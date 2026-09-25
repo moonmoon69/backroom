@@ -87,7 +87,7 @@ function RenameRoomDialog({ room, onCommand, onClose }: { room: RoomListItem; on
   );
 }
 
-const THREAD_CHOICES: Array<{ key: ThreadLifecycleChoice; label: string; help: string }> = [
+export const THREAD_CHOICES: Array<{ key: ThreadLifecycleChoice; label: string; help: string }> = [
   { key: "keep", label: "Keep in T3", help: "The thread stays as it is in T3 Code" },
   { key: "settle", label: "Settle", help: "Moves it to T3's settled list; it can still be opened and continued" },
   { key: "archive", label: "Archive", help: "Hides it in T3; it can be unarchived" },

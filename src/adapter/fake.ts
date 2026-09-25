@@ -302,6 +302,19 @@ export class FakeT3Adapter implements T3Adapter {
     }
   }
 
+  /** Test control: a message the user types in T3 into the running turn (Claude delivers it inside that turn). */
+  sendUserMessage(threadId: string, text: string, attachments: T3Message["attachments"] = []): string {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error("unknown thread");
+    if (!thread.shell.session?.activeTurnId) throw new Error("no active turn");
+    const id = `user:${randomUUID()}`;
+    const at = new Date().toISOString();
+    thread.messages.push({ id, role: "user", text, turnId: null, streaming: false, createdAt: at, attachments });
+    thread.shell.latestUserMessageAt = at;
+    thread.shell.updatedAt = at;
+    return id;
+  }
+
   /** Test control: a turn the agent starts itself, with no user message (e.g. a background task finished). */
   startSelfTurn(threadId: string): string {
     const thread = this.threads.get(threadId);

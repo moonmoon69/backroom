@@ -50,10 +50,11 @@ function dayLabel(iso: string): string {
 const DIRECT_TITLE = "Started directly in T3 Code. Not shared with other participants and never satisfies a room prerequisite.";
 
 type ChatMessage = Omit<RoomEvent, "kind"> & { kind: MessageKind };
-/** "t3.prompt" is not a room event: it is the prompt of a t3.turn, shown on the user's side like a room message. */
-type MessageKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.prompt";
+/** "t3.prompt" is not a room event: it is the prompt of a t3.turn, shown on the user's side like a room message.
+ * "t3.message" is: a note the user typed in T3 into a turn the room started, shown the same way. */
+type MessageKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.prompt" | "t3.message";
 const isMessage = (event: RoomEvent): boolean =>
-  event.kind === "user.message" || event.kind === "note" || event.kind === "assistant.reply" || event.kind === "t3.turn";
+  event.kind === "user.message" || event.kind === "note" || event.kind === "assistant.reply" || event.kind === "t3.turn" || event.kind === "t3.message";
 
 /** Messages from the same speaker within this gap (and with nothing in between) share one header. */
 const GROUP_GAP_MS = 10 * 60 * 1000;
@@ -65,7 +66,7 @@ type TimelineItem =
   | { type: "system"; event: RoomEvent };
 
 const speakerKey = (event: RoomEvent | ChatMessage): string => {
-  if (event.kind === "user.message" || (event.kind as string) === "t3.prompt") return "user";
+  if (event.kind === "user.message" || event.kind === "t3.message" || (event.kind as string) === "t3.prompt") return "user";
   if (event.kind === "note") return "note";
   return event.speaker.type === "participant" ? `p:${event.speaker.participantId}` : "other";
 };
@@ -451,9 +452,9 @@ function MessageRow({
     </span>
   );
 
-  if (event.kind === "user.message" || event.kind === "note" || event.kind === "t3.prompt") {
+  if (event.kind === "user.message" || event.kind === "note" || event.kind === "t3.prompt" || event.kind === "t3.message") {
     const note = event.kind === "note";
-    const fromT3 = event.kind === "t3.prompt";
+    const fromT3 = event.kind === "t3.prompt" || event.kind === "t3.message";
     const attachments = event.attachmentIds ?? [];
     return (
       <div className={`chat-row from-user${note ? " is-note" : ""}${continued ? " continued" : ""}`} data-sequence={event.sequence}>
@@ -462,7 +463,14 @@ function MessageRow({
             <div className="chat-head">
               <span className="you-mark mono">{note ? "note" : "you"}</span>
               {fromT3 ? (
-                <span className="tag mono direct-tag" title="Typed directly in T3 Code on this participant's thread. Not shared with other participants.">
+                <span
+                  className="tag mono direct-tag"
+                  title={
+                    event.kind === "t3.message"
+                      ? "Typed in T3 Code into this participant's running turn. Not shared with other participants."
+                      : "Typed directly in T3 Code on this participant's thread. Not shared with other participants."
+                  }
+                >
                   in T3
                 </span>
               ) : (

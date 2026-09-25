@@ -98,3 +98,42 @@ test("providers that start a new turn for a mid-turn message (Claude): each mess
   assert.deepEqual(replies, ["Built.", "Tests added."]);
   assert.equal(stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "t3.turn").length, 0);
 });
+
+test("a note typed in T3 into a running room turn shows in the timeline with its images, before the reply, and never in briefings", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const thread = stack.threadOf("sol1");
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "build it", schedule: { mode: "now" } });
+  await stack.tick(2);
+  assert.equal(stack.task(1).state, "running");
+
+  // The user types into the running turn in T3 Code, with a screenshot attached.
+  const noteId = stack.fake.sendUserMessage(thread, "also it crashes on phones", [{ id: "thr-abc-img1", name: "IMG_1.png", mimeType: "image/png", sizeBytes: 1234 }]);
+  await stack.tick(1);
+  const events = () => stack.repos.listRecentEvents(stack.roomId, 100);
+  const note = events().find((e) => e.kind === "t3.message");
+  assert.ok(note, "the note appears while the turn is still running");
+  assert.equal(note.text, "also it crashes on phones");
+  assert.deepEqual(note.attachmentIds, ["thr-abc-img1"]);
+  assert.equal(note.speaker.type, "user");
+  assert.equal(note.taskId, stack.task(1).id);
+  assert.equal(note.sourceRef?.messageId, noteId);
+
+  // The turn ends: the reply follows the note, and the note is not recorded twice.
+  stack.fake.completeTurn(thread, { text: "Built, and fixed the phone crash." });
+  await stack.tick(2);
+  assert.equal(stack.task(1).state, "succeeded");
+  const all = events();
+  const notes = all.filter((e) => e.kind === "t3.message");
+  assert.equal(notes.length, 1);
+  const reply = all.find((e) => e.kind === "assistant.reply");
+  assert.ok(reply);
+  assert.ok(notes[0]!.sequence < reply.sequence, "note precedes the reply");
+
+  // Another participant's next briefing carries the room exchange but not the note typed in T3.
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol2!], instruction: "review it", schedule: { mode: "now" } });
+  await stack.tick(2);
+  const briefing = stack.fake.commands.filter((c) => c.type === "thread.turn.start").at(-1)?.payload as { text: string };
+  assert.match(briefing.text, /Built, and fixed the phone crash/);
+  assert.doesNotMatch(briefing.text, /also it crashes on phones/);
+});

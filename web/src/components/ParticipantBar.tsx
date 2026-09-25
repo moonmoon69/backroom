@@ -11,6 +11,8 @@ import {
   type ParticipantStatus,
   type RuntimeMode,
   type ThreadBindingInput,
+  type CommandResult,
+  type ThreadLifecycleChoice,
 } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ContextReadout } from "./ContextMeter.tsx";
@@ -22,6 +24,7 @@ import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
 import { Popover } from "./Popover.tsx";
+import { THREAD_CHOICES } from "./RoomActions.tsx";
 
 type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
 
@@ -538,26 +541,58 @@ export function RebindDialog({ participant, onClose }: { participant: Participan
 /** Retire a participant: past replies stay attributed, the T3 thread is untouched, pending work is handled explicitly. */
 export function RemoveParticipantDialog({ participant, onClose }: { participant: Participant; onClose: () => void }) {
   const { runCommand, snapshot } = useRoom();
+  const { toast } = useToast();
   const [pendingTasks, setPendingTasks] = useState<"cancel" | "keep" | null>(null);
+  const [thread, setThread] = useState<ThreadLifecycleChoice>("keep");
+  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const pending = snapshot.tasks.filter(
     (t) => t.participantId === participant.id && (t.state === "queued" || t.state === "held" || t.state === "blocked"),
   );
+  // A thread T3 no longer has cannot be settled, archived, or deleted; the choice is skipped and "keep" sent.
+  const threadMissing = snapshot.participantStatus[participant.id]?.threadMissing === true;
+  const deleting = thread === "delete" && !threadMissing;
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!pendingTasks) return;
+    if (!pendingTasks || (deleting && !confirmed)) return;
     setBusy(true);
-    const result = await runCommand({ type: "participant.retire", participantId: participant.id, pendingTasks });
+    const result = (await runCommand({ type: "participant.retire", participantId: participant.id, pendingTasks, thread: threadMissing ? "keep" : thread })) as CommandResult | null;
     setBusy(false);
-    if (result) onClose();
+    if (!result) return;
+    const outcome = result.type === "participant.updated" && "thread" in result ? (result as Extract<CommandResult, { type: "participant.updated" }>).thread : undefined;
+    if (outcome && outcome.action !== "keep") {
+      if (outcome.result === "done") toast(`@${participant.alias} removed; its thread was ${outcome.action === "delete" ? "deleted" : `${outcome.action}d`} in T3.`, "success");
+      else if (outcome.result === "kept") toast(`@${participant.alias} removed; its thread was kept in T3 (${outcome.detail ?? "still in use"}).`, "info");
+      else toast(`@${participant.alias} removed, but T3 did not ${outcome.action} the thread: ${outcome.detail ?? "failed"}`);
+    }
+    onClose();
   };
   return (
     <Dialog title={`Remove ${participant.alias} from the room`} onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <p className="serif remove-lede">
-          @{participant.alias}&rsquo;s past replies stay in the timeline under its name, and its T3 thread is left untouched;
-          it simply stops receiving work here.
+          @{participant.alias}&rsquo;s past replies stay in the timeline under its name; it simply stops receiving work here.
+          {threadMissing ? " Its thread no longer exists in T3 Code, so there is nothing to archive or delete there." : " Its thread lives in T3 Code: choose what happens to it."}
         </p>
+        {threadMissing ? null : (
+        <label>
+          T3 thread
+          <select value={thread} onChange={(e) => setThread(e.target.value as ThreadLifecycleChoice)} title={THREAD_CHOICES.find((c) => c.key === thread)?.help}>
+            {THREAD_CHOICES.map((choice) => (
+              <option key={choice.key} value={choice.key}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+          <span className="hint">{THREAD_CHOICES.find((c) => c.key === thread)?.help}. A thread also seated in another room is always kept.</span>
+        </label>
+        )}
+        {deleting ? (
+          <label className="checkbox">
+            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+            I understand the thread and its history are deleted in T3 permanently.
+          </label>
+        ) : null}
         <fieldset>
           <legend>
             Pending tasks ({pending.length}) <span className="required">required</span>
@@ -582,8 +617,8 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
           <button type="button" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary destructive" disabled={busy || !pendingTasks}>
-            Remove @{participant.alias}
+          <button type="submit" className="primary destructive" disabled={busy || !pendingTasks || (deleting && !confirmed)}>
+            {busy ? "Removing…" : `Remove @${participant.alias}`}
           </button>
         </div>
       </form>

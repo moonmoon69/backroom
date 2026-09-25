@@ -337,6 +337,11 @@ export class Repos {
     return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND turn_id = ?").get(threadId, turnId) !== undefined;
   }
 
+  /** Whether a room run sent this T3 user message (the room's own prompt or steer, not a note typed in T3). */
+  isRunMessage(threadId: string, messageId: string): boolean {
+    return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND message_id = ?").get(threadId, messageId) !== undefined;
+  }
+
   findEventIdForSource(threadId: string, messageId: string): string | null {
     const row = this.raw.prepare("SELECT id FROM events WHERE source_thread_id = ? AND source_message_id = ?").get(threadId, messageId) as { id: string } | undefined;
     return row?.id ?? null;

@@ -276,7 +276,7 @@ A room can give its agents one shared Chrome for browser work. You can watch it 
   | Linux without those tools and no desktop | Headless Chrome | Agents only; nothing to watch |
 
   Ubuntu packages: `sudo apt install xvfb x11vnc websockify novnc` plus Google Chrome or Chromium.
-- **Watching from another device:** noVNC listens on `127.0.0.1` by default. To open it from your Mac or iPad over Tailscale, set `ROOMS_BROWSER_BIND` to the box's Tailscale IP. Leave the DevTools port on localhost: anyone who reaches it controls the browser and its logins.
+- **Watching from another device:** noVNC listens on `127.0.0.1` by default. To open it from your Mac or iPad over Tailscale, set `ROOMS_BROWSER_BIND` to the box's Tailscale IP. Leave the DevTools port on localhost: anyone who reaches it controls the browser and its logins. The room UI itself is bound to `127.0.0.1` too; to use it from a phone, put Tailscale Serve (or another reverse proxy) in front of `ROOMS_PORT` (see [On a phone](#on-a-phone)).
 - **Same machine:** the room browser runs on the machine running the room service, so run the service next to the T3 server whose agents use it.
 
 ## What the room shows
@@ -287,6 +287,8 @@ A room can give its agents one shared Chrome for browser work. You can watch it 
 - **Progress, then the final answer.** T3 keeps each message an agent writes during a turn separately. While a turn runs, the room streams those progress notes, with the tool calls between them collapsed ("ran 4 tools · Read, Bash, Edit"). When the turn ends, the reply is the turn's final answer, and the notes sit under a collapsed "progress updates" disclosure. Dependent tasks receive only the final answer, which is why the briefing asks every agent to end with a **Handoff** section.
 - **Changed files** from a turn are listed under the reply, with line counts, collapsed by default.
 - **Turns typed directly in T3 Code** also appear. Your prompt shows as your bubble, and the answer as the participant's. A turn the agent started on its own, such as a background job finishing, is marked "↻ continued on its own". These turns are for awareness only: other participants never receive them in briefings, and they never satisfy a room dependency.
+- **Notes typed into a running room turn** in T3 Code (Claude delivers them inside the turn, so the reply answers them too) appear as your bubble tagged "in T3", with any images, ahead of the reply. Like direct turns, they are for awareness only and never enter briefings.
+- **Replies render richly.** Code blocks have a copy button. Inline code that names a file (`src/parser.ts:42`) shows as a chip with a type badge and the basename; hover for the full path, click to copy it. Images an agent saves to disk and references by path (`![shot](/tmp/shot.png)`) render inline; the room serves only image files under your home directory or the temp directory, resolving symlinks first.
 
 ### Participant bar
 
@@ -341,10 +343,22 @@ Status, model, role and context are on the participant tile and its usage card.
 
 Terminals, the browser preview and full diff text stay in T3 Code.
 
+### On a phone
+
+The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button, the crew strip scrolls sideways, participant menus and dialogs open as bottom sheets, the inspector covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
+
+It also installs as an app. Open the room over HTTPS (for example a Tailscale Serve address; the offline shell only registers on a secure origin), then:
+
+- **iPhone or iPad:** in Safari, tap Share, then **Add to Home Screen**. Chrome on iOS 16.4 or later offers the same from its share menu.
+- **Android:** in Chrome, open the menu and choose **Install app** (or accept the install banner).
+- **Desktop Chrome or Edge:** click the install icon at the right end of the address bar.
+
+The installed app opens full screen, keeps its icon, and shows the last loaded shell when offline. Live data is never cached, so it always reflects the server once connected.
+
 ## Managing rooms, participants and roles
 
 - **Participants mirror their thread.** Change the model or effort in T3 Code and the tile updates. Change it from the room and the room updates the thread through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
-- **Removing a participant** asks what happens to its queued, held and blocked tasks: cancel them, or keep them blocked so you can reassign them. Removal is refused while it has a run in progress.
+- **Removing a participant** asks what happens to its queued, held and blocked tasks (cancel them, or keep them blocked so you can reassign them) and to its T3 thread: **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Deleting asks for a confirmation. A thread also seated in another room is always kept, and when T3 no longer has the thread the choice is skipped. Removal is refused while it has a run in progress. If T3 refuses the thread action, the participant is still removed and the reason is shown.
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
 - **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the top right, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
 

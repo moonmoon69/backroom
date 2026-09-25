@@ -65,7 +65,7 @@ export interface SessionBinding {
   retiredAt: string | null;
 }
 
-export type RoomEventKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "task.status" | "system";
+export type RoomEventKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.message" | "task.status" | "system";
 
 export type Speaker =
   | { type: "user" }
@@ -609,7 +609,7 @@ export type RoomCommand =
   | { type: "participant.model.set"; participantId: string; modelSelection: ModelSelection }
   | { type: "participant.rebind"; participantId: string; thread: ThreadBindingInput; outstandingTasks: "carry" | "block" }
   | { type: "participant.runtimeMode.set"; participantId: string; runtimeMode: RuntimeMode }
-  | { type: "participant.retire"; participantId: string; pendingTasks: "cancel" | "keep" }
+  | { type: "participant.retire"; participantId: string; pendingTasks: "cancel" | "keep"; thread?: ThreadLifecycleChoice }
   | { type: "role.create"; name: string; rules: string }
   | { type: "role.update"; roleId: string; name?: string; rules?: string }
   | { type: "role.delete"; roleId: string }
@@ -659,7 +659,12 @@ export type CommandResult =
       threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }>;
     }
   | { type: "participant.created"; participantId: string; threadId: string }
-  | { type: "participant.updated"; participantId: string }
+  | {
+      type: "participant.updated";
+      participantId: string;
+      /** Present after participant.retire: what happened to its T3 thread. */
+      thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed"; detail?: string };
+    }
   | { type: "tasks.created"; taskIds: string[]; eventId: string }
   | { type: "note.created"; eventId: string }
   | { type: "task.updated"; taskId: string; revision: number }

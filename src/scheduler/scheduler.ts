@@ -9,7 +9,7 @@ import type { T3Adapter, T3Message, T3ThreadDetail, T3ThreadShell, TurnImage } f
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import { assembleBriefing, type PrerequisiteResult } from "../briefing/assemble.ts";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
-import { promptForTurn, resolveTurnForMessage, type TurnResolution } from "../adapter/correlate.ts";
+import { promptMessageForTurn, resolveTurnForMessage, type TurnResolution } from "../adapter/correlate.ts";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { Participant, ParticipantStatus, Room, RoomEvent, Run, SessionBinding, Task } from "../domain/types.ts";
@@ -25,6 +25,9 @@ const VANISHED_RECHECK_MS = 30 * 60 * 1000;
 const TURN_VANISH_GRACE_MS = 2 * 60 * 1000;
 /** How long an accepted command may sit without a recorded turn before the run is failed visibly. */
 const ACCEPT_WITHOUT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
+/** While a room turn runs, the thread is re-read for notes the user types into it in T3 whenever its shell changes,
+ * and at least this often as a fallback. */
+const MID_TURN_SCAN_MS = 4000;
 const BRIEFING_EVENT_KINDS = new Set<RoomEvent["kind"]>(["user.message", "note", "assistant.reply"]);
 
 export interface SchedulerOptions {
@@ -40,6 +43,8 @@ export class Scheduler {
   private readonly statuses = new Map<string, ParticipantStatus>();
   /** Last latest-turn state seen per binding, so direct-turn import reads thread detail only when a turn finishes. */
   private readonly seenLatestTurn = new Map<string, string>();
+  /** Last mid-turn note scan per binding: when, and the shell stamp it saw (see importMidTurnMessages). */
+  private readonly midTurnScans = new Map<string, { at: number; stamp: string }>();
   /** Per thread: requestedAt → turnId for turns seen as T3's latestTurn (T3 only exposes the latest one). */
   private readonly turnRequests = new Map<string, Map<string, string>>();
   private readonly log: (message: string, detail?: unknown) => void;
@@ -233,8 +238,10 @@ export class Scheduler {
       const messages = detail.messages.filter((m) => m.turnId === turnId && m.role === "assistant" && !m.streaming && m.text.trim().length > 0);
       if (messages.length === 0) continue;
       const finalMessage = messages[messages.length - 1] as T3Message; // the last message, not the checkpoint's (see observeRun)
-      // Null for turns the agent started itself (a background task finishing wakes it): see promptForTurn.
-      const prompt = promptForTurn(detail.messages, turnId);
+      // Null for turns the agent started itself (a background task finishing wakes it): see promptForTurn. Also null
+      // when the prompt is already in the timeline as a note typed into the previous room turn (t3.message).
+      const promptMessage = promptMessageForTurn(detail.messages, turnId);
+      const prompt = promptMessage && this.repos.findEventIdForSource(binding.threadId, promptMessage.id) === null ? promptMessage.text : null;
       imports.push({
         turnId,
         completedAt: turn.completedAt,
@@ -288,6 +295,48 @@ export class Scheduler {
       }
     });
     return changed;
+  }
+
+  /**
+   * Notes the user types in T3 Code into a turn the room started (Claude delivers them inside the running turn, so
+   * the room's reply answers them too) appear in the timeline as "t3.message" events with their images, ahead of the
+   * reply. Display only: never delivered in briefings. The room's own prompts and steers on the thread are skipped,
+   * as is anything after the turn's final answer (that is the next turn's prompt).
+   */
+  private importMidTurnMessages(run: Run, task: Task, participant: Participant, binding: SessionBinding, detail: T3ThreadDetail, completed: boolean): boolean {
+    const own = detail.messages.find((m) => m.id === run.messageId);
+    if (!own) return false;
+    const finalAt = completed
+      ? (detail.messages.filter((m) => m.turnId === run.turnId && m.role === "assistant" && !m.streaming).at(-1)?.createdAt ?? null)
+      : null;
+    const notes = detail.messages.filter(
+      (m) =>
+        m.role === "user" &&
+        m.id !== run.messageId &&
+        m.createdAt > own.createdAt &&
+        (m.turnId === null || m.turnId === run.turnId) &&
+        (finalAt === null || m.createdAt <= finalAt) &&
+        (m.text.trim().length > 0 || (m.attachments?.length ?? 0) > 0) &&
+        !this.repos.isRunMessage(binding.threadId, m.id) &&
+        this.repos.findEventIdForSource(binding.threadId, m.id) === null,
+    );
+    if (notes.length === 0) return false;
+    this.db.transaction(() => {
+      for (const note of notes) {
+        this.service.appendEvent({
+          roomId: task.roomId,
+          kind: "t3.message",
+          speaker: { type: "user" },
+          text: note.text.trim(),
+          taskId: task.id,
+          runId: run.id,
+          attachmentIds: (note.attachments ?? []).map((a) => a.id),
+          sourceRef: { threadId: binding.threadId, messageId: note.id, turnId: run.turnId },
+          createdAt: note.createdAt,
+        });
+      }
+    });
+    return true;
   }
 
   private async observeRun(
@@ -397,9 +446,18 @@ export class Scheduler {
     }
 
     if (outcome === "running") {
+      // Notes the user types into this turn in T3 show up while it runs, not only when it ends.
+      let noted = false;
+      const stamp = `${shell.updatedAt}|${shell.latestUserMessageAt ?? ""}`;
+      const lastScan = this.midTurnScans.get(binding.id);
+      if (!lastScan || lastScan.stamp !== stamp || Date.now() - lastScan.at >= MID_TURN_SCAN_MS) {
+        this.midTurnScans.set(binding.id, { at: Date.now(), stamp });
+        const scanned = await loadDetail();
+        if (scanned) noted = this.importMidTurnMessages(run, task, participant, binding, scanned, false);
+      }
       const needsInput = shell.hasPendingApprovals || shell.hasPendingUserInput;
       const nextStatus: Run["status"] = needsInput ? "needs_input" : "running";
-      if (run.status === nextStatus && task.state === (needsInput ? "needs_input" : "running")) return false;
+      if (run.status === nextStatus && task.state === (needsInput ? "needs_input" : "running")) return noted;
       this.db.transaction(() => {
         this.repos.updateRun({ ...run, status: nextStatus, updatedAt: now() });
         this.service.setTaskState(task, needsInput ? "needs_input" : "running", needsInput ? `@${participant.alias} is waiting for a native permission or question` : `running on @${participant.alias}`, { currentRunId: run.id });
@@ -409,6 +467,8 @@ export class Scheduler {
     }
 
     const detail = await loadDetail();
+    if (detail) this.importMidTurnMessages(run, task, participant, binding, detail, true);
+    this.midTurnScans.delete(binding.id);
     const checkpoint = detail?.checkpoints.find((c) => c.turnId === run.turnId);
     // T3 keeps each assistant message of a turn separately: progress notes between tool calls, then the final answer.
     // The final one is the reply (and what dependents receive); the earlier ones are kept as progress.

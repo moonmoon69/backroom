@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
-import type { T3Adapter } from "../adapter/types.ts";
+import type { T3Adapter, ThreadLifecycleAction } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import type { Assignment, RoomCommand, Schedule } from "../domain/commands.ts";
 import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
@@ -37,7 +37,12 @@ export type CommandResult =
   | { type: "role.saved"; roleId: string }
   | { type: "role.deleted"; roleId: string }
   | { type: "participant.created"; participantId: string; threadId: string }
-  | { type: "participant.updated"; participantId: string }
+  | {
+      type: "participant.updated";
+      participantId: string;
+      /** After participant.retire: what happened to its T3 thread (kept when the choice was keep, it has no binding, or it is seated elsewhere). */
+      thread?: { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed"; detail?: string };
+    }
   | { type: "tasks.created"; taskIds: string[]; eventId: string }
   | { type: "note.created"; eventId: string }
   | { type: "task.updated"; taskId: string; revision: number }
@@ -574,6 +579,11 @@ export class RoomService {
     return { type: "participant.updated", participantId: participant.id };
   }
 
+  /**
+   * Retire a participant. Its room data stays for attribution; its T3 thread is kept, settled, archived, or deleted
+   * as chosen (a thread also seated in another room is always kept). The T3 action runs after the room bookkeeping
+   * commits; a failure is reported in the result and leaves the thread as it was.
+   */
   private async retireParticipant(command: Extract<RoomCommand, { type: "participant.retire" }>): Promise<CommandResult> {
     const participant = this.requireParticipant(command.participantId);
     const tasks = this.repos.listTasks(participant.roomId).filter((task) => task.participantId === participant.id);
@@ -586,8 +596,13 @@ export class RoomService {
       );
     }
     const pending = tasks.filter((task) => PENDING_TASK_STATES.has(task.state));
+    const binding = this.repos.currentBinding(participant.id);
+    const elsewhere = binding
+      ? this.repos
+          .listActiveBindings()
+          .some((b) => b.threadId === binding.threadId && b.participantId !== participant.id && this.repos.getParticipant(b.participantId)?.roomId !== participant.roomId)
+      : false;
     this.db.transaction(() => {
-      const binding = this.repos.currentBinding(participant.id);
       if (binding) this.repos.updateBinding({ ...binding, retiredAt: now() });
       this.repos.updateParticipant({ ...participant, retiredAt: now(), updatedAt: now() });
       for (const task of pending) {
@@ -601,14 +616,36 @@ export class RoomService {
         }
       }
     });
+    let thread: NonNullable<Extract<CommandResult, { type: "participant.updated" }>["thread"]> | undefined;
+    if (binding) {
+      const action = command.thread;
+      if (action === "keep") thread = { threadId: binding.threadId, action, result: "kept" };
+      else if (elsewhere) thread = { threadId: binding.threadId, action, result: "kept", detail: "also used in another room" };
+      else {
+        try {
+          await this.adapter.setThreadLifecycle({ commandId: randomUUID(), threadId: binding.threadId, action });
+          thread = { threadId: binding.threadId, action, result: "done" };
+        } catch (error) {
+          thread = { threadId: binding.threadId, action, result: "failed", detail: (error as Error).message };
+        }
+      }
+    }
+    const threadNote =
+      thread && thread.action !== "keep"
+        ? thread.result === "done"
+          ? `; its T3 thread was ${thread.action === "delete" ? "deleted" : `${thread.action}d`}`
+          : thread.result === "kept"
+            ? `; its T3 thread was kept (${thread.detail ?? "kept"})`
+            : `; T3 could not ${thread.action} its thread (${thread.detail ?? "failed"})`
+        : "";
     this.appendEvent({
       roomId: participant.roomId,
       kind: "system",
       speaker: { type: "system" },
-      text: `@${participant.alias} removed from the room; ${pending.length} pending task(s) ${command.pendingTasks === "cancel" ? "cancelled" : "kept blocked for reassignment"}`,
+      text: `@${participant.alias} removed from the room; ${pending.length} pending task(s) ${command.pendingTasks === "cancel" ? "cancelled" : "kept blocked for reassignment"}${threadNote}`,
     });
     this.notify(participant.roomId);
-    return { type: "participant.updated", participantId: participant.id };
+    return { type: "participant.updated", participantId: participant.id, ...(thread ? { thread } : {}) };
   }
 
   // ---------- tasks ----------

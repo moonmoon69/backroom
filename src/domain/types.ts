@@ -86,6 +86,8 @@ export type RoomEventKind =
   | "assistant.reply"
   /** A turn started directly in T3 on a participant's thread. Display only: never part of briefings or prerequisites. */
   | "t3.turn"
+  /** A message the user typed in T3 into a turn the room started (a mid-turn note). Display only, like t3.turn. */
+  | "t3.message"
   | "task.status"
   | "system";
 

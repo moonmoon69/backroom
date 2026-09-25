@@ -117,6 +117,15 @@ export interface T3Message {
   turnId: string | null;
   streaming: boolean;
   createdAt: string;
+  /** Images attached to a user message in T3 (files named by id under T3's userdata/attachments). */
+  attachments?: T3MessageAttachment[];
+}
+
+export interface T3MessageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
 }
 
 export interface T3Activity {

@@ -458,6 +458,9 @@ export class HttpT3Adapter implements T3Adapter {
         turnId: (message.turnId as string | null) ?? null,
         streaming: Boolean(message.streaming),
         createdAt: message.createdAt as string,
+        attachments: ((message.attachments as Array<Record<string, unknown>> | undefined) ?? [])
+          .filter((a) => a.type === "image" && typeof a.id === "string")
+          .map((a) => ({ id: a.id as string, name: (a.name as string) ?? "image", mimeType: (a.mimeType as string) ?? "image/png", sizeBytes: Number(a.sizeBytes ?? 0) })),
       })),
       activities: activities.map((activity) => ({
         id: activity.id as string,

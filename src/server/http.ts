@@ -409,11 +409,28 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json(stack.service.storeAttachment({ roomId: c.req.param("roomId"), name, mimeType, data }));
   });
 
+  // Images attached to messages typed in T3 Code live as files under T3's userdata/attachments, named by id.
+  // Those ids appear on t3.message events; they are served here when the id is not a room attachment.
+  const t3Attachment = (id: string): { path: string; mimeType: string } | null => {
+    if (!/^[A-Za-z0-9-]{1,120}$/.test(id)) return null;
+    for (const [ext, mimeType] of [[".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"], [".webp", "image/webp"]] as const) {
+      const path = join(config.t3UserDataDir, "attachments", `${id}${ext}`);
+      if (existsSync(path)) return { path, mimeType };
+    }
+    return null;
+  };
+
   app.get("/api/attachments/:attachmentId", (c) => {
     const id = c.req.param("attachmentId");
     const attachment = stack.repos.getAttachment(id);
     const data = stack.repos.getAttachmentData(id);
-    if (!attachment || !data) throw new RoomError("not_found", "attachment not found", 404);
+    if (!attachment || !data) {
+      const fromT3 = t3Attachment(id);
+      if (!fromT3) throw new RoomError("not_found", "attachment not found", 404);
+      return new Response(readFileSync(fromT3.path), {
+        headers: { "content-type": fromT3.mimeType, "cache-control": "private, max-age=31536000, immutable" },
+      });
+    }
     return new Response(data, {
       headers: {
         "content-type": attachment.mimeType,

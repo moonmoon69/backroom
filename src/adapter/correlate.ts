@@ -57,12 +57,17 @@ export function resolveTurnForMessage(detail: T3ThreadDetail, messageId: string,
  * turn's first output, and only if no output of an earlier turn lies between them.
  */
 export function promptForTurn(messages: T3ThreadDetail["messages"], turnId: string): string | null {
+  return promptMessageForTurn(messages, turnId)?.text ?? null;
+}
+
+/** The user message that started a turn (see promptForTurn), or null. */
+export function promptMessageForTurn(messages: T3ThreadDetail["messages"], turnId: string): T3ThreadDetail["messages"][number] | null {
   const first = messages.findIndex((m) => m.turnId === turnId && m.role !== "user");
   if (first < 0) return null;
   for (let index = first - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!message) continue;
-    if (message.role === "user") return message.text;
+    if (message.role === "user") return message;
     if (message.turnId && message.turnId !== turnId) return null;
   }
   return null;

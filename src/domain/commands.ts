@@ -143,6 +143,8 @@ export const ParticipantRetireCommand = z
     participantId: nonEmpty,
     /** Required explicit handling of pending work: cancel it, or keep it blocked for reassignment. */
     pendingTasks: z.enum(["cancel", "keep"]),
+    /** What happens to its T3 thread: left alone (default), settled, archived, or deleted in T3 Code. */
+    thread: z.enum(["keep", "settle", "archive", "delete"]).default("keep"),
   })
   .strict();
 
