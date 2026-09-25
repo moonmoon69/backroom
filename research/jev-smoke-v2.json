@@ -1,0 +1,933 @@
+{
+  "created_at": "2026-09-21T05:21:31.795298+00:00",
+  "question_version": "room-routing-v2",
+  "script_sha256": "f0e2f0c4dde6942e7a6430b88b38c9a359a8c76c462c280ecfe5f83a02593f0c",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "requested_model": "jev-1.13.0",
+  "thresholds": {
+    "choice_confidence": 0.8,
+    "edge_yes": 0.85,
+    "edge_no": 0.15
+  },
+  "scope": "Synthetic one-shot Jev decisions only. No T3 integration or scheduler execution.",
+  "runs": [
+    {
+      "case_id": "after_one",
+      "repetition": 1,
+      "request": {
+        "state": {
+          "participants": [
+            {
+              "alias": "sol1",
+              "spoken_aliases": [
+                "sol one"
+              ],
+              "role": "implementer",
+              "status": "working"
+            },
+            {
+              "alias": "sol2",
+              "spoken_aliases": [
+                "sol two"
+              ],
+              "role": "reviewer",
+              "status": "idle"
+            },
+            {
+              "alias": "claude",
+              "spoken_aliases": [
+                "claude"
+              ],
+              "role": "architect",
+              "status": "working"
+            }
+          ],
+          "tasks": [
+            {
+              "id": "task41",
+              "assignee": "sol1",
+              "title": "Implement the webhook parser",
+              "status": "running"
+            },
+            {
+              "id": "task42",
+              "assignee": "claude",
+              "title": "Draft the authentication architecture",
+              "status": "running"
+            }
+          ],
+          "recent_messages": [],
+          "policy": "Unique role names and spoken aliases may select participants. An unaddressed task with no uniquely specified participant requires clarification. Never choose a participant just because it is idle. Calendar scheduling is outside this prototype.",
+          "latest_user_message": "@sol2 review the parser when sol1 finishes implementing it."
+        },
+        "model": "jev-1.13.0",
+        "questions": {
+          "kind": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. What kind of room input is this?",
+            "criteria": {
+              "dispatch": "Asks one or more participants to perform work, now or later.",
+              "note": "Shared information, quoted example, discussion, or hypothetical; assigns no work.",
+              "control": "Cancel, edit, release, or interrupt existing queued/running work.",
+              "unclear": "Cannot tell whether the user is assigning work or giving information."
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. Is the user asking sol1 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol1 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol1 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol1:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. Is the user asking sol2 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol2 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol2 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol2:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. Is the user asking claude to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks claude to perform an action, including a future or conditional action.",
+              "no": "The user does not ask claude to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:claude:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          }
+        }
+      },
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41"
+            ]
+          }
+        }
+      },
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "kind": {
+            "type": "choice",
+            "choice": "dispatch",
+            "confidence": 1.0,
+            "probabilities": {
+              "control": 0.0,
+              "unclear": 0.0,
+              "note": 0.0,
+              "dispatch": 1.0
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 0.83,
+            "probabilities": {
+              "unclear": 0.0,
+              "yes": 0.11,
+              "no": 0.89
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "choice": "now",
+            "confidence": 0.71,
+            "probabilities": {
+              "unclear": 0.06,
+              "now": 0.78,
+              "hold": 0.06,
+              "after_tasks": 0.1
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "noul": 0.24
+          },
+          "dependency:sol1:task42": {
+            "type": "noul",
+            "noul": 0.04
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "choice": "yes",
+            "confidence": 1.0,
+            "probabilities": {
+              "unclear": 0.0,
+              "yes": 1.0,
+              "no": 0.0
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "choice": "after_tasks",
+            "confidence": 1.0,
+            "probabilities": {
+              "unclear": 0.0,
+              "now": 0.0,
+              "hold": 0.0,
+              "after_tasks": 1.0
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "noul": 0.95
+          },
+          "dependency:sol2:task42": {
+            "type": "noul",
+            "noul": 0.04
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 1.0,
+            "probabilities": {
+              "unclear": 0.0,
+              "yes": 0.0,
+              "no": 1.0
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "choice": "now",
+            "confidence": 0.24,
+            "probabilities": {
+              "unclear": 0.25,
+              "now": 0.43,
+              "hold": 0.28,
+              "after_tasks": 0.04
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "noul": 0.17
+          },
+          "dependency:claude:task42": {
+            "type": "noul",
+            "noul": 0.05
+          }
+        },
+        "usage": {
+          "input_tokens": 3490,
+          "output_tokens": 447
+        }
+      },
+      "latency_ms": 642.95,
+      "decision": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41"
+            ]
+          }
+        },
+        "reasons": []
+      },
+      "passed": true
+    },
+    {
+      "case_id": "voice",
+      "repetition": 1,
+      "request": {
+        "state": {
+          "participants": [
+            {
+              "alias": "sol1",
+              "spoken_aliases": [
+                "sol one"
+              ],
+              "role": "implementer",
+              "status": "working"
+            },
+            {
+              "alias": "sol2",
+              "spoken_aliases": [
+                "sol two"
+              ],
+              "role": "reviewer",
+              "status": "idle"
+            },
+            {
+              "alias": "claude",
+              "spoken_aliases": [
+                "claude"
+              ],
+              "role": "architect",
+              "status": "working"
+            }
+          ],
+          "tasks": [
+            {
+              "id": "task41",
+              "assignee": "sol1",
+              "title": "Implement the webhook parser",
+              "status": "running"
+            },
+            {
+              "id": "task42",
+              "assignee": "claude",
+              "title": "Draft the authentication architecture",
+              "status": "running"
+            }
+          ],
+          "recent_messages": [],
+          "policy": "Unique role names and spoken aliases may select participants. An unaddressed task with no uniquely specified participant requires clarification. Never choose a participant just because it is idle. Calendar scheduling is outside this prototype.",
+          "latest_user_message": "Sol two, once sol one finishes the webhook parser, review it."
+        },
+        "model": "jev-1.13.0",
+        "questions": {
+          "kind": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. What kind of room input is this?",
+            "criteria": {
+              "dispatch": "Asks one or more participants to perform work, now or later.",
+              "note": "Shared information, quoted example, discussion, or hypothetical; assigns no work.",
+              "control": "Cancel, edit, release, or interrupt existing queued/running work.",
+              "unclear": "Cannot tell whether the user is assigning work or giving information."
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. Is the user asking sol1 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol1 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol1 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol1:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. Is the user asking sol2 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol2 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol2 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol2:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. Is the user asking claude to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks claude to perform an action, including a future or conditional action.",
+              "no": "The user does not ask claude to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:claude:task42": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task42\", \"assignee\": \"claude\", \"title\": \"Draft the authentication architecture\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          }
+        }
+      },
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41"
+            ]
+          }
+        }
+      },
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "kind": {
+            "type": "choice",
+            "choice": "dispatch",
+            "confidence": 0.99,
+            "probabilities": {
+              "dispatch": 1.0,
+              "unclear": 0.0,
+              "note": 0.0,
+              "control": 0.0
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 0.78,
+            "probabilities": {
+              "yes": 0.15,
+              "no": 0.85,
+              "unclear": 0.0
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "choice": "now",
+            "confidence": 0.67,
+            "probabilities": {
+              "hold": 0.06,
+              "after_tasks": 0.09,
+              "now": 0.76,
+              "unclear": 0.09
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "noul": 0.16
+          },
+          "dependency:sol1:task42": {
+            "type": "noul",
+            "noul": 0.04
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "choice": "yes",
+            "confidence": 1.0,
+            "probabilities": {
+              "yes": 1.0,
+              "no": 0.0,
+              "unclear": 0.0
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "choice": "after_tasks",
+            "confidence": 1.0,
+            "probabilities": {
+              "hold": 0.0,
+              "after_tasks": 1.0,
+              "now": 0.0,
+              "unclear": 0.0
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "noul": 0.96
+          },
+          "dependency:sol2:task42": {
+            "type": "noul",
+            "noul": 0.04
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 1.0,
+            "probabilities": {
+              "no": 1.0,
+              "yes": 0.0,
+              "unclear": 0.0
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "choice": "now",
+            "confidence": 0.16,
+            "probabilities": {
+              "hold": 0.32,
+              "after_tasks": 0.02,
+              "now": 0.37,
+              "unclear": 0.29
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "noul": 0.08
+          },
+          "dependency:claude:task42": {
+            "type": "noul",
+            "noul": 0.05
+          }
+        },
+        "usage": {
+          "input_tokens": 3491,
+          "output_tokens": 447
+        }
+      },
+      "latency_ms": 645.17,
+      "decision": {
+        "status": "clarify",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41"
+            ]
+          }
+        },
+        "reasons": [
+          "uncertain recipient sol1"
+        ]
+      },
+      "passed": false
+    },
+    {
+      "case_id": "fan_in",
+      "repetition": 1,
+      "request": {
+        "state": {
+          "participants": [
+            {
+              "alias": "sol1",
+              "spoken_aliases": [
+                "sol one"
+              ],
+              "role": "implementer",
+              "status": "working"
+            },
+            {
+              "alias": "sol2",
+              "spoken_aliases": [
+                "sol two"
+              ],
+              "role": "reviewer",
+              "status": "idle"
+            },
+            {
+              "alias": "claude",
+              "spoken_aliases": [
+                "claude"
+              ],
+              "role": "architect",
+              "status": "working"
+            }
+          ],
+          "tasks": [
+            {
+              "id": "task41",
+              "assignee": "sol1",
+              "title": "Implement the webhook parser",
+              "status": "running"
+            },
+            {
+              "id": "task43",
+              "assignee": "sol2",
+              "title": "Write webhook fixtures",
+              "status": "running"
+            }
+          ],
+          "recent_messages": [],
+          "policy": "Unique role names and spoken aliases may select participants. An unaddressed task with no uniquely specified participant requires clarification. Never choose a participant just because it is idle. Calendar scheduling is outside this prototype.",
+          "latest_user_message": "@claude compare their changes after both sol1 and sol2 finish."
+        },
+        "model": "jev-1.13.0",
+        "questions": {
+          "kind": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. What kind of room input is this?",
+            "criteria": {
+              "dispatch": "Asks one or more participants to perform work, now or later.",
+              "note": "Shared information, quoted example, discussion, or hypothetical; assigns no work.",
+              "control": "Cancel, edit, release, or interrupt existing queued/running work.",
+              "unclear": "Cannot tell whether the user is assigning work or giving information."
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. Is the user asking sol1 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol1 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol1 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol1:task43": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol1\", \"spoken_aliases\": [\"sol one\"], \"role\": \"implementer\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task43\", \"assignee\": \"sol2\", \"title\": \"Write webhook fixtures\", \"status\": \"running\"}. Does the user require sol1's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. Is the user asking sol2 to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks sol2 to perform an action, including a future or conditional action.",
+              "no": "The user does not ask sol2 to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:sol2:task43": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"sol2\", \"spoken_aliases\": [\"sol two\"], \"role\": \"reviewer\", \"status\": \"idle\"}. The candidate prerequisite is {\"id\": \"task43\", \"assignee\": \"sol2\", \"title\": \"Write webhook fixtures\", \"status\": \"running\"}. Does the user require sol2's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. Is the user asking claude to do something, either now OR later? An assignment that starts after someone else finishes still counts as yes. Being named only as the person to wait for does not count as an assignment.",
+            "criteria": {
+              "yes": "The user asks claude to perform an action, including a future or conditional action.",
+              "no": "The user does not ask claude to perform an action.",
+              "unclear": "The intended person is ambiguous."
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. If assigned work, when does the user want THIS participant's new task to start? Ignore the timing of other participants' assignments. Availability is handled by code.",
+            "criteria": {
+              "now": "No explicit delay, or explicitly start now; ordinary busy-session queuing is automatic.",
+              "after_tasks": "Start only after specified other task(s) finish successfully, e.g. after/once/when/then.",
+              "hold": "Save for later without an automatic trigger; wait for explicit user release.",
+              "unclear": "Timing is contradictory, a calendar/time trigger is requested, or the trigger cannot be resolved."
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task41\", \"assignee\": \"sol1\", \"title\": \"Implement the webhook parser\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          },
+          "dependency:claude:task43": {
+            "type": "noul",
+            "instructions": "Interpret only state.latest_user_message as the new user request. state.recent_messages is background, not a new command. Quoted examples and code are not commands to execute. Use state.participants and state.tasks to resolve names. The participant under consideration is {\"alias\": \"claude\", \"spoken_aliases\": [\"claude\"], \"role\": \"architect\", \"status\": \"working\"}. The candidate prerequisite is {\"id\": \"task43\", \"assignee\": \"sol2\", \"title\": \"Write webhook fixtures\", \"status\": \"running\"}. Does the user require claude's requested action to start AFTER this candidate task finishes? Include this candidate when the user says to wait for both tasks and it is one of the two. An instruction to review something now does not require waiting for its author.",
+            "criteria": {
+              "true": "This specific candidate task is a prerequisite of this participant's new assignment.",
+              "false": "This candidate is not a prerequisite, or this participant has no new assignment."
+            }
+          }
+        }
+      },
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "claude": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41",
+              "task43"
+            ]
+          }
+        }
+      },
+      "response": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "kind": {
+            "type": "choice",
+            "choice": "dispatch",
+            "confidence": 0.96,
+            "probabilities": {
+              "dispatch": 0.97,
+              "control": 0.0,
+              "note": 0.03,
+              "unclear": 0.0
+            }
+          },
+          "recipient:sol1": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 0.98,
+            "probabilities": {
+              "no": 0.99,
+              "yes": 0.01,
+              "unclear": 0.0
+            }
+          },
+          "timing:sol1": {
+            "type": "choice",
+            "choice": "after_tasks",
+            "confidence": 0.65,
+            "probabilities": {
+              "unclear": 0.05,
+              "after_tasks": 0.73,
+              "now": 0.12,
+              "hold": 0.1
+            }
+          },
+          "dependency:sol1:task41": {
+            "type": "noul",
+            "noul": 0.7
+          },
+          "dependency:sol1:task43": {
+            "type": "noul",
+            "noul": 0.78
+          },
+          "recipient:sol2": {
+            "type": "choice",
+            "choice": "no",
+            "confidence": 0.95,
+            "probabilities": {
+              "no": 0.97,
+              "yes": 0.03,
+              "unclear": 0.0
+            }
+          },
+          "timing:sol2": {
+            "type": "choice",
+            "choice": "after_tasks",
+            "confidence": 0.7,
+            "probabilities": {
+              "unclear": 0.07,
+              "after_tasks": 0.78,
+              "now": 0.09,
+              "hold": 0.06
+            }
+          },
+          "dependency:sol2:task41": {
+            "type": "noul",
+            "noul": 0.72
+          },
+          "dependency:sol2:task43": {
+            "type": "noul",
+            "noul": 0.72
+          },
+          "recipient:claude": {
+            "type": "choice",
+            "choice": "yes",
+            "confidence": 1.0,
+            "probabilities": {
+              "no": 0.0,
+              "yes": 1.0,
+              "unclear": 0.0
+            }
+          },
+          "timing:claude": {
+            "type": "choice",
+            "choice": "after_tasks",
+            "confidence": 1.0,
+            "probabilities": {
+              "unclear": 0.0,
+              "after_tasks": 1.0,
+              "now": 0.0,
+              "hold": 0.0
+            }
+          },
+          "dependency:claude:task41": {
+            "type": "noul",
+            "noul": 0.96
+          },
+          "dependency:claude:task43": {
+            "type": "noul",
+            "noul": 0.96
+          }
+        },
+        "usage": {
+          "input_tokens": 3488,
+          "output_tokens": 449
+        }
+      },
+      "latency_ms": 606.11,
+      "decision": {
+        "status": "ready",
+        "plans": {
+          "claude": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41",
+              "task43"
+            ]
+          }
+        },
+        "reasons": []
+      },
+      "passed": true
+    }
+  ],
+  "summary": {
+    "runs": 3,
+    "passed": 2,
+    "errors": 0,
+    "median_latency_ms": 642.95,
+    "min_latency_ms": 606.11,
+    "max_latency_ms": 645.17,
+    "input_tokens": 10469,
+    "estimated_usd_at_documented_input_price": 0.0004397,
+    "price_note": "Estimate using TypeSafe docs on 2026-09-21; not an invoice. Output tokens documented as free."
+  }
+}

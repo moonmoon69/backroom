@@ -1,0 +1,393 @@
+# T3 Rooms
+
+A local companion for [T3 Code](https://github.com/pingdotgg/t3code). A **room** is one shared conversation with several T3 threads in it. Each thread takes part under a short alias (`@claude`, `@grok`, …). You address them in plain text. The room queues the work, waits where one task depends on another, and passes each finished answer to whoever needs it next. You don't have to copy anything between threads yourself.
+
+The room owns conversation and coordination. T3 owns execution: every participant is a real T3 thread, with its own model, permissions and worktree, and you can still open it in T3 Code. No model reads your input on the room's side: every action is a direct control or a small explicit syntax, and the composer shows the plan before you send.
+
+See [`PRD.md`](PRD.md) for the product definition and [`research/`](research/) for feasibility notes and live findings.
+
+---
+
+## Contents
+
+1. [Requirements](#requirements)
+2. [Install](#install)
+3. [Connect to T3 Code](#connect-to-t3-code)
+4. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
+5. [Your first room](#your-first-room)
+6. [Writing messages](#writing-messages)
+7. [Sending while someone is working](#sending-while-someone-is-working)
+8. [T3 slash commands](#t3-slash-commands)
+9. [Room browser](#room-browser)
+10. [What the room shows](#what-the-room-shows)
+11. [Managing rooms, participants and roles](#managing-rooms-participants-and-roles)
+12. [Configuration](#configuration)
+13. [Running, updating and backing up](#running-updating-and-backing-up)
+14. [Troubleshooting](#troubleshooting)
+15. [Development](#development)
+16. [How it works](#how-it-works)
+
+---
+
+## Requirements
+
+- **Node 24 or newer.** The service runs TypeScript directly through Node's type stripping and stores data with the built-in `node:sqlite`, so it has no build step. Only the web UI is built. Check with `node --version`.
+- **npm** (bundled with Node).
+- **T3 Code**, with a server the room can reach over HTTP. Either of these works:
+  - the **T3 Code Desktop app**, with **Settings → Connections → Network access** turned on (see below);
+  - a headless server started with `t3 serve`, or installed with `t3 service install`.
+- The harnesses you want in rooms (Claude, Codex, Cursor, Grok, OpenCode, …) are set up and signed in **inside T3**. The room never talks to a harness directly.
+
+Tested on macOS against T3 Code 0.0.43.
+
+## Install
+
+```sh
+git clone https://github.com/moonmoon69/t3code-rooms.git
+cd t3code-rooms
+npm install          # installs the service and the web workspace
+npm run build:web    # builds the UI into web/dist (the service serves it)
+npm start            # http://127.0.0.1:4400
+```
+
+Open <http://127.0.0.1:4400>. The service binds to `127.0.0.1` only, so it is not reachable from other machines.
+
+At startup the service logs the T3 address it will use and whether it has credentials:
+
+```
+[rooms] … T3 base URL http://127.0.0.1:3773; credentials missing (pair from the UI)
+[rooms] … listening on http://127.0.0.1:4400 (db /…/t3code-rooms/data/rooms.sqlite)
+```
+
+The T3 address is found automatically from `~/.t3/userdata/server-runtime.json`, which T3 writes while it runs. Set `T3_BASE_URL` if your server is elsewhere.
+
+## Connect to T3 Code
+
+The room is a third-party client of your T3 server, so it needs a credential. T3 hands out credentials through **one-time pairing links**.
+
+### 1. Get a pairing link
+
+- **Desktop app:** open **Settings → Connections** and turn on **Network access** (the app restarts). Then create a pairing link on the same screen. On loopback only, the Desktop server runs under the `desktop-managed-local` auth policy and offers no pairing links. That is why Network access is required.
+- **Headless server** (`t3 serve` or the installed service): run `t3 pair`.
+
+Treat pairing links like passwords. They expire within minutes and work only once.
+
+### 2. Pair
+
+Either paste the link into the room UI, or use the command line. While the room is unpaired, the UI shows the pairing panel in place of the rooms. Later you can reach it from the connection plaque at the bottom of the sidebar.
+
+From the command line:
+
+```sh
+npm run t3:pair -- "http://127.0.0.1:3773/pair?token=..."
+```
+
+The link is exchanged for a bearer token, which is stored in `data/t3-auth.json` with owner-only permissions (0600). The token is never sent to the browser. The command prints only the scope and expiry.
+
+### 3. Verify (optional but recommended)
+
+```sh
+npm run t3:check                                   # read-only: server descriptor, auth policy, projects, models, threads
+npm run t3:check -- --write --project <projectId>  # creates one thread, sends one turn, checks correlation and interrupt
+```
+
+The `--write` check leaves one thread titled "T3 Rooms contract check" in T3; delete it there when you are done. Copy a project id from the room's **Open in T3** dialog, or from T3 itself.
+
+## Try it without T3 (demo mode)
+
+```sh
+ROOMS_ADAPTER=fake npm start
+```
+
+A simulated T3 takes the place of the real one. Its agents reply after about four seconds, and it offers sample slash commands (`/compact`, `/review`). Pairing is disabled in this mode. Use a separate data directory so demo rooms stay out of your real database:
+
+```sh
+ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
+```
+
+## Your first room
+
+1. **Create a room.** Click **+ New room** in the sidebar, give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
+2. **Add a participant.** Click **+ Add participant** in the participant bar at the top, then choose one of:
+   - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
+   - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
+
+   The alias is what you type after `@`, and it exists only inside this room.
+3. **Send work.** Type `@claude fix the failing parser test` and press **Enter**. The plan under the composer shows the result before you send: who receives what, and whether it starts now or waits.
+4. **Watch it run.** Your message appears on the left and the participant's reply on the right. Progress notes stream in while the turn runs. When it ends, the final answer becomes the reply.
+
+The composer placeholder cycles through examples built from your room's actual participants, so every example can be sent as is.
+
+## Writing messages
+
+The text you type is the whole instruction. The buttons under the composer only edit that text. As you type, the composer highlights mentions and commands, then shows the **plan**: one row per assignment, with its recipients, instruction and timing ("now", "next", "after @x", "held").
+
+| Key | Action |
+| --- | --- |
+| **Enter** | Send |
+| **Shift+Enter** | New line |
+| **⌘/Ctrl+Enter** | Send, and deliver into a running turn instead of waiting (see [below](#sending-while-someone-is-working)) |
+| `@` | Mention autocomplete (participants and `@all`) |
+| `/` | Command menu (room commands, and T3 commands after an `@name`) |
+
+### Addressing
+
+```
+@claude review the diff                        one participant
+@claude @grok review the diff                  the same instruction for both (two independent tasks)
+@all review the release notes                  everyone in the room ("all" cannot be used as an alias)
+Claude, review the parser                      the spoken form works at the start of a sentence
+```
+
+### Several assignments in one message
+
+```
+@claude fix the login bug @grok update the docs
+                                               two assignments, both start now
+@claude fix the login bug. @grok check claude's work
+                                               grok waits for claude: the text names claude
+@claude build it, then @grok deploy it         grok waits for claude ("then")
+@claude build it. @grok /now read the notes    /now: grok starts immediately anyway
+when @grok finishes, @claude write the summary claude waits for grok ("when/once/after … finishes")
+@grok deploy it when claude finishes           same, with the condition at the end
+@claude fix it and once she's done @grok test it
+                                               grok waits for the previous assignment ("she", "it", "that")
+@claude API, @grok UI, and @codex review both once they're finished
+                                               codex waits for all earlier assignments ("they", "both")
+The build is red. @claude fix it. @grok find the cause
+                                               "The build is red." is context for both, not an assignment
+```
+
+How an @mention is read:
+
+- **At the start of a message, line or sentence, it addresses.** Mentions side by side (`@a @b`, `@a and @b`) share one assignment.
+- **Later in a sentence it starts a new assignment,** unless it reads as a reference:
+  - possessive (`@claude's`);
+  - after a linking word (`with @claude`, `what @claude did`, `the @claude branch`);
+  - after a one-word lead (`review @claude changes`);
+  - with nothing after it (`…and tell @claude`).
+
+  URLs and paths containing `@` are ignored.
+- **The plan row offers one-click fixes that rewrite the text.** "It's a reference" drops the `@`, "Make it a new assignment" moves the mention onto a new line, and "Don't wait" inserts `/now`.
+
+A condition the room cannot observe ("when the tests pass") stays in the instruction, and the plan says so. Names of participants who have no assignment in the message never create a wait. The rules don't cover negation ("don't touch claude's files") or waiting on a later assignment. Unknown aliases and ambiguous task references leave the draft unresolved rather than guessed.
+
+### Directives and room commands
+
+Type `/` at the start of the message to see these, each with a description:
+
+```
+/after task41 @grok review the implementation  wait for existing work (a task picker opens after /after)
+/after @claude @grok review it                 wait for claude's open task
+/hold @grok save this for later                held until you release it from the task card or board
+/now @grok …                                   start now, even if the text implies a wait
+/steer @grok also cover the edge cases         deliver into grok's running turn (see below)
+/note preserve the public API                  a room note everyone sees; no task
+/add alice                                     seat a new participant on a new thread (T3's default model)
+/add alice role accountant                     same, with a role
+/role @alice accountant                        assign a role ("none" clears it)
+/remove @alice                                 retire a participant (asks about its pending tasks)
+```
+
+### Images
+
+Paste, drop, or attach PNG, JPEG, GIF or WebP images (T3's limits: up to 10 MB each, 80 MB per message). Every assignment in the message receives them. A resend or retry delivers the same bytes. A message with images can have an empty instruction.
+
+### Quoting and escaping
+
+Text inside code blocks, `` `inline code` ``, or lines starting with `> ` is read literally: its @names and /commands address nobody. `\@name` escapes a single mention. When you paste several lines containing @names or /commands (a transcript, a log), the composer wraps them in a code block for you. Undo removes the wrapping.
+
+## Sending while someone is working
+
+A plain send to a participant who is mid-turn **waits**. The task starts when the current turn ends, and the plan shows "next". Delivering into the running turn instead is called steering, and there are three ways to do it:
+
+- add `/steer` to the message;
+- pick **Send into the running turn** on the plan row;
+- press **⌘/Ctrl+Enter** for this one send.
+
+This works like T3's own "steer" follow-up setting. The mid-turn message carries only your words and images, not the full room briefing. It is never sent while the agent is waiting on an approval or a question, or before the thread's first room briefing.
+
+Providers handle a steered message differently (verified live with `scripts/t3-steer-check.ts`):
+
+- **Cursor, Grok, OpenCode** take it into the running turn. One reply answers both messages and links back to both ("↩ your 3:49 and 3:50 PM messages").
+- **Claude** starts a separate turn for it straight away. You get two replies, each linked to its own message.
+
+## T3 slash commands
+
+T3 publishes each provider's slash commands and skills. Claude exposes dozens (`/compact`, `/autocompact`, installed skills, …). Codex has `/compact` and `/feedback`, and Cursor has `/compact`. Grok and OpenCode currently expose none.
+
+- **Browse:** type `@claude /` to list the room directives plus claude's T3 commands, labelled "T3 · @claude", each with a description and argument hint. Typing narrows the list. With several recipients (or `@all`), only the commands they all have are listed.
+- **Send:** `@claude /compact focus on the parser` is sent to claude's thread exactly as typed, with no room briefing around it, because a harness only runs a slash command when it is the first thing in the message. The plan row marks it **T3 command**.
+- **Unknown commands are blocked.** The plan and the server both refuse a command the recipient's provider doesn't have.
+- **Limits:** a T3 command can't be combined with `/steer`, and it doesn't count as the participant having seen the room. Its next normal task still gets the full briefing.
+
+## Room browser
+
+A room can give its agents one shared Chrome for browser work. You can watch it and take over: close tabs, type a password, click through a login.
+
+- **Turn it on** with the **Browser** button in the room header, then tick "Give this room's agents a shared browser".
+- **When it runs:** it starts when you turn it on or press Start, and before each task in the room is sent (slash commands excepted). It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
+- **Stable address:** each room keeps its own ports and profile under `data/browsers/<room>/`, so logins survive stop, start and service restarts. Browsers keep running when the room service restarts, and the service picks them up again. Deleting the room deletes its browser profile.
+- **How agents find it:** every briefing in the room gets a "Room browser" section with the DevTools address (`http://127.0.0.1:<port>`) and how to attach, for example `agent-browser connect <port>` or Playwright's `connectOverCDP`. No harness MCP configuration is needed. Agents are asked to open their own tab and leave other tabs and logins alone.
+- **What you see depends on the machine:**
+
+  | Machine | What runs | How you watch |
+  | --- | --- | --- |
+  | Linux with `Xvfb`, `x11vnc`, `websockify` and noVNC installed | Chrome on a virtual screen | The panel's **Open the browser screen** link opens noVNC with mouse and keyboard. Agents also get the link, so they can hand it to you. |
+  | macOS, or Linux with a desktop | A normal Chrome window with the room's own profile | Use the window directly |
+  | Linux without those tools and no desktop | Headless Chrome | Agents only; nothing to watch |
+
+  Ubuntu packages: `sudo apt install xvfb x11vnc websockify novnc` plus Google Chrome or Chromium.
+- **Watching from another device:** noVNC listens on `127.0.0.1` by default. To open it from your Mac or iPad over Tailscale, set `ROOMS_BROWSER_BIND` to the box's Tailscale IP. Leave the DevTools port on localhost: anyone who reaches it controls the browser and its logins.
+- **Same machine:** the room browser runs on the machine running the room service, so run the service next to the T3 server whose agents use it.
+
+## What the room shows
+
+### Timeline
+
+- **The layout is a chat.** Your messages are on the left, and participants' replies on the right, labelled with their alias. Each reply links back to the message(s) it answers.
+- **Progress, then the final answer.** T3 keeps each message an agent writes during a turn separately. While a turn runs, the room streams those progress notes, with the tool calls between them collapsed ("ran 4 tools · Read, Bash, Edit"). When the turn ends, the reply is the turn's final answer, and the notes sit under a collapsed "progress updates" disclosure. Dependent tasks receive only the final answer, which is why the briefing asks every agent to end with a **Handoff** section.
+- **Changed files** from a turn are listed under the reply, with line counts, collapsed by default.
+- **Turns typed directly in T3 Code** also appear. Your prompt shows as your bubble, and the answer as the participant's. A turn the agent started on its own, such as a background job finishing, is marked "↻ continued on its own". These turns are for awareness only: other participants never receive them in briefings, and they never satisfy a room dependency.
+
+### Participant bar
+
+Each participant tile shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
+
+**Hover or click the alias** for the usage card. It shows:
+
+- the thread's context window and token totals;
+- today's usage for that model across all threads, with an API-equivalent cost (T3 does not split cost by thread);
+- the provider's plan limits.
+
+All of it comes from T3. The tile's menu has:
+
+- **Open in T3:** thread and project ids.
+- **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
+- **Settings…:** alias, role, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
+- **Rebind thread…:** point the participant at another thread.
+- **Remove from room…**
+
+### Background status
+
+A turn can end while subagents, background shells or watch loops keep running. T3 reports this, and the room shows it on the participant and in the sidebar, so a quiet thread doesn't look finished or dead.
+
+### Sidebar
+
+Each room shows activity pills:
+
+- mid-turn;
+- between turns with background work;
+- only watch loops running;
+- waiting for your approval or answer.
+
+Drag rooms to reorder them. The **⋯** menu renames or deletes a room.
+
+### Inspector (right-hand panel)
+
+- **Board:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
+- **Changes:** files changed across the room, grouped by participant. A path touched by two participants is marked "also: @alias".
+
+**Thread details…** in a participant's menu covers what T3 reports about the thread that isn't shown elsewhere:
+
+- session detail and errors;
+- branch, worktree and thread id;
+- pull requests;
+- the latest proposed plan;
+- per-turn checkpoints with changed files;
+- the tool log.
+
+Status, model, role and context are on the participant tile and its usage card.
+
+Terminals, the browser preview and full diff text stay in T3 Code.
+
+## Managing rooms, participants and roles
+
+- **Participants mirror their thread.** Change the model or effort in T3 Code and the tile updates. Change it from the room and the room updates the thread through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
+- **Removing a participant** asks what happens to its queued, held and blocked tasks: cancel them, or keep them blocked so you can reassign them. Removal is refused while it has a run in progress.
+- **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
+- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** in the sidebar, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
+
+## Configuration
+
+The service reads environment variables only. It does **not** load `.env`, which is used only by the optional research scripts. Set variables inline, for example `ROOMS_PORT=4500 npm start`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ROOMS_PORT` | `4400` | UI/API port (always bound to 127.0.0.1) |
+| `ROOMS_DATA_DIR` | `./data` | Database, stored credential and images |
+| `ROOMS_DB_PATH` | `$ROOMS_DATA_DIR/rooms.sqlite` | Database file, if it should live elsewhere |
+| `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
+| `T3_BASE_URL` | from `~/.t3/userdata/server-runtime.json`, else the paired server, else `http://127.0.0.1:3773` | T3 server origin |
+| `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token |
+| `T3_USERDATA_DIR` | `~/.t3/userdata` | Where to find T3's runtime file and local model catalog |
+| `ROOMS_TICK_MS` | `1500` | Scheduler poll interval |
+| `ROOMS_BRIEFING_BUDGET` | `60000` | Characters per delivery before older room context is condensed |
+| `ROOMS_BROWSER_MODE` | `auto` | Room browser: `vnc` (Xvfb + noVNC), `window`, `headless`, or `off`. `auto` picks `vnc` on Linux with the tools installed, otherwise `window` (macOS or a Linux desktop) or `headless` |
+| `ROOMS_BROWSER_CHROME` | found automatically | Path to Chrome or Chromium |
+| `ROOMS_BROWSER_BIND` | `127.0.0.1` | Address noVNC listens on (for example a Tailscale IP) |
+| `ROOMS_BROWSER_HOST` | the bind address | Host used in watch links given to agents; if unset with a wildcard bind, the UI uses the host you opened it on |
+| `ROOMS_BROWSER_NOVNC_DIR` | `/usr/share/novnc` | noVNC web files |
+| `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a room's browser after this long without tab changes (`0` = never) |
+
+## Running, updating and backing up
+
+- **Restarting is safe.** Queued tasks resume, and in-flight runs are matched back to their T3 turns. A turn that finished while the service was down is picked up on the next poll.
+- **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "The room UI was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
+- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite` and `t3-auth.json`. Keep the copy private, since the credential is inside.
+- **Keep it running** with any process manager (a `launchd` agent, `pm2`, a tmux pane). The service needs no special privileges.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Status says "not paired", and the pairing panel mentions `desktop-managed-local` | The Desktop server on loopback does not issue pairing links. Turn on Settings → Connections → Network access in T3 Code, then create a link. |
+| Pairing returns HTTP 4xx | Links are one-time and expire within minutes. Create a fresh one. |
+| Status says "re-pair the room service" | The stored token expired or was revoked in T3 (Settings → Connections → clients). Pair again; queued work is untouched. |
+| The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
+| A task sits in "dispatching" and then fails with "provider failed to start" | The harness behind that participant isn't signed in, or its CLI is missing. Fix it in T3, then press Retry on the task card. |
+| A participant shows "busy in T3" | Someone is driving that thread directly in T3 Code. The room waits for that turn to end. |
+| A task card shows "previous attempt: T3 no longer reports this turn" | T3 briefly stopped listing the turn. The room rechecks for a while and revives the run if the turn reappears, so a retry doesn't deliver the work twice. Retry only if the thread really shows no such turn. |
+| `/name is not a T3 command for @x` | That participant's provider doesn't offer the command. Type `@x /` to see what it has. |
+| The model picker is empty | The catalog comes from T3's server config. With the RPC unavailable, it falls back to `~/.t3/userdata` and existing threads. Create one thread in T3 with the model you want, or type the instance id and model manually. |
+| A participant shows "thread deleted in T3" | Its thread was deleted in T3 Code. The room keeps the participant and its past replies, and new work for it is blocked. Rebind it to another thread or remove it. Settling or archiving a thread does not cause this. |
+| The Browser panel says "Chrome exited during start: No usable sandbox" | Chrome's sandbox can't run, which is typical inside Docker. Run the container with `--security-opt seccomp=unconfined`, or use Google Chrome's package on the host. Each tool's output is in `data/browsers/<room>/*.log`. |
+| The page stops updating | The service stopped. Restart it with `npm start`; nothing is lost. |
+
+## Development
+
+```sh
+npm run typecheck                # service types
+npm --workspace web run typecheck
+npm test                         # acceptance tests against the fake adapter
+npm run check                    # typecheck + tests
+npm run dev                      # service with --watch
+npm --workspace web run dev      # Vite on :5173, proxying /api to :4400
+```
+
+Tests never touch a real T3 server. To try UI changes safely, run a demo instance on another port (`ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start`).
+
+| Path | Purpose |
+| --- | --- |
+| `src/domain` | Room records, the versioned command contract (zod), dependency-graph checks |
+| `src/db` | SQLite persistence (`node:sqlite`, WAL) and migrations |
+| `src/app/service.ts` | The single command handler behind every input path |
+| `src/parser` | Composer syntax: mentions, assignments, waits, directives, slash commands (shared with the UI) |
+| `src/scheduler` | Durable queue: dependencies, dispatch outbox, steering, turn correlation, reconciliation |
+| `src/browser` | Room browsers: starts, adopts and stops each room's Chrome (and Xvfb/x11vnc/noVNC on Linux) |
+| `src/briefing` | Exact context assembled for each delivery |
+| `src/adapter` | T3 boundary: HTTP + WebSocket RPC adapter with pairing, and an in-memory fake |
+| `src/server` | HTTP API and Server-Sent Events for the UI |
+| `web/` | React UI |
+| `scripts/t3-pair.ts` | Pair from the command line |
+| `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
+| `scripts/t3-steer-check.ts` | Live check of mid-turn delivery per model (creates scratch threads) |
+| `scripts/repair-replies.ts` | One-off repair of stored final answers and prompts from T3's record (`--dry-run` first) |
+| `scripts/probe-jev-split.ts` | Research: compares the parser with a hosted interpreter (needs `JEV_API_KEY` in `.env`) |
+| `tests/` | Acceptance tests driven through the fake adapter |
+
+## How it works
+
+- **Delivery.** Each task goes to its participant's thread as one T3 turn. The turn's message is a **briefing**: the room messages the participant hasn't seen, the finished answers of the tasks it waited on, its role rules, and its assignment. Each message is delivered once. If a message was addressed only to this participant and is already the assignment, it isn't repeated in the context.
+- **Completion.** T3 has no "turn completed" event and never stamps a turn id on the message that started a turn. The scheduler polls each thread and matches its own message to the turn exactly: the turn's `requestedAt` equals the message's `createdAt`. It then reads that turn's state and final answer. A steered message has no turn of its own. An outcome is decided from the freshest T3 read, with a grace period, so a stale list can't end a run early.
+- **Direct turns** started in T3 Code are imported into the timeline for awareness. They mark the participant busy but never satisfy a room dependency.

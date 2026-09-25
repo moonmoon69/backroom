@@ -1,0 +1,128 @@
+{
+  "note": "Authored after v3 was fixed; not used to adjust its questions or thresholds. Small synthetic phrasing check, not independently labeled.",
+  "base_state": {
+    "participants": [
+      {
+        "alias": "sol1",
+        "spoken_aliases": [
+          "sol one"
+        ],
+        "role": "implementer",
+        "status": "working"
+      },
+      {
+        "alias": "sol2",
+        "spoken_aliases": [
+          "sol two"
+        ],
+        "role": "reviewer",
+        "status": "idle"
+      },
+      {
+        "alias": "claude",
+        "spoken_aliases": [
+          "claude"
+        ],
+        "role": "architect",
+        "status": "working"
+      }
+    ],
+    "tasks": [
+      {
+        "id": "task41",
+        "assignee": "sol1",
+        "title": "Implement the webhook parser",
+        "status": "running"
+      },
+      {
+        "id": "task42",
+        "assignee": "claude",
+        "title": "Draft the authentication architecture",
+        "status": "running"
+      }
+    ],
+    "recent_messages": [],
+    "policy": "Unique role names and spoken aliases may select participants. An unaddressed task with no uniquely specified participant requires clarification. Never choose a participant just because it is idle. Calendar scheduling is outside this prototype."
+  },
+  "cases": [
+    {
+      "id": "holdout_voice_after",
+      "message": "Sol two, take a look at the webhook parser as soon as sol one has wrapped up.",
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task41"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "holdout_title_reference",
+      "message": "Have the reviewer check the design after the authentication architecture is complete.",
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task42"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "holdout_busy_now",
+      "message": "@sol1 investigate the timeout bug now.",
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol1": {
+            "timing": "now",
+            "dependencies": []
+          }
+        }
+      }
+    },
+    {
+      "id": "holdout_dependency_first",
+      "message": "Once Claude's authentication design is finished, @sol2 review it.",
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "after_tasks",
+            "dependencies": [
+              "task42"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "holdout_hold",
+      "message": "@sol2 prepare a review task, but leave it on hold until I say go.",
+      "expected": {
+        "status": "ready",
+        "plans": {
+          "sol2": {
+            "timing": "hold",
+            "dependencies": []
+          }
+        }
+      }
+    },
+    {
+      "id": "holdout_unknown_alias",
+      "message": "@sol10 inspect the parser now.",
+      "expected": {
+        "status": "clarify",
+        "plans": {}
+      }
+    }
+  ]
+}

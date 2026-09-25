@@ -1,0 +1,2608 @@
+{
+  "createdAt": "2026-09-24T06:43:56.788Z",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "thresholds": {
+    "CHOICE_CONFIDENCE": 0.8,
+    "EDGE_YES": 0.85,
+    "EDGE_NO": 0.15
+  },
+  "summary": {
+    "model": "jev-1.13.0",
+    "runs": 20,
+    "jevExact": 20,
+    "jevReady": 20,
+    "jevWrongWhenReady": 0,
+    "jevClarify": 0,
+    "rulesExact": 6,
+    "cases": 10,
+    "medianLatencyMs": 283,
+    "inputTokens": 38246,
+    "estimatedUsd": 0.001606
+  },
+  "runs": [
+    {
+      "caseId": "h_after_lands",
+      "repetition": 1,
+      "message": "@alice upgrade React to 19 and @bob, after alice's upgrade lands, fix any broken tests",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 31,
+          "end": 35
+        },
+        {
+          "id": "o3",
+          "name": "alice",
+          "written": "alice",
+          "start": 43,
+          "end": 48
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 1,
+            "assign": 0,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.98
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "upgrade React to 19 and",
+          ", after alice's upgrade lands, fix any broken tests"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 737
+    },
+    {
+      "caseId": "h_until_mention",
+      "repetition": 1,
+      "message": "@carol please don't start until @alice has pushed the schema; then write the seed script",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "carol",
+          "written": "@carol",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 32,
+          "end": 38
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.99,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.01,
+            "mention": 0.99
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.88
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.05
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "please don't start until @alice has pushed the schema; then write the seed script"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 605
+    },
+    {
+      "caseId": "h_three_shared",
+      "repetition": 1,
+      "message": "@alice @bob @carol everyone review PR 42 independently",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 7,
+          "end": 11
+        },
+        {
+          "id": "o3",
+          "name": "carol",
+          "written": "@carol",
+          "start": 12,
+          "end": 18
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 0.98,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.99,
+            "mention": 0.01
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 0.99,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.99,
+            "mention": 0.01
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.03
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.03
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.04
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice",
+              "bob",
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "everyone review PR 42 independently"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 243
+    },
+    {
+      "caseId": "h_group_waits",
+      "repetition": 1,
+      "message": "@alice draft the RFC. @bob and @carol review alice's draft once it's ready",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 22,
+          "end": 26
+        },
+        {
+          "id": "o3",
+          "name": "carol",
+          "written": "@carol",
+          "start": 31,
+          "end": 37
+        },
+        {
+          "id": "o4",
+          "name": "alice",
+          "written": "alice",
+          "start": 45,
+          "end": 50
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o4": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0,
+            "mention": 1
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.98
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.05
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob",
+              "carol"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "draft the RFC.",
+          "review alice's draft once it's ready"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob",
+            "carol"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob",
+            "carol"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 283
+    },
+    {
+      "caseId": "h_numbers_posted",
+      "repetition": 1,
+      "message": "@bob can you double-check the numbers @alice posted earlier",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "bob",
+          "written": "@bob",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 38,
+          "end": 44
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "unclear": 0,
+            "assign": 1
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 1,
+            "unclear": 0,
+            "assign": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.51
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "can you double-check the numbers @alice posted earlier"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 263
+    },
+    {
+      "caseId": "h_two_plain",
+      "repetition": 1,
+      "message": "@alice fix the typo in the header @carol bump the version",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "carol",
+          "written": "@carol",
+          "start": 34,
+          "end": 40
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.08
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "fix the typo in the header",
+          "bump the version"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 224
+    },
+    {
+      "caseId": "h_forward_wait",
+      "repetition": 1,
+      "message": "@alice, when bob is done with the schema, migrate the data. @bob finish the schema first",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "bob",
+          "start": 13,
+          "end": 16
+        },
+        {
+          "id": "o3",
+          "name": "bob",
+          "written": "@bob",
+          "start": 60,
+          "end": 64
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.95,
+          "probabilities": {
+            "mention": 0.97,
+            "assign": 0.03,
+            "unclear": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "assign": 1,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": [
+              "bob"
+            ]
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          ", when bob is done with the schema, migrate the data.",
+          "finish the schema first"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": [
+            "bob"
+          ]
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 347
+    },
+    {
+      "caseId": "h_thanks",
+      "repetition": 1,
+      "message": "@carol thanks for the help earlier! @alice rerun the benchmark and @bob compare it with last week's run once alice has numbers",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "carol",
+          "written": "@carol",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 36,
+          "end": 42
+        },
+        {
+          "id": "o3",
+          "name": "bob",
+          "written": "@bob",
+          "start": 67,
+          "end": 71
+        },
+        {
+          "id": "o4",
+          "name": "alice",
+          "written": "alice",
+          "start": 109,
+          "end": 114
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 0,
+            "mention": 1,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o4": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.98,
+          "probabilities": {
+            "assign": 0.01,
+            "mention": 0.99,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.05
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "rerun the benchmark and",
+          "compare it with last week's run once alice has numbers"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 253
+    },
+    {
+      "caseId": "h_spoken_commas",
+      "repetition": 1,
+      "message": "bob, look at the failing CI job. alice, keep going on the payments work",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "bob",
+          "written": "bob",
+          "start": 0,
+          "end": 3
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "alice",
+          "start": 33,
+          "end": 38
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "unclear": 0,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "unclear": 0,
+            "mention": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          ", look at the failing CI job.",
+          ", keep going on the payments work"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 285
+    },
+    {
+      "caseId": "h_existing_work",
+      "repetition": 1,
+      "message": "@alice please deploy after @bob merges the hotfix",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 27,
+          "end": 31
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.91,
+          "probabilities": {
+            "assign": 0.06,
+            "mention": 0.94,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.93
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "please deploy after @bob merges the hotfix"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 274
+    },
+    {
+      "caseId": "h_after_lands",
+      "repetition": 2,
+      "message": "@alice upgrade React to 19 and @bob, after alice's upgrade lands, fix any broken tests",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 31,
+          "end": 35
+        },
+        {
+          "id": "o3",
+          "name": "alice",
+          "written": "alice",
+          "start": 43,
+          "end": 48
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "unclear": 0,
+            "assign": 1
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "unclear": 0,
+            "assign": 1
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.99,
+          "probabilities": {
+            "mention": 1,
+            "unclear": 0,
+            "assign": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.98
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "upgrade React to 19 and",
+          ", after alice's upgrade lands, fix any broken tests"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 295
+    },
+    {
+      "caseId": "h_until_mention",
+      "repetition": 2,
+      "message": "@carol please don't start until @alice has pushed the schema; then write the seed script",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "carol",
+          "written": "@carol",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 32,
+          "end": 38
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "mention": 0,
+            "unclear": 0,
+            "assign": 1
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.99,
+          "probabilities": {
+            "assign": 0.01,
+            "unclear": 0,
+            "mention": 0.99
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.86
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.05
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "please don't start until @alice has pushed the schema; then write the seed script"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 294
+    },
+    {
+      "caseId": "h_three_shared",
+      "repetition": 2,
+      "message": "@alice @bob @carol everyone review PR 42 independently",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 7,
+          "end": 11
+        },
+        {
+          "id": "o3",
+          "name": "carol",
+          "written": "@carol",
+          "start": 12,
+          "end": 18
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 0.98,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.99,
+            "mention": 0.01
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 0.98,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.98,
+            "mention": 0.02
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.03
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.04
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice",
+              "bob",
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "everyone review PR 42 independently"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 267
+    },
+    {
+      "caseId": "h_group_waits",
+      "repetition": 2,
+      "message": "@alice draft the RFC. @bob and @carol review alice's draft once it's ready",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 22,
+          "end": 26
+        },
+        {
+          "id": "o3",
+          "name": "carol",
+          "written": "@carol",
+          "start": 31,
+          "end": 37
+        },
+        {
+          "id": "o4",
+          "name": "alice",
+          "written": "alice",
+          "start": 45,
+          "end": 50
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o4": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 0,
+            "mention": 1,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.98
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob",
+              "carol"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "draft the RFC.",
+          "review alice's draft once it's ready"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob",
+            "carol"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob",
+            "carol"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 270
+    },
+    {
+      "caseId": "h_numbers_posted",
+      "repetition": 2,
+      "message": "@bob can you double-check the numbers @alice posted earlier",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "bob",
+          "written": "@bob",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 38,
+          "end": 44
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "mention": 0,
+            "assign": 1
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "mention": 1,
+            "assign": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.53
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "can you double-check the numbers @alice posted earlier"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 494
+    },
+    {
+      "caseId": "h_two_plain",
+      "repetition": 2,
+      "message": "@alice fix the typo in the header @carol bump the version",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "carol",
+          "written": "@carol",
+          "start": 34,
+          "end": 40
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "mention": 0,
+            "unclear": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.09
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "carol"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "fix the typo in the header",
+          "bump the version"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 229
+    },
+    {
+      "caseId": "h_forward_wait",
+      "repetition": 2,
+      "message": "@alice, when bob is done with the schema, migrate the data. @bob finish the schema first",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "bob",
+          "start": 13,
+          "end": 16
+        },
+        {
+          "id": "o3",
+          "name": "bob",
+          "written": "@bob",
+          "start": 60,
+          "end": 64
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 0.99,
+          "probabilities": {
+            "unclear": 0,
+            "mention": 0.01,
+            "assign": 0.99
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.96,
+          "probabilities": {
+            "unclear": 0,
+            "mention": 0.98,
+            "assign": 0.02
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.08
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": [
+              "bob"
+            ]
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          ", when bob is done with the schema, migrate the data.",
+          "finish the schema first"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": [
+            "bob"
+          ]
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 256
+    },
+    {
+      "caseId": "h_thanks",
+      "repetition": 2,
+      "message": "@carol thanks for the help earlier! @alice rerun the benchmark and @bob compare it with last week's run once alice has numbers",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "carol",
+          "written": "@carol",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "@alice",
+          "start": 36,
+          "end": 42
+        },
+        {
+          "id": "o3",
+          "name": "bob",
+          "written": "@bob",
+          "start": 67,
+          "end": 71
+        },
+        {
+          "id": "o4",
+          "name": "alice",
+          "written": "alice",
+          "start": 109,
+          "end": 114
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0,
+            "mention": 1
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o3": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o4": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.99,
+          "probabilities": {
+            "assign": 0.01,
+            "unclear": 0,
+            "mention": 0.99
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.07
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.97
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "bob"
+            ],
+            "after": [
+              "alice"
+            ]
+          }
+        ],
+        "texts": [
+          "rerun the benchmark and",
+          "compare it with last week's run once alice has numbers"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "carol"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "bob"
+          ],
+          "after": [
+            "alice"
+          ]
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": false,
+      "latencyMs": 262
+    },
+    {
+      "caseId": "h_spoken_commas",
+      "repetition": 2,
+      "message": "bob, look at the failing CI job. alice, keep going on the payments work",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "bob",
+          "written": "bob",
+          "start": 0,
+          "end": 3
+        },
+        {
+          "id": "o2",
+          "name": "alice",
+          "written": "alice",
+          "start": 33,
+          "end": 38
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "unclear": 0,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "assign": 1,
+            "unclear": 0,
+            "mention": 0
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.06
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "bob"
+            ],
+            "after": []
+          },
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          ", look at the failing CI job.",
+          ", keep going on the payments work"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "bob"
+          ],
+          "after": []
+        },
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 295
+    },
+    {
+      "caseId": "h_existing_work",
+      "repetition": 2,
+      "message": "@alice please deploy after @bob merges the hotfix",
+      "occurrences": [
+        {
+          "id": "o1",
+          "name": "alice",
+          "written": "@alice",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "id": "o2",
+          "name": "bob",
+          "written": "@bob",
+          "start": 27,
+          "end": 31
+        }
+      ],
+      "answers": {
+        "role:o1": {
+          "type": "choice",
+          "choice": "assign",
+          "confidence": 1,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 1,
+            "mention": 0
+          }
+        },
+        "role:o2": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.93,
+          "probabilities": {
+            "unclear": 0,
+            "assign": 0.04,
+            "mention": 0.96
+          }
+        },
+        "wait:alice:bob": {
+          "type": "noul",
+          "noul": 0.91
+        },
+        "wait:alice:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:bob:alice": {
+          "type": "noul",
+          "noul": 0.04
+        },
+        "wait:bob:carol": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "wait:carol:alice": {
+          "type": "noul",
+          "noul": 0.06
+        },
+        "wait:carol:bob": {
+          "type": "noul",
+          "noul": 0.07
+        }
+      },
+      "jev": {
+        "status": "ready",
+        "plan": [
+          {
+            "to": [
+              "alice"
+            ],
+            "after": []
+          }
+        ],
+        "texts": [
+          "please deploy after @bob merges the hotfix"
+        ],
+        "concerns": []
+      },
+      "rules": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "expected": [
+        {
+          "to": [
+            "alice"
+          ],
+          "after": []
+        }
+      ],
+      "jevOk": true,
+      "rulesOk": true,
+      "latencyMs": 324
+    }
+  ]
+}

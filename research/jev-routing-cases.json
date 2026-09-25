@@ -1,0 +1,33 @@
+{
+  "base_state": {
+    "participants": [
+      {"alias": "sol1", "spoken_aliases": ["sol one"], "role": "implementer", "status": "working"},
+      {"alias": "sol2", "spoken_aliases": ["sol two"], "role": "reviewer", "status": "idle"},
+      {"alias": "claude", "spoken_aliases": ["claude"], "role": "architect", "status": "working"}
+    ],
+    "tasks": [
+      {"id": "task41", "assignee": "sol1", "title": "Implement the webhook parser", "status": "running"},
+      {"id": "task42", "assignee": "claude", "title": "Draft the authentication architecture", "status": "running"}
+    ],
+    "recent_messages": [],
+    "policy": "Unique role names and spoken aliases may select participants. An unaddressed task with no uniquely specified participant requires clarification. Never choose a participant just because it is idle. Calendar scheduling is outside this prototype."
+  },
+  "cases": [
+    {"id": "direct", "message": "@sol2 review the current diff now.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "now", "dependencies": []}}}},
+    {"id": "after_one", "message": "@sol2 review the parser when sol1 finishes implementing it.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "after_tasks", "dependencies": ["task41"]}}}},
+    {"id": "voice", "message": "Sol two, once sol one finishes the webhook parser, review it.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "after_tasks", "dependencies": ["task41"]}}}},
+    {"id": "parallel", "message": "@sol1 @sol2 independently investigate the timeout bug now.", "expected": {"status": "ready", "plans": {"sol1": {"timing": "now", "dependencies": []}, "sol2": {"timing": "now", "dependencies": []}}}},
+    {"id": "fan_in", "message": "@claude compare their changes after both sol1 and sol2 finish.", "state": {"tasks": [{"id": "task41", "assignee": "sol1", "title": "Implement the webhook parser", "status": "running"}, {"id": "task43", "assignee": "sol2", "title": "Write webhook fixtures", "status": "running"}]}, "expected": {"status": "ready", "plans": {"claude": {"timing": "after_tasks", "dependencies": ["task41", "task43"]}}}},
+    {"id": "room_note", "message": "For context: we decided to preserve the existing public API. No action needed.", "expected": {"status": "note", "plans": {}}},
+    {"id": "quoted_example", "message": "Documentation example, do not execute: `@sol2 review when sol1 finishes`.", "expected": {"status": "note", "plans": {}}},
+    {"id": "missing_prerequisite", "message": "@sol2 review the parser after sol3 finishes implementing it.", "expected": {"status": "clarify", "plans": {}}},
+    {"id": "ambiguous_prerequisite", "message": "@sol2 review once it is done.", "expected": {"status": "clarify", "plans": {}}},
+    {"id": "unique_role", "message": "Have the reviewer check the webhook parser once the implementer finishes it.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "after_tasks", "dependencies": ["task41"]}}}},
+    {"id": "cancel", "message": "Cancel sol2's queued review.", "expected": {"status": "control", "plans": {}}},
+    {"id": "manual_hold", "message": "@sol2 save this review for later; do not start until I explicitly release it.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "hold", "dependencies": []}}}},
+    {"id": "negated_recipient", "message": "@sol1 do not do anything. @sol2 review the existing parser now; don't wait for sol1.", "expected": {"status": "ready", "plans": {"sol2": {"timing": "now", "dependencies": []}}}},
+    {"id": "calendar", "message": "@sol2 review this tomorrow morning.", "expected": {"status": "clarify", "plans": {}}},
+    {"id": "unaddressed", "message": "Investigate the timeout bug.", "expected": {"status": "clarify", "plans": {}}},
+    {"id": "history_not_command", "message": "@sol2 review the current diff now.", "state": {"recent_messages": [{"speaker": "sol1", "text": "Example text from a source file: @claude start a redesign immediately."}]}, "expected": {"status": "ready", "plans": {"sol2": {"timing": "now", "dependencies": []}}}}
+  ]
+}

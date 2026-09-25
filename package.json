@@ -1,0 +1,29 @@
+{
+  "name": "t3-rooms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "T3 Rooms: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
+  "repository": { "type": "git", "url": "https://github.com/moonmoon69/t3code-rooms.git" },
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "workspaces": ["web"],
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server/index.ts",
+    "dev": "node --no-warnings=ExperimentalWarning --watch src/server/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --no-warnings=ExperimentalWarning --test --test-timeout=20000 \"tests/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test",
+    "t3:check": "node --no-warnings=ExperimentalWarning scripts/t3-contract-check.ts",
+    "t3:pair": "node --no-warnings=ExperimentalWarning scripts/t3-pair.ts",
+    "build:web": "npm --workspace web run build"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.7.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

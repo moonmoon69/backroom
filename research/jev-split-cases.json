@@ -1,0 +1,21 @@
+{
+  "participants": ["alice", "bob", "carol"],
+  "note": "Expected plans authored before the run. 'to' is the recipients of each assignment in message order; 'after' lists recipients of earlier assignments in the same message it must wait for.",
+  "cases": [
+    { "id": "shared", "message": "@alice @bob look into the flaky checkout test", "expected": [{ "to": ["alice", "bob"], "after": [] }] },
+    { "id": "split_plain", "message": "@alice please fix the login redirect @bob please update the changelog", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": [] }] },
+    { "id": "review_after", "message": "@alice go fix the webhook parser. @bob check alice's work", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "then", "message": "@alice build the release, then @bob deploy it to staging", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "verb_object", "message": "@bob take a look at @alice changes from yesterday", "expected": [{ "to": ["bob"], "after": [] }] },
+    { "id": "reference_with", "message": "@carol compare the work of @alice and @bob carefully", "expected": [{ "to": ["carol"], "after": [] }] },
+    { "id": "negative_dependency", "message": "@alice refactor the auth module. @bob don't touch alice's files, just update the README", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": [] }] },
+    { "id": "meanwhile", "message": "@alice write the migration; @bob meanwhile update the API docs", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": [] }] },
+    { "id": "once_she_is_done", "message": "@alice fix the payment bug and once she's done @bob write a regression test", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "fan_in", "message": "@alice build the API, @bob build the UI, and @carol review both once they're finished", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": [] }, { "to": ["carol"], "after": ["alice", "bob"] }] },
+    { "id": "no_at_signs", "message": "alice please build it and bob can test it afterwards", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "ask_reference", "message": "Hey @alice can you ask @bob about the schema decision?", "expected": [{ "to": ["alice"], "after": [] }] },
+    { "id": "preamble", "message": "The build is red on main. @alice find the cause. @bob pause the deploy pipeline", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": [] }] },
+    { "id": "url", "message": "@alice read https://github.com/@bob/notes and summarize it", "expected": [{ "to": ["alice"], "after": [] }] },
+    { "id": "group_then_single", "message": "@alice and @bob, each independently estimate the migration effort; @carol then pick the lower estimate", "expected": [{ "to": ["alice", "bob"], "after": [] }, { "to": ["carol"], "after": ["alice", "bob"] }] }
+  ]
+}

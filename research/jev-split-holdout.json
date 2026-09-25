@@ -1,0 +1,16 @@
+{
+  "participants": ["alice", "bob", "carol"],
+  "note": "Holdout: written after the first run, before running; no question or threshold changes after seeing results. 'after' may name a later assignment (forward wait).",
+  "cases": [
+    { "id": "h_after_lands", "message": "@alice upgrade React to 19 and @bob, after alice's upgrade lands, fix any broken tests", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "h_until_mention", "message": "@carol please don't start until @alice has pushed the schema; then write the seed script", "expected": [{ "to": ["carol"], "after": [] }] },
+    { "id": "h_three_shared", "message": "@alice @bob @carol everyone review PR 42 independently", "expected": [{ "to": ["alice", "bob", "carol"], "after": [] }] },
+    { "id": "h_group_waits", "message": "@alice draft the RFC. @bob and @carol review alice's draft once it's ready", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob", "carol"], "after": ["alice"] }] },
+    { "id": "h_numbers_posted", "message": "@bob can you double-check the numbers @alice posted earlier", "expected": [{ "to": ["bob"], "after": [] }] },
+    { "id": "h_two_plain", "message": "@alice fix the typo in the header @carol bump the version", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["carol"], "after": [] }] },
+    { "id": "h_forward_wait", "message": "@alice, when bob is done with the schema, migrate the data. @bob finish the schema first", "expected": [{ "to": ["alice"], "after": ["bob"] }, { "to": ["bob"], "after": [] }] },
+    { "id": "h_thanks", "message": "@carol thanks for the help earlier! @alice rerun the benchmark and @bob compare it with last week's run once alice has numbers", "expected": [{ "to": ["alice"], "after": [] }, { "to": ["bob"], "after": ["alice"] }] },
+    { "id": "h_spoken_commas", "message": "bob, look at the failing CI job. alice, keep going on the payments work", "expected": [{ "to": ["bob"], "after": [] }, { "to": ["alice"], "after": [] }] },
+    { "id": "h_existing_work", "message": "@alice please deploy after @bob merges the hotfix", "expected": [{ "to": ["alice"], "after": [] }] }
+  ]
+}
