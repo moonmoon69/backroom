@@ -597,54 +597,13 @@ textarea.invalid,
   color: var(--input);
 }
 
-.sidebar-footer {
-  border-top: 1px solid var(--line);
-  padding: 6px 8px;
-}
 
-.plaque {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border-color: transparent;
-  color: var(--fg-muted);
-  font-size: 11px;
-  padding: 4px 6px;
-  text-align: left;
-}
 
-.plaque:hover:not(:disabled) {
-  border-color: var(--line);
-  color: var(--fg);
-}
 
-.plaque {
-  align-items: flex-start;
-}
 
-.plaque .dot {
-  margin-top: 5px;
-}
 
-.plaque-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  white-space: normal;
-  word-break: break-all;
-  line-height: 1.3;
-}
 
-.plaque-host {
-  color: var(--fg-muted);
-}
 
-.plaque-meta {
-  color: var(--fg-dim);
-}
 
 .main {
   display: flex;
@@ -3360,27 +3319,8 @@ legend {
 }
 
 /* ---- theme toggle ---- */
-.theme-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 6px 2px;
-}
 
-.theme-toggle .segment {
-  padding: 1px 8px;
-  font-size: 11px;
-  background: transparent;
-  border-radius: 0;
-  border-top: none;
-  border-bottom: none;
-  border-left: none;
-  color: var(--fg-muted);
-}
 
-.theme-toggle .segment:last-child {
-  border-right: none;
-}
 
 /* ---- model picker (listbox popover) ---- */
 .model-trigger {
@@ -3599,26 +3539,8 @@ legend {
 }
 
 /* ---- roles library ---- */
-.library-button {
-  width: 100%;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  background: transparent;
-  border-color: transparent;
-  padding: 4px 6px;
-  margin-bottom: 4px;
-  text-align: left;
-}
 
-.library-button .serif {
-  font-size: 14px;
-}
 
-.library-button:hover:not(:disabled) {
-  border-color: var(--line);
-}
 
 .library-head {
   display: flex;
@@ -4245,4 +4167,98 @@ span.reply-to {
 .browser-panel .hint,
 .browser-panel p {
   margin: 0;
+}
+
+/* Header, right end: app-wide controls (roles, T3 connection, theme). The sidebar holds only rooms. */
+.room-header {
+  align-items: center;
+}
+.app-header-only {
+  min-height: 45px;
+}
+.header-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--line-strong);
+}
+.app-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.app-controls .ghost {
+  color: var(--fg-muted);
+}
+.connection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.icon-only {
+  min-width: 28px;
+  padding-inline: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+.theme-menu {
+  position: relative;
+}
+.theme-menu .menu {
+  left: auto;
+  right: 0;
+  min-width: 140px;
+}
+.theme-menu .menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.theme-menu .menu button.on {
+  color: var(--fg);
+  font-weight: 600;
+}
+.theme-icon {
+  width: 14px;
+  text-align: center;
+}
+
+/* Participants above the composer: click to insert @alias at the caret. */
+.mention-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 3px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  box-shadow: none;
+}
+.mention-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pc) 10%, var(--bg-1));
+  border-color: color-mix(in srgb, var(--pc) 45%, var(--line-strong));
+}
+.mention-chip.on {
+  background: color-mix(in srgb, var(--pc) 16%, var(--bg-1));
+  border-color: color-mix(in srgb, var(--pc) 60%, transparent);
+}
+.mention-chip .avatar {
+  border-radius: 999px;
+}
+.mention-chip .dot {
+  width: 6px;
+  height: 6px;
+}
+.mention-chip-all {
+  --pc: var(--accent);
+  padding-left: 10px;
+  color: var(--fg-muted);
 }

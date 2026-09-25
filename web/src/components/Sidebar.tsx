@@ -1,11 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api.ts";
-import type { ThemeChoice } from "../theme.ts";
-import type { RoomCommand, RoomListItem, StatusResponse, T3Project } from "../types.ts";
+import type { RoomCommand, RoomListItem, T3Project } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { titleMonogram } from "./Monogram.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
-import { ConnectionPlaque } from "./StatusStrip.tsx";
 import { useToast } from "./Toast.tsx";
 
 interface Props {
@@ -14,20 +12,9 @@ interface Props {
   onSelect: (roomId: string) => void;
   onCommand: (command: RoomCommand) => Promise<{ type: string; roomId?: string } | null>;
   disabled: boolean;
-  status: StatusResponse | null;
-  onOpenConnection: () => void;
-  theme: ThemeChoice;
-  onTheme: (choice: ThemeChoice) => void;
-  onOpenLibrary: () => void;
 }
 
-const THEMES: Array<{ key: ThemeChoice; label: string }> = [
-  { key: "system", label: "System" },
-  { key: "light", label: "Light" },
-  { key: "dark", label: "Dark" },
-];
-
-export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled, status, onOpenConnection, theme, onTheme, onOpenLibrary }: Props) {
+export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled }: Props) {
   const [creating, setCreating] = useState(false);
   // Drag to reorder: the order shown while dragging, committed on drop.
   const [dragId, setDragId] = useState<string | null>(null);
@@ -126,29 +113,6 @@ export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled, 
           </li>
         ))}
       </ul>
-      <div className="sidebar-footer">
-        <button type="button" className="library-button" onClick={onOpenLibrary} disabled={disabled} title="Named sets of rules assigned to participants in the room">
-          <span className="serif">Roles</span>
-          <span className="mono muted">rules by name</span>
-        </button>
-        <ConnectionPlaque status={status} onOpen={onOpenConnection} />
-        <div className="theme-toggle" role="group" aria-label="Theme">
-          <span className="label">Theme</span>
-          <span className="segmented">
-            {THEMES.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                className={`segment${theme === option.key ? " on" : ""}`}
-                aria-pressed={theme === option.key}
-                onClick={() => onTheme(option.key)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </span>
-        </div>
-      </div>
       {creating ? (
         <NewRoomDialog
           onClose={() => setCreating(false)}

@@ -74,7 +74,7 @@ Treat pairing links like passwords. They expire within minutes and work only onc
 
 ### 2. Pair
 
-Either paste the link into the room UI, or use the command line. While the room is unpaired, the UI shows the pairing panel in place of the rooms. Later you can reach it from the connection plaque at the bottom of the sidebar.
+Either paste the link into the room UI, or use the command line. While the room is unpaired, the UI shows the pairing panel in place of the rooms. Later you can reach it from the **T3** status button at the top right.
 
 From the command line:
 
@@ -120,7 +120,7 @@ The composer placeholder cycles through examples built from your room's actual p
 
 ## Writing messages
 
-The text you type is the whole instruction. The buttons under the composer only edit that text. As you type, the composer highlights mentions and commands, then shows the **plan**: one row per assignment, with its recipients, instruction and timing ("now", "next", "after @x", "held").
+The text you type is the whole instruction. The buttons around the composer only edit that text. Above the field, one chip per participant (plus **@all**) inserts `@name` at the cursor when clicked; chips the message already addresses are highlighted, and a dot marks anyone mid-turn. As you type, the composer highlights mentions and commands, then shows the **plan**: one row per assignment, with its recipients, instruction and timing ("now", "next", "after @x", "held").
 
 | Key | Action |
 | --- | --- |
@@ -128,7 +128,45 @@ The text you type is the whole instruction. The buttons under the composer only 
 | **Shift+Enter** | New line |
 | **⌘/Ctrl+Enter** | Send, and deliver into a running turn instead of waiting (see [below](#sending-while-someone-is-working)) |
 | `@` | Mention autocomplete (participants and `@all`) |
+| **Backspace** right after a mention (**Delete** right before one) | Removes the whole `@name` at once; ⌘/Ctrl+Z brings it back. Partly typed or unknown names delete letter by letter |
 | `/` | Command menu (room commands, and T3 commands after an `@name`) |
+
+### How a message becomes tasks
+
+No model reads your message. The composer and the server run the same fixed rules (`src/parser/explicit.ts`), and the plan under the field shows exactly what will happen before you send. There are three steps.
+
+**1. Split into assignments.** An assignment is one or more recipients plus an instruction. Each recipient gets its own task (`task41`, `task42`, …), so `@claude @grok review the diff` is two tasks with the same text. Text before the first address (for example "The build is red.") is context that every recipient receives. The rules for where one assignment ends and the next begins are under [How an @mention is read](#several-assignments-in-one-message).
+
+**2. Decide when each assignment starts.** The first row that applies wins:
+
+| Timing | How you write it | Plan shows |
+| --- | --- | --- |
+| Held until you release it | `/hold` | held |
+| Start now, ignoring any implied wait | `/now` | now |
+| After tasks that already exist | `/after task41` or `/after @claude` (claude's open task, or claude's assignment in this message) | after task41 |
+| After an earlier assignment in this message | one of the implied waits below | after @claude |
+| As soon as possible | nothing | now, or next if the recipient is mid-turn |
+
+Implied waits. Each is on an assignment that comes *earlier in the same message*, except the two conditions, which fall back to work that already exists:
+
+- **Sequence words:** "then", "after that", "once that's done": `@claude build it, then @grok deploy it`.
+- **Naming an earlier recipient** in the instruction, with or without `@`, possessive or spoken: `@grok check claude's work`.
+- **A condition before the address:** `when @grok finishes, @claude write the summary`. The room removes the condition from claude's instruction, because the room already waits for it.
+- **A condition after it:** `@grok deploy it when claude finishes`. The condition stays in the text.
+
+  For either condition, the room waits for the named participant's assignment in this message if there is one. Otherwise it waits for their open task. If they have neither, the plan says "@grok has no task to wait for" and the message can't be sent until you change it.
+- **Pronouns:** "once she's done", "when it's finished" wait for the previous assignment; "once they're finished", "when both are done" wait for all earlier ones.
+
+What never creates a wait:
+
+- Naming someone who has no assignment in the message; the plan suggests `/after @name` if they have open work.
+- A condition the room can't observe ("when the tests pass"). It stays in the instruction and the plan says so.
+- An assignment that comes later in the same message. The plan asks you to move it first.
+
+**3. Deliver and release.** A task with nothing to wait for goes to its participant's thread straight away, or after that thread's current turn ends. A task that waits starts only when **every** task it waits for has **succeeded**, and its briefing then includes their final answers under "Completed prerequisites". The waiting task becomes **blocked**, with the reason on its card, in two cases:
+
+- A prerequisite failed, was stopped or was cancelled. Retry the prerequisite, or edit or unblock the waiting task.
+- A prerequisite was edited after the wait was set up. Edit's "carry dependents" option re-points them.
 
 ### Addressing
 
@@ -149,11 +187,11 @@ Claude, review the parser                      the spoken form works at the star
 @claude build it, then @grok deploy it         grok waits for claude ("then")
 @claude build it. @grok /now read the notes    /now: grok starts immediately anyway
 when @grok finishes, @claude write the summary claude waits for grok ("when/once/after … finishes")
-@grok deploy it when claude finishes           same, with the condition at the end
+@grok deploy it when claude finishes           same, with the condition at the end (or claude's open task)
 @claude fix it and once she's done @grok test it
                                                grok waits for the previous assignment ("she", "it", "that")
-@claude API, @grok UI, and @codex review both once they're finished
-                                               codex waits for all earlier assignments ("they", "both")
+@claude build the API. @grok build the UI. @codex review both once they're finished
+                                               codex waits for both earlier assignments ("they", "both")
 The build is red. @claude fix it. @grok find the cause
                                                "The build is red." is context for both, not an assignment
 ```
@@ -170,7 +208,7 @@ How an @mention is read:
   URLs and paths containing `@` are ignored.
 - **The plan row offers one-click fixes that rewrite the text.** "It's a reference" drops the `@`, "Make it a new assignment" moves the mention onto a new line, and "Don't wait" inserts `/now`.
 
-A condition the room cannot observe ("when the tests pass") stays in the instruction, and the plan says so. Names of participants who have no assignment in the message never create a wait. The rules don't cover negation ("don't touch claude's files") or waiting on a later assignment. Unknown aliases and ambiguous task references leave the draft unresolved rather than guessed.
+The rules don't understand negation: in "@grok don't touch claude's files", grok still waits for claude. They also can't wait on a later assignment (see [How a message becomes tasks](#how-a-message-becomes-tasks)). Unknown aliases and ambiguous task references leave the draft unresolved rather than guessed. `research/JEV_SPLIT_FINDINGS.md` compares these rules with a language-model interpreter on the cases they miss; the room doesn't use one.
 
 ### Directives and room commands
 
@@ -272,7 +310,9 @@ All of it comes from T3. The tile's menu has:
 
 A turn can end while subagents, background shells or watch loops keep running. T3 reports this, and the room shows it on the participant and in the sidebar, so a quiet thread doesn't look finished or dead.
 
-### Sidebar
+### Sidebar and header
+
+The sidebar holds only rooms. The top right of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
 
 Each room shows activity pills:
 
@@ -306,7 +346,7 @@ Terminals, the browser preview and full diff text stay in T3 Code.
 - **Participants mirror their thread.** Change the model or effort in T3 Code and the tile updates. Change it from the room and the room updates the thread through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
 - **Removing a participant** asks what happens to its queued, held and blocked tasks: cancel them, or keep them blocked so you can reassign them. Removal is refused while it has a run in progress.
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
-- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** in the sidebar, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
+- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the top right, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
 
 ## Configuration
 

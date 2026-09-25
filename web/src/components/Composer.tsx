@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -24,6 +25,7 @@ import {
   type Draft,
   type DraftAssignment,
   type MentionSpan,
+  type Participant,
   type Unresolved,
 } from "../types.ts";
 import {
@@ -39,7 +41,7 @@ import {
   toggleNote,
   type TextEdit,
 } from "./composerText.ts";
-import { identityStyle } from "./Monogram.tsx";
+import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./ParticipantBar.tsx";
 
 interface Props {
@@ -109,13 +111,10 @@ export function Composer({ followUp }: Props) {
   const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[] }) | null>(null);
   /** "/after " typed: pick a task by what it says instead of remembering its number. */
   const [taskPick, setTaskPick] = useState<MentionState | null>(null);
-  const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [focusAssignment, setFocusAssignment] = useState<number | null>(null);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
-  const mentionMenu = useRef<HTMLSpanElement>(null);
-  useDismiss(mentionMenu, mentionMenuOpen, () => setMentionMenuOpen(false));
 
   // Parsed in the browser on every keystroke: the plan and the highlighting always match the text exactly.
   const { participants, tasks, roles, participantStatus } = snapshot;
@@ -365,7 +364,6 @@ export function Composer({ followUp }: Props) {
   };
 
   const insertMentionAtCaret = (alias: string) => {
-    setMentionMenuOpen(false);
     applyEdit(insertMention(text, textarea.current?.selectionStart ?? text.length, alias));
   };
 
@@ -430,6 +428,30 @@ export function Composer({ followUp }: Props) {
     }
   };
 
+  /**
+   * A mention of a participant (or @all) is one token: Backspace right after it, or Delete right before it, removes the
+   * whole "@alias" (and a doubled space left behind). Partly typed or unknown names still delete one letter at a time.
+   * The browser's own delete is used so ⌘/Ctrl+Z brings the mention back.
+   */
+  const deleteWholeMention = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if ((event.key !== "Backspace" && event.key !== "Delete") || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return false;
+    const el = event.currentTarget;
+    if (el.selectionStart !== el.selectionEnd || !draft || draft.kind !== "task") return false;
+    const caret = el.selectionStart;
+    const span = draft.mentions.find(
+      (m) => (m.participantId !== null || m.alias.toLowerCase() === "all") && (event.key === "Backspace" ? m.end === caret : m.start === caret),
+    );
+    if (!span) return false;
+    let start = span.start;
+    let end = span.end;
+    if (text[start - 1] === " " && text[end] === " ") end += 1;
+    else if (start > 0 && text[start - 1] === " " && (end === text.length || text[end] === "\n")) start -= 1;
+    event.preventDefault();
+    el.setSelectionRange(start, end);
+    if (!document.execCommand("delete")) applyEdit({ text: text.slice(0, start) + text.slice(end), caret: start });
+    return true;
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashPick && slashMatches.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -466,6 +488,10 @@ export function Composer({ followUp }: Props) {
         setTaskPick(null);
         return;
       }
+    }
+    if (deleteWholeMention(event)) {
+      setMention(null);
+      return;
     }
     if (mention && mentionMatches.length > 0) {
       if (event.key === "ArrowDown") {
@@ -505,6 +531,16 @@ export function Composer({ followUp }: Props) {
 
   return (
     <div className={`composer${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {crew.length > 0 ? (
+        <MentionChips
+          crew={crew}
+          addressed={new Set(draft?.kind === "task" ? draft.assignments.flatMap((a) => a.recipients) : [])}
+          allAddressed={draft?.kind === "task" && /(^|\s)@all\b/i.test(text)}
+          isBusy={isBusy}
+          colorOf={colorOf}
+          onPick={insertMentionAtCaret}
+        />
+      ) : null}
       <div className="composer-text">
         <div className="composer-field">
           <div className={`composer-backdrop${focusAssignment !== null ? " focusing" : ""}`} ref={backdrop} aria-hidden="true">
@@ -644,35 +680,6 @@ export function Composer({ followUp }: Props) {
       ) : null}
 
       <div className="composer-row composer-toolbar">
-        <span className="tool-adder" ref={mentionMenu}>
-          <button
-            type="button"
-            className="small ghost"
-            aria-haspopup="menu"
-            aria-expanded={mentionMenuOpen}
-            disabled={crew.length === 0}
-            title={crew.length === 0 ? "Add a participant first" : "Mention a crew member"}
-            onClick={() => setMentionMenuOpen((v) => !v)}
-          >
-            @ Mention
-          </button>
-          {mentionMenuOpen ? (
-            <div className="menu menu-up" role="menu">
-              {crew.length > 1 ? (
-                <button type="button" role="menuitem" className="mono" onClick={() => insertMentionAtCaret("all")}>
-                  <span>@all</span>
-                  <span className="muted"> everyone ({crew.length})</span>
-                </button>
-              ) : null}
-              {crew.map((p) => (
-                <button key={p.id} type="button" role="menuitem" className="mono" style={identityStyle(colorOf(p.id))} onClick={() => insertMentionAtCaret(p.alias)}>
-                  <span className="identity">@{p.alias}</span>
-                  <span className="muted"> {p.modelSelection.model}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </span>
         <button type="button" className="small ghost" onClick={() => fileInput.current?.click()} title="Attach PNG, JPEG, GIF, or WebP images (or paste / drop them here)">
           Attach image
         </button>
@@ -1280,4 +1287,60 @@ function roomPlaceholders(aliases: string[], lastTask: number | null): string[] 
     `/add new-name role accountant  ·  /role @${a} none  ·  /remove @${b}`,
   ];
   return examples;
+}
+
+/**
+ * The room's participants above the text field: a click inserts "@alias " at the caret (or starts the message with
+ * it). Chips already addressed by the draft are marked; a dot marks participants mid-turn.
+ */
+function MentionChips({
+  crew,
+  addressed,
+  allAddressed,
+  isBusy,
+  colorOf,
+  onPick,
+}: {
+  crew: Participant[];
+  addressed: Set<string>;
+  allAddressed: boolean;
+  isBusy: (id: string) => boolean;
+  colorOf: (id: string) => string;
+  onPick: (alias: string) => void;
+}) {
+  // mousedown keeps the textarea focused and its caret where it was.
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+  return (
+    <div className="mention-chips" role="toolbar" aria-label="Mention a participant">
+      {crew.length > 1 ? (
+        <button
+          type="button"
+          className={`mention-chip mention-chip-all${allAddressed ? " on" : ""}`}
+          onMouseDown={keepFocus}
+          onClick={() => onPick("all")}
+          title={`Insert @all: everyone in the room (${crew.length})`}
+        >
+          @all
+        </button>
+      ) : null}
+      {crew.map((p) => {
+        const on = allAddressed || addressed.has(p.id);
+        return (
+          <button
+            key={p.id}
+            type="button"
+            className={`mention-chip${on ? " on" : ""}`}
+            style={identityStyle(colorOf(p.id))}
+            onMouseDown={keepFocus}
+            onClick={() => onPick(p.alias)}
+            title={`Insert @${p.alias} (${p.modelSelection.model})${isBusy(p.id) ? " · working now" : ""}`}
+          >
+            <Monogram participant={p} size="xs" />
+            <span className="identity">@{p.alias}</span>
+            {isBusy(p.id) ? <span className="dot dot-working" aria-label="working" /> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
 }

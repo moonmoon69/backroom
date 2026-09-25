@@ -5,6 +5,7 @@ import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, type InspectorTab } from "./components/Inspector.tsx";
 import { RoomBrowserButton } from "./components/RoomBrowser.tsx";
+import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { ParticipantBar } from "./components/ParticipantBar.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -179,6 +180,17 @@ export function App() {
   );
   const staleUi = Boolean(status?.uiBuild && loadedBuild && status.uiBuild !== loadedBuild);
 
+  const appControls = (
+    <AppControls
+      status={status}
+      onOpenConnection={() => setPairingOpen(true)}
+      onOpenLibrary={() => setLibraryOpen(true)}
+      rolesDisabled={needsPairing}
+      theme={theme}
+      onTheme={setTheme}
+    />
+  );
+
   return (
     <div className="app">
       {staleUi ? (
@@ -195,11 +207,6 @@ export function App() {
         onSelect={setSelectedRoomId}
         onCommand={runCommand}
         disabled={needsPairing}
-        status={status}
-        onOpenConnection={() => setPairingOpen(true)}
-        theme={theme}
-        onTheme={setTheme}
-        onOpenLibrary={() => setLibraryOpen(true)}
       />
       <div className="main">
         {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
@@ -221,6 +228,8 @@ export function App() {
                 Queue {pendingCount > 0 ? `(${pendingCount})` : ""}
                 {openRequests > 0 ? <span className="pill pill-input"> {openRequests} need input</span> : null}
               </button>
+              <span className="header-divider" aria-hidden="true" />
+              {appControls}
             </div>
             <ParticipantBar />
             <div className="room-body">
@@ -235,6 +244,11 @@ export function App() {
             </div>
           </RoomContext.Provider>
         ) : (
+          <>
+          <div className="room-header app-header-only">
+            <span className="spacer" />
+            {appControls}
+          </div>
           <div className="empty-state">
             {needsPairing ? null : rooms.length === 0 ? (
               <>
@@ -245,6 +259,7 @@ export function App() {
               <p className="serif muted">Loading room…</p>
             )}
           </div>
+          </>
         )}
       </div>
       {pairingOpen ? (

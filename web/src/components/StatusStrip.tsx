@@ -19,38 +19,33 @@ const hostOf = (baseUrl: string | null): string => {
   }
 };
 
-/** Compact connection plaque for the sidebar: dot + "T3 · host:port · vX"; details on hover. */
-export function ConnectionPlaque({ status, onOpen }: { status: StatusResponse | null; onOpen: () => void }) {
+/** Header chip for the T3 connection: dot + "T3" (plus the problem, if any); host, version and policy on hover. */
+export function ConnectionChip({ status, onOpen }: { status: StatusResponse | null; onOpen: () => void }) {
   if (!status) {
     return (
-      <button type="button" className="plaque mono" onClick={onOpen} title="Connecting to the room service…">
+      <button type="button" className="small ghost connection-chip" onClick={onOpen} title="Connecting to the room service…">
         <span className="dot dot-unknown" aria-hidden="true" />
-        connecting…
+        T3
       </button>
     );
   }
   const { adapter, t3 } = status;
   const tone = t3.error ? "err" : t3.paired ? "ok" : "warn";
-  const version = t3.environment?.serverVersion ? `v${t3.environment.serverVersion}` : "v?";
   const detail = [
+    `T3 ${hostOf(t3.baseUrl)}${t3.environment?.serverVersion ? ` · v${t3.environment.serverVersion}` : ""}`,
     `adapter: ${adapter}`,
     t3.paired ? "paired" : "not paired",
-    t3.baseUrl ? `base URL: ${t3.baseUrl}` : null,
     t3.auth ? `policy: ${t3.auth.policy}` : null,
     t3.error ? `last error: ${t3.error}` : null,
   ]
     .filter(Boolean)
     .join("\n");
+  const problem = t3.error ? "error" : t3.paired ? null : "not paired";
   return (
-    <button type="button" className="plaque mono" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
+    <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />
-      <span className="plaque-text">
-        <span className="plaque-host">{hostOf(t3.baseUrl)}</span>
-        <span className="plaque-meta">
-          {version} · {t3.error ? "error" : t3.paired ? "paired" : "not paired"}
-          {adapter === "fake" ? " · fake" : ""}
-        </span>
-      </span>
+      T3{adapter === "fake" ? " (demo)" : ""}
+      {problem ? <span className={tone === "err" ? "status-error" : "muted"}> · {problem}</span> : null}
     </button>
   );
 }
