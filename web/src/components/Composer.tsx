@@ -14,6 +14,7 @@ import {
   type RefObject,
 } from "react";
 import { api, ApiError, attachmentUrl, useProviders } from "../api.ts";
+import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { useRoom, type FollowUpPrefill } from "../context.tsx";
 import { parseDraft } from "../parser.ts";
 import {
@@ -452,6 +453,7 @@ export function Composer({ followUp }: Props) {
     return true;
   };
 
+  const touchKeyboard = useMediaQuery(COARSE_POINTER_QUERY);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashPick && slashMatches.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -516,7 +518,8 @@ export function Composer({ followUp }: Props) {
       }
     }
     // Enter sends; Shift+Enter inserts a newline. Ignore Enter while an IME is composing (e.g. Chinese or Japanese input).
-    if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+    // On touch devices the on-screen keyboard's Enter is a newline and the Send button sends.
+    if (event.key === "Enter" && !event.shiftKey && !event.altKey && !touchKeyboard && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       void submit({ steerBusy: event.metaKey || event.ctrlKey });
     }
@@ -704,7 +707,7 @@ export function Composer({ followUp }: Props) {
           Note
         </button>
         <span className="spacer" />
-        <span className="muted hint mono">
+        <span className="muted hint mono composer-hint">
           {busyAddressed.length > 0 ? (
             <>
               Enter: waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · {MOD_KEY}+Enter: send into the running turn

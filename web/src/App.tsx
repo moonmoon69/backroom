@@ -16,6 +16,7 @@ import { Timeline } from "./components/Timeline.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
 import { useTheme } from "./theme.ts";
+import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
 import type { CommandResult, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse } from "./types.ts";
 
 const ROOM_KEY = "t3rooms.selectedRoom";
@@ -26,7 +27,10 @@ export function App() {
   const [rooms, setRooms] = useState<RoomListItem[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => localStorage.getItem(ROOM_KEY));
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  // Phones start with the inspector closed: it covers the timeline there.
+  const [inspectorOpen, setInspectorOpen] = useState(() => !mediaMatches(MOBILE_QUERY));
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isMobile = useMediaQuery(MOBILE_QUERY);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("board");
   const [pairingOpen, setPairingOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -191,8 +195,15 @@ export function App() {
     />
   );
 
+  // Phones: the room list is a drawer opened from the header.
+  const roomsButton = (
+    <button type="button" className="small ghost icon-only mobile-only rooms-toggle" aria-label="Rooms" title="Rooms" onClick={() => setSidebarOpen(true)}>
+      <span aria-hidden="true">☰</span>
+    </button>
+  );
+
   return (
-    <div className="app">
+    <div className={`app${isMobile ? " app-mobile" : ""}`}>
       {staleUi ? (
         <div className="update-banner" role="status">
           <span>The room UI was updated.</span>
@@ -204,15 +215,21 @@ export function App() {
       <Sidebar
         rooms={rooms}
         selectedRoomId={selectedRoomId}
-        onSelect={setSelectedRoomId}
+        onSelect={(roomId) => {
+          setSelectedRoomId(roomId);
+          setSidebarOpen(false);
+        }}
         onCommand={runCommand}
         disabled={needsPairing}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
       <div className="main">
         {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
         {contextValue ? (
           <RoomContext.Provider value={contextValue}>
             <div className="room-header">
+              {roomsButton}
               <h1 className="room-title">{contextValue.snapshot.room.title}</h1>
               <span className="room-project mono" title="T3 project id">
                 {contextValue.snapshot.room.projectId}
@@ -231,21 +248,25 @@ export function App() {
               <span className="header-divider" aria-hidden="true" />
               {appControls}
             </div>
-            <ParticipantBar />
-            <div className="room-body">
-              <div className="room-centre">
-                <Timeline />
-                <BackgroundBar />
-                <Composer followUp={followUp} />
+            {/* Everything under the header: on phones the inspector sheet covers exactly this area. */}
+            <div className="room-under">
+              <ParticipantBar />
+              <div className="room-body">
+                <div className="room-centre">
+                  <Timeline />
+                  <BackgroundBar />
+                  <Composer followUp={followUp} />
+                </div>
+                {inspectorOpen ? (
+                  <Inspector tab={inspectorTab} onTab={setInspectorTab} onClose={() => setInspectorOpen(false)} />
+                ) : null}
               </div>
-              {inspectorOpen ? (
-                <Inspector tab={inspectorTab} onTab={setInspectorTab} onClose={() => setInspectorOpen(false)} />
-              ) : null}
             </div>
           </RoomContext.Provider>
         ) : (
           <>
           <div className="room-header app-header-only">
+            {roomsButton}
             <span className="spacer" />
             {appControls}
           </div>

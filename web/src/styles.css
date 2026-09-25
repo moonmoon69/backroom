@@ -663,6 +663,13 @@ textarea.invalid,
   color: var(--fg-dim);
 }
 
+.room-under {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .room-body {
   display: flex;
   flex: 1;
@@ -855,6 +862,32 @@ textarea.invalid,
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
+}
+
+/* Menus rendered at the body (Popover.tsx): fixed to the viewport, above drawers and sheets. Desktop places
+   them under their anchor with inline top/left; phones use the sheet variant. */
+.menu.popover {
+  position: fixed;
+  top: auto;
+  left: auto;
+  z-index: 130;
+  overflow: auto;
+  max-width: calc(100vw - 16px);
+}
+
+.menu.popover-sheet {
+  left: 8px;
+  right: 8px;
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  min-width: 0;
+  max-height: 70dvh;
+}
+
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 129;
+  background: rgb(0 0 0 / 0.35);
 }
 
 .menu button {
@@ -1498,6 +1531,57 @@ button.primary.destructive {
   white-space: pre;
 }
 
+/* Fenced code blocks: the copy button sits in the top-right corner and appears on hover or focus, like
+   the sidebar room menu. The wrapper, not the scrolling <pre>, anchors it so it stays put while scrolling. */
+.md-code {
+  position: relative;
+  margin: 0.65rem 0;
+}
+
+.md-code > pre {
+  margin: 0;
+}
+
+.md-copy {
+  position: absolute;
+  z-index: 1; /* above the composited scroll layer of the <pre> */
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  transition: opacity 120ms, color 120ms, border-color 120ms;
+}
+
+.md-code:hover .md-copy,
+.md-code:focus-within .md-copy,
+.md-copy.md-copy-done {
+  opacity: 1;
+}
+
+.md-copy:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.md-copy.md-copy-done {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+
+/* Touch screens have no hover, so the button is always visible there. */
+@media (hover: none) {
+  .md-copy {
+    opacity: 1;
+  }
+}
+
 .md blockquote {
   margin: 0.65rem 0;
   padding: 0 0 0 0.8rem;
@@ -1524,6 +1608,104 @@ button.primary.destructive {
 .md img {
   max-width: 100%;
 }
+
+/* Images agents attach by path (`![shot](/tmp/shot.png)`): framed like T3 Code's media, click opens full size. */
+.md-img {
+  display: block;
+  margin: 0.65rem 0;
+  max-width: 100%;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: var(--bg-2);
+  line-height: 0;
+}
+
+.md-img img {
+  display: block;
+  max-height: 480px;
+  object-fit: contain;
+}
+
+.md-img-broken {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+/* File references (`src/App.tsx:42`): a chip with the basename and a file-type badge, full path on hover.
+   Mirrors T3 Code's file chips; click copies the path since the room has no file viewer. */
+.md-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  vertical-align: baseline;
+  margin: 0;
+  padding: 0.1rem 0.45rem 0.1rem 0.3rem;
+  font: inherit;
+  font-size: 0.8125em;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: copy;
+  transition: background-color 120ms, border-color 120ms;
+}
+
+.md-file:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--line-strong);
+}
+
+.md-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-file-loc {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.md-file-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6em;
+  padding: 0 0.25em;
+  font-family: var(--mono);
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+  color: var(--badge, var(--fg-muted));
+  background: color-mix(in srgb, var(--badge, var(--fg-muted)) 16%, transparent);
+  border-radius: 3px;
+}
+
+.md-file-badge.tone-react { --badge: oklch(77.7% 0.152 181.912); } /* teal-400 */
+.md-file-badge.tone-ts { --badge: oklch(70.7% 0.165 254.624); } /* blue-400 */
+.md-file-badge.tone-js { --badge: oklch(82.8% 0.189 84.429); } /* amber-400 */
+.md-file-badge.tone-css { --badge: oklch(70.2% 0.183 293.541); } /* violet-400 */
+.md-file-badge.tone-html { --badge: oklch(75% 0.183 55.934); } /* orange-400 */
+.md-file-badge.tone-data { --badge: oklch(79.2% 0.209 151.711); } /* green-400 */
+.md-file-badge.tone-doc { --badge: oklch(70.7% 0.165 254.624); }
+.md-file-badge.tone-py { --badge: oklch(70.7% 0.165 254.624); }
+.md-file-badge.tone-rs { --badge: oklch(75% 0.183 55.934); }
+.md-file-badge.tone-go { --badge: oklch(77.7% 0.152 181.912); }
+.md-file-badge.tone-sh { --badge: oklch(79.2% 0.209 151.711); }
+.md-file-badge.tone-img { --badge: oklch(71.8% 0.202 349.761); } /* pink-400 */
+.md-file-badge.tone-muted { --badge: var(--fg-muted); }
 
 .md input[type="checkbox"] {
   margin: 0 0.4em 0 0;
@@ -3764,6 +3946,10 @@ legend {
 
 /* Reply header link back to the message a reply answers. */
 .reply-to {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4em;
+  white-space: nowrap;
   background: none;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -4261,4 +4447,310 @@ span.reply-to {
   --pc: var(--accent);
   padding-left: 10px;
   color: var(--fg-muted);
+}
+
+/* =====================================================================================================
+   Phones and narrow tablets (≤ 760px). Desktop layout is a three-column grid; here the room list becomes
+   an off-canvas drawer, the inspector a bottom sheet, the crew strip scrolls sideways, and the composer
+   hugs the bottom edge inside the safe area. Everything that only exists on phones carries .mobile-only.
+   ===================================================================================================== */
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  /* --app-height is set by viewportFit.ts while the on-screen keyboard is open (iOS Safari). */
+  html,
+  body,
+  #root {
+    height: var(--app-height, 100dvh);
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  button.mobile-only {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  div.mobile-only {
+    display: block;
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+    height: var(--app-height, 100dvh);
+  }
+
+  /* With the keyboard up the home-indicator inset is under the keyboard, so the composer needs no extra room. */
+  .keyboard-open .composer {
+    padding-bottom: 8px;
+  }
+
+  /* Rooms drawer. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(300px, 86vw);
+    z-index: 120;
+    transform: translateX(-104%);
+    transition: transform 180ms ease-out;
+    box-shadow: var(--shadow-lg);
+    border-right: 1px solid var(--line-strong);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sidebar.open {
+    transform: none;
+  }
+
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 119;
+    background: rgb(0 0 0 / 0.45);
+    backdrop-filter: blur(1px);
+  }
+
+  .sidebar-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .sidebar-close {
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .room-tile {
+    padding: 8px;
+  }
+
+  /* Header: menu button, title, then the controls; the project id has no room here. */
+  .room-header {
+    gap: 6px;
+    padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+    flex-wrap: nowrap;
+  }
+
+  .room-header h1 {
+    font-size: 16px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .room-project,
+  .header-divider {
+    display: none;
+  }
+
+  .rooms-toggle {
+    font-size: 17px;
+    padding: 0 8px;
+    min-height: 32px;
+  }
+
+  .room-header button,
+  .app-controls button {
+    min-height: 32px;
+  }
+
+  /* The browser panel hangs from a button in the middle of the header, where a 300px panel would run off the
+     left edge, so it opens as a bottom sheet instead (the header is not a scroll container, so fixed is safe). */
+  .menu.browser-panel {
+    position: fixed;
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    width: auto;
+    min-width: 0;
+    max-height: 75dvh;
+    overflow: auto;
+    z-index: 130;
+    box-shadow: var(--shadow-lg), 0 0 0 100vmax rgb(0 0 0 / 0.35);
+  }
+
+  /* Crew strip: one row that scrolls sideways instead of a tall stack. */
+  .participant-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    padding: 6px 10px;
+    scrollbar-width: none;
+  }
+
+  .participant-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .participant-chip,
+  .crew-add {
+    flex: 0 0 auto;
+  }
+
+  .crew-text {
+    white-space: nowrap;
+  }
+
+  .crew-total {
+    display: none;
+  }
+
+  /* Timeline: bubbles use nearly the full width. */
+  .timeline {
+    padding: 8px 10px 14px;
+  }
+
+  .chat-stack,
+  .chat-row.wide .chat-stack {
+    max-width: 94%;
+  }
+
+  .from-agent .chat-stack {
+    max-width: 100%;
+  }
+
+  .md pre {
+    max-height: 320px;
+  }
+
+  /* Composer: bottom edge inside the home-indicator safe area; 16px text so iOS does not zoom on focus. */
+  .composer {
+    padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .composer-field textarea,
+  .composer-backdrop {
+    font-size: 16px;
+    line-height: 1.5;
+  }
+
+  .composer-hint {
+    display: none;
+  }
+
+  .composer-toolbar button {
+    min-height: 34px;
+  }
+
+  input[type="text"],
+  input:not([type]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  .mention-menu {
+    left: 0;
+    right: 0;
+    max-height: 40dvh;
+    overflow: auto;
+  }
+
+  /* Inspector: covers everything under the header (crew strip, timeline, composer), flush with the top bar. */
+  .room-under {
+    position: relative;
+  }
+
+  .room-body {
+    position: static;
+  }
+
+  .queue-drawer {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    z-index: 110;
+    border-left: none;
+    border-top: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Dialogs become bottom sheets. */
+  .dialog-backdrop {
+    align-items: flex-end;
+  }
+
+  .dialog,
+  .dialog-wide {
+    width: 100vw;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 24px);
+    border-radius: 14px 14px 0 0;
+    border-right: none;
+    border-bottom: none;
+    border-left: none;
+  }
+
+  .dialog-header {
+    padding: 14px 16px 6px;
+  }
+
+  .dialog-body {
+    padding: 6px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .dialog-footer {
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .toast-stack {
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    max-width: none;
+  }
+
+  .update-banner {
+    left: 10px;
+    right: 10px;
+    top: calc(8px + env(safe-area-inset-top));
+    transform: none;
+    justify-content: space-between;
+  }
+
+  .empty-state {
+    padding: 20px 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Header fits in one row: the browser button keeps its dot and tab count, buttons lose some padding. */
+  .room-header {
+    gap: 4px;
+  }
+
+  .room-header button.small {
+    padding: 3px 7px;
+  }
+
+  .room-header h1 {
+    flex: 1 1 60px;
+    min-width: 60px;
+  }
+
+  .room-browser-label {
+    display: none;
+  }
+
+  .room-browser > button {
+    gap: 4px;
+  }
+
+  .room-browser > button .dot {
+    margin: 0 2px;
+  }
+
+  .popover-sheet button {
+    min-height: 36px;
+  }
 }

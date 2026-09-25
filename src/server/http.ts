@@ -3,7 +3,7 @@
  * Live updates use Server-Sent Events; the UI refetches the room snapshot on each notification.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -17,6 +17,7 @@ import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { RoomSnapshot } from "../domain/types.ts";
 import { parseExplicit } from "../parser/explicit.ts";
+import { resolveLocalImage } from "./localImage.ts";
 import type { Config } from "../config.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
@@ -423,6 +424,25 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   });
 
+  // Images agents saved to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders them.
+  // Only image files under the allowed roots are served; see localImage.ts.
+  app.get("/api/local-image", (c) => {
+    const resolved = resolveLocalImage(c.req.query("path") ?? "");
+    if (!resolved.ok) {
+      const code = resolved.status === 404 ? "not_found" : resolved.status === 400 ? "invalid_path" : "forbidden";
+      throw new RoomError(code, `local image: ${resolved.reason}`, resolved.status);
+    }
+    return new Response(readFileSync(resolved.path), {
+      headers: {
+        "content-type": resolved.mimeType,
+        "content-length": String(resolved.size),
+        // Files under /tmp get overwritten (a re-run screenshot), so revalidate rather than cache forever.
+        "cache-control": "private, no-cache",
+        "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(basename(resolved.path))}`,
+      },
+    });
+  });
+
   // ---- room browsers (processes on this machine; the room only stores whether its browser is on) ----
   app.get("/api/browser/environment", (c) => c.json(stack.browsers ? stack.browsers.environment() : null));
   app.post("/api/rooms/:roomId/browser/start", async (c) => {
@@ -472,7 +492,24 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- static UI ----
   if (existsSync(join(webDistDir, "index.html"))) {
-    app.use("/assets/*", serveStatic({ root: webDistDir.replace(process.cwd() + "/", "") }));
+    const distRoot = webDistDir.replace(process.cwd() + "/", "");
+    app.use("/assets/*", serveStatic({ root: distRoot }));
+    app.use("/icons/*", serveStatic({ root: distRoot }));
+    // PWA shell files live at the site root. They are revalidated on every load so an updated worker or manifest
+    // is picked up without a hard refresh.
+    const rootFiles: Record<string, string> = {
+      "/manifest.webmanifest": "application/manifest+json",
+      "/sw.js": "text/javascript; charset=utf-8",
+      "/favicon.svg": "image/svg+xml",
+      "/apple-touch-icon.png": "image/png",
+    };
+    for (const [path, type] of Object.entries(rootFiles)) {
+      app.get(path, (c) => {
+        const file = join(webDistDir, path);
+        if (!existsSync(file)) return c.notFound();
+        return new Response(readFileSync(file), { headers: { "content-type": type, "cache-control": "no-cache" } });
+      });
+    }
     // Read per request so a rebuilt bundle is served without restarting the service, and never let the browser
     // cache the shell: asset file names are hashed, so a stale index.html is the only way to run old code.
     app.get("*", (c) => {

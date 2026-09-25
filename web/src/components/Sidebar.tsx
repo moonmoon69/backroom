@@ -12,9 +12,12 @@ interface Props {
   onSelect: (roomId: string) => void;
   onCommand: (command: RoomCommand) => Promise<{ type: string; roomId?: string } | null>;
   disabled: boolean;
+  /** Phones: the sidebar is an off-canvas drawer; these say whether it is showing and how to dismiss it. */
+  open: boolean;
+  onClose: () => void;
 }
 
-export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled }: Props) {
+export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled, open, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   // Drag to reorder: the order shown while dragging, committed on drop.
   const [dragId, setDragId] = useState<string | null>(null);
@@ -32,13 +35,28 @@ export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled }
     if (ids && ids.join() !== rooms.map((r) => r.id).join()) await onCommand({ type: "room.reorder", roomIds: ids });
     setOrder(null);
   };
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   return (
-    <aside className="sidebar" aria-label="Rooms">
+    <>
+    {open ? <div className="sidebar-backdrop mobile-only" onClick={onClose} aria-hidden="true" /> : null}
+    <aside className={`sidebar${open ? " open" : ""}`} aria-label="Rooms">
       <div className="sidebar-header">
         <span className="brand serif">T3 Rooms</span>
-        <button type="button" className="small ghost" onClick={() => setCreating(true)} disabled={disabled} title="Create a room">
-          + New room
-        </button>
+        <span className="sidebar-header-actions">
+          <button type="button" className="small ghost" onClick={() => setCreating(true)} disabled={disabled} title="Create a room">
+            + New room
+          </button>
+          <button type="button" className="icon-button mobile-only sidebar-close" aria-label="Close rooms" onClick={onClose}>
+            ×
+          </button>
+        </span>
       </div>
       <ul className="room-list">
         {rooms.length === 0 ? (
@@ -126,6 +144,7 @@ export function Sidebar({ rooms, selectedRoomId, onSelect, onCommand, disabled }
         />
       ) : null}
     </aside>
+    </>
   );
 }
 

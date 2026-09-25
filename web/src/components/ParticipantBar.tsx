@@ -21,6 +21,7 @@ import { InheritedLine, ModelPicker, ThreadBindingPicker, ThreadList, threadBind
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
+import { Popover } from "./Popover.tsx";
 
 type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
 
@@ -113,10 +114,14 @@ function ParticipantChip({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // The menu is portalled to the body (see Popover), so the outside-click check has to know about it too.
+  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
@@ -191,7 +196,7 @@ function ParticipantChip({
         </div>
       ) : null}
       {open ? (
-        <div className="menu menu-with-usage" role="menu">
+        <Popover anchor={ref} menuRef={menuRef} className="menu-with-usage" role="menu" onClose={() => setOpen(false)}>
           <ThreadUsageCard participant={participant} desk={desk} />
           <button type="button" role="menuitem" onClick={() => pick("open")}>
             Open in T3
@@ -208,7 +213,7 @@ function ParticipantChip({
           <button type="button" role="menuitem" className="danger" onClick={() => pick("remove")}>
             Remove from room…
           </button>
-        </div>
+        </Popover>
       ) : null}
     </div>
   );

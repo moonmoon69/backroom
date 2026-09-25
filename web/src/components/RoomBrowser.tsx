@@ -78,7 +78,7 @@ export function RoomBrowserButton() {
         onClick={() => setOpen((v) => !v)}
       >
         <span className={`dot ${running ? "dot-working" : status.state === "error" ? "dot-err" : ""}`} aria-hidden="true" />
-        Browser
+        <span className="room-browser-label">Browser</span>
         {running && status.tabs.length > 0 ? <span className="muted"> {status.tabs.length}</span> : null}
       </button>
       {open ? (
