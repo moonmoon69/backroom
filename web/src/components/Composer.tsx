@@ -381,7 +381,7 @@ export function Composer({ followUp }: Props) {
     snapshot.tasks.some((t) => t.participantId === id && (t.state === "dispatching" || t.state === "running" || t.state === "needs_input")) ||
     Boolean(snapshot.participantStatus[id]?.externalActivity);
 
-  const submit = async (options: { steerBusy?: boolean } = {}) => {
+  const submit = async () => {
     if (!draft || submitting || !evaluate(draft, readyIds.length, uploading, attachedCount).ready) return;
     if (draft.kind === "participant.remove") {
       if (draft.participant) setRemoveTarget(draft.participant.participantId);
@@ -407,13 +407,9 @@ export function Composer({ followUp }: Props) {
                       instruction: a.instruction,
                       schedule: a.schedule ?? { mode: "now" },
                       after: a.after.map((ref) => ref.index),
-                      // ⌘/Ctrl+Enter: send into the running turn of anyone who is mid-turn, for this send only.
                       slashCommand: Boolean(a.slashCommand),
-                      delivery:
-                        a.delivery === "steer" ||
-                        (options.steerBusy && a.schedule?.mode === "now" && a.after.length === 0 && a.recipients.some(isBusy))
-                          ? ("steer" as const)
-                          : ("queue" as const),
+                      // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
+                      delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),
                     })),
                   })
                 : null;
@@ -521,12 +517,12 @@ export function Composer({ followUp }: Props) {
     // On touch devices the on-screen keyboard's Enter is a newline and the Send button sends.
     if (event.key === "Enter" && !event.shiftKey && !event.altKey && !touchKeyboard && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
-      void submit({ steerBusy: event.metaKey || event.ctrlKey });
+      void submit();
     }
   };
 
   const showPlan = text.trim().length > 0 || attachments.length > 0;
-  // Only relevant when someone addressed (without /steer or a wait) is mid-turn: then Enter and ⌘Enter differ.
+  // Someone addressed (without /steer or a wait) is mid-turn: say that the message waits, and how to steer instead.
   const busyAddressed =
     draft?.kind === "task"
       ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && a.schedule?.mode === "now" && a.after.length === 0).flatMap((a) => a.recipients.filter(isBusy)))]
@@ -710,7 +706,7 @@ export function Composer({ followUp }: Props) {
         <span className="muted hint mono composer-hint">
           {busyAddressed.length > 0 ? (
             <>
-              Enter: waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · {MOD_KEY}+Enter: send into the running turn
+              Waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · add /steer to send into the running turn
             </>
           ) : (
             "Enter to send · Shift+Enter new line"
@@ -1264,7 +1260,6 @@ const formatBytes = (bytes: number): string =>
   bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 /** Placeholder examples rotate on each focus so the syntax is discoverable without crowding one line. */
-const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
 /** Room commands for the "/" menu. At the start of a message: all of them; right after an @name: the per-assignment ones. */
 const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | null }> = [

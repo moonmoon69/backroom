@@ -13,19 +13,20 @@ See [`PRD.md`](PRD.md) for the product definition and [`research/`](research/) f
 1. [Requirements](#requirements)
 2. [Install](#install)
 3. [Connect to T3 Code](#connect-to-t3-code)
-4. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
-5. [Your first room](#your-first-room)
-6. [Writing messages](#writing-messages)
-7. [Sending while someone is working](#sending-while-someone-is-working)
-8. [T3 slash commands](#t3-slash-commands)
-9. [Room browser](#room-browser)
-10. [What the room shows](#what-the-room-shows)
-11. [Managing rooms, participants and roles](#managing-rooms-participants-and-roles)
-12. [Configuration](#configuration)
-13. [Running, updating and backing up](#running-updating-and-backing-up)
-14. [Troubleshooting](#troubleshooting)
-15. [Development](#development)
-16. [How it works](#how-it-works)
+4. [A headless box over Tailscale](#a-headless-box-over-tailscale)
+5. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
+6. [Your first room](#your-first-room)
+7. [Writing messages](#writing-messages)
+8. [Sending while someone is working](#sending-while-someone-is-working)
+9. [T3 slash commands](#t3-slash-commands)
+10. [Room browser](#room-browser)
+11. [What the room shows](#what-the-room-shows)
+12. [Managing rooms, participants and roles](#managing-rooms-participants-and-roles)
+13. [Configuration](#configuration)
+14. [Running, updating and backing up](#running-updating-and-backing-up)
+15. [Troubleshooting](#troubleshooting)
+16. [Development](#development)
+17. [How it works](#how-it-works)
 
 ---
 
@@ -93,6 +94,64 @@ npm run t3:check -- --write --project <projectId>  # creates one thread, sends o
 
 The `--write` check leaves one thread titled "T3 Rooms contract check" in T3; delete it there when you are done. Copy a project id from the room's **Open in T3** dialog, or from T3 itself.
 
+## A headless box over Tailscale
+
+The setup this was built on, and the one Theo describes for his own "bb-1": a headless Linux box runs the T3 Code server and T3 Rooms as background services, and you work from a Mac or a phone anywhere on your tailnet. Nothing listens on the public internet.
+
+**1. T3 Code on the box.** Install the server as a user service and pair it over Tailscale:
+
+```bash
+npx t3 service install          # runs `t3 serve` at boot, as your user
+npx t3 pair --tailscale         # publishes it on Tailscale Serve (HTTPS) and prints a pairing link + QR code
+```
+
+Open that pairing link in the T3 Code desktop app on your Mac (or scan the QR code on the phone). The link is a password: it only ever travels inside the tailnet.
+
+**2. T3 Rooms on the box.** Run it as a user service too, and let user services run without a login session:
+
+```bash
+loginctl enable-linger "$USER"
+mkdir -p ~/.config/systemd/user
+"$EDITOR" ~/.config/systemd/user/t3rooms.service   # contents below
+systemctl --user enable --now t3rooms.service
+```
+
+```ini
+[Unit]
+Description=T3 Rooms
+After=t3code.service
+Wants=t3code.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/t3code-rooms
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ROOMS_PORT=4400
+Environment=ROOMS_BROWSER_MODE=vnc
+Environment=ROOMS_BROWSER_BIND=100.x.y.z
+Environment=ROOMS_BROWSER_HOST=box.tailnet-name.ts.net
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
+```
+
+`ROOMS_BROWSER_BIND` is the box's Tailscale IP (`tailscale ip -4`) and `ROOMS_BROWSER_HOST` its MagicDNS name (`tailscale status`). Adjust `WorkingDirectory` and the `npm` path to where you cloned it and how you installed Node. `t3code.service` is the unit `t3 service install` creates.
+
+**3. Reach the room from the tailnet.** The room listens on `127.0.0.1` only. Publish it over HTTPS with Tailscale Serve on a port of its own (T3 Code's pairing already took 443):
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:4400
+tailscale serve status    # https://box.tailnet-name.ts.net:8443 -> http://127.0.0.1:4400 (tailnet only)
+```
+
+Open `https://box.tailnet-name.ts.net:8443` on the Mac or the phone. HTTPS matters on the phone: it is what lets the room install as an app and keep its shell offline (see [On a phone](#on-a-phone)).
+
+**What is exposed where:** T3 Code and T3 Rooms stay on loopback, reached only through Tailscale Serve. The room browser's noVNC viewer listens on the Tailscale IP because the watch link is meant to be opened from another device; its DevTools port stays on loopback. Update the room with `git pull && npm install && npm run build:web && systemctl --user restart t3rooms.service`.
+
 ## Try it without T3 (demo mode)
 
 ```sh
@@ -124,12 +183,13 @@ The text you type is the whole instruction. The buttons around the composer only
 
 | Key | Action |
 | --- | --- |
-| **Enter** | Send |
+| **Enter** | Send (however many lines the draft has). A message for someone mid-turn waits for that turn unless it says `/steer` (see [below](#sending-while-someone-is-working)) |
 | **Shift+Enter** | New line |
-| **⌘/Ctrl+Enter** | Send, and deliver into a running turn instead of waiting (see [below](#sending-while-someone-is-working)) |
 | `@` | Mention autocomplete (participants and `@all`) |
 | **Backspace** right after a mention (**Delete** right before one) | Removes the whole `@name` at once; ⌘/Ctrl+Z brings it back. Partly typed or unknown names delete letter by letter |
 | `/` | Command menu (room commands, and T3 commands after an `@name`) |
+
+On a touch keyboard Enter is a new line and the **Send** button sends.
 
 ### How a message becomes tasks
 
@@ -227,6 +287,10 @@ Type `/` at the start of the message to see these, each with a description:
 /remove @alice                                 retire a participant (asks about its pending tasks)
 ```
 
+### Notes
+
+A **note** is a message to the room rather than to anyone in it. Click **Note** in the composer toolbar (it toggles a `/note` prefix on the text) and send. The note appears in the timeline with a dashed border, creates no task and starts no turn, and from then on every participant receives it in their briefings as shared room context, like your messages and other participants' replies. Use it for decisions, constraints and facts you want everyone to have without asking anyone to act: "we keep the public API as it is", "the deploy window is Friday". Notes are text only; a message with images cannot be a note.
+
 ### Images
 
 Paste, drop, or attach PNG, JPEG, GIF or WebP images (T3's limits: up to 10 MB each, 80 MB per message). Every assignment in the message receives them. A resend or retry delivers the same bytes. A message with images can have an empty instruction.
@@ -237,11 +301,10 @@ Text inside code blocks, `` `inline code` ``, or lines starting with `> ` is rea
 
 ## Sending while someone is working
 
-A plain send to a participant who is mid-turn **waits**. The task starts when the current turn ends, and the plan shows "next". Delivering into the running turn instead is called steering, and there are three ways to do it:
+A plain send to a participant who is mid-turn **waits**. The task starts when the current turn ends, and the plan shows "next". Delivering into the running turn instead is called steering, and there are two ways to do it:
 
 - add `/steer` to the message;
-- pick **Send into the running turn** on the plan row;
-- press **⌘/Ctrl+Enter** for this one send.
+- pick **Send into the running turn** on the plan row.
 
 This works like T3's own "steer" follow-up setting. The mid-turn message carries only your words and images, not the full room briefing. It is never sent while the agent is waiting on an approval or a question, or before the thread's first room briefing.
 
