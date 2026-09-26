@@ -3127,6 +3127,10 @@ legend {
   transform: rotate(-90deg);
 }
 
+.chevron-left {
+  transform: rotate(180deg);
+}
+
 .desk-body {
   border-top: 1px solid var(--line);
   padding: 6px 10px 8px;
@@ -6232,4 +6236,47 @@ button:has(> .icon):not(.mobile-only) {
 .preset-chip-what {
   font-size: var(--text-xs);
   color: var(--fg-muted);
+}
+
+/* A preset's menu: "Add to room" opens the rooms in the menu's place. */
+.menu.preset-menu {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.menu .menu-more,
+.menu .menu-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu .menu-more span {
+  flex: 1;
+}
+
+.menu .menu-back {
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  margin-bottom: 2px;
+}
+
+.menu .menu-room {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.menu-room-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.menu-room-meta {
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
 }

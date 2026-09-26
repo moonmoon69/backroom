@@ -509,16 +509,15 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                             <span className="side-preset-what">{what}</span>
                           </span>
                         </button>
-                        <AddMenu
-                          label={<MoreIcon />}
-                          title={`${preset.name} options`}
-                          className="room-menu-button"
+                        <PresetMenu
+                          preset={preset}
+                          rooms={rooms}
+                          projects={projects ?? []}
+                          openRoomId={openRoom?.id ?? null}
                           disabled={disabled}
-                          items={[
-                            { label: "Start a thread", onPick: () => newThread(null, preset.id) },
-                            ...(openRoom ? [{ label: `Add to ${openRoom.title}`, onPick: () => void onSeatPreset(openRoom.id, preset.id) }] : []),
-                            { label: "Edit…", onPick: () => setDialog({ kind: "preset", preset }) },
-                          ]}
+                          onStart={() => newThread(null, preset.id)}
+                          onAdd={(roomId) => void onSeatPreset(roomId, preset.id)}
+                          onEdit={() => setDialog({ kind: "preset", preset })}
                         />
                       </li>
                     );
@@ -723,6 +722,115 @@ function ThreadTile({ thread, selected, onSelect }: { thread: T3ThreadShell; sel
 }
 
 /** A small button opening a menu of actions (rendered at the body so the scrolling sidebar cannot clip it). */
+/**
+ * A preset's menu. "Add to room" opens the list of rooms in the menu's place (the open room first), so the preset
+ * can be seated anywhere without dragging: on a phone, or in a room that is not the open one.
+ */
+function PresetMenu({
+  preset,
+  rooms,
+  projects,
+  openRoomId,
+  disabled,
+  onStart,
+  onAdd,
+  onEdit,
+}: {
+  preset: Preset;
+  rooms: RoomListItem[];
+  projects: T3Project[];
+  openRoomId: string | null;
+  disabled: boolean;
+  onStart: () => void;
+  onAdd: (roomId: string) => void;
+  onEdit: () => void;
+}) {
+  const [level, setLevel] = useState<"closed" | "main" | "rooms">("closed");
+  const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const open = level !== "closed";
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!anchor.current?.contains(target) && !menuRef.current?.contains(target)) setLevel("closed");
+    };
+    // Escape goes back from the rooms to the menu, then closes it.
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setLevel((current) => (current === "rooms" ? "main" : "closed"));
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  // Moving between the menu and the rooms keeps the keyboard inside it.
+  useEffect(() => {
+    if (!open) return;
+    // A frame later: the menu is hidden until it has been placed, and a hidden button takes no focus.
+    const frame = requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [level, open]);
+
+  const projectTitle = new Map(projects.map((p) => [p.id, p.title]));
+  const listed = [...rooms].sort((a, b) => Number(b.id === openRoomId) - Number(a.id === openRoomId));
+  const pick = (action: () => void) => {
+    setLevel("closed");
+    action();
+  };
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className="small ghost room-menu-button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`${preset.name} options`}
+        aria-label={`${preset.name} options`}
+        disabled={disabled}
+        onClick={() => setLevel((current) => (current === "closed" ? "main" : "closed"))}
+      >
+        <MoreIcon />
+      </button>
+      {open ? (
+        // Keyed by level, so the menu is placed again for the list it now holds.
+        <Popover key={level} anchor={anchor} menuRef={menuRef} role="menu" className="preset-menu" onClose={() => setLevel("closed")} menuProps={{ "aria-label": level === "rooms" ? `Add ${preset.name} to a room` : `${preset.name} options` }}>
+          {level === "main" ? (
+            <>
+              <button type="button" role="menuitem" onClick={() => pick(onStart)}>
+                Start a thread
+              </button>
+              <button type="button" role="menuitem" className="menu-more" aria-haspopup="menu" disabled={rooms.length === 0} title={rooms.length === 0 ? "There are no rooms yet" : undefined} onClick={() => setLevel("rooms")}>
+                <span>Add to room</span>
+                <ChevronIcon dir="right" />
+              </button>
+              <button type="button" role="menuitem" onClick={() => pick(onEdit)}>
+                Edit…
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" role="menuitem" className="menu-back" onClick={() => setLevel("main")}>
+                <ChevronIcon dir="left" />
+                <span>Add to room</span>
+              </button>
+              {listed.map((room) => (
+                <button key={room.id} type="button" role="menuitem" className="menu-room" onClick={() => pick(() => onAdd(room.id))}>
+                  <span className="menu-room-title">{room.title}</span>
+                  <span className="menu-room-meta">
+                    {[projectTitle.get(room.projectId), `${room.participantCount} crew`, room.id === openRoomId ? "open" : null].filter(Boolean).join(" · ")}
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
+        </Popover>
+      ) : null}
+    </>
+  );
+}
+
 function AddMenu({
   label,
   title,

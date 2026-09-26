@@ -504,7 +504,7 @@ A **preset** keeps a participant's settings under a name: the model with its opt
 | To | Do this |
 | --- | --- |
 | Make one | **+** beside **Presets**, or **Save as preset** in the Add participant dialog (it takes the name typed there; a preset of that name is brought up to date instead) |
-| Add it to a room | Drag it onto the room in the sidebar or onto the open room's page. Without a mouse: the preset's **⋯** menu → **Add to** the open room |
+| Add it to a room | Drag it onto the room in the sidebar or onto the open room's page. Or, without dragging: the preset's **⋯** menu → **Add to room**, then pick the room from the list (every room, the open one first) |
 | Start a thread with it | Click it (the thread starts in the open room's project, else the last one used), or drag it onto a project |
 | Use it in a form | The Add participant dialog and the New thread page list the presets above the settings; one click fills them in, and you can still change anything before you confirm |
 | Change or delete it | The preset's **⋯** menu → **Edit…** |

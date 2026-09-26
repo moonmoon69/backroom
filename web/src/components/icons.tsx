@@ -51,7 +51,7 @@ export const MenuIcon = () => (
 );
 
 /** A chevron pointing right, down (an open disclosure, a dropdown) or up (an open dropdown). */
-export const ChevronIcon = ({ dir = "right" }: { dir?: "right" | "down" | "up" }) => (
+export const ChevronIcon = ({ dir = "right" }: { dir?: "right" | "down" | "up" | "left" }) => (
   <Icon className={`chevron chevron-${dir}`} strokeWidth={1.5}>
     <path d="M6 3.5 10.5 8 6 12.5" />
   </Icon>
