@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { CloseIcon } from "./icons.tsx";
 
 interface DialogProps {
   title: string;
@@ -54,8 +55,8 @@ export function Dialog({ title, onClose, children, footer, wide }: DialogProps) 
       >
         <div className="dialog-header">
           <h2>{title}</h2>
-          <button type="button" className="dialog-close icon-button" aria-label="Close dialog" onClick={onClose}>
-            ×
+          <button type="button" className="dialog-close small ghost icon-only" aria-label="Close dialog" title="Close" onClick={onClose}>
+            <CloseIcon />
           </button>
         </div>
         <div className="dialog-body">{children}</div>

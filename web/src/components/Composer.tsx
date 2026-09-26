@@ -44,6 +44,7 @@ import {
 } from "./composerText.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
+import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
 
 interface Props {
   followUp: FollowUpPrefill | null;
@@ -651,7 +652,7 @@ export function Composer({ followUp }: Props) {
                 {a.status === "error" ? <span className="attach-error">{a.error}</span> : <span className="muted mono">{formatBytes(a.sizeBytes)}</span>}
               </figcaption>
               <button type="button" className="attach-remove" aria-label={`Remove ${a.name}`} title="Remove" onClick={() => removeAttachment(a.key)}>
-                ×
+                <CloseIcon />
               </button>
             </figure>
           ))}
@@ -681,8 +682,14 @@ export function Composer({ followUp }: Props) {
       ) : null}
 
       <div className="composer-row composer-toolbar">
-        <button type="button" className="small ghost" onClick={() => fileInput.current?.click()} title="Attach PNG, JPEG, GIF, or WebP images (or paste / drop them here)">
-          Attach image
+        <button
+          type="button"
+          className="small ghost icon-only"
+          onClick={() => fileInput.current?.click()}
+          aria-label="Attach images"
+          title="Attach images: PNG, JPEG, GIF or WebP (or paste or drop them here)"
+        >
+          <ImageIcon />
         </button>
         <input
           ref={fileInput}
@@ -697,12 +704,13 @@ export function Composer({ followUp }: Props) {
         />
         <button
           type="button"
-          className={`small ghost note-button${noteOn ? " active" : ""}`}
+          className={`small ghost icon-only note-button${noteOn ? " active" : ""}`}
           aria-pressed={noteOn}
-          title="Post a room note: shared context, no participant is invoked"
+          aria-label="Room note"
+          title="Room note: shared context for everyone, no participant is invoked"
           onClick={() => applyEdit(toggleNote(text))}
         >
-          Note
+          <NoteIcon />
         </button>
         <span className="spacer" />
         <span className="muted hint mono composer-hint">
@@ -1031,7 +1039,7 @@ function TimingPill({ assignment, assignments, aliasOf, edit }: { assignment: Dr
   return (
     <span className="plan-timing" ref={wrapper}>
       <button type="button" className={`plan-pill mono tone-${tone}`} title={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {label} <span aria-hidden="true">▾</span>
+        {label} <ChevronIcon dir="down" />
       </button>
       {open ? (
         <div className="menu menu-up menu-right" role="menu">

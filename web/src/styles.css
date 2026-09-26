@@ -835,18 +835,6 @@ textarea.invalid,
   color: var(--err) !important;
 }
 
-.crew-add {
-  align-self: flex-start;
-  background: transparent;
-  border: 1px dashed var(--line-strong);
-  color: var(--fg-muted);
-  padding: 5px 12px;
-}
-
-.crew-add:hover:not(:disabled) {
-  color: var(--accent);
-}
-
 .menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -2456,9 +2444,9 @@ button.primary.destructive {
   position: absolute;
   top: 5px;
   right: 5px;
-  padding: 0 5px;
-  line-height: 1.3;
-  font-size: 12px;
+  padding: 2px;
+  display: inline-flex;
+  line-height: 1;
   background: color-mix(in srgb, var(--bg) 80%, transparent);
   border-color: var(--line);
 }
@@ -3144,10 +3132,22 @@ legend {
   color: var(--fg-dim);
 }
 
+/* The drawn chevron (icons.tsx): disclosures point right when shut and down when open; dropdowns down / up. */
 .chevron {
-  color: var(--fg-dim);
-  width: 10px;
+  flex: none;
   display: inline-block;
+  width: 12px;
+  height: 12px;
+  color: var(--fg-dim);
+  transition: transform 120ms ease-out;
+}
+
+.chevron-down {
+  transform: rotate(90deg);
+}
+
+.chevron-up {
+  transform: rotate(-90deg);
 }
 
 .desk-body {
@@ -4046,12 +4046,14 @@ span.reply-to {
 }
 .room-menu-button {
   opacity: 0;
+  display: inline-flex;
+  align-items: center;
   background: none;
   border: 1px solid transparent;
   border-radius: 4px;
-  padding: 0 6px;
+  padding: 2px 4px;
   color: var(--fg-muted);
-  line-height: 1.4;
+  line-height: 1;
   cursor: pointer;
 }
 .room-item:hover .room-menu-button,
@@ -4321,6 +4323,7 @@ span.reply-to {
   padding-inline: 6px;
   font-size: 14px;
   line-height: 1;
+  justify-content: center;
 }
 .theme-menu {
   position: relative;
@@ -4340,8 +4343,7 @@ span.reply-to {
   font-weight: 600;
 }
 .theme-icon {
-  width: 14px;
-  text-align: center;
+  display: inline-flex;
 }
 
 /* Participants above the composer: click to insert @alias at the caret. */
@@ -4458,10 +4460,6 @@ span.reply-to {
     gap: 4px;
   }
 
-  .sidebar-close {
-    font-size: 20px;
-    line-height: 1;
-  }
 
   .room-tile {
     padding: 8px;
@@ -4692,11 +4690,7 @@ span.reply-to {
   background: transparent;
 }
 
-.project-toggle .chevron {
-  width: 10px;
-  font-size: 10px;
-  color: var(--fg-dim);
-}
+
 
 .project-name {
   overflow: hidden;
@@ -4974,10 +4968,7 @@ span.reply-to {
   background: transparent;
 }
 
-.thread-section-toggle .chevron {
-  width: 10px;
-  font-size: 10px;
-}
+
 
 .side-thread-tile.archived .thread-title {
   color: var(--fg-dim);
@@ -5239,7 +5230,7 @@ span.reply-to {
   font-weight: 600;
 }
 
-.inspector-head .icon-button {
+.inspector-head button {
   align-self: center;
 }
 
@@ -5528,4 +5519,23 @@ span.reply-to {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* ---- icons (icons.tsx) in buttons: aligned with any words beside them, the same size everywhere ---- */
+.icon {
+  display: block;
+  flex: none;
+}
+
+/* Not phone-only buttons: .mobile-only must keep hiding them on desktops. */
+button:has(> .icon):not(.mobile-only) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.attach-remove .icon,
+.plan-pill .chevron {
+  width: 12px;
+  height: 12px;
 }

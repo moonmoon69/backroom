@@ -4,6 +4,7 @@ import type { CatalogEntry, ModelOptionDescriptor, ModelSelection, ProviderInfo,
 import { optionLabel } from "./deskFormat.ts";
 import { ProviderLine } from "./Providers.tsx";
 import { useToast } from "./Toast.tsx";
+import { ChevronIcon } from "./icons.tsx";
 
 /** Default value for one descriptor: the isDefault option (else the first) for selects, defaultValue === true for booleans. */
 function defaultOptionValue(descriptor: ModelOptionDescriptor): unknown {
@@ -198,9 +199,7 @@ export function ModelPicker({
           <span className="muted">Choose a model…</span>
         )}
         <span className="spacer" />
-        <span className="chevron mono" aria-hidden="true">
-          {open ? "▴" : "▾"}
-        </span>
+        <ChevronIcon dir={open ? "up" : "down"} />
       </button>
       {open ? (
         <div

@@ -33,6 +33,7 @@ import { PageTitle } from "./PageTitle.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
+import { CloseIcon, ImageIcon, MoreIcon } from "./icons.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
@@ -912,15 +913,21 @@ function ThreadComposer({
                 {image.error ? <span className="attach-error">{image.error}</span> : null}
               </figcaption>
               <button type="button" className="attach-remove" aria-label={`Remove ${image.name}`} title="Remove" onClick={() => setImages((list) => list.filter((i) => i.key !== image.key))}>
-                ×
+                <CloseIcon />
               </button>
             </figure>
           ))}
         </div>
       ) : null}
       <div className="composer-row composer-toolbar">
-        <button type="button" className="small ghost" onClick={() => fileInput.current?.click()} title="Attach PNG, JPEG, GIF, or WebP images (or paste / drop them here)">
-          Attach image
+        <button
+          type="button"
+          className="small ghost icon-only"
+          onClick={() => fileInput.current?.click()}
+          aria-label="Attach images"
+          title="Attach images: PNG, JPEG, GIF or WebP (or paste or drop them here)"
+        >
+          <ImageIcon />
         </button>
         <input
           ref={fileInput}
@@ -988,8 +995,8 @@ function ThreadMenu({
   };
   return (
     <>
-      <button ref={anchor} type="button" className="small ghost icon-only" aria-label="Thread options" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        ⋯
+      <button ref={anchor} type="button" className="small ghost icon-only" aria-label="Thread options" title="Thread options" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <MoreIcon />
       </button>
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="menu" onClose={() => setOpen(false)}>

@@ -8,6 +8,7 @@ import { Popover } from "./Popover.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { threadActivity } from "./ThreadView.tsx";
 import { useToast } from "./Toast.tsx";
+import { ChevronIcon, CloseIcon, PlusIcon, SidebarIcon } from "./icons.tsx";
 
 /** What the main area shows: a room, a thread used on its own, or a new thread being started in a project. */
 export type Selection =
@@ -76,16 +77,6 @@ function shortAge(iso: string): string {
   if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return days < 14 ? `${days}d` : `${Math.floor(days / 7)}w`;
-}
-
-/** A window with a side pane: the control that hides and shows the sidebar. */
-export function SidebarIcon() {
-  return (
-    <svg className="sidebar-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
-      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
-      <path d="M6.25 3v10" />
-    </svg>
-  );
 }
 
 /** A room's activity as one dot tone for the rail: needs you, working, background work, or none. */
@@ -284,7 +275,12 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
           <span className="brand serif">T3 Rooms</span>
           <span className="sidebar-header-actions">
             <AddMenu
-              label="+ New"
+              label={
+                <>
+                  <PlusIcon />
+                  New
+                </>
+              }
               title="Start a thread, create a room, or add a project"
               disabled={disabled}
               items={[
@@ -304,8 +300,8 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                 <SidebarIcon />
               </button>
             ) : null}
-            <button type="button" className="icon-button mobile-only sidebar-close" aria-label="Close sidebar" onClick={onClose}>
-              ×
+            <button type="button" className="small ghost icon-only mobile-only sidebar-close" aria-label="Close sidebar" title="Close" onClick={onClose}>
+              <CloseIcon />
             </button>
           </span>
         </div>
@@ -313,7 +309,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
           {nothing ? (
             <li className="room-empty">
               <p className="serif muted">{projects === null && !t3Error ? "Loading projects…" : "No projects or rooms yet."}</p>
-              {projects !== null ? <p className="mono muted">+ New → New project</p> : null}
+              {projects !== null ? <p className="mono muted">New → New project</p> : null}
             </li>
           ) : null}
           {groups.map((group) => {
@@ -334,16 +330,14 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                     title={group.workspaceRoot ?? `T3 project ${group.id}`}
                     onClick={() => toggleCollapsed(group.id)}
                   >
-                    <span className="chevron mono" aria-hidden="true">
-                      {isCollapsed ? "▸" : "▾"}
-                    </span>
+                    <ChevronIcon dir={isCollapsed ? "right" : "down"} />
                     <span className="project-name">{group.title || "…"}</span>
                     {isCollapsed && group.rooms.length + group.threads.length > 0 ? <span className="project-count mono">{group.rooms.length + group.threads.length}</span> : null}
                     {isCollapsed && attention ? <span className="thread-dot tone-input" title="Something here needs you" /> : null}
                   </button>
                   {known ? (
                     <AddMenu
-                      label="+"
+                      label={<PlusIcon />}
                       title={`New thread or room in ${group.title}`}
                       className="project-add"
                       disabled={disabled}
@@ -434,14 +428,12 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             <li className="project-group browsers-group">
               <div className="project-head">
                 <button type="button" className="project-toggle" aria-expanded={!collapsed.has(BROWSERS_KEY)} onClick={() => toggleCollapsed(BROWSERS_KEY)} title="Shared Chrome browsers on this machine, for agents">
-                  <span className="chevron mono" aria-hidden="true">
-                    {collapsed.has(BROWSERS_KEY) ? "▸" : "▾"}
-                  </span>
+                  <ChevronIcon dir={collapsed.has(BROWSERS_KEY) ? "right" : "down"} />
                   <span className="project-name">Browsers</span>
                   {collapsed.has(BROWSERS_KEY) ? <span className="project-count mono">{browsers.length}</span> : null}
                 </button>
                 <button type="button" className="small ghost project-add" aria-label="New browser" title="New browser" disabled={disabled} onClick={() => setDialog({ kind: "browser" })}>
-                  +
+                  <PlusIcon />
                 </button>
               </div>
               {!collapsed.has(BROWSERS_KEY) ? (
@@ -594,9 +586,7 @@ function ThreadSection({
           onClick={onToggle}
           title={section === "settled" ? "Threads in T3's settled list: done for now. Sending one a message makes it active again." : "Threads archived in T3: hidden there, reversible. Open one to unarchive or delete it."}
         >
-          <span className="chevron" aria-hidden="true">
-            {open ? "▾" : "▸"}
-          </span>
+          <ChevronIcon dir={open ? "down" : "right"} />
           {section === "settled" ? "Settled" : "Archived"} · {threads.length}
         </button>
       </li>
@@ -635,7 +625,7 @@ function AddMenu({
   disabled,
   items,
 }: {
-  label: string;
+  label: ReactNode;
   title: string;
   className?: string;
   disabled: boolean;

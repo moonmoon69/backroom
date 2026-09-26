@@ -3,6 +3,7 @@ import { api, ApiError } from "../api.ts";
 import type { CommandResult, Role, RoomCommand } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { useToast } from "./Toast.tsx";
+import { PlusIcon } from "./icons.tsx";
 
 interface Props {
   runCommand: (command: RoomCommand) => Promise<CommandResult | null>;
@@ -88,7 +89,8 @@ export function RolesDialog({ runCommand, onClose }: Props) {
       <div className="library-head">
         <p className="serif library-lede">A role is a named set of rules assigned in the room; its text travels with every assignment to whoever holds it.</p>
         <button type="button" className="primary" onClick={() => setEditing({ role: null, name: "", rules: "" })}>
-          + New role
+          <PlusIcon />
+          New role
         </button>
       </div>
       {roles === null ? <p className="muted mono">loading…</p> : null}

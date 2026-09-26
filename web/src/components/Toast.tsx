@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { CloseIcon } from "./icons.tsx";
 
 export interface Toast {
   id: number;
@@ -34,8 +35,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === "error" ? "alert" : "status"}>
             <span>{t.message}</span>
-            <button type="button" className="icon-button" aria-label="Dismiss" onClick={() => dismiss(t.id)}>
-              ×
+            <button type="button" className="small ghost icon-only" aria-label="Dismiss" title="Dismiss" onClick={() => dismiss(t.id)}>
+              <CloseIcon />
             </button>
           </div>
         ))}

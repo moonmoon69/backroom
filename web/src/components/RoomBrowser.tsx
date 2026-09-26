@@ -4,6 +4,7 @@ import { useRoom } from "../context.tsx";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { CopyButton } from "./pickers.tsx";
+import { GlobeGlyph } from "./icons.tsx";
 
 /** The noVNC link, completed with this page's host when the service does not know which host you reach it by. */
 export function watchUrl(status: RoomBrowserStatus): string | null {
@@ -133,11 +134,7 @@ export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatu
 export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boolean }) {
   return (
     <span className="globe" aria-hidden="true">
-      <svg className="globe-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
-        <circle cx="8" cy="8" r="6.25" />
-        <path d="M1.75 8h12.5" />
-        <path d="M8 1.75c1.7 1.75 2.55 3.85 2.55 6.25S9.7 12.5 8 14.25C6.3 12.5 5.45 10.4 5.45 8S6.3 3.5 8 1.75z" />
-      </svg>
+      <GlobeGlyph />
       {failed ? (
         <span className="globe-badge globe-failed" />
       ) : checked ? (

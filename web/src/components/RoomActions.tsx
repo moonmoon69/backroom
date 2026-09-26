@@ -5,6 +5,7 @@ import { isActiveParticipant, type CommandResult, type Room, type RoomCommand, t
 import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
+import { MoreIcon } from "./icons.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
 
@@ -40,7 +41,7 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
           setOpen((v) => !v);
         }}
       >
-        ⋯
+        <MoreIcon />
       </button>
       {open ? (
         <div className="menu" role="menu">
@@ -95,7 +96,7 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
         title="Room options"
         onClick={() => setOpen((v) => !v)}
       >
-        ⋯
+        <MoreIcon />
       </button>
       {open ? (
         <div className="menu" role="menu">

@@ -4,6 +4,7 @@ import type { Desk, DeskCheckpoint, Participant, PullRequestRef, T3Activity } fr
 import { ageOf, shortId, timeOf } from "./deskFormat.ts";
 import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
+import { ChevronIcon } from "./icons.tsx";
 
 const ACTIVITY_COLLAPSED = 8;
 
@@ -151,9 +152,7 @@ function CheckpointsRow({ checkpoints }: { checkpoints: DeskCheckpoint[] }) {
                 disabled={checkpoint.files.length === 0}
                 onClick={() => setExpanded((state) => ({ ...state, [checkpoint.turnId]: !isOpen }))}
               >
-                <span className="chevron" aria-hidden="true">
-                  {checkpoint.files.length === 0 ? "·" : isOpen ? "▾" : "▸"}
-                </span>
+                {checkpoint.files.length === 0 ? <span className="icon chevron" aria-hidden="true" /> : <ChevronIcon dir={isOpen ? "down" : "right"} />}
                 <span>turn {shortId(checkpoint.turnId)}</span>
                 <span>
                   <span className="add">+{checkpoint.additions}</span> <span className="del">−{checkpoint.deletions}</span>
@@ -191,9 +190,7 @@ function PlanRow({ plan }: { plan: NonNullable<Desk["proposedPlan"]> }) {
   return (
     <div className="desk-row desk-plan">
       <button type="button" className="plan-head mono" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <span className="chevron" aria-hidden="true">
-          {open ? "▾" : "▸"}
-        </span>
+        <ChevronIcon dir={open ? "down" : "right"} />
         <span className="desk-label">Plan</span>
         <span className="muted">{timeOf(plan.createdAt)}</span>
         {plan.implementedAt ? (

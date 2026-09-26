@@ -25,6 +25,7 @@ import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
+import { ChevronIcon, PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
 type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
 
@@ -61,13 +62,12 @@ export function describeStatus(status: ParticipantStatus | undefined): { label: 
  */
 export function CrewPanel() {
   const { snapshot, desk } = useRoom();
-  const [adding, setAdding] = useState(false);
   const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant } | null>(null);
   const crew = snapshot.participants.filter(isActiveParticipant);
 
   return (
     <div className="crew-list" aria-label="Participants">
-      {crew.length === 0 ? <p className="serif muted crew-empty">No one here yet; add a participant to start handing out work.</p> : null}
+      {crew.length === 0 ? <p className="serif muted crew-empty">No one here yet. Add a participant with the button at the top of this panel to start handing out work.</p> : null}
       {crew.map((participant) => (
         <ParticipantChip
           key={participant.id}
@@ -77,29 +77,13 @@ export function CrewPanel() {
           onAction={(action) => setDialog({ action, participant })}
         />
       ))}
-      <button type="button" className="crew-add" onClick={() => setAdding(true)}>
-        + Add participant
-      </button>
       <CrewContextTotal />
-      {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
       {dialog?.action === "open" ? <OpenInT3Dialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "details" ? <ThreadDetailsDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "settings" ? <ParticipantSettingsDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "rebind" ? <RebindDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "remove" ? <RemoveParticipantDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
     </div>
-  );
-}
-
-/** Two people: the members of the room. */
-function PeopleIcon() {
-  return (
-    <svg className="people-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
-      <circle cx="6" cy="5.25" r="2.25" />
-      <path d="M1.75 13.25c0-2.4 1.9-4.25 4.25-4.25s4.25 1.85 4.25 4.25" />
-      <path d="M10.25 3.1a2.25 2.25 0 0 1 0 4.3" />
-      <path d="M11.9 9.35c1.45.55 2.35 2 2.35 3.9" />
-    </svg>
   );
 }
 
@@ -123,6 +107,19 @@ export function CrewButton({ active, onClick }: { active: boolean; onClick: () =
       <PeopleIcon />
       <span className="panel-count mono">{crew.length}</span>
     </button>
+  );
+}
+
+/** The People panel's add button, in its head beside the close button: seat a participant (new or existing thread). */
+export function AddParticipantButton() {
+  const [adding, setAdding] = useState(false);
+  return (
+    <>
+      <button type="button" className="small ghost icon-only" aria-label="Add participant" title="Add participant" onClick={() => setAdding(true)}>
+        <PersonPlusIcon />
+      </button>
+      {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
+    </>
   );
 }
 
@@ -726,9 +723,7 @@ export function CrewFields({
       {showRuntimeMode ? (
         <div className="advanced">
           <button type="button" className="advanced-toggle mono" aria-expanded={advanced} aria-controls={advancedId} onClick={toggleAdvanced}>
-            <span className="chevron" aria-hidden="true">
-              {advanced ? "▾" : "▸"}
-            </span>
+            <ChevronIcon dir={advanced ? "down" : "right"} />
             Advanced
             {!advanced ? <span className="muted advanced-summary">{value.runtimeMode}</span> : null}
           </button>

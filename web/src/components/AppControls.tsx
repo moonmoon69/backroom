@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse } from "../types.ts";
 import { ConnectionChip } from "./StatusStrip.tsx";
+import { MonitorIcon, MoonIcon, SunIcon } from "./icons.tsx";
 
-const THEMES: Array<{ key: ThemeChoice; label: string; icon: string }> = [
-  { key: "system", label: "System", icon: "◐" },
-  { key: "light", label: "Light", icon: "☀" },
-  { key: "dark", label: "Dark", icon: "☾" },
+const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
+  { key: "system", label: "System", icon: <MonitorIcon /> },
+  { key: "light", label: "Light", icon: <SunIcon /> },
+  { key: "dark", label: "Dark", icon: <MoonIcon /> },
 ];
 
 /** App-wide controls at the foot of the sidebar: roles, the T3 connection, and the theme. */

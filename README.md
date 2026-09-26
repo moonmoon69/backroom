@@ -168,7 +168,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 ## Your first room
 
 1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
-2. **Add a participant.** Click the people button (two-person icon) in the room header, then **+ Add participant**, and choose one of:
+2. **Add a participant.** Click the people button (two-person icon) in the room header, then the add button at the top of the People panel (a person with a plus), and choose one of:
    - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
    - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
 
@@ -311,7 +311,7 @@ Type `/` at the start of the message to see these, each with a description:
 
 ### Notes
 
-A **note** is a message to the room rather than to anyone in it. Click **Note** in the composer toolbar (it toggles a `/note` prefix on the text) and send. The note appears in the timeline with a dashed border, creates no task and starts no turn, and from then on every participant receives it in their briefings as shared room context, like your messages and other participants' replies. Use it for decisions, constraints and facts you want everyone to have without asking anyone to act: "we keep the public API as it is", "the deploy window is Friday". Notes are text only; a message with images cannot be a note.
+A **note** is a message to the room rather than to anyone in it. Click the note button under the composer (a page with a folded corner; it toggles a `/note` prefix on the text) and send. The note appears in the timeline with a dashed border, creates no task and starts no turn, and from then on every participant receives it in their briefings as shared room context, like your messages and other participants' replies. Use it for decisions, constraints and facts you want everyone to have without asking anyone to act: "we keep the public API as it is", "the deploy window is Friday". Notes are text only; a message with images cannot be a note.
 
 ### Images
 
@@ -348,7 +348,7 @@ T3 publishes each provider's slash commands and skills. Claude exposes dozens (`
 
 Agents can use shared Chrome browsers on this machine for browser work. You can watch one and take over: close tabs, type a password, click through a login.
 
-- **Browsers are a list, named by purpose**, under **Browsers** in the sidebar: `general` exists from the start; add others such as `t3-rooms-testing` with **+**, and describe what each is for and which logins it holds (agents read that). Each browser's page has **Start browser** / **Stop browser** at the top, the screen link, open tabs, the rooms using it, its profile size, **Reset profile** (wipes logins, history and tabs) and **Delete**.
+- **Browsers are a list, named by purpose**, under **Browsers** in the sidebar: `general` exists from the start; add others such as `t3-rooms-testing` with **+**, and describe what each is for and which logins it holds (agents read that). Each browser's page has **Start browser** / **Stop browser** at the top and a **⋯** menu (**Edit name and purpose…**, **Reset profile…**, which wipes logins, history and tabs, and **Delete browser…**), then the screen link, open tabs, the rooms using it and its profile size.
 - **Turn it on for a room** with the **Browser** button (the globe) in the room header, which opens the side panel on the room's browser. The panel goes in the order it matters to agents:
   1. **Let this room's agents use browsers.** While it is off (the default for a new room), agents aren't told about browsers and `rooms-browser` refuses the room's agents.
   2. **Browsers they can use:** one checkbox per browser, each showing its name and description, which is exactly what agents read. **Edit** changes both right there; the change reaches agents with the next task. **make default** picks the browser that starts before each task (`general` unless you choose another). Any browser can be unticked, `general` and the default included: unticking the default makes the next ticked browser the default. One browser stays ticked; to give a room none, turn browsers off. With every browser ticked, browsers you add later are included too.
@@ -403,7 +403,7 @@ Every page's header names what is open as a small breadcrumb: `project / room` (
 
 ### People
 
-The **People** tab of the side panel lists everyone seated, with **+ Add participant** and the total context across the crew. Each participant shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
+The **People** tab of the side panel lists everyone seated, with the total context across the crew; the button at its top (a person with a plus) adds a participant. Each participant shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
 
 **Click a participant** for its menu, headed by the usage card. The card shows:
 
@@ -428,6 +428,8 @@ A turn can end while subagents, background shells or watch loops keep running. T
 The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
 
 The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
+
+Controls that open, close, toggle or add something are icons with a hover name (people, globe, checklist, changes, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
 Each room shows activity pills:
 

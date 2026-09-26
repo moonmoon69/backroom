@@ -7,6 +7,7 @@ import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
+import { OptionsMenu } from "./OptionsMenu.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { BrowserPowerButton, BrowserStatusPanel, useBrowserPower } from "./RoomBrowser.tsx";
 
@@ -76,15 +77,14 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
         {item ? (
           <>
             <BrowserPowerButton status={item.status} power={power} small />
-            <button type="button" className="small ghost" onClick={() => setDialog("edit")}>
-              Edit
-            </button>
-            <button type="button" className="small ghost" onClick={() => setDialog("reset")} title="Wipe logins, history and saved tabs">
-              Reset profile…
-            </button>
-            <button type="button" className="small ghost danger" onClick={() => setDialog("delete")}>
-              Delete…
-            </button>
+            <OptionsMenu
+              label="Browser options"
+              items={[
+                { label: "Edit name and purpose…", onPick: () => setDialog("edit") },
+                { label: "Reset profile…", onPick: () => setDialog("reset"), title: "Wipe logins, history and saved tabs" },
+                { label: "Delete browser…", onPick: () => setDialog("delete"), danger: true },
+              ]}
+            />
           </>
         ) : null}
       </div>

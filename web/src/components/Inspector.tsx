@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { ChangesTab } from "./ChangesTab.tsx";
-import { CrewButton, CrewPanel } from "./Crew.tsx";
+import { AddParticipantButton, CrewButton, CrewPanel } from "./Crew.tsx";
+import { ChangesIcon, CloseIcon, TasksIcon } from "./icons.tsx";
 import { ageOf } from "./deskFormat.ts";
 import { TaskLanes, taskCount } from "./QueueDrawer.tsx";
 import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
@@ -9,27 +10,6 @@ import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
 export type InspectorTab = "people" | "browser" | "tasks" | "changes";
 
 const TITLES: Record<InspectorTab, string> = { people: "People", browser: "Browser", tasks: "Tasks", changes: "Changes" };
-
-/** A checklist: the room's tasks. */
-function TasksIcon() {
-  return (
-    <svg className="panel-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M1.9 3.9 3.2 5.2 5.5 2.8" />
-      <path d="M1.9 9.4 3.2 10.7 5.5 8.3" />
-      <path d="M7.75 4h6.5M7.75 9.5h6.5M7.75 13.5h6.5" />
-    </svg>
-  );
-}
-
-/** A page with a plus over a minus: the diff of the files the room's threads changed. */
-function ChangesIcon() {
-  return (
-    <svg className="panel-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M9.5 1.75H4.25a1.5 1.5 0 0 0-1.5 1.5v9.5a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V5.5L9.5 1.75z" />
-      <path d="M8 4.75v3.5M6.25 6.5h3.5M6.25 10.75h3.5" />
-    </svg>
-  );
-}
 
 /** Files changed across the room's threads; null until the desk has been read. */
 function useChangedCount(): number | null {
@@ -103,8 +83,9 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
         <h2>{TITLES[tab]}</h2>
         {count !== null ? <span className="lane-count mono">{count}</span> : null}
         <span className="spacer" />
-        <button type="button" className="icon-button" aria-label="Close panel" onClick={onClose}>
-          ×
+        {tab === "people" ? <AddParticipantButton /> : null}
+        <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel" onClick={onClose}>
+          <CloseIcon />
         </button>
       </div>
       <div className="queue-body">

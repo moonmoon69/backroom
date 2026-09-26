@@ -7,6 +7,7 @@ import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspector.tsx";
 import { PageTitle } from "./components/PageTitle.tsx";
+import { MenuIcon } from "./components/icons.tsx";
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
@@ -316,7 +317,7 @@ export function App() {
   // Phones: the sidebar is a drawer opened from the header. Desktops: collapsed, it is a rail beside the page.
   const roomsButton = isMobile ? (
     <button type="button" className="small ghost icon-only rooms-toggle" aria-label="Rooms and threads" title="Rooms and threads" onClick={() => setSidebarOpen(true)}>
-      <span aria-hidden="true">☰</span>
+      <MenuIcon />
       {alert}
     </button>
   ) : null;
@@ -478,7 +479,7 @@ export function App() {
             ) : (
               <>
                 <p className="serif">Start a thread on its own, or open a room to hand out work orders to a crew.</p>
-                <p className="mono muted">+ New → New thread · + New → New room → add a participant → @alias do the thing</p>
+                <p className="mono muted">New → New thread · New → New room → add a participant → @alias do the thing</p>
               </>
             )}
           </div>
