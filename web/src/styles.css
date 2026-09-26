@@ -5811,6 +5811,41 @@ button:has(> .icon):not(.mobile-only) {
   align-self: center;
 }
 
+/* Where it works: the dropdown, then (for a new worktree) the base branch and the new branch's name. */
+.workspace-row {
+  align-items: center;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.inline-field select {
+  width: auto;
+  max-width: 14em;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.branch-input {
+  flex: 1 1 12em;
+  min-width: 10em;
+  width: auto;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  font-size: var(--text-sm);
+}
+
+.setting-choice .icon {
+  width: 12px;
+  height: 12px;
+  vertical-align: -1px;
+}
+
 /* The options and permission dropdowns look like the model button beside them. */
 .setting-button {
   display: inline-flex;

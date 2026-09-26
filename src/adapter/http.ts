@@ -25,6 +25,7 @@ import type {
   T3Environment,
   T3Project,
   T3ProviderInfo,
+  T3Ref,
   T3SessionStatus,
   T3ThreadDetail,
   T3ThreadShell,
@@ -284,6 +285,7 @@ export class HttpT3Adapter implements T3Adapter {
       title: project.title as string,
       workspaceRoot: project.workspaceRoot as string,
       defaultModelSelection: (project.defaultModelSelection as ModelSelection | null) ?? null,
+      defaultThreadEnvMode: project.defaultThreadEnvMode === "worktree" || project.defaultThreadEnvMode === "local" ? project.defaultThreadEnvMode : null,
     }));
   }
 
@@ -547,10 +549,29 @@ export class HttpT3Adapter implements T3Adapter {
       modelSelection: input.modelSelection,
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
-      branch: null,
-      worktreePath: null,
+      branch: input.branch ?? null,
+      worktreePath: input.worktreePath ?? null,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  async listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }> {
+    const value = await this.rpc<{ isRepo: boolean; refs: Array<{ name: string; isRemote?: boolean; current: boolean; isDefault: boolean; worktreePath: string | null }> }>("vcs.listRefs", { cwd, limit: 200 });
+    return { isRepo: value.isRepo, refs: value.refs.map((ref) => ({ name: ref.name, isRemote: ref.isRemote === true, current: ref.current, isDefault: ref.isDefault, worktreePath: ref.worktreePath ?? null })) };
+  }
+
+  async createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }> {
+    // Checking out a large repository takes a while; T3 answers when the worktree is ready.
+    const value = await this.rpc<{ worktree: { path: string; refName: string } }>(
+      "vcs.createWorktree",
+      { cwd: input.cwd, refName: input.baseBranch, newRefName: input.branch, baseRefName: input.baseBranch, path: null },
+      300_000,
+    );
+    return { path: value.worktree.path, branch: value.worktree.refName };
+  }
+
+  async removeWorktree(input: { cwd: string; path: string }): Promise<void> {
+    await this.rpc("vcs.removeWorktree", { cwd: input.cwd, path: input.path, force: true }, 60_000);
   }
 
   async startTurn(input: StartTurnInput): Promise<void> {

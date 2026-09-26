@@ -17,6 +17,17 @@ export interface T3Project {
   title: string;
   workspaceRoot: string;
   defaultModelSelection: ModelSelection | null;
+  /** Where T3 Code starts new threads of this project by default: the project folder or a new worktree. */
+  defaultThreadEnvMode?: "local" | "worktree" | null;
+}
+
+/** A branch as T3 lists it (vcs.listRefs), with the worktree that has it checked out, if any. */
+export interface T3Ref {
+  name: string;
+  isRemote: boolean;
+  current: boolean;
+  isDefault: boolean;
+  worktreePath: string | null;
 }
 
 /** A per-model option T3 exposes (effort, context window, fast mode…), as declared in its model manifest. */
@@ -183,6 +194,9 @@ export interface CreateThreadInput {
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
+  /** A worktree for the thread to work in (T3 starts the agent there), with its branch; absent: the project folder. */
+  branch?: string | null;
+  worktreePath?: string | null;
 }
 
 export interface CreateProjectInput {
@@ -231,6 +245,12 @@ export interface T3Adapter {
   /** T3's default model for new threads in a project (project override, else the server default). */
   defaultModelSelection(projectId: string): Promise<ModelSelection | null>;
   createThread(input: CreateThreadInput): Promise<void>;
+  /** The repository's branches at `cwd` (vcs.listRefs); isRepo false when the folder is not a git repository. */
+  listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }>;
+  /** A new worktree on a new branch from `baseBranch` (vcs.createWorktree), in T3's worktrees folder. */
+  createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }>;
+  /** Remove a worktree (vcs.removeWorktree), discarding what is in it. */
+  removeWorktree(input: { cwd: string; path: string }): Promise<void>;
   startTurn(input: StartTurnInput): Promise<void>;
   /** Change a thread's model/options in T3 (thread.meta.update). */
   setThreadModel(input: { commandId: string; threadId: string; modelSelection: ModelSelection }): Promise<void>;

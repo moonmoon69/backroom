@@ -86,7 +86,7 @@ test("shell snapshot maps projects and thread shells, including pending-input fl
   const { fetchImpl, calls } = mockFetch({ "GET /api/orchestration/shell": () => ({ status: 200, body: shell }) });
   const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, shellCacheMs: 10_000 });
   const projects = await adapter.listProjects();
-  assert.deepEqual(projects, [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" } }]);
+  assert.deepEqual(projects, [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" }, defaultThreadEnvMode: null }]);
   const thread = await adapter.getThreadShell("thread-1");
   assert.equal(thread?.session?.activeTurnId, "turn-1");
   assert.equal(thread?.hasPendingUserInput, true);

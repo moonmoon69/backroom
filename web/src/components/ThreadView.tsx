@@ -20,6 +20,7 @@ import {
   type T3ThreadShell,
   type ThreadItem,
   type ThreadView as ThreadViewData,
+  type WorkspaceChoice,
 } from "../types.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { Dialog } from "./Dialog.tsx";
@@ -27,7 +28,7 @@ import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
-import { CopyButton, ThreadSettingsRow } from "./pickers.tsx";
+import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
@@ -379,6 +380,9 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
   // T3's default model for the project is looked up first; the picker only falls back to the catalog default without one.
   const [modelReady, setModelReady] = useState(false);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => (localStorage.getItem(MODE_KEY) as RuntimeMode | null) ?? "full-access");
+  // Where it works starts over with each project (its branches and T3's default differ).
+  const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
+  useEffect(() => setWorkspace({ mode: "local" }), [projectId]);
   const project = projects.find((p) => p.id === projectId) ?? null;
   const page = useRef<HTMLDivElement>(null);
 
@@ -454,6 +458,7 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
                       />
                       <span className="hint">T3&rsquo;s own settings for the thread; you can change them later.</span>
                     </div>
+                    <WorkspacePicker projectId={projectId} value={workspace} onChange={setWorkspace} newBranchHint="named by T3 from your first message" />
                     {browsers ? (
                       <label>
                         Browser
@@ -488,7 +493,8 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
                 const threadId = crypto.randomUUID();
                 const first = browserId ? await withBrowserInstructions(threadId, browserId, text, toast) : text;
                 if (first === null) return false;
-                const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode });
+                if (!workspaceReady(workspace)) return false;
+                const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode, ...(workspace.mode === "local" ? {} : { workspace }) });
                 if (result && browserId) rememberThreadBrowser(threadId, browserId);
                 if (result && result.type === "thread.started" && "threadId" in result) {
                   onStarted(result.threadId as string);

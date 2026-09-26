@@ -12,13 +12,14 @@ import {
   type ThreadBindingInput,
   type CommandResult,
   type ThreadLifecycleChoice,
+  type WorkspaceChoice,
 } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
-import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, threadBindingReady, useAttachableThreads } from "./pickers.tsx";
+import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
@@ -709,6 +710,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const [roleId, setRoleId] = useState<string | null>(null);
   const [aliasTouched, setAliasTouched] = useState(false);
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
   // T3's default model for the project: "loading" until fetched; null when T3 has none configured.
   const [defaultModel, setDefaultModel] = useState<ModelSelection | null | "loading">("loading");
   const [fromDefault, setFromDefault] = useState(false);
@@ -746,7 +748,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
 
   const aliasTaken = snapshot.participants.filter(isActiveParticipant).some((p) => p.alias.toLowerCase() === fields.alias.trim().toLowerCase());
   const aliasValid = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(fields.alias.trim());
-  const ready = aliasValid && !aliasTaken && (mode === "create" ? fields.model !== null : threadId !== null);
+  const ready = aliasValid && !aliasTaken && (mode === "create" ? fields.model !== null && workspaceReady(workspace) : threadId !== null);
 
   const selectThread = (thread: T3ThreadShell) => {
     setThreadId(thread.id);
@@ -783,7 +785,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
             ...(fromDefault ? {} : { modelSelection: fields.model as ModelSelection }),
             runtimeMode: fields.runtimeMode,
             interactionMode: "default",
-            thread: { mode: "create" },
+            thread: { mode: "create", ...(workspace.mode === "local" ? {} : { workspace }) },
           });
     setBusy(false);
     if (result) onClose();
@@ -809,6 +811,12 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
         {mode === "create" ? (
           <>
             <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelPending={defaultModel === "loading"}>
+              <WorkspacePicker
+                projectId={snapshot.room.projectId}
+                value={workspace}
+                onChange={setWorkspace}
+                newBranchHint={`${branchSlug(snapshot.room.title, "room")}/${branchSlug(fields.alias || "name", "name")}`}
+              />
               <RoleSelect value={roleId} onChange={setRoleId} />
             </CrewFields>
             <div className="dialog-actions">

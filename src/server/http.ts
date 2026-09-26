@@ -132,6 +132,16 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/t3/catalog", async (c) => c.json(await stack.adapter.listCatalog()));
   app.get("/api/t3/providers", async (c) => c.json(await stack.adapter.listProviders()));
   app.get("/api/t3/projects/:projectId/default-model", async (c) => c.json({ modelSelection: await stack.adapter.defaultModelSelection(c.req.param("projectId")) }));
+  /**
+   * What a new thread of the project can work in: its branches (with the worktree each is checked out in), the project
+   * folder, and T3's default for new threads (project folder or new worktree).
+   */
+  app.get("/api/t3/projects/:projectId/refs", async (c) => {
+    const project = (await stack.adapter.listProjects()).find((p) => p.id === c.req.param("projectId"));
+    if (!project) throw new RoomError("not_found", "project not found", 404);
+    const { isRepo, refs } = await stack.adapter.listRefs(project.workspaceRoot);
+    return c.json({ workspaceRoot: project.workspaceRoot, defaultMode: project.defaultThreadEnvMode ?? null, isRepo, refs });
+  });
   app.get("/api/t3/threads", async (c) => {
     const projectId = c.req.query("projectId");
     const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));

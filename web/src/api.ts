@@ -10,6 +10,7 @@ import type {
   DeskResponse,
   Draft,
   GitDiff,
+  ProjectRefs,
   GitResponse,
   ModelSelection,
   LiveView,
@@ -114,6 +115,8 @@ export const api = {
   usageToday: (): Promise<UsageToday> => get(`/api/t3/usage/today?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   /** T3's default model for a project; null when T3 has none configured. */
   defaultModel: (projectId: string): Promise<{ modelSelection: ModelSelection | null }> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/default-model`),
+  /** The project's branches and worktrees, for choosing where a new thread works. */
+  projectRefs: (projectId: string): Promise<ProjectRefs> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/refs`),
   roles: (): Promise<Role[]> => get("/api/roles"),
   browsers: (): Promise<BrowserListItem[]> => get("/api/browsers"),
   /** One browser, with its profile size. */

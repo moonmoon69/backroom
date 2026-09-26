@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, ApiError, useProviders } from "../api.ts";
-import type { CatalogEntry, ModelOptionDescriptor, ModelSelection, ProviderInfo, RuntimeMode, T3ThreadShell, ThreadBindingInput } from "../types.ts";
+import type { CatalogEntry, ModelOptionDescriptor, ModelSelection, ProjectRefs, ProviderInfo, RuntimeMode, T3ThreadShell, ThreadBindingInput, WorkspaceChoice } from "../types.ts";
 import { Popover } from "./Popover.tsx";
 import { optionLabel } from "./deskFormat.ts";
 import { ProviderLine } from "./Providers.tsx";
 import { useToast } from "./Toast.tsx";
-import { ChevronIcon } from "./icons.tsx";
+import { BranchIcon, ChevronIcon } from "./icons.tsx";
 
 /** Default value for one descriptor: the isDefault option (else the first) for selects, defaultValue === true for booleans. */
 function defaultOptionValue(descriptor: ModelOptionDescriptor): unknown {
@@ -442,6 +442,173 @@ export function ThreadSettingsRow({
       {pending ? <span className="muted model-pending">looking up T3&rsquo;s default model…</span> : <ModelPicker value={model} onChange={onModel} {...(providerFilter ? { providerFilter } : {})} />}
       <ModelOptionsMenu value={model} onChange={onModel} />
       <PermissionMenu value={runtimeMode} onChange={onRuntimeMode} />
+    </div>
+  );
+}
+
+/** A branch-name fragment, as the server makes them: lowercase letters, digits and dashes. */
+export const branchSlug = (text: string, fallback: string): string =>
+  text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || fallback;
+
+/** A new worktree needs its base branch; the other choices are complete. */
+export const workspaceReady = (choice: WorkspaceChoice): boolean => choice.mode !== "worktree" || choice.baseBranch.length > 0;
+
+/** The project's branches and worktrees, read when the form opens (they change as worktrees are made). */
+function useProjectRefs(projectId: string): { refs: ProjectRefs | null; error: string | null } {
+  const [state, setState] = useState<{ projectId: string; refs: ProjectRefs | null; error: string | null }>({ projectId, refs: null, error: null });
+  useEffect(() => {
+    let cancelled = false;
+    setState({ projectId, refs: null, error: null });
+    api
+      .projectRefs(projectId)
+      .then((refs) => !cancelled && setState({ projectId, refs, error: null }))
+      .catch((error) => !cancelled && setState({ projectId, refs: null, error: error instanceof Error ? error.message : String(error) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  return state.projectId === projectId ? state : { refs: null, error: null };
+}
+
+/**
+ * Where a new thread works, like T3 Code's new-thread toolbar: the project folder (shared with anyone else there), a
+ * new worktree made now from a base branch, or an existing worktree. Starts on T3's default for the project. With a
+ * new worktree, the base branch and the new branch's name sit beside the dropdown; `newBranchHint` says what an empty
+ * name becomes.
+ */
+export function WorkspacePicker({
+  projectId,
+  value,
+  onChange,
+  newBranchHint,
+}: {
+  projectId: string;
+  value: WorkspaceChoice;
+  onChange: (choice: WorkspaceChoice) => void;
+  newBranchHint: string;
+}) {
+  const { refs, error } = useProjectRefs(projectId);
+  const root = refs?.workspaceRoot ?? null;
+  const rootBranch = refs?.refs.find((r) => r.worktreePath === root)?.name ?? null;
+  const worktrees = (refs?.refs ?? []).filter((r) => r.worktreePath && r.worktreePath !== root);
+  const bases = (refs?.refs ?? []).filter((r) => !r.isRemote).concat((refs?.refs ?? []).filter((r) => r.isRemote));
+  const defaultBase = (bases.find((r) => r.isDefault) ?? bases.find((r) => r.current) ?? bases[0])?.name ?? "";
+  // T3's project default applies once, when the branches arrive; after that the choice is the user's.
+  const applied = useRef<string | null>(null);
+  useEffect(() => {
+    if (!refs || applied.current === projectId) return;
+    applied.current = projectId;
+    if (refs.defaultMode === "worktree" && refs.isRepo && value.mode === "local" && defaultBase) onChange({ mode: "worktree", baseBranch: defaultBase });
+  }, [refs, projectId, value.mode, defaultBase, onChange]);
+
+  const existing = value.mode === "existing" ? worktrees.find((r) => r.worktreePath === value.worktreePath) : undefined;
+  const label = value.mode === "local" ? "Project folder" : value.mode === "worktree" ? "New worktree" : `Worktree · ${existing?.name ?? value.worktreePath}`;
+  const hint = error
+    ? `Couldn't read the project's branches (${error}); it works in the project folder.`
+    : refs && !refs.isRepo
+      ? "The project folder isn't a git repository, so there are no worktrees; it works in the project folder."
+      : value.mode === "local"
+        ? `The project folder${root ? ` (${root})` : ""}${rootBranch ? `, on ${rootBranch}` : ""}: shared with anyone else working there.`
+        : value.mode === "worktree"
+          ? `A folder and branch of its own, made in T3's worktrees folder now, from ${value.baseBranch || "a base branch"}.`
+          : `${value.worktreePath}${existing ? `, on ${existing.name}` : ""}: shared with anyone else working there.`;
+  const choose = (choice: WorkspaceChoice, close: () => void) => {
+    onChange(choice);
+    close();
+  };
+  const disabled = !refs || !refs.isRepo;
+  return (
+    <div className="form-field">
+      <span>Where it works</span>
+      <div className="thread-settings-row workspace-row">
+        {disabled ? (
+          <button type="button" className="setting-button" disabled title={hint}>
+            <span className="setting-value">Project folder</span>
+            {!refs && !error ? <span className="muted"> reading branches…</span> : null}
+          </button>
+        ) : (
+          <DropdownButton label={<span className="setting-value">{label}</span>} title={`Where it works: ${hint}`}>
+            {(close) => (
+              <>
+                <div className="setting-section" role="group" aria-label="Where it works">
+                  <span className="setting-section-head">Where it works</span>
+                  <button type="button" role="menuitemradio" aria-checked={value.mode === "local"} className="setting-choice" onClick={() => choose({ mode: "local" }, close)}>
+                    <span className="setting-check">{value.mode === "local" ? "✓" : ""}</span>
+                    <span>
+                      Project folder
+                      <span className="hint">
+                        {rootBranch ? `On ${rootBranch}, ` : ""}shared with anyone else working there.
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={value.mode === "worktree"}
+                    className="setting-choice"
+                    onClick={() => choose(value.mode === "worktree" ? value : { mode: "worktree", baseBranch: defaultBase }, close)}
+                  >
+                    <span className="setting-check">{value.mode === "worktree" ? "✓" : ""}</span>
+                    <span>
+                      New worktree
+                      <span className="hint">A folder and branch of its own, made now from a base branch.</span>
+                    </span>
+                  </button>
+                </div>
+                {worktrees.length > 0 ? (
+                  <div className="setting-section" role="group" aria-label="Existing worktrees">
+                    <span className="setting-section-head">Existing worktrees</span>
+                    {worktrees.map((ref) => (
+                      <button
+                        key={ref.worktreePath}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={value.mode === "existing" && value.worktreePath === ref.worktreePath}
+                        className="setting-choice"
+                        onClick={() => choose({ mode: "existing", worktreePath: ref.worktreePath as string }, close)}
+                      >
+                        <span className="setting-check">{value.mode === "existing" && value.worktreePath === ref.worktreePath ? "✓" : ""}</span>
+                        <span>
+                          <BranchIcon /> {ref.name}
+                          <span className="hint mono">{ref.worktreePath}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </DropdownButton>
+        )}
+        {value.mode === "worktree" && refs ? (
+          <>
+            <label className="inline-field">
+              <span className="muted">from</span>
+              <select value={value.baseBranch} onChange={(e) => onChange({ ...value, baseBranch: e.target.value })} aria-label="Base branch">
+                {bases.map((ref) => (
+                  <option key={`${ref.isRemote ? "r" : "l"}:${ref.name}`} value={ref.name}>
+                    {ref.name}
+                    {ref.isDefault ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <input
+              className="branch-input mono"
+              value={value.branch ?? ""}
+              onChange={(e) => {
+                const branch = e.target.value.trim();
+                onChange(branch ? { mode: "worktree", baseBranch: value.baseBranch, branch } : { mode: "worktree", baseBranch: value.baseBranch });
+              }}
+              placeholder={newBranchHint}
+              aria-label="New branch name"
+              title={`The new branch's name; empty: ${newBranchHint}`}
+              pattern="[A-Za-z0-9][A-Za-z0-9._/\-]{0,99}"
+            />
+          </>
+        ) : null}
+      </div>
+      <span className="hint">{hint}</span>
     </div>
   );
 }

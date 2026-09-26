@@ -18,6 +18,7 @@ import type {
   T3Message,
   T3Project,
   T3ProviderInfo,
+  T3Ref,
   T3ThreadDetail,
   T3ThreadShell,
 } from "./types.ts";
@@ -110,6 +111,42 @@ export class FakeT3Adapter implements T3Adapter {
   async listProjects(): Promise<T3Project[]> {
     this.guard();
     return [...this.projects];
+  }
+
+  /** Test control: each project folder's branches; a folder not listed has "main" checked out in it. */
+  readonly refs = new Map<string, T3Ref[]>();
+  /** Test control: the next createWorktree fails with this message. */
+  failCreateWorktree: string | null = null;
+
+  async listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }> {
+    this.guard();
+    return { isRepo: true, refs: this.refsOf(cwd) };
+  }
+
+  private refsOf(cwd: string): T3Ref[] {
+    if (!this.refs.has(cwd)) this.refs.set(cwd, [{ name: "main", isRemote: false, current: true, isDefault: true, worktreePath: cwd }]);
+    return this.refs.get(cwd)!;
+  }
+
+  async createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }> {
+    this.guard();
+    const refs = this.refsOf(input.cwd);
+    if (this.failCreateWorktree) {
+      const message = this.failCreateWorktree;
+      this.failCreateWorktree = null;
+      throw new T3CommandRejected(message, 500, null);
+    }
+    if (!refs.some((ref) => ref.name === input.baseBranch)) throw new T3CommandRejected(`invalid reference: ${input.baseBranch}`, 500, null);
+    if (refs.some((ref) => ref.name === input.branch)) throw new T3CommandRejected(`a branch named '${input.branch}' already exists`, 500, null);
+    const path = `${input.cwd}-worktrees/${input.branch.replace(/\//g, "-")}`;
+    refs.push({ name: input.branch, isRemote: false, current: false, isDefault: false, worktreePath: path });
+    return { path, branch: input.branch };
+  }
+
+  async removeWorktree(input: { cwd: string; path: string }): Promise<void> {
+    this.guard();
+    const refs = this.refsOf(input.cwd);
+    for (const ref of refs) if (ref.worktreePath === input.path) ref.worktreePath = null;
   }
 
   async createProject(input: CreateProjectInput): Promise<void> {
@@ -211,8 +248,8 @@ export class FakeT3Adapter implements T3Adapter {
         modelSelection: input.modelSelection,
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
-        branch: null,
-        worktreePath: null,
+        branch: input.branch ?? null,
+        worktreePath: input.worktreePath ?? null,
         session: null,
         latestTurn: null,
         hasPendingApprovals: false,

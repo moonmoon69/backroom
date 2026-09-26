@@ -13,6 +13,7 @@ import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import type { InlineImage, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES } from "../domain/types.ts";
+import { discardWorkspace, prepareWorkspace } from "./workspaceChoice.ts";
 
 export type DirectCommand = Extract<
   RoomCommand,
@@ -215,17 +216,26 @@ export class DirectThreads {
     if (!modelSelection) throw new RoomError("no_model", "T3 has no default model for this project; pick one");
     const threadId = command.threadId ?? randomUUID();
     const title = threadTitleFor(command.text);
-    await t3(() =>
-      this.adapter.createThread({
-        commandId: randomUUID(),
-        threadId,
-        projectId: command.projectId,
-        title,
-        modelSelection,
-        runtimeMode: command.runtimeMode,
-        interactionMode: command.interactionMode,
-      }),
-    );
+    // A new worktree is made first so T3 starts the agent in it; its temporary branch is renamed by T3 from this message.
+    const workspace = await prepareWorkspace(this.adapter, command.projectId, command.workspace, null);
+    try {
+      await t3(() =>
+        this.adapter.createThread({
+          commandId: randomUUID(),
+          threadId,
+          projectId: command.projectId,
+          title,
+          modelSelection,
+          runtimeMode: command.runtimeMode,
+          interactionMode: command.interactionMode,
+          branch: workspace.branch,
+          worktreePath: workspace.worktreePath,
+        }),
+      );
+    } catch (error) {
+      await discardWorkspace(this.adapter, workspace);
+      throw error;
+    }
     try {
       await t3(() =>
         this.adapter.startTurn({

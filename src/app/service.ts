@@ -8,10 +8,11 @@ import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { T3Adapter, ThreadLifecycleAction } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
-import type { Assignment, RoomCommand, Schedule } from "../domain/commands.ts";
+import type { Assignment, RoomCommand, Schedule, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
 import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
+import { discardWorkspace, prepareWorkspace } from "./workspaceChoice.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
@@ -413,7 +414,7 @@ export class RoomService {
   private async bindThread(
     room: Room,
     participant: Pick<Participant, "alias" | "modelSelection" | "runtimeMode" | "interactionMode">,
-    thread: { mode: "create" } | { mode: "attach"; threadId: string },
+    thread: { mode: "create"; workspace?: WorkspaceChoice | undefined } | { mode: "attach"; threadId: string },
   ): Promise<{ threadId: string; runtimeMode: Participant["runtimeMode"]; modelSelection: Participant["modelSelection"]; interactionMode: Participant["interactionMode"] }> {
     try {
       if (thread.mode === "attach") {
@@ -429,16 +430,25 @@ export class RoomService {
       }
       const threadId = randomUUID();
       const commandId = randomUUID();
+      // The folder first (a new worktree is made now), so T3 starts the agent in it.
+      const workspace = await prepareWorkspace(this.adapter, room.projectId, thread.workspace, { roomTitle: room.title, alias: participant.alias });
       this.repos.logCommand(commandId, "thread.create", threadId, "pending", null);
-      await this.adapter.createThread({
-        commandId,
-        threadId,
-        projectId: room.projectId,
-        title: `${room.title} · ${participant.alias}`,
-        modelSelection: participant.modelSelection,
-        runtimeMode: participant.runtimeMode,
-        interactionMode: participant.interactionMode,
-      });
+      try {
+        await this.adapter.createThread({
+          commandId,
+          threadId,
+          projectId: room.projectId,
+          title: `${room.title} · ${participant.alias}`,
+          modelSelection: participant.modelSelection,
+          runtimeMode: participant.runtimeMode,
+          interactionMode: participant.interactionMode,
+          branch: workspace.branch,
+          worktreePath: workspace.worktreePath,
+        });
+      } catch (error) {
+        await discardWorkspace(this.adapter, workspace);
+        throw error;
+      }
       this.repos.logCommand(commandId, "thread.create", threadId, "accepted", null);
       return { threadId, runtimeMode: participant.runtimeMode, modelSelection: participant.modelSelection, interactionMode: participant.interactionMode };
     } catch (error) {

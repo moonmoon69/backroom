@@ -35,8 +35,25 @@ export const ScheduleSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 
+/** A git branch name git accepts, kept simple: letters, digits, . _ / - ; no "..", "//", or a trailing "/", "." or ".lock". */
+const BranchName = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/, "branch names use letters, digits, . _ / and -")
+  .refine((name) => !name.includes("..") && !name.includes("//") && !/[/.]$/.test(name) && !name.endsWith(".lock"), "not a valid branch name");
+
+/**
+ * Where a new thread works, as in T3 Code's new-thread toolbar: the project's own folder (T3's "current checkout"),
+ * a new worktree made now from a base branch (on `branch`, else a name the room picks), or a worktree that exists.
+ */
+export const WorkspaceChoiceSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("local") }).strict(),
+  z.object({ mode: z.literal("worktree"), baseBranch: nonEmpty, branch: BranchName.optional() }).strict(),
+  z.object({ mode: z.literal("existing"), worktreePath: nonEmpty }).strict(),
+]);
+
 const ThreadBindingInput = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("create") }).strict(),
+  z.object({ mode: z.literal("create"), workspace: WorkspaceChoiceSchema.optional() }).strict(),
   z.object({ mode: z.literal("attach"), threadId: nonEmpty }).strict(),
 ]);
 
@@ -367,6 +384,7 @@ export const ThreadStartCommand = z
     modelSelection: ModelSelectionSchema.optional(),
     runtimeMode: RuntimeModeSchema.default("full-access"),
     interactionMode: InteractionModeSchema.default("default"),
+    workspace: WorkspaceChoiceSchema.optional(),
   })
   .strict()
   .refine((command) => command.text.trim().length > 0 || command.images.length > 0, { message: "message is empty", path: ["text"] });
@@ -449,6 +467,7 @@ export type Schedule = z.infer<typeof ScheduleSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateCommand>;
 export type Assignment = z.infer<typeof AssignmentSchema>;
 export type InlineImage = z.infer<typeof InlineImageSchema>;
+export type WorkspaceChoice = z.infer<typeof WorkspaceChoiceSchema>;
 
 export class CommandValidationError extends Error {
   readonly issues: Array<{ path: string; message: string }>;

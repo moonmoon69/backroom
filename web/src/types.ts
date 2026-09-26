@@ -737,7 +737,22 @@ export interface Draft {
 
 // ---- Commands (mirror of src/domain/commands.ts, input shape) ----
 
-export type ThreadBindingInput = { mode: "create" } | { mode: "attach"; threadId: string };
+/**
+ * Where a new thread works: the project folder (T3's "current checkout"), a new worktree made now from a base branch
+ * (on `branch`, else a name the room picks), or an existing worktree.
+ */
+export type WorkspaceChoice = { mode: "local" } | { mode: "worktree"; baseBranch: string; branch?: string } | { mode: "existing"; worktreePath: string };
+
+/** A project's branches as T3 lists them, each with the worktree it is checked out in (GET /api/t3/projects/:id/refs). */
+export interface ProjectRefs {
+  workspaceRoot: string;
+  /** T3 Code's default for the project's new threads. */
+  defaultMode: "local" | "worktree" | null;
+  isRepo: boolean;
+  refs: Array<{ name: string; isRemote: boolean; current: boolean; isDefault: boolean; worktreePath: string | null }>;
+}
+
+export type ThreadBindingInput = { mode: "create"; workspace?: WorkspaceChoice } | { mode: "attach"; threadId: string };
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel";
 
@@ -811,7 +826,7 @@ export type RoomCommand =
   /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
   | { type: "project.create"; workspaceRoot: string; title?: string; createIfMissing?: boolean }
   /** Direct threads (outside any room): the text goes to T3 as typed. */
-  | { type: "thread.start"; projectId: string; threadId?: string; text: string; images?: InlineImage[]; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; interactionMode?: InteractionMode }
+  | { type: "thread.start"; projectId: string; threadId?: string; text: string; images?: InlineImage[]; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; interactionMode?: InteractionMode; workspace?: WorkspaceChoice }
   | { type: "thread.send"; threadId: string; text: string; images?: InlineImage[] }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.approval.respond"; threadId: string; requestId: string; decision: ApprovalDecision }
