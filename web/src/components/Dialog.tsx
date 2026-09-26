@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { CloseIcon } from "./icons.tsx";
 
 interface DialogProps {
@@ -10,7 +11,8 @@ interface DialogProps {
 }
 
 /**
- * Modal dialog: closes on Escape or backdrop click, labelled by its title.
+ * Modal dialog: closes on Escape or backdrop click, labelled by its title. Rendered at the document body, so the
+ * styles of whatever opened it (a panel head, a sidebar row) never reach into it.
  * Initial focus goes to the element marked `data-autofocus`, otherwise the first enabled field.
  * Focus is set exactly once when the dialog opens; background re-renders never move it.
  */
@@ -44,7 +46,7 @@ export function Dialog({ title, onClose, children, footer, wide }: DialogProps) 
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  return (
+  return createPortal(
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
         className={`dialog${wide ? " dialog-wide" : ""}`}
@@ -62,6 +64,7 @@ export function Dialog({ title, onClose, children, footer, wide }: DialogProps) 
         <div className="dialog-body">{children}</div>
         {footer ? <div className="dialog-footer">{footer}</div> : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

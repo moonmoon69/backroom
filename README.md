@@ -540,6 +540,8 @@ npm run dev                      # service with --watch
 npm --workspace web run dev      # Vite on :5173, proxying /api to :4400
 ```
 
+UI text uses one type scale, defined at the top of `web/src/styles.css`: `--text-xs` 11px (meta), `--text-sm` 12px (secondary), `--text-md` 13px (list rows, menus), `--text-base` 14px (messages, inputs), `--text-lg` 16px (titles), `--text-xl` 18px (brand). Use those rather than literal sizes; icons come from `web/src/components/icons.tsx`.
+
 Tests never touch a real T3 server. To try UI changes safely, run a demo instance on another port (`ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start`).
 
 | Path | Purpose |
