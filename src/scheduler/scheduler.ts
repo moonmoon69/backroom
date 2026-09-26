@@ -56,8 +56,9 @@ export class Scheduler {
   /** Per thread: requestedAt → turnId for turns seen as T3's latestTurn (T3 only exposes the latest one). */
   private readonly turnRequests = new Map<string, Map<string, string>>();
   private readonly log: (message: string, detail?: unknown) => void;
-  /** Last error from T3 connectivity, surfaced to the UI. */
+  /** Last error from T3 connectivity, surfaced to the UI, and when it happened; cleared by the next good tick. */
   lastAdapterError: string | null = null;
+  lastAdapterErrorAt: string | null = null;
 
   private readonly db: Database;
   private readonly repos: Repos;
@@ -108,6 +109,16 @@ export class Scheduler {
     );
   }
 
+  private noteAdapterError(message: string | null): void {
+    if (message === null) {
+      this.lastAdapterError = null;
+      this.lastAdapterErrorAt = null;
+    } else {
+      this.lastAdapterError = message;
+      this.lastAdapterErrorAt = now();
+    }
+  }
+
   /** Serialized tick; concurrent calls await the in-flight one. */
   tick(): Promise<void> {
     if (this.ticking) return this.ticking;
@@ -122,13 +133,13 @@ export class Scheduler {
     try {
       await this.observe(touched);
       await this.dispatch(touched);
-      this.lastAdapterError = null;
+      this.noteAdapterError(null);
     } catch (error) {
       if (error instanceof T3Unavailable) {
-        this.lastAdapterError = error.message;
+        this.noteAdapterError(error.message);
         this.log("t3 unavailable", error.message);
       } else {
-        this.lastAdapterError = (error as Error).message;
+        this.noteAdapterError((error as Error).message);
         this.log("tick failed", error);
       }
     } finally {
@@ -891,7 +902,7 @@ export class Scheduler {
       if (error instanceof T3Unavailable) {
         // Keep it pending; the next tick resends with the same command id.
         this.repos.updateRun({ ...run, status: "pending", updatedAt: now() });
-        this.lastAdapterError = error.message;
+        this.noteAdapterError(error.message);
         return;
       }
       if (error instanceof T3CommandRejected) {

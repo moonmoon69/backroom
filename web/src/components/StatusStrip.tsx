@@ -109,7 +109,10 @@ export function PairingPanel({ status, onPaired, embedded }: Props) {
           {status.t3.error ? (
             <>
               <dt>Last error</dt>
-              <dd className="status-error">{status.t3.error}</dd>
+              <dd className="status-error">
+                {status.t3.errorAt ? <span className="mono">{new Date(status.t3.errorAt).toLocaleTimeString()} · </span> : null}
+                {status.t3.error}
+              </dd>
             </>
           ) : null}
         </dl>

@@ -678,6 +678,8 @@ export interface StatusResponse {
     environment: T3Environment | null;
     auth: { authenticated: boolean; policy: string; bootstrapMethods: string[] } | null;
     error: string | null;
+    /** When the error happened; it stays until the room's next good round of checks. */
+    errorAt?: string | null;
   };
 }
 

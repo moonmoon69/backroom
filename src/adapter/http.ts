@@ -40,6 +40,8 @@ export interface HttpAdapterOptions {
   fetchImpl?: typeof fetch;
   /** Reuse the shell snapshot for this many milliseconds between calls (one poll per scheduler tick). */
   shellCacheMs?: number;
+  /** How long a read waits for T3 to answer (a dispatch waits twice as long). Default 30s. */
+  requestTimeoutMs?: number;
 }
 
 interface ShellSnapshot {
@@ -107,6 +109,7 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly fetchImpl: typeof fetch;
   private readonly userDataDir: string | undefined;
   private readonly shellCacheMs: number;
+  private readonly requestTimeoutMs: number;
   private shellCache: { at: number; value: ShellSnapshot } | null = null;
   /** Archived threads come over the WebSocket RPC (one socket per read), so the sidebar's polls share a reading. */
   private archivedCache: { at: number; value: T3ThreadShell[] } | null = null;
@@ -117,6 +120,7 @@ export class HttpT3Adapter implements T3Adapter {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.userDataDir = options.userDataDir;
     this.shellCacheMs = options.shellCacheMs ?? 750;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   }
 
   setAccessToken(token: string | null): void {
@@ -132,17 +136,28 @@ export class HttpT3Adapter implements T3Adapter {
     const headers: Record<string, string> = { accept: "application/json" };
     if (this.accessToken) headers.authorization = `Bearer ${this.accessToken}`;
     if (body !== undefined) headers["content-type"] = "application/json";
+    // A T3 that accepts the connection but never answers (seen while it restarts after an update) would otherwise hold
+    // the scheduler's tick for fetch's own 5-minute limit, stopping every room. Past the limit it counts as unreachable
+    // and the next tick retries (a dispatch is resent with the same command id).
+    const limitMs = method === "GET" ? this.requestTimeoutMs : this.requestTimeoutMs * 2;
+    const signal = AbortSignal.timeout(limitMs);
+    const unanswered = (error: unknown) =>
+      signal.aborted
+        ? new T3Unavailable(`T3 at ${this.baseUrl} did not answer ${method} ${path} within ${limitMs >= 1000 ? `${Math.round(limitMs / 1000)}s` : `${limitMs}ms`}`, error)
+        : new T3Unavailable(`cannot reach T3 at ${this.baseUrl}: ${(error as Error).message}`, error);
     let response: Response;
+    let text: string;
     try {
       response = await this.fetchImpl(this.baseUrl + path, {
         method,
         headers,
+        signal,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
+      text = await response.text();
     } catch (error) {
-      throw new T3Unavailable(`cannot reach T3 at ${this.baseUrl}: ${(error as Error).message}`, error);
+      throw unanswered(error);
     }
-    const text = await response.text();
     if (response.status === 401 || response.status === 403) {
       throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); re-pair the room service`);
     }

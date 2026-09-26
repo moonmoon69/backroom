@@ -75,13 +75,16 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const stored = readStoredAuth(config.dataDir);
     let environment: unknown = null;
     let auth: unknown = null;
+    // The scheduler's last error until its next good tick, or this request's own check of T3 when that fails.
     let error: string | null = stack.scheduler.lastAdapterError;
+    let errorAt: string | null = stack.scheduler.lastAdapterErrorAt;
     if (stack.adapter.kind === "fake" || (httpAdapter && httpAdapter.hasCredentials)) {
       try {
         environment = await stack.adapter.describe();
         if (httpAdapter) auth = await httpAdapter.authSession();
       } catch (caught) {
         error = (caught as Error).message;
+        errorAt = new Date().toISOString();
       }
     } else if (httpAdapter) {
       try {
@@ -89,6 +92,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         auth = await httpAdapter.authSession();
       } catch (caught) {
         error = (caught as Error).message;
+        errorAt = new Date().toISOString();
       }
     }
     // The built UI's entry script (hashed name). The page compares it with what it loaded to offer a reload.
@@ -109,6 +113,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         environment,
         auth,
         error,
+        errorAt,
       },
     });
   });

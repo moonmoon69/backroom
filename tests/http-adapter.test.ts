@@ -165,3 +165,13 @@ test("pairing URL parsing and the RFC 8693 token exchange request", async () => 
   assert.equal(auth.tokenType, "Bearer");
   assert.ok(auth.expiresAt && Date.parse(auth.expiresAt) > Date.now());
 });
+
+test("a T3 that accepts a request but never answers counts as unreachable after the time limit, not forever", async () => {
+  // Like T3 while it restarts after an update: the connection is accepted, no response ever comes.
+  const silent: typeof fetch = (_input, init) =>
+    new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl: silent, requestTimeoutMs: 50 });
+  const started = Date.now();
+  await assert.rejects(adapter.listProjects(), (error: Error) => error instanceof T3Unavailable && /did not answer GET \/api\/orchestration\/shell within 50ms/.test(error.message));
+  assert.ok(Date.now() - started < 2000, "gives up at the limit");
+});
