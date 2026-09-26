@@ -216,11 +216,14 @@ export function WorkspacePicker({
   value,
   onChange,
   newBranchHint,
+  prefer,
 }: {
   projectId: string;
   value: WorkspaceChoice;
   onChange: (choice: WorkspaceChoice) => void;
   newBranchHint: string;
+  /** A preset's choice, applied once per `nonce` when the branches are known (a new worktree needs its base). */
+  prefer?: { mode: "local" | "worktree"; nonce: number } | null;
 }) {
   const { refs, error } = useProjectRefs(projectId);
   const root = refs?.workspaceRoot ?? null;
@@ -235,6 +238,13 @@ export function WorkspacePicker({
     applied.current = projectId;
     if (refs.defaultMode === "worktree" && refs.isRepo && value.mode === "local" && defaultBase) onChange({ mode: "worktree", baseBranch: defaultBase });
   }, [refs, projectId, value.mode, defaultBase, onChange]);
+  // After T3's default, so a preset picked before the branches arrived has the last word.
+  const preferred = useRef<number | null>(null);
+  useEffect(() => {
+    if (!prefer || !refs || preferred.current === prefer.nonce) return;
+    preferred.current = prefer.nonce;
+    onChange(prefer.mode === "worktree" && refs.isRepo && defaultBase ? { mode: "worktree", baseBranch: defaultBase } : { mode: "local" });
+  }, [prefer, refs, defaultBase, onChange]);
 
   const existing = value.mode === "existing" ? worktrees.find((r) => r.worktreePath === value.worktreePath) : undefined;
   const label = value.mode === "local" ? "Project folder" : value.mode === "worktree" ? "New worktree" : `Worktree · ${existing?.name ?? value.worktreePath}`;

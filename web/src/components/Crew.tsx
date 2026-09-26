@@ -8,6 +8,7 @@ import {
   type T3ThreadShell,
   type Participant,
   type ParticipantStatus,
+  type Preset,
   type RuntimeMode,
   type ThreadBindingInput,
   type CommandResult,
@@ -23,6 +24,7 @@ import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, Work
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
+import { PresetChips, usePresets } from "./presets.tsx";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
@@ -715,6 +717,10 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const [defaultModel, setDefaultModel] = useState<ModelSelection | null | "loading">("loading");
   const [fromDefault, setFromDefault] = useState(false);
   const [busy, setBusy] = useState(false);
+  const { presets, reload: reloadPresets } = usePresets();
+  // A picked preset sets where it works once the project's branches are known, and keeps T3's default model out.
+  const [workspacePrefer, setWorkspacePrefer] = useState<{ mode: "local" | "worktree"; nonce: number } | null>(null);
+  const presetPicked = useRef(false);
   const aliasRef = useRef<HTMLInputElement>(null);
   const threads = useAttachableThreads(snapshot.room.projectId);
   const selectedThread = threadId ? (threads ?? []).find((t) => t.id === threadId) ?? null : null;
@@ -731,7 +737,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
       .then(({ modelSelection }) => {
         if (cancelled) return;
         setDefaultModel(modelSelection);
-        if (modelSelection) {
+        if (modelSelection && !presetPicked.current) {
           setFields((f) => ({ ...f, model: modelSelection }));
           setFromDefault(true);
         }
@@ -753,6 +759,29 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const selectThread = (thread: T3ThreadShell) => {
     setThreadId(thread.id);
     if (!aliasTouched || fields.alias.trim().length === 0) setFields((f) => ({ ...f, alias: slugifyAlias(thread.title) }));
+  };
+
+  const applyPreset = (preset: Preset) => {
+    const taken = new Set(snapshot.participants.filter(isActiveParticipant).map((p) => p.alias.toLowerCase()));
+    let alias = preset.name;
+    for (let n = 2; taken.has(alias.toLowerCase()); n += 1) alias = `${preset.name.slice(0, 32 - String(n).length)}${n}`;
+    presetPicked.current = true;
+    setFields({ alias, model: preset.modelSelection, runtimeMode: preset.runtimeMode });
+    setAliasTouched(true);
+    setFromDefault(false);
+    setRoleId(preset.roleId && snapshot.roles.some((r) => r.id === preset.roleId) ? preset.roleId : null);
+    setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
+  };
+
+  // The form as a preset, under the name typed: a new one, or the one of that name brought up to date.
+  const presetOfName = presets.find((p) => p.name.toLowerCase() === fields.alias.trim().toLowerCase()) ?? null;
+  const savePreset = async () => {
+    if (!aliasValid || !fields.model) return;
+    const values = { name: fields.alias.trim(), modelSelection: fields.model, runtimeMode: fields.runtimeMode, roleId, workspaceMode: workspace.mode === "worktree" ? ("worktree" as const) : ("local" as const) };
+    const result = presetOfName ? await runCommand({ type: "preset.update", presetId: presetOfName.id, ...values }) : await runCommand({ type: "preset.create", ...values });
+    if (!result) return;
+    reloadPresets();
+    toast(presetOfName ? `Preset ${values.name} updated` : `Saved as preset ${values.name}`, "success");
   };
 
   const onFields = (next: CrewFieldsState) => {
@@ -810,16 +839,28 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
 
         {mode === "create" ? (
           <>
+            <PresetChips model={fields.model} runtimeMode={fields.runtimeMode} onPick={applyPreset} />
             <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelPending={defaultModel === "loading"}>
               <WorkspacePicker
                 projectId={snapshot.room.projectId}
                 value={workspace}
                 onChange={setWorkspace}
                 newBranchHint={`${branchSlug(snapshot.room.title, "room")}/${branchSlug(fields.alias || "name", "name")}`}
+                prefer={workspacePrefer}
               />
               <RoleSelect value={roleId} onChange={setRoleId} />
             </CrewFields>
             <div className="dialog-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy || !aliasValid || fields.model === null}
+                title={presetOfName ? `Bring the preset ${presetOfName.name} up to date with these settings` : "Keep these settings under this name, to add or start with one click next time"}
+                onClick={() => void savePreset()}
+              >
+                {presetOfName ? "Update preset" : "Save as preset"}
+              </button>
+              <span className="spacer" />
               <button type="button" onClick={onClose}>
                 Cancel
               </button>

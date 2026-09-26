@@ -373,6 +373,22 @@ export interface Role {
   updatedAt: string;
 }
 
+/**
+ * A participant's settings under a name (GET /api/presets): seated in a room on a new thread, or used to start a
+ * thread. The name is the alias it takes in a room, numbered when the room already has it.
+ */
+export interface Preset {
+  id: string;
+  name: string;
+  modelSelection: ModelSelection;
+  runtimeMode: RuntimeMode;
+  roleId: string | null;
+  /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
+  workspaceMode: "local" | "worktree";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface T3ThreadShell {
   id: string;
   projectId: string;
@@ -811,6 +827,11 @@ export type RoomCommand =
   | { type: "role.create"; name: string; rules: string }
   | { type: "role.update"; roleId: string; name?: string; rules?: string }
   | { type: "role.delete"; roleId: string }
+  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; roleId?: string | null; workspaceMode?: "local" | "worktree" }
+  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; roleId?: string | null; workspaceMode?: "local" | "worktree" }
+  | { type: "preset.delete"; presetId: string }
+  /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
+  | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }
   | {
       type: "task.create";
       roomId: string;
@@ -867,7 +888,7 @@ export type CommandResult =
       roomId: string;
       threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }>;
     }
-  | { type: "participant.created"; participantId: string; threadId: string }
+  | { type: "participant.created"; participantId: string; threadId: string; alias?: string }
   | {
       type: "participant.updated";
       participantId: string;
@@ -884,7 +905,7 @@ export type CommandResult =
   | { type: "thread.started"; threadId: string }
   | { type: "thread.updated"; threadId: string }
   /** Newer result kinds the UI does not need to distinguish. */
-  | { type: string; participantId?: string; roleId?: string };
+  | { type: string; participantId?: string; roleId?: string; presetId?: string; alias?: string };
 
 export interface ApiErrorBody {
   error: string;

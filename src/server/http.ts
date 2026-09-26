@@ -193,6 +193,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- crew library ----
   app.get("/api/roles", (c) => c.json(stack.repos.listRoles()));
+  app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
 
   // ---- rooms ----
   app.get("/api/rooms", (c) => {

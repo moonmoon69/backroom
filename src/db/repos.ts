@@ -4,6 +4,7 @@ import type {
   Browser,
   NativeRequest,
   Participant,
+  Preset,
   Role,
   Room,
   RoomEvent,
@@ -607,7 +608,52 @@ export class Repos {
 
   deleteRole(id: string): boolean {
     this.raw.prepare("UPDATE participants SET role_id = NULL WHERE role_id = ?").run(id);
+    this.raw.prepare("UPDATE presets SET role_id = NULL WHERE role_id = ?").run(id);
     return this.raw.prepare("DELETE FROM roles WHERE id = ?").run(id).changes > 0;
+  }
+
+  // ---- presets (participant settings under a name) ----
+  private rowToPreset(row: Row): Preset {
+    return {
+      id: s(row.id),
+      name: s(row.name),
+      modelSelection: JSON.parse(s(row.model_selection_json)) as Preset["modelSelection"],
+      runtimeMode: s(row.runtime_mode) as Preset["runtimeMode"],
+      roleId: (row.role_id as string | null) ?? null,
+      workspaceMode: s(row.workspace_mode) === "worktree" ? "worktree" : "local",
+      createdAt: s(row.created_at),
+      updatedAt: s(row.updated_at),
+    };
+  }
+
+  /** New presets go to the end of the list; an update keeps its place. */
+  upsertPreset(p: Preset): void {
+    this.raw
+      .prepare(
+        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, role_id, workspace_mode, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, model_selection_json = excluded.model_selection_json,
+           runtime_mode = excluded.runtime_mode, role_id = excluded.role_id, workspace_mode = excluded.workspace_mode, updated_at = excluded.updated_at`,
+      )
+      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.roleId, p.workspaceMode, p.createdAt, p.updatedAt);
+  }
+
+  getPreset(id: string): Preset | null {
+    const row = this.raw.prepare("SELECT * FROM presets WHERE id = ?").get(id) as Row | undefined;
+    return row ? this.rowToPreset(row) : null;
+  }
+
+  findPresetByName(name: string): Preset | null {
+    const row = this.raw.prepare("SELECT * FROM presets WHERE name_key = ?").get(name.toLowerCase()) as Row | undefined;
+    return row ? this.rowToPreset(row) : null;
+  }
+
+  listPresets(): Preset[] {
+    return (this.raw.prepare("SELECT * FROM presets ORDER BY sort_order, created_at").all() as Row[]).map((row) => this.rowToPreset(row));
+  }
+
+  deletePreset(id: string): boolean {
+    return this.raw.prepare("DELETE FROM presets WHERE id = ?").run(id).changes > 0;
   }
 
   // ---- kv ----

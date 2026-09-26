@@ -19,6 +19,7 @@ import {
   type Browser,
   type Participant,
   type PrerequisiteRef,
+  type Preset,
   type Role,
   type Room,
   type RoomEvent,
@@ -40,7 +41,9 @@ export type CommandResult =
   | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }> }
   | { type: "role.saved"; roleId: string }
   | { type: "role.deleted"; roleId: string }
-  | { type: "participant.created"; participantId: string; threadId: string }
+  | { type: "preset.saved"; presetId: string }
+  | { type: "preset.deleted"; presetId: string }
+  | { type: "participant.created"; participantId: string; threadId: string; alias: string }
   | {
       type: "participant.updated";
       participantId: string;
@@ -182,6 +185,17 @@ export class RoomService {
         return this.updateRole(command);
       case "role.delete":
         return this.deleteRole(command);
+      case "preset.create":
+        return this.createPreset(command);
+      case "preset.update":
+        return this.updatePreset(command);
+      case "preset.delete": {
+        const removed = this.db.transaction(() => this.repos.deletePreset(command.presetId));
+        if (!removed) throw notFound("preset", command.presetId);
+        return { type: "preset.deleted", presetId: command.presetId };
+      }
+      case "participant.fromPreset":
+        return this.seatPreset(command);
       case "participant.rebind":
         return this.rebindParticipant(command);
       case "participant.retire":
@@ -567,7 +581,7 @@ export class RoomService {
       text: `@${participant.alias} joined (${participant.modelSelection.model}, ${command.thread.mode === "create" ? "new thread" : "attached thread"})`,
     });
     this.notify(room.id);
-    return { type: "participant.created", participantId: participant.id, threadId: bound.threadId };
+    return { type: "participant.created", participantId: participant.id, threadId: bound.threadId, alias: participant.alias };
   }
 
   private async updateParticipant(command: Extract<RoomCommand, { type: "participant.update" }>): Promise<CommandResult> {
@@ -590,6 +604,95 @@ export class RoomService {
     }
     this.notify(participant.roomId);
     return { type: "participant.updated", participantId: participant.id };
+  }
+
+  // ---------- presets (participant settings under a name) ----------
+
+  private assertPresetNameFree(name: string, exceptId: string | null): void {
+    const existing = this.repos.findPresetByName(name);
+    if (existing && existing.id !== exceptId) throw new RoomError("preset_name_taken", `a preset named "${name}" already exists`, 409);
+  }
+
+  private async createPreset(command: Extract<RoomCommand, { type: "preset.create" }>): Promise<CommandResult> {
+    this.assertPresetNameFree(command.name, null);
+    const preset: Preset = {
+      id: randomUUID(),
+      name: command.name,
+      modelSelection: command.modelSelection,
+      runtimeMode: command.runtimeMode,
+      roleId: this.requireRoleId(command.roleId),
+      workspaceMode: command.workspaceMode,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    this.db.transaction(() => this.repos.upsertPreset(preset));
+    return { type: "preset.saved", presetId: preset.id };
+  }
+
+  private async updatePreset(command: Extract<RoomCommand, { type: "preset.update" }>): Promise<CommandResult> {
+    const preset = this.repos.getPreset(command.presetId);
+    if (!preset) throw notFound("preset", command.presetId);
+    if (command.name) this.assertPresetNameFree(command.name, preset.id);
+    const updated: Preset = {
+      ...preset,
+      name: command.name ?? preset.name,
+      modelSelection: command.modelSelection ?? preset.modelSelection,
+      runtimeMode: command.runtimeMode ?? preset.runtimeMode,
+      roleId: command.roleId === undefined ? preset.roleId : this.requireRoleId(command.roleId),
+      workspaceMode: command.workspaceMode ?? preset.workspaceMode,
+      updatedAt: now(),
+    };
+    this.db.transaction(() => this.repos.upsertPreset(updated));
+    return { type: "preset.saved", presetId: preset.id };
+  }
+
+  /** The preset's name, or the first of name2, name3, … that no active participant of the room has. */
+  private freeAlias(roomId: string, name: string): string {
+    const taken = new Set(this.repos.listParticipants(roomId).filter((p) => !p.retiredAt).map((p) => p.alias.toLowerCase()));
+    if (!taken.has(name.toLowerCase())) return name;
+    for (let n = 2; n < 1000; n += 1) {
+      const suffix = String(n);
+      const alias = `${name.slice(0, 32 - suffix.length)}${suffix}`;
+      if (!taken.has(alias.toLowerCase())) return alias;
+    }
+    throw new RoomError("alias_taken", `every alias from ${name} is taken in this room`, 409);
+  }
+
+  /** A new worktree for a preset starts from the project's default branch (else the one checked out, else the first). */
+  private async presetWorkspace(projectId: string, preset: Preset): Promise<WorkspaceChoice | undefined> {
+    if (preset.workspaceMode !== "worktree") return undefined;
+    try {
+      const project = (await this.adapter.listProjects()).find((p) => p.id === projectId);
+      if (!project) throw new RoomError("unknown_project", `T3 project ${projectId} was not found`);
+      const { isRepo, refs } = await this.adapter.listRefs(project.workspaceRoot);
+      const local = refs.filter((r) => !r.isRemote);
+      const base = local.find((r) => r.isDefault) ?? local.find((r) => r.current) ?? local[0];
+      // A folder that is not a repository has no worktrees: the preset works in the project folder there.
+      if (!isRepo || !base) return undefined;
+      return { mode: "worktree", baseBranch: base.name };
+    } catch (error) {
+      if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
+      throw error;
+    }
+  }
+
+  private async seatPreset(command: Extract<RoomCommand, { type: "participant.fromPreset" }>): Promise<CommandResult> {
+    const room = this.requireRoom(command.roomId);
+    const preset = this.repos.getPreset(command.presetId);
+    if (!preset) throw notFound("preset", command.presetId);
+    const workspace = await this.presetWorkspace(room.projectId, preset);
+    return this.seatParticipant(
+      room.id,
+      {
+        alias: command.alias ?? this.freeAlias(room.id, preset.name),
+        // A role deleted since the preset was saved is cleared from it, so this one exists.
+        roleId: preset.roleId && this.repos.getRole(preset.roleId) ? preset.roleId : null,
+        modelSelection: preset.modelSelection,
+        runtimeMode: preset.runtimeMode,
+        interactionMode: "default",
+      },
+      { mode: "create", ...(workspace ? { workspace } : {}) },
+    );
   }
 
   // ---------- roles (named rule sets) ----------

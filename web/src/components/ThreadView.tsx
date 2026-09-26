@@ -13,6 +13,7 @@ import {
   type CommandResult,
   type InlineImage,
   type ModelSelection,
+  type Preset,
   type RoomCommand,
   type BrowserListItem,
   type RoomListItem,
@@ -25,6 +26,7 @@ import {
 } from "../types.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { Dialog } from "./Dialog.tsx";
+import { PresetChips, usePresets } from "./presets.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, participantColor } from "./Monogram.tsx";
@@ -364,6 +366,8 @@ export function ArchivedThreadView({
 
 interface NewThreadViewProps {
   projectId: string;
+  /** The preset the thread's settings start from (picked in the sidebar), if any. */
+  presetId: string | null;
   projects: T3Project[];
   browsers: BrowserListItem[] | null;
   runCommand: RunCommand;
@@ -374,7 +378,7 @@ interface NewThreadViewProps {
   headerStart: ReactNode;
 }
 
-export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, onCancel, headerStart }: NewThreadViewProps) {
+export function NewThreadView({ projectId, presetId, projects, browsers, runCommand, onProject, onStarted, onCancel, headerStart }: NewThreadViewProps) {
   const [browserId, setBrowserId] = useState<string>("");
   const { toast } = useToast();
   const [model, setModel] = useState<ModelSelection | null>(null);
@@ -384,6 +388,22 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
   // Where it works starts over with each project (its branches and T3's default differ).
   const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
   useEffect(() => setWorkspace({ mode: "local" }), [projectId]);
+  const { presets } = usePresets();
+  // A picked preset sets where it works once the project's branches are known, and keeps T3's default model out.
+  const [workspacePrefer, setWorkspacePrefer] = useState<{ mode: "local" | "worktree"; nonce: number } | null>(null);
+  const presetPicked = useRef(false);
+  const applyPreset = useCallback((preset: Preset) => {
+    presetPicked.current = true;
+    setModel(preset.modelSelection);
+    setRuntimeMode(preset.runtimeMode);
+    setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
+  }, []);
+  // The preset the page was opened with, once the presets are read; in another project it applies again.
+  const opened = presetId ? (presets.find((p) => p.id === presetId) ?? null) : null;
+  useEffect(() => {
+    if (opened) applyPreset(opened);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened?.id, opened?.updatedAt, projectId, applyPreset]);
   const project = projects.find((p) => p.id === projectId) ?? null;
   const page = useRef<HTMLDivElement>(null);
 
@@ -406,7 +426,7 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
     api
       .defaultModel(projectId)
       .then(({ modelSelection }) => {
-        if (!cancelled) setModel((current) => modelSelection ?? current);
+        if (!cancelled && !presetPicked.current) setModel((current) => modelSelection ?? current);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -445,6 +465,7 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
                         ))}
                       </select>
                     </label>
+                    <PresetChips model={model} runtimeMode={runtimeMode} onPick={applyPreset} />
                     <div className="form-field">
                       <span>Model</span>
                       <ThreadSettingsRow
@@ -455,11 +476,11 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
                           setRuntimeMode(mode);
                           localStorage.setItem(MODE_KEY, mode);
                         }}
-                        pending={!modelReady}
+                        pending={!modelReady && !presetPicked.current}
                       />
                       <span className="hint">T3&rsquo;s own settings for the thread; you can change them later.</span>
                     </div>
-                    <WorkspacePicker projectId={projectId} value={workspace} onChange={setWorkspace} newBranchHint="named by T3 from your first message" />
+                    <WorkspacePicker projectId={projectId} value={workspace} onChange={setWorkspace} newBranchHint="named by T3 from your first message" prefer={workspacePrefer} />
                     {browsers ? (
                       <label>
                         Browser
