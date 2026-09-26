@@ -452,6 +452,89 @@ export async function readGitView(path: string, options: { commitLimit?: number 
   }
 }
 
+/** The repository's main branch, as the room compares against: origin's HEAD branch (local copy preferred), else main or master. */
+async function defaultBranchOf(root: string): Promise<string | null> {
+  const originHead = (await git(root, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim();
+  const candidates = [originHead.replace(/^origin\//, ""), originHead, "main", "master"].filter((c, i, all) => c && all.indexOf(c) === i);
+  for (const candidate of candidates) {
+    if (await git(root, ["rev-parse", "--verify", "-q", `${candidate}^{commit}`]).then(() => true, () => false)) return candidate;
+  }
+  return null;
+}
+
+const nameList = (output: string): string[] => output.split("\0").filter(Boolean);
+
+/** How one room folder stands against the main branch. */
+export interface GitBaseCompare {
+  path: string;
+  /** The main branch compared against; null when none was found. */
+  base: string | null;
+  ahead: number;
+  behind: number;
+}
+
+/** A file changed in more than one room folder since their branches parted (committed or not): a likely conflict. */
+export interface GitOverlap {
+  path: string;
+  folders: string[];
+}
+
+/**
+ * The room across its folders: each folder against the main branch, and the files two folders both changed. For a
+ * pair of folders, a file counts when each changed it since the commit their branches share (merge-base), committed or
+ * not; so branches with a long common history are not flagged for the history they share. Folders of different
+ * repositories are never compared.
+ */
+export async function readRoomCompare(folders: string[]): Promise<{ compares: GitBaseCompare[]; overlaps: GitOverlap[] }> {
+  const read = await Promise.all(
+    folders.map(async (path) => {
+      if (!isDirectory(path)) return null;
+      const paths = await repoPaths(path);
+      if (!paths) return null;
+      try {
+        const status = parseStatus(await git(paths.root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]));
+        const uncommitted = new Set(status.files.flatMap((f) => (f.origPath ? [f.path, f.origPath] : [f.path])));
+        const base = status.oid ? await defaultBranchOf(paths.root) : null;
+        let ahead = 0;
+        let behind = 0;
+        if (base) {
+          const counts = (await git(paths.root, ["rev-list", "--left-right", "--count", `${base}...HEAD`]).catch(() => "0\t0")).trim().split(/\s+/);
+          behind = Number(counts[0]) || 0;
+          ahead = Number(counts[1]) || 0;
+        }
+        return { path, root: paths.root, repo: realpathOrSelf(paths.commonDir), head: status.oid, base, ahead, behind, uncommitted };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const ok = read.filter((r): r is NonNullable<typeof r> => r !== null);
+  const compares = ok.map(({ path, base, ahead, behind }) => ({ path, base, ahead, behind }));
+  const byFile = new Map<string, Set<string>>();
+  for (let i = 0; i < ok.length; i++) {
+    for (let j = i + 1; j < ok.length; j++) {
+      const a = ok[i]!;
+      const b = ok[j]!;
+      if (a.repo !== b.repo) continue;
+      const since = async (side: typeof a, mergeBase: string | null): Promise<Set<string>> => {
+        const committed = mergeBase && side.head && side.head !== mergeBase ? nameList(await git(side.root, ["diff", "--name-only", "-z", "--no-renames", mergeBase, side.head, "--"]).catch(() => "")) : [];
+        return new Set([...committed, ...side.uncommitted]);
+      };
+      const mergeBase = a.head && b.head ? (await git(a.root, ["merge-base", a.head, b.head]).catch(() => "")).trim() || null : null;
+      const [aFiles, bFiles] = await Promise.all([since(a, mergeBase), since(b, mergeBase)]);
+      for (const file of aFiles) {
+        if (!bFiles.has(file)) continue;
+        const holders = byFile.get(file) ?? new Set<string>();
+        holders.add(a.path);
+        holders.add(b.path);
+        byFile.set(file, holders);
+      }
+    }
+  }
+  const overlaps = [...byFile.entries()].map(([path, holders]) => ({ path, folders: folders.filter((f) => holders.has(f)) })).sort((x, y) => x.path.localeCompare(y.path));
+  return { compares, overlaps };
+}
+
 /** The worktree paths of the repository a folder belongs to (for deciding which folders the room may read). */
 export async function worktreePathsOf(path: string): Promise<string[]> {
   if (!isDirectory(path)) return [];

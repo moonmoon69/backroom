@@ -548,9 +548,26 @@ export interface GitView extends Omit<GitFolder, "participantIds" | "isProjectRo
   worktrees: GitWorktree[];
 }
 
+/** A room folder against the repository's main branch. */
+export interface GitBaseCompare {
+  path: string;
+  base: string | null;
+  ahead: number;
+  behind: number;
+}
+
+/** A file two or more room folders changed since their branches parted: a likely merge conflict. */
+export interface GitOverlap {
+  path: string;
+  folders: string[];
+}
+
 export interface GitResponse {
   folders: GitFolder[];
   view: GitView | null;
+  /** With the full view only (not the header's brief read). */
+  compares?: GitBaseCompare[];
+  overlaps?: GitOverlap[];
   /** The home folder of the machine the room service runs on, to show paths as ~/… */
   home: string;
   fetchedAt: string;

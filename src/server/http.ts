@@ -23,7 +23,7 @@ import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
-import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, worktreePathsOf } from "../git/reader.ts";
+import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoomCompare, worktreePathsOf } from "../git/reader.ts";
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 
@@ -460,8 +460,11 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const requested = c.req.query("path");
     const selected = requested && (await readableFolder(folders, requested)) ? canonicalPath(requested) : (folders[0]?.path ?? null);
     const commitLimit = Number(c.req.query("commits") ?? 30);
-    const view = selected ? await readGitView(selected, { commitLimit: Number.isFinite(commitLimit) ? commitLimit : 30 }) : null;
-    return c.json({ folders: summaries, view, home: homedir(), fetchedAt: new Date().toISOString() });
+    const [view, room] = await Promise.all([
+      selected ? readGitView(selected, { commitLimit: Number.isFinite(commitLimit) ? commitLimit : 30 }) : Promise.resolve(null),
+      readRoomCompare(folders.map((f) => f.path)),
+    ]);
+    return c.json({ folders: summaries, view, compares: room.compares, overlaps: room.overlaps, home: homedir(), fetchedAt: new Date().toISOString() });
   });
 
   /** One file's diff in a room folder: uncommitted against HEAD, or its change in ?commit=. */

@@ -231,7 +231,7 @@ export function useGit(
         const data = await api.git(roomId, detail ? { path, commits } : { summary: true });
         if (!cancelled) {
           // A brief read keeps the last full view, so reopening the tab shows it while the next read runs.
-          setGit((previous) => (detail || !previous ? data : { ...data, view: previous.view }));
+          setGit((previous) => (detail || !previous ? data : { ...data, view: previous.view, compares: previous.compares ?? [], overlaps: previous.overlaps ?? [] }));
           setError(null);
         }
       } catch (caught) {

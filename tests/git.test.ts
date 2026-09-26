@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
-import { parseStatus, splitRenamedPath } from "../src/git/reader.ts";
+import { parseStatus, readRoomCompare, splitRenamedPath } from "../src/git/reader.ts";
 import { createTestStack } from "./helpers.ts";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "Tester", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Tester", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -133,4 +133,39 @@ test("git status and numstat paths: renames split, branch and upstream read", ()
       ["new file.md", "untracked", "none"],
     ],
   );
+});
+
+test("room compare: each folder against main, and files two branches both changed since they parted", async (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rooms-cmp-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const repo = join(dir, "app");
+  execFileSync("git", ["init", "-q", "-b", "main", repo], { env });
+  writeFileSync(join(repo, "shared.txt"), "a\n");
+  writeFileSync(join(repo, "old.txt"), "history\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-q", "-m", "base");
+  // A long shared history: both branches carry this commit, so old.txt must not count as an overlap.
+  writeFileSync(join(repo, "old.txt"), "history 2\n");
+  git(repo, "commit", "-q", "-am", "shared history");
+  const one = join(dir, "one");
+  const two = join(dir, "two");
+  git(repo, "worktree", "add", "-q", "-b", "one", one);
+  git(repo, "worktree", "add", "-q", "-b", "two", two);
+  writeFileSync(join(one, "shared.txt"), "one\n");
+  git(one, "commit", "-q", "-am", "one edits shared");
+  writeFileSync(join(one, "only-one.txt"), "x\n");
+  git(one, "add", ".");
+  git(one, "commit", "-q", "-m", "one adds a file");
+  writeFileSync(join(two, "shared.txt"), "two, not committed\n");
+
+  const { compares, overlaps } = await readRoomCompare([repo, one, two]);
+  assert.deepEqual(
+    compares.map((c) => [c.path, c.base, c.ahead, c.behind]),
+    [
+      [repo, "main", 0, 0],
+      [one, "main", 2, 0],
+      [two, "main", 0, 0],
+    ],
+  );
+  assert.deepEqual(overlaps, [{ path: "shared.txt", folders: [one, two] }]);
 });

@@ -2859,7 +2859,7 @@ button.primary.destructive {
   gap: 10px;
 }
 
-.form label:not(.radio):not(.checkbox):not(.thread-item):not(.segment) {
+.form label:not(.radio):not(.checkbox):not(.thread-item):not(.segment):not(.inline-field) {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -3386,25 +3386,6 @@ legend {
 }
 
 /* ---- git tab ---- */
-.git-folders {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.git-folder {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-}
-
-.git-folder-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .git-people {
   display: inline-flex;
   gap: 2px;
@@ -3641,6 +3622,52 @@ legend {
 
 .git-worktree .tag {
   flex: none;
+}
+
+.git-commit-meta .pending {
+  color: var(--warn);
+}
+
+.git-name .icon {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  vertical-align: -1px;
+}
+
+.git-worktree-text .git-name {
+  white-space: nowrap;
+}
+
+/* A file changed in more than one folder, with a chip per folder (who works there, its branch). */
+.git-overlap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 4px;
+  border-left: 2px solid var(--warn);
+  margin-bottom: 2px;
+}
+
+.git-overlap-where {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.git-overlap-where .branch-tag {
+  cursor: pointer;
+  gap: 4px;
+}
+
+.git-overlap-where .avatar {
+  width: 14px;
+  height: 14px;
+  font-size: 8px;
+}
+
+.git-overlaps .lane-hint {
+  margin: 0 0 4px;
 }
 
 /* ---- diff dialog ---- */
@@ -5816,15 +5843,16 @@ button:has(> .icon):not(.mobile-only) {
   align-items: center;
 }
 
-.inline-field {
+.form .inline-field {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 6px;
   margin: 0;
   font-size: var(--text-sm);
 }
 
-.inline-field select {
+.form .inline-field select {
   width: auto;
   max-width: 14em;
   padding-top: 4px;
@@ -5841,6 +5869,7 @@ button:has(> .icon):not(.mobile-only) {
 }
 
 .setting-choice .icon {
+  display: inline-block;
   width: 12px;
   height: 12px;
   vertical-align: -1px;

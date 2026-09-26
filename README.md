@@ -448,10 +448,14 @@ Drag rooms to reorder them within their project. The **⋯** menu renames or del
 ### Tasks and Git (side panel)
 
 - **Tasks:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
-- **Git:** the git state of the folders the room's threads work in: each participant's T3 worktree, or the project's folder (shown even when nobody works there). When participants work in more than one folder, buttons at the top switch between them, each with its branch, who works there and its uncommitted count. For the folder shown:
-  - **the checkout:** branch (or the commit it is detached at), main checkout or worktree (and of which repository), where it stands against its upstream (to push, to pull, or no upstream), its path, and who in the room works in it;
+- **Git:** the git state of the folders the room's threads work in: each participant's T3 worktree, or the project's folder (shown even when nobody works there). When participants work in more than one folder, the tab opens with the room across them:
+  - **Where everyone works:** one row per folder with its branch, who works there, how far it is ahead of or behind the main branch (origin's default, else `main` or `master`) and what is uncommitted. Click a row to show that folder below.
+  - **Changed in more than one place:** files two folders both changed since their branches parted, committed or not, with a chip per folder. Merging those branches may conflict there. Branches that share a long history are compared from where they split, so the shared part is never flagged.
+
+  For the folder shown:
+  - **the checkout:** branch (or the commit it is detached at), main checkout or worktree (and of which repository), where it stands against its upstream (to push, to pull, or no upstream) and against the main branch, its path, and who in the room works in it;
   - **Uncommitted:** every changed, staged, renamed and untracked file against the last commit, with line counts. A participant's avatar marks files one of their turns changed since that commit;
-  - **Worktrees:** the repository's worktrees with their branches and who works in each (when there is more than the main checkout); click one to show it;
+  - **Worktrees:** the repository's worktrees with their branches and who works in each (when there is more than the main checkout; under the room overview, only the ones nobody in the room works in); click one to show it;
   - **Commits:** the branch's recent commits (subject, sha, author, age, files and line counts), marked "not pushed" until the upstream has them. Click a commit for its files; **Show older commits** reads further back.
 
   Any file opens its diff: an uncommitted change against the last commit, or a file's change in that commit. The room service reads all of this with git on its own machine, so it needs to run where T3 keeps the checkouts; a folder that isn't there is shown as such. Reads never take git's locks, so they can't get in the way of agents' own git commands. The panel reads every few seconds while it is open, and only the counts otherwise.

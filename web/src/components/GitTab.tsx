@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import type { GitCommit, GitCommitFile, GitDiff, GitFolder, GitView, GitWorkingFile, GitWorktree, Participant } from "../types.ts";
+import type { GitBaseCompare, GitCommit, GitCommitFile, GitDiff, GitFolder, GitOverlap, GitView, GitWorkingFile, GitWorktree, Participant } from "../types.ts";
 import { ageOf } from "./deskFormat.ts";
 import { Dialog } from "./Dialog.tsx";
 import { BranchIcon, ChevronIcon } from "./icons.tsx";
@@ -48,9 +48,10 @@ interface DiffTarget {
 }
 
 /**
- * The Git tab: the room's working folders (each participant's worktree, or the project's folder), and for the one
- * shown its branch and upstream, uncommitted files, recent commits and the repository's worktrees. Files open their
- * diff. Read from git on the machine the room service runs on.
+ * The Git tab: the room's working folders (each participant's worktree, or the project's folder) side by side, with
+ * each against the main branch and the files two of them both changed; then, for the one shown, its branch and
+ * upstream, uncommitted files, the repository's worktrees and recent commits. Files open their diff. Read from git on
+ * the machine the room service runs on.
  */
 export function GitTab() {
   const { git, snapshot } = useRoom();
@@ -72,17 +73,19 @@ export function GitTab() {
   const view = data.view && data.view.path === selected ? data.view : null;
   const folder = data.folders.find((f) => f.path === selected) ?? null;
   const here = (folder?.participantIds ?? []).map((id) => participants.find((p) => p.id === id)).filter(Boolean) as Participant[];
+  const compareOf = (path: string) => data.compares?.find((c) => c.path === path) ?? null;
 
   return (
     <>
-      {data.folders.length > 1 ? <FolderSwitch folders={data.folders} selected={selected} home={data.home} onSelect={git.setPath} /> : null}
+      {data.folders.length > 1 ? <RoomOverview folders={data.folders} compareOf={compareOf} selected={selected} home={data.home} onSelect={git.setPath} /> : null}
+      {data.folders.length > 1 && (data.overlaps ?? []).length > 0 ? <Overlaps overlaps={data.overlaps ?? []} folders={data.folders} onSelect={git.setPath} /> : null}
       {view ? (
         <>
-          <CheckoutHead view={view} home={data.home} here={here} />
+          <CheckoutHead view={view} home={data.home} here={here} compare={compareOf(view.path)} />
           {view.exists && view.isRepo && !view.error ? (
             <>
               <WorkingFiles view={view} here={here} onOpen={(file) => setDiff({ folder: view.path, path: file.path, origPath: file.origPath, commit: null, untracked: file.status === "untracked" })} />
-              <WorktreeList view={view} folders={data.folders} home={data.home} onSelect={git.setPath} />
+              <WorktreeList view={view} folders={data.folders} home={data.home} onSelect={git.setPath} others={data.folders.length > 1} />
               <CommitList view={view} onMore={git.showMoreCommits} onOpen={(commit, file) => setDiff({ folder: view.path, path: file.path, origPath: file.origPath, commit, untracked: false })} />
             </>
           ) : null}
@@ -95,42 +98,122 @@ export function GitTab() {
   );
 }
 
-/** The room's folders, when its threads work in more than one: pick the one the tab shows. */
-function FolderSwitch({ folders, selected, home, onSelect }: { folders: GitFolder[]; selected: string; home: string; onSelect: (path: string) => void }) {
+const againstBase = (compare: GitBaseCompare | null, branch: string | null): string | null => {
+  if (!compare?.base || branch === compare.base) return null;
+  if (compare.ahead === 0 && compare.behind === 0) return `even with ${compare.base}`;
+  return [compare.ahead > 0 ? `${compare.ahead} ahead of` : "", compare.behind > 0 ? `${compare.behind} behind` : ""].filter(Boolean).join(", ") + ` ${compare.base}`;
+};
+
+/**
+ * The room's folders side by side, when its threads work in more than one: branch, who works there, where it stands
+ * against the main branch and what is uncommitted. Picking one shows it below.
+ */
+function RoomOverview({
+  folders,
+  compareOf,
+  selected,
+  home,
+  onSelect,
+}: {
+  folders: GitFolder[];
+  compareOf: (path: string) => GitBaseCompare | null;
+  selected: string;
+  home: string;
+  onSelect: (path: string) => void;
+}) {
   const { participantById } = useRoom();
   return (
-    <div className="git-folders" role="group" aria-label="Working folders">
-      {folders.map((folder) => {
-        const people = folder.participantIds.map(participantById).filter(Boolean) as Participant[];
-        const on = folder.path === selected;
-        return (
-          <button
-            key={folder.path}
-            type="button"
-            className={`git-folder small${on ? " active" : ""}`}
-            aria-pressed={on}
-            title={`${homePath(folder.path, home)}${people.length > 0 ? ` · ${people.map((p) => p.alias).join(", ")}` : " · nobody works here"}`}
-            onClick={() => onSelect(folder.path)}
-          >
-            <BranchIcon />
-            <span className="git-folder-name mono">{folder.branch ?? (folder.exists ? (folder.isRepo ? "detached" : "no git") : "not here")}</span>
-            {people.length > 0 ? (
-              <span className="git-people">
-                {people.map((p) => (
-                  <Monogram key={p.id} participant={p} size="xs" />
-                ))}
+    <section className="lane git-section" aria-label="The room's folders">
+      <h3>
+        <span className="lane-title">Where everyone works</span>
+        <span className="lane-count mono">{folders.length}</span>
+      </h3>
+      <ul className="git-list">
+        {folders.map((folder) => {
+          const people = folder.participantIds.map(participantById).filter(Boolean) as Participant[];
+          const on = folder.path === selected;
+          const base = againstBase(compareOf(folder.path), folder.branch);
+          const state = !folder.exists ? "not on this machine" : !folder.isRepo ? "not a git repository" : null;
+          return (
+            <li key={folder.path}>
+              <button
+                type="button"
+                className={`git-row git-worktree${on ? " current" : ""}`}
+                aria-current={on ? "true" : undefined}
+                title={`${folder.path}${people.length > 0 ? `\n${people.map((p) => p.alias).join(", ")}` : "\nNobody in the room works here"}${on ? "" : "\nShow it below"}`}
+                onClick={() => onSelect(folder.path)}
+              >
+                <span className="git-worktree-text">
+                  <span className="mono git-name">
+                    <BranchIcon /> {folder.branch ?? (folder.detached ? "detached" : "—")}
+                  </span>
+                  <span className="git-commit-meta mono">
+                    {state ? <span>{state}</span> : null}
+                    {base ? <span className={/ahead|behind/.test(base) ? "pending" : ""}>{base}</span> : null}
+                    {folder.changed > 0 ? <span className="pending">{folder.changed} uncommitted</span> : state ? null : <span>clean</span>}
+                    <span className="git-dir">{homePath(folder.path, home)}</span>
+                  </span>
+                </span>
+                {people.length > 0 ? (
+                  <span className="git-people">
+                    {people.map((p) => (
+                      <Monogram key={p.id} participant={p} size="xs" />
+                    ))}
+                  </span>
+                ) : (
+                  <span className="tag">nobody</span>
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** Files changed in more than one folder since their branches parted: merging those branches may conflict there. */
+function Overlaps({ overlaps, folders, onSelect }: { overlaps: GitOverlap[]; folders: GitFolder[]; onSelect: (path: string) => void }) {
+  const { participantById } = useRoom();
+  return (
+    <section className="lane git-section git-overlaps" aria-label="Changed in more than one place">
+      <h3>
+        <span className="lane-title">Changed in more than one place</span>
+        <span className="lane-count mono">{overlaps.length}</span>
+      </h3>
+      <p className="lane-hint mono muted">since their branches parted, committed or not: merging them may conflict here</p>
+      <ul className="git-list">
+        {overlaps.map((overlap) => {
+          const { dir, name } = splitPath(overlap.path);
+          return (
+            <li key={overlap.path} className="git-overlap">
+              <span className="git-file mono" title={overlap.path}>
+                <span className="git-name">{name}</span>
+                {dir ? <span className="git-dir">{dir}</span> : null}
               </span>
-            ) : null}
-            {folder.changed > 0 ? <span className="panel-count mono">{folder.changed}</span> : null}
-          </button>
-        );
-      })}
-    </div>
+              <span className="git-overlap-where">
+                {overlap.folders.map((path) => {
+                  const folder = folders.find((f) => f.path === path);
+                  const people = (folder?.participantIds ?? []).map(participantById).filter(Boolean) as Participant[];
+                  return (
+                    <button key={path} type="button" className="tag mono branch-tag" title={`${path}\nShow this folder`} onClick={() => onSelect(path)}>
+                      {people.length > 0 ? people.map((p) => <Monogram key={p.id} participant={p} size="xs" />) : <BranchIcon />}
+                      {folder?.branch ?? "detached"}
+                    </button>
+                  );
+                })}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
 /** Branch, where it stands against its upstream, the folder and who works in it. */
-function CheckoutHead({ view, home, here }: { view: GitView; home: string; here: Participant[] }) {
+function CheckoutHead({ view, home, here, compare }: { view: GitView; home: string; here: Participant[]; compare: GitBaseCompare | null }) {
+  const base = againstBase(compare, view.branch);
   const sync = view.upstream
     ? view.ahead === 0 && view.behind === 0
       ? `up to date with ${view.upstream}`
@@ -146,6 +229,7 @@ function CheckoutHead({ view, home, here }: { view: GitView; home: string; here:
         {view.isRepo ? <span className="tag">{view.isLinkedWorktree ? "worktree" : "main checkout"}</span> : null}
       </div>
       {sync ? <div className={`git-sync mono${view.ahead > 0 || view.behind > 0 ? " pending" : ""}`}>{sync}</div> : null}
+      {base ? <div className="git-sync mono">{base}</div> : null}
       <div className="git-path mono muted" title={view.path}>
         {homePath(view.path, home)}
         {view.repoName && view.isLinkedWorktree ? <span> · of {view.repoName}</span> : null}
@@ -324,19 +408,21 @@ function CommitList({ view, onMore, onOpen }: { view: GitView; onMore: () => voi
 
 /**
  * The repository's worktrees, with who in the room works in each; any of them can be shown. Hidden while the
- * repository has only its main checkout (the head already says so).
+ * repository has only its main checkout (the head already says so). Under the room overview, only the worktrees
+ * nobody in the room works in are listed ("Other worktrees"): the overview has the rest.
  */
-function WorktreeList({ view, folders, home, onSelect }: { view: GitView; folders: GitFolder[]; home: string; onSelect: (path: string) => void }) {
+function WorktreeList({ view, folders, home, onSelect, others }: { view: GitView; folders: GitFolder[]; home: string; onSelect: (path: string) => void; others: boolean }) {
   const { participantById } = useRoom();
-  if (view.worktrees.length < 2) return null;
+  const listed = others ? view.worktrees.filter((w) => !folders.some((f) => f.path === w.path)) : view.worktrees;
+  if (others ? listed.length === 0 : listed.length < 2) return null;
   return (
-    <section className="lane git-section" aria-label="Worktrees">
+    <section className="lane git-section" aria-label={others ? "Other worktrees" : "Worktrees"}>
       <h3>
-        <span className="lane-title">Worktrees</span>
-        <span className="lane-count mono">{view.worktrees.length}</span>
+        <span className="lane-title">{others ? "Other worktrees" : "Worktrees"}</span>
+        <span className="lane-count mono">{listed.length}</span>
       </h3>
       <ul className="git-list">
-        {view.worktrees.map((worktree: GitWorktree) => {
+        {listed.map((worktree: GitWorktree) => {
           const people = (folders.find((f) => f.path === worktree.path)?.participantIds ?? []).map(participantById).filter(Boolean) as Participant[];
           const current = worktree.path === view.path;
           return (
