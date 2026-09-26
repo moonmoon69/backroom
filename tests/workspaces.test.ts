@@ -38,6 +38,7 @@ test("briefings say where everyone works; replies record where their work is; de
   assert.match(sol2Briefing, /== Where everyone works ==\nYou: .*\/feature, branch feature\./);
   assert.match(sol2Briefing, new RegExp(`@sol1: ${repo} \\(the project folder\\), branch main\\.`));
   assert.match(sol2Briefing, /git diff <your branch>\.\.\.<branch>/, "how to read the others' work");
+  assert.match(sol2Briefing, /Extra worktrees are fine for parallel work \(sub-agents, experiments\): base them on your branch, merge what you keep into your branch before you finish/);
   assert.doesNotMatch(sol2Briefing, /Choose your own workspace strategy/);
   assert.doesNotMatch(sol2Briefing, /You share your folder/);
 

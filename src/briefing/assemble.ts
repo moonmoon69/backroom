@@ -161,9 +161,12 @@ export function workspaceSection(participantId: string, workspaces: Workspace[])
   const lines = ["== Where everyone works ==", `You: ${where(self)}.`];
   for (const other of elsewhere) lines.push(`@${other.alias}: ${other.folder ? where(other) : "folder unknown"}.`);
   if (sharing.length > 0) lines.push(`${sharing.map((w) => `@${w.alias}`).join(", ")}: the same folder as you.`);
+  // Extra worktrees are welcome (parallel sub-agents, experiments); what matters is that the result ends up where T3, the
+  // Git tab and the next participant look. Harness worktrees often start from origin's default branch, not this one.
   lines.push(
-    "Work in your folder: T3 and the room follow your changes there, not in other folders or in worktrees you create yourself " +
-      "(if you do work elsewhere, say where in your Handoff).",
+    "Your work belongs in your folder and on your branch: T3 and the room follow changes there. " +
+      "Extra worktrees are fine for parallel work (sub-agents, experiments): base them on your branch, merge what you keep " +
+      "into your branch before you finish, remove the ones you no longer need, and list any you leave in your Handoff.",
   );
   if (elsewhere.some((w) => w.folder)) {
     lines.push(
