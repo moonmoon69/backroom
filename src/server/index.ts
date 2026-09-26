@@ -7,6 +7,7 @@ import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
+import { reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
 import { loadConfig } from "../config.ts";
 import { createHttpApp } from "./http.ts";
 
@@ -40,11 +41,17 @@ const stack = createStack({
     new RoomBrowsers({
       dataDir: config.dataDir,
       ...config.browser,
-      isRoomBusy: (roomId) => repos.listTasks(roomId).some((t) => t.state === "running" || t.state === "dispatching" || t.state === "needs_input"),
-      onChange: notify,
+      // Busy while any room using the browser has work in flight; changes are shown in those rooms.
+      isBusy: (browserId) =>
+        roomsUsingBrowser(repos, browserId).some((room) => repos.listTasks(room.id).some((t) => t.state === "running" || t.state === "dispatching" || t.state === "needs_input")),
+      onChange: (browserId) => {
+        for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);
+      },
       log,
     }),
 });
+// Profile folders from before browsers were a list become browsers (the running ones are adopted under the same id).
+for (const browser of stack.db.transaction(() => reconcileBrowserCatalog(stack.repos, config.dataDir))) log(`browser "${browser.name}" adopted from ${browser.id}`);
 stack.browsers?.start();
 {
   const environment = stack.browsers?.environment();

@@ -33,7 +33,7 @@ const BRIEFING_EVENT_KINDS = new Set<RoomEvent["kind"]>(["user.message", "note",
 export interface SchedulerOptions {
   briefingBudgetChars: number;
   /** Room browsers: started for tasks of rooms that have one turned on, and described in their briefings. */
-  browsers?: { briefingFor(roomId: string): Promise<BrowserBriefing | null> };
+  browsers?: { briefingFor(browser: { id: string; name: string; description: string }): Promise<BrowserBriefing | null> };
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -599,8 +599,10 @@ export class Scheduler {
         continue;
       }
       busyParticipants.add(participant.id);
-      // A room with a shared browser gets it running before the briefing names its address (slash commands skip it).
-      const browser = room.browserEnabled && !task.slashCommand && this.options.browsers ? await this.options.browsers.briefingFor(room.id) : null;
+      // A room with browsers on gets its default browser running before the briefing names its address (slash commands
+      // skip it).
+      const roomBrowser = room.browserEnabled && !task.slashCommand ? this.service.effectiveBrowser(room) : null;
+      const browser = roomBrowser && this.options.browsers ? await this.options.browsers.briefingFor(roomBrowser) : null;
       const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { browser });
       await this.send(run, task, participant, binding);
       touched.add(room.id);

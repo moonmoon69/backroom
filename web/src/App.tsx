@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, useDesk, useRoomStream } from "./api.ts";
 import { BackgroundBar } from "./components/BackgroundBar.tsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
+import { BrowserView } from "./components/BrowserView.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, type InspectorTab } from "./components/Inspector.tsx";
@@ -8,7 +10,8 @@ import { RoomBrowserButton } from "./components/RoomBrowser.tsx";
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { ParticipantBar } from "./components/ParticipantBar.tsx";
-import { Sidebar } from "./components/Sidebar.tsx";
+import { rememberProject, Sidebar, type Selection } from "./components/Sidebar.tsx";
+import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { RolesDialog } from "./components/RolesLibrary.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
 import { PairingPanel } from "./components/StatusStrip.tsx";
@@ -17,16 +20,41 @@ import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
 import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
-import type { CommandResult, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse } from "./types.ts";
+import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
 
-const ROOM_KEY = "t3rooms.selectedRoom";
+const SELECTION_KEY = "t3rooms.selection";
+/** Where the selected room was kept before threads could be selected too. */
+const LEGACY_ROOM_KEY = "t3rooms.selectedRoom";
+
+function storedSelection(): Selection | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SELECTION_KEY) ?? "null") as Selection | null;
+    if (parsed && (parsed.kind === "room" || parsed.kind === "thread" || parsed.kind === "browser") && typeof parsed.id === "string") return parsed;
+    if (parsed && parsed.kind === "new-thread" && typeof parsed.projectId === "string") return parsed;
+  } catch {
+    // fall through
+  }
+  const legacy = localStorage.getItem(LEGACY_ROOM_KEY);
+  return legacy ? { kind: "room", id: legacy } : null;
+}
 
 export function App() {
   const { toast } = useToast();
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [rooms, setRooms] = useState<RoomListItem[]>([]);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => localStorage.getItem(ROOM_KEY));
+  const [selection, setSelection] = useState<Selection | null>(storedSelection);
+  const selectedRoomId = selection?.kind === "room" ? selection.id : null;
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  // T3's projects and threads, for the sidebar. Kept at the last good reading while T3 does not answer.
+  const [projects, setProjects] = useState<T3Project[] | null>(null);
+  const [threads, setThreads] = useState<T3ThreadShell[]>([]);
+  const [t3Error, setT3Error] = useState<string | null>(null);
+  // Archive and unarchive switch the view before the next thread-list read confirms them.
+  const markThread = useCallback((threadId: string, patch: Partial<T3ThreadShell>) => {
+    setThreads((list) => list.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread)));
+  }, []);
+  // T3 serves an archived thread's conversation only after it is unarchived; such a selection gets its own panel.
+  const selectedArchived = selection?.kind === "thread" ? threads.find((t) => t.id === selection.id && t.archivedAt) ?? null : null;
   // Phones start with the inspector closed: it covers the timeline there.
   const [inspectorOpen, setInspectorOpen] = useState(() => !mediaMatches(MOBILE_QUERY));
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -51,6 +79,26 @@ export function App() {
     api.rooms().then(setRooms).catch(report);
   }, [report]);
 
+  // Polled with the room list; failures are shown once in the sidebar, not as a toast every poll.
+  // Browsers are local processes: cheap to read, polled with the room list. Null when the service cannot run them.
+  const [browsers, setBrowsers] = useState<BrowserListItem[] | null>(null);
+  const loadBrowsers = useCallback(() => {
+    api.browsers().then(
+      (list) => setBrowsers(list.length > 0 ? list : null),
+      () => undefined,
+    );
+  }, []);
+
+  const loadT3 = useCallback(() => {
+    Promise.all([api.projects(), api.allThreads()])
+      .then(([projectList, threadList]) => {
+        setProjects(projectList);
+        setThreads(threadList);
+        setT3Error(null);
+      })
+      .catch((error: unknown) => setT3Error(error instanceof Error ? error.message : String(error)));
+  }, []);
+
   const loadSnapshot = useCallback(() => {
     if (!selectedRoomId) {
       setSnapshot(null);
@@ -61,8 +109,7 @@ export function App() {
       .then(setSnapshot)
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) {
-          setSelectedRoomId(null);
-          localStorage.removeItem(ROOM_KEY);
+          setSelection(null);
           setSnapshot(null);
           return;
         }
@@ -73,28 +120,39 @@ export function App() {
   useEffect(() => {
     loadStatus();
     loadRooms();
-    // The room list carries live activity (working, background, needs you) for the sidebar; the connection
-    // status asks T3 itself, so it stays slow.
-    const rooms = setInterval(loadRooms, 8000);
+    loadT3();
+    loadBrowsers();
+    // The room list and thread list carry live activity (working, background, needs you) for the sidebar; the
+    // connection status asks T3 itself, so it stays slow.
+    const rooms = setInterval(() => {
+      loadRooms();
+      loadT3();
+      loadBrowsers();
+    }, 8000);
     const status = setInterval(loadStatus, 30000);
     return () => {
       clearInterval(rooms);
       clearInterval(status);
     };
-  }, [loadStatus, loadRooms]);
+  }, [loadStatus, loadRooms, loadT3, loadBrowsers]);
 
   useEffect(() => {
-    if (selectedRoomId) localStorage.setItem(ROOM_KEY, selectedRoomId);
+    if (selection) localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
+    else localStorage.removeItem(SELECTION_KEY);
+    localStorage.removeItem(LEGACY_ROOM_KEY);
+  }, [selection]);
+
+  useEffect(() => {
     loadSnapshot();
   }, [selectedRoomId, loadSnapshot]);
 
   // Pick the first room automatically when nothing is selected.
   useEffect(() => {
-    if (!selectedRoomId && rooms.length > 0) {
+    if (!selection && rooms.length > 0) {
       const first = rooms[0];
-      if (first) setSelectedRoomId(first.id);
+      if (first) setSelection({ kind: "room", id: first.id });
     }
-  }, [rooms, selectedRoomId]);
+  }, [rooms, selection]);
 
   const onRoomChanged = useCallback(() => {
     loadSnapshot();
@@ -122,11 +180,20 @@ export function App() {
           // Leave the deleted room for the next one in the list (or none).
           if (selectedRoomId === command.roomId) {
             const next = rooms.find((room) => room.id !== command.roomId);
-            setSelectedRoomId(next ? next.id : null);
+            setSelection(next ? { kind: "room", id: next.id } : null);
           }
           loadRooms();
-        } else if (command.type.startsWith("room.")) loadRooms();
-        else onRoomChanged();
+          loadT3();
+        } else if (command.type.startsWith("room.")) {
+          loadRooms();
+          if (command.type === "room.browser") loadBrowsers();
+        } else if (command.type.startsWith("browser.")) loadBrowsers();
+        else if (command.type === "project.create" || command.type.startsWith("thread.")) loadT3();
+        else {
+          onRoomChanged();
+          // Seating or removing a participant moves a thread into or out of the sidebar's thread list.
+          if (command.type === "participant.create" || command.type === "participant.retire" || command.type === "participant.rebind") loadT3();
+        }
         return result;
       } catch (error) {
         if (error instanceof ApiError && error.code === "stale_revision") {
@@ -142,7 +209,7 @@ export function App() {
         return null;
       }
     },
-    [loadRooms, onRoomChanged, report, toast, selectedRoomId, rooms],
+    [loadRooms, loadT3, loadBrowsers, onRoomChanged, report, toast, selectedRoomId, rooms],
   );
 
   const contextValue = useMemo<RoomContextValue | null>(() => {
@@ -175,6 +242,7 @@ export function App() {
     setPairingOpen(false);
     loadStatus();
     loadRooms();
+    loadT3();
   };
 
   // After a rebuild the server serves a new bundle; offer a reload instead of silently running old code.
@@ -195,9 +263,9 @@ export function App() {
     />
   );
 
-  // Phones: the room list is a drawer opened from the header.
+  // Phones: the sidebar is a drawer opened from the header.
   const roomsButton = (
-    <button type="button" className="small ghost icon-only mobile-only rooms-toggle" aria-label="Rooms" title="Rooms" onClick={() => setSidebarOpen(true)}>
+    <button type="button" className="small ghost icon-only mobile-only rooms-toggle" aria-label="Rooms and threads" title="Rooms and threads" onClick={() => setSidebarOpen(true)}>
       <span aria-hidden="true">☰</span>
     </button>
   );
@@ -214,19 +282,103 @@ export function App() {
       ) : null}
       <Sidebar
         rooms={rooms}
-        selectedRoomId={selectedRoomId}
-        onSelect={(roomId) => {
-          setSelectedRoomId(roomId);
+        projects={projects}
+        threads={threads}
+        t3Error={t3Error}
+        selection={selection}
+        onSelect={(next) => {
+          setSelection(next);
           setSidebarOpen(false);
         }}
         onCommand={runCommand}
+        onT3Changed={loadT3}
+        browsers={browsers}
+        onBrowsersChanged={loadBrowsers}
         disabled={needsPairing}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
       <div className="main">
         {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
-        {contextValue ? (
+        <ErrorBoundary
+          key={selection ? `${selection.kind}:${selection.kind === "new-thread" ? selection.projectId : selection.id}` : "none"}
+          onReset={() => setSelection(null)}
+          header={
+            <div className="room-header app-header-only">
+              {roomsButton}
+              <span className="spacer" />
+              {appControls}
+            </div>
+          }
+        >
+        {selection?.kind === "thread" && selectedArchived && !needsPairing ? (
+          <ArchivedThreadView
+            thread={selectedArchived}
+            project={projects?.find((p) => p.id === selectedArchived.projectId) ?? null}
+            runCommand={runCommand}
+            onUnarchived={() => {
+              markThread(selectedArchived.id, { archivedAt: null });
+              loadT3();
+            }}
+            onGone={() => {
+              setSelection(null);
+              loadT3();
+            }}
+            headerStart={roomsButton}
+            headerEnd={appControls}
+          />
+        ) : selection?.kind === "thread" && !needsPairing ? (
+          <ThreadView
+            threadId={selection.id}
+            rooms={rooms}
+            runCommand={runCommand}
+            onGone={() => {
+              setSelection(null);
+              loadT3();
+            }}
+            onChanged={loadT3}
+            onArchived={() => {
+              markThread(selection.id, { archivedAt: new Date().toISOString() });
+              loadT3();
+            }}
+            onOpenRoom={(roomId) => {
+              setSelection({ kind: "room", id: roomId });
+              loadRooms();
+              loadT3();
+            }}
+            headerStart={roomsButton}
+            headerEnd={appControls}
+          />
+        ) : selection?.kind === "browser" ? (
+          <BrowserView
+            browserId={selection.id}
+            runCommand={runCommand}
+            onGone={() => {
+              setSelection(null);
+              loadBrowsers();
+            }}
+            onChanged={loadBrowsers}
+            onOpenRoom={(roomId) => setSelection({ kind: "room", id: roomId })}
+            headerStart={roomsButton}
+            headerEnd={appControls}
+          />
+        ) : selection?.kind === "new-thread" && !needsPairing ? (
+          <NewThreadView
+            projectId={selection.projectId}
+            projects={projects ?? []}
+            runCommand={runCommand}
+            onProject={(projectId) => {
+              rememberProject(projectId);
+              setSelection({ kind: "new-thread", projectId });
+            }}
+            onStarted={(threadId) => {
+              setSelection({ kind: "thread", id: threadId });
+              loadT3();
+            }}
+            headerStart={roomsButton}
+            headerEnd={appControls}
+          />
+        ) : contextValue ? (
           <RoomContext.Provider value={contextValue}>
             <div className="room-header">
               {roomsButton}
@@ -235,7 +387,12 @@ export function App() {
                 {contextValue.snapshot.room.projectId}
               </span>
               <span className="spacer" />
-              <RoomBrowserButton />
+              <RoomBrowserButton
+                onManage={(browserId) => {
+                  const target = browserId ?? browsers?.[0]?.id;
+                  if (target) setSelection({ kind: "browser", id: target });
+                }}
+              />
               <button
                 type="button"
                 className={`small${inspectorOpen ? " active" : ""}`}
@@ -271,17 +428,18 @@ export function App() {
             {appControls}
           </div>
           <div className="empty-state">
-            {needsPairing ? null : rooms.length === 0 ? (
-              <>
-                <p className="serif">Open a room to start handing out work orders.</p>
-                <p className="mono muted">New room → pick a T3 project → add a participant → @alias do the thing</p>
-              </>
-            ) : (
+            {needsPairing ? null : selection?.kind === "room" ? (
               <p className="serif muted">Loading room…</p>
+            ) : (
+              <>
+                <p className="serif">Start a thread on its own, or open a room to hand out work orders to a crew.</p>
+                <p className="mono muted">+ New → New thread · + New → New room → add a participant → @alias do the thing</p>
+              </>
             )}
           </div>
           </>
         )}
+        </ErrorBoundary>
       </div>
       {pairingOpen ? (
         <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>

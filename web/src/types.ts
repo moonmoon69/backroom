@@ -21,8 +21,10 @@ export interface Room {
   title: string;
   nextSequence: number;
   nextTaskNumber: number;
-  /** Tasks in this room get a shared browser (started on demand) described in their briefings. */
+  /** Tasks in this room get a browser (started on demand) described in their briefings. */
   browserEnabled: boolean;
+  /** The room's default browser; null means "general". */
+  defaultBrowserId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -248,14 +250,32 @@ export interface RoomSnapshot {
   events: RoomEvent[];
   nativeRequests: NativeRequest[];
   participantStatus: Record<string, ParticipantStatus>;
-  /** The room's shared browser process; null when the room service cannot run browsers. */
-  browser: RoomBrowserStatus | null;
+  /** The room's effective browser and its process; null when it has none or the service cannot run browsers. */
+  browser: { browser: Browser; status: RoomBrowserStatus } | null;
+}
+
+/** A shared Chrome on the room service's machine, named by purpose. */
+export interface Browser {
+  id: string;
+  name: string;
+  /** What it is for and which logins it holds, written for agents. */
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/browsers: a browser with its process state and the rooms using it as their default. */
+export interface BrowserListItem extends Browser {
+  status: RoomBrowserStatus;
+  usedBy: Array<{ roomId: string; title: string }>;
+  /** Only on GET /api/browsers/:id. */
+  profileBytes?: number | null;
 }
 
 export type BrowserMode = "vnc" | "window" | "headless";
 
 export interface RoomBrowserStatus {
-  roomId: string;
+  browserId: string;
   state: "stopped" | "starting" | "running" | "error";
   mode: BrowserMode | null;
   cdpUrl: string | null;
@@ -357,10 +377,54 @@ export interface T3ThreadShell {
   latestTurn: { turnId: string; state: string; completedAt: string | null; assistantMessageId: string | null } | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  backgroundLiveness?: "working" | "monitoring" | null;
+  latestUserMessageAt?: string | null;
+  settledAt?: string | null;
   archivedAt: string | null;
   deletedAt: string | null;
   updatedAt: string;
   boundToRoom: boolean;
+}
+
+/** One entry of a direct thread's conversation (GET /api/threads/:threadId). */
+export type ThreadItem =
+  | { kind: "user"; id: string; text: string; attachmentIds: string[]; at: string }
+  | {
+      kind: "reply";
+      id: string;
+      turnId: string;
+      text: string;
+      progress: Array<{ text: string; at: string }>;
+      at: string;
+      state: "error" | "interrupted" | null;
+      files: { count: number; additions: number; deletions: number } | null;
+    };
+
+/** An approval or question a thread is waiting on. */
+export interface ThreadRequest {
+  requestId: string;
+  kind: "approval" | "user-input";
+  payload: unknown;
+  createdAt: string;
+}
+
+/** A T3 thread used on its own, outside any room: read from T3 on every call. */
+export interface ThreadView {
+  thread: T3ThreadShell;
+  project: T3Project | null;
+  items: ThreadItem[];
+  requests: ThreadRequest[];
+  /** The turn running now, streamed as T3 shows it. */
+  running: { turnId: string; feed: LiveFeedItem[] } | null;
+  contextWindow: ContextWindowReading | null;
+  /** Older turns exist in T3 beyond the window read here. */
+  partial: boolean;
+}
+
+/** An image sent inline with a direct thread message. */
+export interface InlineImage {
+  name: string;
+  dataUrl: string;
 }
 
 export interface T3Activity {
@@ -590,7 +654,11 @@ export type ThreadLifecycleChoice = "keep" | "settle" | "archive" | "delete";
 export type RoomCommand =
   | { type: "room.create"; projectId: string; title: string }
   | { type: "room.update"; roomId: string; title: string }
-  | { type: "room.browser"; roomId: string; enabled: boolean }
+  /** browserId omitted keeps the room's default; null falls back to "general". */
+  | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null }
+  | { type: "browser.create"; name: string; description?: string }
+  | { type: "browser.update"; browserId: string; name?: string; description?: string }
+  | { type: "browser.delete"; browserId: string }
   | { type: "room.reorder"; roomIds: string[] }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
   | {
@@ -647,7 +715,18 @@ export type RoomCommand =
   | { type: "task.markBlocked"; taskId: string; revision: number; reason: string }
   | { type: "task.unblock"; taskId: string; revision: number }
   | { type: "native.approval.respond"; participantId: string; requestId: string; decision: ApprovalDecision }
-  | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> };
+  | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> }
+  /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
+  | { type: "project.create"; workspaceRoot: string; title?: string; createIfMissing?: boolean }
+  /** Direct threads (outside any room): the text goes to T3 as typed. */
+  | { type: "thread.start"; projectId: string; text: string; images?: InlineImage[]; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; interactionMode?: InteractionMode }
+  | { type: "thread.send"; threadId: string; text: string; images?: InlineImage[] }
+  | { type: "thread.interrupt"; threadId: string }
+  | { type: "thread.approval.respond"; threadId: string; requestId: string; decision: ApprovalDecision }
+  | { type: "thread.userInput.respond"; threadId: string; requestId: string; answers: Record<string, unknown> }
+  | { type: "thread.model.set"; threadId: string; modelSelection: ModelSelection }
+  | { type: "thread.runtimeMode.set"; threadId: string; runtimeMode: RuntimeMode }
+  | { type: "thread.lifecycle"; threadId: string; action: "settle" | "unsettle" | "archive" | "unarchive" | "delete" };
 
 export type CommandResult =
   | { type: "room.created"; roomId: string }
@@ -670,6 +749,10 @@ export type CommandResult =
   | { type: "task.updated"; taskId: string; revision: number }
   | { type: "task.interrupt.requested"; taskId: string; runId: string }
   | { type: "native.responded"; requestId: string }
+  | { type: "project.created"; projectId: string }
+  | { type: "browser.created"; browserId: string }
+  | { type: "thread.started"; threadId: string }
+  | { type: "thread.updated"; threadId: string }
   /** Newer result kinds the UI does not need to distinguish. */
   | { type: string; participantId?: string; roleId?: string };
 

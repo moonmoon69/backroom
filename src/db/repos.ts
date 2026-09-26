@@ -1,6 +1,7 @@
 /** Repositories: typed row mapping over the SQLite tables. All writes assume the caller manages transactions. */
 import type { Database } from "./database.ts";
 import type {
+  Browser,
   NativeRequest,
   Participant,
   Role,
@@ -27,9 +28,14 @@ function rowToRoom(row: Row): Room {
     nextSequence: n(row.next_sequence),
     nextTaskNumber: n(row.next_task_number),
     browserEnabled: n(row.browser_enabled) === 1,
+    defaultBrowserId: ns(row.default_browser_id),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
   };
+}
+
+function rowToBrowser(row: Row): Browser {
+  return { id: s(row.id), name: s(row.name), description: s(row.description), createdAt: s(row.created_at), updatedAt: s(row.updated_at) };
 }
 
 function rowToParticipant(row: Row): Participant {
@@ -178,8 +184,39 @@ export class Repos {
     this.raw.prepare("UPDATE rooms SET title = ?, updated_at = ? WHERE id = ?").run(title, at, roomId);
   }
 
-  setRoomBrowser(roomId: string, enabled: boolean, at: string): void {
-    this.raw.prepare("UPDATE rooms SET browser_enabled = ?, updated_at = ? WHERE id = ?").run(enabled ? 1 : 0, at, roomId);
+  setRoomBrowser(roomId: string, enabled: boolean, defaultBrowserId: string | null, at: string): void {
+    this.raw.prepare("UPDATE rooms SET browser_enabled = ?, default_browser_id = ?, updated_at = ? WHERE id = ?").run(enabled ? 1 : 0, defaultBrowserId, at, roomId);
+  }
+
+  // ---- browsers ----
+
+  insertBrowser(browser: Browser): void {
+    this.raw
+      .prepare("INSERT INTO browsers (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(browser.id, browser.name, browser.description, browser.createdAt, browser.updatedAt);
+  }
+
+  getBrowser(id: string): Browser | null {
+    const row = this.raw.prepare("SELECT * FROM browsers WHERE id = ?").get(id) as Row | undefined;
+    return row ? rowToBrowser(row) : null;
+  }
+
+  getBrowserByName(name: string): Browser | null {
+    const row = this.raw.prepare("SELECT * FROM browsers WHERE name = ?").get(name) as Row | undefined;
+    return row ? rowToBrowser(row) : null;
+  }
+
+  /** "general" first, then by name. */
+  listBrowsers(): Browser[] {
+    return (this.raw.prepare("SELECT * FROM browsers ORDER BY name = 'general' DESC, name").all() as Row[]).map(rowToBrowser);
+  }
+
+  updateBrowser(browser: Browser): void {
+    this.raw.prepare("UPDATE browsers SET name = ?, description = ?, updated_at = ? WHERE id = ?").run(browser.name, browser.description, browser.updatedAt, browser.id);
+  }
+
+  deleteBrowser(id: string): void {
+    this.raw.prepare("DELETE FROM browsers WHERE id = ?").run(id);
   }
 
   setRoomOrder(roomIds: string[]): void {

@@ -185,6 +185,16 @@ export interface CreateThreadInput {
   interactionMode: InteractionMode;
 }
 
+export interface CreateProjectInput {
+  commandId: string;
+  projectId: string;
+  title: string;
+  /** A folder on the machine running T3. T3 expands ~ and resolves it; the folder must exist unless createIfMissing. */
+  workspaceRoot: string;
+  /** Let T3 create the folder (and its parents) when it does not exist. */
+  createIfMissing: boolean;
+}
+
 export type ApprovalDecision = "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel";
 
 /** Raised when T3 rejects a command (validation/state) rather than a transport failure. */
@@ -211,6 +221,8 @@ export interface T3Adapter {
   readonly kind: "fake" | "http";
   describe(): Promise<T3Environment>;
   listProjects(): Promise<T3Project[]>;
+  /** Add a project to T3 (project.create). T3 refuses a folder another project already uses. */
+  createProject(input: CreateProjectInput): Promise<void>;
   listCatalog(): Promise<CatalogEntry[]>;
   listProviders(): Promise<T3ProviderInfo[]>;
   listThreads(projectId?: string): Promise<T3ThreadShell[]>;
@@ -231,11 +243,16 @@ export interface T3Adapter {
    * model across all threads, read from the harness transcripts. Not per thread; not money spent on subscriptions.
    */
   usageSummary?(input: { day: string; timeZone: string }): Promise<UsageSummary>;
-  /** Settle (T3's "settled" list), archive (hidden, reversible), or delete (permanent) a thread. */
+  /** Settle (T3's "settled" list), archive (hidden, reversible), or delete (permanent) a thread; or undo a settle or archive. */
   setThreadLifecycle(input: { commandId: string; threadId: string; action: ThreadLifecycleAction }): Promise<void>;
+  /**
+   * Archived threads. T3 leaves them out of listThreads and of reads by id; only its archived snapshot lists them.
+   * Deleted threads are in neither: T3 serves no record of them.
+   */
+  listArchivedThreads?(): Promise<T3ThreadShell[]>;
 }
 
-export type ThreadLifecycleAction = "settle" | "archive" | "delete";
+export type ThreadLifecycleAction = "settle" | "unsettle" | "archive" | "unarchive" | "delete";
 
 export interface UsageBucket {
   day: string;

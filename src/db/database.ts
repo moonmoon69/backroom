@@ -201,6 +201,22 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE tasks ADD COLUMN slash_command INTEGER NOT NULL DEFAULT 0;`,
   // Rooms with a shared browser for their agents.
   `ALTER TABLE rooms ADD COLUMN browser_enabled INTEGER NOT NULL DEFAULT 0;`,
+  // Browsers are a list named by purpose ("general", "t3-rooms-testing"); a room picks its default. Profiles and ports
+  // live under data/browsers/<id>. "general" is the fallback default.
+  `
+  CREATE TABLE browsers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX browsers_name ON browsers(name);
+  INSERT INTO browsers (id, name, description, created_at, updated_at)
+    VALUES ('general', 'general', 'General browsing with no special logins. Use it unless the task calls for another browser.',
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+  ALTER TABLE rooms ADD COLUMN default_browser_id TEXT;
+  `,
 ];
 
 export class Database {

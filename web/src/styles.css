@@ -4754,3 +4754,420 @@ span.reply-to {
     min-height: 36px;
   }
 }
+
+/* ---- sidebar: projects, each with its rooms and the threads no room holds ---- */
+.project-list {
+  gap: 10px;
+}
+
+.project-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  text-align: left;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-toggle:hover:not(:disabled) {
+  color: var(--fg);
+  background: transparent;
+}
+
+.project-toggle .chevron {
+  width: 10px;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+.project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+
+.project-add {
+  padding: 0 7px;
+  min-height: 22px;
+  line-height: 1;
+  color: var(--fg-dim);
+  opacity: 0;
+}
+
+.project-head:hover .project-add,
+.project-add:focus-visible,
+.project-add[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.project-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-empty {
+  padding: 2px 8px 2px 20px;
+  font-size: 12px;
+}
+
+.side-thread-tile {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px 4px 18px;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.side-thread-tile:hover:not(:disabled) {
+  background: var(--bg-2);
+}
+
+.side-thread-tile.selected {
+  background: var(--bg-3);
+}
+
+.side-thread-tile.settled .thread-title {
+  color: var(--fg-muted);
+}
+
+.new-thread-tile .thread-title {
+  font-style: italic;
+}
+
+.side-thread-age {
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+.side-thread-tile .pill {
+  font-size: 10px;
+}
+
+.thread-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: none;
+}
+
+.thread-dot.tone-idle {
+  background: var(--fg-dim);
+  opacity: 0.5;
+}
+
+.thread-dot.tone-working {
+  background: var(--accent);
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.thread-dot.tone-background {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.thread-dot.tone-input {
+  background: var(--input);
+}
+
+.thread-dot.tone-error {
+  background: var(--err);
+}
+
+.thread-more {
+  margin: 2px 0 0 18px;
+}
+
+.sidebar-note {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}
+
+/* Touch screens have no hover: keep the row menus reachable. */
+@media (hover: none) {
+  .project-add,
+  .room-menu-button {
+    opacity: 1;
+  }
+}
+
+/* ---- a thread on its own ---- */
+.thread-pill.tone-working {
+  color: var(--accent);
+}
+
+.thread-pill.tone-input {
+  color: var(--input);
+}
+
+.thread-pill.tone-background {
+  color: var(--fg-muted);
+}
+
+.thread-pill.tone-error {
+  color: var(--err);
+}
+
+.thread-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.thread-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.thread-setting .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.thread-direct-note {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.thread-loading {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.thread-partial {
+  opacity: 0.8;
+}
+
+.thread-error .status-text {
+  color: var(--err);
+}
+
+.thread-files {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.tag.thread-turn-error {
+  color: var(--err);
+}
+
+.tag.thread-turn-interrupted {
+  color: var(--warn);
+}
+
+.thread-requests {
+  margin: 8px 0;
+}
+
+.thread-start {
+  max-width: 560px;
+  margin: 24px auto 0;
+  width: 100%;
+}
+
+.thread-start > p {
+  margin: 0 0 4px;
+}
+
+/* The thread composer has no highlight mirror: the textarea draws its own text. */
+.composer-field.plain textarea {
+  color: var(--fg);
+}
+
+.composer-field.plain textarea::selection {
+  color: inherit;
+}
+
+@media (max-width: 760px) {
+  .thread-bar {
+    padding: 5px 10px;
+    gap: 8px;
+  }
+
+  .thread-direct-note,
+  .thread-branch {
+    display: none;
+  }
+
+  .side-thread-tile {
+    padding: 7px 8px 7px 18px;
+  }
+
+  .thread-start {
+    margin-top: 12px;
+  }
+}
+
+/* Settled / Archived sections under a project. */
+.thread-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 8px 3px 18px;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.thread-section-toggle:hover:not(:disabled) {
+  color: var(--fg-muted);
+  background: transparent;
+}
+
+.thread-section-toggle .chevron {
+  width: 10px;
+  font-size: 10px;
+}
+
+.side-thread-tile.archived .thread-title {
+  color: var(--fg-dim);
+}
+
+.archived-thread .row {
+  margin-top: 12px;
+  gap: 8px;
+}
+
+/* Browsers: the sidebar section, the room panel's default picker, and the browser view. */
+.browsers-group {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.thread-dot.tone-on {
+  background: var(--ok);
+}
+
+.browser-default {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+
+.browser-default .label,
+.browser-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.browser-default select {
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-purpose {
+  margin: 4px 0 8px;
+}
+
+.browser-view {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px 32px;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.browser-view section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.browser-view .browser-section-title {
+  margin: 0;
+}
+
+.browser-description {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.browser-panel-inline {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-1);
+  padding: 10px 12px;
+}
+
+.browser-used-by {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 760px) {
+  .browser-view {
+    padding: 12px 12px 24px;
+  }
+}
+
+.browser-view p {
+  margin: 0;
+}

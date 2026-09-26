@@ -17,6 +17,7 @@ import type {
   UsageBucket,
   UsageSummary,
   CatalogEntry,
+  CreateProjectInput,
   CreateThreadInput,
   ModelOptionDescriptor,
   StartTurnInput,
@@ -106,6 +107,8 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly userDataDir: string | undefined;
   private readonly shellCacheMs: number;
   private shellCache: { at: number; value: ShellSnapshot } | null = null;
+  /** Archived threads come over the WebSocket RPC (one socket per read), so the sidebar's polls share a reading. */
+  private archivedCache: { at: number; value: T3ThreadShell[] } | null = null;
 
   constructor(options: HttpAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -491,6 +494,15 @@ export class HttpT3Adapter implements T3Adapter {
   private async dispatch(command: Record<string, unknown>): Promise<void> {
     await this.request("POST", "/api/orchestration/dispatch", command);
     this.shellCache = null;
+    this.archivedCache = null;
+  }
+
+  async listArchivedThreads(): Promise<T3ThreadShell[]> {
+    if (this.archivedCache && Date.now() - this.archivedCache.at < 20_000) return this.archivedCache.value;
+    const snapshot = await this.rpc<ShellSnapshot>("orchestration.getArchivedShellSnapshot", {});
+    const value = snapshot.threads.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
+    this.archivedCache = { at: Date.now(), value };
+    return value;
   }
 
   async defaultModelSelection(projectId: string): Promise<ModelSelection | null> {
@@ -510,6 +522,18 @@ export class HttpT3Adapter implements T3Adapter {
       commandId: input.commandId,
       threadId: input.threadId,
       modelSelection: input.modelSelection,
+    });
+  }
+
+  async createProject(input: CreateProjectInput): Promise<void> {
+    await this.dispatch({
+      type: "project.create",
+      commandId: input.commandId,
+      projectId: input.projectId,
+      title: input.title,
+      workspaceRoot: input.workspaceRoot,
+      createWorkspaceRootIfMissing: input.createIfMissing,
+      createdAt: new Date().toISOString(),
     });
   }
 
@@ -591,7 +615,8 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   async setThreadLifecycle(input: { commandId: string; threadId: string; action: ThreadLifecycleAction }): Promise<void> {
-    await this.dispatch({ type: `thread.${input.action}`, commandId: input.commandId, threadId: input.threadId });
+    // T3 records who unsettled a thread; from a client it is always the user.
+    await this.dispatch({ type: `thread.${input.action}`, commandId: input.commandId, threadId: input.threadId, ...(input.action === "unsettle" ? { reason: "user" } : {}) });
   }
 
   private usageMemo = new Map<string, { at: number; value: UsageSummary }>();

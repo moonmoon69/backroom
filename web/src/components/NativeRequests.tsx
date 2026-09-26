@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRoom } from "../context.tsx";
 import type { ApprovalDecision, NativeRequest } from "../types.ts";
 import { identityStyle } from "./Monogram.tsx";
@@ -43,21 +43,39 @@ export function NativeRequestsPanel() {
 
 function ApprovalCard({ request }: { request: NativeRequest }) {
   const { runCommand, aliasOf, colorOf } = useRoom();
+  return (
+    <ApprovalRequestCard
+      payload={request.payload}
+      speaker={
+        <span className="speaker mono identity" style={identityStyle(colorOf(request.participantId))}>
+          {aliasOf(request.participantId)}
+        </span>
+      }
+      onRespond={async (decision) => {
+        await runCommand({ type: "native.approval.respond", participantId: request.participantId, requestId: request.requestId, decision });
+      }}
+    />
+  );
+}
+
+/** An approval T3 is waiting on, with T3's decisions. `speaker` names who asks; used by rooms and direct threads. */
+export function ApprovalRequestCard({ payload: raw, speaker, onRespond }: { payload: unknown; speaker: ReactNode; onRespond: (decision: ApprovalDecision) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
-  const payload = asRecord(request.payload);
+  const payload = asRecord(raw);
   const requestType = asString(payload.requestType) ?? asString(payload.type) ?? "approval";
   const detail = asString(payload.detail) ?? asString(payload.summary) ?? asString(payload.command) ?? null;
   const respond = async (decision: ApprovalDecision) => {
     setBusy(true);
-    await runCommand({ type: "native.approval.respond", participantId: request.participantId, requestId: request.requestId, decision });
-    setBusy(false);
+    try {
+      await onRespond(decision);
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <article className="native-card">
       <header>
-        <span className="speaker mono identity" style={identityStyle(colorOf(request.participantId))}>
-          {aliasOf(request.participantId)}
-        </span>
+        {speaker}
         <span className="stamp stamp-needs_input">approval · {requestType}</span>
       </header>
       {detail ? <pre className="native-detail">{detail}</pre> : <pre className="native-detail">{JSON.stringify(payload, null, 2)}</pre>}
@@ -74,8 +92,36 @@ function ApprovalCard({ request }: { request: NativeRequest }) {
 
 function UserInputCard({ request }: { request: NativeRequest }) {
   const { runCommand, aliasOf, colorOf } = useRoom();
+  return (
+    <UserInputRequestCard
+      requestId={request.requestId}
+      payload={request.payload}
+      speaker={
+        <span className="speaker mono identity" style={identityStyle(colorOf(request.participantId))}>
+          {aliasOf(request.participantId)}
+        </span>
+      }
+      onSubmit={async (answers) => {
+        await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers });
+      }}
+    />
+  );
+}
+
+/** Questions T3 is waiting on (options, multi-select, custom answers). Used by rooms and direct threads. */
+export function UserInputRequestCard({
+  requestId,
+  payload: raw,
+  speaker,
+  onSubmit,
+}: {
+  requestId: string;
+  payload: unknown;
+  speaker: ReactNode;
+  onSubmit: (answers: Record<string, unknown>) => Promise<void>;
+}) {
   const [busy, setBusy] = useState(false);
-  const payload = asRecord(request.payload);
+  const payload = asRecord(raw);
   const questions = (Array.isArray(payload.questions) ? payload.questions : []) as Question[];
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -105,16 +151,17 @@ function UserInputCard({ request }: { request: NativeRequest }) {
       else final[q.id] = value;
     }
     setBusy(true);
-    await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers: final });
-    setBusy(false);
+    try {
+      await onSubmit(final);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <article className="native-card">
       <header>
-        <span className="speaker mono identity" style={identityStyle(colorOf(request.participantId))}>
-          {aliasOf(request.participantId)}
-        </span>
+        {speaker}
         <span className="stamp stamp-needs_input">user input</span>
       </header>
       {questions.length === 0 ? <pre className="native-detail">{JSON.stringify(payload, null, 2)}</pre> : null}
@@ -124,7 +171,7 @@ function UserInputCard({ request }: { request: NativeRequest }) {
           {q.question ? <p>{q.question}</p> : null}
           {(q.options ?? []).map((option, index) => {
             const label = optionLabel(option);
-            const inputId = `${request.requestId}-${q.id}-${index}`;
+            const inputId = `${requestId}-${q.id}-${index}`;
             if (q.multiSelect) {
               const checked = Array.isArray(answers[q.id]) && (answers[q.id] as string[]).includes(label);
               return (
@@ -136,7 +183,7 @@ function UserInputCard({ request }: { request: NativeRequest }) {
             }
             return (
               <label key={inputId} className="radio">
-                <input type="radio" name={`${request.requestId}-${q.id}`} checked={answers[q.id] === label} onChange={() => setAnswer(q.id, label)} />
+                <input type="radio" name={`${requestId}-${q.id}`} checked={answers[q.id] === label} onChange={() => setAnswer(q.id, label)} />
                 {label}
               </label>
             );
@@ -146,7 +193,7 @@ function UserInputCard({ request }: { request: NativeRequest }) {
               {!q.multiSelect && (q.options ?? []).length > 0 ? (
                 <input
                   type="radio"
-                  name={`${request.requestId}-${q.id}`}
+                  name={`${requestId}-${q.id}`}
                   checked={answers[q.id] === "__custom__"}
                   onChange={() => setAnswer(q.id, "__custom__")}
                 />

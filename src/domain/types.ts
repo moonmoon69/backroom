@@ -28,11 +28,30 @@ export interface Room {
   nextSequence: number;
   /** Next human-readable task number (task1, task2, ...). */
   nextTaskNumber: number;
-  /** The room has a shared browser: started for its tasks and described in their briefings. */
+  /** The room's agents get browsers: started for its tasks and described in their briefings. */
   browserEnabled: boolean;
+  /** Browser the room's agents use unless a task calls for another; null means "general" (when it exists). */
+  defaultBrowserId: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * A shared Chrome on this machine, named by purpose ("general", "t3-rooms-testing"). Its profile (logins, tabs) and
+ * ports live under data/browsers/<id>; the process is managed by RoomBrowsers. Any room may use any browser.
+ */
+export interface Browser {
+  id: string;
+  /** Slug agents use to name it: lowercase letters, digits and dashes. */
+  name: string;
+  /** What it is for and which logins it holds, written for agents. */
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The fallback default browser, created with the table. */
+export const GENERAL_BROWSER_ID = "general";
 
 /**
  * A seated crew member: a room-local alias for one T3 thread. The alias is what you type after @, what you say,
@@ -259,11 +278,19 @@ export interface RoomSnapshot {
   events: RoomEvent[];
   nativeRequests: NativeRequest[];
   participantStatus: Record<ParticipantId, ParticipantStatus>;
-  /** The room's shared browser (process state, not room state); null when this service cannot run browsers. */
-  browser: RoomBrowserStatus | null;
+  /** The room's effective browser and its process state; null when it has none or this service cannot run browsers. */
+  browser: { browser: Browser; status: RoomBrowserStatus } | null;
 }
 
 export type { RoomBrowserStatus } from "../browser/roomBrowsers.ts";
+
+/** A browser as the UI lists it: the record, its process state, and the rooms using it as their default. */
+export interface BrowserListItem extends Browser {
+  status: RoomBrowserStatus;
+  usedBy: Array<{ roomId: string; title: string }>;
+  /** Profile size on disk (logins, history, cache), only on the single-browser read. */
+  profileBytes?: number | null;
+}
 import type { RoomBrowserStatus } from "../browser/roomBrowsers.ts";
 
 export interface ParticipantStatus {

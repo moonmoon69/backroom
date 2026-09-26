@@ -8,6 +8,7 @@ import type { ModelSelection } from "../domain/types.ts";
 import type {
   ThreadLifecycleAction,
   CatalogEntry,
+  CreateProjectInput,
   CreateThreadInput,
   StartTurnInput,
   T3Activity,
@@ -111,6 +112,15 @@ export class FakeT3Adapter implements T3Adapter {
     return [...this.projects];
   }
 
+  async createProject(input: CreateProjectInput): Promise<void> {
+    if (!this.record("project.create", input.commandId, input.projectId, input)) return;
+    const root = input.workspaceRoot.replace(/\/+$/, "") || "/";
+    if (this.projects.some((project) => project.workspaceRoot === root)) {
+      throw new T3CommandRejected(`another project already uses ${root}`, 400, null);
+    }
+    this.projects.push({ id: input.projectId, title: input.title, workspaceRoot: root, defaultModelSelection: null });
+  }
+
   async listCatalog(): Promise<CatalogEntry[]> {
     this.guard();
     return [
@@ -139,18 +149,26 @@ export class FakeT3Adapter implements T3Adapter {
   async listThreads(projectId?: string): Promise<T3ThreadShell[]> {
     this.guard();
     if (this.staleShellList) return this.staleShellList.filter((t) => !projectId || t.projectId === projectId);
-    return [...this.threads.values()].map((t) => t.shell).filter((t) => !projectId || t.projectId === projectId);
+    // Like T3's shell snapshot: archived threads are not listed.
+    return [...this.threads.values()].map((t) => t.shell).filter((t) => t.archivedAt === null && (!projectId || t.projectId === projectId));
+  }
+
+  async listArchivedThreads(): Promise<T3ThreadShell[]> {
+    this.guard();
+    return [...this.threads.values()].map((t) => t.shell).filter((t) => t.archivedAt !== null);
   }
 
   async getThreadShell(threadId: string): Promise<T3ThreadShell | null> {
     this.guard();
-    return this.threads.get(threadId)?.shell ?? null;
+    const shell = this.threads.get(threadId)?.shell;
+    return shell && shell.archivedAt === null ? shell : null;
   }
 
   async getThreadDetail(threadId: string): Promise<T3ThreadDetail | null> {
     this.guard();
     const thread = this.threads.get(threadId);
-    if (!thread) return null;
+    // T3 reads threads by id only while they are not archived.
+    if (!thread || thread.shell.archivedAt !== null) return null;
     return {
       shell: structuredClone(thread.shell),
       messages: structuredClone(thread.messages),
@@ -396,7 +414,13 @@ export class FakeT3Adapter implements T3Adapter {
 
   async setThreadLifecycle(input: { commandId: string; threadId: string; action: ThreadLifecycleAction }): Promise<void> {
     if (!this.record(`thread.${input.action}`, input.commandId, input.threadId, input)) return;
-    if (!this.threads.has(input.threadId)) throw new T3CommandRejected("unknown thread", 404, null);
+    const thread = this.threads.get(input.threadId);
+    if (!thread) throw new T3CommandRejected("unknown thread", 404, null);
+    const at = new Date().toISOString();
     if (input.action === "delete") this.threads.delete(input.threadId);
+    else if (input.action === "archive") thread.shell.archivedAt = at;
+    else if (input.action === "unarchive") thread.shell.archivedAt = null;
+    else if (input.action === "settle") thread.shell.settledAt = at;
+    else thread.shell.settledAt = null;
   }
 }

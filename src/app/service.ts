@@ -11,8 +11,11 @@ import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import type { Assignment, RoomCommand, Schedule } from "../domain/commands.ts";
 import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
 import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
+import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
+import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
+  type Browser,
   type Participant,
   type PrerequisiteRef,
   type Role,
@@ -47,7 +50,11 @@ export type CommandResult =
   | { type: "note.created"; eventId: string }
   | { type: "task.updated"; taskId: string; revision: number }
   | { type: "task.interrupt.requested"; taskId: string; runId: string }
-  | { type: "native.responded"; requestId: string };
+  | { type: "native.responded"; requestId: string }
+  | { type: "browser.created"; browserId: string }
+  | { type: "browser.updated"; browserId: string }
+  | { type: "browser.deleted"; browserId: string }
+  | DirectResult;
 
 export const now = (): string => new Date().toISOString();
 
@@ -56,12 +63,15 @@ export class RoomService {
   private readonly repos: Repos;
   private readonly adapter: T3Adapter;
   private readonly notify: (roomId: string) => void;
+  /** Projects and threads used outside any room. */
+  private readonly direct: DirectThreads;
 
   constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}) {
     this.db = db;
     this.repos = repos;
     this.adapter = adapter;
     this.notify = notify;
+    this.direct = new DirectThreads(repos, adapter);
   }
 
   // ---------- shared helpers (also used by the scheduler) ----------
@@ -131,6 +141,7 @@ export class RoomService {
   // ---------- command entry point ----------
 
   async execute(command: RoomCommand): Promise<CommandResult> {
+    if (isDirectCommand(command)) return this.direct.execute(command);
     switch (command.type) {
       case "room.create":
         return this.createRoom(command);
@@ -143,21 +154,14 @@ export class RoomService {
         this.notify(room.id);
         return { type: "room.updated", roomId: room.id };
       }
-      case "room.browser": {
-        const room = this.requireRoom(command.roomId);
-        if (room.browserEnabled === command.enabled) return { type: "room.updated", roomId: room.id };
-        this.db.transaction(() => {
-          this.repos.setRoomBrowser(room.id, command.enabled, now());
-          this.appendEvent({
-            roomId: room.id,
-            kind: "system",
-            speaker: { type: "system" },
-            text: command.enabled ? "Shared browser turned on: tasks in this room get a Chrome to attach to" : "Shared browser turned off",
-          });
-        });
-        this.notify(room.id);
-        return { type: "room.updated", roomId: room.id };
-      }
+      case "room.browser":
+        return this.setRoomBrowser(command);
+      case "browser.create":
+        return this.createBrowser(command);
+      case "browser.update":
+        return this.updateBrowser(command);
+      case "browser.delete":
+        return this.deleteBrowser(command);
       case "room.reorder": {
         const known = new Set(this.repos.listRooms().map((r) => r.id));
         const unknown = command.roomIds.filter((id) => !known.has(id));
@@ -275,12 +279,86 @@ export class RoomService {
       nextSequence: 1,
       nextTaskNumber: 1,
       browserEnabled: false,
+      defaultBrowserId: null,
       createdAt: now(),
       updatedAt: now(),
     };
     this.db.transaction(() => this.repos.insertRoom(room));
     this.notify(room.id);
     return { type: "room.created", roomId: room.id };
+  }
+
+  // ---------- browsers ----------
+
+  /** The browser a room's agents use by default: its own choice when that still exists, else "general" (when it exists). */
+  effectiveBrowser(room: Room): Browser | null {
+    return effectiveBrowser(this.repos, room);
+  }
+
+  roomsUsingBrowser(browserId: string): Room[] {
+    return roomsUsingBrowser(this.repos, browserId);
+  }
+
+  private requireBrowser(browserId: string): Browser {
+    const browser = this.repos.getBrowser(browserId);
+    if (!browser) throw notFound("browser", browserId);
+    return browser;
+  }
+
+  private assertBrowserNameFree(name: string, exceptId: string | null): void {
+    const existing = this.repos.getBrowserByName(name);
+    if (existing && existing.id !== exceptId) throw new RoomError("browser_name_taken", `a browser named "${name}" already exists`, 409);
+  }
+
+  private async setRoomBrowser(command: Extract<RoomCommand, { type: "room.browser" }>): Promise<CommandResult> {
+    const room = this.requireRoom(command.roomId);
+    const defaultBrowserId = command.browserId === undefined ? room.defaultBrowserId : command.browserId;
+    if (defaultBrowserId) this.requireBrowser(defaultBrowserId);
+    if (room.browserEnabled === command.enabled && room.defaultBrowserId === defaultBrowserId) return { type: "room.updated", roomId: room.id };
+    const browser = this.effectiveBrowser({ ...room, defaultBrowserId });
+    const text = !command.enabled
+      ? "Browsers turned off for this room"
+      : !room.browserEnabled
+        ? `Browsers turned on: tasks in this room get "${browser?.name ?? "a browser"}" by default`
+        : `Default browser set to "${browser?.name ?? "none"}"`;
+    this.db.transaction(() => {
+      this.repos.setRoomBrowser(room.id, command.enabled, defaultBrowserId, now());
+      this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text });
+    });
+    this.notify(room.id);
+    return { type: "room.updated", roomId: room.id };
+  }
+
+  private async createBrowser(command: Extract<RoomCommand, { type: "browser.create" }>): Promise<CommandResult> {
+    this.assertBrowserNameFree(command.name, null);
+    const browser: Browser = { id: randomUUID(), name: command.name, description: command.description, createdAt: now(), updatedAt: now() };
+    this.db.transaction(() => this.repos.insertBrowser(browser));
+    return { type: "browser.created", browserId: browser.id };
+  }
+
+  private async updateBrowser(command: Extract<RoomCommand, { type: "browser.update" }>): Promise<CommandResult> {
+    const browser = this.requireBrowser(command.browserId);
+    if (command.name !== undefined) this.assertBrowserNameFree(command.name, browser.id);
+    this.db.transaction(() =>
+      this.repos.updateBrowser({ ...browser, name: command.name ?? browser.name, description: command.description ?? browser.description, updatedAt: now() }),
+    );
+    for (const room of this.roomsUsingBrowser(browser.id)) this.notify(room.id);
+    return { type: "browser.updated", browserId: browser.id };
+  }
+
+  /** Deletes the record; the caller stops the process and removes the profile directory. */
+  private async deleteBrowser(command: Extract<RoomCommand, { type: "browser.delete" }>): Promise<CommandResult> {
+    const browser = this.requireBrowser(command.browserId);
+    const users = this.roomsUsingBrowser(browser.id);
+    if (users.length > 0) {
+      throw new RoomError("browser_in_use", `"${browser.name}" is the default browser of ${users.map((r) => `"${r.title}"`).join(", ")}; pick another default there first`, 409);
+    }
+    this.db.transaction(() => {
+      // Rooms with browsers off may still point at it; they fall back to "general".
+      for (const room of this.repos.listRooms().filter((r) => r.defaultBrowserId === browser.id)) this.repos.setRoomBrowser(room.id, room.browserEnabled, null, now());
+      this.repos.deleteBrowser(browser.id);
+    });
+    return { type: "browser.deleted", browserId: browser.id };
   }
 
   private requireRoom(roomId: string): Room {

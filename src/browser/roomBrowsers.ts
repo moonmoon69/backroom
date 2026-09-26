@@ -1,12 +1,14 @@
 /**
- * Room browsers: one shared Chrome per room, started by the room service on the machine it runs on (the same machine
- * as the T3 server and the agents). Agents attach over Chrome's DevTools port on localhost; the user watches and takes
- * over through noVNC (Linux, on an Xvfb display) or the visible Chrome window (macOS / desktop Linux).
+ * Browser processes: one shared Chrome per browser (see Browser in domain/types.ts), started by the room service on
+ * the machine it runs on (the same machine as the T3 server and the agents). Agents attach over Chrome's DevTools port
+ * on localhost; the user watches and takes over through noVNC (Linux, on an Xvfb display) or the visible Chrome window
+ * (macOS / desktop Linux). Everything here is keyed by browser id; which rooms use a browser is the service's business.
  *
- * Ports and the profile are stable per room (data/browsers/<roomId>), so the address in a briefing stays valid across
- * restarts and logins survive. Browsers outlive a restart of the room service (an agent may be mid-task): their process
- * groups are recorded in state.json and adopted when the service starts again. Nothing here is room state: the room
- * only stores whether its browser is enabled.
+ * Ports and the profile are stable per browser (data/browsers/<browserId>), so the address in a briefing stays valid
+ * across restarts and logins survive. Stopping asks Chrome to quit on its own, so it saves its open tabs, history and
+ * cookies; the next start reopens those tabs. Browsers outlive a restart of the room service (an agent may be
+ * mid-task): their process groups are recorded in state.json and adopted when the service starts again. Under systemd
+ * each process runs in its own transient scope, because a restart of the unit kills everything in its cgroup.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -33,7 +35,7 @@ export interface BrowserTab {
 }
 
 export interface RoomBrowserStatus {
-  roomId: string;
+  browserId: string;
   state: "stopped" | "starting" | "running" | "error";
   mode: BrowserMode | null;
   /** DevTools endpoint on this machine, for agents. */
@@ -49,8 +51,11 @@ export interface RoomBrowserStatus {
   error: string | null;
 }
 
-/** What a briefing needs to point an agent at the room's browser. */
+/** What a briefing needs to point an agent at a browser. */
 export interface BrowserBriefing {
+  /** Name and purpose, from the browser's record (filled in by the caller). */
+  name: string;
+  description: string;
   cdpUrl: string;
   cdpPort: number;
   mode: BrowserMode;
@@ -69,9 +74,15 @@ export interface RoomBrowserOptions {
   watchHost?: string | null;
   noVncDir?: string;
   idleMinutes?: number;
-  /** True while the room has work in flight; a busy room's browser is never stopped for idleness. */
-  isRoomBusy?: (roomId: string) => boolean;
-  onChange?: (roomId: string) => void;
+  /**
+   * Run each browser process in its own transient systemd scope (systemd-run --user --scope) so a restart of the
+   * service unit does not kill it. Default: on when the service itself runs under systemd and systemd-run works, unless
+   * ROOMS_BROWSER_SCOPE=0.
+   */
+  systemdScope?: boolean;
+  /** True while a room using the browser has work in flight; a busy browser is never stopped for idleness. */
+  isBusy?: (browserId: string) => boolean;
+  onChange?: (browserId: string) => void;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -83,7 +94,7 @@ interface Ports {
 }
 
 interface Instance {
-  roomId: string;
+  browserId: string;
   mode: BrowserMode;
   ports: Ports;
   password: string | null;
@@ -163,12 +174,12 @@ export class RoomBrowsers {
     void this.adopt();
   }
 
-  status(roomId: string): RoomBrowserStatus {
-    const instance = this.instances.get(roomId);
+  status(browserId: string): RoomBrowserStatus {
+    const instance = this.instances.get(browserId);
     const environment = this.environment();
     if (!instance) {
       return {
-        roomId,
+        browserId,
         state: "stopped",
         mode: environment.mode,
         cdpUrl: null,
@@ -184,7 +195,7 @@ export class RoomBrowsers {
     }
     const vnc = instance.mode === "vnc";
     return {
-      roomId,
+      browserId,
       state: instance.state,
       mode: instance.mode,
       cdpUrl: `http://127.0.0.1:${instance.ports.cdp}`,
@@ -199,21 +210,21 @@ export class RoomBrowsers {
     };
   }
 
-  /** Start the room's browser if needed and wait until agents can attach. */
-  async ensure(roomId: string): Promise<RoomBrowserStatus> {
-    const existing = this.instances.get(roomId);
-    if (existing?.state === "running") return this.status(roomId);
+  /** Start the browser if needed and wait until agents can attach. */
+  async ensure(browserId: string): Promise<RoomBrowserStatus> {
+    const existing = this.instances.get(browserId);
+    if (existing?.state === "running") return this.status(browserId);
     if (existing?.starting) {
       await existing.starting;
-      return this.status(roomId);
+      return this.status(browserId);
     }
     const environment = this.environment();
     if (!environment.mode || !environment.chromePath) {
       throw new Error(`Cannot start a browser here: missing ${environment.missing.join(", ")}`);
     }
-    const ports = await this.portsFor(roomId, environment.mode);
+    const ports = await this.portsFor(browserId, environment.mode);
     const instance: Instance = {
-      roomId,
+      browserId,
       mode: environment.mode,
       ports,
       password: environment.mode === "vnc" ? randomBytes(6).toString("base64url").slice(0, 8) : null,
@@ -226,54 +237,64 @@ export class RoomBrowsers {
       lastActivityAt: new Date().toISOString(),
       starting: null,
     };
-    this.instances.set(roomId, instance);
-    this.changed(roomId);
+    this.instances.set(browserId, instance);
+    this.changed(browserId);
     instance.starting = this.launch(instance, environment.chromePath)
       .then(() => {
         instance.state = "running";
         this.saveState(instance);
-        this.log("room browser started", { roomId, mode: instance.mode, cdp: ports.cdp });
+        this.log("browser started", { browserId, mode: instance.mode, cdp: ports.cdp });
       })
       .catch((error: Error) => {
         instance.state = "error";
         instance.error = error.message;
         this.kill(instance);
-        this.log("room browser failed to start", { roomId, error: error.message });
+        this.log("browser failed to start", { browserId, error: error.message });
       })
       .finally(() => {
         instance.starting = null;
-        this.changed(roomId);
+        this.changed(browserId);
       });
     await instance.starting;
     if (instance.state !== "running") throw new Error(instance.error ?? "the browser did not start");
     await this.refreshTabs(instance);
-    return this.status(roomId);
+    return this.status(browserId);
   }
 
   /** The briefing section's facts, starting the browser if needed; null when it cannot run. */
-  async briefingFor(roomId: string): Promise<BrowserBriefing | null> {
+  async briefingFor(browser: { id: string; name: string; description: string }): Promise<BrowserBriefing | null> {
     try {
-      const status = await this.ensure(roomId);
+      const status = await this.ensure(browser.id);
       if (!status.cdpUrl || !status.cdpPort || !status.mode) return null;
       const watchUrl =
         status.watchPort && status.watchPath && status.watchHost ? `http://${status.watchHost}:${status.watchPort}${status.watchPath}` : null;
-      return { cdpUrl: status.cdpUrl, cdpPort: status.cdpPort, mode: status.mode, watchUrl };
+      return { name: browser.name, description: browser.description, cdpUrl: status.cdpUrl, cdpPort: status.cdpPort, mode: status.mode, watchUrl };
     } catch (error) {
-      this.log("room browser unavailable for briefing", { roomId, error: (error as Error).message });
+      this.log("browser unavailable for briefing", { browserId: browser.id, error: (error as Error).message });
       return null;
     }
   }
 
-  /** Stop the room's browser and wait until its processes are gone (SIGKILL after a few seconds). */
-  async stop(roomId: string): Promise<void> {
-    const instance = this.instances.get(roomId);
+  /**
+   * Stop the browser and wait until its processes are gone. Chrome is asked to quit first, then the display and
+   * VNC processes get SIGTERM, and anything left after a few seconds gets SIGKILL.
+   */
+  async stop(browserId: string): Promise<void> {
+    const instance = this.instances.get(browserId);
     if (!instance) return;
-    this.instances.delete(roomId);
-    rmSync(join(this.roomDir(roomId), "state.json"), { force: true });
+    this.instances.delete(browserId);
+    rmSync(join(this.browserDir(browserId), "state.json"), { force: true });
     const groups = [...instance.groups];
+    // A signal to Chrome's process group, or its display going away, makes it skip its last writes: the browsing
+    // history of the session and possibly a login made moments earlier. A normal quit commits them and saves the tabs.
+    const chromeGroup = groups[groups.length - 1];
+    if (chromeGroup !== undefined && groupAlive(chromeGroup) && (await closeChrome(instance.ports.cdp, 3000))) {
+      const deadline = Date.now() + 8000;
+      while (groupAlive(chromeGroup) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    }
     this.kill(instance);
-    this.log("room browser stopped", { roomId });
-    this.changed(roomId);
+    this.log("browser stopped", { browserId });
+    this.changed(browserId);
     const deadline = Date.now() + 5000;
     while (groups.some(groupAlive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
     for (const group of groups.filter(groupAlive)) {
@@ -285,10 +306,26 @@ export class RoomBrowsers {
     }
   }
 
-  /** Stop the browser and delete its profile (logins, history). Used when the room is deleted. */
-  async remove(roomId: string): Promise<void> {
-    await this.stop(roomId);
-    rmSync(this.roomDir(roomId), { recursive: true, force: true });
+  /** Stop the browser and wipe its profile (logins, history, tabs); ports stay, so the address does not change. */
+  async resetProfile(browserId: string): Promise<void> {
+    await this.stop(browserId);
+    rmSync(join(this.browserDir(browserId), "profile"), { recursive: true, force: true });
+    this.changed(browserId);
+  }
+
+  /** Profile size on disk in bytes (du), or null when it cannot be read. */
+  profileBytes(browserId: string): number | null {
+    const profile = join(this.browserDir(browserId), "profile");
+    if (!existsSync(profile)) return 0;
+    const du = spawnSync("du", ["-sk", profile], { encoding: "utf8", timeout: 10_000 });
+    const kb = du.status === 0 ? Number(du.stdout.split(/\s+/)[0]) : Number.NaN;
+    return Number.isFinite(kb) ? kb * 1024 : null;
+  }
+
+  /** Stop the browser and delete its profile (logins, history). Used when the browser is deleted. */
+  async remove(browserId: string): Promise<void> {
+    await this.stop(browserId);
+    rmSync(this.browserDir(browserId), { recursive: true, force: true });
   }
 
   /** Service shutdown: stop watching but leave the browsers running; the next start adopts them. */
@@ -298,16 +335,16 @@ export class RoomBrowsers {
     this.instances.clear();
   }
 
-  /** Stop every browser (tests, or an explicit shutdown of all rooms). */
+  /** Stop every browser (tests, or an explicit shutdown). */
   async stopAll(): Promise<void> {
-    await Promise.all([...this.instances.keys()].map((roomId) => this.stop(roomId)));
+    await Promise.all([...this.instances.keys()].map((browserId) => this.stop(browserId)));
     this.detach();
   }
 
   // ---------------- internals ----------------
 
-  private roomDir(roomId: string): string {
-    return join(this.options.dataDir, "browsers", roomId);
+  private browserDir(browserId: string): string {
+    return join(this.options.dataDir, "browsers", browserId);
   }
 
   private findChrome(): string | null {
@@ -319,9 +356,9 @@ export class RoomBrowsers {
     return null;
   }
 
-  /** Stable per room: reuse the saved ports when they are free, otherwise pick new ones and save them. */
-  private async portsFor(roomId: string, mode: BrowserMode): Promise<Ports> {
-    const dir = this.roomDir(roomId);
+  /** Stable per browser: reuse the saved ports when they are free, otherwise pick new ones and save them. */
+  private async portsFor(browserId: string, mode: BrowserMode): Promise<Ports> {
+    const dir = this.browserDir(browserId);
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "ports.json");
     const taken = new Set<number>([...this.instances.values()].flatMap((i) => [i.ports.cdp, i.ports.vnc, i.ports.web]));
@@ -373,7 +410,7 @@ export class RoomBrowsers {
   }
 
   private async launch(instance: Instance, chromePath: string): Promise<void> {
-    const dir = this.roomDir(instance.roomId);
+    const dir = this.browserDir(instance.browserId);
     const profile = join(dir, "profile");
     mkdirSync(profile, { recursive: true });
     const env: NodeJS.ProcessEnv = { ...process.env };
@@ -407,12 +444,15 @@ export class RoomBrowsers {
     if (instance.mode === "vnc") args.push("--window-position=0,0", "--start-maximized");
     if (instance.mode === "headless") args.push("--headless=new");
     if (process.platform === "linux" && process.getuid?.() === 0) args.push("--no-sandbox");
-    args.push("about:blank");
+    // Reopen the tabs that were open when the browser last stopped (Chrome keeps them in the profile's Sessions folder).
+    // A profile that never ran starts on a blank page.
+    const sessions = join(profile, "Default", "Sessions");
+    args.push(existsSync(sessions) && readdirSync(sessions).length > 0 ? "--restore-last-session" : "about:blank");
     const chrome = this.spawnTool(instance, chromePath, args, env, true);
     instance.groups.push(chrome);
     await waitFor(
       async () => {
-        if (!groupAlive(chrome)) throw new Error(`Chrome exited during start: ${this.logTail(instance.roomId, "chrome")}`);
+        if (!groupAlive(chrome)) throw new Error(`Chrome exited during start: ${this.logTail(instance.browserId, "chrome")}`);
         return (await fetchJson(`http://127.0.0.1:${ports.cdp}/json/version`)) !== null;
       },
       20_000,
@@ -425,28 +465,49 @@ export class RoomBrowsers {
    * forks many helpers. Returns the group id.
    */
   private spawnTool(instance: Instance, command: string, args: string[], env: NodeJS.ProcessEnv = process.env, isChrome = false): number {
-    // Output goes to a per-room log (data/browsers/<roomId>/<tool>.log) for diagnosing a browser that will not start.
-    const logFd = openSync(join(this.roomDir(instance.roomId), `${isChrome ? "chrome" : basename(command)}.log`), "w");
-    const child: ChildProcess = spawn(command, args, { env, detached: true, stdio: ["ignore", logFd, logFd] });
+    // Output goes to a per-browser log (data/browsers/<browserId>/<tool>.log) for diagnosing a browser that will not start.
+    const logFd = openSync(join(this.browserDir(instance.browserId), `${isChrome ? "chrome" : basename(command)}.log`), "w");
+    // systemd-run registers the scope and then execs the command, so the pid and process group stay the command's. It
+    // expands $ in arguments, so an argument containing one runs unscoped rather than altered.
+    const scoped = this.useSystemdScope() && ![command, ...args].some((arg) => arg.includes("$"));
+    const child: ChildProcess = scoped
+      ? spawn("systemd-run", ["--user", "--scope", "--quiet", "--collect", command, ...args], { env, detached: true, stdio: ["ignore", logFd, logFd] })
+      : spawn(command, args, { env, detached: true, stdio: ["ignore", logFd, logFd] });
     closeSync(logFd);
     if (child.pid === undefined) throw new Error(`${command} could not be started`);
     child.on("error", (error) => {
       instance.error = `${command}: ${error.message}`;
     });
     child.on("exit", (code) => {
-      if (!isChrome || this.instances.get(instance.roomId) !== instance || instance.state === "starting") return;
-      // Closing the Chrome window (or a crash) ends the room browser; the next task or Start brings it back.
-      this.log("room browser exited", { roomId: instance.roomId, code });
-      void this.stop(instance.roomId);
+      if (!isChrome || this.instances.get(instance.browserId) !== instance || instance.state === "starting") return;
+      // Closing the Chrome window (or a crash) ends the browser; the next task or Start brings it back.
+      this.log("browser exited", { browserId: instance.browserId, code });
+      void this.stop(instance.browserId);
     });
     child.unref();
     return child.pid;
   }
 
+  private systemdScope: boolean | null = null;
+
+  /** Whether browser processes get their own systemd scope; probed once (a failing systemd-run falls back to plain spawn). */
+  private useSystemdScope(): boolean {
+    if (this.systemdScope === null) {
+      this.systemdScope =
+        this.options.systemdScope ??
+        (process.platform === "linux" &&
+          Boolean(process.env.INVOCATION_ID) &&
+          process.env.ROOMS_BROWSER_SCOPE !== "0" &&
+          spawnSync("systemd-run", ["--user", "--scope", "--quiet", "--collect", "true"], { stdio: "ignore", timeout: 5000 }).status === 0);
+      if (this.systemdScope) this.log("browsers run in their own systemd scopes (they outlive restarts of this service)");
+    }
+    return this.systemdScope;
+  }
+
   /** Last meaningful lines of a tool's log, for error messages. */
-  private logTail(roomId: string, tool: string): string {
+  private logTail(browserId: string, tool: string): string {
     try {
-      const lines = readFileSync(join(this.roomDir(roomId), `${tool}.log`), "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+      const lines = readFileSync(join(this.browserDir(browserId), `${tool}.log`), "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
       return lines.slice(-3).join(" | ").slice(0, 400) || "no output";
     } catch {
       return "no output";
@@ -466,16 +527,16 @@ export class RoomBrowsers {
 
   private saveState(instance: Instance): void {
     const state = { mode: instance.mode, ports: instance.ports, password: instance.password, groups: instance.groups, startedAt: instance.startedAt };
-    writeFileSync(join(this.roomDir(instance.roomId), "state.json"), JSON.stringify(state, null, 2));
+    writeFileSync(join(this.browserDir(instance.browserId), "state.json"), JSON.stringify(state, null, 2));
   }
 
   /** Browsers from a previous run: adopt the ones still answering, clean up the rest. */
   private async adopt(): Promise<void> {
     const root = join(this.options.dataDir, "browsers");
     if (!existsSync(root)) return;
-    for (const roomId of readdirSync(root)) {
-      const file = join(root, roomId, "state.json");
-      if (!existsSync(file) || this.instances.has(roomId)) continue;
+    for (const browserId of readdirSync(root)) {
+      const file = join(root, browserId, "state.json");
+      if (!existsSync(file) || this.instances.has(browserId)) continue;
       let state: { mode: BrowserMode; ports: Ports; password: string | null; groups: number[]; startedAt: string };
       try {
         state = JSON.parse(readFileSync(file, "utf8"));
@@ -497,7 +558,7 @@ export class RoomBrowsers {
         continue;
       }
       const instance: Instance = {
-        roomId,
+        browserId,
         mode: state.mode,
         ports: state.ports,
         password: state.password,
@@ -510,10 +571,10 @@ export class RoomBrowsers {
         lastActivityAt: new Date().toISOString(),
         starting: null,
       };
-      this.instances.set(roomId, instance);
+      this.instances.set(browserId, instance);
       await this.refreshTabs(instance);
-      this.log("room browser adopted", { roomId, cdp: state.ports.cdp });
-      this.changed(roomId);
+      this.log("browser adopted", { browserId, cdp: state.ports.cdp });
+      this.changed(browserId);
     }
   }
 
@@ -538,21 +599,21 @@ export class RoomBrowsers {
       const chromeGroup = instance.groups[instance.groups.length - 1];
       if (chromeGroup === undefined || !groupAlive(chromeGroup)) {
         // An adopted browser has no exit listener; notice it went away here.
-        this.log("room browser went away", { roomId: instance.roomId });
-        await this.stop(instance.roomId);
+        this.log("browser went away", { browserId: instance.browserId });
+        await this.stop(instance.browserId);
         continue;
       }
-      if (await this.refreshTabs(instance)) this.changed(instance.roomId);
+      if (await this.refreshTabs(instance)) this.changed(instance.browserId);
       const idle = Date.now() - Date.parse(instance.lastActivityAt) > idleMs;
-      if (idleMs > 0 && idle && !(this.options.isRoomBusy?.(instance.roomId) ?? false)) {
-        this.log("room browser idle; stopping", { roomId: instance.roomId });
-        await this.stop(instance.roomId);
+      if (idleMs > 0 && idle && !(this.options.isBusy?.(instance.browserId) ?? false)) {
+        this.log("browser idle; stopping", { browserId: instance.browserId });
+        await this.stop(instance.browserId);
       }
     }
   }
 
-  private changed(roomId: string): void {
-    this.options.onChange?.(roomId);
+  private changed(browserId: string): void {
+    this.options.onChange?.(browserId);
   }
 
   private log(message: string, detail?: unknown): void {
@@ -574,6 +635,33 @@ function portFree(port: number, host: string): Promise<boolean> {
     const server = createServer();
     server.once("error", () => resolve(false));
     server.listen(port, host, () => server.close(() => resolve(true)));
+  });
+}
+
+/** Ask Chrome to quit through its DevTools port (Browser.close). True once it acknowledged or closed the connection. */
+async function closeChrome(cdpPort: number, timeoutMs: number): Promise<boolean> {
+  const version = (await fetchJson(`http://127.0.0.1:${cdpPort}/json/version`)) as { webSocketDebuggerUrl?: string } | null;
+  const SocketCtor = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+  if (!version?.webSocketDebuggerUrl || !SocketCtor) return false;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.close();
+      } catch {
+        // closing anyway
+      }
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    const socket = new SocketCtor(version.webSocketDebuggerUrl as string);
+    socket.addEventListener("open", () => socket.send(JSON.stringify({ id: 1, method: "Browser.close" })));
+    socket.addEventListener("message", () => done(true));
+    socket.addEventListener("close", () => done(true));
+    socket.addEventListener("error", () => done(false));
   });
 }
 

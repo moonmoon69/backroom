@@ -16,17 +16,18 @@ See [`PRD.md`](PRD.md) for the product definition and [`research/`](research/) f
 4. [A headless box over Tailscale](#a-headless-box-over-tailscale)
 5. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
 6. [Your first room](#your-first-room)
-7. [Writing messages](#writing-messages)
-8. [Sending while someone is working](#sending-while-someone-is-working)
-9. [T3 slash commands](#t3-slash-commands)
-10. [Room browser](#room-browser)
-11. [What the room shows](#what-the-room-shows)
-12. [Managing rooms, participants and roles](#managing-rooms-participants-and-roles)
-13. [Configuration](#configuration)
-14. [Running, updating and backing up](#running-updating-and-backing-up)
-15. [Troubleshooting](#troubleshooting)
-16. [Development](#development)
-17. [How it works](#how-it-works)
+7. [Projects, and threads without a room](#projects-and-threads-without-a-room)
+8. [Writing messages](#writing-messages)
+9. [Sending while someone is working](#sending-while-someone-is-working)
+10. [T3 slash commands](#t3-slash-commands)
+11. [Room browser](#room-browser)
+12. [What the room shows](#what-the-room-shows)
+13. [Managing rooms, participants and roles](#managing-rooms-participants-and-roles)
+14. [Configuration](#configuration)
+15. [Running, updating and backing up](#running-updating-and-backing-up)
+16. [Troubleshooting](#troubleshooting)
+17. [Development](#development)
+18. [How it works](#how-it-works)
 
 ---
 
@@ -166,7 +167,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 
 ## Your first room
 
-1. **Create a room.** Click **+ New room** in the sidebar, give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
+1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
 2. **Add a participant.** Click **+ Add participant** in the participant bar at the top, then choose one of:
    - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
    - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
@@ -176,6 +177,25 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 4. **Watch it run.** Your message appears on the left and the participant's reply on the right. Progress notes stream in while the turn runs. When it ends, the final answer becomes the reply.
 
 The composer placeholder cycles through examples built from your room's actual participants, so every example can be sent as is.
+
+## Projects, and threads without a room
+
+The sidebar lists T3's projects. Under each one are its rooms, then its T3 threads that no room holds, most recently used first (five, then **show more**). Below those, **Settled · N** and **Archived · N** fold open to T3's settled and archived threads for the project. Click a project's name to fold it.
+
+A thread is in one of three states in T3:
+
+- **Active:** in the main list.
+- **Settled:** T3's "done for now" list. It opens and reads as usual; sending it a message makes it active again. **Unsettle** in its ⋯ menu does the same without a message.
+- **Archived:** hidden in T3 and reversible. T3 does not serve an archived thread's conversation, so opening one shows **Unarchive** and **Delete** instead.
+
+Deleted threads are gone: T3 keeps no record a client can list or restore.
+
+- **A thread on its own.** Pick **+ → New thread** on a project (or **+ New → New thread**), choose the model and permission mode, and type. The first message creates the thread in T3 and starts it; T3 then names it. Messages go to T3 exactly as typed, with no room briefing and no queue, like typing in T3 Code. While a turn runs you can **Stop** it, or send another message and T3 handles it as its own client would. Approvals and questions appear in the conversation. Images work as in a room.
+- **Threads started in T3 Code** show up in the same list and open the same way.
+- **The ⋯ menu** on an open thread changes its model and permission mode, **adds it to a room** of the same project (it becomes a participant under an alias and keeps its history), or settles (or unsettles), archives or deletes it in T3.
+- **A new project.** **+ New → New project** adds a T3 project for a folder on the machine T3 runs on. The folder must exist unless you tick **Create the folder**; T3 refuses a folder another project already uses. The title defaults to the folder name.
+
+The thread view reads the last 30 turns from T3 each time it polls; older turns stay in T3 Code. Nothing about a thread outside a room is stored by the room service.
 
 ## Writing messages
 
@@ -324,12 +344,15 @@ T3 publishes each provider's slash commands and skills. Claude exposes dozens (`
 
 ## Room browser
 
-A room can give its agents one shared Chrome for browser work. You can watch it and take over: close tabs, type a password, click through a login.
+Agents can use shared Chrome browsers on this machine for browser work. You can watch one and take over: close tabs, type a password, click through a login.
 
-- **Turn it on** with the **Browser** button in the room header, then tick "Give this room's agents a shared browser".
+- **Browsers are a list, named by purpose**, under **Browsers** in the sidebar: `general` exists from the start; add others such as `t3-rooms-testing` with **+**, and describe what each is for and which logins it holds (agents read that). Each browser's view has Start / Stop, the screen link, open tabs, the rooms using it, its profile size, **Reset profile** (wipes logins, history and tabs) and **Delete**.
+- **Turn it on for a room** with the **Browser** button in the room header: tick "Give this room's agents a browser" and pick the room's **default** browser (`general` unless you choose another). Several rooms can share a browser.
 - **When it runs:** it starts when you turn it on or press Start, and before each task in the room is sent (slash commands excepted). It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
-- **Stable address:** each room keeps its own ports and profile under `data/browsers/<room>/`, so logins survive stop, start and service restarts. Browsers keep running when the room service restarts, and the service picks them up again. Deleting the room deletes its browser profile.
-- **How agents find it:** every briefing in the room gets a "Room browser" section with the DevTools address (`http://127.0.0.1:<port>`) and how to attach, for example `agent-browser connect <port>` or Playwright's `connectOverCDP`. No harness MCP configuration is needed. Agents are asked to open their own tab and leave other tabs and logins alone.
+- **Stable address:** each browser keeps its own ports and profile under `data/browsers/<id>/`, so logins survive stop, start and service restarts. The profile is the browser's own: none of your everyday Chrome's logins are in it. Deleting a room leaves browsers alone; a browser can't be deleted while a room uses it as its default. (A room's browser from before browsers were a list became a browser named after the room, with its logins.)
+- **Stop and start keep your tabs:** Stop asks Chrome to quit normally, so it saves its open tabs, history and cookies; the next start reopens those tabs.
+- **Service restarts don't touch it:** browsers keep running when the room service restarts, and the service picks them up again. Under systemd each browser process runs in its own transient scope (`systemd-run --user --scope`), because restarting a unit kills everything in its cgroup. Set `ROOMS_BROWSER_SCOPE=0` to turn that off.
+- **How agents find it:** every briefing in the room gets a "Room browser" section naming the default browser and what it is for, with its DevTools address (`http://127.0.0.1:<port>`) and how to attach, for example `agent-browser connect <port>` or Playwright's `connectOverCDP`. No harness MCP configuration is needed. Agents are asked to open their own tab and leave other tabs and logins alone.
 - **What you see depends on the machine:**
 
   | Machine | What runs | How you watch |
@@ -377,7 +400,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds only rooms. The top right of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). The top right of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
 
 Each room shows activity pills:
 
@@ -386,7 +409,9 @@ Each room shows activity pills:
 - only watch loops running;
 - waiting for your approval or answer.
 
-Drag rooms to reorder them. The **⋯** menu renames or deletes a room.
+A thread shows a dot: filled and pulsing while it works, a ring with background work, violet when it needs you, red after an error.
+
+Drag rooms to reorder them within their project. The **⋯** menu renames or deletes a room.
 
 ### Inspector (right-hand panel)
 
@@ -446,6 +471,7 @@ The service reads environment variables only. It does **not** load `.env`, which
 | `ROOMS_BROWSER_HOST` | the bind address | Host used in watch links given to agents; if unset with a wildcard bind, the UI uses the host you opened it on |
 | `ROOMS_BROWSER_NOVNC_DIR` | `/usr/share/novnc` | noVNC web files |
 | `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a room's browser after this long without tab changes (`0` = never) |
+| `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
 
 ## Running, updating and backing up
 

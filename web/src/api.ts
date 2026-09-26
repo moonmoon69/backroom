@@ -4,6 +4,7 @@ import type {
   ApiErrorBody,
   RoomBrowserStatus,
   Attachment,
+  BrowserListItem,
   CatalogEntry,
   CommandResult,
   DeskResponse,
@@ -20,6 +21,7 @@ import type {
   StatusResponse,
   T3Project,
   T3ThreadShell,
+  ThreadView,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -53,6 +55,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const errorBody = (body ?? { error: "http_error", message: response.statusText }) as ApiErrorBody;
     throw new ApiError(response.status, errorBody);
   }
+  // A page where data was expected: an older service that does not know this route answered with the app shell.
+  if (body && typeof body === "object" && (body as ApiErrorBody).error === "bad_response") {
+    throw new ApiError(502, { error: "bad_response", message: "The room service answered with a page instead of data; it may be running an older version. Restart it." });
+  }
   return body as T;
 }
 
@@ -68,6 +74,10 @@ export const api = {
   catalog: (): Promise<CatalogEntry[]> => get("/api/t3/catalog"),
   threads: (projectId: string): Promise<T3ThreadShell[]> =>
     get(`/api/t3/threads?projectId=${encodeURIComponent(projectId)}`),
+  /** Every thread in every project, archived ones included, each marked with whether a room participant holds it. */
+  allThreads: (): Promise<T3ThreadShell[]> => get("/api/t3/threads?includeArchived=1"),
+  /** A thread used directly (outside any room). */
+  thread: (threadId: string): Promise<ThreadView> => get(`/api/threads/${encodeURIComponent(threadId)}`),
   rooms: (): Promise<RoomListItem[]> => get("/api/rooms"),
   room: (roomId: string): Promise<RoomSnapshot> => get(`/api/rooms/${encodeURIComponent(roomId)}`),
   run: (roomId: string, runId: string): Promise<Run> =>
@@ -83,8 +93,13 @@ export const api = {
   /** T3's default model for a project; null when T3 has none configured. */
   defaultModel: (projectId: string): Promise<{ modelSelection: ModelSelection | null }> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/default-model`),
   roles: (): Promise<Role[]> => get("/api/roles"),
-  browserStart: (roomId: string): Promise<RoomBrowserStatus> => post(`/api/rooms/${encodeURIComponent(roomId)}/browser/start`, {}),
-  browserStop: (roomId: string): Promise<RoomBrowserStatus | null> => post(`/api/rooms/${encodeURIComponent(roomId)}/browser/stop`, {}),
+  browsers: (): Promise<BrowserListItem[]> => get("/api/browsers"),
+  /** One browser, with its profile size. */
+  browser: (browserId: string): Promise<BrowserListItem> => get(`/api/browsers/${encodeURIComponent(browserId)}`),
+  browserStart: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/start`, {}),
+  browserStop: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/stop`, {}),
+  /** Wipe logins, history and saved tabs; the browser keeps its name, purpose and address. */
+  browserReset: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/reset`, {}),
   /** Upload one image as raw bytes; the returned id is referenced from message.create / task.create. */
   uploadAttachment: (roomId: string, file: File): Promise<Attachment> =>
     request(`/api/rooms/${encodeURIComponent(roomId)}/attachments`, {

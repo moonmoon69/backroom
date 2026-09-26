@@ -50,8 +50,30 @@ export const RoomCreateCommand = z
 
 export const RoomUpdateCommand = z.object({ type: z.literal("room.update"), roomId: nonEmpty, title: nonEmpty }).strict();
 
-/** Turn the room's shared browser on or off (whether its tasks get one; starting and stopping the process is separate). */
-export const RoomBrowserCommand = z.object({ type: z.literal("room.browser"), roomId: nonEmpty, enabled: z.boolean() }).strict();
+/**
+ * Whether the room's agents get browsers, and which one is the room's default (starting and stopping the process is
+ * separate). browserId omitted keeps the current default; null falls back to "general".
+ */
+export const RoomBrowserCommand = z
+  .object({ type: z.literal("room.browser"), roomId: nonEmpty, enabled: z.boolean(), browserId: nonEmpty.nullable().optional() })
+  .strict();
+
+const BROWSER_NAME = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, "use lowercase letters, digits and dashes (up to 40), starting with a letter or digit");
+const BROWSER_DESCRIPTION = z.string().trim().max(500);
+
+/** A shared browser named by purpose; the description tells agents what it is for and which logins it holds. */
+export const BrowserCreateCommand = z.object({ type: z.literal("browser.create"), name: BROWSER_NAME, description: BROWSER_DESCRIPTION.default("") }).strict();
+
+export const BrowserUpdateCommand = z
+  .object({ type: z.literal("browser.update"), browserId: nonEmpty, name: BROWSER_NAME.optional(), description: BROWSER_DESCRIPTION.optional() })
+  .strict();
+
+/** Delete a browser and its profile (logins, history). Refused while a room uses it. */
+export const BrowserDeleteCommand = z.object({ type: z.literal("browser.delete"), browserId: nonEmpty }).strict();
 
 /** Sidebar order: the full list of room ids, top to bottom. */
 export const RoomReorderCommand = z.object({ type: z.literal("room.reorder"), roomIds: z.array(nonEmpty).min(1) }).strict();
@@ -298,10 +320,86 @@ export const NativeUserInputRespondCommand = z
   })
   .strict();
 
+/**
+ * Add a T3 project for a folder on the machine running T3. The title defaults to the folder name. With createIfMissing,
+ * T3 creates the folder first; otherwise it must already exist.
+ */
+export const ProjectCreateCommand = z
+  .object({
+    type: z.literal("project.create"),
+    workspaceRoot: nonEmpty,
+    title: nonEmpty.optional(),
+    createIfMissing: z.boolean().default(false),
+  })
+  .strict();
+
+/** An image sent inline with a direct thread message: PNG, JPEG, GIF or WebP as a base64 data URL (T3's upload form). */
+export const InlineImageSchema = z
+  .object({
+    name: z.string().trim().max(255).default("image"),
+    dataUrl: z.string().regex(/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/, "must be a base64 PNG, JPEG, GIF or WebP data URL"),
+  })
+  .strict();
+
+const InlineImages = z.array(InlineImageSchema).max(20).default([]);
+
+/*
+ * Direct threads: T3 threads used on their own, outside any room. The text goes to T3 exactly as typed (no room
+ * briefing), like typing in T3 Code. A thread seated in a room is refused here: the room coordinates it.
+ */
+
+/** Create a thread in a project and send its first message in one step. Omitted model means T3's default for the project. */
+export const ThreadStartCommand = z
+  .object({
+    type: z.literal("thread.start"),
+    projectId: nonEmpty,
+    text: z.string().default(""),
+    images: InlineImages,
+    modelSelection: ModelSelectionSchema.optional(),
+    runtimeMode: RuntimeModeSchema.default("full-access"),
+    interactionMode: InteractionModeSchema.default("default"),
+  })
+  .strict()
+  .refine((command) => command.text.trim().length > 0 || command.images.length > 0, { message: "message is empty", path: ["text"] });
+
+/** Send a message to a direct thread. While a turn runs, T3 handles it as its own client would (steer or queue). */
+export const ThreadSendCommand = z
+  .object({ type: z.literal("thread.send"), threadId: nonEmpty, text: z.string().default(""), images: InlineImages })
+  .strict()
+  .refine((command) => command.text.trim().length > 0 || command.images.length > 0, { message: "message is empty", path: ["text"] });
+
+export const ThreadInterruptCommand = z.object({ type: z.literal("thread.interrupt"), threadId: nonEmpty }).strict();
+
+export const ThreadApprovalRespondCommand = z
+  .object({
+    type: z.literal("thread.approval.respond"),
+    threadId: nonEmpty,
+    requestId: nonEmpty,
+    decision: z.enum(["accept", "acceptForSession", "acceptAlways", "decline", "cancel"]),
+  })
+  .strict();
+
+export const ThreadUserInputRespondCommand = z
+  .object({ type: z.literal("thread.userInput.respond"), threadId: nonEmpty, requestId: nonEmpty, answers: z.record(z.string(), z.unknown()) })
+  .strict();
+
+/** Change a direct thread's model or options (the provider stays: a thread's session belongs to one harness). */
+export const ThreadModelSetCommand = z.object({ type: z.literal("thread.model.set"), threadId: nonEmpty, modelSelection: ModelSelectionSchema }).strict();
+
+export const ThreadRuntimeModeSetCommand = z.object({ type: z.literal("thread.runtimeMode.set"), threadId: nonEmpty, runtimeMode: RuntimeModeSchema }).strict();
+
+/** Settle (T3's "settled" list), archive (hidden, reversible) or delete (permanent) a direct thread in T3; or undo a settle or archive. */
+export const ThreadLifecycleCommand = z
+  .object({ type: z.literal("thread.lifecycle"), threadId: nonEmpty, action: z.enum(["settle", "unsettle", "archive", "unarchive", "delete"]) })
+  .strict();
+
 export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoomCreateCommand,
   RoomUpdateCommand,
   RoomBrowserCommand,
+  BrowserCreateCommand,
+  BrowserUpdateCommand,
+  BrowserDeleteCommand,
   RoomReorderCommand,
   RoomDeleteCommand,
   ParticipantCreateCommand,
@@ -325,6 +423,15 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   TaskUnblockCommand,
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,
+  ProjectCreateCommand,
+  ThreadStartCommand,
+  ThreadSendCommand,
+  ThreadInterruptCommand,
+  ThreadApprovalRespondCommand,
+  ThreadUserInputRespondCommand,
+  ThreadModelSetCommand,
+  ThreadRuntimeModeSetCommand,
+  ThreadLifecycleCommand,
 ]);
 
 export type RoomCommand = z.infer<typeof RoomCommandSchema>;
@@ -332,6 +439,7 @@ export type RoomCommandInput = z.input<typeof RoomCommandSchema>;
 export type Schedule = z.infer<typeof ScheduleSchema>;
 export type TaskCreate = z.infer<typeof TaskCreateCommand>;
 export type Assignment = z.infer<typeof AssignmentSchema>;
+export type InlineImage = z.infer<typeof InlineImageSchema>;
 
 export class CommandValidationError extends Error {
   readonly issues: Array<{ path: string; message: string }>;

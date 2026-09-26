@@ -13,9 +13,11 @@ import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStored
 import { T3Unavailable } from "../adapter/types.ts";
 import type { T3Activity, T3Message } from "../adapter/types.ts";
 import { promptForTurn } from "../adapter/correlate.ts";
+import { latestContextWindow, openRequests, threadTranscript } from "../app/direct.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
-import type { RoomSnapshot } from "../domain/types.ts";
+import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
+import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import type { Config } from "../config.ts";
@@ -37,7 +39,10 @@ export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 
     events: stack.repos.listRecentEvents(roomId, eventLimit),
     nativeRequests: stack.repos.listOpenNativeRequests(participantIds),
     participantStatus,
-    browser: stack.browsers ? stack.browsers.status(roomId) : null,
+    browser: (() => {
+      const browser = stack.browsers ? effectiveBrowser(stack.repos, room) : null;
+      return browser && stack.browsers ? { browser, status: stack.browsers.status(browser.id) } : null;
+    })(),
   };
 }
 
@@ -118,8 +123,45 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/t3/threads", async (c) => {
     const projectId = c.req.query("projectId");
     const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
-    const threads = await stack.adapter.listThreads(projectId || undefined);
-    return c.json(threads.filter((t) => t.archivedAt === null).map((t) => ({ ...t, boundToRoom: bound.has(t.id) })));
+    const threads = (await stack.adapter.listThreads(projectId || undefined)).filter((t) => t.archivedAt === null);
+    // ?includeArchived=1 adds T3's archived threads (the sidebar's Archived sections). Their read is best effort: the
+    // live list is still served when it fails.
+    if (c.req.query("includeArchived") === "1" && stack.adapter.listArchivedThreads) {
+      try {
+        threads.push(...(await stack.adapter.listArchivedThreads()).filter((t) => !projectId || t.projectId === projectId));
+      } catch (error) {
+        console.warn(`[rooms] archived threads not read: ${(error as Error).message}`);
+      }
+    }
+    return c.json(threads.map((t) => ({ ...t, boundToRoom: bound.has(t.id) })));
+  });
+
+  /**
+   * One T3 thread used directly, outside any room: the conversation (last 30 turns), the running turn as it streams,
+   * the approvals and questions it waits on, and its latest context reading. Read from T3 on every call.
+   */
+  app.get("/api/threads/:threadId", async (c) => {
+    const threadId = c.req.param("threadId");
+    const [detail, listed, projects] = await Promise.all([
+      stack.adapter.getThreadDetail(threadId, { turnLimit: 30 }),
+      stack.adapter.getThreadShell(threadId),
+      stack.adapter.listProjects(),
+    ]);
+    if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
+    const shell = detail.shell;
+    const running = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
+    const items = threadTranscript(detail, running);
+    return c.json({
+      // The per-thread read omits background liveness; the thread list carries it.
+      thread: { ...shell, backgroundLiveness: listed?.backgroundLiveness ?? shell.backgroundLiveness, boundToRoom: stack.repos.listActiveBindings().some((b) => b.threadId === threadId) },
+      project: projects.find((p) => p.id === shell.projectId) ?? null,
+      items,
+      requests: openRequests(detail.activities),
+      running: running ? { turnId: running, feed: buildLiveFeed(detail.messages, detail.activities, running) } : null,
+      contextWindow: latestContextWindow(detail.activities),
+      // T3 holds turns older than the window read here.
+      partial: new Set(items.filter((i) => i.kind === "reply").map((i) => (i.kind === "reply" ? i.turnId : ""))).size >= 30,
+    });
   });
 
   // ---- crew library ----
@@ -460,29 +502,74 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   });
 
-  // ---- room browsers (processes on this machine; the room only stores whether its browser is on) ----
+  // ---- browsers (a list named by purpose; processes on this machine) ----
   app.get("/api/browser/environment", (c) => c.json(stack.browsers ? stack.browsers.environment() : null));
-  app.post("/api/rooms/:roomId/browser/start", async (c) => {
-    const roomId = c.req.param("roomId");
-    if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
+  const browserItem = (browser: ReturnType<typeof stack.repos.listBrowsers>[number]): BrowserListItem | null =>
+    stack.browsers
+      ? { ...browser, status: stack.browsers.status(browser.id), usedBy: roomsUsingBrowser(stack.repos, browser.id).map((room) => ({ roomId: room.id, title: room.title })) }
+      : null;
+  const requireBrowsers = () => {
     if (!stack.browsers) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    return stack.browsers;
+  };
+  const requireBrowserRecord = (browserId: string) => {
+    const browser = stack.repos.getBrowser(browserId);
+    if (!browser) throw new RoomError("not_found", "browser not found", 404);
+    return browser;
+  };
+  app.get("/api/browsers", (c) => c.json(stack.repos.listBrowsers().map(browserItem).filter(Boolean)));
+  app.get("/api/browsers/:browserId", (c) => {
+    const browser = requireBrowserRecord(c.req.param("browserId"));
+    const item = browserItem(browser);
+    if (!item) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    return c.json({ ...item, profileBytes: requireBrowsers().profileBytes(browser.id) });
+  });
+  app.post("/api/browsers/:browserId/start", async (c) => {
+    const browser = requireBrowserRecord(c.req.param("browserId"));
     try {
-      return c.json(await stack.browsers.ensure(roomId));
+      return c.json(await requireBrowsers().ensure(browser.id));
+    } catch (error) {
+      throw new RoomError("browser_failed", (error as Error).message, 409);
+    }
+  });
+  app.post("/api/browsers/:browserId/stop", async (c) => {
+    const browser = requireBrowserRecord(c.req.param("browserId"));
+    await requireBrowsers().stop(browser.id);
+    return c.json(requireBrowsers().status(browser.id));
+  });
+  // Wipes logins, history and saved tabs; the browser keeps its name, purpose and address.
+  app.post("/api/browsers/:browserId/reset", async (c) => {
+    const browser = requireBrowserRecord(c.req.param("browserId"));
+    await requireBrowsers().resetProfile(browser.id);
+    return c.json(requireBrowsers().status(browser.id));
+  });
+  // A room's Start and Stop act on the room's effective browser.
+  const roomBrowser = (roomId: string) => {
+    const room = stack.repos.getRoom(roomId);
+    if (!room) throw new RoomError("not_found", "room not found", 404);
+    const browser = effectiveBrowser(stack.repos, room);
+    if (!browser) throw new RoomError("no_browser", "This room has no browser; create one first", 409);
+    return browser;
+  };
+  app.post("/api/rooms/:roomId/browser/start", async (c) => {
+    const browser = roomBrowser(c.req.param("roomId"));
+    try {
+      return c.json(await requireBrowsers().ensure(browser.id));
     } catch (error) {
       throw new RoomError("browser_failed", (error as Error).message, 409);
     }
   });
   app.post("/api/rooms/:roomId/browser/stop", async (c) => {
-    const roomId = c.req.param("roomId");
-    await stack.browsers?.stop(roomId);
-    return c.json(stack.browsers ? stack.browsers.status(roomId) : null);
+    const browser = roomBrowser(c.req.param("roomId"));
+    await requireBrowsers().stop(browser.id);
+    return c.json(requireBrowsers().status(browser.id));
   });
 
   app.post("/api/commands", async (c) => {
     const command = parseCommand(await c.req.json());
     const result = await stack.service.execute(command);
-    // A deleted room's browser goes with it, profile and logins included.
-    if (command.type === "room.delete") await stack.browsers?.remove(command.roomId);
+    // A deleted browser's process and profile (logins, history) go with it. Rooms never take a browser with them.
+    if (command.type === "browser.delete") await stack.browsers?.remove(command.browserId);
     // Let the scheduler react promptly to new work without waiting for the next interval.
     void stack.scheduler.tick();
     return c.json(result);
@@ -506,6 +593,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       }
     });
   });
+
+  // An API path nothing above handles is a 404, never the app shell (a UI newer than the service would read HTML as data).
+  app.all("/api/*", (c) => c.json({ error: "not_found", message: `no route for ${c.req.method} ${c.req.path}` }, 404));
 
   // ---- static UI ----
   if (existsSync(join(webDistDir, "index.html"))) {

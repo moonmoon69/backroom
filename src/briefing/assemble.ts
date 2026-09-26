@@ -81,9 +81,10 @@ function formatEvent(event: RoomEvent, participantsById: ReadonlyMap<string, Par
 export function browserSection(browser: BrowserBriefing): string {
   const lines = [
     "== Room browser ==",
-    `This room has a shared Chrome running on this machine. DevTools endpoint: ${browser.cdpUrl}`,
+    `This room's browser is "${browser.name}", a shared Chrome running on this machine. DevTools endpoint: ${browser.cdpUrl}`,
+    ...(browser.description.trim() ? [`What it is for: ${browser.description.trim()}`] : []),
     `For browser work, attach to it instead of launching your own browser, e.g. \`agent-browser connect ${browser.cdpPort}\` or Playwright \`chromium.connectOverCDP("${browser.cdpUrl}")\`.`,
-    "Other participants in this room use the same browser and logins: open your own tab, leave other tabs and logins alone, and close your tabs when you are done.",
+    "Other agents, in this room and others, may use the same browser and logins: open your own tab, work only in it, leave other tabs and logins alone, and close your tabs when you are done.",
   ];
   if (browser.mode === "vnc") {
     lines.push(
