@@ -55,6 +55,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const errorBody = (body ?? { error: "http_error", message: response.statusText }) as ApiErrorBody;
+    // The page is newer than the service: the UI is served fresh on each load, the server only after a restart.
+    if (response.status === 404 && typeof errorBody.message === "string" && errorBody.message.startsWith("no route for ")) {
+      throw new ApiError(404, { error: "no_route", message: "The room service is older than this page and doesn't have this yet. Restart it (systemctl --user restart t3rooms)." });
+    }
     throw new ApiError(response.status, errorBody);
   }
   // A page where data was expected: an older service that does not know this route answered with the app shell.

@@ -98,10 +98,10 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
         {tab === "tasks" ? <TaskLanes /> : null}
         {tab === "git" ? <GitTab /> : null}
       </div>
-      {tab === "git" ? (
+      {/* Before the first read the tab itself shows any error; afterwards it keeps the last read, and this says why it is stale. */}
+      {tab === "git" && git.data ? (
         <div className="inspector-footer mono">
-          {git.error ? <span className="status-error">{git.error}</span> : null}
-          {!git.error && git.data ? <span className="muted">read from git {ageOf(git.data.fetchedAt)}</span> : null}
+          {git.error ? <span className="status-error">{git.error}</span> : <span className="muted">read from git {ageOf(git.data.fetchedAt)}</span>}
         </div>
       ) : null}
       {tab === "people" ? (
