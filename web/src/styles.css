@@ -1057,20 +1057,6 @@ button.primary.destructive {
   font-size: 12px;
 }
 
-/* Time (and room event number on hover) beside continued bubbles, shown on hover. */
-.chat-aside {
-  align-self: center;
-  font-size: 10px;
-  color: var(--fg-dim);
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 120ms;
-}
-
-.chat-row:hover .chat-aside {
-  opacity: 1;
-}
-
 /* Bubbles follow T3's user message: rounded-2xl, p-3, no border. */
 .bubble {
   max-width: 100%;
@@ -3952,11 +3938,10 @@ legend {
   white-space: nowrap;
 }
 
-/* Several source messages in one reply link ("↩ your 3:49 and 3:50 PM messages"). */
+/* Several source messages in one reply link ("↩ your 3:49 and 3:50 PM messages"). Plain inline text inside the pill:
+   as a flex box it dropped the spaces around the times ("your3:49 PMmessage"). */
 span.reply-to {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0;
+  display: inline-block;
   cursor: default;
 }
 .reply-to-time {

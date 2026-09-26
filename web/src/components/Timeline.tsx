@@ -446,11 +446,14 @@ function MessageRow({
   const events = snapshot.events;
   const continued = previous !== null;
   const seqTitle = `room event #${event.sequence} · ${fullTime(event.createdAt)}`;
-  const aside = (
-    <span className="chat-aside mono" title={seqTitle}>
+  const stamp = (
+    <span className="time mono" title={seqTitle}>
       {time(event.createdAt)}
     </span>
   );
+  // A bubble grouped under the one above shows its own time on a small line of its own, unless it came in the same
+  // minute (a burst stays compact).
+  const newMinute = continued && time(previous.createdAt) !== time(event.createdAt);
 
   if (event.kind === "user.message" || event.kind === "note" || event.kind === "t3.prompt" || event.kind === "t3.message") {
     const note = event.kind === "note";
@@ -474,11 +477,11 @@ function MessageRow({
                   in T3
                 </span>
               ) : (
-                <span className="time mono" title={seqTitle}>
-                  {time(event.createdAt)}
-                </span>
+                stamp
               )}
             </div>
+          ) : newMinute ? (
+            <div className="chat-head sub">{stamp}</div>
           ) : null}
           <div className={`bubble ${note ? "bubble-note" : "bubble-user"}${fromT3 ? " bubble-user-t3" : ""}`}>
             {event.text ? <UserText text={event.text} /> : null}
@@ -492,7 +495,6 @@ function MessageRow({
             </div>
           ) : null}
         </div>
-        {continued ? aside : null}
       </div>
     );
   }
@@ -539,14 +541,13 @@ function MessageRow({
             <span className="speaker mono identity">{alias}</span>
             {tag}
             {selfMark}
-            <span className="time mono" title={seqTitle}>
-              {time(event.createdAt)}
-            </span>
+            {stamp}
           </div>
-        ) : selfMark ? (
-          <div className="chat-head sub">{selfMark}</div>
-        ) : tagChanged && tag ? (
-          <div className="chat-head sub">{tag}</div>
+        ) : selfMark || (tagChanged && tag) || newMinute ? (
+          <div className="chat-head sub">
+            {selfMark ?? (tagChanged ? tag : null)}
+            {stamp}
+          </div>
         ) : null}
         <div className="bubble bubble-agent">
           {(event.progress ?? []).length > 0 ? <ProgressUpdates progress={event.progress} /> : null}
@@ -555,7 +556,6 @@ function MessageRow({
           {event.artifacts.length > 0 ? <ChangedFiles artifacts={event.artifacts} /> : null}
         </div>
       </div>
-      {continued ? aside : null}
     </div>
   );
 }
