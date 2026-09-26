@@ -295,6 +295,32 @@ test("@all addresses every participant; the alias is reserved", () => {
   assert.ok(parseExplicit("/add all", participants, []).unresolved.some((u) => u.message.includes("reserved")));
 });
 
+test("'when @all finished' waits for every earlier assignment, or for everyone else's open work", () => {
+  // Trailing, leading before the address, and leading inside the instruction: all wait for the whole @all assignment.
+  const trailing = parseExplicit("@all do something. @sol1 cross check when @all finished", participants, []);
+  assert.deepEqual(shape(trailing), [
+    { to: ["p1", "p2", "p3"], text: "do something.", after: [] },
+    { to: ["p1"], text: "cross check when @all finished", after: [0] },
+  ]);
+  assert.equal(trailing.assignments[1]?.after[0]?.because, "condition");
+  assert.deepEqual(trailing.unresolved, []);
+  assert.deepEqual(shape(parseExplicit("@all do something. @sol1 cross check once @all is done", participants, []))[1]?.after, [0]);
+  assert.deepEqual(shape(parseExplicit("@all do something. when @all finished, @sol1 cross check", participants, []))[1], { to: ["p1"], text: "cross check", after: [0] });
+  assert.deepEqual(shape(parseExplicit("@all do something. @sol1 when @all are finished, cross check", participants, []))[1], { to: ["p1"], text: "cross check", after: [0] });
+  // Several earlier assignments: all of them.
+  assert.deepEqual(shape(parseExplicit("@sol1 do X. @sol2 do Y. @claude cross check when @all finished", participants, []))[2]?.after, [0, 1]);
+
+  // Nothing earlier in the message: everyone else's open tasks; finished work and the recipient's own tasks don't count.
+  const open = [task(1, "p1", "running"), task(2, "p2", "running"), task(3, "p3", "succeeded"), task(4, "p3", "queued")];
+  const standalone = only(parseExplicit("@sol1 cross check when @all finished", participants, open));
+  assert.deepEqual(standalone.schedule, { mode: "after_all", prerequisites: [{ taskId: "t2", revision: 1 }, { taskId: "t4", revision: 1 }] });
+  assert.deepEqual(standalone.after, []);
+  assert.equal(only(parseExplicit("when @all finished, @sol1 cross check", participants, open)).instruction, "cross check");
+  const nothing = only(parseExplicit("@sol1 cross check when @all finished", participants, [task(3, "p3", "succeeded")]));
+  assert.equal(nothing.schedule, null);
+  assert.ok(nothing.unresolved.some((u) => u.field === "prerequisites" && u.message.includes("@all")));
+});
+
 test("with one participant, a message that addresses nobody is for them", () => {
   const solo = [{ id: "p3", alias: "claude" }];
   const plain = only(parseExplicit("review the current diff", solo, []));

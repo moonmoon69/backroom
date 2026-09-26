@@ -272,10 +272,11 @@ const CONDITION_LEAD = /^(?:and\s+|then\s+|but\s+)?(when|once|after|as soon as|w
 
 /**
  * A condition on the previous assignment(s) by pronoun: "once she's done" (the previous assignment),
- * "once they're finished" / "when both are done" (all earlier assignments), "afterwards" (the previous one).
+ * "once they're finished" / "when both are done" / "when @all finished" (all earlier assignments), "afterwards" (the
+ * previous one). "@all" with nothing earlier in the message means everyone else's open work in the room.
  */
 const PRONOUN_CONDITION =
-  /\b(?:(?:when|once|after|as soon as)\s+(she|he|it|that|they|both|everyone|all)(?:\s+of\s+them)?(?:['’](?:s|re)|\s+(?:is|are|has|have|gets?))?\s+(?:been\s+)?(?:done|finished|finish(?:es)?|complete[sd]?|ready|merged|landed)|(afterwards?|after that))\b/i;
+  /\b(?:(?:when|once|after|as soon as)\s+(@all|she|he|it|that|they|both|everyone|all)(?:\s+of\s+them)?(?:['’](?:s|re)|\s+(?:is|are|has|have|gets?))?\s+(?:been\s+)?(?:done|finished|finish(?:es)?|complete[sd]?|ready|merged|landed)|(afterwards?|after that))\b/i;
 
 /** A condition at the very start of an instruction: "when @grok finishes, …", "once she's done …". Group 1 is the subject. */
 const LEADING_CONDITION_CLAUSE =
@@ -329,6 +330,7 @@ interface Head {
  */
 function parseAssignments(text: string, participants: ParticipantRef[], tasks: Task[]): ParsedMessage {
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
+  const byId = new Map(participants.map((p) => [p.id, p]));
   const nameForms = participants
     .flatMap((participant) => [participant.alias.toLowerCase(), ...spokenVariants(participant.alias)].map((form) => ({ form, participant })))
     .sort((a, b) => b.form.length - a.form.length);
@@ -666,6 +668,17 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
       if (pronoun && current > 0) {
         const plural = /they|both|everyone|all/i.test(pronoun[1] ?? "");
         for (let earlier = plural ? 0 : current - 1; earlier < current; earlier += 1) addAfter(assignment, earlier, "condition");
+      } else if (pronoun && /^@all$/i.test(pronoun[1] ?? "")) {
+        // "@alice cross check when @all finished" as a message of its own: wait for everyone else's open tasks.
+        const open = tasks.filter((t) => !assignment.recipients.includes(t.participantId) && byId.has(t.participantId) && !TERMINAL_TASK_STATES.has(t.state));
+        for (const t of open) {
+          if (!external.some((p) => p.taskId === t.id)) external.push({ taskId: t.id, revision: t.revision });
+        }
+        if (external.length > 0) assignment.schedule = { mode: "after_all", prerequisites: external };
+        else {
+          assignment.unresolved.push({ severity: "error", field: "prerequisites", message: "@all: nobody else has open work to wait for" });
+          assignment.schedule = null;
+        }
       }
       const prefix = conditionPrefixes[current];
       if (prefix && !pronoun) {

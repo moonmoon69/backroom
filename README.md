@@ -238,6 +238,7 @@ Implied waits. Each is on an assignment that comes *earlier in the same message*
 
   For either condition, the room waits for the named participant's assignment in this message if there is one. Otherwise it waits for their open task. If they have neither, the plan says "@grok has no task to wait for" and the message can't be sent until you change it.
 - **Pronouns:** "once she's done", "when it's finished" wait for the previous assignment; "once they're finished", "when both are done" wait for all earlier ones.
+- **`@all` in a condition:** "when @all finished", "once @all are done" wait for all earlier assignments, so `@all do X. @alice cross check when @all finished` waits for every task of the `@all` assignment, including alice's own. With nothing earlier in the message, it waits for everyone else's open tasks; if nobody has any, the plan says so and the message can't be sent.
 
 What never creates a wait:
 
@@ -276,6 +277,8 @@ when @grok finishes, @claude write the summary claude waits for grok ("when/once
                                                grok waits for the previous assignment ("she", "it", "that")
 @claude build the API. @grok build the UI. @codex review both once they're finished
                                                codex waits for both earlier assignments ("they", "both")
+@all draft a plan. @claude merge them when @all finished
+                                               claude waits for everyone's draft, including its own ("@all")
 The build is red. @claude fix it. @grok find the cause
                                                "The build is red." is context for both, not an assignment
 ```
