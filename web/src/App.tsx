@@ -9,7 +9,7 @@ import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspect
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
-import { rememberProject, Sidebar, type Selection } from "./components/Sidebar.tsx";
+import { rememberProject, Sidebar, SidebarIcon, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { RolesDialog } from "./components/RolesLibrary.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
@@ -25,6 +25,8 @@ const SELECTION_KEY = "t3rooms.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
 const PANEL_KEY = "t3rooms.panel";
 const PANEL_TABS: InspectorTab[] = ["people", "board", "changes"];
+/** Whether the sidebar is hidden on a desktop (phones always have it as a drawer instead). */
+const SIDEBAR_COLLAPSED_KEY = "t3rooms.sidebarCollapsed";
 
 function storedPanel(): { open: boolean; tab: InspectorTab } {
   // Phones start with the panel closed: it covers the timeline there.
@@ -73,6 +75,24 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(() => storedPanel().open);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isMobile = useMediaQuery(MOBILE_QUERY);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+  useEffect(() => {
+    if (sidebarCollapsed) localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "1");
+    else localStorage.removeItem(SIDEBAR_COLLAPSED_KEY);
+  }, [sidebarCollapsed]);
+  const collapsed = sidebarCollapsed && !isMobile;
+  // ⌘B / Ctrl+B hides and shows the sidebar on a desktop.
+  useEffect(() => {
+    if (isMobile) return;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setSidebarCollapsed((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isMobile]);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => storedPanel().tab);
   useEffect(() => {
     localStorage.setItem(PANEL_KEY, JSON.stringify({ open: inspectorOpen, tab: inspectorTab }));
@@ -287,15 +307,25 @@ export function App() {
     />
   );
 
-  // Phones: the sidebar is a drawer opened from the header.
-  const roomsButton = (
-    <button type="button" className="small ghost icon-only mobile-only rooms-toggle" aria-label="Rooms and threads" title="Rooms and threads" onClick={() => setSidebarOpen(true)}>
+  // The app-wide controls sit at the foot of the sidebar; while it is hidden, the button that brings it back carries
+  // a red dot when T3 has a problem.
+  const t3Problem = status !== null && status.adapter === "http" && (Boolean(status.t3.error) || !status.t3.paired);
+  const alert = t3Problem ? <span className="dot dot-err toggle-alert" aria-label="T3 connection problem" /> : null;
+  // Phones: the sidebar is a drawer opened from the header. Desktops: the header offers it back once it is hidden.
+  const roomsButton = isMobile ? (
+    <button type="button" className="small ghost icon-only rooms-toggle" aria-label="Rooms and threads" title="Rooms and threads" onClick={() => setSidebarOpen(true)}>
       <span aria-hidden="true">☰</span>
+      {alert}
     </button>
-  );
+  ) : collapsed ? (
+    <button type="button" className="small ghost icon-only sidebar-toggle" aria-label="Show sidebar" title="Show sidebar (⌘B)" onClick={() => setSidebarCollapsed(false)}>
+      <SidebarIcon />
+      {alert}
+    </button>
+  ) : null;
 
   return (
-    <div className={`app${isMobile ? " app-mobile" : ""}`}>
+    <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
       {staleUi ? (
         <div className="update-banner" role="status">
           <span>The room UI was updated.</span>
@@ -319,6 +349,7 @@ export function App() {
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
         footer={appControls}
+        onCollapse={isMobile ? undefined : () => setSidebarCollapsed(true)}
         disabled={needsPairing}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -329,11 +360,7 @@ export function App() {
           key={selection ? `${selection.kind}:${selection.kind === "new-thread" ? selection.projectId : selection.id}` : "none"}
           onReset={() => setSelection(null)}
           header={
-            <div className="room-header app-header-only">
-              {roomsButton}
-              <span className="spacer" />
-              {appControls}
-            </div>
+            <div className="room-header app-header-only">{roomsButton}</div>
           }
         >
         {selection?.kind === "thread" && selectedArchived && !needsPairing ? (
@@ -350,7 +377,6 @@ export function App() {
               loadT3();
             }}
             headerStart={roomsButton}
-            headerEnd={appControls}
           />
         ) : selection?.kind === "thread" && !needsPairing ? (
           <ThreadView
@@ -373,7 +399,6 @@ export function App() {
               loadT3();
             }}
             headerStart={roomsButton}
-            headerEnd={appControls}
           />
         ) : selection?.kind === "browser" ? (
           <BrowserView
@@ -386,7 +411,6 @@ export function App() {
             onChanged={loadBrowsers}
             onOpenRoom={(roomId) => setSelection({ kind: "room", id: roomId })}
             headerStart={roomsButton}
-            headerEnd={appControls}
           />
         ) : selection?.kind === "new-thread" && !needsPairing ? (
           <NewThreadView
@@ -403,7 +427,6 @@ export function App() {
               loadT3();
             }}
             headerStart={roomsButton}
-            headerEnd={appControls}
           />
         ) : contextValue ? (
           <RoomContext.Provider value={contextValue}>
@@ -421,8 +444,6 @@ export function App() {
                   if (target) setSelection({ kind: "browser", id: target });
                 }}
               />
-              <span className="header-divider" aria-hidden="true" />
-              {appControls}
             </div>
             {/* Everything under the header: on phones the side panel covers exactly this area. */}
             <div className="room-under">
@@ -440,11 +461,7 @@ export function App() {
           </RoomContext.Provider>
         ) : (
           <>
-          <div className="room-header app-header-only">
-            {roomsButton}
-            <span className="spacer" />
-            {appControls}
-          </div>
+          <div className="room-header app-header-only">{roomsButton}</div>
           <div className="empty-state">
             {needsPairing ? null : selection?.kind === "room" ? (
               <p className="serif muted">Loading room…</p>

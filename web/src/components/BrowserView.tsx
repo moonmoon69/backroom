@@ -26,10 +26,9 @@ interface BrowserViewProps {
   onChanged: () => void;
   onOpenRoom: (roomId: string) => void;
   headerStart: ReactNode;
-  headerEnd: ReactNode;
 }
 
-export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRoom, headerStart, headerEnd }: BrowserViewProps) {
+export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRoom, headerStart }: BrowserViewProps) {
   const [item, setItem] = useState<BrowserListItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"edit" | "reset" | "delete" | null>(null);
@@ -89,8 +88,6 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
             </button>
           </>
         ) : null}
-        <span className="header-divider" aria-hidden="true" />
-        {headerEnd}
       </div>
       <div className="browser-view">
         {!item ? (

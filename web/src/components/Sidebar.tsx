@@ -32,8 +32,10 @@ interface Props {
   /** The shared browsers on this machine; null when the service cannot run browsers (or before the first read). */
   browsers: BrowserListItem[] | null;
   onBrowsersChanged: () => void;
-  /** App-wide controls, shown at the foot of the drawer on phones (where the header has no room for them). */
+  /** App-wide controls (roles, the T3 connection, the theme), at the foot of the sidebar. */
   footer?: ReactNode;
+  /** Hide the sidebar (desktops); absent on phones, where it is a drawer. */
+  onCollapse?: (() => void) | undefined;
   disabled: boolean;
   /** Phones: the sidebar is an off-canvas drawer; these say whether it is showing and how to dismiss it. */
   open: boolean;
@@ -75,11 +77,21 @@ function shortAge(iso: string): string {
   return days < 14 ? `${days}d` : `${Math.floor(days / 7)}w`;
 }
 
+/** A window with a side pane: the control that hides and shows the sidebar. */
+export function SidebarIcon() {
+  return (
+    <svg className="sidebar-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+      <path d="M6.25 3v10" />
+    </svg>
+  );
+}
+
 export function rememberProject(projectId: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
 }
 
-export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, disabled, open, onClose }: Props) {
+export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, onCollapse, disabled, open, onClose }: Props) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -203,6 +215,11 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                 { label: "New project…", onPick: () => setDialog({ kind: "project" }), disabled: !projects },
               ]}
             />
+            {onCollapse ? (
+              <button type="button" className="small ghost icon-only sidebar-toggle" aria-label="Hide sidebar" title="Hide sidebar (⌘B)" onClick={onCollapse}>
+                <SidebarIcon />
+              </button>
+            ) : null}
             <button type="button" className="icon-button mobile-only sidebar-close" aria-label="Close sidebar" onClick={onClose}>
               ×
             </button>
@@ -376,7 +393,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             T3 is not answering; its projects and threads are not listed.
           </p>
         ) : null}
-        {footer ? <div className="sidebar-footer mobile-only">{footer}</div> : null}
+        {footer ? <div className="sidebar-footer">{footer}</div> : null}
         {dialog?.kind === "room" ? (
           <NewRoomDialog
             initialProjectId={dialog.projectId}

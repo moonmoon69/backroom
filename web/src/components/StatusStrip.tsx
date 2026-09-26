@@ -19,7 +19,7 @@ const hostOf = (baseUrl: string | null): string => {
   }
 };
 
-/** Header chip for the T3 connection: dot + "T3" (plus the problem, if any); host, version and policy on hover. */
+/** The T3 connection at the foot of the sidebar: dot and state; host, version and policy on hover. */
 export function ConnectionChip({ status, onOpen }: { status: StatusResponse | null; onOpen: () => void }) {
   if (!status) {
     return (
@@ -44,7 +44,7 @@ export function ConnectionChip({ status, onOpen }: { status: StatusResponse | nu
   return (
     <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />
-      T3{adapter === "fake" ? " (demo)" : ""}
+      T3{adapter === "fake" ? " demo" : problem ? "" : " connected"}
       {problem ? <span className={tone === "err" ? "status-error" : "muted"}> · {problem}</span> : null}
     </button>
   );

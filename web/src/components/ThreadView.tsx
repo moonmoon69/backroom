@@ -132,10 +132,9 @@ interface ThreadViewProps {
   onArchived: () => void;
   onOpenRoom: (roomId: string) => void;
   headerStart: ReactNode;
-  headerEnd: ReactNode;
 }
 
-export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart, headerEnd }: ThreadViewProps) {
+export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart }: ThreadViewProps) {
   const { view, error, refresh, hurry } = useThreadView(threadId, onGone);
   // A browser attached here: its instructions go in front of the next message (threads outside rooms get no briefing).
   const [attached, setAttached] = useState<string | null>(null);
@@ -187,8 +186,6 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
             onDelete={() => setDialog("delete")}
           />
         ) : null}
-        <span className="header-divider" aria-hidden="true" />
-        {headerEnd}
       </div>
       <div className="room-under">
         {thread ? (
@@ -305,7 +302,6 @@ export function ArchivedThreadView({
   onUnarchived,
   onGone,
   headerStart,
-  headerEnd,
 }: {
   thread: T3ThreadShell;
   project: T3Project | null;
@@ -313,7 +309,6 @@ export function ArchivedThreadView({
   onUnarchived: () => void;
   onGone: () => void;
   headerStart: ReactNode;
-  headerEnd: ReactNode;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -340,8 +335,6 @@ export function ArchivedThreadView({
         ) : null}
         <span className="pill pill-muted">archived</span>
         <span className="spacer" />
-        <span className="header-divider" aria-hidden="true" />
-        {headerEnd}
       </div>
       <div className="empty-state archived-thread">
         <p className="serif">Archived in T3{archivedOn ? ` on ${archivedOn}` : ""}.</p>
@@ -387,10 +380,9 @@ interface NewThreadViewProps {
   onProject: (projectId: string) => void;
   onStarted: (threadId: string) => void;
   headerStart: ReactNode;
-  headerEnd: ReactNode;
 }
 
-export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, headerStart, headerEnd }: NewThreadViewProps) {
+export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, headerStart }: NewThreadViewProps) {
   const [browserId, setBrowserId] = useState<string>("");
   const { toast } = useToast();
   const [model, setModel] = useState<ModelSelection | null>(null);
@@ -427,8 +419,6 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
           </span>
         ) : null}
         <span className="spacer" />
-        <span className="header-divider" aria-hidden="true" />
-        {headerEnd}
       </div>
       <div className="room-under">
         <div className="room-body">

@@ -76,7 +76,7 @@ Treat pairing links like passwords. They expire within minutes and work only onc
 
 ### 2. Pair
 
-Either paste the link into the room UI, or use the command line. While the room is unpaired, the UI shows the pairing panel in place of the rooms. Later you can reach it from the **T3** status button at the top right.
+Either paste the link into the room UI, or use the command line. While the room is unpaired, the UI shows the pairing panel in place of the rooms. Later you can reach it from the **T3** status button at the foot of the sidebar.
 
 From the command line:
 
@@ -417,7 +417,9 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). The right end of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
+
+The sidebar button next to **+ New** hides the sidebar, and the same button at the left of the header brings it back (**⌘B** / **Ctrl+B** toggles it too). It stays hidden across reloads. While it is hidden, a red dot on that button means T3 is not paired or reports an error.
 
 Each room shows activity pills:
 
@@ -450,7 +452,7 @@ Terminals, the browser preview and full diff text stay in T3 Code.
 
 ### On a phone
 
-The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button (with **Roles**, the T3 connection and the theme at its foot), the header shows one participant and a count, participant menus and dialogs open as bottom sheets, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
+The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button (a red dot on it means a T3 connection problem), the header shows one participant and a count, participant menus and dialogs open as bottom sheets, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
 
 It also installs as an app. Open the room over HTTPS (for example a Tailscale Serve address; the offline shell only registers on a secure origin), then:
 
@@ -465,7 +467,7 @@ The installed app opens full screen, keeps its icon, and shows the last loaded s
 - **Participants mirror their thread.** Change the model or effort in T3 Code and the room updates. Change it from the room and the thread is updated through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
 - **Removing a participant** asks what happens to its queued, held and blocked tasks (cancel them, or keep them blocked so you can reassign them) and to its T3 thread: **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Deleting asks for a confirmation. A thread also seated in another room is always kept, and when T3 no longer has the thread the choice is skipped. Removal is refused while it has a run in progress. If T3 refuses the thread action, the participant is still removed and the reason is shown.
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
-- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the top right, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
+- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the foot of the sidebar, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
 
 ## Configuration
 

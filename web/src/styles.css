@@ -4661,24 +4661,6 @@ span.reply-to {
     display: none;
   }
 
-  /* App-wide controls live at the foot of the drawer on phones; the header keeps the page's own controls. */
-  .room-header .app-controls {
-    display: none;
-  }
-
-  div.sidebar-footer {
-    display: flex;
-    justify-content: flex-end;
-    padding: 8px 10px;
-    border-top: 1px solid var(--line);
-  }
-
-  .sidebar-footer .menu {
-    top: auto;
-    bottom: calc(100% + 4px);
-    left: auto;
-    right: 0;
-  }
 
   .popover-sheet button {
     min-height: 36px;
@@ -5236,4 +5218,69 @@ span.reply-to {
 
 .inspector-head .icon-button {
   align-self: center;
+}
+
+/* ---- sidebar: hide and show (desktop), and the app-wide controls at its foot ---- */
+.app.sidebar-collapsed {
+  grid-template-columns: 1fr;
+}
+
+.app.sidebar-collapsed > .sidebar {
+  display: none;
+}
+
+.sidebar-toggle,
+.rooms-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-toggle {
+  color: var(--fg-muted);
+  min-height: 26px;
+}
+
+.sidebar-icon {
+  display: block;
+}
+
+/* A problem with T3 while its status is out of sight (sidebar hidden, or a phone's closed drawer). */
+.toggle-alert {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+}
+
+.sidebar-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-footer {
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-footer .app-controls {
+  display: flex;
+  width: 100%;
+}
+
+/* The connection first, then roles and the theme at the right. */
+.sidebar-footer .connection-chip {
+  order: -1;
+  margin-right: auto;
+}
+
+/* Menus at the foot of the sidebar open upwards. */
+.sidebar-footer .menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+  left: auto;
+  right: 0;
 }

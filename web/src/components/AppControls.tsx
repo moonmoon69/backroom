@@ -9,7 +9,7 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: string }> = [
   { key: "dark", label: "Dark", icon: "☾" },
 ];
 
-/** App-wide controls at the right end of the header: roles, the T3 connection, and the theme. */
+/** App-wide controls at the foot of the sidebar: roles, the T3 connection, and the theme. */
 export function AppControls({
   status,
   onOpenConnection,
