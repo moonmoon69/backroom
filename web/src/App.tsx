@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, useDesk, useRoomStream } from "./api.ts";
+import { api, ApiError, useDesk, useGit, useRoomStream } from "./api.ts";
 import { BackgroundBar } from "./components/BackgroundBar.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { BrowserView } from "./components/BrowserView.tsx";
@@ -26,7 +26,7 @@ import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSna
 const SELECTION_KEY = "t3rooms.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
 const PANEL_KEY = "t3rooms.panel";
-const PANEL_TABS: InspectorTab[] = ["people", "browser", "tasks", "changes"];
+const PANEL_TABS: InspectorTab[] = ["people", "browser", "tasks", "git"];
 /** Whether the sidebar is hidden on a desktop (phones always have it as a drawer instead). */
 const SIDEBAR_COLLAPSED_KEY = "t3rooms.sidebarCollapsed";
 
@@ -36,7 +36,9 @@ function storedPanel(): { open: boolean; tab: InspectorTab } {
   try {
     const parsed = JSON.parse(localStorage.getItem(PANEL_KEY) ?? "null") as { open?: unknown; tab?: unknown } | null;
     if (!parsed) return fallback;
-    const tab = PANEL_TABS.includes(parsed.tab as InspectorTab) ? (parsed.tab as InspectorTab) : fallback.tab;
+    // Tabs since renamed: Board is Tasks, Changes is Git.
+    const renamed = parsed.tab === "board" ? "tasks" : parsed.tab === "changes" ? "git" : parsed.tab;
+    const tab = PANEL_TABS.includes(renamed as InspectorTab) ? (renamed as InspectorTab) : fallback.tab;
     return { open: mediaMatches(MOBILE_QUERY) ? false : parsed.open !== false, tab };
   } catch {
     return fallback;
@@ -231,8 +233,17 @@ export function App() {
   const snapshotRunning = snapshot
     ? Object.values(snapshot.participantStatus).some((s) => s.session === "running" || s.session === "starting" || s.externalActivity)
     : false;
-  const deskInterval = (inspectorOpen && inspectorTab === "changes") || deskRunning || snapshotRunning ? 2500 : 10000;
+  const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
+
+  // Git: the folder and commit count the Git tab shows start over in each room.
+  const [gitPath, setGitPath] = useState<string | null>(null);
+  const [gitCommits, setGitCommits] = useState(30);
+  useEffect(() => {
+    setGitPath(null);
+    setGitCommits(30);
+  }, [snapshot?.room.id]);
+  const gitRead = useGit(snapshot ? snapshot.room.id : null, { detail: inspectorOpen && inspectorTab === "git", path: gitPath, commits: gitCommits });
   useEffect(() => {
     setDeskRunning(desk ? Object.values(desk.participants).some((d) => Boolean(d.runningTurn)) : false);
   }, [desk]);
@@ -294,8 +305,19 @@ export function App() {
       },
       desk,
       deskError,
+      git: {
+        data: gitRead.git,
+        error: gitRead.error,
+        path: gitPath,
+        setPath: (path) => {
+          setGitPath(path);
+          setGitCommits(30);
+        },
+        commits: gitCommits,
+        showMoreCommits: () => setGitCommits((n) => n + 50),
+      },
     };
-  }, [snapshot, runCommand, onRoomChanged, desk, deskError]);
+  }, [snapshot, runCommand, onRoomChanged, desk, deskError, gitRead.git, gitRead.error, gitPath, gitCommits]);
 
   const needsPairing = status !== null && status.adapter === "http" && !status.t3.paired;
 

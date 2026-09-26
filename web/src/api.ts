@@ -9,6 +9,8 @@ import type {
   CommandResult,
   DeskResponse,
   Draft,
+  GitDiff,
+  GitResponse,
   ModelSelection,
   LiveView,
   ProviderInfo,
@@ -88,6 +90,22 @@ export const api = {
   live: (roomId: string, participantId: string): Promise<LiveView> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/participants/${encodeURIComponent(participantId)}/live`),
   desk: (roomId: string): Promise<DeskResponse> => get(`/api/rooms/${encodeURIComponent(roomId)}/desk`),
+  /** The room's working folders in brief, and (unless `summary`) the full git view of `path` (else the first folder). */
+  git: (roomId: string, options: { path?: string | null; commits?: number; summary?: boolean } = {}): Promise<GitResponse> => {
+    const query = new URLSearchParams();
+    if (options.summary) query.set("summary", "1");
+    if (options.path) query.set("path", options.path);
+    if (options.commits) query.set("commits", String(options.commits));
+    return get(`/api/rooms/${encodeURIComponent(roomId)}/git?${query}`);
+  },
+  /** One file's diff in a room folder: uncommitted against HEAD, or its change in `commit`. */
+  gitDiff: (roomId: string, folder: string, file: { path: string; origPath?: string | null; commit?: string | null; untracked?: boolean }): Promise<GitDiff> => {
+    const query = new URLSearchParams({ path: folder, file: file.path });
+    if (file.origPath) query.set("from", file.origPath);
+    if (file.commit) query.set("commit", file.commit);
+    if (file.untracked) query.set("untracked", "1");
+    return get(`/api/rooms/${encodeURIComponent(roomId)}/git/diff?${query}`);
+  },
   providers: (): Promise<ProviderInfo[]> => get("/api/t3/providers"),
   usageToday: (): Promise<UsageToday> => get(`/api/t3/usage/today?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   /** T3's default model for a project; null when T3 has none configured. */
@@ -180,6 +198,48 @@ export function useDesk(roomId: string | null, intervalMs: number): { desk: Desk
     };
   }, [roomId, intervalMs]);
   return { desk, error };
+}
+
+/**
+ * The room's git state. While the Git tab is open (`detail`), the full view of the chosen folder every 4s;
+ * otherwise only the folders in brief (the header's count) every 15s. A new folder or commit count reads at once.
+ */
+export function useGit(
+  roomId: string | null,
+  options: { detail: boolean; path: string | null; commits: number },
+): { git: GitResponse | null; error: string | null } {
+  const { detail, path, commits } = options;
+  const [git, setGit] = useState<GitResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setGit(null);
+    setError(null);
+  }, [roomId]);
+  useEffect(() => {
+    if (!roomId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const data = await api.git(roomId, detail ? { path, commits } : { summary: true });
+        if (!cancelled) {
+          // A brief read keeps the last full view, so reopening the tab shows it while the next read runs.
+          setGit((previous) => (detail || !previous ? data : { ...data, view: previous.view }));
+          setError(null);
+        }
+      } catch (caught) {
+        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, detail ? 4000 : 15000);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [roomId, detail, path, commits]);
+  return { git, error };
 }
 
 /**

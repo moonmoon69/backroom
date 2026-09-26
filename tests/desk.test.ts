@@ -35,7 +35,7 @@ test("desk view aggregates T3 thread data per participant and across the room", 
   assert.equal(sol1.toolSummary.lastTool, "Read");
   assert.equal(sol1.checkpoints.length, 2);
   assert.equal(sol1.checkpoints[1].additions, 3);
-  assert.deepEqual(sol1.changedFiles, [{ path: "src/parser.ts", kind: "modified", additions: 13, deletions: 5, turns: 2 }]);
+  assert.deepEqual(sol1.changedFiles, [{ path: "src/parser.ts", kind: "modified", additions: 13, deletions: 5, turns: 2, lastAt: sol1.checkpoints[1].completedAt }]);
   assert.equal(sol2.changedFiles.length, 2);
   assert.equal(sol1.modelSelection.model, "gpt-6-sol");
   assert.equal(sol1.runtimeMode, "full-access");

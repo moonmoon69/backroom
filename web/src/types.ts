@@ -469,6 +469,93 @@ export interface ChangedFile {
   additions: number;
   deletions: number;
   turns: number;
+  /** When a turn last changed it. */
+  lastAt: string | null;
+}
+
+export type GitFileStatus = "modified" | "added" | "deleted" | "renamed" | "copied" | "typechange" | "untracked" | "conflict";
+
+export interface GitWorkingFile {
+  path: string;
+  origPath: string | null;
+  status: GitFileStatus;
+  staged: "all" | "part" | "none";
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface GitCommitFile {
+  path: string;
+  origPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface GitCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  authoredAt: string;
+  committedAt: string;
+  isMerge: boolean;
+  /** On the upstream branch; null when the branch has none. */
+  pushed: boolean | null;
+  additions: number;
+  deletions: number;
+  fileCount: number;
+  files: GitCommitFile[];
+}
+
+export interface GitWorktree {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  isMain: boolean;
+  locked: boolean;
+  prunable: boolean;
+}
+
+/** One of the room's working folders in brief (GET /api/rooms/:roomId/git). */
+export interface GitFolder {
+  path: string;
+  exists: boolean;
+  isRepo: boolean;
+  root: string | null;
+  branch: string | null;
+  detached: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  changed: number;
+  error: string | null;
+  participantIds: string[];
+  isProjectRoot: boolean;
+}
+
+export interface GitView extends Omit<GitFolder, "participantIds" | "isProjectRoot"> {
+  prefix: string;
+  repoName: string | null;
+  isLinkedWorktree: boolean;
+  head: { sha: string; shortSha: string; subject: string; committedAt: string } | null;
+  files: GitWorkingFile[];
+  commits: GitCommit[];
+  moreCommits: boolean;
+  worktrees: GitWorktree[];
+}
+
+export interface GitResponse {
+  folders: GitFolder[];
+  view: GitView | null;
+  /** The home folder of the machine the room service runs on, to show paths as ~/… */
+  home: string;
+  fetchedAt: string;
+}
+
+export interface GitDiff {
+  diff: string;
+  truncated: boolean;
 }
 
 export interface ProposedPlan {

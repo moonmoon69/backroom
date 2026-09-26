@@ -31,7 +31,11 @@ export const ageOf = (iso: string | null | undefined, now = Date.now()): string 
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
-  return `${Math.round(m / 60)}h ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 };
 
 /** Meter tone by percent used: ok under 60, warn 60–85, err above. */

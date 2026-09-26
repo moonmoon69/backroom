@@ -93,11 +93,13 @@ export const TasksIcon = () => (
   </Icon>
 );
 
-/** A page with a plus over a minus: the diff of the files the room's threads changed. */
-export const ChangesIcon = () => (
+/** A branch leaving a line: the room's git (branches, worktrees, commits, uncommitted changes). */
+export const BranchIcon = () => (
   <Icon>
-    <path d="M9.5 1.75H4.25a1.5 1.5 0 0 0-1.5 1.5v9.5a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V5.5L9.5 1.75z" />
-    <path d="M8 4.75v3.5M6.25 6.5h3.5M6.25 10.75h3.5" />
+    <path d="M4.5 2v7.75" />
+    <circle cx="4.5" cy="12" r="2" />
+    <circle cx="11.5" cy="4.5" r="2" />
+    <path d="M11.5 6.5c0 3.1-2.5 5.25-5 5.5" />
   </Icon>
 );
 

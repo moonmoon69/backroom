@@ -397,7 +397,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
 ### Room header
 
-The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Tasks** (a checklist, with the count, and a violet "need input" pill when T3 is waiting on you) and **Changes** (a page with ±, with the number of files changed) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
+The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Tasks** (a checklist, with the count, and a violet "need input" pill when T3 is waiting on you) and **Git** (a branch, with the number of uncommitted files in the room's folders) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
 
 Every page's header names what is open as a small breadcrumb: `project / room` (or thread; `Browsers / name` for a browser), so switching from the sidebar or the collapsed rail shows where you landed. Phones show the name alone.
 
@@ -429,7 +429,7 @@ The sidebar holds projects, each with its rooms and its threads that are not in 
 
 The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
 
-Controls that open, close, toggle or add something are icons with a hover name (people, globe, checklist, changes, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
+Controls that open, close, toggle or add something are icons with a hover name (people, globe, checklist, branch, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
 Each room shows activity pills:
 
@@ -442,10 +442,16 @@ A thread shows a dot: filled and pulsing while it works, a ring with background 
 
 Drag rooms to reorder them within their project. The **⋯** menu renames or deletes a room.
 
-### Tasks and Changes (side panel)
+### Tasks and Git (side panel)
 
 - **Tasks:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
-- **Changes:** files changed across the room, grouped by participant. A path touched by two participants is marked "also: @alias".
+- **Git:** the git state of the folders the room's threads work in: each participant's T3 worktree, or the project's folder (shown even when nobody works there). When participants work in more than one folder, buttons at the top switch between them, each with its branch, who works there and its uncommitted count. For the folder shown:
+  - **the checkout:** branch (or the commit it is detached at), main checkout or worktree (and of which repository), where it stands against its upstream (to push, to pull, or no upstream), its path, and who in the room works in it;
+  - **Uncommitted:** every changed, staged, renamed and untracked file against the last commit, with line counts. A participant's avatar marks files one of their turns changed since that commit;
+  - **Worktrees:** the repository's worktrees with their branches and who works in each (when there is more than the main checkout); click one to show it;
+  - **Commits:** the branch's recent commits (subject, sha, author, age, files and line counts), marked "not pushed" until the upstream has them. Click a commit for its files; **Show older commits** reads further back.
+
+  Any file opens its diff: an uncommitted change against the last commit, or a file's change in that commit. The room service reads all of this with git on its own machine, so it needs to run where T3 keeps the checkouts; a folder that isn't there is shown as such. Reads never take git's locks, so they can't get in the way of agents' own git commands. The panel reads every few seconds while it is open, and only the counts otherwise.
 
 **Thread details…** in a participant's menu covers what T3 reports about the thread that isn't shown elsewhere:
 

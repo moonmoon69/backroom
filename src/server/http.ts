@@ -3,6 +3,7 @@
  * Live updates use Server-Sent Events; the UI refetches the room snapshot on each notification.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -22,6 +23,7 @@ import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
+import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, worktreePathsOf } from "./git.ts";
 import type { Config } from "../config.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
@@ -326,7 +328,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       additions: checkpoint.files.reduce((sum, file) => sum + file.additions, 0),
       deletions: checkpoint.files.reduce((sum, file) => sum + file.deletions, 0),
     }));
-    const changedFiles = new Map<string, { path: string; kind: string; additions: number; deletions: number; turns: number }>();
+    // Every file the thread's turns changed, with when a turn last did (the Git tab uses it to say who changed an
+    // uncommitted file: a participant whose turn touched it after the last commit).
+    const changedFiles = new Map<string, { path: string; kind: string; additions: number; deletions: number; turns: number; lastAt: string | null }>();
     for (const checkpoint of detail.checkpoints) {
       for (const file of checkpoint.files) {
         const existing = changedFiles.get(file.path);
@@ -335,8 +339,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
           existing.deletions += file.deletions;
           existing.turns += 1;
           existing.kind = file.kind;
+          if (checkpoint.completedAt && (!existing.lastAt || checkpoint.completedAt > existing.lastAt)) existing.lastAt = checkpoint.completedAt;
         } else {
-          changedFiles.set(file.path, { ...file, turns: 1 });
+          changedFiles.set(file.path, { ...file, turns: 1, lastAt: checkpoint.completedAt ?? null });
         }
       }
     }
@@ -417,6 +422,72 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       }),
     );
     return c.json({ participants: desks, errors, fetchedAt: new Date().toISOString() });
+  });
+
+  /**
+   * The room's working folders: each participant's T3 worktree, or the project's folder for threads that work there
+   * (and the project's folder even when nobody does). Folders with participants come first, in roster order.
+   */
+  const roomFolders = async (roomId: string): Promise<Array<{ path: string; participantIds: string[]; isProjectRoot: boolean }>> => {
+    const room = stack.repos.getRoom(roomId);
+    if (!room) throw new RoomError("not_found", "room not found", 404);
+    const project = (await stack.adapter.listProjects()).find((p) => p.id === room.projectId) ?? null;
+    const projectRoot = project ? canonicalPath(project.workspaceRoot) : null;
+    const folders = new Map<string, { path: string; participantIds: string[]; isProjectRoot: boolean }>();
+    for (const participant of stack.repos.listParticipants(roomId).filter((p) => !p.retiredAt)) {
+      const binding = stack.repos.currentBinding(participant.id);
+      const shell = binding ? await stack.adapter.getThreadShell(binding.threadId).catch(() => null) : null;
+      const folder = shell?.worktreePath ? canonicalPath(shell.worktreePath) : projectRoot;
+      if (!folder) continue;
+      const entry = folders.get(folder) ?? { path: folder, participantIds: [], isProjectRoot: folder === projectRoot };
+      entry.participantIds.push(participant.id);
+      folders.set(folder, entry);
+    }
+    if (projectRoot && !folders.has(projectRoot)) folders.set(projectRoot, { path: projectRoot, participantIds: [], isProjectRoot: true });
+    return [...folders.values()];
+  };
+
+  /** A folder a git read may name: one of the room's folders, or another worktree of their repositories. */
+  const readableFolder = async (folders: Array<{ path: string }>, requested: string): Promise<boolean> => {
+    const wanted = canonicalPath(requested);
+    if (folders.some((folder) => folder.path === wanted)) return true;
+    const worktrees = await Promise.all(folders.map((folder) => worktreePathsOf(folder.path)));
+    return worktrees.flat().some((path) => canonicalPath(path) === wanted);
+  };
+
+  /**
+   * The Git tab: every room folder in brief (branch, upstream, uncommitted count), and for one of them (?path=, else
+   * the first) the full view: uncommitted files, recent commits (?commits=N), and the repository's worktrees.
+   * ?summary=1 skips the full view (the header's count).
+   */
+  app.get("/api/rooms/:roomId/git", async (c) => {
+    const folders = await roomFolders(c.req.param("roomId"));
+    const summaries = await Promise.all(folders.map(async (folder) => ({ ...(await readCheckoutSummary(folder.path)), participantIds: folder.participantIds, isProjectRoot: folder.isProjectRoot })));
+    if (c.req.query("summary") === "1") return c.json({ folders: summaries, view: null, home: homedir(), fetchedAt: new Date().toISOString() });
+    const requested = c.req.query("path");
+    const selected = requested && (await readableFolder(folders, requested)) ? canonicalPath(requested) : (folders[0]?.path ?? null);
+    const commitLimit = Number(c.req.query("commits") ?? 30);
+    const view = selected ? await readGitView(selected, { commitLimit: Number.isFinite(commitLimit) ? commitLimit : 30 }) : null;
+    return c.json({ folders: summaries, view, home: homedir(), fetchedAt: new Date().toISOString() });
+  });
+
+  /** One file's diff in a room folder: uncommitted against HEAD, or its change in ?commit=. */
+  app.get("/api/rooms/:roomId/git/diff", async (c) => {
+    const folder = c.req.query("path") ?? "";
+    const file = c.req.query("file") ?? "";
+    if (!folder || !(await readableFolder(await roomFolders(c.req.param("roomId")), folder))) throw new RoomError("forbidden", "not one of this room's folders", 403);
+    try {
+      return c.json(
+        await readFileDiff(canonicalPath(folder), {
+          path: file,
+          origPath: c.req.query("from") || null,
+          commit: c.req.query("commit") || null,
+          untracked: c.req.query("untracked") === "1",
+        }),
+      );
+    } catch (error) {
+      throw new RoomError("bad_request", (error as Error).message, 400);
+    }
   });
 
   app.get("/api/rooms/:roomId/events", (c) => {
