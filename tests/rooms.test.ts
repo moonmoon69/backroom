@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { loadConfig } from "../src/config.ts";
+import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
 
 test("rooms can be renamed and reordered", async (t) => {
@@ -92,4 +94,17 @@ test("removing a participant can settle, archive, or delete its T3 thread; threa
   assert.equal(sharedResult.thread.result, "kept");
   assert.match(sharedResult.thread.detail ?? "", /another room/);
   assert.equal(stack.fake.commands.some((c) => c.type === "thread.delete" && c.threadId === shared), false);
+});
+
+test("the room list counts the participants seated now, not the ones removed", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-list", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  const count = async () => ((await (await app.request("/api/rooms")).json()) as Array<{ id: string; participantCount: number }>).find((r) => r.id === stack.roomId)?.participantCount;
+  assert.equal(await count(), 3);
+  await stack.run({ type: "participant.retire", participantId: stack.participants.sol1 as string, pendingTasks: "cancel" });
+  await stack.run({ type: "participant.retire", participantId: stack.participants.sol2 as string, pendingTasks: "cancel" });
+  assert.equal(await count(), 1, "two were removed");
+  await stack.run({ type: "participant.create", roomId: stack.roomId, alias: "sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } });
+  assert.equal(await count(), 2, "and one was added again");
 });

@@ -201,7 +201,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       const tasks = stack.repos.listTasks(room.id);
       return {
         ...room,
-        participantCount: stack.repos.listParticipants(room.id).length,
+        // Who is seated now: a removed participant stays in the record (its messages and tasks name it) but is not crew.
+        participantCount: stack.repos.listActiveParticipants(room.id).length,
         working: tasks.filter((t) => t.state === "running" || t.state === "dispatching").length,
         waiting: tasks.filter((t) => t.state === "queued" || t.state === "held" || t.state === "blocked" || t.state === "needs_input").length,
         // Live state of the room's threads from the scheduler's last poll (no T3 call): who is mid-turn, who has
