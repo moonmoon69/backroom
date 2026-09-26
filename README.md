@@ -427,7 +427,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
 
-The sidebar button next to **+ New** hides the sidebar, and the same button at the left of the header brings it back (**⌘B** / **Ctrl+B** toggles it too). It stays hidden across reloads. While it is hidden, a red dot on that button means T3 is not paired or reports an error.
+The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), is working (blue) or has background work (ring), so switching rooms is one click. Its **Threads** button (two speech bubbles, with the same dot for threads outside rooms) shows the whole sidebar over the page for threads, browsers and **+ New**; picking something closes it again, and its sidebar button keeps it open. The T3 connection's dot sits at the foot of the rail. The button at the top of the rail brings the sidebar back.
 
 Each room shows activity pills:
 

@@ -5260,12 +5260,135 @@ span.reply-to {
 }
 
 /* ---- sidebar: hide and show (desktop), and the app-wide controls at its foot ---- */
+/* Collapsed: a narrow rail of room tiles stands in for the sidebar; the Threads button shows the sidebar over the page. */
 .app.sidebar-collapsed {
-  grid-template-columns: 1fr;
+  grid-template-columns: 52px 1fr;
 }
 
 .app.sidebar-collapsed > .sidebar {
   display: none;
+}
+
+.app.sidebar-collapsed > .sidebar.open {
+  display: flex;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 52px;
+  width: 232px;
+  z-index: 120;
+  box-shadow: var(--shadow-lg);
+}
+
+.sidebar-peek-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 119;
+}
+
+.sidebar-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--line);
+}
+
+/* Same height as the page header beside it, so their bottom borders meet. */
+.rail-top {
+  width: 100%;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.rail-rooms {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.rail-sep {
+  width: 22px;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line-strong);
+}
+
+.rail-room {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+}
+
+.rail-room:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.rail-room.selected {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.rail-room.selected .room-mono {
+  color: var(--fg);
+}
+
+.rail-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--sidebar-bg);
+}
+
+.rail-dot-input {
+  background: var(--input);
+}
+
+.rail-dot-working {
+  background: var(--accent);
+}
+
+.rail-dot-background {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--busy), 0 0 0 1.5px var(--sidebar-bg);
+}
+
+.rail-foot {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
 }
 
 .sidebar-toggle,

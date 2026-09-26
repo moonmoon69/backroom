@@ -9,11 +9,11 @@ import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspect
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
-import { rememberProject, Sidebar, SidebarIcon, type Selection } from "./components/Sidebar.tsx";
+import { rememberProject, Sidebar, SidebarRail, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { RolesDialog } from "./components/RolesLibrary.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
-import { PairingPanel } from "./components/StatusStrip.tsx";
+import { ConnectionChip, PairingPanel } from "./components/StatusStrip.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
@@ -88,6 +88,7 @@ export function App() {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
         setSidebarCollapsed((v) => !v);
+        setSidebarOpen(false);
       }
     };
     document.addEventListener("keydown", onKey);
@@ -307,22 +308,19 @@ export function App() {
     />
   );
 
-  // The app-wide controls sit at the foot of the sidebar; while it is hidden, the button that brings it back carries
-  // a red dot when T3 has a problem.
+  // The app-wide controls sit at the foot of the sidebar; on phones, the ☰ that opens it carries a red dot when T3 has
+  // a problem (the collapsed rail shows the connection itself).
   const t3Problem = status !== null && status.adapter === "http" && (Boolean(status.t3.error) || !status.t3.paired);
   const alert = t3Problem ? <span className="dot dot-err toggle-alert" aria-label="T3 connection problem" /> : null;
-  // Phones: the sidebar is a drawer opened from the header. Desktops: the header offers it back once it is hidden.
+  // Phones: the sidebar is a drawer opened from the header. Desktops: collapsed, it is a rail beside the page.
   const roomsButton = isMobile ? (
     <button type="button" className="small ghost icon-only rooms-toggle" aria-label="Rooms and threads" title="Rooms and threads" onClick={() => setSidebarOpen(true)}>
       <span aria-hidden="true">☰</span>
       {alert}
     </button>
-  ) : collapsed ? (
-    <button type="button" className="small ghost icon-only sidebar-toggle" aria-label="Show sidebar" title="Show sidebar (⌘B)" onClick={() => setSidebarCollapsed(false)}>
-      <SidebarIcon />
-      {alert}
-    </button>
   ) : null;
+  // Collapsed on a desktop, sidebarOpen means the whole sidebar is shown over the page from the rail.
+  const peeking = collapsed && sidebarOpen;
 
   return (
     <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
@@ -349,11 +347,43 @@ export function App() {
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
         footer={appControls}
-        onCollapse={isMobile ? undefined : () => setSidebarCollapsed(true)}
+        onCollapse={
+          isMobile
+            ? undefined
+            : collapsed
+              ? () => {
+                  setSidebarCollapsed(false);
+                  setSidebarOpen(false);
+                }
+              : () => setSidebarCollapsed(true)
+        }
+        peeking={peeking}
         disabled={needsPairing}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
+      {collapsed ? (
+        <>
+          {peeking ? <div className="sidebar-peek-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden="true" /> : null}
+          <SidebarRail
+            rooms={rooms}
+            projects={projects}
+            threads={threads}
+            selection={selection}
+            onSelect={(next) => {
+              setSelection(next);
+              setSidebarOpen(false);
+            }}
+            onExpand={() => {
+              setSidebarCollapsed(false);
+              setSidebarOpen(false);
+            }}
+            onPeek={() => setSidebarOpen((v) => !v)}
+            peeking={peeking}
+            connection={<ConnectionChip status={status} onOpen={() => setPairingOpen(true)} compact />}
+          />
+        </>
+      ) : null}
       <div className="main">
         {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
         <ErrorBoundary
