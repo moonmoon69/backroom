@@ -324,16 +324,16 @@ export class RoomService {
     if (room.browserEnabled === command.enabled && room.defaultBrowserId === defaultBrowserId && sameList) return { type: "room.updated", roomId: room.id };
     const next = { ...room, defaultBrowserId, allowedBrowserIds: allowed };
     const browser = this.effectiveBrowser(next);
+    // The default the room actually uses: dropping "general" from the list moves it even while no default is set.
+    const defaultMoved = this.effectiveBrowser(room)?.id !== browser?.id;
     const names = (ids: string[]) => ids.map((id) => this.repos.getBrowser(id)?.name ?? id).join(", ");
     const text = !command.enabled
       ? "Browsers turned off for this room"
       : !room.browserEnabled
         ? `Browsers turned on: tasks in this room get "${browser?.name ?? "a browser"}" by default`
-        : room.defaultBrowserId !== defaultBrowserId
-          ? `Default browser set to "${browser?.name ?? "none"}"`
-          : allowed
-            ? `This room may use these browsers: ${names(allowed)}`
-            : "This room may use every browser";
+        : !sameList
+          ? `${allowed ? `This room may use these browsers: ${names(allowed)}` : "This room may use every browser"}${defaultMoved ? `; its default is now "${browser?.name ?? "none"}"` : ""}`
+          : `Default browser set to "${browser?.name ?? "none"}"`;
     this.db.transaction(() => {
       this.repos.setRoomBrowser(room.id, command.enabled, defaultBrowserId, now(), allowed);
       this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text });

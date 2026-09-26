@@ -132,6 +132,26 @@ test("a room can be limited to some browsers; its default must be one of them", 
   assert.equal(stack.repos.getRoom(stack.roomId)?.browserEnabled, false);
 });
 
+test("a room need not use general: dropping it from the list moves the default to a browser still allowed", async (t) => {
+  const browsers = fakeBrowsers(RUNNING);
+  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1"], { browsers: () => browsers as never });
+  t.after(() => stack.close());
+  const testing = ((await stack.run({ type: "browser.create", name: "testing", description: "Staging logins" })) as { browserId: string }).browserId;
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
+  // No default chosen: the room uses general. Unticking general (the panel sends the next default with the list).
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: testing, allowed: [testing] });
+  const room = stack.repos.getRoom(stack.roomId)!;
+  assert.deepEqual([room.defaultBrowserId, room.allowedBrowserIds], [testing, [testing]]);
+  const notes = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "system").map((e) => e.text);
+  assert.ok(notes.includes('This room may use these browsers: testing; its default is now "testing"'), notes.join(" | "));
+
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "check staging", schedule: { mode: "now" } });
+  await stack.tick();
+  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  assert.match(briefing, /- testing \(this room's default\): Staging logins/);
+  assert.doesNotMatch(briefing, /- general/);
+});
+
 test("rooms-browser rules that need no browser: help, list, and a room's limits", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());

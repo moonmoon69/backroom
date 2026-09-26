@@ -201,12 +201,18 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
       setBusy(false);
     }
   };
+  const tickedCount = list ? list.filter((b) => isAllowed(b.id)).length : 0;
   const toggleAllowed = (browserId: string) => {
     if (!list) return;
     const current = allowedIds ?? list.map((b) => b.id);
-    const next = isAllowed(browserId) ? current.filter((id) => id !== browserId) : [...current, browserId];
+    const unticking = isAllowed(browserId);
+    const next = unticking ? current.filter((id) => id !== browserId) : [...current, browserId];
+    if (next.length === 0) return;
     // Every browser ticked is stored as "every browser", which also takes in browsers added later.
-    void setBrowser({ enabled, allowed: list.every((b) => next.includes(b.id)) ? null : next });
+    const allowed = list.every((b) => next.includes(b.id)) ? null : next;
+    // Unticking the default hands the default to the first browser still ticked, in the same change.
+    const successor = unticking && browserId === info?.browser.id ? list.find((b) => next.includes(b.id))?.id : undefined;
+    void setBrowser({ enabled, allowed, ...(successor ? { browserId: successor } : {}) });
   };
 
   return (
@@ -233,8 +239,8 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
           return (
             <div key={browser.id} className={`browser-choice${allowed ? "" : " unticked"}`}>
               <div className="browser-choice-head">
-                <label className="checkbox" title={isDefault ? "The default stays ticked; make another browser the default first" : undefined}>
-                  <input type="checkbox" checked={allowed} disabled={busy || isDefault} onChange={() => toggleAllowed(browser.id)} />
+                <label className="checkbox" title={allowed && tickedCount === 1 ? "One browser stays ticked; to give this room none, turn browsers off above" : isDefault ? "Unticking the default makes the next ticked browser the default" : undefined}>
+                  <input type="checkbox" checked={allowed} disabled={busy || (allowed && tickedCount === 1)} onChange={() => toggleAllowed(browser.id)} />
                   <span className="mono">{browser.name}</span>
                 </label>
                 {isDefault ? (
