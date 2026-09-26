@@ -86,6 +86,7 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const wrapper = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useMemo(() => `model-list-${Math.random().toString(36).slice(2, 8)}`, []);
 
@@ -154,7 +155,8 @@ export function ModelPicker({
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {
-      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!wrapper.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -193,6 +195,7 @@ export function ModelPicker({
   return (
     <div className="model-picker" ref={wrapper}>
       <button
+        ref={trigger}
         type="button"
         id={id}
         className="model-trigger"
@@ -226,15 +229,22 @@ export function ModelPicker({
         <ChevronIcon dir={open ? "up" : "down"} />
       </button>
       {open ? (
-        <div
+        // At the document level, like the other menus: inside a dialog it would be cut off by the dialog's edges and
+        // scroll it. It hangs under the button, as wide as it, or above it when there is more room there.
+        <Popover
+          anchor={trigger}
+          menuRef={listRef}
           className="model-menu"
           role="listbox"
-          id={listId}
-          tabIndex={-1}
-          ref={listRef}
-          aria-label="Models by provider"
-          aria-activedescendant={flat[active] ? `${listId}-${active}` : undefined}
-          onKeyDown={onListKey}
+          matchAnchorWidth
+          onClose={() => setOpen(false)}
+          menuProps={{
+            id: listId,
+            tabIndex: -1,
+            "aria-label": "Models by provider",
+            "aria-activedescendant": flat[active] ? `${listId}-${active}` : undefined,
+            onKeyDown: onListKey,
+          }}
         >
           {groups.map((group) => (
             <div key={group.instanceId} className="model-group" role="group" aria-label={group.name}>
@@ -269,7 +279,7 @@ export function ModelPicker({
               })}
             </div>
           ))}
-        </div>
+        </Popover>
       ) : null}
     </div>
   );

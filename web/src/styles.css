@@ -3760,12 +3760,10 @@ legend {
   color: var(--fg-dim);
 }
 
-.model-menu {
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 40;
-  margin-top: 4px;
+/* Placed by Popover (at the document level, under or above the trigger, as wide as it). */
+.menu.model-menu {
+  display: block;
+  min-width: 260px;
   max-height: 46vh;
   overflow: auto;
   background: var(--bg-2);

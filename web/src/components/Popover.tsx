@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useLayoutEffect, useState, type CSSProperties, type HTMLAttributes, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 
@@ -11,14 +11,19 @@ interface PopoverProps {
   role?: string;
   onClose: () => void;
   children: ReactNode;
+  /** As wide as the anchor (a list under a full-width field), rather than as wide as the menu's content. */
+  matchAnchorWidth?: boolean;
+  /** Other attributes for the menu element (id, aria-*, tabIndex, key handlers). */
+  menuProps?: HTMLAttributes<HTMLDivElement>;
 }
 
 /**
  * A menu rendered at the document body, so no scrolling or overflow-clipped ancestor (the side panel, a
- * drawer) can cut it off and it never stretches the row it belongs to. On desktop it sits just below its
- * anchor, kept inside the viewport; on phones it is a bottom sheet behind a tap-to-dismiss backdrop.
+ * drawer, a dialog) can cut it off and it never stretches the row it belongs to. On desktop it sits just below its
+ * anchor, or above it when it fits better there, kept inside the viewport; on phones it is a bottom sheet behind a
+ * tap-to-dismiss backdrop.
  */
-export function Popover({ anchor, menuRef, className, role, onClose, children }: PopoverProps) {
+export function Popover({ anchor, menuRef, className, role, onClose, children, matchAnchorWidth, menuProps }: PopoverProps) {
   const sheet = useMediaQuery(MOBILE_QUERY);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
 
@@ -33,10 +38,14 @@ export function Popover({ anchor, menuRef, className, role, onClose, children }:
       if (!target || !menu) return;
       const rect = target.getBoundingClientRect();
       const margin = 8;
-      const width = menu.offsetWidth;
+      const width = matchAnchorWidth ? rect.width : menu.offsetWidth;
       const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
-      const top = rect.bottom + 4;
-      setStyle({ top, left, maxHeight: Math.max(160, window.innerHeight - top - margin) });
+      const below = window.innerHeight - rect.bottom - 4 - margin;
+      const above = rect.top - 4 - margin;
+      const sized = matchAnchorWidth ? { width } : {};
+      // Below unless the menu doesn't fit there and there is more room above.
+      if (menu.scrollHeight <= below || below >= above) setStyle({ top: rect.bottom + 4, left, maxHeight: Math.max(160, below), ...sized });
+      else setStyle({ bottom: window.innerHeight - rect.top + 4, left, maxHeight: above, ...sized });
     };
     place();
     window.addEventListener("resize", place);
@@ -46,10 +55,10 @@ export function Popover({ anchor, menuRef, className, role, onClose, children }:
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [sheet, anchor, menuRef]);
+  }, [sheet, anchor, menuRef, matchAnchorWidth]);
 
   const menu = (
-    <div ref={menuRef} className={`menu popover${sheet ? " popover-sheet" : ""}${className ? ` ${className}` : ""}`} role={role} style={style}>
+    <div {...menuProps} ref={menuRef} className={`menu popover${sheet ? " popover-sheet" : ""}${className ? ` ${className}` : ""}`} role={role} style={style}>
       {children}
     </div>
   );
