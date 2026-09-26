@@ -493,7 +493,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
               {!collapsed.has(PRESETS_KEY) ? (
                 <ul className="project-items">
                   {presets.map((preset) => {
-                    const { model, detail } = presetText(preset);
+                    const { model, what, detail } = presetText(preset);
                     return (
                       <li key={preset.id} className="room-item side-preset" draggable onDragStart={(event) => startPresetDrag(event, preset)} onDragEnd={() => setPresetOver(null)}>
                         <button
@@ -503,9 +503,11 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                           disabled={disabled}
                           onClick={() => newThread(null, preset.id)}
                         >
-                          <PresetIcon preset={preset} />
-                          <span className="thread-title mono">{preset.name}</span>
-                          <span className="side-thread-age side-preset-model">{model}</span>
+                          <PresetIcon preset={preset} size={16} />
+                          <span className="tile-body">
+                            <span className="thread-title mono">{preset.name}</span>
+                            <span className="side-preset-what">{what}</span>
+                          </span>
                         </button>
                         <AddMenu
                           label={<MoreIcon />}

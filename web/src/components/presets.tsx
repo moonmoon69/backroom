@@ -98,13 +98,19 @@ function optionsSummary(selection: ModelSelection, entry: CatalogEntry | undefin
     .join(" · ");
 }
 
-export function usePresetText(): (preset: Preset) => { model: string; detail: string; entry: CatalogEntry | undefined } {
+/**
+ * A preset in words. `what` is what it is known by, the model and its options ("Claude Fable 5.1 · High · 1M");
+ * `detail` adds the permission mode and where it works.
+ */
+export function usePresetText(): (preset: Preset) => { model: string; what: string; detail: string; entry: CatalogEntry | undefined } {
   const catalog = useCatalog();
   return (preset) => {
     const entry = entryOf(catalog, preset.modelSelection);
     const model = entry?.label || preset.modelSelection.model;
-    const detail = [optionsSummary(preset.modelSelection, entry), RUNTIME_MODE_INFO[preset.runtimeMode].label, preset.workspaceMode === "worktree" ? "new worktree" : null].filter(Boolean).join(" · ");
-    return { model, detail, entry };
+    const options = optionsSummary(preset.modelSelection, entry);
+    const what = [model, options].filter(Boolean).join(" · ");
+    const detail = [options, RUNTIME_MODE_INFO[preset.runtimeMode].label, preset.workspaceMode === "worktree" ? "new worktree" : null].filter(Boolean).join(" · ");
+    return { model, what, detail, entry };
   };
 }
 
@@ -128,12 +134,13 @@ export function PresetChips({ model, runtimeMode, onPick, children }: { model: M
       <span>Presets</span>
       <div className="preset-chips">
         {presets.map((preset) => {
-          const { model: modelName, detail } = text(preset);
+          const { model: modelName, what, detail } = text(preset);
           const on = sameSelection(model, preset.modelSelection) && runtimeMode === preset.runtimeMode;
           return (
             <button key={preset.id} type="button" className={`preset-chip${on ? " on" : ""}`} aria-pressed={on} title={`${modelName} · ${detail}`} onClick={() => onPick(preset)}>
               <PresetIcon preset={preset} />
               <span className="preset-chip-name">{preset.name}</span>
+              <span className="preset-chip-what">{what}</span>
             </button>
           );
         })}
