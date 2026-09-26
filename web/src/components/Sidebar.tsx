@@ -33,6 +33,8 @@ interface Props {
   /** The shared browsers on this machine; null when the service cannot run browsers (or before the first read). */
   browsers: BrowserListItem[] | null;
   onBrowsersChanged: () => void;
+  /** Leave the "New thread" page without starting one (its row in the list offers it). */
+  onCancelNewThread?: (() => void) | undefined;
   /** App-wide controls (roles, the T3 connection, the theme), at the foot of the sidebar. */
   footer?: ReactNode;
   /** Hide the sidebar (desktops), or keep it open when it is shown over the page from the rail; absent on phones. */
@@ -160,7 +162,7 @@ export function rememberProject(projectId: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
 }
 
-export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, onCollapse, disabled, open, onClose }: Props) {
+export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, onCancelNewThread, footer, onCollapse, disabled, open, onClose }: Props) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -376,11 +378,16 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                       </li>
                     ))}
                     {newHere ? (
-                      <li className="side-thread">
+                      <li className="side-thread new-thread-item">
                         <button type="button" className="side-thread-tile selected new-thread-tile" aria-current="true">
                           <span className="thread-dot tone-idle" aria-hidden="true" />
                           <span className="thread-title">New thread</span>
                         </button>
+                        {onCancelNewThread ? (
+                          <button type="button" className="room-menu-button new-thread-cancel" aria-label="Cancel new thread" title="Cancel new thread" onClick={onCancelNewThread}>
+                            <CloseIcon />
+                          </button>
+                        ) : null}
                       </li>
                     ) : null}
                     {visibleThreads.map((thread) => (

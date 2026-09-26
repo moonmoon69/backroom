@@ -368,10 +368,12 @@ interface NewThreadViewProps {
   runCommand: RunCommand;
   onProject: (projectId: string) => void;
   onStarted: (threadId: string) => void;
+  /** Leave without starting a thread (back to where you were). */
+  onCancel: () => void;
   headerStart: ReactNode;
 }
 
-export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, headerStart }: NewThreadViewProps) {
+export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, onCancel, headerStart }: NewThreadViewProps) {
   const [browserId, setBrowserId] = useState<string>("");
   const { toast } = useToast();
   const [model, setModel] = useState<ModelSelection | null>(null);
@@ -379,6 +381,20 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
   const [modelReady, setModelReady] = useState(false);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => (localStorage.getItem(MODE_KEY) as RuntimeMode | null) ?? "full-access");
   const project = projects.find((p) => p.id === projectId) ?? null;
+  const page = useRef<HTMLDivElement>(null);
+
+  // Esc cancels, but only while nothing is typed (a half-written prompt is not thrown away by a stray key) and no
+  // menu or dialog is open (Esc closes those first).
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (document.querySelector(".dialog-backdrop, .menu, [role='listbox']")) return;
+      if (page.current?.querySelector("textarea")?.value.trim()) return;
+      onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -403,8 +419,11 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
         {headerStart}
         <PageTitle context={project?.title ?? null} contextTitle={project?.workspaceRoot} name="New thread" />
         <span className="spacer" />
+        <button type="button" className="small ghost icon-only" aria-label="Cancel new thread" title="Cancel new thread (Esc)" onClick={onCancel}>
+          <CloseIcon />
+        </button>
       </div>
-      <div className="room-under">
+      <div className="room-under" ref={page}>
         <div className="room-body">
           <div className="room-centre">
             <div className="timeline-wrap">

@@ -187,6 +187,20 @@ export function App() {
     };
   }, [loadStatus, loadRooms, loadT3, loadBrowsers]);
 
+  // The page you were on before "New thread", so cancelling it goes back there.
+  const lastPage = useRef<Selection | null>(null);
+  useEffect(() => {
+    if (selection && selection.kind !== "new-thread") lastPage.current = selection;
+  }, [selection]);
+  const cancelNewThread = useCallback(() => {
+    const back = lastPage.current;
+    // Back to the page before, if it still exists; otherwise no selection (the first room opens by itself).
+    const exists =
+      back &&
+      (back.kind === "room" ? rooms.some((r) => r.id === back.id) : back.kind === "thread" ? threads.some((t) => t.id === back.id) : back.kind === "browser" ? Boolean(browsers?.some((b) => b.id === back.id)) : false);
+    setSelection(exists ? back : null);
+  }, [rooms, threads, browsers]);
+
   useEffect(() => {
     if (selection) localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
     else localStorage.removeItem(SELECTION_KEY);
@@ -346,6 +360,7 @@ export function App() {
         onT3Changed={loadT3}
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
+        onCancelNewThread={selection?.kind === "new-thread" ? cancelNewThread : undefined}
         footer={appControls}
         onCollapse={isMobile ? undefined : () => setSidebarCollapsed(true)}
         disabled={needsPairing}
@@ -434,6 +449,7 @@ export function App() {
               setSelection({ kind: "thread", id: threadId });
               loadT3();
             }}
+            onCancel={cancelNewThread}
             headerStart={roomsButton}
           />
         ) : contextValue ? (

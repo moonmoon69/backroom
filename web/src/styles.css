@@ -5557,3 +5557,19 @@ button:has(> .icon):not(.mobile-only) {
 .menu {
   font-size: var(--text-md);
 }
+
+/* The "New thread" row while its page is open: a close button beside it cancels. */
+.new-thread-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.new-thread-item .side-thread-tile {
+  flex: 1;
+  min-width: 0;
+}
+
+.new-thread-cancel {
+  opacity: 1;
+}
