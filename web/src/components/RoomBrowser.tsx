@@ -126,19 +126,34 @@ export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatu
   );
 }
 
-/** A browser window: the Browser switch's icon on phones, where its word does not fit. */
-function BrowserIcon() {
+/**
+ * A globe, the browser buttons' icon. A green check marks browsers in use: turned on for a room's agents, or attached
+ * to a thread's next message. A red dot marks a browser that failed to start.
+ */
+export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boolean }) {
   return (
-    <svg className="browser-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
-      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
-      <path d="M1.75 6h12.5" />
-    </svg>
+    <span className="globe" aria-hidden="true">
+      <svg className="globe-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+        <circle cx="8" cy="8" r="6.25" />
+        <path d="M1.75 8h12.5" />
+        <path d="M8 1.75c1.7 1.75 2.55 3.85 2.55 6.25S9.7 12.5 8 14.25C6.3 12.5 5.45 10.4 5.45 8S6.3 3.5 8 1.75z" />
+      </svg>
+      {failed ? (
+        <span className="globe-badge globe-failed" />
+      ) : checked ? (
+        <span className="globe-badge globe-check">
+          <svg viewBox="0 0 8 8">
+            <path d="M1.9 4.2 3.4 5.6 6.2 2.6" />
+          </svg>
+        </span>
+      ) : null}
+    </span>
   );
 }
 
 /**
- * The room header's Browser switch, beside People, Board and Changes: opens the side panel on the room's browser.
- * The dot is green while the room's default browser runs (with its tab count), red when it failed.
+ * The room header's Browser switch, beside People, Board and Changes: a globe, checked while the room's agents may
+ * use browsers, with the open tab count while its default browser runs. Opens the side panel on the room's browser.
  */
 export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {
   const { snapshot } = useRoom();
@@ -146,13 +161,11 @@ export function RoomBrowserButton({ active, onClick }: { active: boolean; onClic
   const enabled = snapshot.room.browserEnabled;
   const running = info?.status.state === "running";
   const tabs = running ? info.status.tabs.length : 0;
-  const tone = info?.status.state === "error" ? " dot-err" : running ? " dot-working" : "";
-  const title = !enabled ? "Browser: off for this room's agents" : info ? `Browser "${info.browser.name}": ${BROWSER_STATE_LABEL[info.status.state]}` : "Browser";
+  const state = info ? `default "${info.browser.name}" ${BROWSER_STATE_LABEL[info.status.state]}${tabs > 0 ? `, ${tabs} tab${tabs === 1 ? "" : "s"}` : ""}` : "no browser yet";
+  const title = `Browser: ${enabled ? "on" : "off"} for this room's agents · ${state}`;
   return (
     <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick}>
-      <span className={`dot${tone}`} aria-hidden="true" />
-      <BrowserIcon />
-      <span className="room-browser-label">Browser</span>
+      <GlobeIcon checked={enabled} failed={info?.status.state === "error"} />
       {tabs > 0 ? <span className="panel-count mono">{tabs}</span> : null}
     </button>
   );

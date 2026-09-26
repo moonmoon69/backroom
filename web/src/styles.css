@@ -4663,9 +4663,6 @@ span.reply-to {
     min-width: 60px;
   }
 
-  .room-browser-label {
-    display: none;
-  }
 
 
   .popover-sheet button {
@@ -5334,15 +5331,57 @@ span.reply-to {
   }
 }
 
-/* The room header's Browser switch: status dot and the word; on phones an icon stands in for the word. */
-.browser-icon {
-  display: none;
+/* Browser buttons (room and thread headers): a globe, with a green check while browsers are in use there, or a red
+   dot when the browser failed to start. The badge's ring is the button's own surface, so it reads as cut out. */
+.globe {
+  position: relative;
+  display: inline-flex;
 }
 
-@media (max-width: 760px) {
-  .room-browser-button .browser-icon {
-    display: block;
-  }
+.globe-icon {
+  display: block;
+}
+
+.globe-badge {
+  position: absolute;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--bg-1);
+}
+
+.globe-check {
+  right: -4px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ok);
+  color: var(--bg-1);
+}
+
+.globe-check svg {
+  width: 8px;
+  height: 8px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.globe-failed {
+  right: -3px;
+  top: -2px;
+  width: 7px;
+  height: 7px;
+  background: var(--err);
+}
+
+.thread-browser-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
 }
 
 /* Actions at the foot of a side panel tab, at its lower right like a dialog's. */

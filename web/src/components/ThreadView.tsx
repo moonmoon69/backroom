@@ -30,6 +30,7 @@ import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ModelPicker } from "./pickers.tsx";
 import { Popover } from "./Popover.tsx";
+import { GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
@@ -561,13 +562,14 @@ function ThreadBrowserButton({
       <button
         ref={anchor}
         type="button"
-        className={`small${attached ? " active" : ""}`}
+        className={`small thread-browser-button${attached ? " active" : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
+        aria-label={attached && used ? `Browser "${used.name}": its instructions go with your next message` : used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
+        title={attached && used ? `Browser "${used.name}": its instructions go with your next message` : used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={`dot ${used?.status.state === "running" ? "dot-working" : ""}`} aria-hidden="true" /> <span className="room-browser-label">Browser</span>
+        <GlobeIcon checked={Boolean(attached)} failed={used?.status.state === "error"} />
       </button>
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="dialog" className="browser-panel" onClose={() => setOpen(false)}>
