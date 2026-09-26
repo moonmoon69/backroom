@@ -697,19 +697,15 @@ textarea.invalid,
   font-size: 16px;
 }
 
-/* ---- crew strip ---- */
-.participant-bar {
+/* ---- people: the side panel's list of participants ---- */
+.crew-list {
   display: flex;
-  gap: 8px;
-  align-items: stretch;
-  flex-wrap: wrap;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-1);
+  flex-direction: column;
+  gap: 6px;
 }
 
 .crew-empty {
-  align-self: center;
+  margin: 4px 0;
 }
 
 .participant-chip {
@@ -718,13 +714,13 @@ textarea.invalid,
 
 .participant-button {
   position: relative;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 10px 7px 6px;
+  width: 100%;
+  padding: 6px 10px 7px 8px;
   background: var(--bg-2);
   border-color: var(--line);
-  height: 100%;
   overflow: hidden;
 }
 
@@ -767,8 +763,7 @@ textarea.invalid,
 }
 
 .crew-total {
-  align-self: center;
-  margin-left: auto;
+  margin-top: 4px;
   font-size: 11px;
   color: var(--fg-dim);
   white-space: nowrap;
@@ -792,8 +787,10 @@ textarea.invalid,
 }
 
 .crew-text {
+  flex: 1;
+  min-width: 0;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 8px;
   row-gap: 0;
   align-items: baseline;
@@ -839,6 +836,7 @@ textarea.invalid,
 }
 
 .crew-add {
+  align-self: flex-start;
   background: transparent;
   border: 1px dashed var(--line-strong);
   color: var(--fg-muted);
@@ -3091,45 +3089,6 @@ legend {
 }
 
 /* ---- inspector rail ---- */
-.inspector-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  padding: 6px 8px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.inspector-tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 6px 8px 7px;
-  font-size: 13px;
-  color: var(--fg-dim);
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  font-weight: 500;
-}
-
-.inspector-tab:hover:not(:disabled) {
-  color: var(--fg-muted);
-}
-
-.inspector-tab.on {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
-.inspector-tab .lane-count {
-  color: var(--fg-dim);
-}
-
-.inspector-tabs .icon-button {
-  align-self: center;
-}
-
 .inspector-footer {
   border-top: 1px solid var(--line);
   padding: 4px 10px;
@@ -4154,20 +4113,7 @@ span.reply-to {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
-/* Per-thread usage card: hover card under a participant tile, and the header of its click menu. */
-.participant-chip {
-  position: relative;
-}
-.usage-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
-  background: var(--bg-1);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-}
+/* Per-thread usage card: the header of a participant's click menu. */
 .menu.menu-with-usage {
   min-width: 300px;
 }
@@ -4276,17 +4222,12 @@ span.reply-to {
   padding: 0;
 }
 
-/* Room header: shared browser panel. */
-.room-browser {
-  position: relative;
-}
-.room-browser > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.room-browser .dot:not(.dot-working):not(.dot-err) {
-  background: var(--fg-dim);
+/* Browser settings: the room's dialog, and the thread header's popover. */
+.browser-panel:not(.menu) {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
 }
 .menu.browser-panel {
   left: auto;
@@ -4455,7 +4396,7 @@ span.reply-to {
 
 /* =====================================================================================================
    Phones and narrow tablets (≤ 760px). Desktop layout is a three-column grid; here the room list becomes
-   an off-canvas drawer, the inspector a bottom sheet, the crew strip scrolls sideways, and the composer
+   an off-canvas drawer, the side panel covers the room under the header, and the composer
    hugs the bottom edge inside the safe area. Everything that only exists on phones carries .mobile-only.
    ===================================================================================================== */
 .mobile-only {
@@ -4580,32 +4521,6 @@ span.reply-to {
     box-shadow: var(--shadow-lg), 0 0 0 100vmax rgb(0 0 0 / 0.35);
   }
 
-  /* Crew strip: one row that scrolls sideways instead of a tall stack. */
-  .participant-bar {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    gap: 6px;
-    padding: 6px 10px;
-    scrollbar-width: none;
-  }
-
-  .participant-bar::-webkit-scrollbar {
-    display: none;
-  }
-
-  .participant-chip,
-  .crew-add {
-    flex: 0 0 auto;
-  }
-
-  .crew-text {
-    white-space: nowrap;
-  }
-
-  .crew-total {
-    display: none;
-  }
-
   /* Timeline: bubbles use nearly the full width. */
   .timeline {
     padding: 8px 10px 14px;
@@ -4657,7 +4572,7 @@ span.reply-to {
     overflow: auto;
   }
 
-  /* Inspector: covers everything under the header (crew strip, timeline, composer), flush with the top bar. */
+  /* Side panel: covers everything under the header (timeline, composer), flush with the top bar. */
   .room-under {
     position: relative;
   }
@@ -4728,7 +4643,7 @@ span.reply-to {
 }
 
 @media (max-width: 760px) {
-  /* Header fits in one row: the browser button keeps its dot and tab count, buttons lose some padding. */
+  /* Header fits in one row: buttons lose some padding, the side panel switches drop their words for counts. */
   .room-header {
     gap: 4px;
   }
@@ -4746,12 +4661,23 @@ span.reply-to {
     display: none;
   }
 
-  .room-browser > button {
-    gap: 4px;
+  /* App-wide controls live at the foot of the drawer on phones; the header keeps the page's own controls. */
+  .room-header .app-controls {
+    display: none;
   }
 
-  .room-browser > button .dot {
-    margin: 0 2px;
+  div.sidebar-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 10px;
+    border-top: 1px solid var(--line);
+  }
+
+  .sidebar-footer .menu {
+    top: auto;
+    bottom: calc(100% + 4px);
+    left: auto;
+    right: 0;
   }
 
   .popover-sheet button {
@@ -5180,23 +5106,24 @@ span.reply-to {
   border: none;
   margin: 4px 0 8px;
   padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  align-items: center;
+  min-width: 0;
 }
 
 .browser-allowed legend {
-  float: left;
-  margin-right: 8px;
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.browser-allowed-choice,
+.browser-allowed-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
 
 .browser-allowed-list {
-  flex-basis: 100%;
-  display: flex;
-  flex-wrap: wrap;
   gap: 4px 12px;
-  padding-left: 4px;
+  padding: 6px 0 0 4px;
 }
 
 .browser-allowed .label {
@@ -5220,4 +5147,93 @@ span.reply-to {
 
 .composer-notice .spacer {
   flex: 1;
+}
+
+/* ---- room header: side panel switches (people, board, changes) and the room's ⋯ menu ---- */
+.panel-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-buttons > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.panel-count {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.panel-buttons .pill {
+  margin: 0;
+}
+
+/* The participants' monograms, overlapped a little, each keeping its status ring. */
+.facepile {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+}
+
+.facepile .avatar + .avatar {
+  margin-left: 1px;
+}
+
+.facepile .avatar.ring {
+  box-shadow: 0 0 0 1.5px var(--bg-2), 0 0 0 3px var(--ring, var(--fg-dim));
+  margin: 0 3px;
+}
+
+.crew-more {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.crew-add-header {
+  border-style: dashed;
+  color: var(--fg-muted);
+}
+
+.room-header-menu {
+  position: relative;
+}
+
+.room-header-menu .menu {
+  left: auto;
+  right: 0;
+  min-width: 240px;
+}
+
+.room-header-menu .menu button {
+  display: flex;
+  align-items: baseline;
+}
+
+.menu-detail {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.inspector-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 10px 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inspector-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.inspector-head .icon-button {
+  align-self: center;
 }

@@ -23,6 +23,7 @@ import { InheritedLine, ModelPicker, ThreadBindingPicker, ThreadList, threadBind
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
+import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 
@@ -55,17 +56,20 @@ export function describeStatus(status: ParticipantStatus | undefined): { label: 
   }
 }
 
-export function ParticipantBar() {
+/**
+ * The People tab of the room's side panel: everyone seated, each opening its thread menu (open in T3, details,
+ * settings, rebind, remove), and a way to add someone.
+ */
+export function CrewPanel() {
   const { snapshot, desk } = useRoom();
   const [adding, setAdding] = useState(false);
   const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant } | null>(null);
+  const crew = snapshot.participants.filter(isActiveParticipant);
 
   return (
-    <div className="participant-bar" aria-label="Participants">
-      {snapshot.participants.filter(isActiveParticipant).length === 0 ? (
-        <span className="serif muted crew-empty">No crew seated; add a participant to start handing out work.</span>
-      ) : null}
-      {snapshot.participants.filter(isActiveParticipant).map((participant) => (
+    <div className="crew-list" aria-label="Participants">
+      {crew.length === 0 ? <p className="serif muted crew-empty">No one here yet; add a participant to start handing out work.</p> : null}
+      {crew.map((participant) => (
         <ParticipantChip
           key={participant.id}
           participant={participant}
@@ -85,6 +89,49 @@ export function ParticipantBar() {
       {dialog?.action === "rebind" ? <RebindDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "remove" ? <RemoveParticipantDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
     </div>
+  );
+}
+
+/**
+ * The header's people button: the participants' monograms with their status rings, opening the People tab. An empty
+ * room gets "+ Add participant" instead, since there is nobody to show.
+ */
+export function CrewButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const { snapshot } = useRoom();
+  const compact = useMediaQuery(MOBILE_QUERY);
+  const [adding, setAdding] = useState(false);
+  const crew = snapshot.participants.filter(isActiveParticipant);
+  if (crew.length === 0) {
+    return (
+      <>
+        <button type="button" className="small crew-add-header" onClick={() => setAdding(true)}>
+          + Add participant
+        </button>
+        {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
+      </>
+    );
+  }
+  // Phones have room for one face and a count; desktops show up to four.
+  const faces = compact ? 1 : 4;
+  const shown = crew.slice(0, crew.length > faces ? Math.max(1, faces - 1) : faces);
+  const statuses = crew.map((p) => `@${p.alias}: ${describeStatus(snapshot.participantStatus[p.id]).label}`);
+  return (
+    <button
+      type="button"
+      className={`small crew-button${active ? " active" : ""}`}
+      aria-pressed={active}
+      aria-label={`People (${crew.length})`}
+      title={`People\n${statuses.join("\n")}`}
+      onClick={onClick}
+    >
+      <span className="facepile" aria-hidden="true">
+        {shown.map((participant) => {
+          const tone = describeStatus(snapshot.participantStatus[participant.id]).tone;
+          return <Monogram key={participant.id} participant={participant} size="xs" ring={tone} pulse={tone === "working"} />;
+        })}
+      </span>
+      {crew.length > shown.length ? <span className="crew-more mono">+{crew.length - shown.length}</span> : null}
+    </button>
   );
 }
 
@@ -137,22 +184,6 @@ function ParticipantChip({
     };
   }, [open]);
 
-  // Usage card: on hover (after a short delay, so passing the mouse over the strip does not flash it) and at the
-  // top of the click menu.
-  const [hover, setHover] = useState(false);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hoverIn = () => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => setHover(true), 450);
-  };
-  const hoverOut = () => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => setHover(false), 150);
-  };
-  useEffect(() => () => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-  }, []);
-
   const { colorOf, snapshot } = useRoom();
   const roleName = participant.roleId ? (snapshot.roles.find((r) => r.id === participant.roleId)?.name ?? null) : null;
   const described = describeStatus(status);
@@ -161,7 +192,7 @@ function ParticipantChip({
     onAction(action);
   };
   return (
-    <div className="participant-chip" ref={ref} style={identityStyle(colorOf(participant.id))} onMouseEnter={hoverIn} onMouseLeave={hoverOut}>
+    <div className="participant-chip" ref={ref} style={identityStyle(colorOf(participant.id))}>
       <button
         type="button"
         className="participant-button"
@@ -193,11 +224,6 @@ function ParticipantChip({
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
         </span>
       </button>
-      {hover && !open ? (
-        <div className="usage-popover">
-          <ThreadUsageCard participant={participant} desk={desk} />
-        </div>
-      ) : null}
       {open ? (
         <Popover anchor={ref} menuRef={menuRef} className="menu-with-usage" role="menu" onClose={() => setOpen(false)}>
           <ThreadUsageCard participant={participant} desk={desk} />

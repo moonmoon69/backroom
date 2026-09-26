@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserView.tsx";
@@ -32,6 +32,8 @@ interface Props {
   /** The shared browsers on this machine; null when the service cannot run browsers (or before the first read). */
   browsers: BrowserListItem[] | null;
   onBrowsersChanged: () => void;
+  /** App-wide controls, shown at the foot of the drawer on phones (where the header has no room for them). */
+  footer?: ReactNode;
   disabled: boolean;
   /** Phones: the sidebar is an off-canvas drawer; these say whether it is showing and how to dismiss it. */
   open: boolean;
@@ -77,7 +79,7 @@ export function rememberProject(projectId: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
 }
 
-export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, disabled, open, onClose }: Props) {
+export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, disabled, open, onClose }: Props) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -374,6 +376,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             T3 is not answering; its projects and threads are not listed.
           </p>
         ) : null}
+        {footer ? <div className="sidebar-footer mobile-only">{footer}</div> : null}
         {dialog?.kind === "room" ? (
           <NewRoomDialog
             initialProjectId={dialog.projectId}

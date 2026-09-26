@@ -1,4 +1,4 @@
-/** Small formatters shared by the inspector and crew strip. */
+/** Small formatters shared by the side panel and the participant rows. */
 
 /** Token counts: thousands as "348k" (whole), millions as "1M" / "1.5M" (one decimal only when needed). */
 export const fmtTokens = (n: number): string => {

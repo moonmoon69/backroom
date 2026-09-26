@@ -626,6 +626,15 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
     position = skipSpace(text, splitAt);
   }
 
+  // With one participant in the room there is nobody else to mean: a message (or part) that addresses nobody is for
+  // them. A mention that names nobody ("@bob" in a room without bob) stays an error.
+  const only = participants.length === 1 ? (participants[0] as ParticipantRef) : null;
+  if (only) {
+    for (const assignment of assignments) {
+      if (assignment.recipients.length === 0 && !assignment.unresolved.some((u) => u.field === "recipients")) assignment.recipients.push(only.id);
+    }
+  }
+
   // Timing and in-message dependencies.
   assignments.forEach((assignment, current) => {
     const external: Array<{ taskId: string; revision: number }> = [];

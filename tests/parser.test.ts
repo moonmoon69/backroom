@@ -294,3 +294,19 @@ test("@all addresses every participant; the alias is reserved", () => {
   assert.deepEqual(split.assignments[1]?.after.map((d) => d.index), [0], "waits for sol1's draft");
   assert.ok(parseExplicit("/add all", participants, []).unresolved.some((u) => u.message.includes("reserved")));
 });
+
+test("with one participant, a message that addresses nobody is for them", () => {
+  const solo = [{ id: "p3", alias: "claude" }];
+  const plain = only(parseExplicit("review the current diff", solo, []));
+  assert.deepEqual(plain.recipients, ["p3"]);
+  assert.equal(plain.instruction, "review the current diff");
+  assert.deepEqual(plain.schedule, { mode: "now" });
+  assert.deepEqual(parseExplicit("review the current diff", solo, []).unresolved, []);
+  assert.equal(only(parseExplicit("/compact", solo, [])).slashCommand, "compact");
+  const held = only(parseExplicit("/hold save this for later", solo, []));
+  assert.deepEqual([held.recipients, held.schedule], [["p3"], { mode: "manual" }]);
+  assert.deepEqual(only(parseExplicit("@claude do it", solo, [])).recipients, ["p3"], "a mention still works");
+  assert.ok(parseExplicit("@bob do it", solo, []).unresolved.some((u) => u.message.includes("unknown participant @bob")), "a wrong name is not redirected");
+  assert.ok(parseExplicit("review the diff", participants, []).unresolved.some((u) => u.field === "recipients"), "several participants: still ask who");
+  assert.ok(parseExplicit("review the diff", [], []).unresolved.some((u) => u.field === "recipients"), "nobody seated: still ask who");
+});

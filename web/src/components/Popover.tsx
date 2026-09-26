@@ -14,7 +14,7 @@ interface PopoverProps {
 }
 
 /**
- * A menu rendered at the document body, so no scrolling or overflow-clipped ancestor (the crew strip, a
+ * A menu rendered at the document body, so no scrolling or overflow-clipped ancestor (the side panel, a
  * drawer) can cut it off and it never stretches the row it belongs to. On desktop it sits just below its
  * anchor, kept inside the viewport; on phones it is a bottom sheet behind a tap-to-dismiss backdrop.
  */
@@ -40,7 +40,7 @@ export function Popover({ anchor, menuRef, className, role, onClose, children }:
     };
     place();
     window.addEventListener("resize", place);
-    // Scrolling anywhere (the crew strip, the page) moves the anchor; capture catches every scroller.
+    // Scrolling anywhere (the side panel, the page) moves the anchor; capture catches every scroller.
     window.addEventListener("scroll", place, true);
     return () => {
       window.removeEventListener("resize", place);

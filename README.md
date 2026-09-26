@@ -168,7 +168,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 ## Your first room
 
 1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
-2. **Add a participant.** Click **+ Add participant** in the participant bar at the top, then choose one of:
+2. **Add a participant.** Click **+ Add participant** in the room header (once someone is seated, it is in the **People** panel), then choose one of:
    - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
    - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
 
@@ -256,6 +256,8 @@ What never creates a wait:
 @all review the release notes                  everyone in the room ("all" cannot be used as an alias)
 Claude, review the parser                      the spoken form works at the start of a sentence
 ```
+
+In a room with one participant, a message that addresses nobody goes to that participant: `review the diff`, `/compact` and `/hold save this for later` need no `@name`. A name that is not in the room is still an error.
 
 ### Several assignments in one message
 
@@ -347,7 +349,7 @@ T3 publishes each provider's slash commands and skills. Claude exposes dozens (`
 Agents can use shared Chrome browsers on this machine for browser work. You can watch one and take over: close tabs, type a password, click through a login.
 
 - **Browsers are a list, named by purpose**, under **Browsers** in the sidebar: `general` exists from the start; add others such as `t3-rooms-testing` with **+**, and describe what each is for and which logins it holds (agents read that). Each browser's view has Start / Stop, the screen link, open tabs, the rooms using it, its profile size, **Reset profile** (wipes logins, history and tabs) and **Delete**.
-- **Turn it on for a room** with the **Browser** button in the room header: tick "Give this room's agents a browser" and pick the room's **default** browser (`general` unless you choose another). Agents may use **every browser** by default; choose **only these** to limit a room to some of them (the default must be one). Several rooms can share a browser.
+- **Turn it on for a room** with **⋯ → Browser…** in the room header: tick "Give this room's agents a browser" and pick the room's **default** browser (`general` unless you choose another). Agents may use **every browser** by default; choose **only these** to limit a room to some of them (the default must be one). Several rooms can share a browser.
 - **Threads outside rooms:** the **Browser** button in a thread's header adds the browsers' instructions to your next message (a thread outside a room gets no briefing), once; add them again if the agent loses track. When starting a new thread, pick a browser in the form and they go with the first message.
 - **When it runs:** it starts when you turn it on or press Start, and before each task in the room is sent (slash commands excepted). It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
 - **Stable address:** each browser keeps its own ports and profile under `data/browsers/<id>/`, so logins survive stop, start and service restarts. The profile is the browser's own: none of your everyday Chrome's logins are in it. Deleting a room leaves browsers alone; a browser can't be deleted while a room uses it as its default. (A room's browser from before browsers were a list became a browser named after the room, with its logins.)
@@ -387,17 +389,21 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 - **Notes typed into a running room turn** in T3 Code (Claude delivers them inside the turn, so the reply answers them too) appear as your bubble tagged "in T3", with any images, ahead of the reply. Like direct turns, they are for awareness only and never enter briefings.
 - **Replies render richly.** Code blocks have a copy button. Inline code that names a file (`src/parser.ts:42`) shows as a chip with a type badge and the basename; hover for the full path, click to copy it. Images an agent saves to disk and references by path (`![shot](/tmp/shot.png)`) render inline; the room serves only image files under your home directory or the temp directory, resolving symlinks first.
 
-### Participant bar
+### Room header
 
-Each participant tile shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
+The header carries the room's own controls. On the right, the participants' monograms (each ringed with its status: green idle, blue working, violet needs you, red error), **Board** (with a count, and "need input" when T3 is waiting on you) and **Changes** open the side panel on that tab; clicking the tab already showing closes it. The **⋯** menu holds **Browser…** (the room's browser settings, see [Room browser](#room-browser)), **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
 
-**Hover or click the alias** for the usage card. It shows:
+### People
+
+The **People** tab of the side panel lists everyone seated, with **+ Add participant** and the total context across the crew. Each participant shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
+
+**Click a participant** for its menu, headed by the usage card. The card shows:
 
 - the thread's context window and token totals;
 - today's usage for that model across all threads, with an API-equivalent cost (T3 does not split cost by thread);
 - the provider's plan limits.
 
-All of it comes from T3. The tile's menu has:
+All of it comes from T3. The menu has:
 
 - **Open in T3:** thread and project ids.
 - **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
@@ -411,7 +417,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). The top right of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). The right end of the header has **Roles**, the **T3** connection status (hover for host, version and pairing; click for the pairing and providers panel) and the theme menu (System, Light, Dark).
 
 Each room shows activity pills:
 
@@ -424,7 +430,7 @@ A thread shows a dot: filled and pulsing while it works, a ring with background 
 
 Drag rooms to reorder them within their project. The **⋯** menu renames or deletes a room.
 
-### Inspector (right-hand panel)
+### Board and Changes (side panel)
 
 - **Board:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
 - **Changes:** files changed across the room, grouped by participant. A path touched by two participants is marked "also: @alias".
@@ -438,13 +444,13 @@ Drag rooms to reorder them within their project. The **⋯** menu renames or del
 - per-turn checkpoints with changed files;
 - the tool log.
 
-Status, model, role and context are on the participant tile and its usage card.
+Status, model, role and context are on the participant's row in **People** and its usage card.
 
 Terminals, the browser preview and full diff text stay in T3 Code.
 
 ### On a phone
 
-The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button, the crew strip scrolls sideways, participant menus and dialogs open as bottom sheets, the inspector covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
+The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button (with **Roles**, the T3 connection and the theme at its foot), the header shows one participant and a count, participant menus and dialogs open as bottom sheets, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
 
 It also installs as an app. Open the room over HTTPS (for example a Tailscale Serve address; the offline shell only registers on a secure origin), then:
 
@@ -456,7 +462,7 @@ The installed app opens full screen, keeps its icon, and shows the last loaded s
 
 ## Managing rooms, participants and roles
 
-- **Participants mirror their thread.** Change the model or effort in T3 Code and the tile updates. Change it from the room and the room updates the thread through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
+- **Participants mirror their thread.** Change the model or effort in T3 Code and the room updates. Change it from the room and the thread is updated through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
 - **Removing a participant** asks what happens to its queued, held and blocked tasks (cancel them, or keep them blocked so you can reassign them) and to its T3 thread: **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Deleting asks for a confirmation. A thread also seated in another room is always kept, and when T3 no longer has the thread the choice is skipped. Removal is refused while it has a run in progress. If T3 refuses the thread action, the participant is still removed and the reason is shown.
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
 - **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the top right, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.

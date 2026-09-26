@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api.ts";
-import { isActiveParticipant, type CommandResult, type RoomCommand, type RoomListItem, type RoomSnapshot, type ThreadLifecycleChoice } from "../types.ts";
+import { useRoom } from "../context.tsx";
+import { isActiveParticipant, type CommandResult, type Room, type RoomCommand, type RoomListItem, type RoomSnapshot, type ThreadLifecycleChoice } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
+import { BROWSER_STATE_LABEL, RoomBrowserDialog } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
@@ -56,7 +58,70 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
   );
 }
 
-function RenameRoomDialog({ room, onCommand, onClose }: { room: RoomListItem; onCommand: RunCommand; onClose: () => void }) {
+type RoomRef = Pick<Room, "id" | "title">;
+
+/**
+ * The ⋯ menu in the room header: the room's settings (its agents' browser) and the same rename and delete as the
+ * sidebar's menu.
+ */
+export function RoomHeaderMenu({ onManageBrowser }: { onManageBrowser: (browserId: string | null) => void }) {
+  const { snapshot, runCommand } = useRoom();
+  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<"browser" | "rename" | "delete" | null>(null);
+  const wrapper = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const { room, browser } = snapshot;
+  const browserState = !room.browserEnabled ? "off" : browser ? `${browser.browser.name}, ${BROWSER_STATE_LABEL[browser.status.state]}` : "on";
+  const pick = (next: "browser" | "rename" | "delete") => {
+    setOpen(false);
+    setDialog(next);
+  };
+  return (
+    <span className="room-header-menu" ref={wrapper}>
+      <button
+        type="button"
+        className={`small ghost icon-only${open ? " active" : ""}`}
+        aria-label="Room options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Room options"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋯
+      </button>
+      {open ? (
+        <div className="menu" role="menu">
+          <button type="button" role="menuitem" onClick={() => pick("browser")}>
+            Browser…<span className="menu-detail mono">{browserState}</span>
+          </button>
+          <button type="button" role="menuitem" onClick={() => pick("rename")}>
+            Rename…
+          </button>
+          <button type="button" role="menuitem" className="danger" onClick={() => pick("delete")}>
+            Delete room…
+          </button>
+        </div>
+      ) : null}
+      {dialog === "browser" ? <RoomBrowserDialog onClose={() => setDialog(null)} onManage={onManageBrowser} /> : null}
+      {dialog === "rename" ? <RenameRoomDialog room={room} onCommand={runCommand} onClose={() => setDialog(null)} /> : null}
+      {dialog === "delete" ? <DeleteRoomDialog room={room} onCommand={runCommand} onClose={() => setDialog(null)} /> : null}
+    </span>
+  );
+}
+
+function RenameRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onCommand: RunCommand; onClose: () => void }) {
   const [title, setTitle] = useState(room.title);
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent) => {
@@ -98,7 +163,7 @@ export const THREAD_CHOICES: Array<{ key: ThreadLifecycleChoice; label: string; 
  * Delete a room: the room's own record (messages, tasks, images) goes; each participant's T3 thread is kept, settled,
  * archived, or deleted in T3, chosen per thread (default keep).
  */
-function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomListItem; onCommand: RunCommand; onClose: () => void }) {
+function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onCommand: RunCommand; onClose: () => void }) {
   const { toast } = useToast();
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [choices, setChoices] = useState<Record<string, ThreadLifecycleChoice>>({});

@@ -38,7 +38,7 @@ export const identityStyle = (color: string): CSSProperties => ({ "--pc": color 
 interface MonogramProps {
   participant: Pick<Participant, "id" | "alias">;
   size?: "xs" | "sm" | "md";
-  /** Status tone for the ring (crew strip only). */
+  /** Status tone for the ring (people list and the header's monograms). */
   ring?: string;
   pulse?: boolean;
 }

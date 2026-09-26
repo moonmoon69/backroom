@@ -5,11 +5,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { BrowserView } from "./components/BrowserView.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
-import { Inspector, type InspectorTab } from "./components/Inspector.tsx";
-import { RoomBrowserButton } from "./components/RoomBrowser.tsx";
+import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspector.tsx";
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
-import { ParticipantBar } from "./components/ParticipantBar.tsx";
+import { RoomHeaderMenu } from "./components/RoomActions.tsx";
 import { rememberProject, Sidebar, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { RolesDialog } from "./components/RolesLibrary.tsx";
@@ -23,6 +22,22 @@ import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
 import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
 
 const SELECTION_KEY = "t3rooms.selection";
+/** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
+const PANEL_KEY = "t3rooms.panel";
+const PANEL_TABS: InspectorTab[] = ["people", "board", "changes"];
+
+function storedPanel(): { open: boolean; tab: InspectorTab } {
+  // Phones start with the panel closed: it covers the timeline there.
+  const fallback = { open: !mediaMatches(MOBILE_QUERY), tab: "board" as InspectorTab };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANEL_KEY) ?? "null") as { open?: unknown; tab?: unknown } | null;
+    if (!parsed) return fallback;
+    const tab = PANEL_TABS.includes(parsed.tab as InspectorTab) ? (parsed.tab as InspectorTab) : fallback.tab;
+    return { open: mediaMatches(MOBILE_QUERY) ? false : parsed.open !== false, tab };
+  } catch {
+    return fallback;
+  }
+}
 /** Where the selected room was kept before threads could be selected too. */
 const LEGACY_ROOM_KEY = "t3rooms.selectedRoom";
 
@@ -55,11 +70,24 @@ export function App() {
   }, []);
   // T3 serves an archived thread's conversation only after it is unarchived; such a selection gets its own panel.
   const selectedArchived = selection?.kind === "thread" ? threads.find((t) => t.id === selection.id && t.archivedAt) ?? null : null;
-  // Phones start with the inspector closed: it covers the timeline there.
-  const [inspectorOpen, setInspectorOpen] = useState(() => !mediaMatches(MOBILE_QUERY));
+  const [inspectorOpen, setInspectorOpen] = useState(() => storedPanel().open);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isMobile = useMediaQuery(MOBILE_QUERY);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("board");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => storedPanel().tab);
+  useEffect(() => {
+    localStorage.setItem(PANEL_KEY, JSON.stringify({ open: inspectorOpen, tab: inspectorTab }));
+  }, [inspectorOpen, inspectorTab]);
+  // A header switch opens the panel on its tab; the switch of the tab already showing closes it.
+  const togglePanel = useCallback(
+    (tab: InspectorTab) => {
+      if (inspectorOpen && inspectorTab === tab) setInspectorOpen(false);
+      else {
+        setInspectorTab(tab);
+        setInspectorOpen(true);
+      }
+    },
+    [inspectorOpen, inspectorTab],
+  );
   const [pairingOpen, setPairingOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [followUp, setFollowUp] = useState<FollowUpPrefill | null>(null);
@@ -166,7 +194,7 @@ export function App() {
   const snapshotRunning = snapshot
     ? Object.values(snapshot.participantStatus).some((s) => s.session === "running" || s.session === "starting" || s.externalActivity)
     : false;
-  const deskInterval = (inspectorOpen && inspectorTab !== "board") || deskRunning || snapshotRunning ? 2500 : 10000;
+  const deskInterval = (inspectorOpen && inspectorTab === "changes") || deskRunning || snapshotRunning ? 2500 : 10000;
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
   useEffect(() => {
     setDeskRunning(desk ? Object.values(desk.participants).some((d) => Boolean(d.runningTurn)) : false);
@@ -233,10 +261,6 @@ export function App() {
   }, [snapshot, runCommand, onRoomChanged, desk, deskError]);
 
   const needsPairing = status !== null && status.adapter === "http" && !status.t3.paired;
-  const openRequests = snapshot?.nativeRequests.length ?? 0;
-  const pendingCount = snapshot
-    ? snapshot.tasks.filter((t) => ["queued", "held", "blocked", "needs_input"].includes(t.state)).length
-    : 0;
 
   const onPaired = () => {
     setPairingOpen(false);
@@ -294,6 +318,7 @@ export function App() {
         onT3Changed={loadT3}
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
+        footer={appControls}
         disabled={needsPairing}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -389,27 +414,18 @@ export function App() {
                 {contextValue.snapshot.room.projectId}
               </span>
               <span className="spacer" />
-              <RoomBrowserButton
-                onManage={(browserId) => {
+              <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
+              <RoomHeaderMenu
+                onManageBrowser={(browserId) => {
                   const target = browserId ?? browsers?.[0]?.id;
                   if (target) setSelection({ kind: "browser", id: target });
                 }}
               />
-              <button
-                type="button"
-                className={`small${inspectorOpen ? " active" : ""}`}
-                aria-pressed={inspectorOpen}
-                onClick={() => setInspectorOpen((v) => !v)}
-              >
-                Queue {pendingCount > 0 ? `(${pendingCount})` : ""}
-                {openRequests > 0 ? <span className="pill pill-input"> {openRequests} need input</span> : null}
-              </button>
               <span className="header-divider" aria-hidden="true" />
               {appControls}
             </div>
-            {/* Everything under the header: on phones the inspector sheet covers exactly this area. */}
+            {/* Everything under the header: on phones the side panel covers exactly this area. */}
             <div className="room-under">
-              <ParticipantBar />
               <div className="room-body">
                 <div className="room-centre">
                   <Timeline />
@@ -417,7 +433,7 @@ export function App() {
                   <Composer followUp={followUp} />
                 </div>
                 {inspectorOpen ? (
-                  <Inspector tab={inspectorTab} onTab={setInspectorTab} onClose={() => setInspectorOpen(false)} />
+                  <Inspector tab={inspectorTab} onClose={() => setInspectorOpen(false)} />
                 ) : null}
               </div>
             </div>

@@ -43,7 +43,7 @@ import {
   type TextEdit,
 } from "./composerText.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
-import { RemoveParticipantDialog } from "./ParticipantBar.tsx";
+import { RemoveParticipantDialog } from "./Crew.tsx";
 
 interface Props {
   followUp: FollowUpPrefill | null;
@@ -109,7 +109,7 @@ export function Composer({ followUp }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
   /** "/" typed: the room's commands, plus the addressed participants' T3 commands after an @name. */
-  const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[] }) | null>(null);
+  const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[]; atStart: boolean }) | null>(null);
   /** "/after " typed: pick a task by what it says instead of remembering its number. */
   const [taskPick, setTaskPick] = useState<MentionState | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -291,9 +291,11 @@ export function Composer({ followUp }: Props) {
       // Addressed participants just before this slash ("@claude /c", "@claude /hold /c", "@all /r").
       const head = /(?:^|\s)((?:@[a-z0-9_-]+[\s,]*(?:and\s+)?)+)(?:\/(?:after|hold|now|steer)\b[^\s]*\s+(?:task\d+\s+|@[a-z0-9_-]+\s+)?)*$/i.exec(before.slice(0, start));
       const aliases = head ? [...(head[1] ?? "").matchAll(/@([a-z0-9_-]+)/gi)].map((m) => (m[1] as string).toLowerCase()) : [];
-      const recipients = aliases.includes("all") ? crew.map((p) => p.id) : crew.filter((p) => aliases.includes(p.alias.toLowerCase())).map((p) => p.id);
+      const named = aliases.includes("all") ? crew.map((p) => p.id) : crew.filter((p) => aliases.includes(p.alias.toLowerCase())).map((p) => p.id);
       const atStart = /(^|\n)\s*$/.test(before.slice(0, start));
-      if (recipients.length > 0 || atStart) setSlashPick({ start, query: (slash[2] ?? "").toLowerCase(), index: 0, recipients });
+      // A room with one participant needs no @name, so its T3 commands are offered at the start too.
+      const recipients = named.length === 0 && atStart && crew.length === 1 ? [(crew[0] as Participant).id] : named;
+      if (recipients.length > 0 || atStart) setSlashPick({ start, query: (slash[2] ?? "").toLowerCase(), index: 0, recipients, atStart });
       else setSlashPick(null);
     } else {
       setSlashPick(null);
@@ -334,7 +336,7 @@ export function Composer({ followUp }: Props) {
 
   const slashMatches = useMemo(() => {
     if (!slashPick) return [];
-    const room = (slashPick.recipients.length > 0 ? ADDRESSED_ROOM_COMMANDS : ROOM_COMMANDS).map((c) => ({ ...c, group: "room" as const }));
+    const room = (slashPick.atStart ? ROOM_COMMANDS : ADDRESSED_ROOM_COMMANDS).map((c) => ({ ...c, group: "room" as const }));
     const t3 = slashPick.recipients.length > 0
       ? commandsFor(slashPick.recipients).map((c) => ({ name: c.name, description: c.description ?? "", hint: c.hint, group: "t3" as const }))
       : [];
@@ -1277,6 +1279,16 @@ const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["after", "hold", "n
 /** Placeholder examples from the room's own participants and tasks (generic names only when the room is empty). */
 function roomPlaceholders(aliases: string[], lastTask: number | null): string[] {
   const [a = "alice", b = aliases.length > 1 ? (aliases[1] as string) : "bob"] = aliases;
+  if (aliases.length === 1) {
+    // One participant: every message is for them, so the examples need no @name.
+    return [
+      `review the diff  ·  with one participant here, no @${a} needed`,
+      `/steer also check the logs  ·  /hold save this for later`,
+      `/compact  ·  type / for the room's and ${a}'s commands`,
+      lastTask ? `/after task${lastTask} review it  ·  /note keep the public API` : `/note keep the public API`,
+      `/add new-name role accountant  ·  /role @${a} none`,
+    ];
+  }
   const examples = [
     `@${a} fix the failing test. @${b} check ${a}'s fix`,
     aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} /steer also check the logs`,
