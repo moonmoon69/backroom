@@ -53,6 +53,10 @@ export interface CatalogEntry {
   isDefault?: boolean;
   isLegacy?: boolean;
   aliases?: string[];
+  /** T3's badge for the model ("new"), shown beside its name in the picker. */
+  badge?: string;
+  /** The provider's harness kind (claudeAgent, codex, cursor, …): picks the provider icon. */
+  driver?: string;
 }
 
 export interface T3ProviderInfo {

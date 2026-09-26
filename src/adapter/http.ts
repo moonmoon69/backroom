@@ -72,6 +72,7 @@ interface ServerConfigLike {
       isDefault?: boolean;
       isLegacy?: boolean;
       isCustom?: boolean;
+      badge?: string;
       optionDescriptors?: ModelOptionDescriptor[];
       capabilities?: { optionDescriptors?: ModelOptionDescriptor[] };
     }>;
@@ -332,6 +333,8 @@ export class HttpT3Adapter implements T3Adapter {
             ...(model.isDefault ? { isDefault: true } : {}),
             ...(model.isLegacy ? { isLegacy: true } : {}),
             ...(model.aliases && model.aliases.length > 0 ? { aliases: model.aliases } : {}),
+            ...(model.badge ? { badge: model.badge } : {}),
+            ...(provider.driver ? { driver: provider.driver } : {}),
           });
         }
       }
