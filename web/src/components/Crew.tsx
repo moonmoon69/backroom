@@ -825,13 +825,13 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
       <form className="form" onSubmit={submit}>
         <div className="composer-row" role="group" aria-label="Thread">
           <span className="segmented add-mode">
-            <label className={`segment${mode === "create" ? " on" : ""}`}>
+            <label className={`segment${mode === "create" ? " on" : ""}`} title="The participant gets a new T3 thread">
               <input type="radio" name="add-mode" checked={mode === "create"} onChange={() => chooseMode("create")} />
-              New thread
+              New
             </label>
-            <label className={`segment${mode === "attach" ? " on" : ""}`}>
+            <label className={`segment${mode === "attach" ? " on" : ""}`} title="The participant continues one of the project's T3 threads">
               <input type="radio" name="add-mode" checked={mode === "attach"} onChange={() => chooseMode("attach")} />
-              Attach existing
+              Existing
               {threads !== null ? <span className="muted"> ({threads.length})</span> : null}
             </label>
           </span>
