@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
-import { BROWSER_STATE_LABEL, BrowserStatusPanel } from "./RoomBrowser.tsx";
+import { BrowserPowerButton, BrowserStatusPanel, useBrowserPower } from "./RoomBrowser.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
@@ -67,16 +67,17 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
     refresh();
     onChanged();
   };
+  const power = useBrowserPower(browserId, changed);
 
   return (
     <>
       <div className="room-header">
         {headerStart}
         <h1 className="room-title mono">{item?.name ?? "Browser"}</h1>
-        {item ? <span className={`pill ${item.status.state === "running" ? "pill-working" : "pill-muted"}`}>{BROWSER_STATE_LABEL[item.status.state]}</span> : null}
         <span className="spacer" />
         {item ? (
           <>
+            <BrowserPowerButton status={item.status} power={power} small />
             <button type="button" className="small ghost" onClick={() => setDialog("edit")}>
               Edit
             </button>
@@ -109,12 +110,12 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
               )}
             </section>
             <section className="browser-panel-inline">
-              <BrowserStatusPanel browserId={item.id} status={item.status} onChanged={changed} />
+              <BrowserStatusPanel status={item.status} error={power.error} />
             </section>
             <section>
               <h2 className="browser-section-title">Rooms using it by default</h2>
               {item.usedBy.length === 0 ? (
-                <p className="muted">None. A room picks its default browser from its Browser button.</p>
+                <p className="muted">None. A room picks its default browser under ⋯ → Browser… in its header.</p>
               ) : (
                 <ul className="browser-used-by">
                   {item.usedBy.map((room) => (

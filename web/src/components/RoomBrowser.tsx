@@ -19,16 +19,18 @@ export const BROWSER_STATE_LABEL: Record<RoomBrowserStatus["state"], string> = {
   error: "failed",
 };
 
-/**
- * A browser's process: state with Start / Stop, the watch link, the DevTools address agents attach to, and the open
- * tabs. Shared by the room's Browser panel and the browser view. `onChanged` runs after Start or Stop.
- */
-export function BrowserStatusPanel({ browserId, status, onChanged }: { browserId: string; status: RoomBrowserStatus; onChanged: () => void }) {
+export interface BrowserPower {
+  busy: boolean;
+  /** Why the last Start or Stop failed, until the next one. */
+  error: string | null;
+  start: () => void;
+  stop: () => void;
+}
+
+/** Start and stop a browser's process. `onChanged` runs after either succeeds. */
+export function useBrowserPower(browserId: string, onChanged: () => void): BrowserPower {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const running = status.state === "running";
-  const unavailable = status.mode === null;
-  const link = running ? watchUrl(status) : null;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -41,6 +43,34 @@ export function BrowserStatusPanel({ browserId, status, onChanged }: { browserId
       setBusy(false);
     }
   };
+  return { busy, error, start: () => void act(() => api.browserStart(browserId)), stop: () => void act(() => api.browserStop(browserId)) };
+}
+
+/** "Start browser" (the primary action while it is off) or "Stop browser", for a dialog's action row or a header. */
+export function BrowserPowerButton({ status, power, small }: { status: RoomBrowserStatus; power: BrowserPower; small?: boolean }) {
+  if (status.state === "running") {
+    return (
+      <button type="button" className={small ? "small" : undefined} disabled={power.busy} onClick={power.stop}>
+        {power.busy ? "Stopping…" : "Stop browser"}
+      </button>
+    );
+  }
+  const starting = status.state === "starting" || power.busy;
+  return (
+    <button type="button" className={small ? "small primary" : "primary"} disabled={starting || status.mode === null} onClick={power.start}>
+      {starting ? "Starting…" : "Start browser"}
+    </button>
+  );
+}
+
+/**
+ * A browser's process as it is: state, the watch link, the DevTools address agents attach to, and the open tabs.
+ * Shared by the room's Browser dialog and the browser view; Start and Stop sit with each one's other actions.
+ */
+export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatus; error: string | null }) {
+  const running = status.state === "running";
+  const unavailable = status.mode === null;
+  const link = running ? watchUrl(status) : null;
   return (
     <>
       <div className="browser-status">
@@ -49,16 +79,6 @@ export function BrowserStatusPanel({ browserId, status, onChanged }: { browserId
           {unavailable ? "unavailable" : BROWSER_STATE_LABEL[status.state]}
           {running ? ` · ${status.mode === "vnc" ? "virtual screen" : status.mode === "window" ? "Chrome window" : "headless"}` : ""}
         </span>
-        <span className="spacer" />
-        {running ? (
-          <button type="button" className="small ghost" disabled={busy} onClick={() => void act(() => api.browserStop(browserId))}>
-            Stop
-          </button>
-        ) : (
-          <button type="button" className="small" disabled={busy || unavailable} onClick={() => void act(() => api.browserStart(browserId))}>
-            {status.state === "starting" || busy ? "Starting…" : "Start"}
-          </button>
-        )}
       </div>
 
       {status.error || error ? <p className="status-error browser-error">{error ?? status.error}</p> : null}
@@ -114,6 +134,7 @@ export function BrowserStatusPanel({ browserId, status, onChanged }: { browserId
 export function RoomBrowserDialog({ onClose, onManage }: { onClose: () => void; onManage: (browserId: string | null) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
   const info = snapshot.browser;
+  const power = useBrowserPower(info?.browser.id ?? "", refetch);
   const enabled = snapshot.room.browserEnabled;
   const [busy, setBusy] = useState(false);
   const [list, setList] = useState<BrowserListItem[] | null>(null);
@@ -172,8 +193,10 @@ export function RoomBrowserDialog({ onClose, onManage }: { onClose: () => void; 
         {info?.browser.description ? <p className="hint browser-purpose">{info.browser.description}</p> : null}
 
         {list && list.length > 1 ? (
-          <fieldset className="browser-allowed">
-            <legend className="label">Agents here may use</legend>
+          <div className="browser-allowed" role="group" aria-labelledby="browser-allowed-label">
+            <span className="label" id="browser-allowed-label">
+              Agents here may use
+            </span>
             <div className="browser-allowed-choice">
               <label className="radio">
                 <input type="radio" checked={allowedIds === null} disabled={busy} onChange={() => void setBrowser({ enabled, allowed: null })} />
@@ -208,10 +231,17 @@ export function RoomBrowserDialog({ onClose, onManage }: { onClose: () => void; 
                 })}
               </div>
             ) : null}
-          </fieldset>
+          </div>
         ) : null}
 
-        {info ? <BrowserStatusPanel browserId={info.browser.id} status={info.status} onChanged={refetch} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
+        {info ? <BrowserStatusPanel status={info.status} error={power.error} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
+
+        <div className="dialog-actions">
+          <button type="button" className="ghost" onClick={onClose}>
+            Close
+          </button>
+          {info ? <BrowserPowerButton status={info.status} power={power} /> : null}
+        </div>
       </div>
     </Dialog>
   );

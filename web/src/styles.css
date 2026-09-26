@@ -4256,10 +4256,16 @@ span.reply-to {
   gap: 8px;
   flex-wrap: wrap;
 }
+/* Same small caps as the dialog's "Default" and "Agents here may use", and the browser page's section titles. */
 .browser-status .label,
 .browser-row .label,
 .browser-tabs .label {
-  min-width: 52px;
+  min-width: 60px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .browser-row .hint {
   flex-basis: 100%;
@@ -5085,15 +5091,10 @@ span.reply-to {
 }
 
 .browser-allowed {
-  border: none;
-  margin: 4px 0 8px;
-  padding: 0;
-  min-width: 0;
-}
-
-.browser-allowed legend {
-  padding: 0;
-  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 2px 0 4px;
 }
 
 .browser-allowed-choice,
