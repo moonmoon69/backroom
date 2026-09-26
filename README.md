@@ -497,6 +497,20 @@ The installed app opens full screen, keeps its icon, and shows the last loaded s
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each participant's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
 - **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles** at the foot of the sidebar, and assign them from a participant's Settings or with `/role`. A participant's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
 
+### Presets
+
+A **preset** keeps a participant's settings under a name: the model with its options, the permission mode, a role, and where it works (the project folder, or a new worktree from the project's default branch). Presets are listed under **Presets** in the sidebar and are stored by the service, so every device you use sees the same ones.
+
+| To | Do this |
+| --- | --- |
+| Make one | **+** beside **Presets**, or **Save as preset** in the Add participant dialog (it takes the name typed there; a preset of that name is brought up to date instead) |
+| Add it to a room | Drag it onto the room in the sidebar or onto the open room's page. Without a mouse: the preset's **⋯** menu → **Add to** the open room |
+| Start a thread with it | Click it (the thread starts in the open room's project, else the last one used), or drag it onto a project |
+| Use it in a form | The Add participant dialog and the New thread page list the presets above the settings; one click fills them in, and you can still change anything before you confirm |
+| Change or delete it | The preset's **⋯** menu → **Edit…** |
+
+Seated in a room, a preset takes its name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. The participant is the room's own from then on: renaming it or changing its model does not touch the preset, and editing or deleting the preset does not touch participants or threads made from it. A preset that works in a new worktree works in the project folder where the project is not a git repository.
+
 ## Configuration
 
 The service reads environment variables only. It does **not** load `.env`, which is used only by the optional research scripts. Set variables inline, for example `ROOMS_PORT=4500 npm start`.

@@ -6115,3 +6115,111 @@ button:has(> .icon):not(.mobile-only) {
   margin-top: 1px;
   white-space: normal;
 }
+
+/* ---- presets: participants you use often, in the sidebar and as chips above a form's settings ---- */
+.side-preset {
+  cursor: grab;
+}
+
+.side-preset:active {
+  cursor: grabbing;
+}
+
+.presets-group {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.room-item.side-preset {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.side-preset .side-preset-tile {
+  flex: 1;
+  min-width: 0;
+  grid-template-columns: 14px auto minmax(0, 1fr);
+  padding-left: 14px;
+}
+
+.side-preset-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.side-preset .room-menu-button {
+  flex: none;
+  margin-right: 6px;
+}
+
+/* Where a dragged preset would land. */
+.room-item.preset-over,
+.project-head.preset-over {
+  border-radius: var(--radius);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.room-under.preset-drop-over,
+.preset-drop-over {
+  position: relative;
+}
+
+.preset-drop-notice {
+  position: absolute;
+  inset: 8px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  pointer-events: none;
+}
+
+.preset-drop-notice span {
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+.preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: var(--text-md);
+}
+
+.preset-chip:hover {
+  background: var(--bg-3);
+}
+
+.preset-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.preset-chip-name {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+}

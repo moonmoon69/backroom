@@ -219,6 +219,23 @@ const MIGRATIONS: string[] = [
   `,
   // Browsers a room may use; NULL means all of them.
   `ALTER TABLE rooms ADD COLUMN browser_ids_json TEXT;`,
+  // Presets: a participant's settings under a name (model and its options, permission mode, role, where it works),
+  // seated in a room or used to start a thread without choosing them again. Unlike the names library dropped above,
+  // a preset is a starting point: the participant it seats is the room's own and can be renamed or changed.
+  `
+  CREATE TABLE presets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    model_selection_json TEXT NOT NULL,
+    runtime_mode TEXT NOT NULL,
+    role_id TEXT,
+    workspace_mode TEXT NOT NULL DEFAULT 'local',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export class Database {

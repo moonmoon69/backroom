@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
-import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { titleMonogram } from "./Monogram.tsx";
@@ -8,13 +8,15 @@ import { Popover } from "./Popover.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { threadActivity } from "./ThreadView.tsx";
 import { useToast } from "./Toast.tsx";
-import { ChevronIcon, CloseIcon, PlusIcon, SidebarIcon } from "./icons.tsx";
+import { ChevronIcon, CloseIcon, MoreIcon, PlusIcon, SidebarIcon } from "./icons.tsx";
+import { carriesPreset, droppedPresetId, PresetDialog, PresetIcon, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
 
 /** What the main area shows: a room, a thread used on its own, or a new thread being started in a project. */
 export type Selection =
   | { kind: "room"; id: string }
   | { kind: "thread"; id: string }
-  | { kind: "new-thread"; projectId: string }
+  /** With a preset, the new thread's settings start from it. */
+  | { kind: "new-thread"; projectId: string; presetId?: string }
   | { kind: "browser"; id: string };
 
 interface Props {
@@ -28,6 +30,8 @@ interface Props {
   selection: Selection | null;
   onSelect: (selection: Selection) => void;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
+  /** Seat a preset in a room on a new thread (a preset dropped on the room, or picked from the preset's menu). */
+  onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   /** Re-read projects and threads from T3 (after a project was added). */
   onT3Changed: () => void;
   /** The shared browsers on this machine; null when the service cannot run browsers (or before the first read). */
@@ -62,6 +66,7 @@ type Section = "settled" | "archived";
 const COLLAPSED_KEY = "t3rooms.collapsedProjects";
 /** The Browsers section folds like a project; its key cannot clash with a project id. */
 const BROWSERS_KEY = "__browsers__";
+const PRESETS_KEY = "__presets__";
 const OPEN_SECTIONS_KEY = "t3rooms.openThreadSections";
 const LAST_PROJECT_KEY = "t3rooms.lastProject";
 /** Loose threads shown per project before "Show more". */
@@ -162,8 +167,13 @@ export function rememberProject(projectId: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
 }
 
-export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, onCancelNewThread, footer, onCollapse, disabled, open, onClose }: Props) {
-  const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | null>(null);
+export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onSeatPreset, onT3Changed, browsers, onBrowsersChanged, onCancelNewThread, footer, onCollapse, disabled, open, onClose }: Props) {
+  const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | { kind: "preset"; preset: Preset | null } | null>(null);
+  const { presets } = usePresets();
+  const presetText = usePresetText();
+  // Where a dragged preset would land: a room (it is seated there) or a project (a thread starts there).
+  const [presetOver, setPresetOver] = useState<string | null>(null);
+  const openRoom = selection?.kind === "room" ? (rooms.find((r) => r.id === selection.id) ?? null) : null;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
       return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]") as string[]);
@@ -230,12 +240,14 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
     });
   };
 
-  const newThread = (projectId: string | null) => {
-    const target = projectId ?? localStorage.getItem(LAST_PROJECT_KEY) ?? projects?.[0]?.id ?? null;
+  const newThread = (projectId: string | null, presetId?: string) => {
+    // Without a project named: the open room's or the open new thread's, else the last one used.
+    const here = selection?.kind === "new-thread" ? selection.projectId : (openRoom?.projectId ?? null);
+    const target = projectId ?? here ?? localStorage.getItem(LAST_PROJECT_KEY) ?? projects?.[0]?.id ?? null;
     const known = target && projects?.some((p) => p.id === target) ? target : projects?.[0]?.id;
     if (!known) return;
     rememberProject(known);
-    onSelect({ kind: "new-thread", projectId: known });
+    onSelect({ kind: "new-thread", projectId: known, ...(presetId ? { presetId } : {}) });
   };
 
   const moveOver = (targetId: string) => {
@@ -324,7 +336,23 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             const known = projects?.some((p) => p.id === group.id) ?? false;
             return (
               <li key={group.id} className="project-group">
-                <div className="project-head">
+                <div
+                  className={`project-head${presetOver === `project:${group.id}` ? " preset-over" : ""}`}
+                  onDragOver={(event) => {
+                    if (!known || !carriesPreset(event)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                    setPresetOver(`project:${group.id}`);
+                  }}
+                  onDragLeave={() => setPresetOver((current) => (current === `project:${group.id}` ? null : current))}
+                  onDrop={(event) => {
+                    const presetId = droppedPresetId(event);
+                    setPresetOver(null);
+                    if (!known || !presetId) return;
+                    event.preventDefault();
+                    newThread(group.id, presetId);
+                  }}
+                >
                   <button
                     type="button"
                     className="project-toggle"
@@ -355,7 +383,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                     {group.rooms.map((room) => (
                       <li
                         key={room.id}
-                        className={`room-item${dragId === room.id ? " dragging" : ""}`}
+                        className={`room-item${dragId === room.id ? " dragging" : ""}${presetOver === room.id ? " preset-over" : ""}`}
                         draggable
                         onDragStart={(event) => {
                           setDragId(room.id);
@@ -363,12 +391,25 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                           event.dataTransfer.setData("text/plain", room.id);
                         }}
                         onDragOver={(event) => {
+                          if (carriesPreset(event)) {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "copy";
+                            setPresetOver(room.id);
+                            return;
+                          }
                           if (!dragId) return;
                           event.preventDefault();
                           moveOver(room.id);
                         }}
+                        onDragLeave={() => setPresetOver((current) => (current === room.id ? null : current))}
                         onDrop={(event) => {
                           event.preventDefault();
+                          const presetId = droppedPresetId(event);
+                          if (presetId) {
+                            setPresetOver(null);
+                            void onSeatPreset(room.id, presetId);
+                            return;
+                          }
                           void finishDrag();
                         }}
                         onDragEnd={() => void finishDrag()}
@@ -431,6 +472,60 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
               </li>
             );
           })}
+          {projects !== null ? (
+            <li className="project-group presets-group">
+              <div className="project-head">
+                <button
+                  type="button"
+                  className="project-toggle"
+                  aria-expanded={!collapsed.has(PRESETS_KEY)}
+                  onClick={() => toggleCollapsed(PRESETS_KEY)}
+                  title="Participants you use often: a model with its options, permission mode, role and where it works"
+                >
+                  <ChevronIcon dir={collapsed.has(PRESETS_KEY) ? "right" : "down"} />
+                  <span className="project-name">Presets</span>
+                  {collapsed.has(PRESETS_KEY) ? <span className="project-count mono">{presets.length}</span> : null}
+                </button>
+                <button type="button" className="small ghost project-add" aria-label="New preset" title="New preset" disabled={disabled} onClick={() => setDialog({ kind: "preset", preset: null })}>
+                  <PlusIcon />
+                </button>
+              </div>
+              {!collapsed.has(PRESETS_KEY) ? (
+                <ul className="project-items">
+                  {presets.map((preset) => {
+                    const { model, detail } = presetText(preset);
+                    return (
+                      <li key={preset.id} className="room-item side-preset" draggable onDragStart={(event) => startPresetDrag(event, preset)} onDragEnd={() => setPresetOver(null)}>
+                        <button
+                          type="button"
+                          className="side-thread-tile side-preset-tile"
+                          title={`${preset.name}: ${model} · ${detail}\nClick to start a thread with it. Drag it onto a room to add it there, or onto a project to start a thread there.`}
+                          disabled={disabled}
+                          onClick={() => newThread(null, preset.id)}
+                        >
+                          <PresetIcon preset={preset} />
+                          <span className="thread-title mono">{preset.name}</span>
+                          <span className="side-thread-age side-preset-model">{model}</span>
+                        </button>
+                        <AddMenu
+                          label={<MoreIcon />}
+                          title={`${preset.name} options`}
+                          className="room-menu-button"
+                          disabled={disabled}
+                          items={[
+                            { label: "Start a thread", onPick: () => newThread(null, preset.id) },
+                            ...(openRoom ? [{ label: `Add to ${openRoom.title}`, onPick: () => void onSeatPreset(openRoom.id, preset.id) }] : []),
+                            { label: "Edit…", onPick: () => setDialog({ kind: "preset", preset }) },
+                          ]}
+                        />
+                      </li>
+                    );
+                  })}
+                  {presets.length === 0 ? <li className="project-empty muted">Save the participants you use often</li> : null}
+                </ul>
+              ) : null}
+            </li>
+          ) : null}
           {browsers ? (
             <li className="project-group browsers-group">
               <div className="project-head">
@@ -490,6 +585,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             }}
           />
         ) : null}
+        {dialog?.kind === "preset" ? <PresetDialog preset={dialog.preset} runCommand={onCommand} onClose={() => setDialog(null)} /> : null}
         {dialog?.kind === "browser" ? (
           <BrowserFormDialog
             title="New browser"

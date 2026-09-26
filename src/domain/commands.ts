@@ -183,6 +183,42 @@ export const RoleUpdateCommand = z
 
 export const RoleDeleteCommand = z.object({ type: z.literal("role.delete"), roleId: nonEmpty }).strict();
 
+/**
+ * A participant's settings under a name. The name follows the alias rules: it is the alias the preset takes in a room.
+ */
+export const PresetCreateCommand = z
+  .object({
+    type: z.literal("preset.create"),
+    name: ALIAS,
+    modelSelection: ModelSelectionSchema,
+    runtimeMode: RuntimeModeSchema.default("full-access"),
+    roleId: nonEmpty.nullable().default(null),
+    workspaceMode: z.enum(["local", "worktree"]).default("local"),
+  })
+  .strict();
+
+export const PresetUpdateCommand = z
+  .object({
+    type: z.literal("preset.update"),
+    presetId: nonEmpty,
+    name: ALIAS.optional(),
+    modelSelection: ModelSelectionSchema.optional(),
+    runtimeMode: RuntimeModeSchema.optional(),
+    roleId: nonEmpty.nullable().optional(),
+    workspaceMode: z.enum(["local", "worktree"]).optional(),
+  })
+  .strict();
+
+export const PresetDeleteCommand = z.object({ type: z.literal("preset.delete"), presetId: nonEmpty }).strict();
+
+/**
+ * Seat a preset in a room on a new thread. Without an alias it takes the preset's name, with a number added when the
+ * room already has that alias ("sol", then "sol2").
+ */
+export const ParticipantFromPresetCommand = z
+  .object({ type: z.literal("participant.fromPreset"), roomId: nonEmpty, presetId: nonEmpty, alias: ALIAS.optional() })
+  .strict();
+
 export const ParticipantRetireCommand = z
   .object({
     type: z.literal("participant.retire"),
@@ -438,6 +474,10 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoleCreateCommand,
   RoleUpdateCommand,
   RoleDeleteCommand,
+  PresetCreateCommand,
+  PresetUpdateCommand,
+  PresetDeleteCommand,
+  ParticipantFromPresetCommand,
   TaskCreateCommand,
   MessageCreateCommand,
   RoomNoteCreateCommand,

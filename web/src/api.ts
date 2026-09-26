@@ -16,6 +16,7 @@ import type {
   LiveView,
   ProviderInfo,
   UsageToday,
+  Preset,
   Role,
   RoomCommand,
   RoomListItem,
@@ -118,6 +119,7 @@ export const api = {
   /** The project's branches and worktrees, for choosing where a new thread works. */
   projectRefs: (projectId: string): Promise<ProjectRefs> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/refs`),
   roles: (): Promise<Role[]> => get("/api/roles"),
+  presets: (): Promise<Preset[]> => get("/api/presets"),
   browsers: (): Promise<BrowserListItem[]> => get("/api/browsers"),
   /** One browser, with its profile size. */
   browser: (browserId: string): Promise<BrowserListItem> => get(`/api/browsers/${encodeURIComponent(browserId)}`),

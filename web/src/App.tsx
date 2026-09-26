@@ -14,6 +14,7 @@ import { RoomHeaderMenu } from "./components/RoomActions.tsx";
 import { rememberProject, Sidebar, SidebarRail, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { RolesDialog } from "./components/RolesLibrary.tsx";
+import { PresetDropZone, PresetsContext } from "./components/presets.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
 import { ConnectionChip, PairingPanel } from "./components/StatusStrip.tsx";
 import { Timeline } from "./components/Timeline.tsx";
@@ -21,7 +22,7 @@ import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
 import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
-import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
+import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
 
 const SELECTION_KEY = "t3rooms.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
@@ -132,6 +133,13 @@ export function App() {
     api.rooms().then(setRooms).catch(report);
   }, [report]);
 
+  // Presets change only from this UI (or another tab of it), so they are read at the start and after a change.
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const loadPresets = useCallback(() => {
+    api.presets().then(setPresets).catch(() => undefined);
+  }, []);
+  const presetsValue = useMemo(() => ({ presets, reload: loadPresets }), [presets, loadPresets]);
+
   // Polled with the room list; failures are shown once in the sidebar, not as a toast every poll.
   // Browsers are local processes: cheap to read, polled with the room list. Null when the service cannot run them.
   const [browsers, setBrowsers] = useState<BrowserListItem[] | null>(null);
@@ -175,6 +183,7 @@ export function App() {
     loadRooms();
     loadT3();
     loadBrowsers();
+    loadPresets();
     // The room list and thread list carry live activity (working, background, needs you) for the sidebar; the
     // connection status asks T3 itself, so it stays slow.
     const rooms = setInterval(() => {
@@ -187,7 +196,7 @@ export function App() {
       clearInterval(rooms);
       clearInterval(status);
     };
-  }, [loadStatus, loadRooms, loadT3, loadBrowsers]);
+  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
 
   // The page you were on before "New thread", so cancelling it goes back there.
   const lastPage = useRef<Selection | null>(null);
@@ -264,11 +273,16 @@ export function App() {
           loadRooms();
           if (command.type === "room.browser") loadBrowsers();
         } else if (command.type.startsWith("browser.")) loadBrowsers();
+        else if (command.type.startsWith("preset.")) loadPresets();
         else if (command.type === "project.create" || command.type.startsWith("thread.")) loadT3();
         else {
           onRoomChanged();
           // Seating or removing a participant moves a thread into or out of the sidebar's thread list.
-          if (command.type === "participant.create" || command.type === "participant.retire" || command.type === "participant.rebind") loadT3();
+          if (command.type === "participant.create" || command.type === "participant.fromPreset" || command.type === "participant.retire" || command.type === "participant.rebind") loadT3();
+          // A preset may be seated in a room other than the open one: its count in the list changes.
+          if (command.type === "participant.fromPreset") loadRooms();
+          // A deleted role is cleared from the presets that had it.
+          if (command.type === "role.delete") loadPresets();
         }
         return result;
       } catch (error) {
@@ -285,7 +299,17 @@ export function App() {
         return null;
       }
     },
-    [loadRooms, loadT3, loadBrowsers, onRoomChanged, report, toast, selectedRoomId, rooms],
+    [loadRooms, loadT3, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId, rooms],
+  );
+
+  const seatPreset = useCallback(
+    async (roomId: string, presetId: string) => {
+      const result = await runCommand({ type: "participant.fromPreset", roomId, presetId });
+      if (!result || !("alias" in result) || !result.alias) return;
+      const room = rooms.find((r) => r.id === roomId);
+      toast(`@${result.alias} joined${room ? ` ${room.title}` : ""} on a new thread`, "success");
+    },
+    [runCommand, rooms, toast],
   );
 
   const contextValue = useMemo<RoomContextValue | null>(() => {
@@ -359,6 +383,7 @@ export function App() {
   ) : null;
 
   return (
+    <PresetsContext.Provider value={presetsValue}>
     <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
       {staleUi ? (
         <div className="update-banner" role="status">
@@ -379,6 +404,7 @@ export function App() {
           setSidebarOpen(false);
         }}
         onCommand={runCommand}
+        onSeatPreset={seatPreset}
         onT3Changed={loadT3}
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
@@ -460,12 +486,13 @@ export function App() {
         ) : selection?.kind === "new-thread" && !needsPairing ? (
           <NewThreadView
             projectId={selection.projectId}
+            presetId={selection.presetId ?? null}
             projects={projects ?? []}
             browsers={browsers}
             runCommand={runCommand}
             onProject={(projectId) => {
               rememberProject(projectId);
-              setSelection({ kind: "new-thread", projectId });
+              setSelection({ kind: "new-thread", projectId, ...(selection.presetId ? { presetId: selection.presetId } : {}) });
             }}
             onStarted={(threadId) => {
               setSelection({ kind: "thread", id: threadId });
@@ -488,7 +515,11 @@ export function App() {
               <RoomHeaderMenu projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null} />
             </div>
             {/* Everything under the header: on phones the side panel covers exactly this area. */}
-            <div className="room-under">
+            <PresetDropZone
+              className="room-under"
+              label={`Drop to add it to ${contextValue.snapshot.room.title}`}
+              onDropPreset={(presetId) => void seatPreset(contextValue.snapshot.room.id, presetId)}
+            >
               <div className="room-body">
                 <div className="room-centre">
                   <Timeline />
@@ -506,7 +537,7 @@ export function App() {
                   />
                 ) : null}
               </div>
-            </div>
+            </PresetDropZone>
           </RoomContext.Provider>
         ) : (
           <>
@@ -535,5 +566,6 @@ export function App() {
         <RolesDialog runCommand={runCommand} onClose={() => setLibraryOpen(false)} />
       ) : null}
     </div>
+    </PresetsContext.Provider>
   );
 }

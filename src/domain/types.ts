@@ -89,6 +89,22 @@ export interface Role {
   updatedAt: string;
 }
 
+/**
+ * A participant's settings under a name: seated in a room (one new thread each time) or used to start a thread.
+ * The name is the alias it takes in a room, with a number added when the room already has that alias.
+ */
+export interface Preset {
+  id: string;
+  name: string;
+  modelSelection: ModelSelection;
+  runtimeMode: RuntimeMode;
+  roleId: string | null;
+  /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
+  workspaceMode: "local" | "worktree";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionBinding {
   id: BindingId;
   participantId: ParticipantId;
