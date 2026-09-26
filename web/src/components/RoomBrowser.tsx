@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
-import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
 
 /** The noVNC link, completed with this page's host when the service does not know which host you reach it by. */
@@ -126,12 +125,44 @@ export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatu
   );
 }
 
+/** A browser window: the Browser switch's icon on phones, where its word does not fit. */
+function BrowserIcon() {
+  return (
+    <svg className="browser-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+      <path d="M1.75 6h12.5" />
+    </svg>
+  );
+}
+
 /**
- * The room's browser settings, from the room header's ⋯ menu: whether its agents get browsers, which browser is the
- * room's default, which browsers they may use, and the default browser's process. The browsers themselves are
- * managed in the sidebar's Browsers section.
+ * The room header's Browser switch, beside People, Board and Changes: opens the side panel on the room's browser.
+ * The dot is green while the room's default browser runs (with its tab count), red when it failed.
  */
-export function RoomBrowserDialog({ onClose, onManage }: { onClose: () => void; onManage: (browserId: string | null) => void }) {
+export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const { snapshot } = useRoom();
+  const info = snapshot.browser;
+  const enabled = snapshot.room.browserEnabled;
+  const running = info?.status.state === "running";
+  const tabs = running ? info.status.tabs.length : 0;
+  const tone = info?.status.state === "error" ? " dot-err" : running ? " dot-working" : "";
+  const title = !enabled ? "Browser: off for this room's agents" : info ? `Browser "${info.browser.name}": ${BROWSER_STATE_LABEL[info.status.state]}` : "Browser";
+  return (
+    <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick}>
+      <span className={`dot${tone}`} aria-hidden="true" />
+      <BrowserIcon />
+      <span className="room-browser-label">Browser</span>
+      {tabs > 0 ? <span className="panel-count mono">{tabs}</span> : null}
+    </button>
+  );
+}
+
+/**
+ * The Browser tab of the room's side panel: whether its agents get browsers, which browser is the room's default,
+ * which browsers they may use, and the default browser's process (status, watch link, tabs; Start or Stop at the
+ * bottom). The browsers themselves are managed in the sidebar's Browsers section.
+ */
+export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string | null) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
   const info = snapshot.browser;
   const power = useBrowserPower(info?.browser.id ?? "", refetch);
@@ -155,94 +186,84 @@ export function RoomBrowserDialog({ onClose, onManage }: { onClose: () => void; 
   };
 
   return (
-    <Dialog title="Browser for this room" onClose={onClose}>
-      <div className="browser-panel">
-        <label className="browser-toggle">
-          <input type="checkbox" checked={enabled} disabled={busy || (unavailable && !enabled)} onChange={() => void setBrowser({ enabled: !enabled })} />
-          <span>
-            Give this room&rsquo;s agents a browser
-            <span className="hint">Its default browser starts for each task and is named in the briefing. Agents attach over DevTools and share tabs and logins with anyone else using it.</span>
+    <div className="browser-panel">
+      <label className="browser-toggle">
+        <input type="checkbox" checked={enabled} disabled={busy || (unavailable && !enabled)} onChange={() => void setBrowser({ enabled: !enabled })} />
+        <span>
+          Give this room&rsquo;s agents a browser
+          <span className="hint">Its default browser starts for each task and is named in the briefing. Agents attach over DevTools and share tabs and logins with anyone else using it.</span>
+        </span>
+      </label>
+
+      <label className="browser-default">
+        <span className="label">Default</span>
+        <select
+          value={snapshot.room.defaultBrowserId ?? info?.browser.id ?? ""}
+          disabled={busy || !list}
+          onChange={(e) => void setBrowser({ enabled, browserId: e.target.value || null })}
+        >
+          {!allowedList ? <option value="">Loading…</option> : null}
+          {allowedList?.map((browser) => (
+            <option key={browser.id} value={browser.id}>
+              {browser.name}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="small ghost" onClick={() => onManage(info?.browser.id ?? null)}>
+          Manage…
+        </button>
+      </label>
+      {info?.browser.description ? <p className="hint browser-purpose">{info.browser.description}</p> : null}
+
+      {list && list.length > 1 ? (
+        <div className="browser-allowed" role="group" aria-labelledby="browser-allowed-label">
+          <span className="label" id="browser-allowed-label">
+            Agents here may use
           </span>
-        </label>
-
-        <label className="browser-default">
-          <span className="label">Default</span>
-          <select
-            value={snapshot.room.defaultBrowserId ?? info?.browser.id ?? ""}
-            disabled={busy || !list}
-            onChange={(e) => void setBrowser({ enabled, browserId: e.target.value || null })}
-          >
-            {!allowedList ? <option value="">Loading…</option> : null}
-            {allowedList?.map((browser) => (
-              <option key={browser.id} value={browser.id}>
-                {browser.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="small ghost"
-            onClick={() => {
-              onClose();
-              onManage(info?.browser.id ?? null);
-            }}
-          >
-            Manage…
-          </button>
-        </label>
-        {info?.browser.description ? <p className="hint browser-purpose">{info.browser.description}</p> : null}
-
-        {list && list.length > 1 ? (
-          <div className="browser-allowed" role="group" aria-labelledby="browser-allowed-label">
-            <span className="label" id="browser-allowed-label">
-              Agents here may use
-            </span>
-            <div className="browser-allowed-choice">
-              <label className="radio">
-                <input type="radio" checked={allowedIds === null} disabled={busy} onChange={() => void setBrowser({ enabled, allowed: null })} />
-                every browser
-              </label>
-              <label className="radio">
-                <input
-                  type="radio"
-                  checked={allowedIds !== null}
-                  disabled={busy}
-                  onChange={() => void setBrowser({ enabled, allowed: [info?.browser.id ?? list[0]?.id].filter((id): id is string => Boolean(id)) })}
-                />
-                only these:
-              </label>
-            </div>
-            {allowedIds !== null ? (
-              <div className="browser-allowed-list">
-                {list.map((browser) => {
-                  const checked = allowedIds.includes(browser.id);
-                  const isDefault = browser.id === info?.browser.id;
-                  return (
-                    <label key={browser.id} className="checkbox" title={isDefault ? "The room's default must stay allowed" : browser.description}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={busy || (checked && isDefault)}
-                        onChange={() => void setBrowser({ enabled, allowed: checked ? allowedIds.filter((id) => id !== browser.id) : [...allowedIds, browser.id] })}
-                      />
-                      <span className="mono">{browser.name}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            ) : null}
+          <div className="browser-allowed-choice">
+            <label className="radio">
+              <input type="radio" checked={allowedIds === null} disabled={busy} onChange={() => void setBrowser({ enabled, allowed: null })} />
+              every browser
+            </label>
+            <label className="radio">
+              <input
+                type="radio"
+                checked={allowedIds !== null}
+                disabled={busy}
+                onChange={() => void setBrowser({ enabled, allowed: [info?.browser.id ?? list[0]?.id].filter((id): id is string => Boolean(id)) })}
+              />
+              only these:
+            </label>
           </div>
-        ) : null}
-
-        {info ? <BrowserStatusPanel status={info.status} error={power.error} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
-
-        <div className="dialog-actions">
-          <button type="button" className="ghost" onClick={onClose}>
-            Close
-          </button>
-          {info ? <BrowserPowerButton status={info.status} power={power} /> : null}
+          {allowedIds !== null ? (
+            <div className="browser-allowed-list">
+              {list.map((browser) => {
+                const checked = allowedIds.includes(browser.id);
+                const isDefault = browser.id === info?.browser.id;
+                return (
+                  <label key={browser.id} className="checkbox" title={isDefault ? "The room's default must stay allowed" : browser.description}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy || (checked && isDefault)}
+                      onChange={() => void setBrowser({ enabled, allowed: checked ? allowedIds.filter((id) => id !== browser.id) : [...allowedIds, browser.id] })}
+                    />
+                    <span className="mono">{browser.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
-      </div>
-    </Dialog>
+      ) : null}
+
+      {info ? <BrowserStatusPanel status={info.status} error={power.error} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
+
+      {info ? (
+        <div className="panel-actions">
+          <BrowserPowerButton status={info.status} power={power} />
+        </div>
+      ) : null}
+    </div>
   );
 }

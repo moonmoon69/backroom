@@ -4,10 +4,11 @@ import { ChangesTab } from "./ChangesTab.tsx";
 import { CrewButton, CrewPanel } from "./Crew.tsx";
 import { ageOf } from "./deskFormat.ts";
 import { BoardLanes, boardCount } from "./QueueDrawer.tsx";
+import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
 
-export type InspectorTab = "people" | "board" | "changes";
+export type InspectorTab = "people" | "browser" | "board" | "changes";
 
-const TITLES: Record<InspectorTab, string> = { people: "People", board: "Board", changes: "Changes" };
+const TITLES: Record<InspectorTab, string> = { people: "People", browser: "Browser", board: "Board", changes: "Changes" };
 
 /** Files changed across the room's threads; null until the desk has been read. */
 function useChangedCount(): number | null {
@@ -16,8 +17,8 @@ function useChangedCount(): number | null {
 }
 
 /**
- * The room header's switches for the side panel: people, board and changes. Each opens the panel on its tab; the
- * tab already showing closes it.
+ * The room header's switches for the side panel: people, browser, board and changes. Each opens the panel on its
+ * tab; the tab already showing closes it.
  */
 export function PanelButtons({ open, tab, onToggle }: { open: boolean; tab: InspectorTab; onToggle: (tab: InspectorTab) => void }) {
   const { snapshot } = useRoom();
@@ -28,6 +29,7 @@ export function PanelButtons({ open, tab, onToggle }: { open: boolean; tab: Insp
   return (
     <span className="panel-buttons" role="group" aria-label="Side panel">
       <CrewButton active={on("people")} onClick={() => onToggle("people")} />
+      <RoomBrowserButton active={on("browser")} onClick={() => onToggle("browser")} />
       <button type="button" className={`small${on("board") ? " active" : ""}`} aria-pressed={on("board")} onClick={() => onToggle("board")} title="Work waiting, running and needing input">
         Board
         {board > 0 ? <span className="panel-count mono">{board}</span> : null}
@@ -44,13 +46,15 @@ export function PanelButtons({ open, tab, onToggle }: { open: boolean; tab: Insp
 interface Props {
   tab: InspectorTab;
   onClose: () => void;
+  /** Open a browser's own page (from the Browser tab's Manage…). */
+  onManageBrowser: (browserId: string | null) => void;
 }
 
 /**
- * Right side panel, switched from the header: People (who is seated, their threads), Board (the queue, with what each
- * participant is doing outside it) and Changes (files across the room).
+ * Right side panel, switched from the header: People (who is seated, their threads), Browser (the room's browser),
+ * Board (the queue, with what each participant is doing outside it) and Changes (files across the room).
  */
-export function Inspector({ tab, onClose }: Props) {
+export function Inspector({ tab, onClose, onManageBrowser }: Props) {
   const { snapshot, desk, deskError, aliasOf } = useRoom();
   const errors = Object.entries(desk?.errors ?? {});
   const board = boardCount(snapshot.tasks, snapshot.nativeRequests.length);
@@ -60,7 +64,7 @@ export function Inspector({ tab, onClose }: Props) {
   // Re-render the "updated Ns ago" footer once a second while desk data is shown.
   const [, setTick] = useState(0);
   useEffect(() => {
-    if (tab === "board") return;
+    if (tab !== "people" && tab !== "changes") return;
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(timer);
   }, [tab]);
@@ -77,10 +81,11 @@ export function Inspector({ tab, onClose }: Props) {
       </div>
       <div className="queue-body">
         {tab === "people" ? <CrewPanel /> : null}
+        {tab === "browser" ? <RoomBrowserPanel onManage={onManageBrowser} /> : null}
         {tab === "board" ? <BoardLanes /> : null}
         {tab === "changes" ? <ChangesTab /> : null}
       </div>
-      {tab !== "board" ? (
+      {tab === "people" || tab === "changes" ? (
         <div className="inspector-footer mono">
           {deskError ? <span className="status-error">{deskError}</span> : null}
           {!deskError && desk ? <span className="muted">updated {ageOf(desk.fetchedAt)}</span> : null}

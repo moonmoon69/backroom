@@ -4,7 +4,6 @@ import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type CommandResult, type Room, type RoomCommand, type RoomListItem, type RoomSnapshot, type ThreadLifecycleChoice } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
-import { BROWSER_STATE_LABEL, RoomBrowserDialog } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
@@ -61,14 +60,11 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
 
 type RoomRef = Pick<Room, "id" | "title">;
 
-/**
- * The ⋯ menu in the room header: the T3 project the room works in (name and id), the room's settings (its agents'
- * browser), and the same rename and delete as the sidebar's menu.
- */
-export function RoomHeaderMenu({ projectTitle, onManageBrowser }: { projectTitle: string | null; onManageBrowser: (browserId: string | null) => void }) {
+/** The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the sidebar's menu. */
+export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }) {
   const { snapshot, runCommand } = useRoom();
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<"browser" | "rename" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const wrapper = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -83,9 +79,8 @@ export function RoomHeaderMenu({ projectTitle, onManageBrowser }: { projectTitle
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const { room, browser } = snapshot;
-  const browserState = !room.browserEnabled ? "off" : browser ? `${browser.browser.name}, ${BROWSER_STATE_LABEL[browser.status.state]}` : "on";
-  const pick = (next: "browser" | "rename" | "delete") => {
+  const { room } = snapshot;
+  const pick = (next: "rename" | "delete") => {
     setOpen(false);
     setDialog(next);
   };
@@ -112,9 +107,6 @@ export function RoomHeaderMenu({ projectTitle, onManageBrowser }: { projectTitle
               <CopyButton text={room.projectId} label="Copy the project id" />
             </span>
           </div>
-          <button type="button" role="menuitem" onClick={() => pick("browser")}>
-            Browser…<span className="menu-detail mono">{browserState}</span>
-          </button>
           <button type="button" role="menuitem" onClick={() => pick("rename")}>
             Rename…
           </button>
@@ -123,7 +115,6 @@ export function RoomHeaderMenu({ projectTitle, onManageBrowser }: { projectTitle
           </button>
         </div>
       ) : null}
-      {dialog === "browser" ? <RoomBrowserDialog onClose={() => setDialog(null)} onManage={onManageBrowser} /> : null}
       {dialog === "rename" ? <RenameRoomDialog room={room} onCommand={runCommand} onClose={() => setDialog(null)} /> : null}
       {dialog === "delete" ? <DeleteRoomDialog room={room} onCommand={runCommand} onClose={() => setDialog(null)} /> : null}
     </span>

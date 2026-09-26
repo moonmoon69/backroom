@@ -115,7 +115,7 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
             <section>
               <h2 className="browser-section-title">Rooms using it by default</h2>
               {item.usedBy.length === 0 ? (
-                <p className="muted">None. A room picks its default browser under ⋯ → Browser… in its header.</p>
+                <p className="muted">None. A room picks its default browser with the Browser button in its header.</p>
               ) : (
                 <ul className="browser-used-by">
                   {item.usedBy.map((room) => (

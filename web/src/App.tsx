@@ -24,7 +24,7 @@ import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSna
 const SELECTION_KEY = "t3rooms.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
 const PANEL_KEY = "t3rooms.panel";
-const PANEL_TABS: InspectorTab[] = ["people", "board", "changes"];
+const PANEL_TABS: InspectorTab[] = ["people", "browser", "board", "changes"];
 /** Whether the sidebar is hidden on a desktop (phones always have it as a drawer instead). */
 const SIDEBAR_COLLAPSED_KEY = "t3rooms.sidebarCollapsed";
 
@@ -435,13 +435,7 @@ export function App() {
               <h1 className="room-title">{contextValue.snapshot.room.title}</h1>
               <span className="spacer" />
               <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
-              <RoomHeaderMenu
-                projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null}
-                onManageBrowser={(browserId) => {
-                  const target = browserId ?? browsers?.[0]?.id;
-                  if (target) setSelection({ kind: "browser", id: target });
-                }}
-              />
+              <RoomHeaderMenu projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null} />
             </div>
             {/* Everything under the header: on phones the side panel covers exactly this area. */}
             <div className="room-under">
@@ -452,7 +446,14 @@ export function App() {
                   <Composer followUp={followUp} />
                 </div>
                 {inspectorOpen ? (
-                  <Inspector tab={inspectorTab} onClose={() => setInspectorOpen(false)} />
+                  <Inspector
+                    tab={inspectorTab}
+                    onClose={() => setInspectorOpen(false)}
+                    onManageBrowser={(browserId) => {
+                      const target = browserId ?? browsers?.[0]?.id;
+                      if (target) setSelection({ kind: "browser", id: target });
+                    }}
+                  />
                 ) : null}
               </div>
             </div>

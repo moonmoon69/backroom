@@ -5210,13 +5210,6 @@ span.reply-to {
   align-items: baseline;
 }
 
-.menu-detail {
-  margin-left: auto;
-  padding-left: 12px;
-  font-size: 11px;
-  color: var(--fg-dim);
-}
-
 .inspector-head {
   display: flex;
   align-items: baseline;
@@ -5313,4 +5306,23 @@ span.reply-to {
   .room-header {
     min-height: 50px;
   }
+}
+
+/* The room header's Browser switch: status dot and the word; on phones an icon stands in for the word. */
+.browser-icon {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .room-browser-button .browser-icon {
+    display: block;
+  }
+}
+
+/* Actions at the foot of a side panel tab, at its lower right like a dialog's. */
+.panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
