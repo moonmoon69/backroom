@@ -429,7 +429,6 @@ function UserText({ text }: { text: string }) {
   return <div className="user-text">{parts}</div>;
 }
 
-const isLongReply = (text: string): boolean => text.length > 600 || /^\s*\|.*\|\s*$/m.test(text) || text.includes("```");
 
 function MessageRow({
   event,
@@ -530,7 +529,7 @@ function MessageRow({
 
   return (
     <div
-      className={`chat-row from-agent${continued ? " continued" : ""}${isLongReply(event.text) ? " wide" : ""}`}
+      className={`chat-row from-agent${continued ? " continued" : ""}`}
       style={identityStyle(color)}
       data-sequence={event.sequence}
     >
@@ -572,7 +571,7 @@ function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Partic
   const items = feedIsOurs ? desk?.liveFeed ?? [] : [];
   const needsYou = task?.state === "needs_input";
   return (
-    <div className="chat-row from-agent live-turn wide" style={identityStyle(colorOf(participant.id))} aria-live="off">
+    <div className="chat-row from-agent live-turn" style={identityStyle(colorOf(participant.id))} aria-live="off">
       <div className="chat-stack">
         <div className="chat-head">
           <Monogram participant={participant} size="xs" />

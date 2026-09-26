@@ -1007,11 +1007,18 @@ button.primary.destructive {
   flex-direction: row-reverse;
 }
 
+/* Widths, as a share of the chat column (the space between the sidebar and the side panel). Your messages fit their
+   text up to --bubble-max; agent replies are always exactly --bubble-max wide, so a run of replies lines up and long
+   answers get the room they need, whatever their first lines look like. */
+.timeline {
+  --bubble-max: 88%;
+}
+
 .chat-stack {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  max-width: 72%;
+  max-width: var(--bubble-max);
 }
 
 .from-user .chat-stack {
@@ -1020,24 +1027,17 @@ button.primary.destructive {
 
 .from-agent .chat-stack {
   align-items: flex-end;
-  /* One width rule for every agent bubble, so a run of replies lines up instead of zig-zagging. */
-  max-width: 86%;
+  width: var(--bubble-max);
 }
 
-.chat-row.wide .chat-stack {
-  max-width: 86%;
+.from-agent .chat-stack > .bubble {
+  align-self: stretch;
 }
 
-/* Narrow column (inspector open on a laptop): bubbles take most of the width. */
+/* Narrow column (side panel open on a small laptop): nearly the whole width. */
 @container timeline (max-width: 760px) {
   .chat-stack {
-    max-width: 88%;
-  }
-  .from-agent .chat-stack {
-    max-width: 96%;
-  }
-  .chat-row.wide .chat-stack {
-    max-width: 96%;
+    --bubble-max: 96%;
   }
 }
 
@@ -4517,13 +4517,12 @@ span.reply-to {
     padding: 8px 10px 14px;
   }
 
-  .chat-stack,
-  .chat-row.wide .chat-stack {
-    max-width: 94%;
+  .chat-stack {
+    --bubble-max: 94%;
   }
 
   .from-agent .chat-stack {
-    max-width: 100%;
+    --bubble-max: 100%;
   }
 
   .md pre {
