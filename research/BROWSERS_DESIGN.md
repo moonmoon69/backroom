@@ -4,6 +4,7 @@ Status: agreed 2026-09-25; built 2026-09-26. Step 1: browsers table, migration, 
 default. Step 2: `bin/rooms-browser`, the chrome-devtools-mcp engine, tab ownership, briefings listing every browser,
 per-room allowed browsers; verified with a real Claude thread and a real Codex thread in one room (own tabs, no
 harness configuration). Step 3: Browser button for threads outside rooms, browser choice when starting a thread.
+Later the same day the room's controls moved into a Browser tab of the room's side panel (see UI below).
 
 ## Goal
 
@@ -76,7 +77,12 @@ rooms-browser <browser> <tab> close                     # own tabs only
 - Sidebar: a folding **Browsers** section (dot, name, tabs or "off", used by N) and **+ New browser**.
 - Browser view: Start / Stop, Open screen (noVNC), description, used by, tabs (with owners, step 2), DevTools address,
   profile size, Edit, Reset profile (wipes logins), Delete (refused while a room uses it).
-- Room header Browser button: on/off and the default browser, with its status and watch link.
+- Room header: a globe switch (green check while the room's agents may use browsers; tab count while its default
+  runs) opens the side panel's Browser tab: the on/off switch first (off: agents are not told, the tool refuses the
+  room), then one checkbox per browser showing the name and description agents read (Edit in place, make default;
+  any browser can be unticked, the default moving to the next ticked one), then the default's status with Start /
+  Stop. All ticked is stored as "every browser".
+- Thread header: the same globe; checked while browser instructions are attached to the next message.
 
 ## Steps
 

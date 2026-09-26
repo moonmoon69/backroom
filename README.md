@@ -40,7 +40,7 @@ See [`PRD.md`](PRD.md) for the product definition and [`research/`](research/) f
   - a headless server started with `t3 serve`, or installed with `t3 service install`.
 - The harnesses you want in rooms (Claude, Codex, Cursor, Grok, OpenCode, …) are set up and signed in **inside T3**. The room never talks to a harness directly.
 
-Tested on macOS against T3 Code 0.0.43.
+Tested against T3 Code 0.0.43, on macOS and on a headless Ubuntu box (see [A headless box over Tailscale](#a-headless-box-over-tailscale)).
 
 ## Install
 
@@ -151,7 +151,7 @@ tailscale serve status    # https://box.tailnet-name.ts.net:8443 -> http://127.0
 
 Open `https://box.tailnet-name.ts.net:8443` on the Mac or the phone. HTTPS matters on the phone: it is what lets the room install as an app and keep its shell offline (see [On a phone](#on-a-phone)).
 
-**What is exposed where:** T3 Code and T3 Rooms stay on loopback, reached only through Tailscale Serve. The room browser's noVNC viewer listens on the Tailscale IP because the watch link is meant to be opened from another device; its DevTools port stays on loopback. Update the room with `git pull && npm install && npm run build:web && systemctl --user restart t3rooms.service`.
+**What is exposed where:** T3 Code and T3 Rooms stay on loopback, reached only through Tailscale Serve. The browsers' noVNC viewers listen on the Tailscale IP because their watch links are meant to be opened from another device; their DevTools ports stay on loopback. Update the room with `git pull && npm install && npm run build:web && systemctl --user restart t3rooms.service`.
 
 ## Try it without T3 (demo mode)
 
@@ -207,7 +207,7 @@ The text you type is the whole instruction. The buttons around the composer only
 | **Shift+Enter** | New line |
 | `@` | Mention autocomplete (participants and `@all`) |
 | **Backspace** right after a mention (**Delete** right before one) | Removes the whole `@name` at once; ⌘/Ctrl+Z brings it back. Partly typed or unknown names delete letter by letter |
-| `/` | Command menu (room commands, and T3 commands after an `@name`) |
+| `/` | Command menu (room commands, and T3 commands after an `@name`; in a room with one participant, its T3 commands at the start too) |
 
 On a touch keyboard Enter is a new line and the **Send** button sends.
 
@@ -299,7 +299,7 @@ Type `/` at the start of the message to see these, each with a description:
 ```
 /after task41 @grok review the implementation  wait for existing work (a task picker opens after /after)
 /after @claude @grok review it                 wait for claude's open task
-/hold @grok save this for later                held until you release it from the task card or board
+/hold @grok save this for later                held until you release it from its card (in the chat or under Tasks)
 /now @grok …                                   start now, even if the text implies a wait
 /steer @grok also cover the edge cases         deliver into grok's running turn (see below)
 /note preserve the public API                  a room note everyone sees; no task
@@ -339,7 +339,7 @@ Providers handle a steered message differently (verified live with `scripts/t3-s
 
 T3 publishes each provider's slash commands and skills. Claude exposes dozens (`/compact`, `/autocompact`, installed skills, …). Codex has `/compact` and `/feedback`, and Cursor has `/compact`. Grok and OpenCode currently expose none.
 
-- **Browse:** type `@claude /` to list the room directives plus claude's T3 commands, labelled "T3 · @claude", each with a description and argument hint. Typing narrows the list. With several recipients (or `@all`), only the commands they all have are listed.
+- **Browse:** type `@claude /` to list the room directives plus claude's T3 commands, labelled "T3 · @claude", each with a description and argument hint. Typing narrows the list. With several recipients (or `@all`), only the commands they all have are listed. In a room with one participant, `/` at the start of the message lists its commands too, and `/compact` needs no `@name`.
 - **Send:** `@claude /compact focus on the parser` is sent to claude's thread exactly as typed, with no room briefing around it, because a harness only runs a slash command when it is the first thing in the message. The plan row marks it **T3 command**.
 - **Unknown commands are blocked.** The plan and the server both refuse a command the recipient's provider doesn't have.
 - **Limits:** a T3 command can't be combined with `/steer`, and it doesn't count as the participant having seen the room. Its next normal task still gets the full briefing.
@@ -356,7 +356,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
   Several rooms can share a browser. Agents get the list as `- name (this room's default): description` lines in each task's instructions, and `rooms-browser list` prints the same.
 - **Threads outside rooms:** the **Browser** button (the globe) in a thread's header adds the browsers' instructions to your next message (a thread outside a room gets no briefing), once (the globe shows a green check until that message is sent); add them again if the agent loses track. When starting a new thread, pick a browser in the form and they go with the first message.
-- **When it runs:** it starts when you turn it on or press Start, and before each task in the room is sent (slash commands excepted). It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
+- **When it runs:** a browser starts when you press **Start browser**, when an agent first uses it, and (for a room's default) before each task in the room is sent, slash commands excepted. Turning browsers on for a room doesn't start one by itself. It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
 - **Stable address:** each browser keeps its own ports and profile under `data/browsers/<id>/`, so logins survive stop, start and service restarts. The profile is the browser's own: none of your everyday Chrome's logins are in it. Deleting a room leaves browsers alone; a browser can't be deleted while a room uses it as its default. (A room's browser from before browsers were a list became a browser named after the room, with its logins.)
 - **Stop and start keep your tabs:** Stop asks Chrome to quit normally, so it saves its open tabs, history and cookies; the next start reopens those tabs.
 - **Service restarts don't touch it:** browsers keep running when the room service restarts, and the service picks them up again. Under systemd each browser process runs in its own transient scope (`systemd-run --user --scope`), because restarting a unit kills everything in its cgroup. Set `ROOMS_BROWSER_SCOPE=0` to turn that off.
@@ -381,7 +381,8 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
   Ubuntu packages: `sudo apt install xvfb x11vnc websockify novnc` plus Google Chrome or Chromium.
 - **Watching from another device:** noVNC listens on `127.0.0.1` by default. To open it from your Mac or iPad over Tailscale, set `ROOMS_BROWSER_BIND` to the box's Tailscale IP. Leave the DevTools port on localhost: anyone who reaches it controls the browser and its logins. The room UI itself is bound to `127.0.0.1` too; to use it from a phone, put Tailscale Serve (or another reverse proxy) in front of `ROOMS_PORT` (see [On a phone](#on-a-phone)).
-- **Same machine:** the room browser runs on the machine running the room service, so run the service next to the T3 server whose agents use it.
+- **Same machine:** browsers run on the machine running the room service, so run the service next to the T3 server whose agents use them.
+- **Not T3 Code's own browser.** T3 Code's preview browser (its `preview_*` tools) lives inside the T3 desktop app: any thread can use it, but only while a desktop app is connected to the T3 server, and it reaches what that computer reaches. These browsers run on the box instead and work with no app open.
 
 ## What the room shows
 
@@ -424,7 +425,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
 
 The sidebar button next to **+ New** hides the sidebar, and the same button at the left of the header brings it back (**⌘B** / **Ctrl+B** toggles it too). It stays hidden across reloads. While it is hidden, a red dot on that button means T3 is not paired or reports an error.
 
@@ -496,7 +497,7 @@ The service reads environment variables only. It does **not** load `.env`, which
 | `ROOMS_BROWSER_BIND` | `127.0.0.1` | Address noVNC listens on (for example a Tailscale IP) |
 | `ROOMS_BROWSER_HOST` | the bind address | Host used in watch links given to agents; if unset with a wildcard bind, the UI uses the host you opened it on |
 | `ROOMS_BROWSER_NOVNC_DIR` | `/usr/share/novnc` | noVNC web files |
-| `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a room's browser after this long without tab changes (`0` = never) |
+| `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a browser after this long without tab changes, unless a room using it has work in flight (`0` = never) |
 | `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
 | `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` to find the service; briefings pass it along when the data folder is elsewhere |
 
@@ -504,8 +505,8 @@ The service reads environment variables only. It does **not** load `.env`, which
 
 - **Restarting is safe.** Queued tasks resume, and in-flight runs are matched back to their T3 turns. A turn that finished while the service was down is picked up on the next poll.
 - **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "The room UI was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
-- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite` and `t3-auth.json`. Keep the copy private, since the credential is inside.
-- **Keep it running** with any process manager (a `launchd` agent, `pm2`, a tmux pane). The service needs no special privileges.
+- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/` and `browser-api.json`. Keep the copy private: the T3 credential and every browser's logins are inside.
+- **Keep it running** with any process manager: the systemd user unit in [A headless box over Tailscale](#a-headless-box-over-tailscale), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
 
 ## Troubleshooting
 
@@ -521,7 +522,9 @@ The service reads environment variables only. It does **not** load `.env`, which
 | `/name is not a T3 command for @x` | That participant's provider doesn't offer the command. Type `@x /` to see what it has. |
 | The model picker is empty | The catalog comes from T3's server config. With the RPC unavailable, it falls back to `~/.t3/userdata` and existing threads. Create one thread in T3 with the model you want, or type the instance id and model manually. |
 | A participant shows "thread deleted in T3" | Its thread was deleted in T3 Code. The room keeps the participant and its past replies, and new work for it is blocked. Rebind it to another thread or remove it. Settling or archiving a thread does not cause this. |
-| A browser's status says "Chrome exited during start: No usable sandbox" | Chrome's sandbox can't run, which is typical inside Docker. Run the container with `--security-opt seccomp=unconfined`, or use Google Chrome's package on the host. Each tool's output is in `data/browsers/<room>/*.log`. |
+| A browser's status says "Chrome exited during start: No usable sandbox" | Chrome's sandbox can't run, which is typical inside Docker. Run the container with `--security-opt seccomp=unconfined`, or use Google Chrome's package on the host. Each tool's output is in `data/browsers/<browserId>/*.log`. |
+| `rooms-browser` says "Browsers are turned off for the room" or "can't use" a browser | The room's Browser tab (the globe in its header): turn browsers on, or tick that browser. |
+| `rooms-browser` can't reach the service | The room service isn't running, or runs with another data folder. Start it; with a non-default `ROOMS_DATA_DIR`, briefings pass `ROOMS_BROWSER_API` along. |
 | The page stops updating | The service stopped. Restart it with `npm start`; nothing is lost. |
 
 ## Development
@@ -544,11 +547,12 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `src/app/service.ts` | The single command handler behind every input path |
 | `src/parser` | Composer syntax: mentions, assignments, waits, directives, slash commands (shared with the UI) |
 | `src/scheduler` | Durable queue: dependencies, dispatch outbox, steering, turn correlation, reconciliation |
-| `src/browser` | Room browsers: starts, adopts and stops each room's Chrome (and Xvfb/x11vnc/noVNC on Linux) |
+| `src/browser` | Browsers: the list and which rooms may use what (`catalog.ts`), each browser's Chrome process (and Xvfb/x11vnc/noVNC on Linux) with start, adopt and stop (`roomBrowsers.ts`), and the agents' tool behind `rooms-browser` (`tools.ts`) |
 | `src/briefing` | Exact context assembled for each delivery |
 | `src/adapter` | T3 boundary: HTTP + WebSocket RPC adapter with pairing, and an in-memory fake |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
+| `bin/rooms-browser` | The agents' browser command (plain Node; talks to the service over `data/browser-api.json`) |
 | `scripts/t3-pair.ts` | Pair from the command line |
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
 | `scripts/t3-steer-check.ts` | Live check of mid-turn delivery per model (creates scratch threads) |
