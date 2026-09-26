@@ -11,7 +11,7 @@ interface Lane {
   hint: string;
 }
 
-/** Board lanes in dispatch order; native requests sit at the top of "Needs input". */
+/** Task lanes in dispatch order; native requests sit at the top of "Needs input". */
 const LANES: Lane[] = [
   { key: "needs_input", title: "Needs input", states: ["needs_input"], hint: "Waiting on an answer in T3 or below." },
   { key: "running", title: "Running", states: ["running", "dispatching"], hint: "Nothing running: no room task, no turn typed in T3, no background work." },
@@ -20,11 +20,11 @@ const LANES: Lane[] = [
   { key: "blocked", title: "Blocked", states: ["blocked"], hint: "Waiting on prerequisites or manually blocked." },
 ];
 
-export function boardCount(tasks: Task[], nativeCount: number): number {
+export function taskCount(tasks: Task[], nativeCount: number): number {
   return LANES.reduce((n, lane) => n + tasks.filter((t) => lane.states.includes(t.state)).length, 0) + nativeCount;
 }
 
-/** Board rows for work T3 is doing outside the room's queue, so an idle-looking lane is not mistaken for idle crew. */
+/** Rows for work T3 is doing outside the room's queue, so an idle-looking lane is not mistaken for idle crew. */
 interface OutsideWork {
   participant: Participant;
   label: string;
@@ -32,10 +32,10 @@ interface OutsideWork {
 }
 
 /**
- * The Board tab body: pending/running work as lanes of compact tickets. The Running lane also lists participants
+ * The Tasks tab body: pending/running work as lanes of compact tickets. The Running lane also lists participants
  * busy without a room task: a turn typed directly in T3, or background work / monitoring between turns.
  */
-export function BoardLanes() {
+export function TaskLanes() {
   const { snapshot, desk } = useRoom();
   const inLane = (lane: Lane): Task[] => snapshot.tasks.filter((t) => lane.states.includes(t.state));
   const nativeCount = snapshot.nativeRequests.length;

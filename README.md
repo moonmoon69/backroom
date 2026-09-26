@@ -396,7 +396,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
 ### Room header
 
-The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Board** (with a count, and "need input" when T3 is waiting on you) and **Changes** open the side panel on that tab; clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
+The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Tasks** (a checklist, with the count, and a violet "need input" pill when T3 is waiting on you) and **Changes** (a page with ±, with the number of files changed) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
 
 While the sidebar is showing, it names the open room, thread or browser (highlighted), so the page header leaves the name out; it shows the name when the sidebar is hidden, and on phones.
 
@@ -439,9 +439,9 @@ A thread shows a dot: filled and pulsing while it works, a ring with background 
 
 Drag rooms to reorder them within their project. The **⋯** menu renames or deletes a room.
 
-### Board and Changes (side panel)
+### Tasks and Changes (side panel)
 
-- **Board:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
+- **Tasks:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists participants busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
 - **Changes:** files changed across the room, grouped by participant. A path touched by two participants is marked "also: @alias".
 
 **Thread details…** in a participant's menu covers what T3 reports about the thread that isn't shown elsewhere:

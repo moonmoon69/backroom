@@ -21,7 +21,7 @@ export function scheduleSummary(task: Task, labelFor: (taskId: string) => string
  * instruction, schedule, state) that expands for the full instruction and the secondary actions. Actionable states
  * (pending, running, failed) always show their actions, and a running task always shows its live section.
  */
-/** Plain words for task states in the chat; the Board and dialogs keep the exact state names. */
+/** Plain words for task states in the chat; the Tasks panel and dialogs keep the exact state names. */
 const STATE_WORDS: Record<Task["state"], string> = {
   queued: "waiting",
   held: "held",

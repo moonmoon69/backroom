@@ -152,7 +152,7 @@ export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boole
 }
 
 /**
- * The room header's Browser switch, beside People, Board and Changes: a globe, checked while the room's agents may
+ * The room header's Browser switch, beside People, Tasks and Changes: a globe, checked while the room's agents may
  * use browsers, with the open tab count while its default browser runs. Opens the side panel on the room's browser.
  */
 export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {

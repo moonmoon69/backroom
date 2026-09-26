@@ -24,13 +24,13 @@ import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, RoomSna
 const SELECTION_KEY = "t3rooms.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
 const PANEL_KEY = "t3rooms.panel";
-const PANEL_TABS: InspectorTab[] = ["people", "browser", "board", "changes"];
+const PANEL_TABS: InspectorTab[] = ["people", "browser", "tasks", "changes"];
 /** Whether the sidebar is hidden on a desktop (phones always have it as a drawer instead). */
 const SIDEBAR_COLLAPSED_KEY = "t3rooms.sidebarCollapsed";
 
 function storedPanel(): { open: boolean; tab: InspectorTab } {
   // Phones start with the panel closed: it covers the timeline there.
-  const fallback = { open: !mediaMatches(MOBILE_QUERY), tab: "board" as InspectorTab };
+  const fallback = { open: !mediaMatches(MOBILE_QUERY), tab: "tasks" as InspectorTab };
   try {
     const parsed = JSON.parse(localStorage.getItem(PANEL_KEY) ?? "null") as { open?: unknown; tab?: unknown } | null;
     if (!parsed) return fallback;

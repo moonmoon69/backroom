@@ -5178,8 +5178,16 @@ span.reply-to {
   margin: 0;
 }
 
-.people-icon {
+.people-icon,
+.panel-icon {
   display: block;
+}
+
+/* Phones: "2 need input" shrinks to its number; the violet pill still says it. */
+@media (max-width: 760px) {
+  .panel-buttons .pill-words {
+    display: none;
+  }
 }
 
 .room-header-menu {

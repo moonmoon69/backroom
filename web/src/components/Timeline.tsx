@@ -81,7 +81,7 @@ function buildItems(events: RoomEvent[], taskIds: ReadonlySet<string>): Timeline
   let lastDay: string | null = null;
   let previous: RoomEvent | ChatMessage | null = null;
   for (const event of events) {
-    // A task's progress shows on its row under the message; its status events stay out of the chat (Board and
+    // A task's progress shows on its row under the message; its status events stay out of the chat (Tasks and
     // Inspect delivery keep the full record).
     if (event.kind === "task.status" && event.taskId && taskIds.has(event.taskId)) continue;
     const day = dayKey(event.createdAt);
@@ -589,7 +589,7 @@ function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Partic
           </span>
         </div>
         <div className={`bubble bubble-agent bubble-live${task ? "" : " bubble-direct"}`} aria-label={`${participant.alias} is working`}>
-          {needsYou ? <div className="status-error">Waiting for your approval or answer: see the Board, or respond in T3.</div> : null}
+          {needsYou ? <div className="status-error">Waiting for your approval or answer: see Tasks, or respond in T3.</div> : null}
           <LiveFeed items={items} placeholder={task?.state === "dispatching" ? "Sending to T3…" : "Thinking…"} className="live-feed-chat" />
         </div>
       </div>

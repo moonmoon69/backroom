@@ -10,7 +10,7 @@ const ACTIVITY_COLLAPSED = 8;
 /**
  * What T3 reports about a participant's thread that the room shows nowhere else: session detail, branch and
  * worktree, pull requests, the proposed plan, per-turn checkpoints, and the tool log. Status, model, role and
- * context are on the participant tile and its usage card; live output is in the timeline and on the Board.
+ * context are on the participant tile and its usage card; live output is in the timeline and in Tasks.
  */
 export function ThreadDetailsDialog({ participant, onClose }: { participant: Participant; onClose: () => void }) {
   const { desk: roomDesk } = useRoom();
