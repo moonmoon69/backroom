@@ -48,6 +48,8 @@ export function createStack(input: {
   adapter: T3Adapter;
   briefingBudgetChars: number;
   log?: (message: string, detail?: unknown) => void;
+  /** How agents run rooms-browser; named in briefings. */
+  browserCommand?: string;
   /** Builds the room browser manager once the repos and change hub exist. */
   browsers?: (deps: { repos: Repos; notify: (roomId: string) => void }) => RoomBrowsers;
 }): AppStack {
@@ -62,7 +64,12 @@ export function createStack(input: {
     repos,
     input.adapter,
     service,
-    { briefingBudgetChars: input.briefingBudgetChars, ...(input.log ? { log: input.log } : {}), ...(browsers ? { browsers } : {}) },
+    {
+      briefingBudgetChars: input.briefingBudgetChars,
+      ...(input.log ? { log: input.log } : {}),
+      ...(browsers ? { browsers } : {}),
+      ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
+    },
     notify,
   );
   return {

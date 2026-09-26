@@ -8,7 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomBrowsers, type BrowserBriefing } from "../src/browser/roomBrowsers.ts";
-import { reconcileBrowserCatalog } from "../src/browser/catalog.ts";
+import { agentKey, browsersForRoom, reconcileBrowserCatalog, roomForKey } from "../src/browser/catalog.ts";
+import { BrowserTools, type BrowserToolError } from "../src/browser/tools.ts";
+import { createHttpApp } from "../src/server/http.ts";
+import { loadConfig } from "../src/config.ts";
 import type { RoomError } from "../src/domain/errors.ts";
 import { createTestStack } from "./helpers.ts";
 
@@ -40,15 +43,15 @@ test("a room with its browser on starts it and tells each agent where to attach"
   await stack.tick();
   assert.deepEqual(browsers.asked, ["general"], "a room without its own default uses general");
   const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
-  assert.match(briefing, /== Room browser ==/);
-  assert.match(briefing, /This room's browser is "general"/);
-  assert.match(briefing, /What it is for: General browsing/);
-  assert.match(briefing, /DevTools endpoint: http:\/\/127\.0\.0\.1:9301/);
-  assert.match(briefing, /agent-browser connect 9301/);
-  assert.match(briefing, /open your own tab/);
+  assert.match(briefing, /== Browsers ==/);
+  assert.match(briefing, /- general \(this room's default\): General browsing/);
+  const key = `sol1.${stack.roomId.slice(0, 8)}`;
+  assert.ok(briefing.includes(`rooms-browser general open <url> --as ${key}`), "the command, with the agent's own key");
+  assert.match(briefing, /Work only in tabs you opened/);
   assert.match(briefing, /http:\/\/box\.ts\.net:6101\/vnc\.html/);
+  assert.match(briefing, /DevTools connections at http:\/\/127\.0\.0\.1:9301/, "the DevTools address stays as a fallback");
   // The browser section sits in the header, before the assignment.
-  assert.ok(briefing.indexOf("== Room browser ==") < briefing.indexOf("== Your assignment"));
+  assert.ok(briefing.indexOf("== Browsers ==") < briefing.indexOf("== Your assignment"));
 });
 
 test("rooms without a browser never start one; turning it on twice is recorded once", async (t) => {
@@ -58,7 +61,7 @@ test("rooms without a browser never start one; turning it on twice is recorded o
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "plain task", schedule: { mode: "now" } });
   await stack.tick();
   assert.deepEqual(browsers.asked, []);
-  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /Room browser/);
+  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /== Browsers ==/);
 
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
@@ -73,7 +76,7 @@ test("a browser that cannot start leaves the briefing without a browser section"
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "anything", schedule: { mode: "now" } });
   await stack.tick();
   assert.equal(stack.task(1).state, "dispatching");
-  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /Room browser/);
+  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /== Browsers ==/);
 });
 
 test("browsers are a list named by purpose; a room picks its default and the briefing names it", async (t) => {
@@ -92,7 +95,9 @@ test("browsers are a list named by purpose; a room picks its default and the bri
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "run the smoke test", schedule: { mode: "now" } });
   await stack.tick();
   assert.deepEqual(browsers.asked, ["t3-rooms-testing"]);
-  assert.match(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /What it is for: Logged into staging as the test user/);
+  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  assert.match(briefing, /- t3-rooms-testing \(this room's default\): Logged into staging as the test user/);
+  assert.match(briefing, /- general \(stopped; starts on first use\): General browsing/, "every browser the room may use is listed");
 
   await stack.run({ type: "browser.update", browserId: created.browserId, name: "staging" });
   assert.equal(stack.repos.getBrowser(created.browserId)?.name, "staging");
@@ -101,6 +106,68 @@ test("browsers are a list named by purpose; a room picks its default and the bri
   await stack.run({ type: "browser.delete", browserId: created.browserId });
   assert.equal(stack.repos.getBrowser(created.browserId), null);
   assert.match(stack.repos.listEvents(stack.roomId).map((e) => e.text).join("\n"), /Default browser set to "general"/);
+});
+
+test("a room can be limited to some browsers; its default must be one of them", async (t) => {
+  const browsers = fakeBrowsers(RUNNING);
+  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1"], { browsers: () => browsers as never });
+  t.after(() => stack.close());
+  const testing = ((await stack.run({ type: "browser.create", name: "testing", description: "Staging logins" })) as { browserId: string }).browserId;
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: testing, allowed: [testing] });
+  assert.deepEqual(stack.repos.getRoom(stack.roomId)?.allowedBrowserIds, [testing]);
+  await assert.rejects(stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: "general" }), (error: RoomError) => error.code === "default_not_allowed");
+
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "check staging", schedule: { mode: "now" } });
+  await stack.tick();
+  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  assert.match(briefing, /- testing \(this room's default\): Staging logins/);
+  assert.doesNotMatch(briefing, /- general/, "browsers outside the room's list are not offered");
+
+  // While the room uses it, the browser cannot be deleted. Once the room's browsers are off it can; the room's list,
+  // left empty, is cleared and its browsers stay off rather than silently widening to every browser.
+  await assert.rejects(stack.run({ type: "browser.delete", browserId: testing }), (error: RoomError) => error.code === "browser_in_use");
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: false });
+  await stack.run({ type: "browser.delete", browserId: testing });
+  assert.equal(stack.repos.getRoom(stack.roomId)?.allowedBrowserIds, null);
+  assert.equal(stack.repos.getRoom(stack.roomId)?.browserEnabled, false);
+});
+
+test("rooms-browser rules that need no browser: help, list, and a room's limits", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const testing = ((await stack.run({ type: "browser.create", name: "testing" })) as { browserId: string }).browserId;
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: testing, allowed: [testing] });
+  const manager = { status: () => ({ state: "stopped" }), ensure: async () => assert.fail("no browser should start"), touch() {} };
+  const tools = new BrowserTools({
+    browsers: manager as never,
+    findBrowser: (name) => stack.repos.getBrowserByName(name) ?? stack.repos.getBrowser(name),
+    listBrowsers: () => stack.repos.listBrowsers(),
+    roomForKey: (key) => roomForKey(stack.repos, key),
+    browsersForRoom: (room) => browsersForRoom(stack.repos, room),
+  });
+  const key = agentKey("sol1", stack.roomId);
+  assert.match(await tools.run(["help"], { as: null, force: false }), /Work only in tabs you opened/);
+  assert.match(await tools.run(["list"], { as: key, force: false }), /- testing \(stopped; starts on first use\)/);
+  assert.doesNotMatch(await tools.run(["list"], { as: key, force: false }), /general/, "a room's agent sees only its browsers");
+  await assert.rejects(tools.run(["general", "tabs"], { as: key, force: false }), (error: BrowserToolError) => error.status === 403 && /can't use "general"/.test(error.message));
+  await assert.rejects(tools.run(["nosuch", "tabs"], { as: key, force: false }), (error: BrowserToolError) => error.status === 404);
+  await assert.rejects(tools.run(["testing", "open", "https://example.com"], { as: null, force: false }), /Pass --as/);
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: false });
+  await assert.rejects(tools.run(["testing", "tabs"], { as: key, force: false }), /turned off/);
+});
+
+test("the tool endpoint needs the token from browser-api.json", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const calls: string[][] = [];
+  const tools = { run: async (argv: string[]) => (calls.push(argv), "ran") };
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-tools", ROOMS_PORT: "0" }), "/nonexistent/dist", { tools: tools as never, token: "secret", command: "rooms-browser" });
+  const post = (headers: Record<string, string>) => app.request("/api/browser-tools", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ argv: ["list"], as: "sol1.x" }) });
+  assert.equal((await post({})).status, 401);
+  assert.equal((await post({ authorization: "Bearer wrong" })).status, 401);
+  const ok = await post({ authorization: "Bearer secret" });
+  assert.deepEqual(await ok.json(), { text: "ran" });
+  assert.deepEqual(calls, [["list"]]);
 });
 
 test("profile folders from before browsers were a list become browsers, and their room keeps using them", async (t) => {
@@ -199,4 +266,37 @@ test("under systemd, a real Chrome runs in its own scope, outside the service's 
   assert.ok(cgroups.some((cg) => cg !== null && /\/run-[^/]+\.scope$/.test(cg)), "the helpers run in the transient scope");
   await browsers.stop("room-c");
   assert.throws(() => process.kill(-chrome, 0), "the scoped process group is gone after stop");
+});
+
+test("rooms-browser against a real headless Chrome: own tabs, element uids, refusals, --force", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
+  const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
+  const record = { id: "tools", name: "tools", description: "", createdAt: "", updatedAt: "" };
+  const tools = new BrowserTools({ browsers, findBrowser: (name) => (name === "tools" ? record : null), listBrowsers: () => [record], roomForKey: () => null, browsersForRoom: () => [record] });
+  const site = createServer((_req, res) => res.end(`<title>form</title><h1>ready</h1><input aria-label="Name"><button onclick="document.querySelector('h1').textContent='hi '+document.querySelector('input').value">Greet</button>`));
+  await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}/form`;
+  t.after(async () => {
+    tools.closeAll();
+    await browsers.stopAll();
+    site.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const a = { as: "sol1.aaaaaaaa", force: false };
+  const opened = await tools.run(["tools", "open", url], a);
+  const tab = /Opened tab (\d+)/.exec(opened)?.[1];
+  assert.ok(tab, opened);
+  const snapshot = await tools.run(["tools", tab, "snapshot"], a);
+  const input = /uid=(\S+) textbox "Name"/.exec(snapshot)?.[1];
+  const button = /uid=(\S+) button "Greet"/.exec(snapshot)?.[1];
+  assert.ok(input && button, snapshot);
+  await tools.run(["tools", tab, "fill", input, "Ada", "Lovelace"], a);
+  await tools.run(["tools", tab, "click", button], a);
+  assert.match(await tools.run(["tools", tab, "eval", "() => document.querySelector('h1').textContent"], a), /hi Ada Lovelace/);
+  assert.match(await tools.run(["tools", "tabs"], a), new RegExp(`${tab}: form .*\\[yours\\]`));
+  await assert.rejects(tools.run(["tools", tab, "snapshot"], { as: "sol2.bbbbbbbb", force: false }), /belongs to sol1\.aaaaaaaa/);
+  assert.match(await tools.run(["tools", tab, "snapshot"], { as: "sol2.bbbbbbbb", force: true }), /hi Ada Lovelace/);
+  assert.match(await tools.run(["tools", tab, "screenshot"], a), /Saved screenshot to .*\.png/);
+  await tools.run(["tools", tab, "close"], a);
+  assert.doesNotMatch(await tools.run(["tools", "tabs"], a), /form/);
 });

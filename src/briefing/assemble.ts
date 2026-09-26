@@ -3,6 +3,19 @@
  * The result is frozen and saved on the run before anything is sent.
  */
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
+
+/** What an agent needs to use the shared browsers: the list, its own key, and the command. */
+export interface BrowsersBriefing {
+  /** A room's briefing (default) or a message to a thread outside any room. */
+  audience?: "room" | "thread";
+  /** How to run rooms-browser (absolute path, with any environment it needs). */
+  command: string;
+  /** The agent's key: tabs it opens are its own. */
+  as: string;
+  browsers: Array<{ name: string; description: string; isDefault: boolean; running: boolean }>;
+  /** The room's default browser, started for this task. */
+  started: BrowserBriefing;
+}
 import type { ArtifactRef, Participant, Role, Room, RoomEvent, Task } from "../domain/types.ts";
 import { taskLabel } from "../domain/types.ts";
 
@@ -26,8 +39,8 @@ export interface BriefingInput {
   attachmentNames?: string[];
   /** True for the first delivery to a new/replacement binding. */
   bootstrap: boolean;
-  /** The room's shared browser, running, when the room has one turned on. */
-  browser?: BrowserBriefing | null;
+  /** The browsers the room may use, when it has browsers on and its default browser is running. */
+  browsers?: BrowsersBriefing | null;
   budgetChars: number;
 }
 
@@ -77,24 +90,35 @@ function formatEvent(event: RoomEvent, participantsById: ReadonlyMap<string, Par
   return `[#${event.sequence} ${tag}] ${preview}${ellipsis} (condensed; full text available in the room)`;
 }
 
-/** How an agent reaches the room's shared browser. Plain instructions: no harness config is needed to use it. */
-export function browserSection(browser: BrowserBriefing): string {
+/**
+ * How an agent uses the shared browsers: the list with what each is for, and the rooms-browser command (every harness
+ * has a shell, so no harness configuration is needed). Sent with every assignment and rebuilt from live state.
+ */
+export function browserSection(input: BrowsersBriefing): string {
+  const { command, as, started } = input;
+  const room = input.audience !== "thread";
+  const run = (args: string) => `  ${command} ${args}`;
   const lines = [
-    "== Room browser ==",
-    `This room's browser is "${browser.name}", a shared Chrome running on this machine. DevTools endpoint: ${browser.cdpUrl}`,
-    ...(browser.description.trim() ? [`What it is for: ${browser.description.trim()}`] : []),
-    `For browser work, attach to it instead of launching your own browser, e.g. \`agent-browser connect ${browser.cdpPort}\` or Playwright \`chromium.connectOverCDP("${browser.cdpUrl}")\`.`,
-    "Other agents, in this room and others, may use the same browser and logins: open your own tab, work only in it, leave other tabs and logins alone, and close your tabs when you are done.",
+    "== Browsers ==",
+    `Shared Chrome browsers run on this machine for browser work; they keep their logins between tasks. ${room ? "This room may" : "You may"} use:`,
+    ...input.browsers.map((b) => `- ${b.name}${b.isDefault ? ` (${room ? "this room's" : "your"} default)` : ""}${b.running ? "" : " (stopped; starts on first use)"}${b.description.trim() ? `: ${b.description.trim()}` : ""}`),
+    "Pick the browser whose purpose fits the task; use the default otherwise. Drive them with this command (nothing to install):",
+    run(`${started.name} open <url> --as ${as}          opens your own tab and prints its id`),
+    run(`${started.name} <tab> snapshot --as ${as}      the page as text, with element uids`),
+    run(`${started.name} <tab> click <uid> --as ${as}   also: fill <uid> <text>, press <key>, navigate <url>, wait-for <text>, screenshot, eval, console, close`),
+    run("help                                          every command"),
+    `Work only in tabs you opened (always pass --as ${as}): other tabs belong to other agents or to the user, and are refused. Close your tabs when you are done. Other agents${room ? ", in this room and others," : ""} may use the same browsers and logins.`,
   ];
-  if (browser.mode === "vnc") {
+  if (started.mode === "vnc") {
     lines.push(
-      browser.watchUrl
-        ? `The user can watch and take over at ${browser.watchUrl}; give them that link when you need them to log in or look at something.`
-        : "The user can watch and take over from the room's Browser panel; ask them there when you need a login or a look.",
+      started.watchUrl
+        ? `The user can watch and take over "${started.name}" at ${started.watchUrl}; give them that link when you need them to log in or look at something.`
+        : `The user can watch and take over "${started.name}" from its page in T3 Rooms; ask them when you need a login or a look.`,
     );
-  } else if (browser.mode === "window") {
-    lines.push("The user sees this browser as a Chrome window on this computer; ask them when you need a login or a look.");
+  } else if (started.mode === "window") {
+    lines.push(`The user sees "${started.name}" as a Chrome window on this computer; ask them when you need a login or a look.`);
   }
+  lines.push(`If the command is unavailable, "${started.name}" also takes DevTools connections at ${started.cdpUrl} (e.g. Playwright connectOverCDP).`);
   return lines.join("\n");
 }
 
@@ -119,7 +143,7 @@ export function assembleBriefing(input: BriefingInput): Briefing {
       "\"Handoff\" section listing where your output lives: paths, branch, commit or diff, and anything left unintegrated.",
   );
 
-  if (input.browser) header.push(browserSection(input.browser));
+  if (input.browsers) header.push(browserSection(input.browsers));
 
   const prerequisiteSection: string[] = [];
   if (input.prerequisiteResults.length > 0) {

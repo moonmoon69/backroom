@@ -280,6 +280,7 @@ export class RoomService {
       nextTaskNumber: 1,
       browserEnabled: false,
       defaultBrowserId: null,
+      allowedBrowserIds: null,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -313,16 +314,28 @@ export class RoomService {
   private async setRoomBrowser(command: Extract<RoomCommand, { type: "room.browser" }>): Promise<CommandResult> {
     const room = this.requireRoom(command.roomId);
     const defaultBrowserId = command.browserId === undefined ? room.defaultBrowserId : command.browserId;
+    const allowed = command.allowed === undefined ? room.allowedBrowserIds : command.allowed === null ? null : [...new Set(command.allowed)];
     if (defaultBrowserId) this.requireBrowser(defaultBrowserId);
-    if (room.browserEnabled === command.enabled && room.defaultBrowserId === defaultBrowserId) return { type: "room.updated", roomId: room.id };
-    const browser = this.effectiveBrowser({ ...room, defaultBrowserId });
+    for (const id of allowed ?? []) this.requireBrowser(id);
+    if (allowed && defaultBrowserId && !allowed.includes(defaultBrowserId)) {
+      throw new RoomError("default_not_allowed", "the room's default browser must be one of the browsers it may use");
+    }
+    const sameList = JSON.stringify(allowed) === JSON.stringify(room.allowedBrowserIds);
+    if (room.browserEnabled === command.enabled && room.defaultBrowserId === defaultBrowserId && sameList) return { type: "room.updated", roomId: room.id };
+    const next = { ...room, defaultBrowserId, allowedBrowserIds: allowed };
+    const browser = this.effectiveBrowser(next);
+    const names = (ids: string[]) => ids.map((id) => this.repos.getBrowser(id)?.name ?? id).join(", ");
     const text = !command.enabled
       ? "Browsers turned off for this room"
       : !room.browserEnabled
         ? `Browsers turned on: tasks in this room get "${browser?.name ?? "a browser"}" by default`
-        : `Default browser set to "${browser?.name ?? "none"}"`;
+        : room.defaultBrowserId !== defaultBrowserId
+          ? `Default browser set to "${browser?.name ?? "none"}"`
+          : allowed
+            ? `This room may use these browsers: ${names(allowed)}`
+            : "This room may use every browser";
     this.db.transaction(() => {
-      this.repos.setRoomBrowser(room.id, command.enabled, defaultBrowserId, now());
+      this.repos.setRoomBrowser(room.id, command.enabled, defaultBrowserId, now(), allowed);
       this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text });
     });
     this.notify(room.id);
@@ -354,8 +367,15 @@ export class RoomService {
       throw new RoomError("browser_in_use", `"${browser.name}" is the default browser of ${users.map((r) => `"${r.title}"`).join(", ")}; pick another default there first`, 409);
     }
     this.db.transaction(() => {
-      // Rooms with browsers off may still point at it; they fall back to "general".
-      for (const room of this.repos.listRooms().filter((r) => r.defaultBrowserId === browser.id)) this.repos.setRoomBrowser(room.id, room.browserEnabled, null, now());
+      for (const room of this.repos.listRooms()) {
+        const pointsAt = room.defaultBrowserId === browser.id;
+        const listed = room.allowedBrowserIds?.includes(browser.id) ?? false;
+        if (!pointsAt && !listed) continue;
+        // A room pointing at it falls back to "general"; a room whose allowed list had only this browser has no browser left.
+        const allowed = room.allowedBrowserIds?.filter((id) => id !== browser.id) ?? null;
+        const emptied = allowed !== null && allowed.length === 0;
+        this.repos.setRoomBrowser(room.id, emptied ? false : room.browserEnabled, pointsAt ? null : room.defaultBrowserId, now(), emptied ? null : allowed);
+      }
       this.repos.deleteBrowser(browser.id);
     });
     return { type: "browser.deleted", browserId: browser.id };

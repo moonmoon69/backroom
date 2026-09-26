@@ -25,6 +25,8 @@ export interface Room {
   browserEnabled: boolean;
   /** The room's default browser; null means "general". */
   defaultBrowserId: string | null;
+  /** Browsers the room's agents may use; null means all of them. */
+  allowedBrowserIds: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -655,7 +657,7 @@ export type RoomCommand =
   | { type: "room.create"; projectId: string; title: string }
   | { type: "room.update"; roomId: string; title: string }
   /** browserId omitted keeps the room's default; null falls back to "general". */
-  | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null }
+  | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
   | { type: "browser.create"; name: string; description?: string }
   | { type: "browser.update"; browserId: string; name?: string; description?: string }
   | { type: "browser.delete"; browserId: string }
@@ -719,7 +721,7 @@ export type RoomCommand =
   /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
   | { type: "project.create"; workspaceRoot: string; title?: string; createIfMissing?: boolean }
   /** Direct threads (outside any room): the text goes to T3 as typed. */
-  | { type: "thread.start"; projectId: string; text: string; images?: InlineImage[]; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; interactionMode?: InteractionMode }
+  | { type: "thread.start"; projectId: string; threadId?: string; text: string; images?: InlineImage[]; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; interactionMode?: InteractionMode }
   | { type: "thread.send"; threadId: string; text: string; images?: InlineImage[] }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.approval.respond"; threadId: string; requestId: string; decision: ApprovalDecision }

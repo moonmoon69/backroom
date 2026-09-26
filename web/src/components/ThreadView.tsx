@@ -14,6 +14,7 @@ import {
   type InlineImage,
   type ModelSelection,
   type RoomCommand,
+  type BrowserListItem,
   type RoomListItem,
   type RuntimeMode,
   type T3Project,
@@ -29,6 +30,7 @@ import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ModelPicker } from "./pickers.tsx";
 import { Popover } from "./Popover.tsx";
+import { useToast } from "./Toast.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
@@ -119,6 +121,8 @@ function useThreadView(threadId: string, onGone: () => void): { view: ThreadView
 interface ThreadViewProps {
   threadId: string;
   rooms: RoomListItem[];
+  /** Shared browsers; null when the service cannot run them. */
+  browsers: BrowserListItem[] | null;
   runCommand: RunCommand;
   /** The thread is gone from T3 (deleted), or was deleted here. */
   onGone: () => void;
@@ -131,8 +135,12 @@ interface ThreadViewProps {
   headerEnd: ReactNode;
 }
 
-export function ThreadView({ threadId, rooms, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart, headerEnd }: ThreadViewProps) {
+export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart, headerEnd }: ThreadViewProps) {
   const { view, error, refresh, hurry } = useThreadView(threadId, onGone);
+  // A browser attached here: its instructions go in front of the next message (threads outside rooms get no briefing).
+  const [attached, setAttached] = useState<string | null>(null);
+  const { toast } = useToast();
+  const attachedBrowser = attached ? browsers?.find((b) => b.id === attached) ?? null : null;
   const [dialog, setDialog] = useState<"settings" | "room" | "delete" | null>(null);
   const thread = view?.thread;
   const activity = thread ? threadActivity({ ...thread, hasPendingApprovals: thread.hasPendingApprovals || (view?.requests.length ?? 0) > 0 }) : null;
@@ -161,6 +169,14 @@ export function ThreadView({ threadId, rooms, runCommand, onGone, onChanged, onA
         ) : null}
         {activity && activity.tone !== "idle" ? <span className={`pill thread-pill tone-${activity.tone}`}>{activity.label}</span> : null}
         <span className="spacer" />
+        {thread && browsers ? (
+          <ThreadBrowserButton
+            browsers={browsers}
+            lastUsed={lastThreadBrowser(threadId)}
+            attached={attached}
+            onAttach={setAttached}
+          />
+        ) : null}
         {thread ? (
           <ThreadMenu
             onSettings={() => setDialog("settings")}
@@ -217,9 +233,26 @@ export function ThreadView({ threadId, rooms, runCommand, onGone, onChanged, onA
               onStop={async () => {
                 if (await runCommand({ type: "thread.interrupt", threadId })) hurry();
               }}
+              notice={
+                attachedBrowser ? (
+                  <>
+                    <span>
+                      Browser <span className="mono">{attachedBrowser.name}</span>: its instructions go with your next message.
+                    </span>
+                    <span className="spacer" />
+                    <button type="button" className="small ghost" onClick={() => setAttached(null)}>
+                      Don&rsquo;t send
+                    </button>
+                  </>
+                ) : null
+              }
               onSend={async (text, images) => {
-                const result = await runCommand({ type: "thread.send", threadId, text, images });
+                const withBrowser = attached ? await withBrowserInstructions(threadId, attached, text, toast) : text;
+                if (withBrowser === null) return false;
+                const result = await runCommand({ type: "thread.send", threadId, text: withBrowser, images });
                 if (result) {
+                  if (attached) rememberThreadBrowser(threadId, attached);
+                  setAttached(null);
                   hurry();
                   onChanged();
                 }
@@ -349,6 +382,7 @@ export function ArchivedThreadView({
 interface NewThreadViewProps {
   projectId: string;
   projects: T3Project[];
+  browsers: BrowserListItem[] | null;
   runCommand: RunCommand;
   onProject: (projectId: string) => void;
   onStarted: (threadId: string) => void;
@@ -356,7 +390,9 @@ interface NewThreadViewProps {
   headerEnd: ReactNode;
 }
 
-export function NewThreadView({ projectId, projects, runCommand, onProject, onStarted, headerStart, headerEnd }: NewThreadViewProps) {
+export function NewThreadView({ projectId, projects, browsers, runCommand, onProject, onStarted, headerStart, headerEnd }: NewThreadViewProps) {
+  const [browserId, setBrowserId] = useState<string>("");
+  const { toast } = useToast();
   const [model, setModel] = useState<ModelSelection | null>(null);
   // T3's default model for the project is looked up first; the picker only falls back to the catalog default without one.
   const [modelReady, setModelReady] = useState(false);
@@ -433,6 +469,24 @@ export function NewThreadView({ projectId, projects, runCommand, onProject, onSt
                       </select>
                       <span className="hint">Enforced by T3 for this thread. You can change it later.</span>
                     </label>
+                    {browsers ? (
+                      <label>
+                        Browser
+                        <select value={browserId} onChange={(e) => setBrowserId(e.target.value)}>
+                          <option value="">none</option>
+                          {browsers.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              {b.name}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="hint">
+                          {browserId
+                            ? browsers.find((b) => b.id === browserId)?.description || "The browser's instructions go with the first message."
+                            : "Give the agent a shared browser: its instructions go with the first message. You can add one later."}
+                        </span>
+                      </label>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -445,7 +499,12 @@ export function NewThreadView({ projectId, projects, runCommand, onProject, onSt
               running={false}
               onSend={async (text, images) => {
                 if (!model) return false;
-                const result = await runCommand({ type: "thread.start", projectId, text, images, modelSelection: model, runtimeMode });
+                // The thread's id is chosen here so the browser key in the first message is the thread's own.
+                const threadId = crypto.randomUUID();
+                const first = browserId ? await withBrowserInstructions(threadId, browserId, text, toast) : text;
+                if (first === null) return false;
+                const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode });
+                if (result && browserId) rememberThreadBrowser(threadId, browserId);
                 if (result && result.type === "thread.started" && "threadId" in result) {
                   onStarted(result.threadId as string);
                   return true;
@@ -461,6 +520,110 @@ export function NewThreadView({ projectId, projects, runCommand, onProject, onSt
 }
 
 const MODE_KEY = "t3rooms.directMode";
+
+// ---- browsers for threads outside rooms ----
+
+const THREAD_BROWSER_KEY = "t3rooms.threadBrowser.";
+const lastThreadBrowser = (threadId: string): string | null => localStorage.getItem(THREAD_BROWSER_KEY + threadId);
+const rememberThreadBrowser = (threadId: string, browserId: string): void => localStorage.setItem(THREAD_BROWSER_KEY + threadId, browserId);
+/** The agent key of a thread outside rooms: tabs it opens with it are its own. */
+const threadBrowserKey = (threadId: string): string => `thread.${threadId.slice(0, 8)}`;
+
+/** The browsers section (every browser, this one as default, started now) in front of the user's text; null on failure. */
+async function withBrowserInstructions(threadId: string, browserId: string, text: string, toast: (message: string) => void): Promise<string | null> {
+  try {
+    const { text: instructions } = await api.browserBriefing(threadBrowserKey(threadId), browserId);
+    return text.trim() ? `${instructions}\n\n${text}` : instructions;
+  } catch (error) {
+    toast(`The browser instructions could not be prepared: ${error instanceof ApiError ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function ThreadBrowserButton({
+  browsers,
+  lastUsed,
+  attached,
+  onAttach,
+}: {
+  browsers: BrowserListItem[];
+  lastUsed: string | null;
+  attached: string | null;
+  onAttach: (browserId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [choice, setChoice] = useState<string>(attached ?? lastUsed ?? browsers[0]?.id ?? "");
+  const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!anchor.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  const used = browsers.find((b) => b.id === (attached ?? lastUsed));
+  const chosen = browsers.find((b) => b.id === choice);
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className={`small${attached ? " active" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`dot ${used?.status.state === "running" ? "dot-working" : ""}`} aria-hidden="true" /> <span className="room-browser-label">Browser</span>
+      </button>
+      {open ? (
+        <Popover anchor={anchor} menuRef={menuRef} role="dialog" className="browser-panel" onClose={() => setOpen(false)}>
+          <label className="browser-default">
+            <span className="label">Browser</span>
+            <select value={choice} onChange={(e) => setChoice(e.target.value)}>
+              {browsers.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {chosen?.description ? <p className="hint browser-purpose">{chosen.description}</p> : null}
+          <p className="hint">
+            A thread outside a room gets no briefing, so the browser&rsquo;s instructions travel with your next message, once. Add them again if the agent loses track.
+          </p>
+          <div className="dialog-actions">
+            {attached ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onAttach(null);
+                  setOpen(false);
+                }}
+              >
+                Don&rsquo;t send
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="primary"
+              disabled={!choice}
+              onClick={() => {
+                onAttach(choice);
+                setOpen(false);
+              }}
+            >
+              Add to my next message
+            </button>
+          </div>
+        </Popover>
+      ) : null}
+    </>
+  );
+}
 
 // ---- transcript ----
 
@@ -646,6 +809,7 @@ function ThreadComposer({
   disabled,
   running,
   autoFocus,
+  notice,
   onSend,
   onStop,
 }: {
@@ -653,6 +817,8 @@ function ThreadComposer({
   disabled: boolean;
   running: boolean;
   autoFocus?: boolean;
+  /** Shown above the text box (what will go with the next message). */
+  notice?: ReactNode;
   onSend: (text: string, images: InlineImage[]) => Promise<boolean>;
   onStop?: () => Promise<void>;
 }) {
@@ -745,6 +911,7 @@ function ThreadComposer({
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
+      {notice ? <div className="composer-notice">{notice}</div> : null}
       <div className="composer-text">
         <div className="composer-field plain">
           <textarea

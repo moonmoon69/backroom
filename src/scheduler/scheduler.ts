@@ -9,6 +9,8 @@ import type { T3Adapter, T3Message, T3ThreadDetail, T3ThreadShell, TurnImage } f
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import { assembleBriefing, type PrerequisiteResult } from "../briefing/assemble.ts";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
+import type { BrowsersBriefing } from "../briefing/assemble.ts";
+import { agentKey, browsersForRoom } from "../browser/catalog.ts";
 import { promptMessageForTurn, resolveTurnForMessage, type TurnResolution } from "../adapter/correlate.ts";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
@@ -32,8 +34,13 @@ const BRIEFING_EVENT_KINDS = new Set<RoomEvent["kind"]>(["user.message", "note",
 
 export interface SchedulerOptions {
   briefingBudgetChars: number;
-  /** Room browsers: started for tasks of rooms that have one turned on, and described in their briefings. */
-  browsers?: { briefingFor(browser: { id: string; name: string; description: string }): Promise<BrowserBriefing | null> };
+  /** Browsers: the room's default is started for its tasks, and all the room may use are listed in their briefings. */
+  browsers?: {
+    briefingFor(browser: { id: string; name: string; description: string }): Promise<BrowserBriefing | null>;
+    status?(browserId: string): { state: string };
+  };
+  /** How agents run rooms-browser (absolute path to bin/rooms-browser, with any environment it needs). */
+  browserCommand?: string;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -599,14 +606,33 @@ export class Scheduler {
         continue;
       }
       busyParticipants.add(participant.id);
-      // A room with browsers on gets its default browser running before the briefing names its address (slash commands
+      // A room with browsers on gets its default browser running before the briefing lists the browsers (slash commands
       // skip it).
-      const roomBrowser = room.browserEnabled && !task.slashCommand ? this.service.effectiveBrowser(room) : null;
-      const browser = roomBrowser && this.options.browsers ? await this.options.browsers.briefingFor(roomBrowser) : null;
-      const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { browser });
+      const browsers = room.browserEnabled && !task.slashCommand ? await this.browsersBriefing(room, participant) : null;
+      const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { browsers });
       await this.send(run, task, participant, binding);
       touched.add(room.id);
     }
+  }
+
+  /** The browsers section for one agent: the room's allowed browsers, its default started, the agent's own key. */
+  private async browsersBriefing(room: Room, participant: Participant): Promise<BrowsersBriefing | null> {
+    const manager = this.options.browsers;
+    const defaultBrowser = this.service.effectiveBrowser(room);
+    if (!manager || !defaultBrowser) return null;
+    const started = await manager.briefingFor(defaultBrowser);
+    if (!started) return null;
+    return {
+      command: this.options.browserCommand ?? "rooms-browser",
+      as: agentKey(participant.alias, room.id),
+      started,
+      browsers: browsersForRoom(this.repos, room).map((browser) => ({
+        name: browser.name,
+        description: browser.description,
+        isDefault: browser.id === defaultBrowser.id,
+        running: browser.id === defaultBrowser.id || manager.status?.(browser.id).state === "running",
+      })),
+    };
   }
 
   private prerequisiteReadiness(
@@ -713,7 +739,7 @@ export class Scheduler {
     binding: SessionBinding,
     tasks: Map<string, Task>,
     prerequisiteResults: PrerequisiteResult[],
-    options: { steer?: boolean; browser?: BrowserBriefing | null } = {},
+    options: { steer?: boolean; browsers?: BrowsersBriefing | null } = {},
   ): Run {
     if (options.steer) return this.prepareSteerRun(room, task, participant, binding);
     if (task.slashCommand) return this.prepareSteerRun(room, task, participant, binding, { verbatim: true });
@@ -739,7 +765,7 @@ export class Scheduler {
         attachmentNames: task.attachmentIds.map((id) => this.repos.getAttachment(id)?.name ?? "image"),
         bootstrap: binding.bootstrapDeliveredAt === null,
         budgetChars: this.options.briefingBudgetChars,
-        browser: options.browser ?? null,
+        browsers: options.browsers ?? null,
       });
       const attempt = this.repos.listRunsForTask(task.id).length + 1;
       const run: Run = {

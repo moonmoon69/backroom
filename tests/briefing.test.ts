@@ -4,7 +4,8 @@ import { assembleBriefing } from "../src/briefing/assemble.ts";
 import type { Participant, Room, RoomEvent, Task } from "../src/domain/types.ts";
 
 const room: Room = { id: "r", projectId: "p", environmentId: null, title: "payments", nextSequence: 10, nextTaskNumber: 3, browserEnabled: false,
-  defaultBrowserId: null, createdAt: "", updatedAt: "" };
+  defaultBrowserId: null,
+  allowedBrowserIds: null, createdAt: "", updatedAt: "" };
 const sol1: Participant = { id: "p1", roomId: "r", alias: "sol1", roleId: null, modelSelection: { instanceId: "x", model: "y" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, createdAt: "", updatedAt: "" };
 const sol2: Participant = { ...sol1, id: "p2", alias: "sol2", roleId: "role-reviewer" };
 const reviewer = { id: "role-reviewer", name: "reviewer", rules: "Review carefully.", createdAt: "", updatedAt: "" };

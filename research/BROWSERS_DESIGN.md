@@ -1,7 +1,9 @@
 # Browsers: design
 
-Status: agreed 2026-09-25. Step 1 done 2026-09-26 (browsers table, migration, Browsers section, browser view, room
-default browser); step 2 next.
+Status: agreed 2026-09-25; built 2026-09-26. Step 1: browsers table, migration, Browsers section, browser view, room
+default. Step 2: `bin/rooms-browser`, the chrome-devtools-mcp engine, tab ownership, briefings listing every browser,
+per-room allowed browsers; verified with a real Claude thread and a real Codex thread in one room (own tabs, no
+harness configuration). Step 3: Browser button for threads outside rooms, browser choice when starting a thread.
 
 ## Goal
 

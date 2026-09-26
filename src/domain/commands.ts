@@ -51,11 +51,18 @@ export const RoomCreateCommand = z
 export const RoomUpdateCommand = z.object({ type: z.literal("room.update"), roomId: nonEmpty, title: nonEmpty }).strict();
 
 /**
- * Whether the room's agents get browsers, and which one is the room's default (starting and stopping the process is
- * separate). browserId omitted keeps the current default; null falls back to "general".
+ * Whether the room's agents get browsers, which one is the room's default, and which browsers it may use (starting and
+ * stopping the process is separate). browserId omitted keeps the current default, null falls back to "general";
+ * allowed omitted keeps the current list, null allows every browser.
  */
 export const RoomBrowserCommand = z
-  .object({ type: z.literal("room.browser"), roomId: nonEmpty, enabled: z.boolean(), browserId: nonEmpty.nullable().optional() })
+  .object({
+    type: z.literal("room.browser"),
+    roomId: nonEmpty,
+    enabled: z.boolean(),
+    browserId: nonEmpty.nullable().optional(),
+    allowed: z.array(nonEmpty).min(1).nullable().optional(),
+  })
   .strict();
 
 const BROWSER_NAME = z
@@ -353,6 +360,8 @@ export const ThreadStartCommand = z
   .object({
     type: z.literal("thread.start"),
     projectId: nonEmpty,
+    /** Chosen by the client when it needs the id up front (a browser key for the first message); else generated. */
+    threadId: z.string().uuid().optional(),
     text: z.string().default(""),
     images: InlineImages,
     modelSelection: ModelSelectionSchema.optional(),

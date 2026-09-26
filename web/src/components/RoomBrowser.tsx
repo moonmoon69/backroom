@@ -136,7 +136,9 @@ export function RoomBrowserButton({ onManage }: { onManage: (browserId: string |
   const running = status?.state === "running";
   const unavailable = !status || status.mode === null;
 
-  const setBrowser = async (next: { enabled: boolean; browserId?: string | null }) => {
+  const allowedIds = snapshot.room.allowedBrowserIds;
+  const allowedList = list ? (allowedIds ? list.filter((b) => allowedIds.includes(b.id)) : list) : null;
+  const setBrowser = async (next: { enabled: boolean; browserId?: string | null; allowed?: string[] | null }) => {
     setBusy(true);
     try {
       await runCommand({ type: "room.browser", roomId: snapshot.room.id, ...next });
@@ -176,8 +178,8 @@ export function RoomBrowserButton({ onManage }: { onManage: (browserId: string |
               disabled={busy || !list}
               onChange={(e) => void setBrowser({ enabled, browserId: e.target.value || null })}
             >
-              {!list ? <option value="">Loading…</option> : null}
-              {list?.map((browser) => (
+              {!allowedList ? <option value="">Loading…</option> : null}
+              {allowedList?.map((browser) => (
                 <option key={browser.id} value={browser.id}>
                   {browser.name}
                 </option>
@@ -195,6 +197,44 @@ export function RoomBrowserButton({ onManage }: { onManage: (browserId: string |
             </button>
           </label>
           {info?.browser.description ? <p className="hint browser-purpose">{info.browser.description}</p> : null}
+
+          {list && list.length > 1 ? (
+            <fieldset className="browser-allowed">
+              <legend className="label">Agents here may use</legend>
+              <label className="radio">
+                <input type="radio" checked={allowedIds === null} disabled={busy} onChange={() => void setBrowser({ enabled, allowed: null })} />
+                every browser
+              </label>
+              <label className="radio">
+                <input
+                  type="radio"
+                  checked={allowedIds !== null}
+                  disabled={busy}
+                  onChange={() => void setBrowser({ enabled, allowed: [info?.browser.id ?? list[0]?.id].filter((id): id is string => Boolean(id)) })}
+                />
+                only these:
+              </label>
+              {allowedIds !== null ? (
+                <div className="browser-allowed-list">
+                  {list.map((browser) => {
+                    const checked = allowedIds.includes(browser.id);
+                    const isDefault = browser.id === info?.browser.id;
+                    return (
+                      <label key={browser.id} className="checkbox" title={isDefault ? "The room's default must stay allowed" : browser.description}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={busy || (checked && isDefault)}
+                          onChange={() => void setBrowser({ enabled, allowed: checked ? allowedIds.filter((id) => id !== browser.id) : [...allowedIds, browser.id] })}
+                        />
+                        <span className="mono">{browser.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </fieldset>
+          ) : null}
 
           {info ? <BrowserStatusPanel browserId={info.browser.id} status={info.status} onChanged={refetch} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
         </div>

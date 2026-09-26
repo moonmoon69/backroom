@@ -306,6 +306,12 @@ export class RoomBrowsers {
     }
   }
 
+  /** Agent activity counts as use: the idle timer starts over. */
+  touch(browserId: string): void {
+    const instance = this.instances.get(browserId);
+    if (instance) instance.lastActivityAt = new Date().toISOString();
+  }
+
   /** Stop the browser and wipe its profile (logins, history, tabs); ports stay, so the address does not change. */
   async resetProfile(browserId: string): Promise<void> {
     await this.stop(browserId);

@@ -347,12 +347,23 @@ T3 publishes each provider's slash commands and skills. Claude exposes dozens (`
 Agents can use shared Chrome browsers on this machine for browser work. You can watch one and take over: close tabs, type a password, click through a login.
 
 - **Browsers are a list, named by purpose**, under **Browsers** in the sidebar: `general` exists from the start; add others such as `t3-rooms-testing` with **+**, and describe what each is for and which logins it holds (agents read that). Each browser's view has Start / Stop, the screen link, open tabs, the rooms using it, its profile size, **Reset profile** (wipes logins, history and tabs) and **Delete**.
-- **Turn it on for a room** with the **Browser** button in the room header: tick "Give this room's agents a browser" and pick the room's **default** browser (`general` unless you choose another). Several rooms can share a browser.
+- **Turn it on for a room** with the **Browser** button in the room header: tick "Give this room's agents a browser" and pick the room's **default** browser (`general` unless you choose another). Agents may use **every browser** by default; choose **only these** to limit a room to some of them (the default must be one). Several rooms can share a browser.
+- **Threads outside rooms:** the **Browser** button in a thread's header adds the browsers' instructions to your next message (a thread outside a room gets no briefing), once; add them again if the agent loses track. When starting a new thread, pick a browser in the form and they go with the first message.
 - **When it runs:** it starts when you turn it on or press Start, and before each task in the room is sent (slash commands excepted). It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
 - **Stable address:** each browser keeps its own ports and profile under `data/browsers/<id>/`, so logins survive stop, start and service restarts. The profile is the browser's own: none of your everyday Chrome's logins are in it. Deleting a room leaves browsers alone; a browser can't be deleted while a room uses it as its default. (A room's browser from before browsers were a list became a browser named after the room, with its logins.)
 - **Stop and start keep your tabs:** Stop asks Chrome to quit normally, so it saves its open tabs, history and cookies; the next start reopens those tabs.
 - **Service restarts don't touch it:** browsers keep running when the room service restarts, and the service picks them up again. Under systemd each browser process runs in its own transient scope (`systemd-run --user --scope`), because restarting a unit kills everything in its cgroup. Set `ROOMS_BROWSER_SCOPE=0` to turn that off.
-- **How agents find it:** every briefing in the room gets a "Room browser" section naming the default browser and what it is for, with its DevTools address (`http://127.0.0.1:<port>`) and how to attach, for example `agent-browser connect <port>` or Playwright's `connectOverCDP`. No harness MCP configuration is needed. Agents are asked to open their own tab and leave other tabs and logins alone.
+- **How agents use them: `bin/rooms-browser`.** Every briefing in the room gets a "Browsers" section listing the browsers the room may use, what each is for, and which is the default, with the command and the agent's own key. Every harness has a shell, so there is nothing to configure or install:
+
+  ```sh
+  bin/rooms-browser list
+  bin/rooms-browser general open https://example.com --as sol1.2fa05e45   # opens the agent's own tab, prints its id
+  bin/rooms-browser general 3 snapshot --as sol1.2fa05e45                  # the page as text, with element uids
+  bin/rooms-browser general 3 click 1_4 --as sol1.2fa05e45                 # fill, press, navigate, wait-for, screenshot, eval, console, close…
+  bin/rooms-browser help
+  ```
+
+  The service drives the browsers through [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) (one per running browser, with usage statistics off); agents never see MCP. Each command names its tab, and a tab belongs to the agent that opened it: acting on another agent's tab, or on one you opened yourself, is refused unless the agent adds `--force` (the service logs it). The command finds the service through `data/browser-api.json` (address and a token written at every start, readable only by you; `ROOMS_BROWSER_API` points it elsewhere). Screenshots go to `/tmp/rooms-browser/`. The DevTools address stays in the briefing as a fallback for agents that prefer Playwright's `connectOverCDP`.
 - **What you see depends on the machine:**
 
   | Machine | What runs | How you watch |
@@ -472,6 +483,7 @@ The service reads environment variables only. It does **not** load `.env`, which
 | `ROOMS_BROWSER_NOVNC_DIR` | `/usr/share/novnc` | noVNC web files |
 | `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a room's browser after this long without tab changes (`0` = never) |
 | `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
+| `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` to find the service; briefings pass it along when the data folder is elsewhere |
 
 ## Running, updating and backing up
 

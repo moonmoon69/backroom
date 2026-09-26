@@ -1,13 +1,17 @@
 /** Service entry point: loads config, builds the adapter, starts the scheduler and the HTTP API. */
 import { serve } from "@hono/node-server";
-import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readStoredAuth } from "../adapter/auth.ts";
 import { FakeT3Adapter } from "../adapter/fake.ts";
 import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
-import { reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
+import { browsersForRoom, reconcileBrowserCatalog, roomForKey, roomsUsingBrowser } from "../browser/catalog.ts";
+import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig } from "../config.ts";
 import { createHttpApp } from "./http.ts";
 
@@ -32,10 +36,19 @@ if (config.adapter === "fake") {
   log(`T3 base URL ${baseUrl}; credentials ${config.t3AccessToken || stored ? "present" : "missing (pair from the UI)"}`);
 }
 
+// Agents run bin/rooms-browser from their shell; it finds the service through data/browser-api.json (URL and a token
+// written at every start). With a data directory elsewhere, the briefing passes that file's path along.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const browserApiFile = join(config.dataDir, "browser-api.json");
+const quote = (path: string) => (/\s/.test(path) ? `'${path}'` : path);
+const browserCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-browser"))}`;
+let browserTools: BrowserTools | null = null;
+
 const stack = createStack({
   dbPath: config.dbPath,
   adapter,
   briefingBudgetChars: config.briefingBudgetChars,
+  browserCommand,
   log,
   browsers: ({ repos, notify }) =>
     new RoomBrowsers({
@@ -45,6 +58,7 @@ const stack = createStack({
       isBusy: (browserId) =>
         roomsUsingBrowser(repos, browserId).some((room) => repos.listTasks(room.id).some((t) => t.state === "running" || t.state === "dispatching" || t.state === "needs_input")),
       onChange: (browserId) => {
+        browserTools?.browserChanged(browserId);
         for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);
       },
       log,
@@ -53,6 +67,17 @@ const stack = createStack({
 // Profile folders from before browsers were a list become browsers (the running ones are adopted under the same id).
 for (const browser of stack.db.transaction(() => reconcileBrowserCatalog(stack.repos, config.dataDir))) log(`browser "${browser.name}" adopted from ${browser.id}`);
 stack.browsers?.start();
+if (stack.browsers) {
+  browserTools = new BrowserTools({
+    browsers: stack.browsers,
+    findBrowser: (nameOrId) => stack.repos.getBrowserByName(nameOrId.toLowerCase()) ?? stack.repos.getBrowser(nameOrId),
+    listBrowsers: () => stack.repos.listBrowsers(),
+    roomForKey: (key) => roomForKey(stack.repos, key),
+    browsersForRoom: (room) => browsersForRoom(stack.repos, room),
+    log,
+  });
+}
+const browserApiToken = randomBytes(24).toString("base64url");
 {
   const environment = stack.browsers?.environment();
   if (environment) log(`room browsers: ${environment.mode ?? "unavailable"}${environment.missing.length > 0 ? ` (missing ${environment.missing.join(", ")})` : ""}`);
@@ -78,16 +103,20 @@ if (adapter instanceof FakeT3Adapter) {
   }
   if (restored > 0) log(`restored ${restored} simulated thread(s) for existing participants`);
 }
-const app = createHttpApp(stack, config, resolve("web/dist"));
+const app = createHttpApp(stack, config, resolve("web/dist"), { tools: browserTools, token: browserApiToken, command: browserCommand });
 stack.scheduler.start(config.tickMs);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {
   log(`listening on http://127.0.0.1:${info.port} (db ${config.dbPath})`);
+  if (browserTools) {
+    writeFileSync(browserApiFile, `${JSON.stringify({ url: `http://127.0.0.1:${info.port}`, token: browserApiToken }, null, 2)}\n`, { mode: 0o600 });
+  }
 });
 
 const shutdown = () => {
   log("shutting down");
   server.close();
+  browserTools?.closeAll();
   stack.close();
   process.exit(0);
 };

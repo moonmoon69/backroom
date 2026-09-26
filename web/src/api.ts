@@ -98,6 +98,9 @@ export const api = {
   browser: (browserId: string): Promise<BrowserListItem> => get(`/api/browsers/${encodeURIComponent(browserId)}`),
   browserStart: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/start`, {}),
   browserStop: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/stop`, {}),
+  /** The browsers section for a thread outside any room, with browserId as its default (started now). */
+  browserBriefing: (threadKey: string, browserId: string): Promise<{ text: string }> =>
+    get(`/api/browser-briefing?as=${encodeURIComponent(threadKey)}&browserId=${encodeURIComponent(browserId)}`),
   /** Wipe logins, history and saved tabs; the browser keeps its name, purpose and address. */
   browserReset: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/reset`, {}),
   /** Upload one image as raw bytes; the returned id is referenced from message.create / task.create. */

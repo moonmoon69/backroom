@@ -29,6 +29,7 @@ function rowToRoom(row: Row): Room {
     nextTaskNumber: n(row.next_task_number),
     browserEnabled: n(row.browser_enabled) === 1,
     defaultBrowserId: ns(row.default_browser_id),
+    allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
   };
@@ -184,8 +185,11 @@ export class Repos {
     this.raw.prepare("UPDATE rooms SET title = ?, updated_at = ? WHERE id = ?").run(title, at, roomId);
   }
 
-  setRoomBrowser(roomId: string, enabled: boolean, defaultBrowserId: string | null, at: string): void {
+  setRoomBrowser(roomId: string, enabled: boolean, defaultBrowserId: string | null, at: string, allowedBrowserIds?: string[] | null): void {
     this.raw.prepare("UPDATE rooms SET browser_enabled = ?, default_browser_id = ?, updated_at = ? WHERE id = ?").run(enabled ? 1 : 0, defaultBrowserId, at, roomId);
+    if (allowedBrowserIds !== undefined) {
+      this.raw.prepare("UPDATE rooms SET browser_ids_json = ? WHERE id = ?").run(allowedBrowserIds === null ? null : JSON.stringify(allowedBrowserIds), roomId);
+    }
   }
 
   // ---- browsers ----

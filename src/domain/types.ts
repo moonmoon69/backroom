@@ -32,6 +32,8 @@ export interface Room {
   browserEnabled: boolean;
   /** Browser the room's agents use unless a task calls for another; null means "general" (when it exists). */
   defaultBrowserId: string | null;
+  /** Browsers the room's agents may use; null means all of them. */
+  allowedBrowserIds: string[] | null;
   createdAt: string;
   updatedAt: string;
 }

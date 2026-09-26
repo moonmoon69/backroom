@@ -217,6 +217,8 @@ const MIGRATIONS: string[] = [
             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
   ALTER TABLE rooms ADD COLUMN default_browser_id TEXT;
   `,
+  // Browsers a room may use; NULL means all of them.
+  `ALTER TABLE rooms ADD COLUMN browser_ids_json TEXT;`,
 ];
 
 export class Database {

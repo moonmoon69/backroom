@@ -213,7 +213,7 @@ export class DirectThreads {
     }
     const modelSelection = command.modelSelection ?? (await t3(() => this.adapter.defaultModelSelection(command.projectId)));
     if (!modelSelection) throw new RoomError("no_model", "T3 has no default model for this project; pick one");
-    const threadId = randomUUID();
+    const threadId = command.threadId ?? randomUUID();
     const title = threadTitleFor(command.text);
     await t3(() =>
       this.adapter.createThread({

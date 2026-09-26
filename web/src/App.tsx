@@ -331,6 +331,7 @@ export function App() {
           <ThreadView
             threadId={selection.id}
             rooms={rooms}
+            browsers={browsers}
             runCommand={runCommand}
             onGone={() => {
               setSelection(null);
@@ -366,6 +367,7 @@ export function App() {
           <NewThreadView
             projectId={selection.projectId}
             projects={projects ?? []}
+            browsers={browsers}
             runCommand={runCommand}
             onProject={(projectId) => {
               rememberProject(projectId);

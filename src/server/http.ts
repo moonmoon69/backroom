@@ -18,6 +18,8 @@ import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
+import { browserSection } from "../briefing/assemble.ts";
+import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import type { Config } from "../config.ts";
@@ -46,7 +48,14 @@ export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 
   };
 }
 
-export function createHttpApp(stack: AppStack, config: Config, webDistDir: string): Hono {
+/** Agents' browser tools (bin/rooms-browser): the engine, the token the CLI presents, and the command briefings name. */
+export interface BrowserToolsHttp {
+  tools: BrowserTools | null;
+  token: string;
+  command: string;
+}
+
+export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp): Hono {
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
 
@@ -543,6 +552,50 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     await requireBrowsers().resetProfile(browser.id);
     return c.json(requireBrowsers().status(browser.id));
   });
+  // rooms-browser: the CLI posts its command line with the token from data/browser-api.json. The tools can run scripts
+  // in logged-in browsers, so they need the token even though the rest of the API does not.
+  app.post("/api/browser-tools", async (c) => {
+    if (!browserTools?.tools) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    if (c.req.header("authorization") !== `Bearer ${browserTools.token}`) {
+      return c.json({ error: "unauthorized", message: "rooms-browser could not authenticate: the service was restarted or this is not its data folder" }, 401);
+    }
+    const body = (await c.req.json()) as { argv?: unknown; as?: unknown; force?: unknown };
+    const argv = Array.isArray(body.argv) ? body.argv.filter((a): a is string => typeof a === "string") : [];
+    try {
+      const text = await browserTools.tools.run(argv, { as: typeof body.as === "string" && body.as.trim() ? body.as.trim() : null, force: body.force === true });
+      return c.json({ text });
+    } catch (error) {
+      if (error instanceof BrowserToolError) return c.json({ error: "browser_tool", message: error.message }, error.status as 400);
+      throw error;
+    }
+  });
+
+  /**
+   * The browsers section for a thread outside any room: every browser, with `browserId` as the default (started now),
+   * and the thread's own key. The UI adds it to the user's next message.
+   */
+  app.get("/api/browser-briefing", async (c) => {
+    const as = c.req.query("as") ?? "";
+    if (!/^thread\.[A-Za-z0-9-]{4,}$/.test(as)) throw new RoomError("invalid_key", "as must be thread.<id>");
+    const browser = requireBrowserRecord(c.req.query("browserId") ?? "");
+    const started = await requireBrowsers().briefingFor(browser);
+    if (!started) throw new RoomError("browser_failed", `"${browser.name}" could not start`, 409);
+    return c.json({
+      text: browserSection({
+        audience: "thread",
+        command: browserTools?.command ?? "rooms-browser",
+        as,
+        started,
+        browsers: stack.repos.listBrowsers().map((b) => ({
+          name: b.name,
+          description: b.description,
+          isDefault: b.id === browser.id,
+          running: b.id === browser.id || requireBrowsers().status(b.id).state === "running",
+        })),
+      }),
+    });
+  });
+
   // A room's Start and Stop act on the room's effective browser.
   const roomBrowser = (roomId: string) => {
     const room = stack.repos.getRoom(roomId);
