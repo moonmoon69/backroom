@@ -334,6 +334,10 @@ export interface CatalogEntry {
   isDefault?: boolean | null;
   isLegacy?: boolean | null;
   aliases?: string[];
+  /** T3's badge for the model ("new"). */
+  badge?: string;
+  /** The provider's harness kind (claudeAgent, codex, cursor, …): picks the provider icon. */
+  driver?: string;
 }
 
 export interface UsageWindow {

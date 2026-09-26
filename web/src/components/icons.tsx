@@ -148,3 +148,16 @@ export const MoonIcon = () => (
     <path d="M13.5 9.6A5.75 5.75 0 1 1 6.4 2.5a4.6 4.6 0 0 0 7.1 7.1z" />
   </Icon>
 );
+
+export const StarIcon = ({ filled = false }: { filled?: boolean }) => (
+  <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.3} strokeLinejoin="round" aria-hidden="true">
+    <path d="M8 1.9l1.85 3.76 4.15.6-3 2.93.7 4.13L8 11.37l-3.7 1.95.7-4.13-3-2.93 4.15-.6z" />
+  </svg>
+);
+
+export const SearchIcon = () => (
+  <Icon>
+    <circle cx="7" cy="7" r="4.2" />
+    <path d="M10.2 10.2 13.5 13.5" />
+  </Icon>
+);

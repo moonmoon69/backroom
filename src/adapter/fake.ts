@@ -171,6 +171,8 @@ export class FakeT3Adapter implements T3Adapter {
           { id: "contextWindow", label: "Context Window", type: "select", options: [{ id: "200k", label: "200k" }, { id: "1m", label: "1M", isDefault: true }] },
         ],
       },
+      { instanceId: "claudeAgent", model: "claude-opus-5-5", label: "Claude Opus 5.5", providerName: "Claude", driver: "claudeAgent", source: "server", badge: "new" },
+      { instanceId: "claudeAgent", model: "claude-opus-4-8", label: "Claude Opus 4.8", providerName: "Claude", driver: "claudeAgent", source: "server", isLegacy: true },
       { instanceId: "codex", model: "gpt-6-sol", label: "GPT-6 Sol", source: "server" },
     ];
   }
