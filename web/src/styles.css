@@ -2190,6 +2190,10 @@ button.primary.destructive {
   z-index: 1;
   display: block;
   width: 100%;
+  /* The text wraps, so there is never anything to scroll sideways. WebKit (Safari, cmux) reserves the stable
+     scrollbar gutter without narrowing the text inside, and would otherwise show a horizontal scrollbar. */
+  overflow-x: hidden;
+  overflow-y: auto;
   min-height: 64px;
   background: transparent;
   color: transparent;
