@@ -11,7 +11,8 @@ import {
 } from "react";
 import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import { isActiveParticipant, taskLabel, type Desk, type Participant, type RoomEvent, type Task } from "../types.ts";
+import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task } from "../types.ts";
+import { BranchIcon } from "./icons.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
@@ -157,6 +158,11 @@ export function Timeline() {
   }, [snapshot.tasks]);
   const taskById = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
   const items = useMemo(() => buildItems(snapshot.events, new Set(taskById.keys())), [snapshot.events, taskById]);
+  // Replies say which branch they were made on once the room's replies come from more than one branch.
+  const showBranches = useMemo(
+    () => new Set(snapshot.events.flatMap((e) => (e.kind === "assistant.reply" ? e.artifacts.filter(isWorkspaceArtifact).map((a) => a.branch ?? "") : []))).size > 1,
+    [snapshot.events],
+  );
   const taskFor = useCallback((id: string | null) => (id ? taskById.get(id) : undefined), [taskById]);
 
   // Turns typed directly in T3 that are still running: shown live at the bottom until the server imports them.
@@ -271,6 +277,7 @@ export function Timeline() {
                   previous={item.previous}
                   tasks={tasksByEvent.get(item.event.id) ?? []}
                   taskFor={taskFor}
+                  showBranches={showBranches}
                 />
               );
             })}
@@ -435,11 +442,14 @@ function MessageRow({
   previous,
   tasks,
   taskFor,
+  showBranches = false,
 }: {
   event: ChatMessage;
   previous: RoomEvent | ChatMessage | null;
   tasks: Task[];
   taskFor: (id: string | null) => Task | undefined;
+  /** Mark replies with the branch they were made on (the room's replies come from more than one). */
+  showBranches?: boolean;
 }) {
   const { aliasOf, colorOf, participantById, snapshot } = useRoom();
   const events = snapshot.events;
@@ -516,6 +526,14 @@ function MessageRow({
   ) : task && source ? (
     <ReplyTo tasks={answered.length > 0 ? answered : [task]} />
   ) : null;
+  const where = event.artifacts.find(isWorkspaceArtifact);
+  const branchTag =
+    showBranches && where?.branch ? (
+      <span className="tag mono branch-tag" title={`Made on branch ${where.branch}${where.commit ? ` at ${where.commit.slice(0, 7)}` : ""}, in ${where.path}`}>
+        <BranchIcon />
+        {where.branch}
+      </span>
+    ) : null;
   // A continued bubble repeats the tag only when it answers something else than the bubble above.
   const tagChanged = continued && (previous.kind !== event.kind || previous.taskId !== event.taskId);
   // A turn the agent started itself (no prompt: background work finished and woke it). Its last message is a real
@@ -539,12 +557,14 @@ function MessageRow({
             {participant ? <Monogram participant={participant} size="xs" /> : null}
             <span className="speaker mono identity">{alias}</span>
             {tag}
+            {branchTag}
             {selfMark}
             {stamp}
           </div>
         ) : selfMark || (tagChanged && tag) || newMinute ? (
           <div className="chat-head sub">
             {selfMark ?? (tagChanged ? tag : null)}
+            {tagChanged ? branchTag : null}
             {stamp}
           </div>
         ) : null}
@@ -552,7 +572,7 @@ function MessageRow({
           {(event.progress ?? []).length > 0 ? <ProgressUpdates progress={event.progress} /> : null}
           {/* The reply is shown in full: it is what the user came to read. */}
           {event.text ? <Markdown text={event.text} /> : null}
-          {event.artifacts.length > 0 ? <ChangedFiles artifacts={event.artifacts} /> : null}
+          {event.artifacts.some((a) => !isWorkspaceArtifact(a)) ? <ChangedFiles artifacts={event.artifacts} /> : null}
         </div>
       </div>
     </div>
@@ -634,8 +654,13 @@ function ReplyTo({ tasks }: { tasks: Task[] }) {
   );
 }
 
-/** The files a turn changed, folded to one line ("3 files changed · +19 −8"); open it for the list. */
-function ChangedFiles({ artifacts }: { artifacts: RoomEvent["artifacts"] }) {
+/**
+ * The files a turn changed, folded to one line ("3 files changed · +19 −8"); open it for the list, headed by where
+ * the work is (folder, branch, commit).
+ */
+function ChangedFiles({ artifacts: all }: { artifacts: RoomEvent["artifacts"] }) {
+  const where = all.find(isWorkspaceArtifact);
+  const artifacts = all.filter((artifact) => !isWorkspaceArtifact(artifact));
   const files = artifacts.filter((artifact) => artifact.path);
   const additions = artifacts.reduce((sum, artifact) => sum + (artifact.additions ?? 0), 0);
   const deletions = artifacts.reduce((sum, artifact) => sum + (artifact.deletions ?? 0), 0);
@@ -647,6 +672,14 @@ function ChangedFiles({ artifacts }: { artifacts: RoomEvent["artifacts"] }) {
         {deletions > 0 ? <span className="del"> −{deletions}</span> : null}
       </summary>
       <ul className="artifacts mono">
+        {where ? (
+          <li className="artifact-where" title={where.path}>
+            in <code>{where.path}</code>
+            {where.branch ? <span className="muted"> on {where.branch}</span> : null}
+            {where.commit ? <code className="muted"> {where.commit.slice(0, 7)}</code> : null}
+            {where.note ? <span className="muted"> · {where.note}</span> : null}
+          </li>
+        ) : null}
         {artifacts.map((artifact, index) => (
           <li key={index}>
             {artifact.kind ? <span className="artifact-kind">{artifact.kind}</span> : null}

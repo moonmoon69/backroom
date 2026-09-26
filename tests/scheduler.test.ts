@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTestStack } from "./helpers.ts";
+import { isFileArtifact, isWorkspaceArtifact } from "../src/domain/types.ts";
 
 test("parallel work: one message starts two participants without waiting", async (t) => {
   const stack = await createTestStack();
@@ -39,7 +40,8 @@ test("sequential review waits for the implementation and receives its output exa
   assert.equal(reviewRun.briefing.split("Parser implemented in src/parser.ts").length, 2, "delivered once");
   const replies = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "assistant.reply");
   assert.equal(replies.length, 1);
-  assert.equal(replies[0]!.artifacts[0]?.path, "src/parser.ts");
+  assert.equal(replies[0]!.artifacts.find(isFileArtifact)?.path, "src/parser.ts");
+  assert.equal(replies[0]!.artifacts.find(isWorkspaceArtifact)?.path, "/tmp/demo", "where the work is: the project folder");
 });
 
 test("fan-in waits for both prerequisites; completion of one does not release it", async (t) => {

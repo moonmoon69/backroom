@@ -23,7 +23,8 @@ import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
-import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, worktreePathsOf } from "./git.ts";
+import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, worktreePathsOf } from "../git/reader.ts";
+import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
@@ -424,27 +425,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json({ participants: desks, errors, fetchedAt: new Date().toISOString() });
   });
 
-  /**
-   * The room's working folders: each participant's T3 worktree, or the project's folder for threads that work there
-   * (and the project's folder even when nobody does). Folders with participants come first, in roster order.
-   */
-  const roomFolders = async (roomId: string): Promise<Array<{ path: string; participantIds: string[]; isProjectRoot: boolean }>> => {
-    const room = stack.repos.getRoom(roomId);
-    if (!room) throw new RoomError("not_found", "room not found", 404);
-    const project = (await stack.adapter.listProjects()).find((p) => p.id === room.projectId) ?? null;
-    const projectRoot = project ? canonicalPath(project.workspaceRoot) : null;
-    const folders = new Map<string, { path: string; participantIds: string[]; isProjectRoot: boolean }>();
-    for (const participant of stack.repos.listParticipants(roomId).filter((p) => !p.retiredAt)) {
-      const binding = stack.repos.currentBinding(participant.id);
-      const shell = binding ? await stack.adapter.getThreadShell(binding.threadId).catch(() => null) : null;
-      const folder = shell?.worktreePath ? canonicalPath(shell.worktreePath) : projectRoot;
-      if (!folder) continue;
-      const entry = folders.get(folder) ?? { path: folder, participantIds: [], isProjectRoot: folder === projectRoot };
-      entry.participantIds.push(participant.id);
-      folders.set(folder, entry);
-    }
-    if (projectRoot && !folders.has(projectRoot)) folders.set(projectRoot, { path: projectRoot, participantIds: [], isProjectRoot: true });
-    return [...folders.values()];
+  const roomFolders = (roomId: string) => {
+    if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
+    return listRoomFolders(stack.adapter, stack.repos, roomId);
   };
 
   /** A folder a git read may name: one of the room's folders, or another worktree of their repositories. */

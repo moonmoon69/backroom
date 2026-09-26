@@ -127,6 +127,11 @@ export interface ArtifactRef {
   note?: string;
 }
 
+/** The artifact that says where a reply's work is: folder (path), branch, commit, uncommitted count (note). */
+export const isWorkspaceArtifact = (artifact: ArtifactRef): boolean => artifact.kind === "workspace";
+/** A file a turn changed (not the workspace line). */
+export const isFileArtifact = (artifact: ArtifactRef): boolean => Boolean(artifact.path) && !isWorkspaceArtifact(artifact);
+
 export interface RoomEvent {
   id: EventId;
   roomId: RoomId;

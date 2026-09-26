@@ -76,6 +76,8 @@ export interface GitCheckoutSummary {
   root: string | null;
   branch: string | null;
   detached: boolean;
+  /** The checked-out commit (full sha); null before the first commit. */
+  headSha: string | null;
   upstream: string | null;
   ahead: number;
   behind: number;
@@ -352,7 +354,7 @@ async function repoPaths(cwd: string): Promise<{ root: string; prefix: string; g
 }
 
 function missing(path: string, exists: boolean, error: string | null = null): GitCheckoutSummary {
-  return { path, exists, isRepo: false, root: null, branch: null, detached: false, upstream: null, ahead: 0, behind: 0, changed: 0, error };
+  return { path, exists, isRepo: false, root: null, branch: null, detached: false, headSha: null, upstream: null, ahead: 0, behind: 0, changed: 0, error };
 }
 
 /** The brief state of one folder: branch, upstream, and how many files are uncommitted. */
@@ -369,6 +371,7 @@ export async function readCheckoutSummary(path: string): Promise<GitCheckoutSumm
       root: paths.root,
       branch: status.branch,
       detached: status.detached,
+      headSha: status.oid,
       upstream: status.upstream,
       ahead: status.ahead,
       behind: status.behind,
@@ -429,6 +432,7 @@ export async function readGitView(path: string, options: { commitLimit?: number 
       root,
       branch: status.branch,
       detached: status.detached,
+      headSha: status.oid,
       upstream: status.upstream,
       ahead: status.ahead,
       behind: status.behind,

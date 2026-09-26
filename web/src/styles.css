@@ -4169,6 +4169,27 @@ span.reply-to {
 }
 
 /* Changed files under a reply: one summary line, open for the list. */
+/* The branch a reply was made on, once the room's replies come from more than one. */
+.branch-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-tag .icon {
+  flex: none;
+  width: 11px;
+  height: 11px;
+}
+
+.artifact-where {
+  overflow-wrap: anywhere;
+}
+
 .changed-files {
   margin-top: 10px;
   padding-top: 6px;

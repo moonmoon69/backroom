@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
-import { parseStatus, splitRenamedPath } from "../src/server/git.ts";
+import { parseStatus, splitRenamedPath } from "../src/git/reader.ts";
 import { createTestStack } from "./helpers.ts";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "Tester", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "Tester", GIT_COMMITTER_EMAIL: "t@example.com" };

@@ -86,6 +86,9 @@ export interface ArtifactRef {
   note?: string;
 }
 
+/** The artifact that says where a reply's work is: folder (path), branch, commit, uncommitted count (note). */
+export const isWorkspaceArtifact = (artifact: ArtifactRef): boolean => artifact.kind === "workspace";
+
 export interface RoomEvent {
   id: string;
   roomId: string;

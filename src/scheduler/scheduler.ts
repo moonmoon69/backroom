@@ -16,6 +16,7 @@ import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { Participant, ParticipantStatus, Room, RoomEvent, Run, SessionBinding, Task } from "../domain/types.ts";
 import { taskLabel } from "../domain/types.ts";
+import { roomWorkspaces, workspaceArtifact, type Workspace } from "../git/workspaces.ts";
 import { dependentsOf } from "../domain/graph.ts";
 import { now, type RoomService } from "../app/service.ts";
 
@@ -486,8 +487,10 @@ export class Scheduler {
     const replyText = finalMessage?.text.trim() ?? "";
     const progress = turnMessages.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt }));
     const assistantMessageId = finalMessage?.id ?? `assistant:${run.turnId}`;
-    const artifacts = (checkpoint?.files ?? []).map((file) => ({ path: file.path, kind: file.kind, additions: file.additions, deletions: file.deletions }));
-    if (shell.branch) artifacts.push({ path: "", kind: "branch", additions: 0, deletions: 0 });
+    const files = (checkpoint?.files ?? []).map((file) => ({ path: file.path, kind: file.kind, additions: file.additions, deletions: file.deletions }));
+    // Where the work is (folder, branch, commit, what is uncommitted), so whoever builds on it looks in the right place.
+    const where = workspaceArtifact((await this.workspaces(participant.roomId, participant.id))?.[0]);
+    const artifacts = where ? [where, ...files] : files;
 
     this.db.transaction(() => {
       // A steered turn answers several tasks with one final message: the first run to finish records the reply and
@@ -501,7 +504,7 @@ export class Scheduler {
           text: replyText,
           taskId: task.id,
           runId: run.id,
-          artifacts: artifacts.filter((a) => a.path !== ""),
+          artifacts,
           progress,
           sourceRef: { threadId: binding.threadId, messageId: assistantMessageId, turnId: run.turnId },
         });
@@ -512,7 +515,7 @@ export class Scheduler {
       if (status === "succeeded") {
         this.repos.updateBinding({ ...binding, deliveredCursor: Math.max(binding.deliveredCursor, run.includedToSequence) });
         this.service.setTaskState(task, "succeeded", "completed", { currentRunId: run.id });
-        this.service.statusEvent(task, `${taskLabel(task)} succeeded on @${participant.alias}${artifacts.length > 0 ? ` (${artifacts.filter((a) => a.path).length} file(s) changed)` : ""}`, run.id);
+        this.service.statusEvent(task, `${taskLabel(task)} succeeded on @${participant.alias}${files.length > 0 ? ` (${files.length} file(s) changed)` : ""}`, run.id);
       } else {
         const reason = status === "interrupted" ? "interrupted" : `failed: ${errorText ?? "provider error"}`;
         // Context delivered before the failure is still delivered; do not replay it on retry.
@@ -609,9 +612,20 @@ export class Scheduler {
       // A room with browsers on gets its default browser running before the briefing lists the browsers (slash commands
       // skip it).
       const browsers = room.browserEnabled && !task.slashCommand ? await this.browsersBriefing(room, participant) : null;
-      const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { browsers });
+      const workspaces = task.slashCommand ? null : await this.workspaces(room.id);
+      const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { browsers, workspaces });
       await this.send(run, task, participant, binding);
       touched.add(room.id);
+    }
+  }
+
+  /** Where the room's participants work (or one of them); null when T3 or git can't be read, which never holds up work. */
+  private async workspaces(roomId: string, participantId?: string): Promise<Workspace[] | null> {
+    try {
+      return await roomWorkspaces(this.adapter, this.repos, roomId, participantId ? { participantId } : {});
+    } catch (error) {
+      this.log("workspaces unreadable", (error as Error).message);
+      return null;
     }
   }
 
@@ -739,7 +753,7 @@ export class Scheduler {
     binding: SessionBinding,
     tasks: Map<string, Task>,
     prerequisiteResults: PrerequisiteResult[],
-    options: { steer?: boolean; browsers?: BrowsersBriefing | null } = {},
+    options: { steer?: boolean; browsers?: BrowsersBriefing | null; workspaces?: Workspace[] | null } = {},
   ): Run {
     if (options.steer) return this.prepareSteerRun(room, task, participant, binding);
     if (task.slashCommand) return this.prepareSteerRun(room, task, participant, binding, { verbatim: true });
@@ -766,6 +780,7 @@ export class Scheduler {
         bootstrap: binding.bootstrapDeliveredAt === null,
         budgetChars: this.options.briefingBudgetChars,
         browsers: options.browsers ?? null,
+        workspaces: options.workspaces ?? null,
       });
       const attempt = this.repos.listRunsForTask(task.id).length + 1;
       const run: Run = {
