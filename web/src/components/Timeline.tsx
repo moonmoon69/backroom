@@ -13,6 +13,7 @@ import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task } from "../types.ts";
 import { BranchIcon } from "./icons.tsx";
+import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
@@ -284,7 +285,12 @@ export function Timeline() {
             {liveTurns.map(({ participant, desk: participantDesk }) => (
               <Fragment key={participantDesk.runningTurn?.turnId ?? participant.id}>
                 {participantDesk.runningTurn?.prompt ? (
-                  <MessageRow event={livePromptMessage(participantDesk.runningTurn.turnId, participantDesk.runningTurn.prompt)} previous={null} tasks={[]} taskFor={taskFor} />
+                  <MessageRow
+                    event={livePromptMessage(participantDesk.runningTurn.turnId, participantDesk.runningTurn.prompt, participantDesk.runningTurn.promptImages ?? [])}
+                    previous={null}
+                    tasks={[]}
+                    taskFor={taskFor}
+                  />
                 ) : null}
                 <LiveTurnBubble participant={participant} desk={participantDesk} />
               </Fragment>
@@ -493,7 +499,7 @@ function MessageRow({
             <div className="chat-head sub">{stamp}</div>
           ) : null}
           <div className={`bubble ${note ? "bubble-note" : "bubble-user"}${fromT3 ? " bubble-user-t3" : ""}`}>
-            {event.text ? <UserText text={event.text} /> : null}
+            {event.text ? <UserText text={fromT3 ? withoutT3ContextRefs(event.text, attachments.length > 0) : event.text} /> : null}
             {attachments.length > 0 ? <AttachedImages ids={attachments} /> : null}
           </div>
           {tasks.length > 0 ? (
@@ -697,7 +703,7 @@ function ChangedFiles({ artifacts: all }: { artifacts: RoomEvent["artifacts"] })
 }
 
 /** The prompt of a turn running directly in T3, shown on the user's side while the reply builds up. */
-function livePromptMessage(turnId: string, prompt: string): ChatMessage {
+function livePromptMessage(turnId: string, prompt: string, images: string[]): ChatMessage {
   return {
     id: `live-prompt:${turnId}`,
     roomId: "",
@@ -708,7 +714,7 @@ function livePromptMessage(turnId: string, prompt: string): ChatMessage {
     taskId: null,
     runId: null,
     artifacts: [],
-    attachmentIds: [],
+    attachmentIds: images,
     progress: [],
     prompt: null,
     sourceRef: null,

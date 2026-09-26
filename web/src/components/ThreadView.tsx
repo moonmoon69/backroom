@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { api, ApiError, attachmentUrl } from "../api.ts";
+import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import {
   ATTACHMENT_MAX_BYTES,
@@ -719,7 +720,7 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
           </div>
         ) : null}
         <div className="bubble bubble-user">
-          {item.text ? <div className="user-text">{item.text}</div> : null}
+          {item.text ? <div className="user-text">{withoutT3ContextRefs(item.text, item.attachmentIds.length > 0)}</div> : null}
           {item.attachmentIds.length > 0 ? (
             <div className="event-images">
               {item.attachmentIds.map((id) => (

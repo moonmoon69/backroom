@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { StartTurnInput } from "../src/adapter/types.ts";
 import { parseExplicit } from "../src/parser/explicit.ts";
 import { createTestStack } from "./helpers.ts";
+import { withoutT3ContextRefs } from "../web/src/t3Context.ts";
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 
@@ -221,4 +222,21 @@ test("a T3 slash command is sent verbatim (no briefing), and unknown commands ar
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "now review", schedule: { mode: "now" } });
   await stack.tick();
   assert.match(stack.repos.listRunsForTask(stack.task(2).id)[0]!.briefing, /T3 Rooms briefing/);
+});
+
+test("a turn typed in T3 with an image (the iPhone app's t3-context reference) keeps the image with its prompt", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const thread = stack.threadOf("sol1");
+  const image = { id: `${thread}-cce0c3d1-4e8d-4567-904b-a55bea373b18`, name: "IMG_3974.png", mimeType: "image/png", sizeBytes: 270752 };
+  stack.fake.startExternalTurn(thread, "![IMG_3974.png](t3-context://v1/image/2bb8720b-15dc-40dd-8c59-5113fa30c529) So it works offline.", [image]);
+  stack.fake.completeTurn(thread, { text: "Yes, it does." });
+  await stack.tick(3);
+  const direct = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "t3.turn")!;
+  assert.deepEqual(direct.attachmentIds, [image.id], "the prompt's image comes along");
+  // The room shows the image under the text; the reference itself is dropped from what is displayed.
+  assert.equal(withoutT3ContextRefs(direct.prompt!, true), "So it works offline.");
+  assert.equal(withoutT3ContextRefs(direct.prompt!, false), "[image: IMG_3974.png] So it works offline.");
+  assert.equal(withoutT3ContextRefs("see [notes.md](t3-context://v1/file/abc) here", false), "see notes.md here");
+  assert.equal(withoutT3ContextRefs("plain text", true), "plain text");
 });

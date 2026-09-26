@@ -363,7 +363,10 @@ export class FakeT3Adapter implements T3Adapter {
     if (!thread) throw new Error("unknown thread");
     if (!thread.shell.session?.activeTurnId) throw new Error("no active turn");
     const id = `user:${randomUUID()}`;
-    const at = new Date().toISOString();
+    // A new message always moves the thread's stamps forward, as in T3 (a test can send within the millisecond of the
+    // turn starting, and an unchanged stamp would make the scheduler skip its scan for notes).
+    const previous = Math.max(Date.parse(thread.shell.updatedAt) || 0, Date.parse(thread.shell.latestUserMessageAt ?? "") || 0);
+    const at = new Date(Math.max(Date.now(), previous + 1)).toISOString();
     thread.messages.push({ id, role: "user", text, turnId: null, streaming: false, createdAt: at, attachments });
     thread.shell.latestUserMessageAt = at;
     thread.shell.updatedAt = at;
@@ -382,12 +385,12 @@ export class FakeT3Adapter implements T3Adapter {
   }
 
   /** Test control: simulate a turn started directly in T3 (not by the room). */
-  startExternalTurn(threadId: string, text = "external prompt"): string {
+  startExternalTurn(threadId: string, text = "external prompt", attachments: T3Message["attachments"] = []): string {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error("unknown thread");
     const turnId = randomUUID();
     const now = new Date().toISOString();
-    thread.messages.push({ id: `user:${randomUUID()}`, role: "user", text, turnId, streaming: false, createdAt: now });
+    thread.messages.push({ id: `user:${randomUUID()}`, role: "user", text, turnId, streaming: false, createdAt: now, attachments });
     thread.shell.session = { status: "running", activeTurnId: turnId, lastError: null };
     thread.shell.latestTurn = { turnId, state: "running", requestedAt: now, completedAt: null, assistantMessageId: null };
     return turnId;

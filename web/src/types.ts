@@ -648,7 +648,7 @@ export interface Desk {
    * The turn running on the thread right now, or null. `startedByRoom` is false when someone typed into the
    * thread directly in T3; `prompt` is that message (null for room-started turns).
    */
-  runningTurn?: { turnId: string; startedByRoom: boolean; prompt: string | null } | null;
+  runningTurn?: { turnId: string; startedByRoom: boolean; prompt: string | null; promptImages?: string[] } | null;
   activities: T3Activity[];
   partial: boolean;
 }

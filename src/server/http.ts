@@ -13,7 +13,7 @@ import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStoredAuth } from "../adapter/auth.ts";
 import { T3Unavailable } from "../adapter/types.ts";
 import type { T3Activity, T3Message } from "../adapter/types.ts";
-import { promptForTurn } from "../adapter/correlate.ts";
+import { promptMessageForTurn } from "../adapter/correlate.ts";
 import { latestContextWindow, openRequests, threadTranscript } from "../app/direct.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
@@ -300,7 +300,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       ? {
           turnId: runningTurnId,
           startedByRoom,
-          prompt: startedByRoom ? null : promptForTurn(detail.messages, runningTurnId) ?? runningPromptBeforeOutput(detail.messages, runningTurnId),
+          ...(() => {
+            const message = startedByRoom ? null : (promptMessageForTurn(detail.messages, runningTurnId) ?? runningPromptMessageBeforeOutput(detail.messages, runningTurnId));
+            return { prompt: message?.text ?? null, promptImages: (message?.attachments ?? []).map((a) => a.id) };
+          })(),
         }
       : null;
 
@@ -789,10 +792,10 @@ function buildLiveFeed(messages: T3Message[], activities: T3Activity[], turnId: 
 }
 
 /** A running turn with no output yet: its prompt is a user message after the previous turn's last output, if any. */
-function runningPromptBeforeOutput(messages: T3Message[], turnId: string): string | null {
+function runningPromptMessageBeforeOutput(messages: T3Message[], turnId: string): T3Message | null {
   if (messages.some((m) => m.turnId === turnId && m.role !== "user")) return null;
   const last = messages[messages.length - 1];
-  return last?.role === "user" ? last.text : null;
+  return last?.role === "user" ? last : null;
 }
 
 interface BackgroundTask {

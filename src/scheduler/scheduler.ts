@@ -238,7 +238,7 @@ export class Scheduler {
     if (latest && latest.state !== "running" && latest.completedAt && !finished.has(latest.turnId)) {
       finished.set(latest.turnId, { assistantMessageId: latest.assistantMessageId, completedAt: latest.completedAt });
     }
-    const imports: Array<{ turnId: string; completedAt: string; prompt: string | null; final: string; finalId: string; progress: Array<{ text: string; at: string }> }> = [];
+    const imports: Array<{ turnId: string; completedAt: string; prompt: string | null; promptImages: string[]; final: string; finalId: string; progress: Array<{ text: string; at: string }> }> = [];
     for (const [turnId, turn] of finished) {
       if (turn.completedAt < binding.createdAt) continue;
       if (turnId === detail.shell.session?.activeTurnId) continue;
@@ -249,11 +249,13 @@ export class Scheduler {
       // Null for turns the agent started itself (a background task finishing wakes it): see promptForTurn. Also null
       // when the prompt is already in the timeline as a note typed into the previous room turn (t3.message).
       const promptMessage = promptMessageForTurn(detail.messages, turnId);
-      const prompt = promptMessage && this.repos.findEventIdForSource(binding.threadId, promptMessage.id) === null ? promptMessage.text : null;
+      const promptShown = promptMessage !== null && this.repos.findEventIdForSource(binding.threadId, promptMessage.id) === null;
       imports.push({
         turnId,
         completedAt: turn.completedAt,
-        prompt,
+        prompt: promptShown ? promptMessage.text : null,
+        // The prompt's images (T3 files named by id), shown with the prompt like a room message's.
+        promptImages: promptShown ? (promptMessage.attachments ?? []).map((a) => a.id) : [],
         final: finalMessage.text.trim(),
         finalId: finalMessage.id,
         progress: messages.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt })),
@@ -270,6 +272,7 @@ export class Scheduler {
           text: turn.final,
           progress: turn.progress,
           prompt: turn.prompt,
+          attachmentIds: turn.promptImages,
           sourceRef: { threadId: binding.threadId, messageId: turn.finalId, turnId: turn.turnId },
           createdAt: turn.completedAt,
         });
