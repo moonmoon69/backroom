@@ -5447,10 +5447,50 @@ span.reply-to {
   right: 0;
 }
 
-/* With the sidebar showing, it already names the open room, thread or browser (highlighted); the page header
-   names it only while the sidebar is hidden or closed (phones). */
-.app:not(.sidebar-collapsed):not(.app-mobile) .room-header > .room-title {
-  display: none;
+/* Page title in every header: "project / name", small and plain so it is not mistaken for a second logo. */
+.room-header h1.page-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* The project gives way before the name when the header is tight. */
+.page-crumb {
+  flex: 0 4 auto;
+  min-width: 2.5em;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--fg-dim);
+}
+
+.page-crumb-sep {
+  flex: none;
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+
+.page-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Phones: the name alone. */
+@media (max-width: 760px) {
+  .page-crumb,
+  .page-crumb-sep {
+    display: none;
+  }
 }
 
 /* Desktop: the sidebar's header and the page header share one line, so their bottom borders meet whatever the

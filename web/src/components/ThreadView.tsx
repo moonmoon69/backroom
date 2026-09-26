@@ -29,6 +29,7 @@ import { Markdown } from "./Markdown.tsx";
 import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ModelPicker } from "./pickers.tsx";
+import { PageTitle } from "./PageTitle.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
@@ -159,14 +160,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
     <>
       <div className="room-header thread-header">
         {headerStart}
-        <h1 className="room-title" title={thread?.title}>
-          {thread?.title ?? "Thread"}
-        </h1>
-        {view?.project ? (
-          <span className="room-project mono" title={view.project.workspaceRoot}>
-            {view.project.title}
-          </span>
-        ) : null}
+        <PageTitle context={view?.project?.title ?? null} contextTitle={view?.project?.workspaceRoot} name={thread?.title ?? "Thread"} />
         {activity && activity.tone !== "idle" ? <span className={`pill thread-pill tone-${activity.tone}`}>{activity.label}</span> : null}
         <span className="spacer" />
         {thread && browsers ? (
@@ -326,14 +320,7 @@ export function ArchivedThreadView({
     <>
       <div className="room-header thread-header">
         {headerStart}
-        <h1 className="room-title" title={thread.title}>
-          {thread.title}
-        </h1>
-        {project ? (
-          <span className="room-project mono" title={project.workspaceRoot}>
-            {project.title}
-          </span>
-        ) : null}
+        <PageTitle context={project?.title ?? null} contextTitle={project?.workspaceRoot} name={thread.title} />
         <span className="pill pill-muted">archived</span>
         <span className="spacer" />
       </div>
@@ -413,12 +400,7 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
     <>
       <div className="room-header thread-header">
         {headerStart}
-        <h1 className="room-title">New thread</h1>
-        {project ? (
-          <span className="room-project mono" title={project.workspaceRoot}>
-            {project.title}
-          </span>
-        ) : null}
+        <PageTitle context={project?.title ?? null} contextTitle={project?.workspaceRoot} name="New thread" />
         <span className="spacer" />
       </div>
       <div className="room-under">

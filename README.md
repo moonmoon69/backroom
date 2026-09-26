@@ -399,7 +399,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
 The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Tasks** (a checklist, with the count, and a violet "need input" pill when T3 is waiting on you) and **Changes** (a page with ±, with the number of files changed) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
 
-While the sidebar is showing, it names the open room, thread or browser (highlighted), so the page header leaves the name out; it shows the name when the sidebar is hidden, and on phones.
+Every page's header names what is open as a small breadcrumb: `project / room` (or thread; `Browsers / name` for a browser), so switching from the sidebar or the collapsed rail shows where you landed. Phones show the name alone.
 
 ### People
 

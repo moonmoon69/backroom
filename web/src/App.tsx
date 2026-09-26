@@ -6,6 +6,7 @@ import { BrowserView } from "./components/BrowserView.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspector.tsx";
+import { PageTitle } from "./components/PageTitle.tsx";
 import { AppControls } from "./components/AppControls.tsx";
 import { participantColor } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
@@ -462,7 +463,11 @@ export function App() {
           <RoomContext.Provider value={contextValue}>
             <div className="room-header">
               {roomsButton}
-              <h1 className="room-title">{contextValue.snapshot.room.title}</h1>
+              <PageTitle
+                context={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null}
+                contextTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.workspaceRoot}
+                name={contextValue.snapshot.room.title}
+              />
               <span className="spacer" />
               <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
               <RoomHeaderMenu projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null} />

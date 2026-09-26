@@ -7,6 +7,7 @@ import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
+import { PageTitle } from "./PageTitle.tsx";
 import { BrowserPowerButton, BrowserStatusPanel, useBrowserPower } from "./RoomBrowser.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
@@ -70,7 +71,7 @@ export function BrowserView({ browserId, runCommand, onGone, onChanged, onOpenRo
     <>
       <div className="room-header">
         {headerStart}
-        <h1 className="room-title mono">{item?.name ?? "Browser"}</h1>
+        <PageTitle context="Browsers" name={item?.name ?? "Browser"} mono />
         <span className="spacer" />
         {item ? (
           <>
