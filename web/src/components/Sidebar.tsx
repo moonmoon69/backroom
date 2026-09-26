@@ -36,8 +36,7 @@ interface Props {
   footer?: ReactNode;
   /** Hide the sidebar (desktops), or keep it open when it is shown over the page from the rail; absent on phones. */
   onCollapse?: (() => void) | undefined;
-  /** Shown over the page from the collapsed rail: the header button then keeps it open instead of hiding it. */
-  peeking?: boolean;
+
   disabled: boolean;
   /** Phones: the sidebar is an off-canvas drawer; these say whether it is showing and how to dismiss it. */
   open: boolean;
@@ -89,16 +88,6 @@ export function SidebarIcon() {
   );
 }
 
-/** Two speech bubbles: the threads (and the rest of the sidebar) behind the collapsed rail. */
-function ThreadsIcon() {
-  return (
-    <svg className="sidebar-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden="true">
-      <path d="M2 3.25c0-.7.55-1.25 1.25-1.25h6.5c.7 0 1.25.55 1.25 1.25v4c0 .7-.55 1.25-1.25 1.25H6L3.5 10.5V8.5h-.25C2.55 8.5 2 7.95 2 7.25z" />
-      <path d="M12.5 5.5h.25c.7 0 1.25.55 1.25 1.25v4c0 .7-.55 1.25-1.25 1.25h-.25V14L10 12H7.25C6.55 12 6 11.45 6 10.75V10.5" />
-    </svg>
-  );
-}
-
 /** A room's activity as one dot tone for the rail: needs you, working, background work, or none. */
 function roomTone(room: RoomListItem): { tone: "input" | "working" | "background"; label: string } | null {
   if (room.activity && room.activity.needsInput > 0) return { tone: "input", label: `${room.activity.needsInput} needs you` };
@@ -110,28 +99,22 @@ function roomTone(room: RoomListItem): { tone: "input" | "working" | "background
 
 /**
  * The collapsed sidebar: a narrow rail that still switches rooms. It shows the expand button, a tile per room
- * (grouped by project, in the sidebar's order, with a dot for what needs you or is working), a Threads button that
- * opens the whole sidebar over the page (threads, browsers, new things), and the T3 connection at the foot.
+ * (grouped by project, in the sidebar's order, with a dot for what needs you or is working), and the T3 connection
+ * at the foot. Threads and browsers are in the full sidebar, one click (or ⌘B) away.
  */
 export function SidebarRail({
   rooms,
   projects,
-  threads,
   selection,
   onSelect,
   onExpand,
-  onPeek,
-  peeking,
   connection,
 }: {
   rooms: RoomListItem[];
   projects: T3Project[] | null;
-  threads: T3ThreadShell[];
   selection: Selection | null;
   onSelect: (selection: Selection) => void;
   onExpand: () => void;
-  onPeek: () => void;
-  peeking: boolean;
   connection: ReactNode;
 }) {
   const groups = useMemo(() => {
@@ -142,10 +125,6 @@ export function SidebarRail({
       .sort(([a], [b]) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER))
       .map(([projectId, list]) => ({ projectId, title: projects?.find((p) => p.id === projectId)?.title ?? "Unknown project", rooms: list }));
   }, [rooms, projects]);
-  // Threads outside rooms that need you or are working: the Threads button carries the most urgent as a dot.
-  const loose = threads.filter((t) => !t.boundToRoom && !t.deletedAt && !t.archivedAt).map(threadActivity);
-  const threadTone = loose.some((a) => a.tone === "input") ? "input" : loose.some((a) => a.tone === "working") ? "working" : null;
-  const onThread = selection?.kind === "thread" || selection?.kind === "new-thread" || selection?.kind === "browser";
   return (
     <nav className="sidebar-rail" aria-label="Rooms (sidebar collapsed)">
       <div className="rail-top">
@@ -180,18 +159,6 @@ export function SidebarRail({
             })}
           </div>
         ))}
-        <span className="rail-sep" aria-hidden="true" />
-        <button
-          type="button"
-          className={`rail-room rail-threads${onThread || peeking ? " selected" : ""}`}
-          aria-label="Threads, browsers and the rest of the sidebar"
-          aria-expanded={peeking}
-          title={`Threads, browsers and the rest of the sidebar${threadTone === "input" ? " · a thread needs you" : threadTone === "working" ? " · a thread is working" : ""}`}
-          onClick={onPeek}
-        >
-          <ThreadsIcon />
-          {threadTone ? <span className={`rail-dot rail-dot-${threadTone}`} aria-hidden="true" /> : null}
-        </button>
       </div>
       <div className="rail-foot">{connection}</div>
     </nav>
@@ -202,7 +169,7 @@ export function rememberProject(projectId: string): void {
   localStorage.setItem(LAST_PROJECT_KEY, projectId);
 }
 
-export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, onCollapse, peeking, disabled, open, onClose }: Props) {
+export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onT3Changed, browsers, onBrowsersChanged, footer, onCollapse, disabled, open, onClose }: Props) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -330,8 +297,8 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
               <button
                 type="button"
                 className="small ghost icon-only sidebar-toggle"
-                aria-label={peeking ? "Keep the sidebar open" : "Hide sidebar"}
-                title={peeking ? "Keep the sidebar open (⌘B)" : "Hide sidebar (⌘B)"}
+                aria-label="Hide sidebar"
+                title="Hide sidebar (⌘B)"
                 onClick={onCollapse}
               >
                 <SidebarIcon />

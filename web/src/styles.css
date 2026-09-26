@@ -5260,30 +5260,13 @@ span.reply-to {
 }
 
 /* ---- sidebar: hide and show (desktop), and the app-wide controls at its foot ---- */
-/* Collapsed: a narrow rail of room tiles stands in for the sidebar; the Threads button shows the sidebar over the page. */
+/* Collapsed: a narrow rail of room tiles stands in for the sidebar. */
 .app.sidebar-collapsed {
   grid-template-columns: 52px 1fr;
 }
 
 .app.sidebar-collapsed > .sidebar {
   display: none;
-}
-
-.app.sidebar-collapsed > .sidebar.open {
-  display: flex;
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 52px;
-  width: 232px;
-  z-index: 120;
-  box-shadow: var(--shadow-lg);
-}
-
-.sidebar-peek-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 119;
 }
 
 .sidebar-rail {

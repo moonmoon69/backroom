@@ -320,8 +320,6 @@ export function App() {
       {alert}
     </button>
   ) : null;
-  // Collapsed on a desktop, sidebarOpen means the whole sidebar is shown over the page from the rail.
-  const peeking = collapsed && sidebarOpen;
 
   return (
     <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
@@ -348,42 +346,20 @@ export function App() {
         browsers={browsers}
         onBrowsersChanged={loadBrowsers}
         footer={appControls}
-        onCollapse={
-          isMobile
-            ? undefined
-            : collapsed
-              ? () => {
-                  setSidebarCollapsed(false);
-                  setSidebarOpen(false);
-                }
-              : () => setSidebarCollapsed(true)
-        }
-        peeking={peeking}
+        onCollapse={isMobile ? undefined : () => setSidebarCollapsed(true)}
         disabled={needsPairing}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
       {collapsed ? (
-        <>
-          {peeking ? <div className="sidebar-peek-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden="true" /> : null}
-          <SidebarRail
-            rooms={rooms}
-            projects={projects}
-            threads={threads}
-            selection={selection}
-            onSelect={(next) => {
-              setSelection(next);
-              setSidebarOpen(false);
-            }}
-            onExpand={() => {
-              setSidebarCollapsed(false);
-              setSidebarOpen(false);
-            }}
-            onPeek={() => setSidebarOpen((v) => !v)}
-            peeking={peeking}
-            connection={<ConnectionChip status={status} onOpen={() => setPairingOpen(true)} compact />}
-          />
-        </>
+        <SidebarRail
+          rooms={rooms}
+          projects={projects}
+          selection={selection}
+          onSelect={setSelection}
+          onExpand={() => setSidebarCollapsed(false)}
+          connection={<ConnectionChip status={status} onOpen={() => setPairingOpen(true)} compact />}
+        />
       ) : null}
       <div className="main">
         {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
