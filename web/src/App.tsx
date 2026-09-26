@@ -433,12 +433,10 @@ export function App() {
             <div className="room-header">
               {roomsButton}
               <h1 className="room-title">{contextValue.snapshot.room.title}</h1>
-              <span className="room-project mono" title="T3 project id">
-                {contextValue.snapshot.room.projectId}
-              </span>
               <span className="spacer" />
               <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
               <RoomHeaderMenu
+                projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null}
                 onManageBrowser={(browserId) => {
                   const target = browserId ?? browsers?.[0]?.id;
                   if (target) setSelection({ kind: "browser", id: target });

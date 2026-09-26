@@ -5154,30 +5154,8 @@ span.reply-to {
   margin: 0;
 }
 
-/* The participants' monograms, overlapped a little, each keeping its status ring. */
-.facepile {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 2px;
-}
-
-.facepile .avatar + .avatar {
-  margin-left: 1px;
-}
-
-.facepile .avatar.ring {
-  box-shadow: 0 0 0 1.5px var(--bg-2), 0 0 0 3px var(--ring, var(--fg-dim));
-  margin: 0 3px;
-}
-
-.crew-more {
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-.crew-add-header {
-  border-style: dashed;
-  color: var(--fg-muted);
+.people-icon {
+  display: block;
 }
 
 .room-header-menu {
@@ -5187,7 +5165,43 @@ span.reply-to {
 .room-header-menu .menu {
   left: auto;
   right: 0;
-  min-width: 240px;
+  width: 300px;
+}
+
+/* The room's T3 project, at the top of its ⋯ menu: name, then the id with a copy button. */
+.menu-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  cursor: default;
+}
+
+.menu-info-name {
+  font-size: 13px;
+}
+
+.menu-info-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.menu-info-id code {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: none;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.menu .menu-info-id button {
+  flex: none;
+  border-color: var(--line-strong);
 }
 
 .room-header-menu .menu button {
@@ -5283,4 +5297,19 @@ span.reply-to {
   bottom: calc(100% + 4px);
   left: auto;
   right: 0;
+}
+
+/* With the sidebar showing, it already names the open room, thread or browser (highlighted); the page header
+   names it only while the sidebar is hidden or closed (phones). */
+.app:not(.sidebar-collapsed):not(.app-mobile) .room-header > .room-title {
+  display: none;
+}
+
+/* Desktop: the sidebar's header and the page header share one line, so their bottom borders meet whatever the
+   page header holds (a title, only buttons, or nothing). */
+@media (min-width: 761px) {
+  .sidebar-header,
+  .room-header {
+    min-height: 50px;
+  }
 }

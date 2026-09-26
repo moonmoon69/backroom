@@ -23,7 +23,6 @@ import { InheritedLine, ModelPicker, ThreadBindingPicker, ThreadList, threadBind
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
-import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 
@@ -92,28 +91,25 @@ export function CrewPanel() {
   );
 }
 
+/** Two people: the members of the room. */
+function PeopleIcon() {
+  return (
+    <svg className="people-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true">
+      <circle cx="6" cy="5.25" r="2.25" />
+      <path d="M1.75 13.25c0-2.4 1.9-4.25 4.25-4.25s4.25 1.85 4.25 4.25" />
+      <path d="M10.25 3.1a2.25 2.25 0 0 1 0 4.3" />
+      <path d="M11.9 9.35c1.45.55 2.35 2 2.35 3.9" />
+    </svg>
+  );
+}
+
 /**
- * The header's people button: the participants' monograms with their status rings, opening the People tab. An empty
- * room gets "+ Add participant" instead, since there is nobody to show.
+ * The header's people button: a two-person icon and how many are seated, opening the People tab (where participants
+ * are added, and each one's status and thread menu are). Hover lists who is doing what.
  */
 export function CrewButton({ active, onClick }: { active: boolean; onClick: () => void }) {
   const { snapshot } = useRoom();
-  const compact = useMediaQuery(MOBILE_QUERY);
-  const [adding, setAdding] = useState(false);
   const crew = snapshot.participants.filter(isActiveParticipant);
-  if (crew.length === 0) {
-    return (
-      <>
-        <button type="button" className="small crew-add-header" onClick={() => setAdding(true)}>
-          + Add participant
-        </button>
-        {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
-      </>
-    );
-  }
-  // Phones have room for one face and a count; desktops show up to four.
-  const faces = compact ? 1 : 4;
-  const shown = crew.slice(0, crew.length > faces ? Math.max(1, faces - 1) : faces);
   const statuses = crew.map((p) => `@${p.alias}: ${describeStatus(snapshot.participantStatus[p.id]).label}`);
   return (
     <button
@@ -121,16 +117,11 @@ export function CrewButton({ active, onClick }: { active: boolean; onClick: () =
       className={`small crew-button${active ? " active" : ""}`}
       aria-pressed={active}
       aria-label={`People (${crew.length})`}
-      title={`People\n${statuses.join("\n")}`}
+      title={crew.length > 0 ? `People\n${statuses.join("\n")}` : "People: nobody seated yet"}
       onClick={onClick}
     >
-      <span className="facepile" aria-hidden="true">
-        {shown.map((participant) => {
-          const tone = describeStatus(snapshot.participantStatus[participant.id]).tone;
-          return <Monogram key={participant.id} participant={participant} size="xs" ring={tone} pulse={tone === "working"} />;
-        })}
-      </span>
-      {crew.length > shown.length ? <span className="crew-more mono">+{crew.length - shown.length}</span> : null}
+      <PeopleIcon />
+      <span className="panel-count mono">{crew.length}</span>
     </button>
   );
 }

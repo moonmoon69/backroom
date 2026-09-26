@@ -3,6 +3,7 @@ import { api } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type CommandResult, type Room, type RoomCommand, type RoomListItem, type RoomSnapshot, type ThreadLifecycleChoice } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
+import { CopyButton } from "./pickers.tsx";
 import { BROWSER_STATE_LABEL, RoomBrowserDialog } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
 
@@ -61,10 +62,10 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
 type RoomRef = Pick<Room, "id" | "title">;
 
 /**
- * The ⋯ menu in the room header: the room's settings (its agents' browser) and the same rename and delete as the
- * sidebar's menu.
+ * The ⋯ menu in the room header: the T3 project the room works in (name and id), the room's settings (its agents'
+ * browser), and the same rename and delete as the sidebar's menu.
  */
-export function RoomHeaderMenu({ onManageBrowser }: { onManageBrowser: (browserId: string | null) => void }) {
+export function RoomHeaderMenu({ projectTitle, onManageBrowser }: { projectTitle: string | null; onManageBrowser: (browserId: string | null) => void }) {
   const { snapshot, runCommand } = useRoom();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"browser" | "rename" | "delete" | null>(null);
@@ -103,6 +104,14 @@ export function RoomHeaderMenu({ onManageBrowser }: { onManageBrowser: (browserI
       </button>
       {open ? (
         <div className="menu" role="menu">
+          <div className="menu-info" role="none">
+            <span className="label">T3 project</span>
+            <span className="menu-info-name">{projectTitle ?? "not listed by T3"}</span>
+            <span className="menu-info-id">
+              <code title={room.projectId}>{room.projectId}</code>
+              <CopyButton text={room.projectId} label="Copy the project id" />
+            </span>
+          </div>
           <button type="button" role="menuitem" onClick={() => pick("browser")}>
             Browser…<span className="menu-detail mono">{browserState}</span>
           </button>

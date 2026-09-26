@@ -93,7 +93,7 @@ npm run t3:check                                   # read-only: server descripto
 npm run t3:check -- --write --project <projectId>  # creates one thread, sends one turn, checks correlation and interrupt
 ```
 
-The `--write` check leaves one thread titled "T3 Rooms contract check" in T3; delete it there when you are done. Copy a project id from the room's **Open in T3** dialog, or from T3 itself.
+The `--write` check leaves one thread titled "T3 Rooms contract check" in T3; delete it there when you are done. Copy a project id from a room's **⋯** menu, its **Open in T3** dialog, or from T3 itself.
 
 ## A headless box over Tailscale
 
@@ -168,7 +168,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 ## Your first room
 
 1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
-2. **Add a participant.** Click **+ Add participant** in the room header (once someone is seated, it is in the **People** panel), then choose one of:
+2. **Add a participant.** Click the people button (two-person icon) in the room header, then **+ Add participant**, and choose one of:
    - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
    - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
 
@@ -391,7 +391,9 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 
 ### Room header
 
-The header carries the room's own controls. On the right, the participants' monograms (each ringed with its status: green idle, blue working, violet needs you, red error), **Board** (with a count, and "need input" when T3 is waiting on you) and **Changes** open the side panel on that tab; clicking the tab already showing closes it. The **⋯** menu holds **Browser…** (the room's browser settings, see [Room browser](#room-browser)), **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
+The header carries the room's own controls. On the right, **People** (a two-person icon with the number seated; hover for who is doing what), **Board** (with a count, and "need input" when T3 is waiting on you) and **Changes** open the side panel on that tab; clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Browser…** (the room's browser settings, see [Room browser](#room-browser)), **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
+
+While the sidebar is showing, it names the open room, thread or browser (highlighted), so the page header leaves the name out; it shows the name when the sidebar is hidden, and on phones.
 
 ### People
 
@@ -452,7 +454,7 @@ Terminals, the browser preview and full diff text stay in T3 Code.
 
 ### On a phone
 
-The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button (a red dot on it means a T3 connection problem), the header shows one participant and a count, participant menus and dialogs open as bottom sheets, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
+The room works on a phone. Below about 760px the room list becomes a drawer behind the ☰ button (a red dot on it means a T3 connection problem), participant menus and dialogs open as bottom sheets, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
 
 It also installs as an app. Open the room over HTTPS (for example a Tailscale Serve address; the offline shell only registers on a secure origin), then:
 

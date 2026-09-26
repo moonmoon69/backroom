@@ -241,7 +241,7 @@ export function Timeline() {
               <div className="timeline-empty">
                 <p className="serif">
                   {noCrew
-                    ? "No crew seated yet; use + Add participant above, then hand out work orders here."
+                    ? "No crew seated yet; open People (the two-person icon above) to add a participant, then hand out work orders here."
                     : "The transcript is empty; address the crew to open the first work order."}
                 </p>
                 <pre className="worked-example mono">
