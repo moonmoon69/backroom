@@ -16,6 +16,7 @@ import {
   type WorkspaceChoice,
 } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
+import { NameInput } from "./NameInput.tsx";
 import { ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
@@ -300,7 +301,7 @@ export function RoleSelect({
         <div className="role-inline" role="group" aria-label="New role">
           <label>
             Role name
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="accountant" autoFocus />
+            <NameInput value={name} onValue={setName} placeholder="accountant" autoFocus />
           </label>
           <label>
             Rules
@@ -427,9 +428,9 @@ export function ParticipantSettingsDialog({
       <form className="form" onSubmit={submit}>
         <label>
           Name
-          <input
+          <NameInput
             value={alias}
-            onChange={(e) => setAlias(e.target.value)}
+            onValue={setAlias}
             required
             pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}"
             aria-invalid={aliasTaken}
@@ -657,10 +658,10 @@ export function CrewFields({
     <>
       <label>
         {aliasLabel}
-        <input
+        <NameInput
           ref={aliasRef}
           value={value.alias}
-          onChange={(e) => set("alias", e.target.value)}
+          onValue={(alias) => set("alias", alias)}
           required
           pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}"
           placeholder={aliasPlaceholder}

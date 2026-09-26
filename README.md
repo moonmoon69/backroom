@@ -509,7 +509,7 @@ A **preset** keeps a participant's settings under a name: the model with its opt
 | Use it in a form | The Add participant dialog and the New thread page list the presets above the settings; one click fills them in, and you can still change anything before you confirm |
 | Change or delete it | The preset's **⋯** menu → **Edit…** |
 
-Seated in a room, a preset takes its name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. The participant is the room's own from then on: renaming it or changing its model does not touch the preset, and editing or deleting the preset does not touch participants or threads made from it. A preset that works in a new worktree works in the project folder where the project is not a git repository.
+Seated in a room, a preset takes its name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. Capitals make no difference to a name: a room with `@Alice` has `alice` taken, and there is one preset per name whatever its capitals. Name fields drop spaces as you type or paste. The participant is the room's own from then on: renaming it or changing its model does not touch the preset, and editing or deleting the preset does not touch participants or threads made from it. A preset that works in a new worktree works in the project folder where the project is not a git repository.
 
 ## Configuration
 

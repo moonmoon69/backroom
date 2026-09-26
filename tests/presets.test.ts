@@ -61,6 +61,20 @@ test("presets are renamed, changed and deleted; names are unique and a deleted r
   await assert.rejects(stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: a.presetId }), /does not exist/);
 });
 
+test("a preset whose name the room already has is numbered, whatever the capitals", async (t) => {
+  const stack = await createTestStack({ autoCompleteMs: null }, ["Alice", "alice2"]);
+  t.after(() => stack.close());
+  const saved = (await stack.run({ type: "preset.create", name: "alice", modelSelection: sol })) as { presetId: string };
+  const seated = (await stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId })) as { alias: string };
+  assert.equal(seated.alias, "alice3", "Alice and alice2 are taken");
+  // Asking for a taken alias outright is refused rather than renamed: the name was chosen on purpose.
+  await assert.rejects(stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId, alias: "ALICE" }), /already used/);
+  // Once Alice is removed her name is free again.
+  await stack.run({ type: "participant.retire", participantId: stack.participants.Alice as string, pendingTasks: "cancel" });
+  const again = (await stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId })) as { alias: string };
+  assert.equal(again.alias, "alice");
+});
+
 test("a preset that works in a new worktree gets one from the project's default branch", async (t) => {
   const stack = await createTestStack({ autoCompleteMs: null }, []);
   t.after(() => stack.close());

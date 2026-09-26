@@ -8,6 +8,7 @@ import { api } from "../api.ts";
 import type { CatalogEntry, CommandResult, ModelSelection, Preset, Role, RoomCommand, RuntimeMode } from "../types.ts";
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
+import { NameInput } from "./NameInput.tsx";
 import { ProviderIcon } from "./ProviderIcon.tsx";
 import { RUNTIME_MODE_INFO, ThreadSettingsRow } from "./pickers.tsx";
 
@@ -219,7 +220,7 @@ export function PresetDialog({
       <form className="form" onSubmit={save}>
         <label>
           Name
-          <input value={name} onChange={(e) => setName(e.target.value)} required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}" placeholder="sol" aria-invalid={taken} data-autofocus />
+          <NameInput value={name} onValue={setName} required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}" placeholder="sol" aria-invalid={taken} data-autofocus />
           {taken ? (
             <span className="field-error">A preset with this name exists.</span>
           ) : (

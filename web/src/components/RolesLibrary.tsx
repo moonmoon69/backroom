@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api.ts";
 import type { CommandResult, Role, RoomCommand } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
+import { NameInput } from "./NameInput.tsx";
 import { useToast } from "./Toast.tsx";
 import { PlusIcon } from "./icons.tsx";
 
@@ -63,7 +64,7 @@ export function RolesDialog({ runCommand, onClose }: Props) {
         <form className="form" onSubmit={save}>
           <label>
             Name
-            <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} required placeholder="accountant" />
+            <NameInput value={editing.name} onValue={(name) => setEditing({ ...editing, name })} required placeholder="accountant" />
             <span className="hint">Assign it with /role @alias {editing.name.trim() || "accountant"}, or from the participant's Edit dialog.</span>
           </label>
           <label>
