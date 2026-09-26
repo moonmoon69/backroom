@@ -5090,31 +5090,57 @@ span.reply-to {
   margin: 0;
 }
 
-.browser-allowed {
+/* The room's Browser tab: each browser agents may be told about, ticked or not, with the description they read. */
+.browser-choices {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 2px 0 4px;
 }
 
-.browser-allowed-choice,
-.browser-allowed-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-}
-
-.browser-allowed-list {
-  gap: 4px 12px;
-  padding: 6px 0 0 4px;
-}
-
-.browser-allowed .label {
+.browser-choices > .label {
   font-size: 11px;
   font-weight: 600;
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* Browsers off for the room: the choices still apply once it is turned on, so they stay usable, only quieter. */
+.browser-choices.is-off .browser-choice {
+  opacity: 0.6;
+}
+
+.browser-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+
+.browser-choice.unticked {
+  background: transparent;
+}
+
+.browser-choice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.browser-choice-head .pill {
+  margin: 0;
+}
+
+.browser-choice-purpose {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }
 
 .composer-notice {

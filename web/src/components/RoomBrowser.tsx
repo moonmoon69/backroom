@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
+import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { CopyButton } from "./pickers.tsx";
 
 /** The noVNC link, completed with this page's host when the service does not know which host you reach it by. */
@@ -158,24 +159,27 @@ export function RoomBrowserButton({ active, onClick }: { active: boolean; onClic
 }
 
 /**
- * The Browser tab of the room's side panel: whether its agents get browsers, which browser is the room's default,
- * which browsers they may use, and the default browser's process (status, watch link, tabs; Start or Stop at the
- * bottom). The browsers themselves are managed in the sidebar's Browsers section.
+ * The Browser tab of the room's side panel, in the order it matters to agents: first whether they are told about
+ * browsers at all, then which browsers they may use, each with the name and description they read (editable here),
+ * one of them the default that starts for each task; then that default's process, with Start or Stop at the bottom.
+ * The browsers themselves are managed in the sidebar's Browsers section.
  */
-export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string | null) => void }) {
+export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
   const info = snapshot.browser;
   const power = useBrowserPower(info?.browser.id ?? "", refetch);
   const enabled = snapshot.room.browserEnabled;
   const [busy, setBusy] = useState(false);
   const [list, setList] = useState<BrowserListItem[] | null>(null);
-  useEffect(() => {
+  const [editing, setEditing] = useState<BrowserListItem | null>(null);
+  const loadList = useCallback(() => {
     api.browsers().then(setList, () => setList([]));
   }, []);
+  useEffect(loadList, [loadList]);
 
   const unavailable = !info || info.status.mode === null;
   const allowedIds = snapshot.room.allowedBrowserIds;
-  const allowedList = list ? (allowedIds ? list.filter((b) => allowedIds.includes(b.id)) : list) : null;
+  const isAllowed = (browserId: string) => allowedIds === null || allowedIds.includes(browserId);
   const setBrowser = async (next: { enabled: boolean; browserId?: string | null; allowed?: string[] | null }) => {
     setBusy(true);
     try {
@@ -184,85 +188,95 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string | 
       setBusy(false);
     }
   };
+  const toggleAllowed = (browserId: string) => {
+    if (!list) return;
+    const current = allowedIds ?? list.map((b) => b.id);
+    const next = isAllowed(browserId) ? current.filter((id) => id !== browserId) : [...current, browserId];
+    // Every browser ticked is stored as "every browser", which also takes in browsers added later.
+    void setBrowser({ enabled, allowed: list.every((b) => next.includes(b.id)) ? null : next });
+  };
 
   return (
     <div className="browser-panel">
       <label className="browser-toggle">
         <input type="checkbox" checked={enabled} disabled={busy || (unavailable && !enabled)} onChange={() => void setBrowser({ enabled: !enabled })} />
         <span>
-          Give this room&rsquo;s agents a browser
-          <span className="hint">Its default browser starts for each task and is named in the briefing. Agents attach over DevTools and share tabs and logins with anyone else using it.</span>
+          Let this room&rsquo;s agents use browsers
+          <span className="hint">
+            Each task&rsquo;s instructions then list the browsers ticked below, with what each is for, and how to drive them; the default starts
+            before the task is sent. While this is off, agents are not told about browsers and the browser tool refuses this room.
+          </span>
         </span>
       </label>
 
-      <label className="browser-default">
-        <span className="label">Default</span>
-        <select
-          value={snapshot.room.defaultBrowserId ?? info?.browser.id ?? ""}
-          disabled={busy || !list}
-          onChange={(e) => void setBrowser({ enabled, browserId: e.target.value || null })}
-        >
-          {!allowedList ? <option value="">Loading…</option> : null}
-          {allowedList?.map((browser) => (
-            <option key={browser.id} value={browser.id}>
-              {browser.name}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="small ghost" onClick={() => onManage(info?.browser.id ?? null)}>
-          Manage…
-        </button>
-      </label>
-      {info?.browser.description ? <p className="hint browser-purpose">{info.browser.description}</p> : null}
-
-      {list && list.length > 1 ? (
-        <div className="browser-allowed" role="group" aria-labelledby="browser-allowed-label">
-          <span className="label" id="browser-allowed-label">
-            Agents here may use
-          </span>
-          <div className="browser-allowed-choice">
-            <label className="radio">
-              <input type="radio" checked={allowedIds === null} disabled={busy} onChange={() => void setBrowser({ enabled, allowed: null })} />
-              every browser
-            </label>
-            <label className="radio">
-              <input
-                type="radio"
-                checked={allowedIds !== null}
-                disabled={busy}
-                onChange={() => void setBrowser({ enabled, allowed: [info?.browser.id ?? list[0]?.id].filter((id): id is string => Boolean(id)) })}
-              />
-              only these:
-            </label>
-          </div>
-          {allowedIds !== null ? (
-            <div className="browser-allowed-list">
-              {list.map((browser) => {
-                const checked = allowedIds.includes(browser.id);
-                const isDefault = browser.id === info?.browser.id;
-                return (
-                  <label key={browser.id} className="checkbox" title={isDefault ? "The room's default must stay allowed" : browser.description}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={busy || (checked && isDefault)}
-                      onChange={() => void setBrowser({ enabled, allowed: checked ? allowedIds.filter((id) => id !== browser.id) : [...allowedIds, browser.id] })}
-                    />
-                    <span className="mono">{browser.name}</span>
-                  </label>
-                );
-              })}
+      <div className={`browser-choices${enabled ? "" : " is-off"}`} role="group" aria-labelledby="browser-choices-label">
+        <span className="label" id="browser-choices-label">
+          Browsers they can use
+        </span>
+        {!list ? <p className="hint">Loading…</p> : null}
+        {list?.map((browser) => {
+          const allowed = isAllowed(browser.id);
+          const isDefault = browser.id === info?.browser.id;
+          return (
+            <div key={browser.id} className={`browser-choice${allowed ? "" : " unticked"}`}>
+              <div className="browser-choice-head">
+                <label className="checkbox" title={isDefault ? "The default stays ticked; make another browser the default first" : undefined}>
+                  <input type="checkbox" checked={allowed} disabled={busy || isDefault} onChange={() => toggleAllowed(browser.id)} />
+                  <span className="mono">{browser.name}</span>
+                </label>
+                {isDefault ? (
+                  <span className="pill pill-muted">default</span>
+                ) : allowed ? (
+                  <button type="button" className="link-button" disabled={busy} onClick={() => void setBrowser({ enabled, browserId: browser.id })}>
+                    make default
+                  </button>
+                ) : null}
+                <span className="spacer" />
+                <button type="button" className="link-button" onClick={() => setEditing(browser)} title="Edit the name and description agents read">
+                  Edit
+                </button>
+              </div>
+              <p className="browser-choice-purpose">{browser.description || <span className="muted">No description; agents see only the name.</span>}</p>
             </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {info ? <BrowserStatusPanel status={info.status} error={power.error} /> : <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>}
+          );
+        })}
+        {list && list.length > 1 ? (
+          <p className="hint">{allowedIds === null ? "All ticked: browsers you add later are included too." : "Browsers you add later start unticked here."}</p>
+        ) : null}
+      </div>
 
       {info ? (
-        <div className="panel-actions">
-          <BrowserPowerButton status={info.status} power={power} />
-        </div>
+        <>
+          <div className="browser-row">
+            <span className="label">Default</span>
+            <button type="button" className="link-button mono" onClick={() => onManage(info.browser.id)} title="Open this browser's page">
+              {info.browser.name}
+            </button>
+          </div>
+          <BrowserStatusPanel status={info.status} error={power.error} />
+          <div className="panel-actions">
+            <BrowserPowerButton status={info.status} power={power} />
+          </div>
+        </>
+      ) : (
+        <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>
+      )}
+
+      {editing ? (
+        <BrowserFormDialog
+          title="Edit browser"
+          submitLabel="Save"
+          initial={editing}
+          onClose={() => setEditing(null)}
+          onSubmit={async (values) => {
+            const result = await runCommand({ type: "browser.update", browserId: editing.id, ...values });
+            if (result) {
+              setEditing(null);
+              loadList();
+              refetch();
+            }
+          }}
+        />
       ) : null}
     </div>
   );

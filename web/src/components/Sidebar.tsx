@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
-import { BrowserFormDialog } from "./BrowserView.tsx";
+import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { titleMonogram } from "./Monogram.tsx";
 import { Popover } from "./Popover.tsx";

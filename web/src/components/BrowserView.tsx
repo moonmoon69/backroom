@@ -2,9 +2,10 @@
  * One browser from the list: what it is for, its process (start, stop, watch, tabs), the rooms using it as their
  * default, and its profile (size, reset, delete). The profile holds logins; any agent using the browser can use them.
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import type { BrowserListItem, CommandResult, RoomCommand } from "../types.ts";
+import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { BrowserPowerButton, BrowserStatusPanel, useBrowserPower } from "./RoomBrowser.tsx";
 
@@ -12,10 +13,6 @@ type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
 const formatBytes = (bytes: number): string =>
   bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : bytes < 1024 * 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(0)} MB` : `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
-/** Browser names are what agents type: lowercase letters, digits and dashes. */
-export const browserNameFrom = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 40);
 
 interface BrowserViewProps {
   browserId: string;
@@ -228,75 +225,5 @@ function ConfirmActions({ label, onCancel, onConfirm }: { label: string; onCance
         {label}
       </button>
     </div>
-  );
-}
-
-/** Name and purpose of a browser; used to create one and to edit one. */
-export function BrowserFormDialog({
-  title,
-  submitLabel,
-  initial,
-  onClose,
-  onSubmit,
-}: {
-  title: string;
-  submitLabel: string;
-  initial?: { name: string; description: string };
-  onClose: () => void;
-  onSubmit: (values: { name: string; description: string }) => Promise<void>;
-}) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [description, setDescription] = useState(initial?.description ?? "");
-  const [busy, setBusy] = useState(false);
-  const cleanName = name.replace(/-+$/, "");
-  const valid = NAME_PATTERN.test(cleanName);
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!valid) return;
-    setBusy(true);
-    try {
-      await onSubmit({ name: cleanName, description: description.trim() });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Dialog title={title} onClose={onClose}>
-      <form className="form" onSubmit={submit}>
-        <label>
-          Name
-          <input
-            type="text"
-            className="mono"
-            value={name}
-            onChange={(e) => setName(browserNameFrom(e.target.value))}
-            placeholder="t3-rooms-testing"
-            spellCheck={false}
-            autoCapitalize="off"
-            data-autofocus
-          />
-          <span className="hint">What agents call it: lowercase letters, digits and dashes.</span>
-        </label>
-        <label>
-          What it is for
-          <textarea
-            rows={3}
-            value={description}
-            maxLength={500}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Logged into staging T3 Rooms as the test user; use for integration tests."
-          />
-          <span className="hint">Shown to agents with the list of browsers, so they pick the right one. Mention the logins it holds.</span>
-        </label>
-        <div className="dialog-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={busy || !valid}>
-            {submitLabel}
-          </button>
-        </div>
-      </form>
-    </Dialog>
   );
 }
