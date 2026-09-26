@@ -539,6 +539,7 @@ The service reads environment variables only. It does **not** load `.env`, which
 | A participant shows "thread deleted in T3" | Its thread was deleted in T3 Code. The room keeps the participant and its past replies, and new work for it is blocked. Rebind it to another thread or remove it. Settling or archiving a thread does not cause this. |
 | A browser's status says "Chrome exited during start: No usable sandbox" | Chrome's sandbox can't run, which is typical inside Docker. Run the container with `--security-opt seccomp=unconfined`, or use Google Chrome's package on the host. Each tool's output is in `data/browsers/<browserId>/*.log`. |
 | `rooms-browser` says "Browsers are turned off for the room" or "can't use" a browser | The room's Browser tab (the globe in its header): turn browsers on, or tick that browser. |
+| A panel says "The room service is older than this page" | The UI was rebuilt (`npm run build:web` goes live on the next load) but the service still runs the old server code. Restart it: `systemctl --user restart t3rooms.service`. |
 | `rooms-browser` can't reach the service | The room service isn't running, or runs with another data folder. Start it; with a non-default `ROOMS_DATA_DIR`, briefings pass `ROOMS_BROWSER_API` along. |
 | The page stops updating | The service stopped. Restart it with `npm start`; nothing is lost. |
 
