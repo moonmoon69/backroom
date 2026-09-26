@@ -47,3 +47,17 @@ test("desk view aggregates T3 thread data per participant and across the room", 
   assert.deepEqual(claude.changedFiles, []);
   assert.equal(claude.partial, false);
 });
+
+test("a turn the room just sent is the room's from the first read, before the scheduler matches it to its task", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-desk", ROOMS_PORT: "0" });
+  const app = createHttpApp(stack, config, "/nonexistent/dist");
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "look at the screenshot", schedule: { mode: "now" } });
+  // One tick sends the task; T3 starts the turn at once, but the scheduler has not seen it yet.
+  await stack.tick(1);
+  const live = (await (await app.request(`/api/rooms/${stack.roomId}/participants/${stack.participants.sol1!}/live`)).json()) as { runningTurn: { startedByRoom: boolean; prompt: string | null } | null };
+  assert.ok(live.runningTurn, "the turn is running");
+  assert.equal(live.runningTurn.startedByRoom, true, "the room's own turn, not one typed in T3");
+  assert.equal(live.runningTurn.prompt, null, "so its briefing is never shown as a message typed in T3");
+});

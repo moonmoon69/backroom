@@ -300,15 +300,21 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const subagents = subagentUsage(detail.activities);
     // The running turn, if any: whether the room started it, and (for turns typed in T3) the prompt that started it.
     const runningTurnId = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
-    const startedByRoom = runningTurnId ? stack.repos.isRunTurn(binding.threadId, runningTurnId) || stack.scheduler.participantStatus(participant.id).activeRunId !== null : false;
+    const promptMessage = runningTurnId ? (promptMessageForTurn(detail.messages, runningTurnId) ?? runningPromptMessageBeforeOutput(detail.messages, runningTurnId)) : null;
+    // The room's own turn: matched to a run, or the participant is busy with one, or (from the first read on, before
+    // either is known) the message that started it is one a room run sent, since the run is written before it is sent.
+    // Otherwise the briefing would show as a message typed in T3 for the seconds a dispatch takes (longer with images).
+    const startedByRoom = runningTurnId
+      ? stack.repos.isRunTurn(binding.threadId, runningTurnId) ||
+        stack.scheduler.participantStatus(participant.id).activeRunId !== null ||
+        (promptMessage !== null && stack.repos.isRunMessage(binding.threadId, promptMessage.id))
+      : false;
     const runningTurn = runningTurnId
       ? {
           turnId: runningTurnId,
           startedByRoom,
-          ...(() => {
-            const message = startedByRoom ? null : (promptMessageForTurn(detail.messages, runningTurnId) ?? runningPromptMessageBeforeOutput(detail.messages, runningTurnId));
-            return { prompt: message?.text ?? null, promptImages: (message?.attachments ?? []).map((a) => a.id) };
-          })(),
+          prompt: startedByRoom ? null : (promptMessage?.text ?? null),
+          promptImages: startedByRoom ? [] : (promptMessage?.attachments ?? []).map((a) => a.id),
         }
       : null;
 
