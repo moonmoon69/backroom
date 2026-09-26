@@ -9,7 +9,6 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_TOTAL_BYTES,
   ATTACHMENT_MIME_TYPES,
-  RUNTIME_MODES,
   type CommandResult,
   type InlineImage,
   type ModelSelection,
@@ -28,7 +27,7 @@ import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
-import { CopyButton, ModelPicker } from "./pickers.tsx";
+import { CopyButton, ThreadSettingsRow } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
@@ -441,27 +440,20 @@ export function NewThreadView({ projectId, projects, browsers, runCommand, onPro
                         ))}
                       </select>
                     </label>
-                    <label>
-                      Model
-                      {modelReady ? <ModelPicker value={model} onChange={setModel} /> : <span className="muted mono model-pending">looking up T3&rsquo;s default model…</span>}
-                    </label>
-                    <label>
-                      Permission mode
-                      <select
-                        value={runtimeMode}
-                        onChange={(e) => {
-                          setRuntimeMode(e.target.value as RuntimeMode);
-                          localStorage.setItem(MODE_KEY, e.target.value);
+                    <div className="form-field">
+                      <span>Model</span>
+                      <ThreadSettingsRow
+                        model={model}
+                        onModel={setModel}
+                        runtimeMode={runtimeMode}
+                        onRuntimeMode={(mode) => {
+                          setRuntimeMode(mode);
+                          localStorage.setItem(MODE_KEY, mode);
                         }}
-                      >
-                        {RUNTIME_MODES.map((mode) => (
-                          <option key={mode} value={mode}>
-                            {mode}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="hint">Enforced by T3 for this thread. You can change it later.</span>
-                    </label>
+                        pending={!modelReady}
+                      />
+                      <span className="hint">T3&rsquo;s own settings for the thread; you can change them later.</span>
+                    </div>
                     {browsers ? (
                       <label>
                         Browser
@@ -1063,22 +1055,11 @@ function ThreadSettingsDialog({ thread, runCommand, onClose }: { thread: T3Threa
   return (
     <Dialog title="Thread settings" onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        <label>
-          Model
-          <ModelPicker value={model} onChange={setModel} providerFilter={thread.modelSelection.instanceId} />
-          <span className="hint">Applies to the T3 thread itself. The provider stays {thread.modelSelection.instanceId}: T3 cannot switch a thread&rsquo;s provider.</span>
-        </label>
-        <label>
-          Permission mode
-          <select value={mode} onChange={(e) => setMode(e.target.value as RuntimeMode)}>
-            {RUNTIME_MODES.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))}
-          </select>
-          <span className="hint">Enforced by T3 for this thread.</span>
-        </label>
+        <div className="form-field">
+          <span>Model</span>
+          <ThreadSettingsRow model={model} onModel={setModel} runtimeMode={mode} onRuntimeMode={setMode} providerFilter={thread.modelSelection.instanceId} />
+          <span className="hint">T3&rsquo;s own settings for the thread. The provider stays {thread.modelSelection.instanceId}: T3 cannot switch a thread&rsquo;s provider.</span>
+        </div>
         <dl className="kv">
           <dt>Thread id</dt>
           <dd>

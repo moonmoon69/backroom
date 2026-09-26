@@ -169,7 +169,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 
 1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every participant's thread belongs to that project.
 2. **Add a participant.** Click the people button (two-person icon) in the room header, then the add button at the top of the People panel (a person with a plus), and choose one of:
-   - **New thread:** pick an alias and a model. T3's default for the project is prefilled. You can also set a role and the permission mode. The room creates the thread in T3.
+   - **New thread:** pick an alias, then the thread's T3 settings in one row, as in T3 Code's composer: the model (T3's default for the project is prefilled), its options (reasoning effort, context window and so on, in one dropdown) and the permission mode (Supervised, Auto-accept edits, Auto, Full access). A role is optional; it is the only part the room adds. The room creates the thread in T3.
    - **Attach existing:** pick one of the project's threads. The participant continues that thread and keeps its model, options and permission mode.
 
    The alias is what you type after `@`, and it exists only inside this room.

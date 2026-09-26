@@ -3,7 +3,6 @@ import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import {
   isActiveParticipant,
-  RUNTIME_MODES,
   type Desk,
   type ModelSelection,
   type T3ThreadShell,
@@ -19,13 +18,13 @@ import { ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
-import { InheritedLine, ModelPicker, ThreadBindingPicker, ThreadList, threadBindingReady, useAttachableThreads } from "./pickers.tsx";
+import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, threadBindingReady, useAttachableThreads } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
-import { ChevronIcon, PeopleIcon, PersonPlusIcon } from "./icons.tsx";
+import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
 type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
 
@@ -319,12 +318,6 @@ export function RoleSelect({
   );
 }
 
-const MODE_HELP: Record<RuntimeMode, string> = {
-  "approval-required": "Every tool call asks for approval in the queue drawer.",
-  "auto-accept-edits": "File edits are accepted automatically; other tools ask.",
-  auto: "T3 decides which actions need approval.",
-  "full-access": "No approval prompts.",
-};
 
 /** The field a settings entry point wants focused when the dialog opens. */
 export type SettingsField = "name" | "role" | "mode";
@@ -445,34 +438,14 @@ export function ParticipantSettingsDialog({
             <span className="hint">This is how you address it: @name in the composer, or just say the name.</span>
           )}
         </label>
+        <div className="form-field">
+          <span>Model</span>
+          <ThreadSettingsRow model={model} onModel={setModel} runtimeMode={mode} onRuntimeMode={setMode} providerFilter={saved.modelSelection.instanceId} />
+          <span className="hint">
+            T3&rsquo;s own settings for the thread; changes made in T3 Code show up here too. The provider stays {saved.modelSelection.instanceId}: rebind to a new thread to use another.
+          </span>
+        </div>
         <RoleSelect value={roleId} onChange={setRoleId} autoFocus={focus === "role"} />
-        <label>
-          Model
-          <ModelPicker value={model} onChange={setModel} providerFilter={saved.modelSelection.instanceId} />
-          <span className="hint">Applies to the T3 thread itself; changes made in T3 Code show up here too.</span>
-        </label>
-        <p className="muted mono small-note">
-          Provider stays {saved.modelSelection.instanceId}: T3 cannot switch a thread&rsquo;s provider. Rebind to a new thread to use another.
-        </p>
-        <fieldset>
-          <legend>Permission mode</legend>
-          <span className="hint">Enforced by T3 for this thread, independent of any role rules.</span>
-          {RUNTIME_MODES.map((candidate) => (
-            <label key={candidate} className="radio">
-              <input
-                type="radio"
-                name="runtime-mode"
-                checked={mode === candidate}
-                onChange={() => setMode(candidate)}
-                data-autofocus={focus === "mode" && mode === candidate ? "" : undefined}
-              />
-              <span>
-                <strong>{candidate}</strong>
-                <span className="hint">{MODE_HELP[candidate]}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
         {failures.length > 0 ? (
           <div className="settings-errors" role="alert">
             {failures.map((failure) => (
@@ -649,8 +622,6 @@ export interface CrewFieldsState {
 
 export const emptyCrewFields = (): CrewFieldsState => ({ alias: "", model: null, runtimeMode: "full-access" });
 
-const ADVANCED_KEY = "t3rooms.crewAdvanced";
-
 /**
  * Name leads (it is what you type, say, and see on the tile), then the model; the permission mode
  * lives behind a remembered Advanced disclosure. `children` renders between Model and Advanced.
@@ -663,8 +634,6 @@ export function CrewFields({
   aliasTaken = false,
   aliasRef,
   showModel = true,
-  showRuntimeMode = true,
-  modelTag,
   modelPending = false,
   children,
 }: {
@@ -674,23 +643,13 @@ export function CrewFields({
   aliasPlaceholder?: string;
   aliasTaken?: boolean;
   aliasRef?: RefObject<HTMLInputElement | null>;
+  /** Model, options and permission mode (a new thread); an attached thread keeps its own. */
   showModel?: boolean;
-  showRuntimeMode?: boolean;
-  /** Small tag shown next to the Model label (for example "T3 default"). */
-  modelTag?: ReactNode;
   /** While true the picker is withheld so it cannot auto-pick before T3's default is known. */
   modelPending?: boolean;
   children?: ReactNode;
 }) {
   const set = <K extends keyof CrewFieldsState>(key: K, next: CrewFieldsState[K]) => onChange({ ...value, [key]: next });
-  const [advanced, setAdvanced] = useState<boolean>(() => localStorage.getItem(ADVANCED_KEY) === "open");
-  const toggleAdvanced = () => {
-    setAdvanced((open) => {
-      localStorage.setItem(ADVANCED_KEY, open ? "closed" : "open");
-      return !open;
-    });
-  };
-  const advancedId = "crew-advanced";
   return (
     <>
       <label>
@@ -711,39 +670,19 @@ export function CrewFields({
         )}
       </label>
       {showModel ? (
-        <label>
-          <span className="label-row">
-            Model
-            {modelTag}
-          </span>
-          {modelPending ? <span className="muted mono model-pending">looking up T3's default model…</span> : <ModelPicker value={value.model} onChange={(model) => set("model", model)} />}
-        </label>
-      ) : null}
-      {children}
-      {showRuntimeMode ? (
-        <div className="advanced">
-          <button type="button" className="advanced-toggle mono" aria-expanded={advanced} aria-controls={advancedId} onClick={toggleAdvanced}>
-            <ChevronIcon dir={advanced ? "down" : "right"} />
-            Advanced
-            {!advanced ? <span className="muted advanced-summary">{value.runtimeMode}</span> : null}
-          </button>
-          {advanced ? (
-            <div className="advanced-body" id={advancedId}>
-              <label>
-                Permission mode
-                <select value={value.runtimeMode} onChange={(e) => set("runtimeMode", e.target.value as RuntimeMode)}>
-                  {RUNTIME_MODES.map((mode) => (
-                    <option key={mode} value={mode}>
-                      {mode}
-                    </option>
-                  ))}
-                </select>
-                <span className="hint">Enforced by T3 for this thread; independent of any role rules.</span>
-              </label>
-            </div>
-          ) : null}
+        <div className="form-field">
+          <span>Model</span>
+          <ThreadSettingsRow
+            model={value.model}
+            onModel={(model) => set("model", model)}
+            runtimeMode={value.runtimeMode}
+            onRuntimeMode={(mode) => set("runtimeMode", mode)}
+            pending={modelPending}
+          />
+          <span className="hint">T3&rsquo;s own settings for the new thread (prefilled with the project&rsquo;s default model).</span>
         </div>
       ) : null}
+      {children}
     </>
   );
 }
@@ -850,15 +789,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     if (result) onClose();
   };
 
-  const modelTag =
-    defaultModel === "loading" ? null : fromDefault ? (
-      <span className="pill pill-muted mono" title="T3's default model for this project; pick another to override for this thread">
-        T3 default
-      </span>
-    ) : defaultModel === null ? (
-      <span className="pill pill-muted mono" title="T3 has no default model for this project">no T3 default</span>
-    ) : null;
-
   return (
     <Dialog title="Add participant" onClose={onClose} wide>
       <form className="form" onSubmit={submit}>
@@ -878,7 +808,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
 
         {mode === "create" ? (
           <>
-            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelTag={modelTag} modelPending={defaultModel === "loading"}>
+            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelPending={defaultModel === "loading"}>
               <RoleSelect value={roleId} onChange={setRoleId} />
             </CrewFields>
             <div className="dialog-actions">
@@ -894,7 +824,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
           <>
             <ThreadList threads={threads} selectedId={threadId} onSelect={selectThread} name="add-thread-id" />
             {selectedThread ? <InheritedLine thread={selectedThread} /> : <span className="hint">Pick the thread this participant should continue.</span>}
-            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} showModel={false} showRuntimeMode={false}>
+            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} showModel={false}>
               <RoleSelect value={roleId} onChange={setRoleId} />
             </CrewFields>
             <div className="dialog-actions">

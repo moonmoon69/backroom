@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, ApiError, useProviders } from "../api.ts";
-import type { CatalogEntry, ModelOptionDescriptor, ModelSelection, ProviderInfo, T3ThreadShell, ThreadBindingInput } from "../types.ts";
+import type { CatalogEntry, ModelOptionDescriptor, ModelSelection, ProviderInfo, RuntimeMode, T3ThreadShell, ThreadBindingInput } from "../types.ts";
+import { Popover } from "./Popover.tsx";
 import { optionLabel } from "./deskFormat.ts";
 import { ProviderLine } from "./Providers.tsx";
 import { useToast } from "./Toast.tsx";
@@ -27,6 +28,31 @@ export function selectionFor(entry: Pick<CatalogEntry, "instanceId" | "model" | 
 }
 
 const entryKey = (entry: Pick<CatalogEntry, "instanceId" | "model">): string => `${entry.instanceId}\u0000${entry.model}`;
+
+// T3's model catalog, read once per page and shared by every picker and options menu.
+let catalogLoad: Promise<CatalogEntry[]> | null = null;
+function loadCatalog(): Promise<CatalogEntry[]> {
+  catalogLoad ??= api.catalog().catch((error: unknown) => {
+    catalogLoad = null;
+    throw error;
+  });
+  return catalogLoad;
+}
+
+function useCatalog(): CatalogEntry[] | null {
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadCatalog().then(
+      (entries) => !cancelled && setCatalog(entries),
+      () => !cancelled && setCatalog([]),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return catalog;
+}
 
 /** Default first, legacy last, otherwise the server's order. */
 const rankEntry = (entry: CatalogEntry): number => (entry.isDefault ? 0 : entry.isLegacy ? 2 : 1);
@@ -65,8 +91,7 @@ export function ModelPicker({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .catalog()
+    loadCatalog()
       .then((entries) => {
         if (cancelled) return;
         setCatalog(entries);
@@ -190,10 +215,9 @@ export function ModelPicker({
         ) : selected ? (
           <>
             <span className="model-provider muted">{selected.providerName ?? selected.instanceId}</span>
-            <span className="model-label">{selected.label || selected.model}</span>
-            <span className="model-slug mono muted">{selected.model}</span>
-            {selected.isDefault ? <span className="tag mono tag-default">default</span> : null}
-            {selected.isLegacy ? <span className="tag mono tag-legacy">legacy</span> : null}
+            <span className="model-label" title={`${selected.instanceId} · ${selected.model}`}>
+              {selected.label || selected.model}
+            </span>
           </>
         ) : (
           <span className="muted">Choose a model…</span>
@@ -247,47 +271,177 @@ export function ModelPicker({
           ))}
         </div>
       ) : null}
-      {selected ? (
-        <span className="hint">
-          {selected.instanceId} · {selected.model}
-          {(selected.optionDescriptors?.length ?? 0) === 0 ? " · no options" : ""}
-        </span>
+    </div>
+  );
+}
+
+/** T3's permission modes, with T3 Code's own names and descriptions. */
+export const RUNTIME_MODE_INFO: Record<RuntimeMode, { label: string; description: string }> = {
+  "approval-required": { label: "Supervised", description: "Ask before commands and file changes." },
+  "auto-accept-edits": { label: "Auto-accept edits", description: "Auto-approve edits, ask before other actions." },
+  auto: { label: "Auto", description: "Supported providers approve routine actions; others still ask." },
+  "full-access": { label: "Full access", description: "Allow commands and edits without prompts." },
+};
+const RUNTIME_MODE_ORDER: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
+
+/** A button that opens a menu below it; `children` gets a close function. */
+function DropdownButton({ label, title, className, children }: { label: ReactNode; title: string; className?: string; children: (close: () => void) => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!anchor.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className={`setting-button${className ? ` ${className}` : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+        <ChevronIcon dir={open ? "up" : "down"} />
+      </button>
+      {open ? (
+        <Popover anchor={anchor} menuRef={menuRef} role="menu" className="setting-menu" onClose={() => setOpen(false)}>
+          {children(() => setOpen(false))}
+        </Popover>
       ) : null}
-      {selected && value && (selected.optionDescriptors?.length ?? 0) > 0 ? (
-        <div className="model-options" role="group" aria-label="Model options">
-          {selected.optionDescriptors!.map((descriptor) => {
-            const current = value.options?.find((o) => o.id === descriptor.id)?.value ?? defaultOptionValue(descriptor);
-            const setOption = (next: unknown) => {
-              const rest = (value.options ?? []).filter((o) => o.id !== descriptor.id);
-              const ordered = selected.optionDescriptors!.map((d) =>
-                d.id === descriptor.id ? { id: d.id, value: next } : (rest.find((o) => o.id === d.id) ?? { id: d.id, value: defaultOptionValue(d) }),
-              );
-              onChange({ instanceId: value.instanceId, model: value.model, options: ordered });
-            };
-            if (descriptor.type === "boolean") {
-              return (
-                <label key={descriptor.id} className="checkbox model-option">
-                  <input type="checkbox" checked={current === true} onChange={(event) => setOption(event.target.checked)} />
-                  {descriptor.label}
-                </label>
-              );
-            }
-            return (
-              <label key={descriptor.id} className="model-option">
-                <span className="model-option-label">{descriptor.label}</span>
-                <select value={typeof current === "string" ? current : String(current ?? "")} onChange={(event) => setOption(event.target.value)}>
-                  {(descriptor.options ?? []).map((choice) => (
-                    <option key={choice.id} value={choice.id} title={choice.description ?? undefined}>
-                      {choice.label}
-                      {choice.isDefault ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            );
-          })}
-        </div>
-      ) : null}
+    </>
+  );
+}
+
+/**
+ * The model's options (reasoning effort, context window, fast mode, …) as one dropdown, like T3 Code's composer: the
+ * button shows the current choices, the menu has a section per option. Nothing when the model has no options.
+ */
+export function ModelOptionsMenu({ value, onChange }: { value: ModelSelection | null; onChange: (selection: ModelSelection) => void }) {
+  const catalog = useCatalog();
+  const entry = value ? catalog?.find((e) => e.instanceId === value.instanceId && e.model === value.model) : undefined;
+  const descriptors = entry?.optionDescriptors ?? [];
+  if (!value || !entry || descriptors.length === 0) return null;
+  const currentOf = (descriptor: ModelOptionDescriptor) => value.options?.find((o) => o.id === descriptor.id)?.value ?? defaultOptionValue(descriptor);
+  const setOption = (descriptor: ModelOptionDescriptor, next: unknown) => {
+    const ordered = descriptors.map((d) => (d.id === descriptor.id ? { id: d.id, value: next } : { id: d.id, value: currentOf(d) }));
+    onChange({ instanceId: value.instanceId, model: value.model, options: ordered });
+  };
+  const summary = descriptors
+    .map((d) => {
+      const current = currentOf(d);
+      if (d.type === "boolean") return current === true ? d.label : null;
+      return (d.options ?? []).find((o) => o.id === current)?.label ?? String(current ?? "");
+    })
+    .filter(Boolean)
+    .join(" · ");
+  const detail = descriptors.map((d) => `${d.label}: ${d.type === "boolean" ? (currentOf(d) === true ? "on" : "off") : ((d.options ?? []).find((o) => o.id === currentOf(d))?.label ?? "")}`).join(", ");
+  return (
+    <DropdownButton label={<span className="setting-value">{summary || "Options"}</span>} title={`Model options: ${detail}`}>
+      {() =>
+        descriptors.map((descriptor) => (
+          <div key={descriptor.id} className="setting-section" role="group" aria-label={descriptor.label}>
+            <span className="setting-section-head">{descriptor.label}</span>
+            {descriptor.type === "boolean" ? (
+              <button type="button" role="menuitemcheckbox" aria-checked={currentOf(descriptor) === true} onClick={() => setOption(descriptor, currentOf(descriptor) !== true)}>
+                <span className="setting-check">{currentOf(descriptor) === true ? "✓" : ""}</span>
+                {currentOf(descriptor) === true ? "On" : "Off"}
+              </button>
+            ) : (
+              (descriptor.options ?? []).map((choice) => (
+                <button
+                  key={choice.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={currentOf(descriptor) === choice.id}
+                  title={choice.description ?? undefined}
+                  onClick={() => setOption(descriptor, choice.id)}
+                >
+                  <span className="setting-check">{currentOf(descriptor) === choice.id ? "✓" : ""}</span>
+                  {choice.label}
+                  {choice.isDefault ? <span className="muted"> default</span> : null}
+                </button>
+              ))
+            )}
+          </div>
+        ))
+      }
+    </DropdownButton>
+  );
+}
+
+/** T3's permission mode for the thread, as one dropdown with T3 Code's names and descriptions. */
+export function PermissionMenu({ value, onChange }: { value: RuntimeMode; onChange: (mode: RuntimeMode) => void }) {
+  return (
+    <DropdownButton label={<span className="setting-value">{RUNTIME_MODE_INFO[value].label}</span>} title={`Permission mode: ${RUNTIME_MODE_INFO[value].label}. ${RUNTIME_MODE_INFO[value].description}`}>
+      {(close) =>
+        RUNTIME_MODE_ORDER.map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            role="menuitemradio"
+            aria-checked={value === mode}
+            className="setting-choice"
+            onClick={() => {
+              onChange(mode);
+              close();
+            }}
+          >
+            <span className="setting-check">{value === mode ? "✓" : ""}</span>
+            <span>
+              {RUNTIME_MODE_INFO[mode].label}
+              <span className="hint">{RUNTIME_MODE_INFO[mode].description}</span>
+            </span>
+          </button>
+        ))
+      }
+    </DropdownButton>
+  );
+}
+
+/**
+ * The thread's T3 settings in one row, like T3 Code's composer: model, the model's options, and permission mode. All
+ * three are T3's own settings; the room only passes them on.
+ */
+export function ThreadSettingsRow({
+  model,
+  onModel,
+  runtimeMode,
+  onRuntimeMode,
+  providerFilter,
+  pending,
+}: {
+  model: ModelSelection | null;
+  onModel: (selection: ModelSelection) => void;
+  runtimeMode: RuntimeMode;
+  onRuntimeMode: (mode: RuntimeMode) => void;
+  providerFilter?: string | undefined;
+  /** While T3's default model is being looked up, the picker waits so it cannot pick one first. */
+  pending?: boolean;
+}) {
+  return (
+    <div className="thread-settings-row">
+      {pending ? <span className="muted model-pending">looking up T3&rsquo;s default model…</span> : <ModelPicker value={model} onChange={onModel} {...(providerFilter ? { providerFilter } : {})} />}
+      <ModelOptionsMenu value={model} onChange={onModel} />
+      <PermissionMenu value={runtimeMode} onChange={onRuntimeMode} />
     </div>
   );
 }

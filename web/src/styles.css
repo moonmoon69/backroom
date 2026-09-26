@@ -606,14 +606,6 @@ textarea.invalid,
   color: var(--input);
 }
 
-
-
-
-
-
-
-
-
 .main {
   display: flex;
   flex-direction: column;
@@ -2899,35 +2891,11 @@ legend {
   gap: 3px;
 }
 
-.model-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 4px;
-  padding: 6px 8px;
-  border: 1px dashed var(--line);
-  border-radius: var(--radius);
-}
 
 .form .model-options label.model-option:not(.checkbox) {
   flex-direction: row;
   align-items: center;
   gap: 6px;
-}
-
-.model-option select {
-  width: auto;
-  min-width: 120px;
-}
-
-.model-option-label {
-  font-size: var(--text-sm);
-  color: var(--fg-muted);
-}
-
-.model-option.checkbox {
-  align-items: center;
-  font-size: var(--text-sm);
 }
 
 .thread-list {
@@ -3460,8 +3428,6 @@ legend {
 
 /* ---- theme toggle ---- */
 
-
-
 /* ---- model picker (listbox popover) ---- */
 .model-trigger {
   width: 100%;
@@ -3476,7 +3442,6 @@ legend {
 
 .model-trigger .model-provider {
   font-size: var(--text-xs);
-  min-width: 64px;
 }
 
 .model-label {
@@ -3680,8 +3645,6 @@ legend {
 
 /* ---- roles library ---- */
 
-
-
 .library-head {
   display: flex;
   align-items: center;
@@ -3707,43 +3670,6 @@ legend {
 /* ---- crew forms: name-first layout with an Advanced disclosure ---- */
 .form label .hint {
   margin-top: 1px;
-}
-
-.advanced {
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-}
-
-.advanced-toggle {
-  background: transparent;
-  border: none;
-  padding: 2px 0;
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: var(--text-sm);
-  color: var(--fg-muted);
-  font-weight: 500;
-}
-
-.advanced-toggle:hover:not(:disabled) {
-  color: var(--fg);
-}
-
-.advanced-summary {
-  text-transform: none;
-  font-size: var(--text-xs);
-}
-
-.advanced-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.advanced-body label:first-child:nth-last-child(3) {
-  grid-column: 1 / -1;
 }
 
 /* ---- attach path: inherited-from-T3 line ---- */
@@ -4654,8 +4580,6 @@ span.reply-to {
     min-width: 60px;
   }
 
-
-
   .popover-sheet button {
     min-height: 36px;
   }
@@ -4698,8 +4622,6 @@ span.reply-to {
   color: var(--fg);
   background: transparent;
 }
-
-
 
 .project-name {
   overflow: hidden;
@@ -4976,8 +4898,6 @@ span.reply-to {
   color: var(--fg-muted);
   background: transparent;
 }
-
-
 
 .side-thread-tile.archived .thread-title {
   color: var(--fg-dim);
@@ -5572,4 +5492,84 @@ button:has(> .icon):not(.mobile-only) {
 
 .new-thread-cancel {
   opacity: 1;
+}
+
+/* ---- a thread's T3 settings in one row, like T3 Code's composer: model, its options, permission mode ---- */
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.thread-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.thread-settings-row .model-picker {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.thread-settings-row .model-pending {
+  flex: 1 1 220px;
+  align-self: center;
+}
+
+/* The options and permission dropdowns look like the model button beside them. */
+.setting-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border-color: var(--line-strong);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.setting-value {
+  font-weight: 500;
+}
+
+.menu.setting-menu {
+  min-width: 220px;
+  padding: 4px;
+}
+
+.setting-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.setting-section + .setting-section {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.setting-section-head {
+  padding: 4px 8px 2px;
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+}
+
+.setting-menu button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.setting-check {
+  flex: none;
+  width: 12px;
+  color: var(--accent);
+}
+
+.setting-choice .hint {
+  display: block;
+  margin-top: 1px;
+  white-space: normal;
 }
