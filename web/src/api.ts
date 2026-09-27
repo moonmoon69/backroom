@@ -1,4 +1,4 @@
-/** Typed fetch helpers for the T3 Rooms HTTP API plus the SSE room-stream hook. */
+/** Typed fetch helpers for the Backroom HTTP API plus the SSE room-stream hook. */
 import { useEffect, useRef, useState } from "react";
 import type {
   ApiErrorBody,

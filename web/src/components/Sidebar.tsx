@@ -63,12 +63,12 @@ interface Group {
 
 type Section = "settled" | "archived";
 
-const COLLAPSED_KEY = "t3rooms.collapsedProjects";
+const COLLAPSED_KEY = "backroom.collapsedProjects";
 /** The Browsers section folds like a project; its key cannot clash with a project id. */
 const BROWSERS_KEY = "__browsers__";
 const PRESETS_KEY = "__presets__";
-const OPEN_SECTIONS_KEY = "t3rooms.openThreadSections";
-const LAST_PROJECT_KEY = "t3rooms.lastProject";
+const OPEN_SECTIONS_KEY = "backroom.openThreadSections";
+const LAST_PROJECT_KEY = "backroom.lastProject";
 /** Loose threads shown per project before "Show more". */
 const THREAD_LIMIT = 5;
 
@@ -286,7 +286,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
       {open ? <div className="sidebar-backdrop mobile-only" onClick={onClose} aria-hidden="true" /> : null}
       <aside className={`sidebar${open ? " open" : ""}`} aria-label="Projects, rooms and threads">
         <div className="sidebar-header">
-          <span className="brand serif">T3 Rooms</span>
+          <span className="brand serif">Backroom</span>
           <span className="sidebar-header-actions">
             <AddMenu
               label={
@@ -480,13 +480,13 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                   className="project-toggle"
                   aria-expanded={!collapsed.has(PRESETS_KEY)}
                   onClick={() => toggleCollapsed(PRESETS_KEY)}
-                  title="Participants you use often: a model with its options, permission mode, role and where it works"
+                  title="Your crew: the people you bring into rooms, each a model with its options, permission mode, role and where it works"
                 >
                   <ChevronIcon dir={collapsed.has(PRESETS_KEY) ? "right" : "down"} />
-                  <span className="project-name">Presets</span>
+                  <span className="project-name">Crew</span>
                   {collapsed.has(PRESETS_KEY) ? <span className="project-count mono">{presets.length}</span> : null}
                 </button>
-                <button type="button" className="small ghost project-add" aria-label="New preset" title="New preset" disabled={disabled} onClick={() => setDialog({ kind: "preset", preset: null })}>
+                <button type="button" className="small ghost project-add" aria-label="New crew member" title="New crew member" disabled={disabled} onClick={() => setDialog({ kind: "preset", preset: null })}>
                   <PlusIcon />
                 </button>
               </div>
@@ -499,7 +499,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                         <button
                           type="button"
                           className="side-thread-tile side-preset-tile"
-                          title={`${preset.name}: ${model} · ${detail}\nClick to start a thread with it. Drag it onto a room to add it there, or onto a project to start a thread there.`}
+                          title={`${preset.name}: ${model} · ${detail}\nClick to start a thread with them. Drag them onto a room to seat them there, or onto a project to start a thread there.`}
                           disabled={disabled}
                           onClick={() => newThread(null, preset.id)}
                         >
@@ -522,7 +522,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                       </li>
                     );
                   })}
-                  {presets.length === 0 ? <li className="project-empty muted">Save the participants you use often</li> : null}
+                  {presets.length === 0 ? <li className="project-empty muted">Nobody in your crew yet</li> : null}
                 </ul>
               ) : null}
             </li>
@@ -631,7 +631,7 @@ function RoomTile({ room, selected, onSelect }: { room: RoomListItem; selected: 
       <span className="tile-body">
         <span className="room-title">{room.title}</span>
         <span className="room-meta mono">
-          <span title="Participants">{room.participantCount} crew</span>
+          <span title="Members seated">{room.participantCount} member{room.participantCount === 1 ? "" : "s"}</span>
           {room.activity && room.activity.needsInput > 0 ? (
             <span className="pill pill-input" title="Waiting for your approval or answer">
               {room.activity.needsInput} needs you
@@ -723,7 +723,7 @@ function ThreadTile({ thread, selected, onSelect }: { thread: T3ThreadShell; sel
 
 /** A small button opening a menu of actions (rendered at the body so the scrolling sidebar cannot clip it). */
 /**
- * A preset's menu. "Add to room" opens the list of rooms in the menu's place (the open room first), so the preset
+ * A crew member's menu. "Seat in a room" opens the list of rooms in the menu's place (the open room first), so the preset
  * can be seated anywhere without dragging: on a phone, or in a room that is not the open one.
  */
 function PresetMenu({
@@ -795,14 +795,14 @@ function PresetMenu({
       </button>
       {open ? (
         // Keyed by level, so the menu is placed again for the list it now holds.
-        <Popover key={level} anchor={anchor} menuRef={menuRef} role="menu" className="preset-menu" onClose={() => setLevel("closed")} menuProps={{ "aria-label": level === "rooms" ? `Add ${preset.name} to a room` : `${preset.name} options` }}>
+        <Popover key={level} anchor={anchor} menuRef={menuRef} role="menu" className="preset-menu" onClose={() => setLevel("closed")} menuProps={{ "aria-label": level === "rooms" ? `Seat ${preset.name} in a room` : `${preset.name} options` }}>
           {level === "main" ? (
             <>
               <button type="button" role="menuitem" onClick={() => pick(onStart)}>
                 Start a thread
               </button>
               <button type="button" role="menuitem" className="menu-more" aria-haspopup="menu" disabled={rooms.length === 0} title={rooms.length === 0 ? "There are no rooms yet" : undefined} onClick={() => setLevel("rooms")}>
-                <span>Add to room</span>
+                <span>Seat in a room</span>
                 <ChevronIcon dir="right" />
               </button>
               <button type="button" role="menuitem" onClick={() => pick(onEdit)}>
@@ -813,13 +813,13 @@ function PresetMenu({
             <>
               <button type="button" role="menuitem" className="menu-back" onClick={() => setLevel("main")}>
                 <ChevronIcon dir="left" />
-                <span>Add to room</span>
+                <span>Seat in a room</span>
               </button>
               {listed.map((room) => (
                 <button key={room.id} type="button" role="menuitem" className="menu-room" onClick={() => pick(() => onAdd(room.id))}>
                   <span className="menu-room-title">{room.title}</span>
                   <span className="menu-room-meta">
-                    {[projectTitle.get(room.projectId), `${room.participantCount} crew`, room.id === openRoomId ? "open" : null].filter(Boolean).join(" · ")}
+                    {[projectTitle.get(room.projectId), `${room.participantCount} member${room.participantCount === 1 ? "" : "s"}`, room.id === openRoomId ? "open" : null].filter(Boolean).join(" · ")}
                   </span>
                 </button>
               ))}

@@ -7,7 +7,7 @@
  *                                    also creates one thread, sends one short turn, waits for the correlated
  *                                    completion, reads the reply, and requests an interrupt on a second turn.
  *
- * Exit code 0 when every executed check passed. Nothing is deleted; created threads are titled "T3 Rooms contract check".
+ * Exit code 0 when every executed check passed. Nothing is deleted; created threads are titled "Backroom contract check".
  */
 import { randomUUID } from "node:crypto";
 import { readStoredAuth } from "../src/adapter/auth.ts";
@@ -132,7 +132,7 @@ try {
     commandId: randomUUID(),
     threadId,
     projectId: project.id,
-    title: "T3 Rooms contract check",
+    title: "Backroom contract check",
     modelSelection,
     runtimeMode: "approval-required",
     interactionMode: "default",
@@ -152,11 +152,11 @@ try {
     commandId,
     threadId,
     messageId,
-    text: "This is an automated contract check from T3 Rooms. Reply with exactly: CONTRACT-CHECK-OK. Do not run tools.",
+    text: "This is an automated contract check from Backroom. Reply with exactly: CONTRACT-CHECK-OK. Do not run tools.",
     modelSelection,
     runtimeMode: "approval-required",
     interactionMode: "default",
-    titleSeed: "T3 Rooms contract check",
+    titleSeed: "Backroom contract check",
   });
   ok("thread.turn.start", "accepted");
   // Idempotency: an identical resend must not create a second prompt.
@@ -227,7 +227,7 @@ try {
   fail("thread.turn.interrupt", (error as Error).message);
 }
 
-console.log(`\ncreated thread ${threadId} ("T3 Rooms contract check") in project ${project.title}; delete it in T3 if you do not want to keep it.`);
+console.log(`\ncreated thread ${threadId} ("Backroom contract check") in project ${project.title}; delete it in T3 if you do not want to keep it.`);
 console.log(failures === 0 ? "all checks passed" : `${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
 

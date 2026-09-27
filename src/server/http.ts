@@ -169,7 +169,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       try {
         threads.push(...(await stack.adapter.listArchivedThreads()).filter((t) => !projectId || t.projectId === projectId));
       } catch (error) {
-        console.warn(`[rooms] archived threads not read: ${(error as Error).message}`);
+        console.warn(`[backroom] archived threads not read: ${(error as Error).message}`);
       }
     }
     return c.json(threads.map((t) => ({ ...t, boundToRoom: bound.has(t.id) })));
@@ -264,7 +264,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   const deskFor = async (participantId: string): Promise<Record<string, unknown>> => {
     const participant = stack.repos.getParticipant(participantId);
-    if (!participant) throw new RoomError("not_found", "participant not found", 404);
+    if (!participant) throw new RoomError("not_found", "member not found", 404);
     const binding = stack.repos.currentBinding(participant.id);
     const empty = {
       participantId: participant.id,
@@ -440,7 +440,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   app.get("/api/rooms/:roomId/participants/:participantId/live", async (c) => {
     const participant = stack.repos.getParticipant(c.req.param("participantId"));
-    if (!participant || participant.roomId !== c.req.param("roomId")) throw new RoomError("not_found", "participant not found", 404);
+    if (!participant || participant.roomId !== c.req.param("roomId")) throw new RoomError("not_found", "member not found", 404);
     return c.json(await deskFor(participant.id));
   });
 
@@ -834,7 +834,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   } else {
     app.get("/", (c) =>
-      c.text("T3 Rooms service is running. Build the UI with `npm run build:web` or run the Vite dev server in web/.", 200),
+      c.text("Backroom service is running. Build the UI with `npm run build:web` or run the Vite dev server in web/.", 200),
     );
   }
   return app;

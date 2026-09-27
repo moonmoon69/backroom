@@ -24,12 +24,12 @@ import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
 import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
 
-const SELECTION_KEY = "t3rooms.selection";
+const SELECTION_KEY = "backroom.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
-const PANEL_KEY = "t3rooms.panel";
+const PANEL_KEY = "backroom.panel";
 const PANEL_TABS: InspectorTab[] = ["people", "browser", "tasks", "git"];
 /** Whether the sidebar is hidden on a desktop (phones always have it as a drawer instead). */
-const SIDEBAR_COLLAPSED_KEY = "t3rooms.sidebarCollapsed";
+const SIDEBAR_COLLAPSED_KEY = "backroom.sidebarCollapsed";
 
 function storedPanel(): { open: boolean; tab: InspectorTab } {
   // Phones start with the panel closed: it covers the timeline there.
@@ -46,7 +46,7 @@ function storedPanel(): { open: boolean; tab: InspectorTab } {
   }
 }
 /** Where the selected room was kept before threads could be selected too. */
-const LEGACY_ROOM_KEY = "t3rooms.selectedRoom";
+const LEGACY_ROOM_KEY = "backroom.selectedRoom";
 
 function storedSelection(): Selection | null {
   try {
@@ -308,7 +308,7 @@ export function App() {
       const result = await runCommand({ type: "participant.fromPreset", roomId, presetId });
       if (!result || !("alias" in result) || !result.alias) return;
       const room = rooms.find((r) => r.id === roomId);
-      toast(`@${result.alias} joined${room ? ` ${room.title}` : ""} on a new thread`, "success");
+      toast(`@${result.alias} is seated${room ? ` in ${room.title}` : ""}, on a new thread`, "success");
     },
     [runCommand, rooms, toast],
   );
@@ -519,7 +519,7 @@ export function App() {
             {/* Everything under the header: on phones the side panel covers exactly this area. */}
             <PresetDropZone
               className="room-under"
-              label={`Drop to add it to ${contextValue.snapshot.room.title}`}
+              label={`Drop to seat them in ${contextValue.snapshot.room.title}`}
               onDropPreset={(presetId) => void seatPreset(contextValue.snapshot.room.id, presetId)}
             >
               <div className="room-body">
@@ -550,7 +550,7 @@ export function App() {
             ) : (
               <>
                 <p className="serif">Start a thread on its own, or open a room to hand out work orders to a crew.</p>
-                <p className="mono muted">New → New thread · New → New room → add a participant → @alias do the thing</p>
+                <p className="mono muted">New → New thread · New → New room → add a member → @alias do the thing</p>
               </>
             )}
           </div>

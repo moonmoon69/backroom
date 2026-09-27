@@ -109,7 +109,7 @@ export function Composer({ followUp }: Props) {
   attachmentsRef.current = attachments;
   const [submitting, setSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
-  /** "/" typed: the room's commands, plus the addressed participants' T3 commands after an @name. */
+  /** "/" typed: the room's commands, plus the addressed members' T3 commands after an @name. */
   const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[]; atStart: boolean }) | null>(null);
   /** "/after " typed: pick a task by what it says instead of remembering its number. */
   const [taskPick, setTaskPick] = useState<MentionState | null>(null);
@@ -618,7 +618,7 @@ export function Composer({ followUp }: Props) {
           </ul>
         ) : null}
         {mention && mentionMatches.length > 0 ? (
-          <ul className="mention-menu" role="listbox" aria-label="Mention a participant">
+          <ul className="mention-menu" role="listbox" aria-label="Mention a member">
             {mentionMatches.map((p, index) => (
               <li
                 key={p.id}
@@ -707,7 +707,7 @@ export function Composer({ followUp }: Props) {
           className={`small ghost icon-only note-button${noteOn ? " active" : ""}`}
           aria-pressed={noteOn}
           aria-label="Room note"
-          title="Room note: shared context for everyone, no participant is invoked"
+          title="Room note: shared context for everyone, no member is invoked"
           onClick={() => applyEdit(toggleNote(text))}
         >
           <NoteIcon />
@@ -820,7 +820,7 @@ function PlanPreview({
           <span className="plan-num mono">·</span>
           <span className="plan-text serif">
             <span className="note-mark mono">note</span>{" "}
-            {body ? truncate(body, 160) : <span className="plan-placeholder">shared context for the room; no participant is invoked</span>}
+            {body ? truncate(body, 160) : <span className="plan-placeholder">shared context for the room; nobody is invoked</span>}
           </span>
           <span />
         </li>
@@ -1129,7 +1129,7 @@ function IssueLine({ issues }: { issues: Unresolved[] }) {
 
 function crewSummary(draft: Draft): string {
   if (draft.kind === "participant.add") {
-    if (!draft.add) return "Add a participant on a new thread";
+    if (!draft.add) return "Add a member on a new thread";
     const base = `Add @${draft.add.alias} with T3's default model`;
     return draft.add.roleName ? `${base} as ${draft.add.roleName}` : base;
   }
@@ -1278,9 +1278,9 @@ const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | n
   { name: "now", description: "Start now, without waiting for anything", hint: null },
   { name: "steer", description: "If they are mid-turn, send into the running turn", hint: null },
   { name: "note", description: "Room note for everyone; no task", hint: "text" },
-  { name: "add", description: "Seat a new participant on a new T3 thread", hint: "name [role <role>]" },
-  { name: "role", description: "Give a participant a role (or none)", hint: "@name role" },
-  { name: "remove", description: "Remove a participant from the room", hint: "@name" },
+  { name: "add", description: "Seat a new member on a new T3 thread", hint: "name [role <role>]" },
+  { name: "role", description: "Give a member a role (or none)", hint: "@name role" },
+  { name: "remove", description: "Remove a member from the room", hint: "@name" },
 ];
 const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["after", "hold", "now", "steer"].includes(c.name));
 
@@ -1290,7 +1290,7 @@ function roomPlaceholders(aliases: string[], lastTask: number | null): string[] 
   if (aliases.length === 1) {
     // One participant: every message is for them, so the examples need no @name.
     return [
-      `review the diff  ·  with one participant here, no @${a} needed`,
+      `review the diff  ·  with one member here, no @${a} needed`,
       `/steer also check the logs  ·  /hold save this for later`,
       `/compact  ·  type / for the room's and ${a}'s commands`,
       lastTask ? `/after task${lastTask} review it  ·  /note keep the public API` : `/note keep the public API`,
@@ -1329,7 +1329,7 @@ function MentionChips({
   // mousedown keeps the textarea focused and its caret where it was.
   const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
   return (
-    <div className="mention-chips" role="toolbar" aria-label="Mention a participant">
+    <div className="mention-chips" role="toolbar" aria-label="Mention a member">
       {crew.length > 1 ? (
         <button
           type="button"

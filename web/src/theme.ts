@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 export type ThemeChoice = "system" | "light" | "dark";
 
-const KEY = "t3rooms.theme";
+const KEY = "backroom.theme";
 
 export function readTheme(): ThemeChoice {
   const stored = localStorage.getItem(KEY);

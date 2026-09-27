@@ -1,5 +1,5 @@
 /**
- * Domain records for T3 Rooms. These mirror PRD section 6.1 (minimal records).
+ * Domain records for Backroom. These mirror PRD section 6.1 (minimal records).
  * T3 identities (project, thread, message, turn, command) are stored as opaque strings.
  */
 
@@ -39,7 +39,7 @@ export interface Room {
 }
 
 /**
- * A shared Chrome on this machine, named by purpose ("general", "t3-rooms-testing"). Its profile (logins, tabs) and
+ * A shared Chrome on this machine, named by purpose ("general", "backroom-testing"). Its profile (logins, tabs) and
  * ports live under data/browsers/<id>; the process is managed by RoomBrowsers. Any room may use any browser.
  */
 export interface Browser {

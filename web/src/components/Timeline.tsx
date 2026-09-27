@@ -50,7 +50,7 @@ function dayLabel(iso: string): string {
   });
 }
 
-const DIRECT_TITLE = "Started directly in T3 Code. Not shared with other participants and never satisfies a room prerequisite.";
+const DIRECT_TITLE = "Started directly in T3 Code. Not shared with other members and never satisfies a room prerequisite.";
 
 type ChatMessage = Omit<RoomEvent, "kind"> & { kind: MessageKind };
 /** "t3.prompt" is not a room event: it is the prompt of a t3.turn, shown on the user's side like a room message.
@@ -249,7 +249,7 @@ export function Timeline() {
               <div className="timeline-empty">
                 <p className="serif">
                   {noCrew
-                    ? "No crew seated yet; open People (the two-person icon above) to add a participant, then hand out work orders here."
+                    ? "No crew seated yet; open People (the two-person icon above) to add a member, then hand out work orders here."
                     : "The transcript is empty; address the crew to open the first work order."}
                 </p>
                 <pre className="worked-example mono">
@@ -486,8 +486,8 @@ function MessageRow({
                   className="tag mono direct-tag"
                   title={
                     event.kind === "t3.message"
-                      ? "Typed in T3 Code into this participant's running turn. Not shared with other participants."
-                      : "Typed directly in T3 Code on this participant's thread. Not shared with other participants."
+                      ? "Typed in T3 Code into this member's running turn. Not shared with other participants."
+                      : "Typed directly in T3 Code on this member's thread. Not shared with other participants."
                   }
                 >
                   in T3
@@ -644,7 +644,7 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
   const spend = costs?.replies[event.id];
   if (!spend || !spend.available || spend.total.calls === 0) return null;
   const participantId = event.speaker.type === "participant" ? event.speaker.participantId : null;
-  // Back from this reply to the user's last message: this participant's replies in between, this one included.
+  // Back from this reply to the user's last message: this member's replies in between, this one included.
   let since = 0;
   let turns = 0;
   for (let index = snapshot.events.findIndex((e) => e.id === event.id); index >= 0; index -= 1) {

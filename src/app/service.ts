@@ -438,7 +438,7 @@ export class RoomService {
           throw new RoomError("thread_project_mismatch", `thread ${thread.threadId} belongs to a different T3 project`);
         }
         const inUse = this.repos.listActiveBindings().find((binding) => binding.threadId === thread.threadId);
-        if (inUse) throw new RoomError("thread_in_use", `thread ${thread.threadId} is already bound to another participant`, 409);
+        if (inUse) throw new RoomError("thread_in_use", `thread ${thread.threadId} is already bound to another member`, 409);
         // An attached thread keeps what T3 has for it: model, options, permission mode, interaction mode.
         return { threadId: shell.id, runtimeMode: shell.runtimeMode, modelSelection: shell.modelSelection, interactionMode: shell.interactionMode };
       }
@@ -930,7 +930,7 @@ export class RoomService {
     for (const assignment of input.assignments) {
       for (const recipient of assignment.recipients) {
         const participant = participants.get(recipient);
-        if (!participant) throw new RoomError("unknown_participant", `participant ${recipient} is not in this room`);
+        if (!participant) throw new RoomError("unknown_participant", `member ${recipient} is not in this room`);
         if (participant.retiredAt) throw new RoomError("participant_retired", `@${participant.alias} was removed from the room`, 409);
       }
     }
@@ -1019,7 +1019,7 @@ export class RoomService {
     const participants = this.participantsById(task.roomId);
     const participantId = command.participantId ?? task.participantId;
     const assignee = participants.get(participantId);
-    if (!assignee) throw new RoomError("unknown_participant", `participant ${participantId} is not in this room`);
+    if (!assignee) throw new RoomError("unknown_participant", `member ${participantId} is not in this room`);
     if (assignee.retiredAt) throw new RoomError("participant_retired", `@${assignee.alias} was removed from the room; pick another assignee`, 409);
     const tasksById = new Map(this.repos.listTasks(task.roomId).map((t) => [t.id, t]));
     const schedule: Schedule = command.schedule ?? (task.scheduleMode === "after_all" ? { mode: "after_all", prerequisites: task.prerequisites } : { mode: task.scheduleMode });

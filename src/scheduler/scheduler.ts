@@ -837,7 +837,7 @@ export class Scheduler {
     return this.db.transaction(() => {
       // A slash command must be the whole turn text for the harness to run it, so it is sent exactly as written.
       const text = options.verbatim ? task.instruction : [
-        `[T3 Rooms: the user added this to your current turn in room "${room.title}" (${taskLabel(task)})]`,
+        `[Backroom: the user added this to your current turn in room "${room.title}" (${taskLabel(task)})]`,
         task.instruction,
         ...(task.attachmentIds.length > 0 ? [`Images attached: ${task.attachmentIds.map((id) => this.repos.getAttachment(id)?.name ?? "image").join(", ")}.`] : []),
         "Take it into account in the work you are doing now, and cover it in your final reply for this turn.",

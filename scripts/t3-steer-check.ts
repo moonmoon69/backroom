@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Live check of mid-turn delivery (steering) against a real T3 server. Creates one thread per model titled
- * "T3 Rooms steer check", starts a long turn, sends a second message while it runs, and reports whether T3
+ * "Backroom steer check", starts a long turn, sends a second message while it runs, and reports whether T3
  * kept one turn (same turn id for both messages) and whether the final answer honoured the second message.
  *
  *   node scripts/t3-steer-check.ts --project <projectId> --model instance/model [--model instance/model ...]
@@ -29,7 +29,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 for (const spec of models) {
   const [instanceId, model] = spec.split("/") as [string, string];
   const threadId = randomUUID();
-  await adapter.createThread({ commandId: randomUUID(), threadId, projectId, title: "T3 Rooms steer check", modelSelection: { instanceId, model }, runtimeMode: "approval-required", interactionMode: "default" });
+  await adapter.createThread({ commandId: randomUUID(), threadId, projectId, title: "Backroom steer check", modelSelection: { instanceId, model }, runtimeMode: "approval-required", interactionMode: "default" });
   const first = randomUUID();
   await adapter.startTurn({
     commandId: randomUUID(), threadId, messageId: first, runtimeMode: "approval-required", interactionMode: "default",

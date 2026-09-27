@@ -1,8 +1,8 @@
 {
-  "name": "t3-rooms",
+  "name": "backroom",
   "version": "0.1.0",
   "private": true,
-  "description": "T3 Rooms: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
+  "description": "Backroom: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
   "repository": {
     "type": "git",
     "url": "https://github.com/moonmoon69/t3code-rooms.git"

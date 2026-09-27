@@ -69,8 +69,8 @@ export function CrewPanel() {
   const crew = snapshot.participants.filter(isActiveParticipant);
 
   return (
-    <div className="crew-list" aria-label="Participants">
-      {crew.length === 0 ? <p className="serif muted crew-empty">No one here yet. Add a participant with the button at the top of this panel to start handing out work.</p> : null}
+    <div className="crew-list" aria-label="Members">
+      {crew.length === 0 ? <p className="serif muted crew-empty">Nobody seated yet. Bring in a member with the button at the top of this panel, then hand out the work.</p> : null}
       {crew.map((participant) => (
         <ParticipantChip
           key={participant.id}
@@ -103,8 +103,8 @@ export function CrewButton({ active, onClick }: { active: boolean; onClick: () =
       type="button"
       className={`small crew-button${active ? " active" : ""}`}
       aria-pressed={active}
-      aria-label={`People (${crew.length})`}
-      title={crew.length > 0 ? `People\n${statuses.join("\n")}` : "People: nobody seated yet"}
+      aria-label={`Members (${crew.length})`}
+      title={crew.length > 0 ? `Members\n${statuses.join("\n")}` : "Members: nobody seated yet"}
       onClick={onClick}
     >
       <PeopleIcon />
@@ -118,7 +118,7 @@ export function AddParticipantButton() {
   const [adding, setAdding] = useState(false);
   return (
     <>
-      <button type="button" className="small ghost icon-only" aria-label="Add participant" title="Add participant" onClick={() => setAdding(true)}>
+      <button type="button" className="small ghost icon-only" aria-label="Add member" title="Add member" onClick={() => setAdding(true)}>
         <PersonPlusIcon />
       </button>
       {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
@@ -134,7 +134,7 @@ function CrewContextTotal() {
     .map((p) => desk?.participants[p.id]?.contextWindow ?? null)
     .filter((r): r is NonNullable<typeof r> => r !== null);
   const total = readings.reduce((n, r) => n + r.usedTokens, 0);
-  // The room's spend counts everyone who was ever seated: a removed participant's work was still paid for.
+  // The room's spend counts everyone who was ever seated: a removed member's work was still paid for.
   const spend = costs?.room.available ? costs.room : null;
   const left = costs?.withoutEstimate.length ?? 0;
   if (readings.length === 0 && !spend) return null;
@@ -143,7 +143,7 @@ function CrewContextTotal() {
       <span className="label">Total</span>
       {readings.length > 0 ? <span title={`${readings.length} thread${readings.length === 1 ? "" : "s"} reporting context`}>crew context {fmtTokens(total)}</span> : null}
       {spend ? (
-        <span title={`Estimated spend of every thread seated here, at list price${left > 0 ? `; ${left} participant${left === 1 ? "" : "s"} without an estimate` : ""}`}>
+        <span title={`Estimated spend of every thread seated here, at list price${left > 0 ? `; ${left} member${left === 1 ? "" : "s"} without an estimate` : ""}`}>
           {readings.length > 0 ? " · " : ""}
           spent {spend.priced && left === 0 ? "≈" : "≥"} {money(spend.total.costUsd)}
         </span>
@@ -204,7 +204,7 @@ function ParticipantChip({
         onClick={() => setOpen((v) => !v)}
         title={
           described.tone === "missing"
-            ? "Rebind to another thread or remove the participant"
+            ? "Rebind to another thread or remove the member"
             : `${participant.alias} · ${participant.modelSelection.model} · ${described.label}`
         }
       >
@@ -625,7 +625,7 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
             </span>
           </label>
         </fieldset>
-        <p className="muted hint">Removal is refused while the participant has work in progress; stop or wait for it first.</p>
+        <p className="muted hint">Removal is refused while the member has work in progress; stop or wait for it first.</p>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             Cancel
@@ -713,9 +713,9 @@ export function CrewFields({
   );
 }
 
-const ADD_MODE_KEY = "t3rooms.addMode";
+const ADD_MODE_KEY = "backroom.addMode";
 
-/** "T3 Rooms Build Feasibility" -> "t3-rooms-build-feasibility" (valid alias: alnum start, [a-z0-9_-], max 32). */
+/** "Backroom Build Feasibility" -> "t3-rooms-build-feasibility" (valid alias: alnum start, [a-z0-9_-], max 32). */
 export function slugifyAlias(title: string): string {
   const slug = title
     .toLowerCase()
@@ -804,7 +804,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     const result = presetOfName ? await runCommand({ type: "preset.update", presetId: presetOfName.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     if (!result) return;
     reloadPresets();
-    toast(presetOfName ? `Preset ${values.name} updated` : `Saved as preset ${values.name}`, "success");
+    toast(presetOfName ? `${values.name} in your crew updated` : `${values.name} saved to your crew`, "success");
   };
 
   const onFields = (next: CrewFieldsState) => {
@@ -844,15 +844,15 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog title="Add participant" onClose={onClose} wide>
+    <Dialog title="Add member" onClose={onClose} wide>
       <form className="form" onSubmit={submit}>
         <div className="composer-row" role="group" aria-label="Thread">
           <span className="segmented add-mode">
-            <label className={`segment${mode === "create" ? " on" : ""}`} title="The participant gets a new T3 thread">
+            <label className={`segment${mode === "create" ? " on" : ""}`} title="The member gets a new T3 thread">
               <input type="radio" name="add-mode" checked={mode === "create"} onChange={() => chooseMode("create")} />
               New
             </label>
-            <label className={`segment${mode === "attach" ? " on" : ""}`} title="The participant continues one of the project's T3 threads">
+            <label className={`segment${mode === "attach" ? " on" : ""}`} title="The member continues one of the project's T3 threads">
               <input type="radio" name="add-mode" checked={mode === "attach"} onChange={() => chooseMode("attach")} />
               Existing
               {threads !== null ? <span className="muted"> ({threads.length})</span> : null}
@@ -878,24 +878,24 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
                 type="button"
                 className="ghost"
                 disabled={busy || !aliasValid || fields.model === null}
-                title={presetOfName ? `Bring the preset ${presetOfName.name} up to date with these settings` : "Keep these settings under this name, to add or start with one click next time"}
+                title={presetOfName ? `Bring ${presetOfName.name} in your crew up to date with these settings` : "Keep these settings under this name in your crew, to seat or start with one click next time"}
                 onClick={() => void savePreset()}
               >
-                {presetOfName ? "Update preset" : "Save as preset"}
+                {presetOfName ? "Update in crew" : "Save to crew"}
               </button>
               <span className="spacer" />
               <button type="button" onClick={onClose}>
                 Cancel
               </button>
               <button type="submit" className="primary" disabled={busy || !ready}>
-                {busy ? "Adding…" : "Add participant"}
+                {busy ? "Adding…" : "Add member"}
               </button>
             </div>
           </>
         ) : (
           <>
             <ThreadList threads={threads} selectedId={threadId} onSelect={selectThread} name="add-thread-id" />
-            {selectedThread ? <InheritedLine thread={selectedThread} /> : <span className="hint">Pick the thread this participant should continue.</span>}
+            {selectedThread ? <InheritedLine thread={selectedThread} /> : <span className="hint">Pick the thread this member should continue.</span>}
             <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} showModel={false}>
               <RoleSelect value={roleId} onChange={setRoleId} />
             </CrewFields>

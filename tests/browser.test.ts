@@ -85,18 +85,18 @@ test("browsers are a list named by purpose; a room picks its default and the bri
   t.after(() => stack.close());
   assert.deepEqual(stack.repos.listBrowsers().map((b) => b.name), ["general"], "general exists from the start");
 
-  const created = (await stack.run({ type: "browser.create", name: "  T3-Rooms-Testing ", description: "Logged into staging as the test user" })) as { browserId: string };
-  assert.equal(stack.repos.getBrowser(created.browserId)?.name, "t3-rooms-testing", "names are lowercased and trimmed");
-  await assert.rejects(stack.run({ type: "browser.create", name: "t3-rooms-testing" }), (error: RoomError) => error.code === "browser_name_taken");
+  const created = (await stack.run({ type: "browser.create", name: "  Backroom-Testing ", description: "Logged into staging as the test user" })) as { browserId: string };
+  assert.equal(stack.repos.getBrowser(created.browserId)?.name, "backroom-testing", "names are lowercased and trimmed");
+  await assert.rejects(stack.run({ type: "browser.create", name: "backroom-testing" }), (error: RoomError) => error.code === "browser_name_taken");
   await assert.rejects(stack.run({ type: "browser.create", name: "has spaces" }), /lowercase letters, digits and dashes/);
 
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: created.browserId });
   assert.equal(stack.repos.getRoom(stack.roomId)?.defaultBrowserId, created.browserId);
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "run the smoke test", schedule: { mode: "now" } });
   await stack.tick();
-  assert.deepEqual(browsers.asked, ["t3-rooms-testing"]);
+  assert.deepEqual(browsers.asked, ["backroom-testing"]);
   const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
-  assert.match(briefing, /- t3-rooms-testing \(this room's default\): Logged into staging as the test user/);
+  assert.match(briefing, /- backroom-testing \(this room's default\): Logged into staging as the test user/);
   assert.match(briefing, /- general \(stopped; starts on first use\): General browsing/, "every browser the room may use is listed");
 
   await stack.run({ type: "browser.update", browserId: created.browserId, name: "staging" });

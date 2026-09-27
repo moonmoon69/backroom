@@ -7,6 +7,13 @@ import { applyTheme, readTheme } from "./theme.ts";
 import { installViewportFit } from "./viewportFit.ts";
 import "./styles.css";
 
+// Settings kept in this browser under the old name are carried over once.
+for (const key of Object.keys(localStorage)) {
+  if (key.startsWith("t3rooms.") && localStorage.getItem(`backroom.${key.slice("t3rooms.".length)}`) === null) {
+    localStorage.setItem(`backroom.${key.slice("t3rooms.".length)}`, localStorage.getItem(key) ?? "");
+  }
+}
+
 applyTheme(readTheme());
 installViewportFit();
 
@@ -20,7 +27,7 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 }
 
 // Formatting helpers reachable from the console for quick checks (no app behaviour depends on this).
-(window as unknown as { __t3rooms?: unknown }).__t3rooms = { fmtTokens, contextReadout };
+(window as unknown as { __backroom?: unknown }).__backroom = { fmtTokens, contextReadout };
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");

@@ -21,7 +21,7 @@ export const PresetsContext = createContext<PresetsValue>({ presets: [], reload:
 export const usePresets = (): PresetsValue => useContext(PresetsContext);
 
 // ---- dragging a preset ----
-const PRESET_MIME = "application/x-t3rooms-preset";
+const PRESET_MIME = "application/x-backroom-crew";
 
 export function startPresetDrag(event: DragEvent, preset: Preset): void {
   event.dataTransfer.effectAllowed = "copy";
@@ -132,7 +132,7 @@ export function PresetChips({ model, runtimeMode, onPick, children }: { model: M
   if (presets.length === 0 && !children) return null;
   return (
     <div className="form-field preset-field">
-      <span>Presets</span>
+      <span>Crew</span>
       <div className="preset-chips">
         {presets.map((preset) => {
           const { model: modelName, what, detail } = text(preset);
@@ -147,7 +147,7 @@ export function PresetChips({ model, runtimeMode, onPick, children }: { model: M
         })}
         {children}
       </div>
-      {presets.length === 0 ? <span className="hint">Save the settings you use often as a preset; next time one click fills them in.</span> : null}
+      {presets.length === 0 ? <span className="hint">Save the settings you use often to your crew; next time one click fills them in.</span> : null}
     </div>
   );
 }
@@ -216,13 +216,13 @@ export function PresetDialog({
   };
 
   return (
-    <Dialog title={preset ? `Edit preset ${preset.name}` : "New preset"} onClose={onClose} wide>
+    <Dialog title={preset ? `Edit ${preset.name}` : "New crew member"} onClose={onClose} wide>
       <form className="form" onSubmit={save}>
         <label>
           Name
           <NameInput value={name} onValue={setName} required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,31}" placeholder="sol" aria-invalid={taken} data-autofocus />
           {taken ? (
-            <span className="field-error">A preset with this name exists.</span>
+            <span className="field-error">Someone in your crew has this name.</span>
           ) : (
             <span className="hint">
               The name it takes in a room: @{trimmed || "sol"}, then @{trimmed || "sol"}2 when the room already has one.
@@ -255,7 +255,7 @@ export function PresetDialog({
               </option>
             ))}
           </select>
-          <span className="hint">Used when the preset is seated in a room; a thread on its own has no role.</span>
+          <span className="hint">Used when they are seated in a room; a thread on its own has no role.</span>
         </label>
         <div className="dialog-actions">
           {preset ? (
@@ -269,7 +269,7 @@ export function PresetDialog({
                 </button>
               </>
             ) : (
-              <button type="button" className="ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)} title="Participants and threads made from it stay as they are">
+              <button type="button" className="ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)} title="Members and threads made from them stay as they are">
                 Delete
               </button>
             )
@@ -279,7 +279,7 @@ export function PresetDialog({
             Cancel
           </button>
           <button type="submit" className="primary" disabled={busy || !ready}>
-            {preset ? "Save preset" : "Create preset"}
+            {preset ? "Save" : "Add to crew"}
           </button>
         </div>
       </form>

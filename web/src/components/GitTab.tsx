@@ -48,7 +48,7 @@ interface DiffTarget {
 }
 
 /**
- * The Git tab: the room's working folders (each participant's worktree, or the project's folder) side by side, with
+ * The Git tab: the room's working folders (each member's worktree, or the project's folder) side by side, with
  * each against the main branch and the files two of them both changed; then, for the one shown, its branch and
  * upstream, uncommitted files, the repository's worktrees and recent commits. Files open their diff. Read from git on
  * the machine the room service runs on.

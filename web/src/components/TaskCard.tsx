@@ -460,7 +460,7 @@ function RetryDialog({ task, onClose }: { task: Task; onClose: () => void }) {
   return (
     <Dialog title={`Retry ${taskLabel(task)}`} onClose={onClose}>
       <form className="form" onSubmit={submit}>
-        <p className="muted">A new attempt is recorded and delivered to the same participant.</p>
+        <p className="muted">A new attempt is recorded and delivered to the same member.</p>
         <fieldset>
           <legend>
             Blocked dependents ({dependents.length}) <span className="required">required</span>
@@ -518,7 +518,7 @@ function MarkBlockedDialog({ task, onClose }: { task: Task; onClose: () => void 
     <Dialog title={`Mark ${taskLabel(task)} as blocked`} onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <p className="muted">
-          Use this when the participant reported success but the result is actually blocked. Dependent tasks will
+          Use this when the member reported success but the result is actually blocked. Dependent tasks will
           not be released.
         </p>
         <label>
