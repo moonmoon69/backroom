@@ -6,6 +6,7 @@ import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
 import { MoreIcon } from "./icons.tsx";
+import { useAutoRead, useSpeechAvailable } from "../speech.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
 
@@ -64,6 +65,8 @@ type RoomRef = Pick<Room, "id" | "title">;
 /** The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the sidebar's menu. */
 export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }) {
   const { snapshot, runCommand } = useRoom();
+  const [autoRead, setAutoRead] = useAutoRead(`room:${snapshot.room.id}`);
+  const canSpeak = useSpeechAvailable();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const wrapper = useRef<HTMLSpanElement>(null);
@@ -108,6 +111,21 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
               <CopyButton text={room.projectId} label="Copy the project id" />
             </span>
           </div>
+          {canSpeak ? (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={autoRead}
+              title="Read each new reply and request aloud in this browser, with the voice set at the foot of the sidebar"
+              onClick={() => {
+                setAutoRead(!autoRead);
+                setOpen(false);
+              }}
+            >
+              <span className="setting-check">{autoRead ? "✓" : ""}</span>
+              Read new replies aloud
+            </button>
+          ) : null}
           <button type="button" role="menuitem" onClick={() => pick("rename")}>
             Rename…
           </button>

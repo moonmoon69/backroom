@@ -36,6 +36,8 @@ import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx"
 import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { SpendFoot } from "./Timeline.tsx";
+import { speakableSummary, useAutoRead, useSpeechAvailable } from "../speech.ts";
+import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { UsageCard } from "./ThreadUsageCard.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
@@ -160,6 +162,20 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   const { presets } = usePresets();
   const crewPreset = crew ? (presets.find((p) => p.id === crew.presetId) ?? null) : null;
   const thread = view?.thread;
+  // Who is speaking when a reply is read aloud: the crew member it started as, else its model.
+  const voiceName = crew?.name ?? thread?.modelSelection.model ?? "reply";
+  const [autoRead, setAutoRead] = useAutoRead(`thread:${threadId}`);
+  const canSpeak = useSpeechAvailable();
+  useAnnounceNew(
+    `thread:${threadId}`,
+    autoRead,
+    view ? view.items.filter((item) => item.kind === "reply" && item.text.trim().length > 0).map((item) => ({ id: item.id, text: `${voiceName}. ${speakableSummary(item.text)}` })) : null,
+  );
+  useAnnounceNew(
+    `thread:${threadId}:requests`,
+    autoRead,
+    view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })) : null,
+  );
   const activity = thread ? threadActivity({ ...thread, hasPendingApprovals: thread.hasPendingApprovals || (view?.requests.length ?? 0) > 0 }) : null;
   const running = view?.running ?? null;
 
@@ -189,6 +205,9 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
         ) : null}
         {thread ? (
           <ThreadMenu
+            canSpeak={canSpeak}
+            autoRead={autoRead}
+            onToggleAutoRead={() => setAutoRead(!autoRead)}
             onSettings={() => setDialog("settings")}
             onAddToRoom={() => setDialog("room")}
             settled={Boolean(thread.settledAt)}
@@ -260,6 +279,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 view={view}
                 error={error}
                 costs={costs}
+                lead={voiceName}
                 onRespond={async (command) => {
                   const result = await runCommand(command);
                   if (result) hurry();
@@ -720,7 +740,7 @@ function ThreadBrowserButton({
 
 // ---- transcript ----
 
-function Transcript({ view, error, onRespond, costs }: { view: ThreadViewData | null; error: string | null; onRespond: (command: RoomCommand) => Promise<void>; costs: ThreadCosts | null }) {
+function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewData | null; error: string | null; onRespond: (command: RoomCommand) => Promise<void>; costs: ThreadCosts | null; lead: string }) {
   // What the turn behind a reply used, and the running total since the user's last message over the replies since.
   const spendOf = (index: number): { spend: ThreadCost; since: number; turns: number } | null => {
     const items = view?.items ?? [];
@@ -778,7 +798,7 @@ function Transcript({ view, error, onRespond, costs }: { view: ThreadViewData | 
       <div className="timeline-content">
         {view.partial ? <div className="chat-status mono thread-partial">Earlier turns are in T3 Code</div> : null}
         {view.items.length === 0 && !view.running ? <p className="muted thread-loading">No messages yet.</p> : null}
-        {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} />))}
+        {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} lead={lead} />))}
         {view.running ? (
           <div className="chat-row from-agent live-turn wide" style={identityStyle(AGENT_COLOR)} aria-live="off">
             <div className="chat-stack">
@@ -875,7 +895,7 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
 
 const isLong = (text: string): boolean => text.length > 600 || /^\s*\|.*\|\s*$/m.test(text) || text.includes("```");
 
-function ReplyRow({ item, speaker, spend }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode; spend: { spend: ThreadCost; since: number; turns: number } | null }) {
+function ReplyRow({ item, speaker, spend, lead }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode; spend: { spend: ThreadCost; since: number; turns: number } | null; lead: string }) {
   return (
     <div className={`chat-row from-agent${isLong(item.text) ? " wide" : ""}`} style={identityStyle(AGENT_COLOR)}>
       <div className="chat-stack">
@@ -907,7 +927,10 @@ function ReplyRow({ item, speaker, spend }: { item: Extract<ThreadItem, { kind: 
               <span className="del">−{item.files.deletions}</span>
             </div>
           ) : null}
-          {spend ? <SpendFoot spend={spend.spend} since={spend.since} turns={spend.turns} /> : null}
+          <div className="reply-foot">
+            <SpeakButton id={item.id} text={item.text} lead={lead} />
+            {spend ? <SpendFoot spend={spend.spend} since={spend.since} turns={spend.turns} /> : null}
+          </div>
         </div>
       </div>
     </div>
@@ -1114,6 +1137,9 @@ function ThreadComposer({
 // ---- menus and dialogs ----
 
 function ThreadMenu({
+  canSpeak,
+  autoRead,
+  onToggleAutoRead,
   onSettings,
   onAddToRoom,
   settled,
@@ -1121,6 +1147,9 @@ function ThreadMenu({
   onArchive,
   onDelete,
 }: {
+  canSpeak: boolean;
+  autoRead: boolean;
+  onToggleAutoRead: () => void;
   onSettings: () => void;
   onAddToRoom: () => void;
   settled: boolean;
@@ -1156,6 +1185,12 @@ function ThreadMenu({
       </button>
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="menu" onClose={() => setOpen(false)}>
+          {canSpeak ? (
+            <button type="button" role="menuitemcheckbox" aria-checked={autoRead} onClick={pick(onToggleAutoRead)} title="Read each new reply and request aloud in this browser, with the voice set at the foot of the sidebar">
+              <span className="setting-check">{autoRead ? "✓" : ""}</span>
+              Read new replies aloud
+            </button>
+          ) : null}
           <button type="button" role="menuitem" onClick={pick(onSettings)}>
             Model and permissions…
           </button>

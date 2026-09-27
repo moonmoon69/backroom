@@ -13,6 +13,7 @@ import { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { browsersForRoom, reconcileBrowserCatalog, roomForKey, roomsUsingBrowser } from "../browser/catalog.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig } from "../config.ts";
+import { KokoroSpeech } from "../speech/kokoro.ts";
 import { createHttpApp } from "./http.ts";
 
 const config = loadConfig();
@@ -103,7 +104,9 @@ if (adapter instanceof FakeT3Adapter) {
   }
   if (restored > 0) log(`restored ${restored} simulated thread(s) for existing participants`);
 }
-const app = createHttpApp(stack, config, resolve("web/dist"), { tools: browserTools, token: browserApiToken, command: browserCommand });
+// Backroom's voice: loaded when the UI first asks (the model is fetched once into data/models), off with ROOMS_SPEECH=off.
+const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
+const app = createHttpApp(stack, config, resolve("web/dist"), { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
 stack.scheduler.start(config.tickMs);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {

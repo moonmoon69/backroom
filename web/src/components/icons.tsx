@@ -65,6 +65,21 @@ export const UpFolderIcon = () => (
   </Icon>
 );
 
+/** A loudspeaker: read aloud. */
+export const SpeakerIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <path d="M2.5 6.25h2.6L8.5 3.5v9L5.1 9.75H2.5z" />
+    <path d="M10.75 5.75a3.2 3.2 0 0 1 0 4.5M12.6 4a5.75 5.75 0 0 1 0 8" />
+  </Icon>
+);
+
+/** A square: stop. */
+export const StopIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <rect x="4" y="4" width="8" height="8" rx="1" />
+  </Icon>
+);
+
 /** A chevron pointing right, down (an open disclosure, a dropdown) or up (an open dropdown). */
 export const ChevronIcon = ({ dir = "right" }: { dir?: "right" | "down" | "up" | "left" }) => (
   <Icon className={`chevron chevron-${dir}`} strokeWidth={1.5}>
