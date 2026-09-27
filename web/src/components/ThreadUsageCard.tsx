@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, useProviders } from "../api.ts";
-import type { Desk, Participant, ThreadCost, UsageToday } from "../types.ts";
+import type { Compaction, ContextWindowReading, Desk, ModelSelection, Participant, SubagentUsage, ThreadCost, UsageToday } from "../types.ts";
 import { contextReadout, costReason, fmtTokens, money, timeOf } from "./deskFormat.ts";
 
 /** One shared, minute-old copy of today's usage: T3 scans transcripts to answer, so every card reuses it. */
@@ -107,6 +107,36 @@ export function SpendSection({ cost, title = "Estimated spend · this thread", p
 }
 
 export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { participant: Participant; desk: Desk | null; cost?: ThreadCost | null; pricesFetchedAt?: string | null }) {
+  const files = desk?.changedFiles ?? [];
+  return (
+    <UsageCard
+      label={participant.alias}
+      modelSelection={participant.modelSelection}
+      facts={{
+        context: desk?.contextWindow ?? null,
+        contextReporting: desk?.contextReporting ?? null,
+        lastCompaction: desk?.compactions?.[desk.compactions.length - 1] ?? null,
+        subagents: desk?.subagents ?? [],
+        files: { count: files.length, additions: files.reduce((sum, f) => sum + f.additions, 0), deletions: files.reduce((sum, f) => sum + f.deletions, 0) },
+      }}
+      cost={cost ?? null}
+      pricesFetchedAt={pricesFetchedAt ?? null}
+    />
+  );
+}
+
+/** What a usage card shows besides spend: the thread's context and what T3 reports of its work. */
+export interface UsageFacts {
+  context: ContextWindowReading | null;
+  /** False when the provider never reports context; null when unknown. */
+  contextReporting: boolean | null;
+  lastCompaction: Compaction | null;
+  subagents: SubagentUsage[];
+  files: { count: number; additions: number; deletions: number };
+}
+
+/** The card itself, for a member (from its desk) or a thread on its own (from its view). `label` names whose it is. */
+export function UsageCard({ label, modelSelection, facts, cost, pricesFetchedAt }: { label: string; modelSelection: ModelSelection; facts: UsageFacts; cost: ThreadCost | null; pricesFetchedAt: string | null }) {
   const { providers } = useProviders(true, 60_000);
   const [usage, setUsage] = useState<UsageToday | null>(null);
   useEffect(() => {
@@ -119,8 +149,8 @@ export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { 
     };
   }, []);
 
-  const model = participant.modelSelection.model;
-  const provider = providers?.find((p) => p.instanceId === participant.modelSelection.instanceId) ?? null;
+  const model = modelSelection.model;
+  const provider = providers?.find((p) => p.instanceId === modelSelection.instanceId) ?? null;
   const buckets = usage?.buckets.filter((b) => b.model === model) ?? [];
   const today = buckets.reduce(
     (acc, b) => ({
@@ -133,16 +163,11 @@ export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { 
     }),
     { input: 0, cached: 0, output: 0, cost: 0, sessions: 0, priced: false },
   );
-  const context = desk?.contextWindow ?? null;
-  const subagents = desk?.subagents ?? [];
+  const { context, subagents, files, lastCompaction } = facts;
   const subagentTokens = subagents.reduce((sum, s) => sum + s.tokens, 0);
-  const files = desk?.changedFiles ?? [];
-  const additions = files.reduce((sum, f) => sum + f.additions, 0);
-  const deletions = files.reduce((sum, f) => sum + f.deletions, 0);
-  const lastCompaction = desk?.compactions?.[desk.compactions.length - 1] ?? null;
 
   return (
-    <div className="usage-card" role="dialog" aria-label={`${participant.alias} usage`}>
+    <div className="usage-card" role="dialog" aria-label={`${label} usage`}>
       <section>
         <h4 className="mono">This thread</h4>
         {context ? (
@@ -164,7 +189,7 @@ export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { 
         ) : (
           <div className="usage-line muted">
             <span>Context</span>
-            <span className="mono">{desk?.contextReporting === false ? "not reported by this provider" : "no reading yet"}</span>
+            <span className="mono">{facts.contextReporting === false ? "not reported by this provider" : "no reading yet"}</span>
           </div>
         )}
         {lastCompaction ? (
@@ -183,11 +208,11 @@ export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { 
             </span>
           </div>
         ) : null}
-        {files.length > 0 ? (
+        {files.count > 0 ? (
           <div className="usage-line muted">
             <span>Files changed (recent turns)</span>
             <span className="mono">
-              {files.length} · <span className="add">+{additions}</span> <span className="del">−{deletions}</span>
+              {files.count} · <span className="add">+{files.additions}</span> <span className="del">−{files.deletions}</span>
             </span>
           </div>
         ) : null}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pair the room service with a T3 Code server from the command line.
+ * Pair Backroom with a T3 Code server from the command line.
  *
  *   npm run t3:pair -- "http://127.0.0.1:3773/pair?token=..."
  *

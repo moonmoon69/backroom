@@ -36,7 +36,7 @@ export function describeStatus(status: ParticipantStatus | undefined): { label: 
   if (!status) return { label: "unknown", tone: "unknown" };
   // A deleted T3 thread outranks everything: the participant cannot receive work until rebound or removed.
   if (status.threadMissing) return { label: "thread deleted in T3", tone: "missing" };
-  // PRD: waiting for input is the most prominent state, then working, then busy in T3, then idle/ready.
+  // Waiting for input is the most prominent state, then working, then busy in T3, then idle/ready.
   if (status.pendingApprovals || status.pendingUserInput) return { label: "needs input", tone: "input" };
   if (status.activeRunId || status.session === "running") return { label: "working", tone: "working" };
   if (status.externalActivity) return { label: "busy in T3", tone: "busy" };

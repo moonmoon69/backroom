@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * rooms-browser: drive the shared Chrome browsers of a T3 Rooms service from any shell. A thin client: it finds the
+ * rooms-browser: drive Backroom's shared Chrome browsers from any shell. A thin client: it finds the
  * service through browser-api.json (URL and token, written by the service at every start), posts the command line,
  * and prints the answer. Parsing, rules and help live in the service (src/browser/tools.ts).
  *
@@ -35,7 +35,7 @@ let api;
 try {
   api = JSON.parse(readFileSync(apiFile, "utf8"));
 } catch {
-  console.error(`rooms-browser: cannot read ${apiFile}. Is the T3 Rooms service running, with browsers available?`);
+  console.error(`rooms-browser: cannot read ${apiFile}. Is Backroom running, with browsers available?`);
   process.exit(2);
 }
 
@@ -47,7 +47,7 @@ try {
     body: JSON.stringify({ argv, as, force }),
   });
 } catch (error) {
-  console.error(`rooms-browser: cannot reach the T3 Rooms service at ${api.url} (${error.message}).`);
+  console.error(`rooms-browser: cannot reach Backroom at ${api.url} (${error.message}).`);
   process.exit(2);
 }
 const body = await response.json().catch(() => ({ message: `HTTP ${response.status}` }));

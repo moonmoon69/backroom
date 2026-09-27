@@ -3,7 +3,7 @@
  * participant's worktree, or the project's folder), its branch and upstream, the uncommitted changes, recent commits,
  * and the repository's other worktrees; and single-file diffs from those.
  *
- * T3 keeps no commit history of its own, so this reads the folders directly. That needs the room service to run on
+ * T3 keeps no commit history of its own, so this reads the folders directly. That needs Backroom to run on
  * the machine where T3 keeps its checkouts; a folder that is not here is reported as missing, not as an error.
  * Reads never take git's optional locks, so they cannot get in the way of an agent's own git commands.
  */

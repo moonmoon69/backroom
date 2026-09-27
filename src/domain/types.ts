@@ -1,5 +1,5 @@
 /**
- * Domain records for Backroom. These mirror PRD section 6.1 (minimal records).
+ * Domain records for Backroom: the minimal records a room needs.
  * T3 identities (project, thread, message, turn, command) are stored as opaque strings.
  */
 
@@ -238,7 +238,7 @@ export interface Task {
   /** Visible reason for queued/blocked states. */
   stateReason: string | null;
   currentRunId: RunId | null;
-  /** Explicit user outcome override (PRD 6.4 prose blockers). */
+  /** Explicit user outcome override: the user marked the task blocked. */
   userOutcome: "blocked" | null;
   createdAt: string;
   updatedAt: string;

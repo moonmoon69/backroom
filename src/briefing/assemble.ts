@@ -1,5 +1,5 @@
 /**
- * Shared-context contract (PRD section 7). Builds the exact text delivered to a participant for one run.
+ * Shared context: builds the exact text delivered to a participant for one run.
  * The result is frozen and saved on the run before anything is sent.
  */
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";

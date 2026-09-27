@@ -266,3 +266,40 @@ test("a thread's replies divide its spend between them", async (t) => {
   assert.equal(body.replies[second.id].total.outputTokens, 6);
   assert.equal(body.openTurns[stack.participants.sol1 as string].total.outputTokens, 8);
 });
+
+test("a thread on its own gets a room member's figures: the total, one per reply, and the turn in progress", async (t) => {
+  const m = machine(t);
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "first", modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5-1" } })) as { threadId: string };
+  m.bind(threadId, "claudeAgent", { resume: "sess-direct" });
+  stack.fake.completeTurn(threadId, { text: "first answer" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await stack.run({ type: "thread.send", threadId, text: "second" });
+  stack.fake.completeTurn(threadId, { text: "second answer" });
+
+  const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(m.root, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: m.userdata, CLAUDE_CONFIG_DIR: join(m.root, "claude"), CODEX_HOME: join(m.root, "codex") });
+  const app = createHttpApp(stack, config, "/nonexistent/dist");
+  const view = (await (await app.request(`/api/threads/${threadId}`)).json()) as any;
+  const replies = view.items.filter((item: { kind: string }) => item.kind === "reply") as Array<{ id: string; at: string }>;
+  assert.equal(replies.length, 2);
+  assert.deepEqual(view.usage, { lastCompaction: null, subagents: [], changedFiles: { count: 0, additions: 0, deletions: 0 }, contextReporting: true }, "the usage card's facts come with the view");
+  const at = (iso: string, delta: number) => new Date(Date.parse(iso) + delta).toISOString();
+  writeFileSync(
+    join(m.claudeProject, "sess-direct.jsonl"),
+    [
+      claudeLine("one", "claude-fable", at(replies[0]!.at, -1), { input: 0, read: 0, write: 0, output: 7 }),
+      claudeLine("two", "claude-fable", at(replies[1]!.at, -1), { input: 0, read: 0, write: 0, output: 11 }),
+      claudeLine("open", "claude-fable", at(replies[1]!.at, 1), { input: 0, read: 0, write: 0, output: 30 }),
+    ].join("\n") + "\n",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const body = (await (await app.request(`/api/t3/threads/${threadId}/costs`)).json()) as any;
+  assert.equal(body.total.total.outputTokens, 48);
+  assert.equal(body.replies[replies[0]!.id].total.outputTokens, 7, "the first reply: everything before it");
+  assert.equal(body.replies[replies[1]!.id].total.outputTokens, 11, "the second: since the first");
+  assert.equal(body.openTurn.total.outputTokens, 30, "since the last reply: the turn in progress");
+  assert.equal(body.pricesFetchedAt, "2026-09-26T00:00:00.000Z");
+  assert.equal((await app.request("/api/t3/threads/nope/costs")).status, 404);
+});

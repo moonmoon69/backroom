@@ -259,7 +259,7 @@ export interface RoomSnapshot {
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
 }
 
-/** A shared Chrome on the room service's machine, named by purpose. */
+/** A shared Chrome on Backroom's machine, named by purpose. */
 export interface Browser {
   id: string;
   name: string;
@@ -384,6 +384,17 @@ export interface ThreadCost {
   lastAt: string | null;
 }
 
+/** GET /api/t3/threads/:threadId/costs: a thread's spend as a room shows a member's. */
+export interface ThreadCosts {
+  readAt: string;
+  pricesFetchedAt: string | null;
+  total: ThreadCost;
+  /** Per reply item of the thread view (by its id): what the thread used since its previous reply. */
+  replies: Record<string, ThreadCost>;
+  /** What the thread has used since its last reply: the turn in progress; null when nothing. */
+  openTurn: ThreadCost | null;
+}
+
 export interface RoomCosts {
   readAt: string;
   pricesFetchedAt: string | null;
@@ -492,6 +503,13 @@ export interface ThreadView {
   /** The turn running now, streamed as T3 shows it. */
   running: { turnId: string; feed: LiveFeedItem[] } | null;
   contextWindow: ContextWindowReading | null;
+  /** What its usage card shows besides context and spend, from what T3 reports about the thread. */
+  usage: {
+    lastCompaction: Compaction | null;
+    subagents: SubagentUsage[];
+    changedFiles: { count: number; additions: number; deletions: number };
+    contextReporting: boolean | null;
+  };
   /** Older turns exist in T3 beyond the window read here. */
   partial: boolean;
 }
@@ -638,7 +656,7 @@ export interface GitResponse {
   /** With the full view only (not the header's brief read). */
   compares?: GitBaseCompare[];
   overlaps?: GitOverlap[];
-  /** The home folder of the machine the room service runs on, to show paths as ~/… */
+  /** The home folder of the machine Backroom runs on, to show paths as ~/… */
   home: string;
   fetchedAt: string;
 }
@@ -831,6 +849,14 @@ export interface Draft {
  * (on `branch`, else a name the room picks), or an existing worktree.
  */
 export type WorkspaceChoice = { mode: "local" } | { mode: "worktree"; baseBranch: string; branch?: string } | { mode: "existing"; worktreePath: string };
+
+/** Folders on the T3 machine for a path as it is typed (GET /api/t3/folders): T3's own folder picker's listing. */
+export interface FolderListing {
+  /** The folder whose subfolders are listed; null when T3 could not read it (then `unreadable` says so). */
+  parentPath: string | null;
+  entries: Array<{ name: string; fullPath: string }>;
+  unreadable: string | null;
+}
 
 /** A project's branches as T3 lists them, each with the worktree it is checked out in (GET /api/t3/projects/:id/refs). */
 export interface ProjectRefs {

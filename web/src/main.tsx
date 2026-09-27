@@ -7,13 +7,6 @@ import { applyTheme, readTheme } from "./theme.ts";
 import { installViewportFit } from "./viewportFit.ts";
 import "./styles.css";
 
-// Settings kept in this browser under the old name are carried over once.
-for (const key of Object.keys(localStorage)) {
-  if (key.startsWith("t3rooms.") && localStorage.getItem(`backroom.${key.slice("t3rooms.".length)}`) === null) {
-    localStorage.setItem(`backroom.${key.slice("t3rooms.".length)}`, localStorage.getItem(key) ?? "");
-  }
-}
-
 applyTheme(readTheme());
 installViewportFit();
 

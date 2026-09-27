@@ -1,12 +1,12 @@
 /**
- * Browser processes: one shared Chrome per browser (see Browser in domain/types.ts), started by the room service on
+ * Browser processes: one shared Chrome per browser (see Browser in domain/types.ts), started by Backroom on
  * the machine it runs on (the same machine as the T3 server and the agents). Agents attach over Chrome's DevTools port
  * on localhost; the user watches and takes over through noVNC (Linux, on an Xvfb display) or the visible Chrome window
  * (macOS / desktop Linux). Everything here is keyed by browser id; which rooms use a browser is the service's business.
  *
  * Ports and the profile are stable per browser (data/browsers/<browserId>), so the address in a briefing stays valid
  * across restarts and logins survive. Stopping asks Chrome to quit on its own, so it saves its open tabs, history and
- * cookies; the next start reopens those tabs. Browsers outlive a restart of the room service (an agent may be
+ * cookies; the next start reopens those tabs. Browsers outlive a restart of Backroom (an agent may be
  * mid-task): their process groups are recorded in state.json and adopted when the service starts again. Under systemd
  * each process runs in its own transient scope, because a restart of the unit kills everything in its cgroup.
  */
@@ -59,7 +59,7 @@ export interface BrowserBriefing {
   cdpUrl: string;
   cdpPort: number;
   mode: BrowserMode;
-  /** Full watch link when the host is known; otherwise null (the room UI shows it). */
+  /** Full watch link when the host is known; otherwise null (the UI shows it). */
   watchUrl: string | null;
 }
 

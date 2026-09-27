@@ -11,7 +11,7 @@ import {
 } from "react";
 import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task } from "../types.ts";
+import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task, type ThreadCost } from "../types.ts";
 import { BranchIcon } from "./icons.tsx";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
@@ -658,6 +658,14 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
       }
     }
   }
+  return <SpendFoot spend={spend} since={since} turns={turns} />;
+}
+
+/**
+ * The foot of a reply: what the turn behind it used, and (over more than one turn since the user's last message) the
+ * running total. Rooms and threads on their own alike; `since` and `turns` are counted by whoever knows the history.
+ */
+export function SpendFoot({ spend, since, turns }: { spend: ThreadCost; since: number; turns: number }) {
   const input = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) => t.inputTokens + t.cachedInputTokens + t.cacheWriteTokens;
   const inputTitle = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) =>
     `${t.inputTokens.toLocaleString()} uncached · ${t.cachedInputTokens.toLocaleString()} from cache · ${t.cacheWriteTokens.toLocaleString()} written to cache`;

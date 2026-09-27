@@ -6,7 +6,7 @@
  *               GET  /api/orchestration/threads/:threadId[?turnLimit=N]
  * Discovery:    GET  /.well-known/t3/environment
  *
- * Observation is bounded polling of persisted read models, as the PRD allows. Turn correlation uses the
+ * Observation is bounded polling of persisted read models. Turn correlation uses the
  * client-supplied messageId (user message -> turnId) and latestTurn/checkpoints on the thread.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -19,6 +19,7 @@ import type {
   CatalogEntry,
   CreateProjectInput,
   CreateThreadInput,
+  FolderListing,
   ModelOptionDescriptor,
   StartTurnInput,
   T3Adapter,
@@ -160,7 +161,7 @@ export class HttpT3Adapter implements T3Adapter {
       throw unanswered(error);
     }
     if (response.status === 401 || response.status === 403) {
-      throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); re-pair the room service`);
+      throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); pair Backroom again`);
     }
     if (response.status >= 500) {
       throw new T3Unavailable(`T3 returned HTTP ${response.status}`);
@@ -576,6 +577,11 @@ export class HttpT3Adapter implements T3Adapter {
   async listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }> {
     const value = await this.rpc<{ isRepo: boolean; refs: Array<{ name: string; isRemote?: boolean; current: boolean; isDefault: boolean; worktreePath: string | null }> }>("vcs.listRefs", { cwd, limit: 200 });
     return { isRepo: value.isRepo, refs: value.refs.map((ref) => ({ name: ref.name, isRemote: ref.isRemote === true, current: ref.current, isDefault: ref.isDefault, worktreePath: ref.worktreePath ?? null })) };
+  }
+
+  async browseFolders(partialPath: string): Promise<FolderListing> {
+    const value = await this.rpc<{ parentPath: string; entries: Array<{ name: string; fullPath: string }> }>("filesystem.browse", { partialPath });
+    return { parentPath: value.parentPath, entries: value.entries.map((entry) => ({ name: entry.name, fullPath: entry.fullPath })) };
   }
 
   async createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }> {

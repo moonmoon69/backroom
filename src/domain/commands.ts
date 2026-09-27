@@ -1,5 +1,5 @@
 /**
- * The versioned room command contract (PRD 4.4, 4.5).
+ * The versioned room command contract.
  * Every input adapter (direct UI, explicit syntax, optional interpreter) builds one of these.
  * Validation of schema happens here; reference/state validation happens in the service.
  */
@@ -165,7 +165,7 @@ export const ParticipantRebindCommand = z
     type: z.literal("participant.rebind"),
     participantId: nonEmpty,
     thread: ThreadBindingInput,
-    /** Required explicit handling of outstanding pending tasks (PRD 4.2). */
+    /** Required explicit handling of outstanding pending tasks. */
     outstandingTasks: z.enum(["carry", "block"]),
   })
   .strict();
@@ -344,7 +344,7 @@ export const TaskRetryCommand = z
     type: z.literal("task.retry"),
     taskId: nonEmpty,
     revision: z.number().int().min(1),
-    /** Explicit dependent handling (PRD 4.4): follow the new attempt or stay blocked. */
+    /** Explicit dependent handling: follow the new attempt or stay blocked. */
     reattachDependents: z.boolean(),
   })
   .strict();

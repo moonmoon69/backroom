@@ -389,7 +389,7 @@ export function App() {
     <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
       {staleUi ? (
         <div className="update-banner" role="status">
-          <span>The room UI was updated.</span>
+          <span>Backroom was updated.</span>
           <button type="button" className="primary" onClick={() => window.location.reload()}>
             Reload
           </button>
