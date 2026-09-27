@@ -49,8 +49,8 @@ Tested against T3 Code 0.0.43, on macOS and on a headless Ubuntu box (see [A hea
 ## Install
 
 ```sh
-git clone https://github.com/moonmoon69/t3code-rooms.git
-cd t3code-rooms
+git clone https://github.com/moonmoon69/backroom.git
+cd backroom
 npm install          # installs the service and the web workspace
 npm run build:web    # builds the UI into web/dist (the service serves it)
 npm start            # http://127.0.0.1:4400
