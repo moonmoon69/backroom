@@ -2,7 +2,9 @@
 
 ![The boss at the head of the table, the crew in the shadows](assets/banner.jpg)
 
-A local companion for [T3 Code](https://github.com/pingdotgg/t3code). A **room** is one shared conversation with several T3 threads in it. Each thread takes part under a short alias (`@claude`, `@grok`, …). You address them in plain text. The room queues the work, waits where one task depends on another, and passes each finished answer to whoever needs it next. You don't have to copy anything between threads yourself.
+Backroom is the back room where the boss hands out the work. It is a local companion for [T3 Code](https://github.com/pingdotgg/t3code): a **room** is one shared conversation, and the **members** seated in it are T3 threads, each under a short alias (`@claude`, `@grok`, …). You address them in plain text. The room queues the work, waits where one task depends on another, and passes each finished answer to whoever needs it next. You don't have to copy anything between threads yourself.
+
+Your **crew** are the people you bring into rooms: a name with a model and its options, a permission mode, a role and a place to work. Drag one onto a room and they are seated on a new thread; click one and a thread starts on its own.
 
 The room owns conversation and coordination. T3 owns execution: every member is a real T3 thread, with its own model, permissions and worktree, and you can still open it in T3 Code. No model reads your input on the room's side: every action is a direct control or a small explicit syntax, and the composer shows the plan before you send.
 
@@ -179,6 +181,8 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
    - **Existing:** pick one of the project's threads. The member continues that thread and keeps its model, options and permission mode.
 
    The alias is what you type after `@`, and it exists only inside this room.
+
+   Quicker, once you have a crew: drag someone from **Crew** in the sidebar onto the room, or pick them at the top of this dialog (see [Crew](#crew)).
 3. **Send work.** Type `@claude fix the failing parser test` and press **Enter**. The plan under the composer shows the result before you send: who receives what, and whether it starts now or waits.
 4. **Watch it run.** Your message appears on the left and the member's reply on the right. Progress notes stream in while the turn runs. When it ends, the final answer becomes the reply.
 
