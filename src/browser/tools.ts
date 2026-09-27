@@ -14,7 +14,8 @@ import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Browser, Room } from "../domain/types.ts";
+import type { Browser } from "../domain/types.ts";
+import type { BrowserAccess } from "./catalog.ts";
 import type { RoomBrowsers } from "./roomBrowsers.ts";
 
 const ENGINE_BIN = createRequire(import.meta.url).resolve("chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js");
@@ -156,13 +157,15 @@ export interface BrowserToolsDeps {
   browsers: RoomBrowsers;
   /** Resolve a browser by name (or id); null when there is none. */
   findBrowser: (nameOrId: string) => Browser | null;
-  listBrowsers: () => Browser[];
-  /** The room an agent key belongs to ("sol1.2fa05e45" → the room whose id starts with 2fa05e45). */
-  roomForKey: (key: string) => Room | null;
-  /** Browsers a room may use (its allowed list, or all). */
-  browsersForRoom: (room: Room) => Browser[];
+  /**
+   * The rules for an agent key: its room's ("sol1.2fa05e45" → the room whose id starts with 2fa05e45) or its thread's
+   * ("thread.1a2b3c4d"); null for a key that names neither.
+   */
+  accessFor: (key: string) => BrowserAccess | null;
   log?: (message: string, detail?: unknown) => void;
 }
+
+const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 export class BrowserTools {
   private readonly engines = new Map<string, Engine>();
@@ -192,10 +195,13 @@ export class BrowserTools {
   async run(argv: string[], caller: ToolCaller): Promise<string> {
     const [first, second, third, ...rest] = argv;
     if (!first || first === "help" || first === "--help" || first === "-h") return HELP;
-    if (first === "list") return this.list(caller);
+    const access = this.access(caller);
+    if (first === "list") return this.list(access);
     const browser = this.deps.findBrowser(first);
-    if (!browser) throw new BrowserToolError(`No browser named "${first}". ${this.list(caller)}`, 404);
-    this.checkAllowed(browser, caller);
+    if (!browser) throw new BrowserToolError(`No browser named "${first}". ${this.list(access)}`, 404);
+    if (!access.allowed.some((b) => b.id === browser.id)) {
+      throw new BrowserToolError(`${capitalize(access.subject)} can't use "${browser.name}". Its browsers: ${access.allowed.map((b) => b.name).join(", ") || "none"}.`, 403);
+    }
     if (second === undefined) throw new BrowserToolError(`Say what to do with "${browser.name}": tabs, open <url>, or <tab> <command>. Run "help" for all commands.`);
     if (second === "tabs") return this.tabs(browser, caller);
     if (second === "open") return this.open(browser, [third, ...rest].filter((x): x is string => x !== undefined), caller);
@@ -204,25 +210,29 @@ export class BrowserTools {
     return this.onTab(browser, Number(second), third, rest, caller);
   }
 
-  private list(caller: ToolCaller): string {
-    const room = caller.as ? this.deps.roomForKey(caller.as) : null;
-    const browsers = room ? this.deps.browsersForRoom(room) : this.deps.listBrowsers();
-    const lines = browsers.map((b) => {
+  private list(access: BrowserAccess): string {
+    const lines = access.allowed.map((b) => {
       const state = this.deps.browsers.status(b.id).state;
       return `- ${b.name} (${state === "running" ? "running" : state === "error" ? "failed" : "stopped; starts on first use"})${b.description ? `: ${b.description}` : ""}`;
     });
     return lines.length > 0 ? `Browsers:\n${lines.join("\n")}` : "No browsers are available.";
   }
 
-  private checkAllowed(browser: Browser, caller: ToolCaller): void {
-    if (!caller.as) return;
-    const room = this.deps.roomForKey(caller.as);
-    if (!room) return;
-    if (!room.browserEnabled) throw new BrowserToolError(`Browsers are turned off for the room "${room.title}".`, 403);
-    const allowed = this.deps.browsersForRoom(room);
-    if (!allowed.some((b) => b.id === browser.id)) {
-      throw new BrowserToolError(`The room "${room.title}" can't use "${browser.name}". Its browsers: ${allowed.map((b) => b.name).join(", ") || "none"}.`, 403);
+  /**
+   * Whose rules the caller works under: every command but help names the agent, and its room or thread must have
+   * browsers on. A room and a thread outside rooms are held to the same rules.
+   */
+  private access(caller: ToolCaller): BrowserAccess {
+    if (!caller.as) throw new BrowserToolError("Pass --as <your key> (it is in your briefing): which browsers you may use depends on your room or thread.");
+    const access = this.deps.accessFor(caller.as);
+    if (!access) throw new BrowserToolError(`"${caller.as}" is not a key Backroom gave out. Use the one in your briefing.`, 403);
+    if (!access.enabled) {
+      throw new BrowserToolError(
+        access.kind === "thread" ? "Browsers are turned off for this thread. The user turns them on with the globe in the thread's header." : `Browsers are turned off for ${access.subject}.`,
+        403,
+      );
     }
+    return access;
   }
 
   /** The engine for a browser, starting the browser (and a fresh engine after a browser restart) as needed. */
@@ -362,10 +372,13 @@ const TAB_COMMANDS: Record<string, TabCommand> = {
 
 export const HELP = `rooms-browser: drive the shared Chrome browsers on this machine.
 
-  rooms-browser list                               browsers you can use, what each is for, running or not
-  rooms-browser <browser> tabs                     tabs, marked yours / another agent's / not opened by an agent
+  rooms-browser list --as <key>                    browsers you can use, what each is for, running or not
+  rooms-browser <browser> tabs --as <key>          tabs, marked yours / another agent's / not opened by an agent
   rooms-browser <browser> open <url> --as <key>    open your own tab; prints its id
   rooms-browser <browser> <tab> <command> --as <key>
+
+Your key is in your briefing. It names your room or thread, and that decides which browsers you may use: the ones it
+was given, and none while its browsers are off.
 
 Commands on your tab:
 ${Object.values(TAB_COMMANDS)

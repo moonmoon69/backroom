@@ -8,28 +8,77 @@ Your **crew** are the people you bring into rooms: a name with a model and its o
 
 Backroom owns conversation and coordination. T3 owns execution: every member is a real T3 thread, with its own model, permissions and worktree, and you can still open it in T3 Code. No model reads your input on Backroom's side: every action is a direct control or a small explicit syntax, and the composer shows the plan before you send. [How it works](#how-it-works) at the end describes the delivery, correlation and completion rules.
 
+**Why Backroom.** T3 Code is a cockpit for each agent: a thread, a conversation, its terminal, diffs and worktree, and it can start several agents at once and tell you when each finishes. What it doesn't do is make them work together. Agents in different threads can't hear each other, wait on each other, or pass their results along; you do that by hand. A room is one conversation for several agents: you address them by name, say what waits for what, and each finished answer goes to whoever needs it next, with where the work is. T3 still runs every turn, and every member stays a thread you can open in T3 Code.
+
 ---
 
 ## Contents
 
-1. [Requirements](#requirements)
-2. [Install](#install)
-3. [Connect to T3 Code](#connect-to-t3-code)
-4. [A headless box over Tailscale](#a-headless-box-over-tailscale)
-5. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
-6. [Your first room](#your-first-room)
-7. [Projects, and threads without a room](#projects-and-threads-without-a-room)
-8. [Writing messages](#writing-messages)
-9. [Sending while someone is working](#sending-while-someone-is-working)
-10. [T3 slash commands](#t3-slash-commands)
-11. [Room browser](#room-browser)
-12. [What the room shows](#what-the-room-shows)
-13. [Managing rooms, members and roles](#managing-rooms-members-and-roles)
-14. [Configuration](#configuration)
-15. [Running, updating and backing up](#running-updating-and-backing-up)
-16. [Troubleshooting](#troubleshooting)
-17. [Development](#development)
-18. [How it works](#how-it-works)
+1. [What Backroom adds to T3 Code](#what-backroom-adds-to-t3-code)
+2. [Requirements](#requirements)
+3. [Install](#install)
+4. [Connect to T3 Code](#connect-to-t3-code)
+5. [A headless box over Tailscale](#a-headless-box-over-tailscale)
+6. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
+7. [Your first room](#your-first-room)
+8. [Projects, and threads without a room](#projects-and-threads-without-a-room)
+9. [Writing messages](#writing-messages)
+10. [Sending while someone is working](#sending-while-someone-is-working)
+11. [T3 slash commands](#t3-slash-commands)
+12. [Room browser](#room-browser)
+13. [What the room shows](#what-the-room-shows)
+14. [Managing rooms, members and roles](#managing-rooms-members-and-roles)
+15. [Configuration](#configuration)
+16. [Running, updating and backing up](#running-updating-and-backing-up)
+17. [Troubleshooting](#troubleshooting)
+18. [Development](#development)
+19. [How it works](#how-it-works)
+
+---
+
+## What Backroom adds to T3 Code
+
+Each part below starts from what T3 Code does (read from [its source and docs](https://github.com/pingdotgg/t3code)), then shows what Backroom adds. The screenshots come from a demo room: the fake T3 with scripted replies (`scripts/readme-demo.ts`).
+
+### Agents that work together
+
+In T3 Code each thread is its own conversation, and its agent has no way to reach another thread: the tools T3 gives agents are its browser, simulators and pull-request links. Sending one prompt to several models is supported, as separate threads; what comes next is up to you, by copying and quoting between them.
+
+In a room, several threads share one conversation. One message chains the work: Opus builds, Sol reviews Opus's branch once Opus has succeeded, and Fable writes the release note once Sol has. Each receives the finished answers it waited for and where the work is (folder, branch, commit). The room's note, above the message, reaches all three.
+
+![A room: a note, one message chaining three members, and the first reply](assets/readme/room.png)
+
+### The plan before anything runs
+
+T3 Code sends what you type to one agent. Backroom reads a message with fixed rules, not a model, and shows what will happen before you send it: who gets which instruction, and what each waits for. Here Sol waits for assignment 1 and Fable for assignment 2; the row under Sol offers a one-click fix if "Sol" was only a reference.
+
+![The plan under the composer: now, after 1, after 2](assets/readme/plan.png)
+
+### A crew instead of settings each time
+
+T3 Code remembers the last model, has favorites, custom models and a project default. A Backroom crew member bundles a model and its options, a permission mode, a role (rules sent with every assignment) and where they work. Drag one onto a room, or pick several in the Add member dialog and seat them at once.
+
+![Add member with two crew members picked, and what each joins with](assets/readme/crew.png)
+
+### What finished, room by room
+
+T3 Code notifies you, per thread, when an agent finishes, fails or needs you, and marks unread threads. In Backroom one room holds several threads, so the sidebar says it per room: a count on the room, who finished and how the reply opens, in red when a turn failed. Threads on their own get a tick (or a cross) the same way. What you have seen is kept by the service, so looking on your phone clears it on your Mac, and the bell at the foot of the sidebar adds system notifications. See [What finished while you were away](#what-finished-while-you-were-away).
+
+![The sidebar: a room with a new reply, a room whose turn failed, a finished thread](assets/readme/sidebar-news.png)
+
+### Browsers on the box, chosen per room
+
+T3 Code's agent browser runs inside its desktop app: it works while that app is open and connected, and a headless server has no browser of its own. Backroom runs named Chrome browsers on the machine itself. They keep their logins, every harness drives them with one command, you can watch and take over through a link, and each room (or thread) decides which ones its agents may use and which starts by default. See [Room browser](#room-browser).
+
+![A room's browsers: two of three allowed, staging the default](assets/readme/browsers.png)
+
+### Cost per piece of work
+
+T3 Code's Usage page reports tokens and estimated cost by day, provider and model. Backroom estimates it per thread, per reply (subagents included) and per room, so you can see what a task cost and which model is worth it for which job. See [Estimated spend](#estimated-spend).
+
+### What stays in T3 Code
+
+Running every turn, terminals, the preview browser with its annotations and recordings, simulators, pull requests and rewinding a conversation are T3 Code's. Backroom never takes a thread away from it: any member or thread opens in T3 Code as it is.
 
 ---
 
@@ -180,7 +229,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 
    The alias is what you type after `@`, and it exists only inside this room.
 
-   Quicker, once you have a crew: drag someone from **Crew** in the sidebar onto the room, or pick them at the top of this dialog (see [Crew](#crew)).
+   Quicker, once you have a crew: drag someone from **Crew** in the sidebar onto the room, or pick them at the top of this dialog, several at once if you like (see [Crew](#crew)).
 3. **Send work.** Type `@claude fix the failing parser test` and press **Enter**. The plan under the composer shows the result before you send: who receives what, and whether it starts now or waits.
 4. **Watch it run.** Your message appears on the left and the member's reply on the right. Progress notes stream in while the turn runs. When it ends, the final answer becomes the reply.
 
@@ -366,7 +415,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
   3. The default browser's status, watch link and tabs, with **Start browser** / **Stop browser** at the bottom, for example to log in before a task.
 
   Several rooms can share a browser. Agents get the list as `- name (this room's default): description` lines in each task's instructions, and `rooms-browser list` prints the same.
-- **Threads outside rooms:** the **Browser** button (the globe) in a thread's header adds the browsers' instructions to your next message (a thread outside a room gets no briefing), once (the globe shows a green check until that message is sent); add them again if the agent loses track. When starting a new thread, pick a browser in the form and they go with the first message. In the conversation the instructions sit folded ("browser instructions") above the message they went with.
+- **Threads outside rooms work the same way.** The **Browser** button (the globe) in a thread's header opens the same choices as a room's panel: **Let this thread's agent use browsers**, the browsers it may use (ticked, with a default), and the same rules: its instructions list only those, and `rooms-browser` refuses the others, and refuses the thread entirely while its browsers are off (the default for a thread, as for a new room). The globe has a green check while they are on. A thread outside a room gets no briefing, so the instructions go with your next message, once, after each change (**Add to my next message** sends them again if the agent loses track; the composer says when they are going). When starting a new thread, picking a browser in the form gives it that browser only, and the instructions go with the first message. In the conversation the instructions sit folded ("browser instructions") above the message they went with. A thread given a browser before this worked this way has its browsers off until you turn them on with the globe.
 - **When it runs:** a browser starts when you press **Start browser**, when an agent first uses it, and (for a room's default) before each task in the room is sent, slash commands excepted. Turning browsers on for a room doesn't start one by itself. It stops after `ROOMS_BROWSER_IDLE_MINUTES` with no tab changes, but never while the room has work in flight.
 - **Stable address:** each browser keeps its own ports and profile under `data/browsers/<id>/`, so logins survive stop, start and service restarts. The profile is the browser's own: none of your everyday Chrome's logins are in it. Deleting a room leaves browsers alone; a browser can't be deleted while a room uses it as its default. (A room's browser from before browsers were a list became a browser named after the room, with its logins.)
 - **Stop and start keep your tabs:** Stop asks Chrome to quit normally, so it saves its open tabs, history and cookies; the next start reopens those tabs.
@@ -381,7 +430,7 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
   bin/rooms-browser help
   ```
 
-  The service drives the browsers through [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) (one per running browser, with usage statistics off); agents never see MCP. Each command names its tab, and a tab belongs to the agent that opened it: acting on another agent's tab, or on one you opened yourself, is refused unless the agent adds `--force` (the service logs it). The command finds the service through `data/browser-api.json` (address and a token written at every start, readable only by you; `ROOMS_BROWSER_API` points it elsewhere). Screenshots go to `/tmp/rooms-browser/`. The DevTools address stays in the briefing as a fallback for agents that prefer Playwright's `connectOverCDP`.
+  The service drives the browsers through [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) (one per running browser, with usage statistics off); agents never see MCP. Every command but `help` carries the agent's key (`--as`, from its briefing), which names its room or thread: the tool allows the browsers that room or thread was given and refuses the rest, a key Backroom didn't give out, and a command without one. The key keeps agents to their browsers; it is not a lock, since any program on the box can reach a browser's DevTools port or start a Chrome of its own. Each command names its tab, and a tab belongs to the agent that opened it: acting on another agent's tab, or on one you opened yourself, is refused unless the agent adds `--force` (the service logs it). The command finds the service through `data/browser-api.json` (address and a token written at every start, readable only by you; `ROOMS_BROWSER_API` points it elsewhere). Screenshots go to `/tmp/rooms-browser/`. The DevTools address stays in the briefing as a fallback for agents that prefer Playwright's `connectOverCDP`.
 - **What you see depends on the machine:**
 
   | Machine | What runs | How you watch |
@@ -469,9 +518,9 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles**, the **Voice** replies are read aloud in (see [Read aloud](#read-aloud)) and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles**, **Notifications** (a bell, see [What finished while you were away](#what-finished-while-you-were-away)), the **Voice** replies are read aloud in (see [Read aloud](#read-aloud)) and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
 
-The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
+The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), has something new (green), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
 
 Controls that open, close, toggle or add something are icons with a hover name (people, globe, checklist, branch, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
@@ -482,7 +531,17 @@ Each room shows activity pills:
 - only watch loops running;
 - waiting for your approval or answer.
 
-A thread shows a dot: filled and pulsing while it works, a ring with background work, violet when it needs you, red after an error.
+When something finished there since you last looked, a line under the pills says who and how the reply opens (see [below](#what-finished-while-you-were-away)).
+
+A thread shows a dot: filled and pulsing while it works, a ring with background work, violet when it needs you, green with a tick and how long ago when its turn finished since you last looked (a red cross when it ended with an error), red after an error.
+
+### What finished while you were away
+
+When a member replies, or a turn fails without a reply, while you are not looking at its room, the sidebar shows it the way a chat app shows unread messages: the room's name turns bold, a count sits on its monogram, and a line under it says who finished, when, and how the reply opens ("@Fable replied · 2m: Draft for 2.4…"). A failure is red ("@Sol's turn failed"). The collapsed rail shows the count on the room's tile, a collapsed project a green dot, and the tab's title counts it all: `(2) Backroom`. A thread outside rooms turns bold, with a green tick and how long ago when its turn finishes (a red cross when it failed). Opening the room or thread clears it; so does bringing the window back to the front while it is open. "Looking" means the page is on screen and its window is in front: a reply that lands in the open room while you are in another app is still news.
+
+What you have seen is kept by the service, so looking on your phone clears it on your Mac too. Only what finishes after the update counts; older replies are not news. A turn you interrupted yourself isn't news either.
+
+**Notifications:** the bell at the foot of the sidebar turns them on for this device (the browser asks for permission, then shows one so you know what they look like). Then each reply, failed turn, or finished thread arrives as a system notification while Backroom is open but not in front; clicking one opens the room or thread. They come from the page itself, not a push service, so Backroom has to be open in a tab or window on that device. A desktop browser keeps a background tab working, so that is where they are useful. Phones pause a page once it leaves the screen, so a phone rarely gets them (the pills are waiting when you come back); an iPhone offers them only to Backroom added to the Home Screen. The bell only appears where the browser supports notifications.
 
 Drag rooms to reorder them within their project. The **⋯** menu renames or deletes a room.
 
@@ -542,7 +601,8 @@ Your **crew** are the people you bring into rooms: each one a name with a model 
 | Add someone | **+** beside **Crew**, or **Save to crew** in the Add member dialog (it takes the name typed there; a crew member of that name is brought up to date instead) |
 | Seat them in a room | Drag them onto the room in the sidebar or onto the open room's page. Or, without dragging: their **⋯** menu → **Seat in a room**, then pick the room from the list (every room, the open one first) |
 | Start a thread with them | Click them (the thread starts in the open room's project, else the last one used), or drag them onto a project |
-| Use them in a form | The Add member dialog and the New thread page list the crew above the settings; one click fills them in, and you can still change anything before you confirm (**Add member**, or the first message of a new thread). On the New thread page a line under the row names who is picked, and clicking them again goes back to the defaults |
+| Use them in a form | The Add member dialog and the New thread page list the crew above the settings; one click fills them in, and you can still change anything before you confirm (**Add member**, or the first message of a new thread). A line under the row names who is picked, and clicking them again goes back to the defaults |
+| Seat several at once | In the Add member dialog, pick more than one. The settings give way to a list of who joins, under which name, with what; **Add 3 members** seats them one after another, each on a new thread with their saved settings. To change someone's settings first, pick them alone. If one can't be seated, those already seated stay, and the rest stay picked to try again |
 | Change or remove them | Their **⋯** menu → **Edit…** |
 
 Seated in a room, a crew member takes their name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. Capitals make no difference to a name: a room with `@Alice` has `alice` taken, and there is one crew member per name whatever its capitals. Name fields drop spaces as you type or paste. The seated member is the room's own from then on: renaming it or changing its model does not touch the crew, and editing or removing someone from the crew does not touch members or threads made from them. A crew member who works in a new worktree works in the project folder where the project is not a git repository.
@@ -634,6 +694,7 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
 | `scripts/t3-steer-check.ts` | Live check of mid-turn delivery per model (creates scratch threads) |
 | `scripts/repair-replies.ts` | One-off repair of stored final answers and prompts from T3's record (`--dry-run` first) |
+| `scripts/readme-demo.ts` | The demo behind the README's screenshots: the fake T3 with scripted replies, a crew and three rooms, in a throwaway data folder (build the UI first) |
 | `tests/` | Acceptance tests driven through the fake adapter |
 
 ## How it works

@@ -4,7 +4,9 @@ import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { MonitorIcon, MoonIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { BellIcon, MonitorIcon, MoonIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
+import { useToast } from "./Toast.tsx";
 
 const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "system", label: "System", icon: <MonitorIcon /> },
@@ -12,7 +14,7 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "dark", label: "Dark", icon: <MoonIcon /> },
 ];
 
-/** App-wide controls at the foot of the sidebar: roles, the T3 connection, and the theme. */
+/** App-wide controls at the foot of the sidebar: roles, the T3 connection, notifications, the voice, and the theme. */
 export function AppControls({
   status,
   onOpenConnection,
@@ -35,9 +37,38 @@ export function AppControls({
         Roles
       </button>
       <ConnectionChip status={status} onOpen={onOpenConnection} />
+      {notificationsSupported ? <NotifyButton /> : null}
       {speechSupported || boxSpeech ? <VoiceButton /> : null}
       <ThemeMenu theme={theme} onTheme={onTheme} />
     </span>
+  );
+}
+
+/** Notifications on this device when a member finishes while Backroom is open but not in front. */
+function NotifyButton() {
+  const on = useNotifyOn();
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const label = on
+    ? "Notifications on: this device tells you when a member finishes while Backroom is in the background. Click to turn them off."
+    : "Notifications off: click to be told on this device when a member finishes while Backroom is in the background.";
+  return (
+    <button
+      type="button"
+      className="small ghost icon-only"
+      aria-pressed={on}
+      aria-label={on ? "Notifications on" : "Notifications off"}
+      title={label}
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        const problem = await setNotify(!on);
+        setBusy(false);
+        if (problem) toast(problem);
+      }}
+    >
+      <BellIcon off={!on} />
+    </button>
   );
 }
 

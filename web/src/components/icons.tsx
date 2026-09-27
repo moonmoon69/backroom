@@ -73,6 +73,15 @@ export const SpeakerIcon = () => (
   </Icon>
 );
 
+/** A bell: notifications; struck through while they are off. */
+export const BellIcon = ({ off = false }: { off?: boolean }) => (
+  <Icon strokeWidth={1.25}>
+    <path d="M4 11.5V7.25a4 4 0 0 1 8 0v4.25l1 1H3z" />
+    <path d="M6.75 14a1.35 1.35 0 0 0 2.5 0" />
+    {off ? <path d="M2.5 2.5l11 11" /> : null}
+  </Icon>
+);
+
 /** A square: stop. */
 export const StopIcon = () => (
   <Icon strokeWidth={1.25}>

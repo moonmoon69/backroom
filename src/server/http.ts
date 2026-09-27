@@ -20,7 +20,7 @@ import { latestContextWindow, openRequests, threadTranscript } from "../app/dire
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
-import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
+import { browsersForRoom, effectiveBrowser, roomsUsingBrowser, threadKey } from "../browser/catalog.ts";
 import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { parseExplicit } from "../parser/explicit.ts";
@@ -29,6 +29,7 @@ import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoom
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 import { ThreadCosts } from "../usage/threadCosts.ts";
+import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
@@ -190,13 +191,28 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         console.warn(`[backroom] archived threads not read: ${(error as Error).message}`);
       }
     }
-    return c.json(threads.map((t) => ({ ...t, boundToRoom: bound.has(t.id) })));
+    // A thread outside rooms has news when its last turn finished (or failed) after you last looked at it. A seated
+    // thread's turns are the room's news; settled and archived threads are done with.
+    const seen = seenMarks(stack.repos);
+    const news = (t: (typeof threads)[number]) => {
+      const turn = t.latestTurn;
+      if (bound.has(t.id) || t.archivedAt || t.settledAt || !turn?.completedAt || (turn.state !== "completed" && turn.state !== "error")) return null;
+      return isAfter(turn.completedAt, seen.of(`thread:${t.id}`)) ? { at: turn.completedAt, state: turn.state } : null;
+    };
+    return c.json(threads.map((t) => ({ ...t, boundToRoom: bound.has(t.id), news: news(t) })));
   });
 
   /**
    * One T3 thread used directly, outside any room: the conversation (last 30 turns), the running turn as it streams,
    * the approvals and questions it waits on, and its latest context reading. Read from T3 on every call.
    */
+  // A thread's browsers as its header shows them: off until chosen, like a new room's; the default is the one it uses.
+  const threadBrowsersView = (threadId: string) => {
+    const access = stack.repos.getThreadBrowsers(threadId);
+    if (!access) return { enabled: false, defaultBrowserId: effectiveBrowser(stack.repos, { defaultBrowserId: null, allowedBrowserIds: null })?.id ?? null, allowedBrowserIds: null };
+    return { enabled: access.browserEnabled, defaultBrowserId: effectiveBrowser(stack.repos, access)?.id ?? null, allowedBrowserIds: access.allowedBrowserIds };
+  };
+
   app.get("/api/threads/:threadId", async (c) => {
     const threadId = c.req.param("threadId");
     const [detail, listed, projects] = await Promise.all([
@@ -217,6 +233,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       running: running ? { turnId: running, feed: buildLiveFeed(detail.messages, detail.activities, running) } : null,
       contextWindow: latestContextWindow(detail.activities),
       usage: await threadUsage(detail),
+      browsers: threadBrowsersView(threadId),
       // T3 holds turns older than the window read here.
       partial: new Set(items.filter((i) => i.kind === "reply").map((i) => (i.kind === "reply" ? i.turnId : ""))).size >= 30,
     });
@@ -261,8 +278,13 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- rooms ----
   app.get("/api/rooms", (c) => {
+    const seen = seenMarks(stack.repos);
     const rooms = stack.repos.listRooms().map((room) => {
       const tasks = stack.repos.listTasks(room.id);
+      // What finished since you last looked at the room (on any device), newest first.
+      const finishes = stack.repos.listRoomFinishes(room.id, seen.of(`room:${room.id}`), 100);
+      const newest = finishes[0];
+      const alias = newest?.participantId ? (stack.repos.getParticipant(newest.participantId)?.alias ?? null) : null;
       return {
         ...room,
         // Who is seated now: a removed participant stays in the record (its messages and tasks name it) but is not crew.
@@ -282,9 +304,19 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
           },
           { turn: 0, background: 0, monitoring: 0, needsInput: 0 },
         ),
+        news: { unseen: finishes.length, latest: newest ? { at: newest.at, alias, kind: newest.kind, preview: newest.text } : null },
       };
     });
     return c.json(rooms);
+  });
+
+  // A room or thread was on screen up to `at` (the newest finish it showed): its news is seen, on every device.
+  app.post("/api/seen", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { key?: unknown; at?: unknown } | null;
+    const key = typeof body?.key === "string" ? body.key : "";
+    const at = typeof body?.at === "string" ? body.at : "";
+    if (!SEEN_KEY.test(key) || Number.isNaN(Date.parse(at))) throw new RoomError("invalid_seen", "key must be room:<id> or thread:<id>, and at an ISO time");
+    return c.json({ key, at: markSeen(stack.repos, key, at) });
   });
 
   app.get("/api/rooms/:roomId", (c) => {
@@ -866,22 +898,24 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
 
   /**
-   * The browsers section for a thread outside any room: every browser, with `browserId` as the default (started now),
-   * and the thread's own key. The UI adds it to the user's next message.
+   * The browsers section for a thread outside any room, as a room's agents get it: the browsers the thread may use,
+   * its default (started now), and the thread's own key. The UI adds it to the user's next message.
    */
-  app.get("/api/browser-briefing", async (c) => {
-    const as = c.req.query("as") ?? "";
-    if (!/^thread\.[A-Za-z0-9-]{4,}$/.test(as)) throw new RoomError("invalid_key", "as must be thread.<id>");
-    const browser = requireBrowserRecord(c.req.query("browserId") ?? "");
+  app.get("/api/threads/:threadId/browser-briefing", async (c) => {
+    const threadId = c.req.param("threadId");
+    const access = stack.repos.getThreadBrowsers(threadId);
+    if (!access?.browserEnabled) throw new RoomError("browsers_off", "Browsers are off for this thread; turn them on first", 409);
+    const browser = effectiveBrowser(stack.repos, access);
+    if (!browser) throw new RoomError("no_browser", "This thread has no browser; create one first", 409);
     const started = await requireBrowsers().briefingFor(browser);
     if (!started) throw new RoomError("browser_failed", `"${browser.name}" could not start`, 409);
     return c.json({
       text: browserSection({
         audience: "thread",
         command: browserTools?.command ?? "rooms-browser",
-        as,
+        as: threadKey(threadId),
         started,
-        browsers: stack.repos.listBrowsers().map((b) => ({
+        browsers: browsersForRoom(stack.repos, access).map((b) => ({
           name: b.name,
           description: b.description,
           isDefault: b.id === browser.id,

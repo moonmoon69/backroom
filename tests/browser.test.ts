@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomBrowsers, type BrowserBriefing } from "../src/browser/roomBrowsers.ts";
-import { agentKey, browsersForRoom, reconcileBrowserCatalog, roomForKey } from "../src/browser/catalog.ts";
+import { accessForKey, agentKey, reconcileBrowserCatalog, threadKey } from "../src/browser/catalog.ts";
 import { BrowserTools, type BrowserToolError } from "../src/browser/tools.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
@@ -24,6 +24,7 @@ function fakeBrowsers(briefing: Omit<BrowserBriefing, "name" | "description"> | 
       asked.push(browser.name);
       return briefing ? { ...briefing, name: browser.name, description: browser.description } : null;
     },
+    status: () => ({ state: "stopped" }),
     detach() {},
   };
   return browsers;
@@ -161,9 +162,7 @@ test("rooms-browser rules that need no browser: help, list, and a room's limits"
   const tools = new BrowserTools({
     browsers: manager as never,
     findBrowser: (name) => stack.repos.getBrowserByName(name) ?? stack.repos.getBrowser(name),
-    listBrowsers: () => stack.repos.listBrowsers(),
-    roomForKey: (key) => roomForKey(stack.repos, key),
-    browsersForRoom: (room) => browsersForRoom(stack.repos, room),
+    accessFor: (key) => accessForKey(stack.repos, key),
   });
   const key = agentKey("sol1", stack.roomId);
   assert.match(await tools.run(["help"], { as: null, force: false }), /Work only in tabs you opened/);
@@ -171,9 +170,55 @@ test("rooms-browser rules that need no browser: help, list, and a room's limits"
   assert.doesNotMatch(await tools.run(["list"], { as: key, force: false }), /general/, "a room's agent sees only its browsers");
   await assert.rejects(tools.run(["general", "tabs"], { as: key, force: false }), (error: BrowserToolError) => error.status === 403 && /can't use "general"/.test(error.message));
   await assert.rejects(tools.run(["nosuch", "tabs"], { as: key, force: false }), (error: BrowserToolError) => error.status === 404);
-  await assert.rejects(tools.run(["testing", "open", "https://example.com"], { as: null, force: false }), /Pass --as/);
+  // Every command but help names the agent, and only keys Backroom gave out are taken.
+  for (const argv of [["list"], ["testing", "tabs"], ["testing", "open", "https://example.com"]]) {
+    await assert.rejects(tools.run(argv, { as: null, force: false }), /Pass --as/);
+  }
+  await assert.rejects(tools.run(["list"], { as: "someone.00000000", force: false }), (error: BrowserToolError) => error.status === 403 && /not a key Backroom gave out/.test(error.message));
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: false });
   await assert.rejects(tools.run(["testing", "tabs"], { as: key, force: false }), /turned off/);
+  await assert.rejects(tools.run(["list"], { as: key, force: false }), /turned off/, "a room with browsers off lists none either");
+});
+
+test("a thread outside rooms gets browsers as a room does: off until chosen, then only the ones it may use", async (t) => {
+  const browsers = fakeBrowsers(RUNNING);
+  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1"], { browsers: () => browsers as never });
+  t.after(() => stack.close());
+  const testing = ((await stack.run({ type: "browser.create", name: "testing", description: "Staging logins" })) as { browserId: string }).browserId;
+  const manager = { status: () => ({ state: "stopped" }), ensure: async () => assert.fail("no browser should start"), touch() {} };
+  const tools = new BrowserTools({
+    browsers: manager as never,
+    findBrowser: (name) => stack.repos.getBrowserByName(name) ?? stack.repos.getBrowser(name),
+    accessFor: (key) => accessForKey(stack.repos, key),
+  });
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-thread-browsers", ROOMS_PORT: "0" }), "/nonexistent/dist", { tools: null, token: "t", command: "rooms-browser" });
+  const threadId = "1a2b3c4d-0000-4000-8000-000000000000";
+  const key = threadKey(threadId);
+  const briefing = async () => app.request(`/api/threads/${threadId}/browser-briefing`);
+
+  // Nothing chosen: off, like a new room. The instructions are refused too.
+  await assert.rejects(tools.run(["list"], { as: key, force: false }), /turned off for this thread/);
+  assert.equal((await briefing()).status, 409);
+
+  // On, with one browser: the instructions list it alone, and the tool keeps to it.
+  await stack.run({ type: "thread.browser", threadId, enabled: true, browserId: testing, allowed: [testing] });
+  const text = ((await (await briefing()).json()) as { text: string }).text;
+  assert.match(text, /- testing \(your default\): Staging logins/);
+  assert.doesNotMatch(text, /- general/, "browsers outside the thread's list are not offered");
+  assert.match(text, /--as thread\.1a2b3c4d/);
+  assert.match(await tools.run(["list"], { as: key, force: false }), /- testing/);
+  assert.doesNotMatch(await tools.run(["list"], { as: key, force: false }), /general/);
+  await assert.rejects(tools.run(["general", "tabs"], { as: key, force: false }), (error: BrowserToolError) => error.status === 403 && /This thread can't use "general"/.test(error.message));
+
+  // The same rules as a room's: the default must be allowed; null widens the list to every browser.
+  await assert.rejects(stack.run({ type: "thread.browser", threadId, enabled: true, browserId: "general" }), (error: RoomError) => error.code === "default_not_allowed");
+  await stack.run({ type: "thread.browser", threadId, enabled: true, allowed: null });
+  assert.match(await tools.run(["list"], { as: key, force: false }), /- general/);
+
+  // Off again: refused, and the thread view says so.
+  await stack.run({ type: "thread.browser", threadId, enabled: false });
+  await assert.rejects(tools.run(["testing", "tabs"], { as: key, force: false }), /turned off for this thread/);
+  assert.deepEqual(stack.repos.getThreadBrowsers(threadId)?.allowedBrowserIds, null);
 });
 
 test("the tool endpoint needs the token from browser-api.json", async (t) => {
@@ -292,7 +337,7 @@ test("rooms-browser against a real headless Chrome: own tabs, element uids, refu
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
   const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
   const record = { id: "tools", name: "tools", description: "", createdAt: "", updatedAt: "" };
-  const tools = new BrowserTools({ browsers, findBrowser: (name) => (name === "tools" ? record : null), listBrowsers: () => [record], roomForKey: () => null, browsersForRoom: () => [record] });
+  const tools = new BrowserTools({ browsers, findBrowser: (name) => (name === "tools" ? record : null), accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }) });
   const site = createServer((_req, res) => res.end(`<title>form</title><h1>ready</h1><input aria-label="Name"><button onclick="document.querySelector('h1').textContent='hi '+document.querySelector('input').value">Greet</button>`));
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}/form`;

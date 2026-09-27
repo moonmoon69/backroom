@@ -92,6 +92,8 @@ export const api = {
   /** A thread used directly (outside any room). */
   thread: (threadId: string): Promise<ThreadView> => get(`/api/threads/${encodeURIComponent(threadId)}`),
   rooms: (): Promise<RoomListItem[]> => get("/api/rooms"),
+  /** A room ("room:<id>") or thread ("thread:<id>") was on screen up to `at`, its newest finish. */
+  markSeen: (key: string, at: string): Promise<{ key: string; at: string }> => post("/api/seen", { key, at }),
   room: (roomId: string): Promise<RoomSnapshot> => get(`/api/rooms/${encodeURIComponent(roomId)}`),
   run: (roomId: string, runId: string): Promise<Run> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/runs/${encodeURIComponent(runId)}`),
@@ -148,8 +150,8 @@ export const api = {
   browserStart: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/start`, {}),
   browserStop: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/stop`, {}),
   /** The browsers section for a thread outside any room, with browserId as its default (started now). */
-  browserBriefing: (threadKey: string, browserId: string): Promise<{ text: string }> =>
-    get(`/api/browser-briefing?as=${encodeURIComponent(threadKey)}&browserId=${encodeURIComponent(browserId)}`),
+  /** A thread's browser instructions (its browsers, its default started, its key), for the user's next message. */
+  threadBrowserBriefing: (threadId: string): Promise<{ text: string }> => get(`/api/threads/${encodeURIComponent(threadId)}/browser-briefing`),
   /** Wipe logins, history and saved tabs; the browser keeps its name, purpose and address. */
   browserReset: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/reset`, {}),
   /** Upload one image as raw bytes; the returned id is referenced from message.create / task.create. */

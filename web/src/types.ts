@@ -37,6 +37,13 @@ export interface RoomListItem extends Room {
   waiting: number;
   /** Live thread state from the scheduler's last poll: mid-turn, background work running, only monitoring, needs you. */
   activity?: { turn: number; background: number; monitoring: number; needsInput: number };
+  /** What finished since the room was last seen on any device: replies and failed runs, the newest described. */
+  news?: RoomNews;
+}
+
+export interface RoomNews {
+  unseen: number;
+  latest: { at: string; alias: string | null; kind: "reply" | "failed"; preview: string } | null;
 }
 
 export interface Participant {
@@ -480,6 +487,8 @@ export interface T3ThreadShell {
   deletedAt: string | null;
   updatedAt: string;
   boundToRoom: boolean;
+  /** Outside rooms: its last turn finished (or failed) after it was last seen on any device. */
+  news?: { at: string; state: "completed" | "error" } | null;
 }
 
 /** One entry of a direct thread's conversation (GET /api/threads/:threadId). */
@@ -522,6 +531,8 @@ export interface ThreadView {
   };
   /** Older turns exist in T3 beyond the window read here. */
   partial: boolean;
+  /** Browsers for its agent, chosen as a room chooses them; off until chosen. The default is the one in use. Absent from an older service. */
+  browsers?: { enabled: boolean; defaultBrowserId: string | null; allowedBrowserIds: string[] | null };
 }
 
 /** An image sent inline with a direct thread message. */
@@ -888,6 +899,7 @@ export type RoomCommand =
   | { type: "room.update"; roomId: string; title: string }
   /** browserId omitted keeps the room's default; null falls back to "general". */
   | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
+  | { type: "thread.browser"; threadId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
   | { type: "browser.create"; name: string; description?: string }
   | { type: "browser.update"; browserId: string; name?: string; description?: string }
   | { type: "browser.delete"; browserId: string }

@@ -5,6 +5,7 @@ import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
+import { startSeen } from "./seen.ts";
 
 export class ChangeHub {
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -55,6 +56,7 @@ export function createStack(input: {
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
+  startSeen(repos);
   const hub = new ChangeHub();
   const notify = (roomId: string) => hub.notify(roomId);
   const service = new RoomService(db, repos, input.adapter, notify);

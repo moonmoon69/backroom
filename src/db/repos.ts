@@ -11,6 +11,7 @@ import type {
   Run,
   SessionBinding,
   Task,
+  ThreadBrowsers,
   Attachment,
 } from "../domain/types.ts";
 
@@ -19,6 +20,16 @@ type Row = Record<string, unknown>;
 const s = (value: unknown): string => value as string;
 const n = (value: unknown): number => value as number;
 const ns = (value: unknown): string | null => (value === null || value === undefined ? null : (value as string));
+
+function rowToThreadBrowsers(row: Row): ThreadBrowsers {
+  return {
+    threadId: s(row.thread_id),
+    browserEnabled: n(row.browser_enabled) === 1,
+    defaultBrowserId: ns(row.default_browser_id),
+    allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
+    updatedAt: s(row.updated_at),
+  };
+}
 
 function rowToRoom(row: Row): Room {
   return {
@@ -191,6 +202,29 @@ export class Repos {
     if (allowedBrowserIds !== undefined) {
       this.raw.prepare("UPDATE rooms SET browser_ids_json = ? WHERE id = ?").run(allowedBrowserIds === null ? null : JSON.stringify(allowedBrowserIds), roomId);
     }
+  }
+
+  // ---- a thread's browsers ----
+
+  getThreadBrowsers(threadId: string): ThreadBrowsers | null {
+    const row = this.raw.prepare("SELECT * FROM thread_browsers WHERE thread_id = ?").get(threadId) as Row | undefined;
+    return row ? rowToThreadBrowsers(row) : null;
+  }
+
+  /** The record of the thread whose id starts with `prefix` (a thread's browser key carries 8 characters of it). */
+  findThreadBrowsers(prefix: string): ThreadBrowsers | null {
+    const row = this.raw.prepare("SELECT * FROM thread_browsers WHERE substr(thread_id, 1, ?) = ? ORDER BY updated_at DESC LIMIT 1").get(prefix.length, prefix) as Row | undefined;
+    return row ? rowToThreadBrowsers(row) : null;
+  }
+
+  setThreadBrowsers(record: ThreadBrowsers): void {
+    this.raw
+      .prepare(
+        `INSERT INTO thread_browsers (thread_id, browser_enabled, default_browser_id, browser_ids_json, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET browser_enabled = excluded.browser_enabled, default_browser_id = excluded.default_browser_id,
+           browser_ids_json = excluded.browser_ids_json, updated_at = excluded.updated_at`,
+      )
+      .run(record.threadId, record.browserEnabled ? 1 : 0, record.defaultBrowserId, record.allowedBrowserIds === null ? null : JSON.stringify(record.allowedBrowserIds), record.updatedAt);
   }
 
   // ---- browsers ----
@@ -676,5 +710,32 @@ export class Repos {
 
   setKv(key: string, value: string): void {
     this.raw.prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+
+  /** Every kv entry whose key starts with `prefix`. */
+  listKv(prefix: string): Map<string, string> {
+    const rows = this.raw.prepare("SELECT key, value FROM kv WHERE substr(key, 1, ?) = ?").all(prefix.length, prefix) as Row[];
+    return new Map(rows.map((row) => [s(row.key), s(row.value)]));
+  }
+
+  /**
+   * What finished in a room after `after` (an ISO time), newest first, at most `limit`: members' replies (to room
+   * tasks, or to turns typed in T3), and runs that failed without one. A run the user interrupted is not news.
+   */
+  listRoomFinishes(roomId: string, after: string, limit: number): Array<{ at: string; participantId: string | null; kind: "reply" | "failed"; text: string }> {
+    const rows = this.raw
+      .prepare(
+        `SELECT at, participant_id, kind, text FROM (
+           SELECT created_at AS at, json_extract(speaker_json, '$.participantId') AS participant_id, 'reply' AS kind, substr(text, 1, 400) AS text
+             FROM events
+            WHERE room_id = ? AND kind IN ('assistant.reply', 't3.turn') AND json_extract(speaker_json, '$.type') = 'participant' AND created_at > ?
+           UNION ALL
+           SELECT runs.completed_at, bindings.participant_id, 'failed', substr(COALESCE(runs.error, ''), 1, 400)
+             FROM runs JOIN tasks ON tasks.id = runs.task_id JOIN bindings ON bindings.id = runs.binding_id
+            WHERE tasks.room_id = ? AND runs.status = 'failed' AND runs.result_event_id IS NULL AND runs.completed_at > ?
+         ) ORDER BY at DESC LIMIT ?`,
+      )
+      .all(roomId, after, roomId, after, limit) as Row[];
+    return rows.map((row) => ({ at: s(row.at), participantId: row.participant_id === null ? null : s(row.participant_id), kind: row.kind === "failed" ? "failed" : "reply", text: s(row.text) }));
   }
 }

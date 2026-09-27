@@ -160,6 +160,8 @@ export class RoomService {
       }
       case "room.browser":
         return this.setRoomBrowser(command);
+      case "thread.browser":
+        return this.setThreadBrowser(command);
       case "browser.create":
         return this.createBrowser(command);
       case "browser.update":
@@ -326,15 +328,28 @@ export class RoomService {
     if (existing && existing.id !== exceptId) throw new RoomError("browser_name_taken", `a browser named "${name}" already exists`, 409);
   }
 
-  private async setRoomBrowser(command: Extract<RoomCommand, { type: "room.browser" }>): Promise<CommandResult> {
-    const room = this.requireRoom(command.roomId);
-    const defaultBrowserId = command.browserId === undefined ? room.defaultBrowserId : command.browserId;
-    const allowed = command.allowed === undefined ? room.allowedBrowserIds : command.allowed === null ? null : [...new Set(command.allowed)];
+  /**
+   * The default and the list a room.browser or thread.browser command leaves: omitted keeps the current one, null
+   * falls back ("general" for the default, every browser for the list). The default must be one the list allows.
+   */
+  private browserChoice(
+    current: Pick<Room, "defaultBrowserId" | "allowedBrowserIds">,
+    command: { browserId?: string | null | undefined; allowed?: string[] | null | undefined },
+    subject: string,
+  ): { defaultBrowserId: string | null; allowed: string[] | null } {
+    const defaultBrowserId = command.browserId === undefined ? current.defaultBrowserId : command.browserId;
+    const allowed = command.allowed === undefined ? current.allowedBrowserIds : command.allowed === null ? null : [...new Set(command.allowed)];
     if (defaultBrowserId) this.requireBrowser(defaultBrowserId);
     for (const id of allowed ?? []) this.requireBrowser(id);
     if (allowed && defaultBrowserId && !allowed.includes(defaultBrowserId)) {
-      throw new RoomError("default_not_allowed", "the room's default browser must be one of the browsers it may use");
+      throw new RoomError("default_not_allowed", `the ${subject}'s default browser must be one of the browsers it may use`);
     }
+    return { defaultBrowserId, allowed };
+  }
+
+  private async setRoomBrowser(command: Extract<RoomCommand, { type: "room.browser" }>): Promise<CommandResult> {
+    const room = this.requireRoom(command.roomId);
+    const { defaultBrowserId, allowed } = this.browserChoice(room, command, "room");
     const sameList = JSON.stringify(allowed) === JSON.stringify(room.allowedBrowserIds);
     if (room.browserEnabled === command.enabled && room.defaultBrowserId === defaultBrowserId && sameList) return { type: "room.updated", roomId: room.id };
     const next = { ...room, defaultBrowserId, allowedBrowserIds: allowed };
@@ -355,6 +370,14 @@ export class RoomService {
     });
     this.notify(room.id);
     return { type: "room.updated", roomId: room.id };
+  }
+
+  /** A thread outside rooms gets browsers as a room does; a thread without a record has them off. */
+  private async setThreadBrowser(command: Extract<RoomCommand, { type: "thread.browser" }>): Promise<CommandResult> {
+    const current = this.repos.getThreadBrowsers(command.threadId) ?? { threadId: command.threadId, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, updatedAt: now() };
+    const { defaultBrowserId, allowed } = this.browserChoice(current, command, "thread");
+    this.db.transaction(() => this.repos.setThreadBrowsers({ ...current, browserEnabled: command.enabled, defaultBrowserId, allowedBrowserIds: allowed, updatedAt: now() }));
+    return { type: "thread.updated", threadId: command.threadId };
   }
 
   private async createBrowser(command: Extract<RoomCommand, { type: "browser.create" }>): Promise<CommandResult> {

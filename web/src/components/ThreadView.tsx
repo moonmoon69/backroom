@@ -40,7 +40,7 @@ import { speakableSummary, useAutoRead, useSpeechAvailable } from "../speech.ts"
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { UsageCard } from "./ThreadUsageCard.tsx";
 import { Popover } from "./Popover.tsx";
-import { GlobeIcon } from "./RoomBrowser.tsx";
+import { BrowserChoices, GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
 import { CloseIcon, ImageIcon, MoreIcon } from "./icons.tsx";
 
@@ -148,10 +148,9 @@ interface ThreadViewProps {
 
 export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart }: ThreadViewProps) {
   const { view, error, refresh, hurry } = useThreadView(threadId, onGone);
-  // A browser attached here: its instructions go in front of the next message (threads outside rooms get no briefing).
-  const [attached, setAttached] = useState<string | null>(null);
+  // The browser instructions go in front of the next message (threads outside rooms get no briefing).
+  const [attached, setAttached] = useState(false);
   const { toast } = useToast();
-  const attachedBrowser = attached ? browsers?.find((b) => b.id === attached) ?? null : null;
   const [dialog, setDialog] = useState<"settings" | "room" | "delete" | null>(null);
   const crew = useMemo(() => threadCrew(threadId), [threadId]);
   // Priced as a room prices a member: the total, a figure per reply, the turn in progress. A new reply is priced at once.
@@ -195,13 +194,8 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
         <PageTitle context={view?.project?.title ?? null} contextTitle={view?.project?.workspaceRoot} name={thread?.title ?? "Thread"} />
         {activity && activity.tone !== "idle" ? <span className={`pill thread-pill tone-${activity.tone}`}>{activity.label}</span> : null}
         <span className="spacer" />
-        {thread && browsers ? (
-          <ThreadBrowserButton
-            browsers={browsers}
-            lastUsed={lastThreadBrowser(threadId)}
-            attached={attached}
-            onAttach={setAttached}
-          />
+        {thread && browsers && view?.browsers ? (
+          <ThreadBrowserButton threadId={threadId} browsers={browsers} access={view.browsers} attached={attached} onAttach={setAttached} runCommand={runCommand} onChanged={refresh} />
         ) : null}
         {thread ? (
           <ThreadMenu
@@ -298,25 +292,22 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 if (await runCommand({ type: "thread.interrupt", threadId })) hurry();
               }}
               notice={
-                attachedBrowser ? (
+                attached ? (
                   <>
-                    <span>
-                      Browser <span className="mono">{attachedBrowser.name}</span>: its instructions go with your next message.
-                    </span>
+                    <span>The browser instructions go with your next message.</span>
                     <span className="spacer" />
-                    <button type="button" className="small ghost" onClick={() => setAttached(null)}>
+                    <button type="button" className="small ghost" onClick={() => setAttached(false)}>
                       Don&rsquo;t send
                     </button>
                   </>
                 ) : null
               }
               onSend={async (text, images) => {
-                const withBrowser = attached ? await withBrowserInstructions(threadId, attached, text, toast) : text;
+                const withBrowser = attached ? await withBrowserInstructions(threadId, text, toast) : text;
                 if (withBrowser === null) return false;
                 const result = await runCommand({ type: "thread.send", threadId, text: withBrowser, images });
                 if (result) {
-                  if (attached) rememberThreadBrowser(threadId, attached);
-                  setAttached(null);
+                  setAttached(false);
                   hurry();
                   onChanged();
                 }
@@ -578,7 +569,7 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
                         </select>
                         <span className="hint">
                           {browserId
-                            ? browsers.find((b) => b.id === browserId)?.description || "The browser's instructions go with the first message."
+                            ? `${browsers.find((b) => b.id === browserId)?.description || "No description."} The agent may use this browser only, as a room limits its agents; its instructions go with the first message. The globe in the thread's header changes it later.`
                             : "Give the agent a shared browser: its instructions go with the first message. You can add one later."}
                         </span>
                       </label>
@@ -595,13 +586,13 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
               running={false}
               onSend={async (text, images) => {
                 if (!model) return false;
-                // The thread's id is chosen here so the browser key in the first message is the thread's own.
-                const threadId = crypto.randomUUID();
-                const first = browserId ? await withBrowserInstructions(threadId, browserId, text, toast) : text;
-                if (first === null) return false;
                 if (!workspaceReady(workspace)) return false;
+                // The thread's id is chosen here, so its browsers are set and the key in the first message is its own.
+                const threadId = crypto.randomUUID();
+                if (browserId && !(await runCommand({ type: "thread.browser", threadId, enabled: true, browserId, allowed: [browserId] }))) return false;
+                const first = browserId ? await withBrowserInstructions(threadId, text, toast) : text;
+                if (first === null) return false;
                 const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode, ...(workspace.mode === "local" ? {} : { workspace }) });
-                if (result && browserId) rememberThreadBrowser(threadId, browserId);
                 if (result && picked) rememberThreadCrew(threadId, picked);
                 if (result && result.type === "thread.started" && "threadId" in result) {
                   onStarted(result.threadId as string);
@@ -635,16 +626,10 @@ const rememberThreadCrew = (threadId: string, preset: Preset): void => localStor
 
 // ---- browsers for threads outside rooms ----
 
-const THREAD_BROWSER_KEY = "backroom.threadBrowser.";
-const lastThreadBrowser = (threadId: string): string | null => localStorage.getItem(THREAD_BROWSER_KEY + threadId);
-const rememberThreadBrowser = (threadId: string, browserId: string): void => localStorage.setItem(THREAD_BROWSER_KEY + threadId, browserId);
-/** The agent key of a thread outside rooms: tabs it opens with it are its own. */
-const threadBrowserKey = (threadId: string): string => `thread.${threadId.slice(0, 8)}`;
-
-/** The browsers section (every browser, this one as default, started now) in front of the user's text; null on failure. */
-async function withBrowserInstructions(threadId: string, browserId: string, text: string, toast: (message: string) => void): Promise<string | null> {
+/** The thread's browsers section (the ones it may use, its default started now) in front of the user's text; null on failure. */
+async function withBrowserInstructions(threadId: string, text: string, toast: (message: string) => void): Promise<string | null> {
   try {
-    const { text: instructions } = await api.browserBriefing(threadBrowserKey(threadId), browserId);
+    const { text: instructions } = await api.threadBrowserBriefing(threadId);
     return text.trim() ? `${instructions}\n\n${text}` : instructions;
   } catch (error) {
     toast(`The browser instructions could not be prepared: ${error instanceof ApiError ? error.message : String(error)}`);
@@ -652,19 +637,31 @@ async function withBrowserInstructions(threadId: string, browserId: string, text
   }
 }
 
+/**
+ * The thread's Browser switch: a globe, checked while its agent may use browsers, like a room's. It opens the choices a
+ * room's panel has (browsers on or off, which ones, the default), with the same rules: the tool refuses the rest, and
+ * refuses the thread while they are off. A thread outside a room gets no briefing, so the instructions go with your
+ * next message: after each change, or when you add them again.
+ */
 function ThreadBrowserButton({
+  threadId,
   browsers,
-  lastUsed,
+  access,
   attached,
   onAttach,
+  runCommand,
+  onChanged,
 }: {
+  threadId: string;
   browsers: BrowserListItem[];
-  lastUsed: string | null;
-  attached: string | null;
-  onAttach: (browserId: string | null) => void;
+  access: NonNullable<ThreadViewData["browsers"]>;
+  attached: boolean;
+  onAttach: (attach: boolean) => void;
+  runCommand: RunCommand;
+  onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [choice, setChoice] = useState<string>(attached ?? lastUsed ?? browsers[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -676,8 +673,19 @@ function ThreadBrowserButton({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
-  const used = browsers.find((b) => b.id === (attached ?? lastUsed));
-  const chosen = browsers.find((b) => b.id === choice);
+  const set = async (next: { enabled: boolean; browserId?: string | null; allowed?: string[] | null }) => {
+    setBusy(true);
+    const result = await runCommand({ type: "thread.browser", threadId, ...next });
+    setBusy(false);
+    if (!result) return;
+    onChanged();
+    // What the agent was told is out of date: the new instructions go with the next message (nothing, once off).
+    onAttach(next.enabled);
+  };
+  const defaultBrowser = browsers.find((b) => b.id === access.defaultBrowserId);
+  const title = !access.enabled
+    ? "Browser: off for this thread's agent"
+    : `Browser: on for this thread's agent · default "${defaultBrowser?.name ?? "none"}"${attached ? " · instructions go with your next message" : ""}`;
   return (
     <>
       <button
@@ -686,51 +694,49 @@ function ThreadBrowserButton({
         className={`small thread-browser-button${attached ? " active" : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={attached && used ? `Browser "${used.name}": its instructions go with your next message` : used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
-        title={attached && used ? `Browser "${used.name}": its instructions go with your next message` : used ? `Browser: ${used.name}` : "Give this thread a shared browser"}
+        aria-label={title}
+        title={title}
         onClick={() => setOpen((v) => !v)}
       >
-        <GlobeIcon checked={Boolean(attached)} failed={used?.status.state === "error"} />
+        <GlobeIcon checked={access.enabled} failed={access.enabled && defaultBrowser?.status.state === "error"} />
       </button>
       {open ? (
-        <Popover anchor={anchor} menuRef={menuRef} role="dialog" className="browser-panel" onClose={() => setOpen(false)}>
-          <label className="browser-default">
-            <span className="label">Browser</span>
-            <select value={choice} onChange={(e) => setChoice(e.target.value)}>
-              {browsers.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+        <Popover anchor={anchor} menuRef={menuRef} role="dialog" className="browser-panel thread-browser-panel" onClose={() => setOpen(false)}>
+          <label className="browser-toggle">
+            <input type="checkbox" checked={access.enabled} disabled={busy} onChange={() => void set({ enabled: !access.enabled })} />
+            <span>
+              Let this thread&rsquo;s agent use browsers
+              <span className="hint">As in a room: the agent is told about the browsers ticked below, and the browser tool refuses the others. While this is off, it refuses this thread.</span>
+            </span>
           </label>
-          {chosen?.description ? <p className="hint browser-purpose">{chosen.description}</p> : null}
-          <p className="hint">
-            A thread outside a room gets no briefing, so the browser&rsquo;s instructions travel with your next message, once. Add them again if the agent loses track.
-          </p>
+          <BrowserChoices
+            list={browsers}
+            enabled={access.enabled}
+            allowedIds={access.allowedBrowserIds}
+            defaultId={access.defaultBrowserId}
+            busy={busy}
+            subject="thread"
+            onChange={(next) => void set({ enabled: access.enabled, ...next })}
+          />
+          <p className="hint">A thread outside a room gets no briefing, so the instructions go with your next message, once, after each change. Add them again if the agent loses track.</p>
           <div className="dialog-actions">
             {attached ? (
+              <button type="button" onClick={() => onAttach(false)} title="The instructions are going with your next message; keep them back">
+                Don&rsquo;t send
+              </button>
+            ) : (
               <button
                 type="button"
+                className="primary"
+                disabled={!access.enabled}
                 onClick={() => {
-                  onAttach(null);
+                  onAttach(true);
                   setOpen(false);
                 }}
               >
-                Don&rsquo;t send
+                Add to my next message
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="primary"
-              disabled={!choice}
-              onClick={() => {
-                onAttach(choice);
-                setOpen(false);
-              }}
-            >
-              Add to my next message
-            </button>
+            )}
           </div>
         </Popover>
       ) : null}

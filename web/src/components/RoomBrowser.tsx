@@ -169,6 +169,87 @@ export function RoomBrowserButton({ active, onClick }: { active: boolean; onClic
 }
 
 /**
+ * Which browsers the agents of a room, or of a thread outside rooms, may use: a box per browser with the name and
+ * description they read, one of them the default. Every browser ticked is stored as "every browser" (null), which
+ * takes in browsers added later; one stays ticked (none at all is browsers off). Unticking the default hands the
+ * default to the first browser still ticked, in the same change.
+ */
+export function BrowserChoices({
+  list,
+  enabled,
+  allowedIds,
+  defaultId,
+  busy,
+  subject,
+  onChange,
+  onEdit,
+}: {
+  list: BrowserListItem[] | null;
+  enabled: boolean;
+  allowedIds: string[] | null;
+  /** The default in use (the effective one). */
+  defaultId: string | null;
+  busy: boolean;
+  subject: "room" | "thread";
+  onChange: (next: { browserId?: string | null; allowed?: string[] | null }) => void;
+  /** Edit a browser's name and description; without it there is no Edit link. */
+  onEdit?: (browser: BrowserListItem) => void;
+}) {
+  const isAllowed = (browserId: string) => allowedIds === null || allowedIds.includes(browserId);
+  const tickedCount = list ? list.filter((b) => isAllowed(b.id)).length : 0;
+  const toggleAllowed = (browserId: string) => {
+    if (!list) return;
+    const current = allowedIds ?? list.map((b) => b.id);
+    const unticking = isAllowed(browserId);
+    const next = unticking ? current.filter((id) => id !== browserId) : [...current, browserId];
+    if (next.length === 0) return;
+    const allowed = list.every((b) => next.includes(b.id)) ? null : next;
+    const successor = unticking && browserId === defaultId ? list.find((b) => next.includes(b.id))?.id : undefined;
+    onChange({ allowed, ...(successor ? { browserId: successor } : {}) });
+  };
+  const labelId = `browser-choices-label-${subject}`;
+  return (
+    <div className={`browser-choices${enabled ? "" : " is-off"}`} role="group" aria-labelledby={labelId}>
+      <span className="label" id={labelId}>
+        {subject === "room" ? "Browsers they can use" : "Browsers it can use"}
+      </span>
+      {!list ? <p className="hint">Loading…</p> : null}
+      {list?.map((browser) => {
+        const allowed = isAllowed(browser.id);
+        const isDefault = browser.id === defaultId;
+        return (
+          <div key={browser.id} className={`browser-choice${allowed ? "" : " unticked"}`}>
+            <div className="browser-choice-head">
+              <label className="checkbox" title={allowed && tickedCount === 1 ? `One browser stays ticked; to give this ${subject} none, turn browsers off above` : isDefault ? "Unticking the default makes the next ticked browser the default" : undefined}>
+                <input type="checkbox" checked={allowed} disabled={busy || (allowed && tickedCount === 1)} onChange={() => toggleAllowed(browser.id)} />
+                <span className="mono">{browser.name}</span>
+              </label>
+              {isDefault ? (
+                <span className="pill pill-muted">default</span>
+              ) : allowed ? (
+                <button type="button" className="link-button" disabled={busy} onClick={() => onChange({ browserId: browser.id })}>
+                  make default
+                </button>
+              ) : null}
+              <span className="spacer" />
+              {onEdit ? (
+                <button type="button" className="link-button" onClick={() => onEdit(browser)} title="Edit the name and description agents read">
+                  Edit
+                </button>
+              ) : null}
+            </div>
+            <p className="browser-choice-purpose">{browser.description || <span className="muted">No description; agents see only the name.</span>}</p>
+          </div>
+        );
+      })}
+      {list && list.length > 1 ? (
+        <p className="hint">{allowedIds === null ? "All ticked: browsers you add later are included too." : "Browsers you add later start unticked here."}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The Browser tab of the room's side panel, in the order it matters to agents: first whether they are told about
  * browsers at all, then which browsers they may use, each with the name and description they read (editable here),
  * one of them the default that starts for each task; then that default's process, with Start or Stop at the bottom.
@@ -188,8 +269,6 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
   useEffect(loadList, [loadList]);
 
   const unavailable = !info || info.status.mode === null;
-  const allowedIds = snapshot.room.allowedBrowserIds;
-  const isAllowed = (browserId: string) => allowedIds === null || allowedIds.includes(browserId);
   const setBrowser = async (next: { enabled: boolean; browserId?: string | null; allowed?: string[] | null }) => {
     setBusy(true);
     try {
@@ -197,19 +276,6 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
     } finally {
       setBusy(false);
     }
-  };
-  const tickedCount = list ? list.filter((b) => isAllowed(b.id)).length : 0;
-  const toggleAllowed = (browserId: string) => {
-    if (!list) return;
-    const current = allowedIds ?? list.map((b) => b.id);
-    const unticking = isAllowed(browserId);
-    const next = unticking ? current.filter((id) => id !== browserId) : [...current, browserId];
-    if (next.length === 0) return;
-    // Every browser ticked is stored as "every browser", which also takes in browsers added later.
-    const allowed = list.every((b) => next.includes(b.id)) ? null : next;
-    // Unticking the default hands the default to the first browser still ticked, in the same change.
-    const successor = unticking && browserId === info?.browser.id ? list.find((b) => next.includes(b.id))?.id : undefined;
-    void setBrowser({ enabled, allowed, ...(successor ? { browserId: successor } : {}) });
   };
 
   return (
@@ -225,41 +291,16 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
         </span>
       </label>
 
-      <div className={`browser-choices${enabled ? "" : " is-off"}`} role="group" aria-labelledby="browser-choices-label">
-        <span className="label" id="browser-choices-label">
-          Browsers they can use
-        </span>
-        {!list ? <p className="hint">Loading…</p> : null}
-        {list?.map((browser) => {
-          const allowed = isAllowed(browser.id);
-          const isDefault = browser.id === info?.browser.id;
-          return (
-            <div key={browser.id} className={`browser-choice${allowed ? "" : " unticked"}`}>
-              <div className="browser-choice-head">
-                <label className="checkbox" title={allowed && tickedCount === 1 ? "One browser stays ticked; to give this room none, turn browsers off above" : isDefault ? "Unticking the default makes the next ticked browser the default" : undefined}>
-                  <input type="checkbox" checked={allowed} disabled={busy || (allowed && tickedCount === 1)} onChange={() => toggleAllowed(browser.id)} />
-                  <span className="mono">{browser.name}</span>
-                </label>
-                {isDefault ? (
-                  <span className="pill pill-muted">default</span>
-                ) : allowed ? (
-                  <button type="button" className="link-button" disabled={busy} onClick={() => void setBrowser({ enabled, browserId: browser.id })}>
-                    make default
-                  </button>
-                ) : null}
-                <span className="spacer" />
-                <button type="button" className="link-button" onClick={() => setEditing(browser)} title="Edit the name and description agents read">
-                  Edit
-                </button>
-              </div>
-              <p className="browser-choice-purpose">{browser.description || <span className="muted">No description; agents see only the name.</span>}</p>
-            </div>
-          );
-        })}
-        {list && list.length > 1 ? (
-          <p className="hint">{allowedIds === null ? "All ticked: browsers you add later are included too." : "Browsers you add later start unticked here."}</p>
-        ) : null}
-      </div>
+      <BrowserChoices
+        list={list}
+        enabled={enabled}
+        allowedIds={snapshot.room.allowedBrowserIds}
+        defaultId={info?.browser.id ?? null}
+        busy={busy}
+        subject="room"
+        onChange={(next) => void setBrowser({ enabled, ...next })}
+        onEdit={setEditing}
+      />
 
       {info ? (
         <>
