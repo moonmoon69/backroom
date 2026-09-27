@@ -6294,9 +6294,15 @@ button:has(> .icon):not(.mobile-only) {
   color: var(--fg-dim);
 }
 
-.chat-head .reply-spend {
-  margin-left: auto;
-  padding-left: 8px;
+/* At the foot of the reply bubble, right-aligned under the text. */
+.bubble .reply-spend {
+  margin-top: 8px;
+  text-align: right;
+  color: var(--fg-dim);
+}
+
+.reply-spend-detail {
+  color: var(--fg-dim);
 }
 
 .thread-spend {
