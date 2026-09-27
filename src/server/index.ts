@@ -18,7 +18,7 @@ import { createHttpApp } from "./http.ts";
 const config = loadConfig();
 const log = (message: string, detail?: unknown) => {
   const suffix = detail === undefined ? "" : ` ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
-  console.log(`[rooms] ${new Date().toISOString()} ${message}${suffix}`);
+  console.log(`[backroom] ${new Date().toISOString()} ${message}${suffix}`);
 };
 
 let adapter: T3Adapter;

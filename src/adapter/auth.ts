@@ -60,7 +60,7 @@ export async function exchangePairingCredential(
     subject_token_type: BOOTSTRAP_TOKEN_TYPE,
     requested_token_type: ACCESS_TOKEN_TYPE,
     scope: REQUESTED_SCOPES,
-    client_label: "T3 Rooms",
+    client_label: "Backroom",
     client_device_type: "bot",
   });
   const response = await fetchImpl(new URL("/oauth/token", baseUrl), {

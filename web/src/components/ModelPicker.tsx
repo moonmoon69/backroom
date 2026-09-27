@@ -20,7 +20,7 @@ import { useToast } from "./Toast.tsx";
 import { ChevronIcon, SearchIcon, StarIcon } from "./icons.tsx";
 
 // ---- favourites: a set of entry keys in localStorage, shared by every picker on the page ----
-const FAVORITES_KEY = "t3rooms.modelFavorites";
+const FAVORITES_KEY = "backroom.modelFavorites";
 let favoriteKeys: ReadonlySet<string> | null = null;
 const favoriteListeners = new Set<() => void>();
 

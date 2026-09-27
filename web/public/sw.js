@@ -1,5 +1,5 @@
 /*
- * T3 Rooms service worker: makes the app installable and lets the shell open while offline.
+ * Backroom service worker: makes the app installable and lets the shell open while offline.
  * Live data (/api/*) is never cached. Hashed bundles under /assets/ are cache-first; the shell and PWA files are
  * network-first with the cached copy as the offline fallback, so a rebuilt UI is picked up on the next load.
  */

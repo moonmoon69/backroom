@@ -15,7 +15,7 @@ interface Lane {
 const LANES: Lane[] = [
   { key: "needs_input", title: "Needs input", states: ["needs_input"], hint: "Waiting on an answer in T3 or below." },
   { key: "running", title: "Running", states: ["running", "dispatching"], hint: "Nothing running: no room task, no turn typed in T3, no background work." },
-  { key: "waiting", title: "Waiting", states: ["queued"], hint: "Ready; waits for the participant's session to be free." },
+  { key: "waiting", title: "Waiting", states: ["queued"], hint: "Ready; waits for the member's session to be free." },
   { key: "held", title: "Held", states: ["held"], hint: "Saved for later; release to queue." },
   { key: "blocked", title: "Blocked", states: ["blocked"], hint: "Waiting on prerequisites or manually blocked." },
 ];

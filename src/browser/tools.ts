@@ -71,7 +71,7 @@ class Engine {
     this.child.on("exit", () => this.fail(new BrowserToolError(`the browser engine exited${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`, 502)));
     this.child.on("error", (error) => this.fail(new BrowserToolError(`the browser engine could not start: ${error.message}`, 502)));
     this.ready = (async () => {
-      await this.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t3-rooms", version: "1" } }, 30_000);
+      await this.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "backroom", version: "1" } }, 30_000);
       child.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
     })();
   }

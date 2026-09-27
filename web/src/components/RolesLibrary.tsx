@@ -65,7 +65,7 @@ export function RolesDialog({ runCommand, onClose }: Props) {
           <label>
             Name
             <NameInput value={editing.name} onValue={(name) => setEditing({ ...editing, name })} required placeholder="accountant" />
-            <span className="hint">Assign it with /role @alias {editing.name.trim() || "accountant"}, or from the participant's Edit dialog.</span>
+            <span className="hint">Assign it with /role @alias {editing.name.trim() || "accountant"}, or from the member's Edit dialog.</span>
           </label>
           <label>
             Rules
@@ -97,7 +97,7 @@ export function RolesDialog({ runCommand, onClose }: Props) {
       {roles === null ? <p className="muted mono">loading…</p> : null}
       {roles && roles.length === 0 ? (
         <div className="inspector-empty">
-          <p className="serif">No roles yet; create one and assign it from a participant's Edit dialog or with /role.</p>
+          <p className="serif">No roles yet; create one and assign it from a member's Edit dialog or with /role.</p>
           <p className="mono muted">/role @alice accountant</p>
         </div>
       ) : null}

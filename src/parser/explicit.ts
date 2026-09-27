@@ -156,7 +156,7 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
     draft.consumed.push("/add");
     const alias = addMatch[1] ?? "";
     if (!alias) {
-      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: "give the new participant a name, e.g. /add alice" });
+      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: "give the new member a name, e.g. /add alice" });
       return draft;
     }
     if (!/^[a-z0-9][a-z0-9_-]{0,31}$/i.test(alias)) {
@@ -197,7 +197,7 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
     }
     const wantedRole = tokens.slice(consumedTokens).join(" ").toLowerCase();
     if (!participant) {
-      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: tokens.length > 0 ? `no participant @${tokens[0]} in this room` : "which participant?" });
+      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: tokens.length > 0 ? `no member @${tokens[0]} in this room` : "which member?" });
       return draft;
     }
     draft.participant = { participantId: participant.id, alias: participant.alias };
@@ -226,7 +226,7 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
     const wanted = (removeMatch[1] ?? "").trim().toLowerCase();
     const participant = wanted ? participants.find((p) => matchesSpoken(p, wanted)) : undefined;
     if (!participant) {
-      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: wanted ? `no participant @${removeMatch[1]} in this room` : "which participant?" });
+      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: wanted ? `no member @${removeMatch[1]} in this room` : "which member?" });
       return draft;
     }
     draft.participant = { participantId: participant.id, alias: participant.alias };
@@ -446,7 +446,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
           const pool = participants.filter((p) => new RegExp(`^${escapeRegExp(alias)}\\d+$`, "i").test(p.alias));
           const available = pool.filter((p) => !p.busy && !taken.has(p.id) && !assignment.recipients.includes(p.id));
           if (pool.length === 0) {
-            assignment.unresolved.push({ field: "recipients", severity: "error", message: `unknown participant @${alias}` });
+            assignment.unresolved.push({ field: "recipients", severity: "error", message: `nobody called @${alias} in this room` });
           } else if (available.length > 0) {
             const chosen = [...available].sort((a, b) => a.alias.localeCompare(b.alias))[0] as ParticipantRef;
             span.participantId = chosen.id;
@@ -456,7 +456,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
             assignment.unresolved.push({
               field: "recipients",
               severity: "error",
-              message: `no available participant in the @${alias} pool; pick one or wait`,
+              message: `no free member in the @${alias} pool; pick one or wait`,
               participantCandidates: pool.map((p) => ({ participantId: p.id, alias: p.alias, busy: Boolean(p.busy) })),
             });
           }
@@ -842,7 +842,7 @@ function resolvePrerequisite(
   const alias = (mention[1] as string).toLowerCase();
   const participant = byAlias.get(alias);
   if (!participant) {
-    unresolved.push({ severity: "error", field: "prerequisites", message: `unknown participant @${alias}` });
+    unresolved.push({ severity: "error", field: "prerequisites", message: `nobody called @${alias} in this room` });
     return;
   }
   // Candidate tasks for an alias: open (non-terminal) tasks first; fall back to the latest succeeded task.

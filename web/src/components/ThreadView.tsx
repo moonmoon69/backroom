@@ -221,7 +221,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
               />
             </div>
             {thread?.boundToRoom ? (
-              <p className="chat-status mono thread-partial">This thread is now a participant in a room; talk to it from the room.</p>
+              <p className="chat-status mono thread-partial">This thread is now a member in a room; talk to it from the room.</p>
             ) : null}
             <ThreadComposer
               key={threadId}
@@ -553,11 +553,11 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
   );
 }
 
-const MODE_KEY = "t3rooms.directMode";
+const MODE_KEY = "backroom.directMode";
 
 // ---- browsers for threads outside rooms ----
 
-const THREAD_BROWSER_KEY = "t3rooms.threadBrowser.";
+const THREAD_BROWSER_KEY = "backroom.threadBrowser.";
 const lastThreadBrowser = (threadId: string): string | null => localStorage.getItem(THREAD_BROWSER_KEY + threadId);
 const rememberThreadBrowser = (threadId: string, browserId: string): void => localStorage.setItem(THREAD_BROWSER_KEY + threadId, browserId);
 /** The agent key of a thread outside rooms: tabs it opens with it are its own. */

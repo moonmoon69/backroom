@@ -221,7 +221,7 @@ test("a T3 slash command is sent verbatim (no briefing), and unknown commands ar
   // The next ordinary assignment still gets the room briefing (the command did not consume it).
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "now review", schedule: { mode: "now" } });
   await stack.tick();
-  assert.match(stack.repos.listRunsForTask(stack.task(2).id)[0]!.briefing, /T3 Rooms briefing/);
+  assert.match(stack.repos.listRunsForTask(stack.task(2).id)[0]!.briefing, /Backroom briefing/);
 });
 
 test("a turn typed in T3 with an image (the iPhone app's t3-context reference) keeps the image with its prompt", async (t) => {

@@ -48,7 +48,7 @@ export function BrowserFormDialog({
             className="mono"
             value={name}
             onChange={(e) => setName(browserNameFrom(e.target.value))}
-            placeholder="t3-rooms-testing"
+            placeholder="backroom-testing"
             spellCheck={false}
             autoCapitalize="off"
             data-autofocus
@@ -62,7 +62,7 @@ export function BrowserFormDialog({
             value={description}
             maxLength={500}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Logged into staging T3 Rooms as the test user; use for integration tests."
+            placeholder="Logged into staging Backroom as the test user; use for integration tests."
           />
           <span className="hint">Shown to agents with the list of browsers, so they pick the right one. Mention the logins it holds.</span>
         </label>

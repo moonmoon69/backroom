@@ -201,7 +201,7 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE tasks ADD COLUMN slash_command INTEGER NOT NULL DEFAULT 0;`,
   // Rooms with a shared browser for their agents.
   `ALTER TABLE rooms ADD COLUMN browser_enabled INTEGER NOT NULL DEFAULT 0;`,
-  // Browsers are a list named by purpose ("general", "t3-rooms-testing"); a room picks its default. Profiles and ports
+  // Browsers are a list named by purpose ("general", "backroom-testing"); a room picks its default. Profiles and ports
   // live under data/browsers/<id>. "general" is the fallback default.
   `
   CREATE TABLE browsers (

@@ -161,7 +161,7 @@ export const THREAD_CHOICES: Array<{ key: ThreadLifecycleChoice; label: string; 
 ];
 
 /**
- * Delete a room: the room's own record (messages, tasks, images) goes; each participant's T3 thread is kept, settled,
+ * Delete a room: the room's own record (messages, tasks, images) goes; each member's T3 thread is kept, settled,
  * archived, or deleted in T3, chosen per thread (default keep).
  */
 function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onCommand: RunCommand; onClose: () => void }) {
@@ -203,14 +203,14 @@ function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onComma
     <Dialog title={`Delete "${room.title}"?`} onClose={onClose} wide>
       <form onSubmit={submit} className="form">
         <p className="muted">
-          This removes the room's conversation, tasks and images from T3 Rooms. The participants' threads live in T3 Code; choose what happens to each.
+          This removes the room's conversation, tasks and images from Backroom. The members' threads live in T3 Code; choose what happens to each.
           {running > 0 ? ` ${running} task${running === 1 ? " is" : "s are"} running: those turns keep running in T3, the room just stops following them.` : ""}
           {pending > 0 ? ` ${pending} waiting task${pending === 1 ? "" : "s"} will not be sent.` : ""}
         </p>
         {!snapshot ? (
-          <p className="muted mono">Loading participants…</p>
+          <p className="muted mono">Loading members…</p>
         ) : crew.length === 0 ? (
-          <p className="muted">No participants, so no threads to handle.</p>
+          <p className="muted">No members, so no threads to handle.</p>
         ) : (
           <>
             <div className="thread-choices" role="group" aria-label="Threads">

@@ -9,7 +9,7 @@ import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
 
 export type InspectorTab = "people" | "browser" | "tasks" | "git";
 
-const TITLES: Record<InspectorTab, string> = { people: "People", browser: "Browser", tasks: "Tasks", git: "Git" };
+const TITLES: Record<InspectorTab, string> = { people: "Members", browser: "Browser", tasks: "Tasks", git: "Git" };
 
 /** Uncommitted files across the room's working folders, and the branch when there is one folder; null until read. */
 function useUncommitted(): { count: number; branch: string | null; folders: number } | null {

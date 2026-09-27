@@ -28,7 +28,7 @@ export function AppControls({
 }) {
   return (
     <span className="app-controls">
-      <button type="button" className="small ghost" onClick={onOpenLibrary} disabled={rolesDisabled} title="Roles: named sets of rules assigned to participants">
+      <button type="button" className="small ghost" onClick={onOpenLibrary} disabled={rolesDisabled} title="Roles: named sets of rules assigned to members">
         Roles
       </button>
       <ConnectionChip status={status} onOpen={onOpenConnection} />
