@@ -72,14 +72,24 @@ export function fileBadge(reference: FileReference): { label: string; tone: stri
   return { label: (ext || name.slice(0, 3)).toUpperCase().slice(0, 4), tone: "muted" };
 }
 
-const LOCAL_IMAGE_ENDPOINT = "/api/local-image?path=";
+const LOCAL_FILE_ENDPOINT = "/api/local-file?path=";
+
+/** True for an absolute path on the machine (or a file URL), as opposed to a web URL or one of the app's own routes. */
+export const isLocalPath = (src: string): boolean => src.startsWith("file://") || (src.startsWith("/") && !src.startsWith("//") && !src.startsWith("/api/") && !src.startsWith("/assets/"));
 
 /**
- * Image sources agents write as absolute paths (`/tmp/shot.png`, `file:///home/me/shot.png`) become
- * room-server URLs. Web URLs, data URLs, and the app's own routes pass through untouched.
+ * Sources agents write as absolute paths (`/tmp/shot.png`, `file:///home/me/demo.mp4`) become Backroom URLs, served
+ * by the service from the machine it runs on. Web URLs, data URLs, and the app's own routes pass through untouched.
  */
 export function imageSource(src: string): string {
-  if (src.startsWith("file://")) return LOCAL_IMAGE_ENDPOINT + encodeURIComponent(decodeURIComponent(src.slice("file://".length)));
-  if (src.startsWith("/") && !src.startsWith("//") && !src.startsWith("/api/") && !src.startsWith("/assets/")) return LOCAL_IMAGE_ENDPOINT + encodeURIComponent(src);
+  if (src.startsWith("file://")) return LOCAL_FILE_ENDPOINT + encodeURIComponent(decodeURIComponent(src.slice("file://".length)));
+  if (isLocalPath(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(src);
   return src;
 }
+
+export type MediaKind = "image" | "video" | "audio";
+const VIDEO = /\.(mp4|m4v|webm|mov|ogv)(\?|#|$)/i;
+const AUDIO = /\.(wav|mp3|m4a|aac|ogg|oga|flac)(\?|#|$)/i;
+
+/** What a source plays as, by its extension: markdown writes every embedded file as an image. */
+export const mediaKind = (src: string): MediaKind => (VIDEO.test(src) ? "video" : AUDIO.test(src) ? "audio" : "image");

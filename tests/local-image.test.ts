@@ -1,4 +1,4 @@
-/** GET /api/local-image: serves agent screenshots referenced from replies, and nothing else. */
+/** GET /api/local-file (and its older name /api/local-image): media agents reference from replies, and nothing else. */
 import assert from "node:assert/strict";
 import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,7 @@ function fixture() {
   writeFileSync(join(dir, "shot.png"), PNG);
   writeFileSync(join(dir, "notes.txt"), "secret");
   writeFileSync(join(dir, "fake.png.txt"), "secret");
+  writeFileSync(join(dir, "demo.mp4"), Buffer.from("0123456789abcdef"));
   return dir;
 }
 
@@ -56,4 +57,28 @@ test("GET /api/local-image streams the image with its mime type and refuses ever
   assert.equal((await app.request(`/api/local-image?path=${encodeURIComponent(join(dir, "missing.png"))}`)).status, 404);
   assert.equal((await app.request("/api/local-image?path=relative.png")).status, 400);
   assert.equal((await app.request("/api/local-image")).status, 400);
+});
+
+test("GET /api/local-file serves a video in byte ranges, so it seeks and plays on every browser", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-local-file", ROOMS_PORT: "0" });
+  const app = createHttpApp(stack, config, "/nonexistent/dist");
+  const dir = fixture();
+  const url = `/api/local-file?path=${encodeURIComponent(join(dir, "demo.mp4"))}`;
+
+  const whole = await app.request(url);
+  assert.deepEqual([whole.status, whole.headers.get("content-type"), whole.headers.get("accept-ranges"), whole.headers.get("content-length")], [200, "video/mp4", "bytes", "16"]);
+  assert.equal(await whole.text(), "0123456789abcdef");
+
+  const part = await app.request(url, { headers: { range: "bytes=4-7" } });
+  assert.deepEqual([part.status, part.headers.get("content-range"), part.headers.get("content-length")], [206, "bytes 4-7/16", "4"]);
+  assert.equal(await part.text(), "4567");
+  const tail = await app.request(url, { headers: { range: "bytes=12-" } });
+  assert.deepEqual([tail.status, await tail.text()], [206, "cdef"]);
+  const last = await app.request(url, { headers: { range: "bytes=-3" } });
+  assert.deepEqual([last.status, last.headers.get("content-range"), await last.text()], [206, "bytes 13-15/16", "def"]);
+  assert.equal((await app.request(url, { headers: { range: "bytes=20-" } })).status, 416);
+  const head = await app.request(url, { method: "HEAD" });
+  assert.deepEqual([head.status, head.headers.get("content-length")], [200, "16"]);
 });
