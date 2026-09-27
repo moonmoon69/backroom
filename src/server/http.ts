@@ -816,8 +816,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const rootFiles: Record<string, string> = {
       "/manifest.webmanifest": "application/manifest+json",
       "/sw.js": "text/javascript; charset=utf-8",
-      "/favicon.svg": "image/svg+xml",
+      "/favicon.png": "image/png",
       "/apple-touch-icon.png": "image/png",
+      // The sidebar's mark.
+      "/logo.png": "image/png",
     };
     for (const [path, type] of Object.entries(rootFiles)) {
       app.get(path, (c) => {

@@ -1,5 +1,7 @@
 # Backroom
 
+![The boss at the head of the table, the crew in the shadows](assets/banner.jpg)
+
 A local companion for [T3 Code](https://github.com/pingdotgg/t3code). A **room** is one shared conversation with several T3 threads in it. Each thread takes part under a short alias (`@claude`, `@grok`, …). You address them in plain text. The room queues the work, waits where one task depends on another, and passes each finished answer to whoever needs it next. You don't have to copy anything between threads yourself.
 
 The room owns conversation and coordination. T3 owns execution: every member is a real T3 thread, with its own model, permissions and worktree, and you can still open it in T3 Code. No model reads your input on the room's side: every action is a direct control or a small explicit syntax, and the composer shows the plan before you send.

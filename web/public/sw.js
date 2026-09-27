@@ -3,7 +3,7 @@
  * Live data (/api/*) is never cached. Hashed bundles under /assets/ are cache-first; the shell and PWA files are
  * network-first with the cached copy as the offline fallback, so a rebuilt UI is picked up on the next load.
  */
-const CACHE = "t3rooms-shell-v1";
+const CACHE = "backroom-shell-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
