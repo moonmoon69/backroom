@@ -656,6 +656,18 @@ export class Repos {
     return this.raw.prepare("DELETE FROM presets WHERE id = ?").run(id).changes > 0;
   }
 
+  // ---- the harness sessions a thread has had ----
+  rememberThreadSession(threadId: string, provider: string, sessionId: string): void {
+    this.raw.prepare("INSERT OR IGNORE INTO thread_sessions (thread_id, provider, session_id, seen_at) VALUES (?, ?, ?, ?)").run(threadId, provider, sessionId, new Date().toISOString());
+  }
+
+  listThreadSessions(threadId: string): Array<{ provider: string; sessionId: string }> {
+    return (this.raw.prepare("SELECT provider, session_id FROM thread_sessions WHERE thread_id = ? ORDER BY seen_at").all(threadId) as Row[]).map((row) => ({
+      provider: s(row.provider),
+      sessionId: s(row.session_id),
+    }));
+  }
+
   // ---- kv ----
   getKv(key: string): string | null {
     const row = this.raw.prepare("SELECT value FROM kv WHERE key = ?").get(key) as Row | undefined;

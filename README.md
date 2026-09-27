@@ -416,16 +416,36 @@ The **People** tab of the side panel lists everyone seated, with the total conte
 **Click a participant** for its menu, headed by the usage card. The card shows:
 
 - the thread's context window and token totals;
+- **estimated spend for this thread**: its total at list price, split into the thread's own calls and its subagents', then a row per model with input tokens, output tokens and cost (see [Estimated spend](#estimated-spend));
 - today's usage for that model across all threads, with an API-equivalent cost (T3 does not split cost by thread);
 - the provider's plan limits.
 
-All of it comes from T3. The menu has:
+The menu has:
 
 - **Open in T3:** thread and project ids.
 - **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
 - **Settings…:** alias, role, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
 - **Rebind thread…:** point the participant at another thread.
 - **Remove from room…**
+
+### Estimated spend
+
+T3 reports usage per day and model, never per thread. The room fills that gap from what is on the machine: T3's record of which harness session each thread runs, the harness's own transcripts (one per session, plus one per subagent), and T3's price table. Priced the same way, the same calls give T3's daily totals to the cent, so the room's figures and T3's usage page agree.
+
+| Where | What it shows |
+| --- | --- |
+| A participant's row in **People** | The thread's total, with own and subagent shares on hover |
+| The participant's usage card | The total, the own and subagent split, and a row per model with input tokens, output tokens and cost |
+| The **Total** line under **People** | Every thread ever seated in the room, removed participants included |
+| A task's chip in the timeline | What the thread used while the task ran; a message sent into a running turn counts under that turn's task |
+| A thread's bar, outside any room | Its total, with the breakdown on hover |
+
+What to know when reading them:
+
+- **List price, not your bill.** The figures are what the calls would cost at the provider's API prices. A subscription charges its plan price instead; treat the estimate as a measure of consumption.
+- **Providers.** Claude and Codex threads have estimates. Cursor reports usage through its account rather than per session, and Antigravity's records T3 prices only in part: their threads show "no estimate", and a room total with such threads reads "≥".
+- **A thread's whole life.** An attached thread's estimate includes what it used before it joined the room. T3 keeps only a thread's current session; the room remembers every session it has seen a thread on, so a thread given a new session keeps its earlier spend.
+- **Where it reads.** T3's database (read-only) and `~/.claude/projects` and `~/.codex/sessions`, or `$CLAUDE_CONFIG_DIR/projects` and `$CODEX_HOME/sessions` when those are set. T3's database and the transcripts are not public interfaces; a change in them shows as "no estimate", never as a wrong number.
 
 ### Background status
 

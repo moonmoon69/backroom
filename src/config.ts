@@ -24,6 +24,11 @@ export interface Config {
     noVncDir: string;
     idleMinutes: number;
   };
+  /** Where the harnesses keep their transcripts, read for a thread's usage and cost (src/usage/threadCosts.ts). */
+  usage: {
+    claudeProjectsDir: string;
+    codexSessionsDir: string;
+  };
 }
 
 export function readT3RuntimeOrigin(userDataDir: string): string | null {
@@ -64,6 +69,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       watchHost: env.ROOMS_BROWSER_HOST ?? null,
       noVncDir: env.ROOMS_BROWSER_NOVNC_DIR ?? "/usr/share/novnc",
       idleMinutes: Number(env.ROOMS_BROWSER_IDLE_MINUTES ?? 30),
+    },
+    // The harnesses' own variables for their home, as T3 starts them with the same environment.
+    usage: {
+      claudeProjectsDir: join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects"),
+      codexSessionsDir: join(env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions"),
     },
   };
 }

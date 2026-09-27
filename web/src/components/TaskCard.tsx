@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError, useLive } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, taskLabel, type PrerequisiteRef, type Run, type Schedule, type ScheduleMode, type Task } from "../types.ts";
+import { fmtTokens, money } from "./deskFormat.ts";
 import { Dialog } from "./Dialog.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
@@ -34,6 +35,22 @@ const STATE_WORDS: Record<Task["state"], string> = {
   interrupted: "stopped",
   cancelled: "cancelled",
 };
+
+/** What the task's thread used while the task ran, at list price; nothing until there is a figure. */
+function TaskSpend({ taskId }: { taskId: string }) {
+  const { costs } = useRoom();
+  const spend = costs?.tasks[taskId];
+  if (!spend || !spend.available || spend.total.calls === 0) return null;
+  return (
+    <span
+      className="task-spend mono"
+      title={`While it ran: ${fmtTokens(spend.total.inputTokens + spend.total.cachedInputTokens + spend.total.cacheWriteTokens)} in · ${fmtTokens(spend.total.outputTokens)} out over ${spend.total.calls} calls${spend.subagents.calls > 0 ? `, subagents ${money(spend.subagents.costUsd)}` : ""}. List price, not what a subscription charges.`}
+    >
+      {spend.priced ? "≈ " : "≥ "}
+      {money(spend.total.costUsd)}
+    </span>
+  );
+}
 
 export function TaskCard({
   task,
@@ -217,6 +234,7 @@ export function TaskCard({
               into turn
             </span>
           ) : null}
+          <TaskSpend taskId={task.id} />
           <span className={`stamp stamp-${task.state}`} title={`${taskLabel(task)} · ${task.state.replace("_", " ")}`}>
             {STATE_WORDS[task.state]}
           </span>
@@ -277,6 +295,7 @@ export function TaskCard({
         {assignee ? <Monogram participant={assignee} size="xs" /> : null}
         <span className="task-assignee mono identity">{aliasOf(task.participantId)}</span>
         <span className="spacer" />
+        <TaskSpend taskId={task.id} />
         <span className={`stamp stamp-${task.state}`}>{task.state.replace("_", " ")}</span>
       </header>
       <div className="task-instruction">{task.instruction}</div>

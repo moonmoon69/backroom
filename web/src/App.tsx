@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, useDesk, useGit, useRoomStream } from "./api.ts";
+import { api, ApiError, useDesk, useGit, useRoomCosts, useRoomStream } from "./api.ts";
 import { BackgroundBar } from "./components/BackgroundBar.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { BrowserView } from "./components/BrowserView.tsx";
@@ -244,6 +244,7 @@ export function App() {
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
+  const costs = useRoomCosts(snapshot ? snapshot.room.id : null);
 
   // Git: the folder and commit count the Git tab shows start over in each room.
   const [gitPath, setGitPath] = useState<string | null>(null);
@@ -329,6 +330,7 @@ export function App() {
       },
       desk,
       deskError,
+      costs,
       git: {
         data: gitRead.git,
         error: gitRead.error,
@@ -341,7 +343,7 @@ export function App() {
         showMoreCommits: () => setGitCommits((n) => n + 50),
       },
     };
-  }, [snapshot, runCommand, onRoomChanged, desk, deskError, gitRead.git, gitRead.error, gitPath, gitCommits]);
+  }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits]);
 
   const needsPairing = status !== null && status.adapter === "http" && !status.t3.paired;
 

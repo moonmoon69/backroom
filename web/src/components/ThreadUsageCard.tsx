@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, useProviders } from "../api.ts";
-import type { Desk, Participant, UsageToday } from "../types.ts";
-import { contextReadout, fmtTokens, timeOf } from "./deskFormat.ts";
+import type { Desk, Participant, ThreadCost, UsageToday } from "../types.ts";
+import { contextReadout, costReason, fmtTokens, money, timeOf } from "./deskFormat.ts";
 
 /** One shared, minute-old copy of today's usage: T3 scans transcripts to answer, so every card reuses it. */
 let usageCache: { at: number; value: Promise<UsageToday> } | null = null;
@@ -10,7 +10,6 @@ function usageToday(): Promise<UsageToday> {
   return usageCache.value;
 }
 
-const money = (usd: number): string => (usd >= 100 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`);
 const duration = (ms: number): string => {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 1) return `${Math.max(1, Math.round(ms / 1000))}s`;
@@ -29,7 +28,85 @@ const resetsIn = (iso: string | null): string => {
  * turns, files), today's usage for its model across all threads (T3 does not split cost by thread), and the
  * provider's plan limits.
  */
-export function ThreadUsageCard({ participant, desk }: { participant: Participant; desk: Desk | null }) {
+/**
+ * What a thread used and what it is worth at list price, from its harness transcripts (own calls and subagents,
+ * per model, with input and output tokens). Shown for a participant and for a thread used on its own.
+ */
+export function SpendSection({ cost, title = "Estimated spend · this thread", pricesFetchedAt }: { cost: ThreadCost | null; title?: string; pricesFetchedAt?: string | null }) {
+  if (!cost) {
+    return (
+      <section>
+        <h4 className="mono">{title}</h4>
+        <div className="usage-line muted">
+          <span>Reading transcripts…</span>
+        </div>
+      </section>
+    );
+  }
+  if (!cost.available) {
+    return (
+      <section>
+        <h4 className="mono">{title}</h4>
+        <div className="usage-line muted">
+          <span>No estimate: {costReason(cost.reason, cost.provider)}.</span>
+        </div>
+      </section>
+    );
+  }
+  const input = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) => t.inputTokens + t.cachedInputTokens + t.cacheWriteTokens;
+  const inputTitle = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) =>
+    `input ${t.inputTokens.toLocaleString()} uncached · ${t.cachedInputTokens.toLocaleString()} from cache · ${t.cacheWriteTokens.toLocaleString()} written to cache`;
+  const split = cost.subagents.calls > 0;
+  return (
+    <section>
+      <h4 className="mono">{title}</h4>
+      <div className="usage-line">
+        <span>Total</span>
+        <span className="mono">{cost.priced ? "≈ " : "at least "}{money(cost.total.costUsd)}</span>
+      </div>
+      {split ? (
+        <div className="usage-line muted">
+          <span>Own · subagents</span>
+          <span className="mono">
+            {money(cost.own.costUsd)} · {money(cost.subagents.costUsd)}
+          </span>
+        </div>
+      ) : null}
+      <table className="spend-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th className="num">In</th>
+            <th className="num">Out</th>
+            <th className="num">Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cost.models.map((model) => (
+            <tr key={model.model} title={`${model.calls} calls${model.subagents.calls > 0 ? ` · own ${money(model.own.costUsd)}, subagents ${money(model.subagents.costUsd)}` : ""}`}>
+              <td className="mono spend-model">
+                {model.model}
+                {model.subagents.calls > 0 && model.own.calls === 0 ? <span className="muted"> (subagents)</span> : model.subagents.calls > 0 ? <span className="muted"> (+ subagents)</span> : null}
+              </td>
+              <td className="num mono" title={inputTitle(model)}>
+                {fmtTokens(input(model))}
+              </td>
+              <td className="num mono">{fmtTokens(model.outputTokens)}</td>
+              <td className="num mono">{model.priced ? money(model.costUsd) : "unpriced"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="usage-note muted" title={inputTitle(cost.total)}>
+        {fmtTokens(input(cost.total))} in · {fmtTokens(cost.total.outputTokens)} out over {cost.total.calls.toLocaleString()} calls
+        {cost.firstAt ? ` since ${new Date(cost.firstAt).toLocaleDateString()}` : ""}. List price from T3&rsquo;s table
+        {pricesFetchedAt ? ` (${new Date(pricesFetchedAt).toLocaleDateString()})` : ""}, not what a subscription charges.
+      </div>
+    </section>
+  );
+}
+
+export function ThreadUsageCard({ participant, desk, cost, pricesFetchedAt }: { participant: Participant; desk: Desk | null; cost?: ThreadCost | null; pricesFetchedAt?: string | null }) {
   const { providers } = useProviders(true, 60_000);
   const [usage, setUsage] = useState<UsageToday | null>(null);
   useEffect(() => {
@@ -115,6 +192,8 @@ export function ThreadUsageCard({ participant, desk }: { participant: Participan
           </div>
         ) : null}
       </section>
+
+      <SpendSection cost={cost ?? null} pricesFetchedAt={pricesFetchedAt ?? null} />
 
       <section>
         <h4 className="mono">{model} today · all threads</h4>
