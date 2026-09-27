@@ -437,13 +437,14 @@ T3 reports usage per day and model, never per thread. The room fills that gap fr
 | A participant's row in **People** | The thread's total, with own and subagent shares on hover |
 | The participant's usage card | The total, the own and subagent split, and a row per model with input tokens, output tokens and cost |
 | The **Total** line under **People** | Every thread ever seated in the room, removed participants included |
-| A task's chip in the timeline | What the thread used while the task ran; a message sent into a running turn counts under that turn's task |
+| A task's chip in the timeline | What the thread used from that task's delivery until the next task reached the thread: the answering turn, the turns the agent continued on its own afterwards, and its subagents meanwhile. A thread's tasks divide its spend between them. A message sent into a running turn counts under that turn's task |
 | A thread's bar, outside any room | Its total, with the breakdown on hover |
 
 What to know when reading them:
 
 - **List price, not your bill.** The figures are what the calls would cost at the provider's API prices. A subscription charges its plan price instead; treat the estimate as a measure of consumption.
 - **Providers.** Claude and Codex threads have estimates. Cursor reports usage through its account rather than per session, and Antigravity's records T3 prices only in part: their threads show "no estimate", and a room total with such threads reads "≥".
+- **Between tasks.** Work between one task and the next belongs to the earlier task, including turns typed directly in T3 in that time. What a thread used before its first task in the room belongs to no task.
 - **A thread's whole life.** An attached thread's estimate includes what it used before it joined the room. T3 keeps only a thread's current session; the room remembers every session it has seen a thread on, so a thread given a new session keeps its earlier spend.
 - **Where it reads.** T3's database (read-only) and `~/.claude/projects` and `~/.codex/sessions`, or `$CLAUDE_CONFIG_DIR/projects` and `$CODEX_HOME/sessions` when those are set. T3's database and the transcripts are not public interfaces; a change in them shows as "no estimate", never as a wrong number.
 
