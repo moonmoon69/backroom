@@ -11,6 +11,7 @@ import type {
   Draft,
   GitDiff,
   ProjectRefs,
+  FolderListing,
   GitResponse,
   ModelSelection,
   LiveView,
@@ -20,6 +21,7 @@ import type {
   Role,
   RoomCosts,
   ThreadCost,
+  ThreadCosts,
   RoomCommand,
   RoomListItem,
   RoomSnapshot,
@@ -61,13 +63,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const errorBody = (body ?? { error: "http_error", message: response.statusText }) as ApiErrorBody;
     // The page is newer than the service: the UI is served fresh on each load, the server only after a restart.
     if (response.status === 404 && typeof errorBody.message === "string" && errorBody.message.startsWith("no route for ")) {
-      throw new ApiError(404, { error: "no_route", message: "The room service is older than this page and doesn't have this yet. Restart it (systemctl --user restart t3rooms)." });
+      throw new ApiError(404, { error: "no_route", message: "Backroom's service is older than this page and doesn't have this yet. Restart it (systemctl --user restart backroom)." });
     }
     throw new ApiError(response.status, errorBody);
   }
   // A page where data was expected: an older service that does not know this route answered with the app shell.
   if (body && typeof body === "object" && (body as ApiErrorBody).error === "bad_response") {
-    throw new ApiError(502, { error: "bad_response", message: "The room service answered with a page instead of data; it may be running an older version. Restart it." });
+    throw new ApiError(502, { error: "bad_response", message: "Backroom's service answered with a page instead of data; it may be running an older version. Restart it." });
   }
   return body as T;
 }
@@ -100,6 +102,8 @@ export const api = {
   desk: (roomId: string): Promise<DeskResponse> => get(`/api/rooms/${encodeURIComponent(roomId)}/desk`),
   roomCosts: (roomId: string): Promise<RoomCosts> => get(`/api/rooms/${encodeURIComponent(roomId)}/costs`),
   threadCost: (threadId: string): Promise<{ readAt: string; pricesFetchedAt: string | null; cost: ThreadCost }> => get(`/api/t3/threads/${encodeURIComponent(threadId)}/cost`),
+  /** A thread's spend as a room shows a member's: the total, a figure per reply, and the turn in progress. */
+  threadCosts: (threadId: string): Promise<ThreadCosts> => get(`/api/t3/threads/${encodeURIComponent(threadId)}/costs`),
   /** The room's working folders in brief, and (unless `summary`) the full git view of `path` (else the first folder). */
   git: (roomId: string, options: { path?: string | null; commits?: number; summary?: boolean } = {}): Promise<GitResponse> => {
     const query = new URLSearchParams();
@@ -122,6 +126,8 @@ export const api = {
   defaultModel: (projectId: string): Promise<{ modelSelection: ModelSelection | null }> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/default-model`),
   /** The project's branches and worktrees, for choosing where a new thread works. */
   projectRefs: (projectId: string): Promise<ProjectRefs> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/refs`),
+  /** The folders T3 lists for a path being typed: "/a/b/" lists b's subfolders, "/a/b" those of a whose names start with b. */
+  folders: (path: string): Promise<FolderListing> => get(`/api/t3/folders?path=${encodeURIComponent(path)}`),
   roles: (): Promise<Role[]> => get("/api/roles"),
   presets: (): Promise<Preset[]> => get("/api/presets"),
   browsers: (): Promise<BrowserListItem[]> => get("/api/browsers"),
@@ -214,7 +220,7 @@ export function useDesk(roomId: string | null, intervalMs: number): { desk: Desk
 }
 
 /**
- * Poll a value while `key` is set: the room's costs every half minute, a thread's every minute. Null until the first
+ * Poll a value while `key` is set: the room's costs every half minute, a thread's too. Null until the first
  * read. A change of `nonce` reads again at once (a reply just arrived: its figure should not wait for the timer).
  */
 function usePolled<T>(key: string | null, intervalMs: number, read: (key: string) => Promise<T>, nonce = 0): T | null {
@@ -248,7 +254,8 @@ function usePolled<T>(key: string | null, intervalMs: number, read: (key: string
 
 /** The room's costs; `replies` is how many replies the room holds, so a new one is priced at once. */
 export const useRoomCosts = (roomId: string | null, replies = 0): RoomCosts | null => usePolled(roomId, 30_000, api.roomCosts, replies);
-export const useThreadCost = (threadId: string | null): ThreadCost | null => usePolled(threadId, 60_000, (id) => api.threadCost(id).then((r) => r.cost));
+/** A thread's costs; `replies` is how many replies its view holds, so a new one is priced at once. */
+export const useThreadCosts = (threadId: string | null, replies = 0): ThreadCosts | null => usePolled(threadId, 30_000, api.threadCosts, replies);
 
 /**
  * The room's git state. While the Git tab is open (`detail`), the full view of the chosen folder every 4s;

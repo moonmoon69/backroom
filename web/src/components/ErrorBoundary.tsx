@@ -31,7 +31,7 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
       <div className="empty-state" role="alert">
         <p className="serif">This view failed to render.</p>
         <p className="mono muted">{this.state.error.message}</p>
-        <p className="muted">If the room service was just updated, restart it and reload.</p>
+        <p className="muted">If Backroom was just updated, restart the service and reload.</p>
         <div className="row">
           <button
             type="button"

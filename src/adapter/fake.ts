@@ -10,6 +10,7 @@ import type {
   CatalogEntry,
   CreateProjectInput,
   CreateThreadInput,
+  FolderListing,
   StartTurnInput,
   T3Activity,
   T3Adapter,
@@ -147,6 +148,37 @@ export class FakeT3Adapter implements T3Adapter {
     this.guard();
     const refs = this.refsOf(input.cwd);
     for (const ref of refs) if (ref.worktreePath === input.path) ref.worktreePath = null;
+  }
+
+  /** Test control: folders on the fake machine besides the projects' own and their parents. `~` is /home/fake. */
+  readonly folders = new Set<string>(["/home/fake/Projects/alpha", "/home/fake/Projects/beta", "/home/fake/Docs"]);
+
+  async browseFolders(partialPath: string): Promise<FolderListing> {
+    this.guard();
+    const all = new Set<string>();
+    const add = (folder: string) => {
+      let path = folder.replace(/\/+$/, "");
+      while (path) {
+        all.add(path);
+        path = path.split("/").slice(0, -1).join("/");
+      }
+      all.add("/");
+    };
+    for (const folder of this.folders) add(folder);
+    for (const project of this.projects) add(project.workspaceRoot);
+    const typed = partialPath.replace(/^~(?=\/|$)/, "/home/fake").replace(/\/{2,}/g, "/");
+    const listing = typed.endsWith("/");
+    const parentPath = listing ? typed.replace(/\/+$/, "") || "/" : typed.split("/").slice(0, -1).join("/") || "/";
+    const prefix = listing ? "" : (typed.split("/").pop() ?? "").toLowerCase();
+    if (!all.has(parentPath)) throw new T3CommandRejected(`Failed to browse filesystem path '${partialPath}'.`, 500, { failure: "read_directory_failed" });
+    const children = [...all].filter((path) => path !== "/" && path.split("/").slice(0, -1).join("/") === (parentPath === "/" ? "" : parentPath));
+    return {
+      parentPath,
+      entries: children
+        .map((fullPath) => ({ name: fullPath.split("/").pop() ?? fullPath, fullPath }))
+        .filter((entry) => entry.name.toLowerCase().startsWith(prefix))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
   }
 
   async createProject(input: CreateProjectInput): Promise<void> {

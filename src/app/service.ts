@@ -1,6 +1,6 @@
 /**
  * RoomService: the single command handler shared by direct controls, explicit syntax,
- * and any later interpreter (PRD 3 "Action contract", 4.5). Validates references and state,
+ * and any later interpreter. Validates references and state,
  * persists transactionally, and appends room events. The scheduler runs separately.
  */
 import { randomUUID } from "node:crypto";

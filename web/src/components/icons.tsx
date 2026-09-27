@@ -50,6 +50,21 @@ export const MenuIcon = () => (
   </Icon>
 );
 
+/** A folder: one entry of the New project dialog's folder list. */
+export const FolderIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12z" />
+  </Icon>
+);
+
+/** A turned arrow: up one folder. */
+export const UpFolderIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <path d="M13 12V8.5A2.5 2.5 0 0 0 10.5 6H3.5" />
+    <path d="M6.5 3 3.5 6l3 3" />
+  </Icon>
+);
+
 /** A chevron pointing right, down (an open disclosure, a dropdown) or up (an open dropdown). */
 export const ChevronIcon = ({ dir = "right" }: { dir?: "right" | "down" | "up" | "left" }) => (
   <Icon className={`chevron chevron-${dir}`} strokeWidth={1.5}>

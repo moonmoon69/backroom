@@ -331,7 +331,7 @@ export function TaskCard({
 }
 
 /**
- * In-progress turn from T3 for an active task, in its own card (PRD 4.1): progress messages and tool bursts
+ * In-progress turn from T3 for an active task, in its own card: progress messages and tool bursts
  * as T3 shows them. Mounted only while the task is dispatching/running/needs_input, so polling stops with the state.
  */
 function LiveSection({ task }: { task: Task }) {

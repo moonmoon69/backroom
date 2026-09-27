@@ -124,21 +124,49 @@ const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): bool
 
 /**
  * The presets as a row of buttons above a form's settings: one click fills them in. `model` and `runtimeMode` are the
- * form's current values, so the preset they equal reads as chosen.
+ * form's current values, so the preset they equal reads as chosen. With `pickedId`, only the preset picked reads as
+ * chosen while the settings are still its own, a line under the row says what confirms (`pickedNote`), and clicking
+ * it again calls `onClear` (back to the defaults) instead of filling it in once more.
  */
-export function PresetChips({ model, runtimeMode, onPick, children }: { model: ModelSelection | null; runtimeMode: RuntimeMode; onPick: (preset: Preset) => void; children?: ReactNode }) {
+export function PresetChips({
+  model,
+  runtimeMode,
+  onPick,
+  pickedId,
+  onClear,
+  pickedNote,
+  children,
+}: {
+  model: ModelSelection | null;
+  runtimeMode: RuntimeMode;
+  onPick: (preset: Preset) => void;
+  pickedId?: string | null;
+  onClear?: () => void;
+  pickedNote?: string;
+  children?: ReactNode;
+}) {
   const { presets } = usePresets();
   const text = usePresetText();
   if (presets.length === 0 && !children) return null;
+  const isOn = (preset: Preset) => (pickedId === undefined || pickedId === preset.id) && sameSelection(model, preset.modelSelection) && runtimeMode === preset.runtimeMode;
+  const picked = pickedId ? (presets.find((p) => p.id === pickedId && isOn(p)) ?? null) : null;
   return (
     <div className="form-field preset-field">
       <span>Crew</span>
       <div className="preset-chips">
         {presets.map((preset) => {
           const { model: modelName, what, detail } = text(preset);
-          const on = sameSelection(model, preset.modelSelection) && runtimeMode === preset.runtimeMode;
+          const on = isOn(preset);
+          const clears = on && onClear !== undefined;
           return (
-            <button key={preset.id} type="button" className={`preset-chip${on ? " on" : ""}`} aria-pressed={on} title={`${modelName} · ${detail}`} onClick={() => onPick(preset)}>
+            <button
+              key={preset.id}
+              type="button"
+              className={`preset-chip${on ? " on" : ""}`}
+              aria-pressed={on}
+              title={clears ? `${preset.name}: ${modelName} · ${detail}. Click again to start from the defaults instead.` : `${modelName} · ${detail}`}
+              onClick={() => (clears ? onClear() : onPick(preset))}
+            >
               <PresetIcon preset={preset} />
               <span className="preset-chip-name">{preset.name}</span>
               <span className="preset-chip-what">{what}</span>
@@ -148,6 +176,11 @@ export function PresetChips({ model, runtimeMode, onPick, children }: { model: M
         {children}
       </div>
       {presets.length === 0 ? <span className="hint">Save the settings you use often to your crew; next time one click fills them in.</span> : null}
+      {picked ? (
+        <span className="hint preset-picked-note">
+          <strong>{picked.name}</strong>&rsquo;s settings are filled in below; change anything you like. {pickedNote ?? ""}
+        </span>
+      ) : null}
     </div>
   );
 }

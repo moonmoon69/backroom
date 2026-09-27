@@ -1,6 +1,6 @@
 /**
  * Serving images that agents write to disk and reference from replies, e.g. `![shot](/tmp/shot.png)`.
- * T3 Code renders those inline; here the room UI asks GET /api/local-image?path=... and this module decides
+ * T3 Code renders those inline; here the UI asks GET /api/local-image?path=... and this module decides
  * whether the path may be served. Only image files are served, and only from inside the allowed roots,
  * so the endpoint cannot be used to read arbitrary files.
  */

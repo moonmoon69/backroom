@@ -26,7 +26,7 @@ const hostOf = (baseUrl: string | null): string => {
 export function ConnectionChip({ status, onOpen, compact }: { status: StatusResponse | null; onOpen: () => void; compact?: boolean }) {
   if (!status) {
     return (
-      <button type="button" className={`small ghost connection-chip${compact ? " icon-only" : ""}`} onClick={onOpen} title="Connecting to the room service…" aria-label="T3 connection: connecting">
+      <button type="button" className={`small ghost connection-chip${compact ? " icon-only" : ""}`} onClick={onOpen} title="Connecting to Backroom…" aria-label="T3 connection: connecting">
         <span className="dot dot-unknown" aria-hidden="true" />
         {compact ? null : "T3"}
       </button>

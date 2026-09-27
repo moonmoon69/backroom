@@ -21,6 +21,24 @@ test("project.create adds a T3 project named after its folder and refuses a fold
   assert.equal(stack.fake.projects.find((p) => p.id === titled.projectId)?.title, "Other work");
 });
 
+test("the folders route lists T3's folders for a path as it is typed, like T3's own picker", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-folders", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  const folders = async (path: string) => (await (await app.request(`/api/t3/folders?path=${encodeURIComponent(path)}`)).json()) as { parentPath: string | null; entries: Array<{ name: string; fullPath: string }>; unreadable: string | null };
+  // A trailing slash lists the folder's own subfolders; ~ is the T3 machine's home.
+  const listed = await folders("~/Projects/");
+  assert.equal(listed.parentPath, "/home/fake/Projects");
+  assert.deepEqual(listed.entries.map((e) => e.fullPath), ["/home/fake/Projects/alpha", "/home/fake/Projects/beta"]);
+  // Without one, the parent's subfolders whose names start with what is typed, whatever the capitals.
+  const typed = await folders("/home/fake/Projects/AL");
+  assert.deepEqual(typed.entries.map((e) => e.name), ["alpha"]);
+  // A folder T3 cannot read is not an error: the dialog shows the reason and the typed path can still be added.
+  const missing = await folders("/home/fake/nowhere/");
+  assert.deepEqual([missing.parentPath, missing.entries, typeof missing.unreadable], [null, [], "string"]);
+  assert.equal((await app.request("/api/t3/folders?path=relative/thing")).status, 400);
+});
+
 test("thread.start creates a thread and sends the text as typed, without a room briefing", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());

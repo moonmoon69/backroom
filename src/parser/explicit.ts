@@ -1,5 +1,5 @@
 /**
- * Explicit composer syntax (PRD 5.0). Deterministic; no model.
+ * Explicit composer syntax. Deterministic; no model.
  *
  *   @sol2 review the diff                       -> one assignment for sol2, now
  *   @sol1 @sol2 independently investigate       -> one assignment, two independent tasks

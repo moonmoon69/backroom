@@ -1,5 +1,5 @@
 /**
- * Durable queue driver (PRD section 6). One tick:
+ * Durable queue driver. One tick:
  *   1. observe   — poll thread shells for every active binding; correlate runs to turns; ingest results.
  *   2. dispatch  — release queued tasks whose prerequisites all succeeded and whose assignee is free.
  * Runs are persisted before submission and resent with the same T3 commandId when the acknowledgement was lost.

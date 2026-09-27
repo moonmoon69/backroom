@@ -1,9 +1,10 @@
 /**
  * A T3 thread used on its own, outside any room. The conversation is read from T3 on every poll and nothing is stored
- * by the room service. What you type goes to T3 as typed (no room briefing), like typing in T3 Code.
+ * by Backroom. What you type goes to T3 as typed (no room briefing), like typing in T3 Code.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { api, ApiError, attachmentUrl, useThreadCost } from "../api.ts";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { api, ApiError, attachmentUrl, useThreadCosts } from "../api.ts";
+import type { ThreadCost, ThreadCosts } from "../types.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import {
@@ -26,14 +27,16 @@ import {
 } from "../types.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { Dialog } from "./Dialog.tsx";
-import { fmtTokens, money } from "./deskFormat.ts";
-import { PresetChips, usePresets } from "./presets.tsx";
+import { money } from "./deskFormat.ts";
+import { PresetChips, PresetIcon, usePresets } from "./presets.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, participantColor } from "./Monogram.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
+import { SpendFoot } from "./Timeline.tsx";
+import { UsageCard } from "./ThreadUsageCard.tsx";
 import { Popover } from "./Popover.tsx";
 import { GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
@@ -148,6 +151,14 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   const { toast } = useToast();
   const attachedBrowser = attached ? browsers?.find((b) => b.id === attached) ?? null : null;
   const [dialog, setDialog] = useState<"settings" | "room" | "delete" | null>(null);
+  const crew = useMemo(() => threadCrew(threadId), [threadId]);
+  // Priced as a room prices a member: the total, a figure per reply, the turn in progress. A new reply is priced at once.
+  const costs = useThreadCosts(threadId, view?.items.filter((item) => item.kind === "reply").length ?? 0);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const usageAnchor = useRef<HTMLButtonElement>(null);
+  const usageMenu = useRef<HTMLDivElement>(null);
+  const { presets } = usePresets();
+  const crewPreset = crew ? (presets.find((p) => p.id === crew.presetId) ?? null) : null;
   const thread = view?.thread;
   const activity = thread ? threadActivity({ ...thread, hasPendingApprovals: thread.hasPendingApprovals || (view?.requests.length ?? 0) > 0 }) : null;
   const running = view?.running ?? null;
@@ -190,12 +201,46 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
       <div className="room-under">
         {thread ? (
           <div className="thread-bar">
+            {crew ? (
+              <span className="thread-crew" title={`Started with ${crew.name} from your crew: their settings then; the thread's own since (change them here or in T3).`}>
+                {crewPreset ? <PresetIcon preset={crewPreset} /> : null}
+                <span className="mono">{crew.name}</span>
+              </span>
+            ) : null}
             <button type="button" className="thread-setting" onClick={() => setDialog("settings")} title="Model and permission mode (applied in T3)">
               <span className="mono">{thread.modelSelection.model}</span>
               <span className={`pill pill-mode mode-${thread.runtimeMode}`}>{thread.runtimeMode}</span>
             </button>
             {view?.contextWindow ? <ContextMeter reading={view.contextWindow} compact /> : null}
-            <ThreadSpend threadId={thread.id} />
+            <button
+              type="button"
+              ref={usageAnchor}
+              className="thread-setting thread-usage"
+              onClick={() => setUsageOpen((open) => !open)}
+              aria-expanded={usageOpen}
+              title="Usage: context, estimated spend at list price, today's usage for this model and the provider's plan limits"
+            >
+              {costs?.total.available ? (
+                <span className="thread-spend mono">
+                  {costs.total.priced ? "≈ " : "≥ "}
+                  {money(costs.total.total.costUsd)}
+                  {running && costs.openTurn ? <span className="crew-spend-open"> · {money(costs.openTurn.total.costUsd)} this turn</span> : null}
+                </span>
+              ) : (
+                <span className="thread-spend mono">usage</span>
+              )}
+            </button>
+            {usageOpen && view ? (
+              <Popover anchor={usageAnchor} menuRef={usageMenu} className="menu-with-usage" role="dialog" onClose={() => setUsageOpen(false)}>
+                <UsageCard
+                  label={thread.title || "thread"}
+                  modelSelection={thread.modelSelection}
+                  facts={{ context: view.contextWindow, contextReporting: view.usage.contextReporting, lastCompaction: view.usage.lastCompaction, subagents: view.usage.subagents, files: view.usage.changedFiles }}
+                  cost={costs?.total ?? null}
+                  pricesFetchedAt={costs?.pricesFetchedAt ?? null}
+                />
+              </Popover>
+            ) : null}
             {thread.branch ? (
               <span className="mono muted thread-branch" title={thread.worktreePath ?? undefined}>
                 ⎇ {thread.branch}
@@ -214,6 +259,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 key={threadId}
                 view={view}
                 error={error}
+                costs={costs}
                 onRespond={async (command) => {
                   const result = await runCommand(command);
                   if (result) hurry();
@@ -364,25 +410,6 @@ export function ArchivedThreadView({
   );
 }
 
-/** What the thread has used at list price, from its transcripts; nothing while there is no estimate. */
-function ThreadSpend({ threadId }: { threadId: string }) {
-  const cost = useThreadCost(threadId);
-  if (!cost?.available) return null;
-  const input = cost.total.inputTokens + cost.total.cachedInputTokens + cost.total.cacheWriteTokens;
-  const lines = [
-    `Estimated spend: ${money(cost.total.costUsd)} at list price, not what a subscription charges.`,
-    `${fmtTokens(input)} in · ${fmtTokens(cost.total.outputTokens)} out over ${cost.total.calls.toLocaleString()} calls.`,
-    ...(cost.subagents.calls > 0 ? [`Own ${money(cost.own.costUsd)} · subagents ${money(cost.subagents.costUsd)}.`] : []),
-    ...cost.models.map((m) => `${m.model}: ${fmtTokens(m.inputTokens + m.cachedInputTokens + m.cacheWriteTokens)} in · ${fmtTokens(m.outputTokens)} out · ${m.priced ? money(m.costUsd) : "unpriced"}`),
-  ];
-  return (
-    <span className="thread-spend mono" title={lines.join("\n")}>
-      {cost.priced ? "≈ " : "≥ "}
-      {money(cost.total.costUsd)}
-    </span>
-  );
-}
-
 // ---- new thread (fast start) ----
 
 interface NewThreadViewProps {
@@ -405,7 +432,9 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
   const [model, setModel] = useState<ModelSelection | null>(null);
   // T3's default model for the project is looked up first; the picker only falls back to the catalog default without one.
   const [modelReady, setModelReady] = useState(false);
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(() => (localStorage.getItem(MODE_KEY) as RuntimeMode | null) ?? "full-access");
+  const [defaultModel, setDefaultModel] = useState<ModelSelection | null>(null);
+  const lastMode = (): RuntimeMode => (localStorage.getItem(MODE_KEY) as RuntimeMode | null) ?? "full-access";
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(lastMode);
   // Where it works starts over with each project (its branches and T3's default differ).
   const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
   useEffect(() => setWorkspace({ mode: "local" }), [projectId]);
@@ -413,12 +442,24 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
   // A picked preset sets where it works once the project's branches are known, and keeps T3's default model out.
   const [workspacePrefer, setWorkspacePrefer] = useState<{ mode: "local" | "worktree"; nonce: number } | null>(null);
   const presetPicked = useRef(false);
+  // The crew member picked, by name: their settings fill the form, and the thread is marked as started with them.
+  const [picked, setPicked] = useState<Preset | null>(null);
   const applyPreset = useCallback((preset: Preset) => {
     presetPicked.current = true;
+    setPicked(preset);
     setModel(preset.modelSelection);
     setRuntimeMode(preset.runtimeMode);
     setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
   }, []);
+  // Clicking the picked member again: back to T3's default model, the last permission mode, the project folder.
+  const clearPreset = useCallback(() => {
+    presetPicked.current = false;
+    setPicked(null);
+    setModel(defaultModel);
+    setRuntimeMode(lastMode());
+    setWorkspacePrefer({ mode: "local", nonce: Date.now() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultModel]);
   // The preset the page was opened with, once the presets are read; in another project it applies again.
   const opened = presetId ? (presets.find((p) => p.id === presetId) ?? null) : null;
   useEffect(() => {
@@ -447,7 +488,9 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
     api
       .defaultModel(projectId)
       .then(({ modelSelection }) => {
-        if (!cancelled && !presetPicked.current) setModel((current) => modelSelection ?? current);
+        if (cancelled) return;
+        setDefaultModel(modelSelection);
+        if (!presetPicked.current) setModel((current) => modelSelection ?? current);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -475,7 +518,7 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
               <div className="timeline">
                 <div className="timeline-content">
                   <div className="thread-start form">
-                    <p className="muted">A thread on its own: no room, no crew. What you type goes to T3 as typed, like typing in T3 Code.</p>
+                    <p className="muted">A thread on its own, outside any room: what you type goes to T3 as typed, like typing in T3 Code. Pick someone from your crew to fill in their settings, or set them below; your first message starts the thread.</p>
                     <label>
                       Project
                       <select value={projectId} onChange={(e) => onProject(e.target.value)}>
@@ -486,7 +529,7 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
                         ))}
                       </select>
                     </label>
-                    <PresetChips model={model} runtimeMode={runtimeMode} onPick={applyPreset} />
+                    <PresetChips model={model} runtimeMode={runtimeMode} onPick={applyPreset} pickedId={picked?.id ?? null} onClear={clearPreset} pickedNote="Your first message starts the thread with them." />
                     <div className="form-field">
                       <span>Model</span>
                       <ThreadSettingsRow
@@ -527,7 +570,7 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
             <ThreadComposer
               key={projectId}
               autoFocus
-              placeholder="What should this thread do?"
+              placeholder={picked ? `Message ${picked.name} to start the thread` : "What should this thread do?"}
               disabled={!project || !model}
               running={false}
               onSend={async (text, images) => {
@@ -539,6 +582,7 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
                 if (!workspaceReady(workspace)) return false;
                 const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode, ...(workspace.mode === "local" ? {} : { workspace }) });
                 if (result && browserId) rememberThreadBrowser(threadId, browserId);
+                if (result && picked) rememberThreadCrew(threadId, picked);
                 if (result && result.type === "thread.started" && "threadId" in result) {
                   onStarted(result.threadId as string);
                   return true;
@@ -554,6 +598,20 @@ export function NewThreadView({ projectId, presetId, projects, browsers, runComm
 }
 
 const MODE_KEY = "backroom.directMode";
+
+// ---- the crew member a thread was started with ----
+// Kept here, like the thread's browser: T3 knows nothing of the crew, and the thread's settings are its own from the
+// start. The name is stored too, so it outlives the crew member.
+const THREAD_CREW_KEY = "backroom.threadCrew.";
+const threadCrew = (threadId: string): { presetId: string; name: string } | null => {
+  try {
+    const raw = localStorage.getItem(THREAD_CREW_KEY + threadId);
+    return raw ? (JSON.parse(raw) as { presetId: string; name: string }) : null;
+  } catch {
+    return null;
+  }
+};
+const rememberThreadCrew = (threadId: string, preset: Preset): void => localStorage.setItem(THREAD_CREW_KEY + threadId, JSON.stringify({ presetId: preset.id, name: preset.name }));
 
 // ---- browsers for threads outside rooms ----
 
@@ -662,7 +720,25 @@ function ThreadBrowserButton({
 
 // ---- transcript ----
 
-function Transcript({ view, error, onRespond }: { view: ThreadViewData | null; error: string | null; onRespond: (command: RoomCommand) => Promise<void> }) {
+function Transcript({ view, error, onRespond, costs }: { view: ThreadViewData | null; error: string | null; onRespond: (command: RoomCommand) => Promise<void>; costs: ThreadCosts | null }) {
+  // What the turn behind a reply used, and the running total since the user's last message over the replies since.
+  const spendOf = (index: number): { spend: ThreadCost; since: number; turns: number } | null => {
+    const items = view?.items ?? [];
+    const spend = costs?.replies[items[index]?.id ?? ""];
+    if (!spend?.available || spend.total.calls === 0) return null;
+    let since = 0;
+    let turns = 0;
+    for (let earlier = index; earlier >= 0; earlier -= 1) {
+      const item = items[earlier] as ThreadItem;
+      if (item.kind === "user") break;
+      const part = costs?.replies[item.id];
+      if (part?.available) {
+        since += part.total.costUsd;
+        turns += 1;
+      }
+    }
+    return { spend, since, turns };
+  };
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const signature = view
@@ -702,7 +778,7 @@ function Transcript({ view, error, onRespond }: { view: ThreadViewData | null; e
       <div className="timeline-content">
         {view.partial ? <div className="chat-status mono thread-partial">Earlier turns are in T3 Code</div> : null}
         {view.items.length === 0 && !view.running ? <p className="muted thread-loading">No messages yet.</p> : null}
-        {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} />))}
+        {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} />))}
         {view.running ? (
           <div className="chat-row from-agent live-turn wide" style={identityStyle(AGENT_COLOR)} aria-live="off">
             <div className="chat-stack">
@@ -751,7 +827,18 @@ function Transcript({ view, error, onRespond }: { view: ThreadViewData | null; e
   );
 }
 
+/**
+ * The browser instructions a thread outside a room sends in front of a message (see withBrowserInstructions): the
+ * "== Browsers ==" block up to the first blank line. Shown folded, so the message reads as typed.
+ */
+function splitBrowserInstructions(text: string): { instructions: string | null; rest: string } {
+  if (!text.startsWith("== Browsers ==")) return { instructions: null, rest: text };
+  const end = text.indexOf("\n\n");
+  return end < 0 ? { instructions: text, rest: "" } : { instructions: text.slice(0, end), rest: text.slice(end + 2) };
+}
+
 function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user" }>; continued: boolean }) {
+  const { instructions, rest } = splitBrowserInstructions(item.text);
   return (
     <div className={`chat-row from-user${continued ? " continued" : ""}`}>
       <div className="chat-stack">
@@ -762,7 +849,15 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
           </div>
         ) : null}
         <div className="bubble bubble-user">
-          {item.text ? <div className="user-text">{withoutT3ContextRefs(item.text, item.attachmentIds.length > 0)}</div> : null}
+          {instructions ? (
+            <details className="reply-progress browser-instructions">
+              <summary className="mono" title="Sent in front of the message so the agent can use the shared browsers">
+                browser instructions
+              </summary>
+              <div className="browser-instructions-text">{instructions}</div>
+            </details>
+          ) : null}
+          {rest ? <div className="user-text">{withoutT3ContextRefs(rest, item.attachmentIds.length > 0)}</div> : null}
           {item.attachmentIds.length > 0 ? (
             <div className="event-images">
               {item.attachmentIds.map((id) => (
@@ -780,7 +875,7 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
 
 const isLong = (text: string): boolean => text.length > 600 || /^\s*\|.*\|\s*$/m.test(text) || text.includes("```");
 
-function ReplyRow({ item, speaker }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode }) {
+function ReplyRow({ item, speaker, spend }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode; spend: { spend: ThreadCost; since: number; turns: number } | null }) {
   return (
     <div className={`chat-row from-agent${isLong(item.text) ? " wide" : ""}`} style={identityStyle(AGENT_COLOR)}>
       <div className="chat-stack">
@@ -812,6 +907,7 @@ function ReplyRow({ item, speaker }: { item: Extract<ThreadItem, { kind: "reply"
               <span className="del">−{item.files.deletions}</span>
             </div>
           ) : null}
+          {spend ? <SpendFoot spend={spend.spend} since={spend.since} turns={spend.turns} /> : null}
         </div>
       </div>
     </div>

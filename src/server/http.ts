@@ -1,5 +1,5 @@
 /**
- * HTTP API for the room UI. Every mutation goes through POST /api/commands using the shared command contract.
+ * Backroom's HTTP API for its UI. Every mutation goes through POST /api/commands using the shared command contract.
  * Live updates use Server-Sent Events; the UI refetches the room snapshot on each notification.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -11,8 +11,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStoredAuth } from "../adapter/auth.ts";
-import { T3Unavailable } from "../adapter/types.ts";
-import type { T3Activity, T3Message } from "../adapter/types.ts";
+import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
+import type { T3Activity, T3Message, T3ThreadDetail } from "../adapter/types.ts";
 import { promptMessageForTurn } from "../adapter/correlate.ts";
 import { latestContextWindow, openRequests, threadTranscript } from "../app/direct.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
@@ -159,6 +159,21 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const { isRepo, refs } = await stack.adapter.listRefs(project.workspaceRoot);
     return c.json({ workspaceRoot: project.workspaceRoot, defaultMode: project.defaultThreadEnvMode ?? null, isRepo, refs });
   });
+  /**
+   * Folders on the T3 machine for the New project dialog's path as it is typed: the subfolders of the folder named
+   * when the path ends in "/", otherwise those of its parent whose names start with the last segment (T3's own
+   * folder picker does the same). A folder T3 cannot read answers with an empty list and the reason.
+   */
+  app.get("/api/t3/folders", async (c) => {
+    const path = (c.req.query("path") ?? "").trim();
+    if (!/^(~|\/|[A-Za-z]:[\\/])/.test(path)) throw new RoomError("invalid_path", "Give the full path of a folder on the T3 machine (starting with / or ~)");
+    try {
+      return c.json({ ...(await stack.adapter.browseFolders(path)), unreadable: null });
+    } catch (error) {
+      if (error instanceof T3CommandRejected) return c.json({ parentPath: null, entries: [], unreadable: "T3 cannot read that folder on its machine." });
+      throw error;
+    }
+  });
   app.get("/api/t3/threads", async (c) => {
     const projectId = c.req.query("projectId");
     const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
@@ -198,8 +213,42 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       requests: openRequests(detail.activities),
       running: running ? { turnId: running, feed: buildLiveFeed(detail.messages, detail.activities, running) } : null,
       contextWindow: latestContextWindow(detail.activities),
+      usage: await threadUsage(detail),
       // T3 holds turns older than the window read here.
       partial: new Set(items.filter((i) => i.kind === "reply").map((i) => (i.kind === "reply" ? i.turnId : ""))).size >= 30,
+    });
+  });
+
+  /**
+   * What the thread has used, for the thread's usage card and the foot of each reply, as a room shows for a member:
+   * the lifetime total, a figure per reply (everything the thread used since its previous reply: the turn that
+   * produced it, subagents included) and what it has used since its last reply (the turn in progress). Replies are
+   * keyed as GET /api/threads/:threadId lists them.
+   */
+  app.get("/api/t3/threads/:threadId/costs", async (c) => {
+    const threadId = c.req.param("threadId");
+    const detail = await stack.adapter.getThreadDetail(threadId, { turnLimit: 30 });
+    if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
+    const shell = detail.shell;
+    const running = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
+    const replies = threadTranscript(detail, running)
+      .filter((item): item is Extract<typeof item, { kind: "reply" }> => item.kind === "reply")
+      .map((item) => ({ id: item.id, at: Date.parse(item.at) }))
+      .filter((reply) => Number.isFinite(reply.at))
+      .sort((a, b) => a.at - b.at);
+    const byReply: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
+    replies.forEach((reply, index) => {
+      const part = costs.costBetween([threadId], index === 0 ? 0 : (replies[index - 1] as { at: number }).at + 1, reply.at);
+      if (part.available && part.total.calls > 0) byReply[reply.id] = part;
+    });
+    const last = replies.reduce((max, reply) => Math.max(max, reply.at), 0);
+    const open = costs.costBetween([threadId], last + 1, Date.now());
+    return c.json({
+      readAt: new Date().toISOString(),
+      pricesFetchedAt: costs.pricesFetchedAt(),
+      total: costs.cost([threadId]),
+      replies: byReply,
+      openTurn: open.available && open.total.calls > 0 ? open : null,
     });
   });
 
@@ -260,6 +309,43 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const value = await stack.adapter.listProviders();
     providersMemo = { at: Date.now(), value };
     return value;
+  };
+
+  /**
+   * The facts a thread's usage card shows besides its context and spend, read from what T3 reports about the thread:
+   * its compactions, subagents, the files its turns changed, and whether its provider reports context at all.
+   */
+  const threadUsage = async (detail: T3ThreadDetail) => {
+    const compactions: Array<{ beforeTokens: number; afterTokens: number; at: string }> = [];
+    for (const activity of detail.activities) {
+      const payload = (activity.payload ?? {}) as Record<string, unknown>;
+      if (activity.kind === "context-compaction" && typeof payload.beforeTokens === "number" && typeof payload.afterTokens === "number") {
+        compactions.push({ beforeTokens: payload.beforeTokens, afterTokens: payload.afterTokens, at: activity.createdAt });
+      }
+    }
+    const files = new Map<string, { additions: number; deletions: number }>();
+    for (const checkpoint of detail.checkpoints) {
+      for (const file of checkpoint.files) {
+        const existing = files.get(file.path) ?? { additions: 0, deletions: 0 };
+        files.set(file.path, { additions: existing.additions + file.additions, deletions: existing.deletions + file.deletions });
+      }
+    }
+    let contextReporting: boolean | null = null;
+    try {
+      contextReporting = (await providersCached()).find((p) => p.instanceId === detail.shell.modelSelection.instanceId)?.reportsContextWindow ?? null;
+    } catch {
+      // Provider info is a decoration.
+    }
+    return {
+      lastCompaction: compactions[compactions.length - 1] ?? null,
+      subagents: subagentUsage(detail.activities),
+      changedFiles: {
+        count: files.size,
+        additions: [...files.values()].reduce((sum, f) => sum + f.additions, 0),
+        deletions: [...files.values()].reduce((sum, f) => sum + f.deletions, 0),
+      },
+      contextReporting,
+    };
   };
 
   const deskFor = async (participantId: string): Promise<Record<string, unknown>> => {
@@ -674,7 +760,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       ? { ...browser, status: stack.browsers.status(browser.id), usedBy: roomsUsingBrowser(stack.repos, browser.id).map((room) => ({ roomId: room.id, title: room.title })) }
       : null;
   const requireBrowsers = () => {
-    if (!stack.browsers) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    if (!stack.browsers) throw new RoomError("browser_unavailable", "This Backroom does not run browsers", 409);
     return stack.browsers;
   };
   const requireBrowserRecord = (browserId: string) => {
@@ -686,7 +772,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/browsers/:browserId", (c) => {
     const browser = requireBrowserRecord(c.req.param("browserId"));
     const item = browserItem(browser);
-    if (!item) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    if (!item) throw new RoomError("browser_unavailable", "This Backroom does not run browsers", 409);
     return c.json({ ...item, profileBytes: requireBrowsers().profileBytes(browser.id) });
   });
   app.post("/api/browsers/:browserId/start", async (c) => {
@@ -711,7 +797,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   // rooms-browser: the CLI posts its command line with the token from data/browser-api.json. The tools can run scripts
   // in logged-in browsers, so they need the token even though the rest of the API does not.
   app.post("/api/browser-tools", async (c) => {
-    if (!browserTools?.tools) throw new RoomError("browser_unavailable", "This room service does not run browsers", 409);
+    if (!browserTools?.tools) throw new RoomError("browser_unavailable", "This Backroom does not run browsers", 409);
     if (c.req.header("authorization") !== `Bearer ${browserTools.token}`) {
       return c.json({ error: "unauthorized", message: "rooms-browser could not authenticate: the service was restarted or this is not its data folder" }, 401);
     }

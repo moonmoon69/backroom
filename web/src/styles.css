@@ -1,5 +1,5 @@
 /*
- * T3 Rooms mirrors T3 Code's default theme: its neutral (zinc) palette, blue primary, system sans and mono
+ * Backroom mirrors T3 Code's default theme: its neutral (zinc) palette, blue primary, system sans and mono
  * stacks, 8px controls and 10px cards, from T3's own stylesheet (0.0.43). Variable names are ours; each notes
  * the T3 token it copies. Identity hues per participant are T3's project-monogram palette (Tailwind 400/600).
  */
@@ -6384,4 +6384,92 @@ button:has(> .icon):not(.mobile-only) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* New project: the folders T3 lists for the path as typed. Click one to go into it, ".." to go up. */
+.folder-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+
+.folder-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-size: var(--text-md);
+  font-weight: 400;
+}
+
+.folder-row:hover {
+  background: var(--bg-2);
+}
+
+.folder-row .icon {
+  color: var(--fg-muted);
+}
+
+.folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-meta {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+.folder-browse > .hint {
+  padding: 4px 8px;
+}
+
+/* The crew member picked on the New thread page, and the note that says what confirms. */
+.preset-picked-note {
+  margin-top: 2px;
+}
+
+/* A thread started from the crew: who, ahead of the model in the thread bar. */
+.thread-crew {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+/* The browser instructions that went in front of a direct thread's message: folded, the message itself below. */
+.browser-instructions {
+  margin: 0 0 6px;
+}
+
+.browser-instructions-text {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A thread's spend in its bar: a button, the card opens from it. */
+.thread-usage {
+  gap: 6px;
 }

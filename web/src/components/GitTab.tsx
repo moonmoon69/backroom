@@ -51,7 +51,7 @@ interface DiffTarget {
  * The Git tab: the room's working folders (each member's worktree, or the project's folder) side by side, with
  * each against the main branch and the files two of them both changed; then, for the one shown, its branch and
  * upstream, uncommitted files, the repository's worktrees and recent commits. Files open their diff. Read from git on
- * the machine the room service runs on.
+ * the machine Backroom runs on.
  */
 export function GitTab() {
   const { git, snapshot } = useRoom();
@@ -247,7 +247,7 @@ function CheckoutHead({ view, home, here, compare }: { view: GitView; home: stri
       ) : null}
       {!view.exists ? (
         <p className="git-note">
-          This folder isn't on the machine the room service runs on, so its git can't be read here. T3 keeps it where the T3 server runs.
+          This folder isn't on the machine Backroom runs on, so its git can't be read here. T3 keeps it where the T3 server runs.
         </p>
       ) : !view.isRepo ? (
         <p className="git-note">Not a git repository.</p>

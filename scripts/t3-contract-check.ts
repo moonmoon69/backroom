@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Live adapter contract check against a real T3 Code server (PRD section 12 spike items 1–3).
+ * Live adapter contract check against a real T3 Code server.
  *
  *   npm run t3:check                 read-only: descriptor, auth policy, projects, catalog, threads
  *   npm run t3:check -- --write --project <projectId> [--model instanceId/model]
@@ -78,6 +78,13 @@ try {
   ok("projects", projects.map((p) => `${p.title} (${p.id})`).join("; ") || "none");
 } catch (error) {
   fail("projects", (error as Error).message);
+}
+
+try {
+  const home = await adapter.browseFolders("~/");
+  ok("folders", `filesystem.browse lists ${home.entries.length} folders under ${home.parentPath} (the New project dialog's picker)`);
+} catch (error) {
+  fail("folders", (error as Error).message);
 }
 
 try {

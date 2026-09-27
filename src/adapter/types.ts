@@ -1,5 +1,5 @@
 /**
- * The T3 integration boundary (PRD section 9). One adapter exposes project/provider discovery,
+ * The T3 integration boundary. One adapter exposes project/provider discovery,
  * thread creation/attachment, turn submission, execution observation, conversation reads,
  * pending-request responses, and interruption. All T3 identities are opaque strings.
  */
@@ -203,6 +203,12 @@ export interface CreateThreadInput {
   worktreePath?: string | null;
 }
 
+/** What T3 lists for a path being typed: the folder it looked in, and the subfolders that match. */
+export interface FolderListing {
+  parentPath: string;
+  entries: Array<{ name: string; fullPath: string }>;
+}
+
 export interface CreateProjectInput {
   commandId: string;
   projectId: string;
@@ -251,6 +257,11 @@ export interface T3Adapter {
   createThread(input: CreateThreadInput): Promise<void>;
   /** The repository's branches at `cwd` (vcs.listRefs); isRepo false when the folder is not a git repository. */
   listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }>;
+  /**
+   * Folders on the T3 machine for a path being typed (filesystem.browse): `partialPath` ending in "/" lists that
+   * folder's subfolders; otherwise the subfolders of its parent whose names start with the last segment. `~` works.
+   */
+  browseFolders(partialPath: string): Promise<FolderListing>;
   /** A new worktree on a new branch from `baseBranch` (vcs.createWorktree), in T3's worktrees folder. */
   createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }>;
   /** Remove a worktree (vcs.removeWorktree), discarding what is in it. */

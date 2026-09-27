@@ -131,7 +131,7 @@ test("401/403 and network failures are T3Unavailable; 4xx rejections are T3Comma
     "POST /api/orchestration/dispatch": () => ({ status: 422, body: { error: "invalid command" } }),
   });
   const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "expired", fetchImpl });
-  await assert.rejects(adapter.listThreads(), (error: unknown) => error instanceof T3Unavailable && /re-pair/.test(error.message));
+  await assert.rejects(adapter.listThreads(), (error: unknown) => error instanceof T3Unavailable && /pair Backroom again/.test(error.message));
   await assert.rejects(
     adapter.interruptTurn({ commandId: "c", threadId: "t", turnId: null }),
     (error: unknown) => error instanceof T3CommandRejected && error.status === 422,
