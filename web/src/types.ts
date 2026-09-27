@@ -391,8 +391,10 @@ export interface RoomCosts {
   /** Participants with no estimate; the room's figure leaves them out. */
   withoutEstimate: string[];
   participants: Record<string, ThreadCost>;
-  /** Tasks with any usage while they ran. */
-  tasks: Record<string, ThreadCost>;
+  /** Per reply event (assistant.reply and t3.turn): what its thread used since the thread's previous reply. */
+  replies: Record<string, ThreadCost>;
+  /** Per seated participant: what its thread has used since its last reply, the turn in progress. */
+  openTurns: Record<string, ThreadCost>;
 }
 
 /** GET /api/t3/providers: one entry per harness provider known to T3. */

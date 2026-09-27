@@ -185,9 +185,9 @@ test("a thread given a new session keeps what its earlier session used", (t) => 
   assert.equal(m.costs().cost(["thread-1"]).total.outputTokens, 40);
 });
 
-test("the room's costs: per participant, per task and for the room", async (t) => {
+test("the room's costs: per participant, per reply and for the room", async (t) => {
   const m = machine(t);
-  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1", "grok"]);
+  const stack = await createTestStack({ autoCompleteMs: 1 }, ["sol1", "grok"]);
   t.after(() => stack.close());
   const sol = stack.threadOf("sol1");
   m.bind(sol, "claudeAgent", { resume: "sess-sol" });
@@ -195,18 +195,23 @@ test("the room's costs: per participant, per task and for the room", async (t) =
 
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction: "do it", schedule: { mode: "now" } });
   await stack.tick();
-  const run = stack.repos.listRunsForRoom(stack.roomId)[0];
-  assert.ok(run?.startedAt ?? run?.acceptedAt, "the task is running");
-  const started = Date.parse((run?.startedAt ?? run?.acceptedAt) as string);
-  const during = new Date(started + 1).toISOString();
-  // Work the agent continued on its own after answering, and a subagent it started then: the task's too.
-  const later = new Date(started + 2).toISOString();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await stack.tick(2);
+  const reply = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "assistant.reply");
+  assert.ok(reply, "the task was answered");
+  const answered = Date.parse(reply.createdAt);
+  const at = (ms: number) => new Date(ms).toISOString();
   writeFileSync(
     join(m.claudeProject, "sess-sol.jsonl"),
-    [claudeLine("before", "claude-fable", "2020-01-01T00:00:00Z", { input: 0, read: 0, write: 0, output: 100 }), claudeLine("during", "claude-fable", during, { input: 0, read: 0, write: 0, output: 7 }), claudeLine("later", "claude-fable", later, { input: 0, read: 0, write: 0, output: 30 })].join("\n") + "\n",
+    [
+      claudeLine("before", "claude-fable", "2020-01-01T00:00:00Z", { input: 0, read: 0, write: 0, output: 100 }), // long before the room: the first reply's
+      claudeLine("turn", "claude-fable", at(answered - 1), { input: 0, read: 0, write: 0, output: 7 }),
+      claudeLine("after", "claude-fable", at(answered + 1), { input: 0, read: 0, write: 0, output: 30 }), // the turn now in progress
+    ].join("\n") + "\n",
   );
   mkdirSync(join(m.claudeProject, "sess-sol", "subagents"), { recursive: true });
-  writeFileSync(join(m.claudeProject, "sess-sol", "subagents", "agent-z.jsonl"), claudeLine("sub", "claude-opus", later, { input: 0, read: 0, write: 0, output: 5 }) + "\n");
+  writeFileSync(join(m.claudeProject, "sess-sol", "subagents", "agent-z.jsonl"), claudeLine("sub", "claude-opus", at(answered - 1), { input: 0, read: 0, write: 0, output: 5 }) + "\n");
+  await new Promise((resolve) => setTimeout(resolve, 10));
 
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(m.root, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: m.userdata, CLAUDE_CONFIG_DIR: join(m.root, "claude"), CODEX_HOME: join(m.root, "codex") });
   const app = createHttpApp(stack, config, "/nonexistent/dist");
@@ -216,9 +221,10 @@ test("the room's costs: per participant, per task and for the room", async (t) =
   assert.deepEqual(body.withoutEstimate, [stack.participants.grok]);
   assert.equal(body.room.total.outputTokens, 142);
   assert.equal(body.pricesFetchedAt, "2026-09-26T00:00:00.000Z");
-  const task = stack.repos.listTasks(stack.roomId)[0];
-  assert.equal(body.tasks[task?.id as string].total.outputTokens, 42, "from the task's delivery on, subagents included; not what came before it");
-  assert.equal(body.tasks[task?.id as string].subagents.outputTokens, 5);
+  assert.equal(body.replies[reply.id].total.outputTokens, 112, "the turn that produced the reply, its subagent included, and everything before it");
+  assert.equal(body.replies[reply.id].subagents.outputTokens, 5);
+  assert.equal(body.openTurns[stack.participants.sol1 as string].total.outputTokens, 30, "used since the last reply: the turn in progress");
+  assert.equal(body.openTurns[stack.participants.grok as string], undefined);
   assert.deepEqual(stack.repos.listThreadSessions(sol), [{ provider: "claudeAgent", sessionId: "sess-sol" }], "the session is remembered by the room");
 
   const direct = (await (await app.request(`/api/t3/threads/${sol}/cost`)).json()) as any;
@@ -226,35 +232,37 @@ test("the room's costs: per participant, per task and for the room", async (t) =
   assert.equal((await app.request("/api/rooms/nope/costs")).status, 404);
 });
 
-test("a thread's tasks divide its spend between them at each delivery", async (t) => {
+test("a thread's replies divide its spend between them", async (t) => {
   const m = machine(t);
   const stack = await createTestStack({ autoCompleteMs: 1 }, ["sol1"]);
   t.after(() => stack.close());
   m.bind(stack.threadOf("sol1"), "claudeAgent", { resume: "sess-sol" });
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction: "first", schedule: { mode: "now" } });
-  await stack.tick();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  await stack.tick(2);
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction: "second", schedule: { mode: "now" } });
-  await stack.tick();
-  const [first, second] = stack.repos.listRunsForRoom(stack.roomId).map((run) => Date.parse((run.startedAt ?? run.acceptedAt) as string));
-  assert.ok(first && second && second > first, "two deliveries, in order");
+  for (const instruction of ["first", "second"]) {
+    await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction, schedule: { mode: "now" } });
+    await stack.tick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await stack.tick(2);
+  }
+  const [first, second] = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "assistant.reply");
+  assert.ok(first && second, "two replies");
+  const a = Date.parse(first.createdAt);
+  const b = Date.parse(second.createdAt);
+  assert.ok(b > a + 2, "the replies are apart in time");
   const at = (ms: number) => new Date(ms).toISOString();
   writeFileSync(
     join(m.claudeProject, "sess-sol.jsonl"),
     [
-      claudeLine("a", "claude-fable", at(first + 1), { input: 0, read: 0, write: 0, output: 1 }),
-      claudeLine("b", "claude-fable", at(second - 1), { input: 0, read: 0, write: 0, output: 2 }), // continued on its own, before the second task
-      claudeLine("c", "claude-fable", at(second + 1), { input: 0, read: 0, write: 0, output: 4 }),
-      claudeLine("d", "claude-fable", at(second + 2), { input: 0, read: 0, write: 0, output: 8 }), // still going: the latest task's
+      claudeLine("a", "claude-fable", at(a - 1), { input: 0, read: 0, write: 0, output: 1 }),
+      claudeLine("b", "claude-fable", at(a + 1), { input: 0, read: 0, write: 0, output: 2 }), // after the first reply: the second's turn
+      claudeLine("c", "claude-fable", at(b), { input: 0, read: 0, write: 0, output: 4 }), // at the second reply's moment: the second's
+      claudeLine("d", "claude-fable", at(b + 1), { input: 0, read: 0, write: 0, output: 8 }), // since the last reply: in progress
     ].join("\n") + "\n",
   );
-  // The latest task's span runs to "now": let the clock pass the last call.
   await new Promise((resolve) => setTimeout(resolve, 10));
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(m.root, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: m.userdata, CLAUDE_CONFIG_DIR: join(m.root, "claude"), CODEX_HOME: join(m.root, "codex") });
   const app = createHttpApp(stack, config, "/nonexistent/dist");
   const body = (await (await app.request(`/api/rooms/${stack.roomId}/costs`)).json()) as any;
-  const tasks = stack.repos.listTasks(stack.roomId);
-  assert.equal(body.tasks[tasks[0]?.id as string].total.outputTokens, 3);
-  assert.equal(body.tasks[tasks[1]?.id as string].total.outputTokens, 12);
+  assert.equal(body.replies[first.id].total.outputTokens, 1);
+  assert.equal(body.replies[second.id].total.outputTokens, 6);
+  assert.equal(body.openTurns[stack.participants.sol1 as string].total.outputTokens, 8);
 });

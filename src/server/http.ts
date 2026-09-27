@@ -446,7 +446,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   /**
    * What the room's threads have used and what that is worth at list price: per participant (every thread it has been
-   * bound to, removed participants too), per task (what its thread used while the task ran) and for the room.
+   * bound to, removed participants too), per reply (the turn that produced it) and for the room.
    */
   app.get("/api/rooms/:roomId/costs", (c) => {
     const roomId = c.req.param("roomId");
@@ -457,32 +457,35 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const byParticipant: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
     for (const participant of participants) byParticipant[participant.id] = costs.cost(threadsOf(participant.id));
 
-    // A task's spend is everything its thread used from the task's delivery until the next task was delivered to
-    // that thread: the turn that answered it, the turns the agent then continued on its own (background work waking
-    // it), and its subagents in that time. So a thread's tasks divide its spend between them, with nothing counted
-    // twice and nothing between tasks left out.
-    const byTask: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
+    // A reply's spend is everything its thread used since the thread's previous reply: the turn that produced it,
+    // with its subagents' work meanwhile. Replies to the room and turns typed in T3 alike, so a thread's replies
+    // divide its spend between them. What the thread has used since its last reply is the turn in progress.
+    const byReply: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
+    const openTurns: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
     const now = Date.now();
-    const starts = new Map<string, Array<{ taskId: string; at: number }>>();
-    for (const run of stack.repos.listRunsForRoom(roomId)) {
-      // A message sent into a turn already running: that turn's task has the spend.
-      if (run.steered) continue;
-      const at = Date.parse(run.startedAt ?? run.acceptedAt ?? "");
-      if (!Number.isFinite(at)) continue;
-      starts.set(run.threadId, [...(starts.get(run.threadId) ?? []), { taskId: run.taskId, at }]);
+    const threadOfBinding = new Map(bindings.map((b) => [b.id, b.threadId]));
+    const replies = new Map<string, Array<{ eventId: string; at: number }>>();
+    for (const event of stack.repos.listEvents(roomId)) {
+      if ((event.kind !== "assistant.reply" && event.kind !== "t3.turn") || event.speaker.type !== "participant") continue;
+      const threadId = threadOfBinding.get(event.speaker.bindingId);
+      const at = Date.parse(event.createdAt);
+      if (!threadId || !Number.isFinite(at)) continue;
+      replies.set(threadId, [...(replies.get(threadId) ?? []), { eventId: event.id, at }]);
     }
-    const spans = new Map<string, Array<{ threadId: string; from: number; to: number }>>();
-    for (const [threadId, list] of starts) {
+    for (const [threadId, list] of replies) {
       list.sort((a, b) => a.at - b.at);
-      list.forEach((start, index) => {
-        const to = list[index + 1]?.at ?? now;
-        spans.set(start.taskId, [...(spans.get(start.taskId) ?? []), { threadId, from: start.at, to }]);
+      list.forEach((reply, index) => {
+        const part = costs.costBetween([threadId], index === 0 ? 0 : (list[index - 1] as { at: number }).at + 1, reply.at);
+        if (part.available && part.total.calls > 0) byReply[reply.eventId] = part;
       });
     }
-    for (const [taskId, list] of spans) {
-      const parts = list.map((span) => costs.costBetween([span.threadId], span.from, span.to)).filter((part) => part.available && part.total.calls > 0);
-      const merged = mergeCosts(parts);
-      if (merged) byTask[taskId] = merged;
+    for (const participant of participants) {
+      if (participant.retiredAt) continue;
+      const threadId = stack.repos.currentBinding(participant.id)?.threadId;
+      if (!threadId) continue;
+      const last = replies.get(threadId)?.reduce((max, reply) => Math.max(max, reply.at), 0) ?? 0;
+      const part = costs.costBetween([threadId], last + 1, now);
+      if (part.available && part.total.calls > 0) openTurns[participant.id] = part;
     }
 
     const room = costs.cost([...new Set(bindings.map((b) => b.threadId))]);
@@ -493,7 +496,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       /** Participants with no estimate (a provider without readable usage): the room's figure leaves them out. */
       withoutEstimate: participants.filter((p) => !byParticipant[p.id]?.available).map((p) => p.id),
       participants: byParticipant,
-      tasks: byTask,
+      replies: byReply,
+      /** What each participant's thread has used since its last reply: the turn in progress. */
+      openTurns,
     });
   });
 
@@ -877,42 +882,6 @@ function runningPromptMessageBeforeOutput(messages: T3Message[], turnId: string)
   if (messages.some((m) => m.turnId === turnId && m.role !== "user")) return null;
   const last = messages[messages.length - 1];
   return last?.role === "user" ? last : null;
-}
-
-/** Several runs of one task as one figure. */
-function mergeCosts(parts: Array<ReturnType<ThreadCosts["cost"]>>): ReturnType<ThreadCosts["cost"]> | null {
-  const [first, ...rest] = parts;
-  if (!first) return null;
-  if (rest.length === 0) return first;
-  type Totals = (typeof first)["total"];
-  const sum = (into: Totals, from: Totals) => {
-    into.inputTokens += from.inputTokens;
-    into.cachedInputTokens += from.cachedInputTokens;
-    into.cacheWriteTokens += from.cacheWriteTokens;
-    into.outputTokens += from.outputTokens;
-    into.calls += from.calls;
-    into.costUsd += from.costUsd;
-  };
-  const merged = structuredClone(first);
-  for (const part of rest) {
-    sum(merged.total, part.total);
-    sum(merged.own, part.own);
-    sum(merged.subagents, part.subagents);
-    for (const model of part.models) {
-      const known = merged.models.find((m) => m.model === model.model);
-      if (!known) merged.models.push(structuredClone(model));
-      else {
-        sum(known, model);
-        sum(known.own, model.own);
-        sum(known.subagents, model.subagents);
-      }
-    }
-    merged.priced = merged.priced && part.priced;
-    if (part.firstAt && (!merged.firstAt || part.firstAt < merged.firstAt)) merged.firstAt = part.firstAt;
-    if (part.lastAt && (!merged.lastAt || part.lastAt > merged.lastAt)) merged.lastAt = part.lastAt;
-  }
-  merged.models.sort((a, b) => b.costUsd - a.costUsd);
-  return merged;
 }
 
 interface BackgroundTask {
