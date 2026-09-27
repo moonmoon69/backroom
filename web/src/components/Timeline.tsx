@@ -518,7 +518,6 @@ function MessageRow({
   // assistant.reply (answer to a room task) or t3.turn (a turn typed directly in T3 on this participant's thread;
   // shown for awareness only: never forwarded to other participants or counted toward a prerequisite).
   const direct = event.kind === "t3.turn";
-  const { costs } = useRoom();
   const participantId = event.speaker.type === "participant" ? event.speaker.participantId : null;
   const participant = participantId ? participantById(participantId) : undefined;
   const alias = participantId ? aliasOf(participantId) : "assistant";
@@ -567,14 +566,12 @@ function MessageRow({
             {tag}
             {branchTag}
             {selfMark}
-            <ReplySpend event={event} />
             {stamp}
           </div>
-        ) : selfMark || (tagChanged && tag) || newMinute || costs?.replies[event.id] ? (
+        ) : selfMark || (tagChanged && tag) || newMinute ? (
           <div className="chat-head sub">
             {selfMark ?? (tagChanged ? tag : null)}
             {tagChanged ? branchTag : null}
-            <ReplySpend event={event} />
             {stamp}
           </div>
         ) : null}
@@ -583,6 +580,7 @@ function MessageRow({
           {/* The reply is shown in full: it is what the user came to read. */}
           {event.text ? <Markdown text={event.text} /> : null}
           {event.artifacts.some((a) => !isWorkspaceArtifact(a)) ? <ChangedFiles artifacts={event.artifacts} /> : null}
+          <ReplySpend event={event} />
         </div>
       </div>
     </div>
@@ -667,10 +665,11 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
     "List price, not what a subscription charges.",
   ];
   return (
-    <span className="reply-spend mono" title={lines.join("\n")}>
+    <div className="reply-spend mono" title={lines.join("\n")}>
       {spend.priced ? "≈ " : "≥ "}
       {money(spend.total.costUsd)}
-    </span>
+      {spend.subagents.calls > 0 ? <span className="reply-spend-detail"> · subagents {money(spend.subagents.costUsd)}</span> : null}
+    </div>
   );
 }
 
