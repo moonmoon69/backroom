@@ -10,7 +10,7 @@ import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
-import { browsersForRoom, reconcileBrowserCatalog, roomForKey, roomsUsingBrowser } from "../browser/catalog.ts";
+import { accessForKey, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig } from "../config.ts";
 import { KokoroSpeech } from "../speech/kokoro.ts";
@@ -72,9 +72,7 @@ if (stack.browsers) {
   browserTools = new BrowserTools({
     browsers: stack.browsers,
     findBrowser: (nameOrId) => stack.repos.getBrowserByName(nameOrId.toLowerCase()) ?? stack.repos.getBrowser(nameOrId),
-    listBrowsers: () => stack.repos.listBrowsers(),
-    roomForKey: (key) => roomForKey(stack.repos, key),
-    browsersForRoom: (room) => browsersForRoom(stack.repos, room),
+    accessFor: (key) => accessForKey(stack.repos, key),
     log,
   });
 }

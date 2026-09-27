@@ -22,6 +22,7 @@ import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
 import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
+import { roomKey, threadKey, useFinishNotifications, useLooking } from "./news.ts";
 import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
 
 const SELECTION_KEY = "backroom.selection";
@@ -236,6 +237,43 @@ export function App() {
   }, [loadSnapshot, loadRooms]);
   useRoomStream(selectedRoomId, onRoomChanged);
 
+  // ---- news: what finished while you were not looking (see news.ts) ----
+  const looking = useLooking();
+  const openKey = selection?.kind === "room" ? roomKey(selection.id) : selection?.kind === "thread" ? threadKey(selection.id) : null;
+  const openNewsAt =
+    selection?.kind === "room" ? rooms.find((r) => r.id === selection.id)?.news?.latest?.at : selection?.kind === "thread" ? threads.find((t) => t.id === selection.id)?.news?.at : undefined;
+  // The open room or thread is seen up to its newest finish while you look at it, on every device.
+  useEffect(() => {
+    if (!openKey || !openNewsAt || !looking) return;
+    api.markSeen(openKey, openNewsAt).then(
+      () => {
+        setRooms((list) => list.map((room) => (roomKey(room.id) === openKey && room.news?.latest?.at === openNewsAt ? { ...room, news: { unseen: 0, latest: null } } : room)));
+        setThreads((list) => list.map((thread) => (threadKey(thread.id) === openKey && thread.news?.at === openNewsAt ? { ...thread, news: null } : thread)));
+      },
+      // A service older than marks: its lists carry no news either.
+      () => undefined,
+    );
+  }, [openKey, openNewsAt, looking]);
+  // The sidebar leaves out the news of what you are looking at, so it does not flash before the mark lands.
+  const sideRooms = useMemo(
+    () => (looking && selection?.kind === "room" ? rooms.map((room) => (room.id === selection.id && room.news?.unseen ? { ...room, news: { unseen: 0, latest: null } } : room)) : rooms),
+    [rooms, looking, selection],
+  );
+  const sideThreads = useMemo(
+    () => (looking && selection?.kind === "thread" ? threads.map((thread) => (thread.id === selection.id && thread.news ? { ...thread, news: null } : thread)) : threads),
+    [threads, looking, selection],
+  );
+  // The tab's title counts what is new, so a background tab shows it: "(3) Backroom".
+  const newCount = sideRooms.reduce((sum, room) => sum + (room.news?.unseen ?? 0), 0) + sideThreads.filter((thread) => thread.news).length;
+  useEffect(() => {
+    document.title = newCount > 0 ? `(${newCount}) Backroom` : "Backroom";
+  }, [newCount]);
+  useFinishNotifications(rooms, threads, looking, (key) => {
+    const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+    if (kind === "room" || kind === "thread") setSelection({ kind, id });
+    setSidebarOpen(false);
+  });
+
   // Desk data: crew tiles show context on every tab, so poll every 10s while a room is open; every 2.5s while
   // Changes is visible or any participant's thread is running a turn (the timeline shows turns typed in T3 live).
   const [deskRunning, setDeskRunning] = useState(false);
@@ -396,9 +434,9 @@ export function App() {
         </div>
       ) : null}
       <Sidebar
-        rooms={rooms}
+        rooms={sideRooms}
         projects={projects}
-        threads={threads}
+        threads={sideThreads}
         t3Error={t3Error}
         selection={selection}
         onSelect={(next) => {
@@ -419,7 +457,7 @@ export function App() {
       />
       {collapsed ? (
         <SidebarRail
-          rooms={rooms}
+          rooms={sideRooms}
           projects={projects}
           selection={selection}
           onSelect={setSelection}

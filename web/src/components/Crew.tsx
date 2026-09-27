@@ -21,11 +21,11 @@ import { ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
-import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
+import { InheritedLine, RUNTIME_MODE_INFO, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
-import { PresetChips, usePresets } from "./presets.tsx";
+import { PresetChips, PresetIcon, usePresets, usePresetText } from "./presets.tsx";
 import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
@@ -727,6 +727,13 @@ export function slugifyAlias(title: string): string {
   return slug;
 }
 
+/** A name free among `taken` (lowercased aliases): the name itself, else with 2, 3… added, as the service does. */
+function freeAlias(name: string, taken: ReadonlySet<string>): string {
+  let alias = name;
+  for (let n = 2; taken.has(alias.toLowerCase()); n += 1) alias = `${name.slice(0, 32 - String(n).length)}${n}`;
+  return alias;
+}
+
 function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const { runCommand, snapshot } = useRoom();
   const { toast } = useToast();
@@ -741,9 +748,17 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const [fromDefault, setFromDefault] = useState(false);
   const [busy, setBusy] = useState(false);
   const { presets, reload: reloadPresets } = usePresets();
+  const presetText = usePresetText();
   // A picked preset sets where it works once the project's branches are known, and keeps T3's default model out.
   const [workspacePrefer, setWorkspacePrefer] = useState<{ mode: "local" | "worktree"; nonce: number } | null>(null);
   const presetPicked = useRef(false);
+  // The crew picked, in the order picked. One fills in the form; several are seated at once, each with its saved
+  // settings, and the form waits hidden (with the preset it was filled from) in case they go back to one.
+  const [pickedIds, setPickedIds] = useState<string[]>([]);
+  const formPresetId = useRef<string | null>(null);
+  const [seating, setSeating] = useState(0);
+  const picked = pickedIds.map((id) => presets.find((p) => p.id === id)).filter((p): p is Preset => p !== undefined);
+  const several = picked.length > 1;
   const aliasRef = useRef<HTMLInputElement>(null);
   const threads = useAttachableThreads(snapshot.room.projectId);
   const selectedThread = threadId ? (threads ?? []).find((t) => t.id === threadId) ?? null : null;
@@ -775,9 +790,10 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     };
   }, [snapshot.room.projectId, toast]);
 
-  const aliasTaken = snapshot.participants.filter(isActiveParticipant).some((p) => p.alias.toLowerCase() === fields.alias.trim().toLowerCase());
+  const seatedAliases = () => new Set(snapshot.participants.filter(isActiveParticipant).map((p) => p.alias.toLowerCase()));
+  const aliasTaken = seatedAliases().has(fields.alias.trim().toLowerCase());
   const aliasValid = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(fields.alias.trim());
-  const ready = aliasValid && !aliasTaken && (mode === "create" ? fields.model !== null && workspaceReady(workspace) : threadId !== null);
+  const ready = (mode === "create" && several) || (aliasValid && !aliasTaken && (mode === "create" ? fields.model !== null && workspaceReady(workspace) : threadId !== null));
 
   const selectThread = (thread: T3ThreadShell) => {
     setThreadId(thread.id);
@@ -785,16 +801,45 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   };
 
   const applyPreset = (preset: Preset) => {
-    const taken = new Set(snapshot.participants.filter(isActiveParticipant).map((p) => p.alias.toLowerCase()));
-    let alias = preset.name;
-    for (let n = 2; taken.has(alias.toLowerCase()); n += 1) alias = `${preset.name.slice(0, 32 - String(n).length)}${n}`;
+    formPresetId.current = preset.id;
     presetPicked.current = true;
-    setFields({ alias, model: preset.modelSelection, runtimeMode: preset.runtimeMode });
+    setFields({ alias: freeAlias(preset.name, seatedAliases()), model: preset.modelSelection, runtimeMode: preset.runtimeMode });
     setAliasTouched(true);
     setFromDefault(false);
     setRoleId(preset.roleId && snapshot.roles.some((r) => r.id === preset.roleId) ? preset.roleId : null);
     setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
   };
+
+  // Nobody picked: the form goes back to how it opened, on T3's default model.
+  const clearForm = () => {
+    formPresetId.current = null;
+    presetPicked.current = false;
+    const model = defaultModel === "loading" ? null : defaultModel;
+    setFields({ ...emptyCrewFields(), model });
+    setFromDefault(model !== null);
+    setAliasTouched(false);
+    setRoleId(null);
+    setWorkspacePrefer({ mode: "local", nonce: Date.now() });
+  };
+
+  const pick = (ids: string[]) => {
+    setPickedIds(ids);
+    if (ids.length === 1 && ids[0] !== formPresetId.current) {
+      const preset = presets.find((p) => p.id === ids[0]);
+      if (preset) applyPreset(preset);
+    } else if (ids.length === 0 && formPresetId.current) clearForm();
+  };
+  const togglePreset = (preset: Preset) => !busy && pick(pickedIds.includes(preset.id) ? pickedIds.filter((id) => id !== preset.id) : [...pickedIds, preset.id]);
+
+  // The names the picked take, as the service will give them: each after the ones seated before it.
+  const pickedAliases = (() => {
+    const taken = seatedAliases();
+    return picked.map((preset) => {
+      const alias = freeAlias(preset.name, taken);
+      taken.add(alias.toLowerCase());
+      return alias;
+    });
+  })();
 
   // The form as a preset, under the name typed: a new one, or the one of that name brought up to date.
   const presetOfName = presets.find((p) => p.name.toLowerCase() === fields.alias.trim().toLowerCase()) ?? null;
@@ -810,12 +855,34 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const onFields = (next: CrewFieldsState) => {
     if (next.alias !== fields.alias) setAliasTouched(true);
     if (next.model !== fields.model && fromDefault && JSON.stringify(next.model) !== JSON.stringify(defaultModel)) setFromDefault(false);
+    // Another model or permission mode makes someone new: the crew member the form came from is no longer picked.
+    const formPreset = presets.find((p) => p.id === formPresetId.current);
+    if (formPreset && (JSON.stringify(next.model) !== JSON.stringify(formPreset.modelSelection) || next.runtimeMode !== formPreset.runtimeMode)) {
+      formPresetId.current = null;
+      setPickedIds([]);
+    }
     setFields(next);
+  };
+
+  // Seated one after another, so each takes the next free name. What fails stays picked, to try again.
+  const seatPicked = async () => {
+    setBusy(true);
+    const seated = new Set<string>();
+    for (const preset of picked) {
+      setSeating(seated.size + 1);
+      const result = await runCommand({ type: "participant.fromPreset", roomId: snapshot.room.id, presetId: preset.id });
+      if (!result) break;
+      seated.add(preset.id);
+    }
+    setBusy(false);
+    if (seated.size === picked.length) onClose();
+    else pick(pickedIds.filter((id) => !seated.has(id)));
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!ready) return;
+    if (mode === "create" && several) return seatPicked();
     setBusy(true);
     // An attached thread keeps what T3 already has: no model, options or permission mode are sent.
     const result =
@@ -862,33 +929,69 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
 
         {mode === "create" ? (
           <>
-            <PresetChips model={fields.model} runtimeMode={fields.runtimeMode} onPick={applyPreset} />
-            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelPending={defaultModel === "loading"}>
-              <WorkspacePicker
-                projectId={snapshot.room.projectId}
-                value={workspace}
-                onChange={setWorkspace}
-                newBranchHint={`${branchSlug(snapshot.room.title, "room")}/${branchSlug(fields.alias || "name", "name")}`}
-                prefer={workspacePrefer}
-              />
-              <RoleSelect value={roleId} onChange={setRoleId} />
-            </CrewFields>
+            <PresetChips
+              model={fields.model}
+              runtimeMode={fields.runtimeMode}
+              onPick={togglePreset}
+              pickedIds={pickedIds}
+              note={
+                picked.length === 0 ? (
+                  "Pick one to fill in the settings below, or several to add them all at once."
+                ) : picked.length === 1 ? (
+                  <>
+                    <strong>{picked[0]?.name}</strong>&rsquo;s settings are filled in below; change anything you like, or pick more to add several at once.
+                  </>
+                ) : null
+              }
+            />
+            {several ? (
+              <div className="form-field">
+                <span>Joining</span>
+                <ul className="seat-list">
+                  {picked.map((preset, index) => {
+                    const role = preset.roleId ? snapshot.roles.find((r) => r.id === preset.roleId) : undefined;
+                    const where = preset.workspaceMode === "worktree" ? "new worktree" : "project folder";
+                    return (
+                      <li key={preset.id} className="seat-row">
+                        <PresetIcon preset={preset} />
+                        <span className="preset-chip-name">@{pickedAliases[index]}</span>
+                        <span className="preset-chip-what">{[presetText(preset).what, RUNTIME_MODE_INFO[preset.runtimeMode].label, where, role ? `${role.name} role` : null].filter(Boolean).join(" · ")}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <span className="hint">Each joins on a new thread of their own, with the settings saved in your crew. To change someone&rsquo;s first, pick them alone.</span>
+              </div>
+            ) : (
+              <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} modelPending={defaultModel === "loading"}>
+                <WorkspacePicker
+                  projectId={snapshot.room.projectId}
+                  value={workspace}
+                  onChange={setWorkspace}
+                  newBranchHint={`${branchSlug(snapshot.room.title, "room")}/${branchSlug(fields.alias || "name", "name")}`}
+                  prefer={workspacePrefer}
+                />
+                <RoleSelect value={roleId} onChange={setRoleId} />
+              </CrewFields>
+            )}
             <div className="dialog-actions">
-              <button
-                type="button"
-                className="ghost"
-                disabled={busy || !aliasValid || fields.model === null}
-                title={presetOfName ? `Bring ${presetOfName.name} in your crew up to date with these settings` : "Keep these settings under this name in your crew, to seat or start with one click next time"}
-                onClick={() => void savePreset()}
-              >
-                {presetOfName ? "Update in crew" : "Save to crew"}
-              </button>
+              {several ? null : (
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={busy || !aliasValid || fields.model === null}
+                  title={presetOfName ? `Bring ${presetOfName.name} in your crew up to date with these settings` : "Keep these settings under this name in your crew, to seat or start with one click next time"}
+                  onClick={() => void savePreset()}
+                >
+                  {presetOfName ? "Update in crew" : "Save to crew"}
+                </button>
+              )}
               <span className="spacer" />
               <button type="button" onClick={onClose}>
                 Cancel
               </button>
               <button type="submit" className="primary" disabled={busy || !ready}>
-                {busy ? "Adding…" : "Add member"}
+                {several ? (busy ? `Adding ${seating} of ${picked.length}…` : `Add ${picked.length} members`) : busy ? "Adding…" : "Add member"}
               </button>
             </div>
           </>

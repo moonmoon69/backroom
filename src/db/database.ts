@@ -246,6 +246,16 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (thread_id, session_id)
   );
   `,
+  // Browsers for a thread outside rooms, chosen as a room chooses them: on or off, the default, the ones it may use.
+  `
+  CREATE TABLE thread_browsers (
+    thread_id TEXT PRIMARY KEY,
+    browser_enabled INTEGER NOT NULL DEFAULT 0,
+    default_browser_id TEXT,
+    browser_ids_json TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export class Database {

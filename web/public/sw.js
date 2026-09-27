@@ -55,3 +55,20 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+
+// A finish notification (web/src/news.ts): bring a Backroom window forward and have it open what finished.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const key = event.notification.data?.key;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+      const client = clients[0];
+      if (!client) {
+        await self.clients.openWindow("/");
+        return;
+      }
+      await client.focus();
+      if (typeof key === "string") client.postMessage({ type: "backroom.open", key });
+    }),
+  );
+});

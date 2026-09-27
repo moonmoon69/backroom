@@ -10,7 +10,8 @@ import "./styles.css";
 applyTheme(readTheme());
 installViewportFit();
 
-// Installable app: the service worker keeps the shell available offline and never touches /api.
+// Installable app: the service worker keeps the shell available offline, never touches /api, and shows the
+// notifications of finished work (see news.ts).
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {

@@ -1,20 +1,21 @@
 /**
- * The browser list and how rooms use it. A room with browsers on uses its default browser, or "general" when it has
- * none (or it was deleted). Profiles live under data/browsers/<browserId>; a folder there without a record (a room's
- * browser from before browsers were a list) is adopted at startup so its logins are not lost.
+ * The browser list and how rooms, and threads outside rooms, use it. Each makes the same choices (browsers on or off,
+ * a default, the ones it may use); with browsers on it uses its default, or "general" when it has none (or it was
+ * deleted). Profiles live under data/browsers/<browserId>; a folder there without a record (a room's browser from
+ * before browsers were a list) is adopted at startup so its logins are not lost.
  */
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Repos } from "../db/repos.ts";
 import { GENERAL_BROWSER_ID, type Browser, type Room } from "../domain/types.ts";
 
-/** Browsers a room's agents may use: its allowed list (in list order), or every browser. */
+/** Browsers a room's (or a thread's) agents may use: its allowed list (in list order), or every browser. */
 export function browsersForRoom(repos: Repos, room: Pick<Room, "allowedBrowserIds">): Browser[] {
   const all = repos.listBrowsers();
   return room.allowedBrowserIds === null ? all : all.filter((browser) => room.allowedBrowserIds?.includes(browser.id));
 }
 
-/** The room's default browser: its own choice when it exists and is allowed, else "general", else the first allowed. */
+/** The default browser of a room (or thread): its own choice when it exists and is allowed, else "general", else the first allowed. */
 export function effectiveBrowser(repos: Repos, room: Pick<Room, "defaultBrowserId" | "allowedBrowserIds">): Browser | null {
   const allowed = browsersForRoom(repos, room);
   return allowed.find((b) => b.id === room.defaultBrowserId) ?? allowed.find((b) => b.id === GENERAL_BROWSER_ID) ?? allowed[0] ?? null;
@@ -22,6 +23,32 @@ export function effectiveBrowser(repos: Repos, room: Pick<Room, "defaultBrowserI
 
 /** An agent's key from its briefing: "<alias>.<first 8 characters of the room id>"; a thread outside rooms uses "thread.<id prefix>". */
 export const agentKey = (alias: string, roomId: string): string => `${alias}.${roomId.slice(0, 8)}`;
+
+/** A thread's key: "thread." and the first 8 characters of its id. */
+export const threadKey = (threadId: string): string => `thread.${threadId.slice(0, 8)}`;
+
+/** What an agent key may do with browsers: whose rules they are, whether browsers are on, and which it may use. */
+export interface BrowserAccess {
+  /** Whose choice it is, for messages: 'the room "payments"', "this thread". */
+  subject: string;
+  kind: "room" | "thread";
+  enabled: boolean;
+  allowed: Browser[];
+}
+
+/**
+ * The browser rules for an agent key: its room's, or (a "thread." key) its thread's, which are off until the thread is
+ * given browsers. Null for a key that names neither.
+ */
+export function accessForKey(repos: Repos, key: string): BrowserAccess | null {
+  if (key.startsWith("thread.")) {
+    const prefix = key.slice("thread.".length);
+    const record = prefix.length >= 8 ? repos.findThreadBrowsers(prefix) : null;
+    return { subject: "this thread", kind: "thread", enabled: record?.browserEnabled ?? false, allowed: record ? browsersForRoom(repos, record) : [] };
+  }
+  const room = roomForKey(repos, key);
+  return room ? { subject: `the room "${room.title}"`, kind: "room", enabled: room.browserEnabled, allowed: browsersForRoom(repos, room) } : null;
+}
 
 /** The room an agent key belongs to, or null (a thread's key, or no such room). */
 export function roomForKey(repos: Repos, key: string): Room | null {

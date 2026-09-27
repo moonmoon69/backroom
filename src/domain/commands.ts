@@ -82,6 +82,17 @@ export const RoomBrowserCommand = z
   })
   .strict();
 
+/** The same choices for a thread outside rooms (its one agent), with the same rules. The thread need not exist yet. */
+export const ThreadBrowserCommand = z
+  .object({
+    type: z.literal("thread.browser"),
+    threadId: z.string().uuid(),
+    enabled: z.boolean(),
+    browserId: nonEmpty.nullable().optional(),
+    allowed: z.array(nonEmpty).min(1).nullable().optional(),
+  })
+  .strict();
+
 const BROWSER_NAME = z
   .string()
   .trim()
@@ -460,6 +471,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoomCreateCommand,
   RoomUpdateCommand,
   RoomBrowserCommand,
+  ThreadBrowserCommand,
   BrowserCreateCommand,
   BrowserUpdateCommand,
   BrowserDeleteCommand,

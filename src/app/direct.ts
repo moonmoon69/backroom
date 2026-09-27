@@ -33,7 +33,9 @@ export type DirectCommand = Extract<
 
 export type DirectResult = { type: "project.created"; projectId: string } | { type: "thread.started"; threadId: string } | { type: "thread.updated"; threadId: string };
 
-export const isDirectCommand = (command: RoomCommand): command is DirectCommand => command.type === "project.create" || command.type.startsWith("thread.");
+// A thread's browsers are the service's, like a room's: they live here, not in T3.
+export const isDirectCommand = (command: RoomCommand): command is DirectCommand =>
+  command.type === "project.create" || (command.type.startsWith("thread.") && command.type !== "thread.browser");
 
 /** Run a T3 call, reporting an unreachable T3 as 503 and a refused command as 502, like the room commands do. */
 async function t3<T>(call: () => Promise<T>): Promise<T> {

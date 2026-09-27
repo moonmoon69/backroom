@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
-import type { BrowserListItem, CommandResult, FolderListing, Preset, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { BrowserListItem, CommandResult, FolderListing, Preset, RoomCommand, RoomListItem, RoomNews, T3Project, T3ThreadShell } from "../types.ts";
+import { describeRoomNews } from "../news.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { titleMonogram } from "./Monogram.tsx";
@@ -87,12 +88,21 @@ function shortAge(iso: string): string {
 }
 
 /** A room's activity as one dot tone for the rail: needs you, working, background work, or none. */
-function roomTone(room: RoomListItem): { tone: "input" | "working" | "background"; label: string } | null {
+function roomTone(room: RoomListItem): { tone: "input" | "new" | "working" | "background"; label: string } | null {
   if (room.activity && room.activity.needsInput > 0) return { tone: "input", label: `${room.activity.needsInput} needs you` };
+  if (room.news && room.news.unseen > 0) return { tone: "new", label: newsLabel(room.news) };
   const working = Math.max(room.working, room.activity?.turn ?? 0);
   if (working > 0) return { tone: "working", label: `${working} working` };
   if (room.activity && room.activity.background + room.activity.monitoring > 0) return { tone: "background", label: "background work" };
   return null;
+}
+
+/** A room's news for a hover: "2 new: @sol1 replied: Fixed the parser…". */
+function newsLabel(news: RoomNews): string {
+  const latest = news.latest;
+  const preview = latest?.preview.replace(/\s+/g, " ").trim() ?? "";
+  const what = latest ? `${describeRoomNews(latest)}${preview ? `: ${preview.length > 120 ? `${preview.slice(0, 117)}…` : preview}` : ""}` : "";
+  return `${news.unseen} new since you looked${what ? `. Latest: ${what}` : ""}`;
 }
 
 /**
@@ -151,7 +161,11 @@ export function SidebarRail({
                   <span className="room-mono serif" aria-hidden="true">
                     {titleMonogram(room.title)}
                   </span>
-                  {tone ? <span className={`rail-dot rail-dot-${tone.tone}`} aria-hidden="true" /> : null}
+                  {tone?.tone === "new" && room.news ? (
+                    <NewsCount news={room.news} />
+                  ) : tone ? (
+                    <span className={`rail-dot rail-dot-${tone.tone}`} aria-hidden="true" />
+                  ) : null}
                 </button>
               );
             })}
@@ -333,9 +347,11 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             const isCollapsed = collapsed.has(group.id);
             const newHere = selection?.kind === "new-thread" && selection.projectId === group.id;
             const expanded = showAll.has(group.id);
-            const visibleThreads = group.threads.filter((thread, index) => expanded || index < THREAD_LIMIT || (selection?.kind === "thread" && selection.id === thread.id));
+            // A thread that finished since you looked is never behind "show more".
+            const visibleThreads = group.threads.filter((thread, index) => expanded || index < THREAD_LIMIT || Boolean(thread.news) || (selection?.kind === "thread" && selection.id === thread.id));
             const hiddenCount = group.threads.length - visibleThreads.length;
             const attention = group.threads.some((t) => threadActivity(t).tone === "input") || group.rooms.some((r) => (r.activity?.needsInput ?? 0) > 0);
+            const fresh = group.threads.some((t) => t.news) || group.rooms.some((r) => (r.news?.unseen ?? 0) > 0);
             const known = projects?.some((p) => p.id === group.id) ?? false;
             return (
               <li key={group.id} className="project-group">
@@ -366,7 +382,11 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                     <ChevronIcon dir={isCollapsed ? "right" : "down"} />
                     <span className="project-name">{group.title || "…"}</span>
                     {isCollapsed && group.rooms.length + group.threads.length > 0 ? <span className="project-count mono">{group.rooms.length + group.threads.length}</span> : null}
-                    {isCollapsed && attention ? <span className="thread-dot tone-input" title="Something here needs you" /> : null}
+                    {isCollapsed && attention ? (
+                      <span className="thread-dot tone-input" title="Something here needs you" />
+                    ) : isCollapsed && fresh ? (
+                      <span className="thread-dot tone-new" title="Something here finished since you looked" />
+                    ) : null}
                   </button>
                   {known ? (
                     <AddMenu
@@ -626,10 +646,12 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
 }
 
 function RoomTile({ room, selected, onSelect }: { room: RoomListItem; selected: boolean; onSelect: () => void }) {
+  const news = room.news && room.news.unseen > 0 ? room.news : null;
   return (
-    <button type="button" className={`room-tile${selected ? " selected" : ""}`} onClick={onSelect} aria-current={selected ? "true" : undefined}>
+    <button type="button" className={`room-tile${selected ? " selected" : ""}${news ? " has-news" : ""}`} onClick={onSelect} aria-current={selected ? "true" : undefined} title={news ? newsLabel(news) : undefined}>
       <span className="room-mono serif" aria-hidden="true">
         {titleMonogram(room.title)}
+        {news ? <NewsCount news={news} /> : null}
       </span>
       <span className="tile-body">
         <span className="room-title">{room.title}</span>
@@ -661,9 +683,45 @@ function RoomTile({ room, selected, onSelect }: { room: RoomListItem; selected: 
             </span>
           ) : null}
         </span>
+        {news?.latest ? (
+          <span className={`room-news tone-${news.latest.kind === "failed" ? "err" : "ok"}`}>
+            <NewsGlyph failed={news.latest.kind === "failed"} />
+            <span className="room-news-text">
+              <span className="sr-only">{news.unseen} new: </span>
+              <span className="room-news-who">
+                {describeRoomNews(news.latest)} · {shortAge(news.latest.at)}
+              </span>
+              {newsPreview(news.latest.preview)}
+            </span>
+          </span>
+        ) : null}
       </span>
     </button>
   );
+}
+
+/** The count on a room's monogram (and its rail tile) while something there finished since you looked. */
+function NewsCount({ news }: { news: RoomNews }) {
+  return (
+    <span className={`news-count tone-${news.latest?.kind === "failed" ? "err" : "ok"}`} aria-hidden="true">
+      {news.unseen > 9 ? "9+" : news.unseen}
+    </span>
+  );
+}
+
+/** A tick in a green disc for a finish, a cross in a red one for a failure. */
+function NewsGlyph({ failed }: { failed: boolean }) {
+  return (
+    <span className="news-glyph" aria-hidden="true">
+      <svg viewBox="0 0 8 8">{failed ? <path d="M2.3 2.3 5.7 5.7M5.7 2.3 2.3 5.7" /> : <path d="M1.9 4.2 3.4 5.6 6.2 2.6" />}</svg>
+    </span>
+  );
+}
+
+/** The opening of a reply after its line: ": Fixed the parser…", as plain words. */
+function newsPreview(preview: string): string {
+  const text = preview.replace(/```[\s\S]*?```/g, " ").replace(/[`*_>#]+/g, "").replace(/\s+/g, " ").trim();
+  return text ? `: ${text}` : "";
 }
 
 /** "Settled · 3" / "Archived · 1" under a project: a toggle, and the threads when open. Nothing when empty. */
@@ -705,20 +763,30 @@ function ThreadSection({
 function ThreadTile({ thread, selected, onSelect }: { thread: T3ThreadShell; selected: boolean; onSelect: () => void }) {
   const activity = threadActivity(thread);
   const state = thread.archivedAt ? "archived" : thread.settledAt ? "settled" : null;
+  const news = state ? null : (thread.news ?? null);
   // Settled and archived threads show when they got there; active ones when they were last used.
   const age = shortAge(thread.archivedAt ?? thread.settledAt ?? lastActive(thread));
   return (
     <li className="side-thread">
       <button
         type="button"
-        className={`side-thread-tile${selected ? " selected" : ""}${state ? ` ${state}` : ""}`}
+        className={`side-thread-tile${selected ? " selected" : ""}${state ? ` ${state}` : ""}${news ? " has-news" : ""}`}
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
-        title={`${thread.title}\n${thread.modelSelection.model} · ${state ?? activity.label}`}
+        title={`${thread.title}\n${thread.modelSelection.model} · ${state ?? (news ? `${news.state === "error" ? "failed" : "finished"} since you looked` : activity.label)}`}
       >
-        <span className={`thread-dot tone-${state ? "idle" : activity.tone}`} aria-hidden="true" />
+        <span className={`thread-dot tone-${state ? "idle" : activity.tone === "input" || !news ? activity.tone : news.state === "error" ? "error" : "new"}`} aria-hidden="true" />
         <span className="thread-title">{thread.title}</span>
-        {activity.tone === "input" && !state ? <span className="pill pill-input">needs you</span> : <span className="side-thread-age mono">{age}</span>}
+        {activity.tone === "input" && !state ? (
+          <span className="pill pill-input">needs you</span>
+        ) : news ? (
+          <span className={`thread-news tone-${news.state === "error" ? "err" : "ok"}`}>
+            <NewsGlyph failed={news.state === "error"} />
+            {shortAge(news.at)}
+          </span>
+        ) : (
+          <span className="side-thread-age mono">{age}</span>
+        )}
       </button>
     </li>
   );

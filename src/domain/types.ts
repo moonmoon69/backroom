@@ -52,6 +52,20 @@ export interface Browser {
   updatedAt: string;
 }
 
+/**
+ * Browsers for a thread outside rooms: the choices a room makes for its agents (on or off, a default, the ones it may
+ * use), made for the thread's one agent. A thread without a record has browsers off, like a new room.
+ */
+export interface ThreadBrowsers {
+  threadId: string;
+  browserEnabled: boolean;
+  /** Its default; null means "general" (when it exists), as for a room. */
+  defaultBrowserId: string | null;
+  /** Browsers it may use; null means all of them. */
+  allowedBrowserIds: string[] | null;
+  updatedAt: string;
+}
+
 /** The fallback default browser, created with the table. */
 export const GENERAL_BROWSER_ID = "general";
 

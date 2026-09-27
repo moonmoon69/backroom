@@ -1,7 +1,7 @@
 /**
  * Presets: a participant's settings under a name (model and its options, permission mode, role, where it works), so
  * the same few combinations are not chosen again each time. A preset is seated in a room on a new thread (dragged
- * onto the room, or picked in the Add participant dialog) or used to start a thread on its own.
+ * onto the room, or picked in the Add member dialog, several at once if you like) or used to start a thread on its own.
  */
 import { createContext, useContext, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
@@ -126,7 +126,9 @@ const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): bool
  * The presets as a row of buttons above a form's settings: one click fills them in. `model` and `runtimeMode` are the
  * form's current values, so the preset they equal reads as chosen. With `pickedId`, only the preset picked reads as
  * chosen while the settings are still its own, a line under the row says what confirms (`pickedNote`), and clicking
- * it again calls `onClear` (back to the defaults) instead of filling it in once more.
+ * it again calls `onClear` (back to the defaults) instead of filling it in once more. With `pickedIds`, several read as
+ * chosen at once: the form keeps the list, and a click on any of them is its to handle (`onPick` picks or unpicks);
+ * `note` is the line under the row.
  */
 export function PresetChips({
   model,
@@ -135,6 +137,8 @@ export function PresetChips({
   pickedId,
   onClear,
   pickedNote,
+  pickedIds,
+  note,
   children,
 }: {
   model: ModelSelection | null;
@@ -143,12 +147,15 @@ export function PresetChips({
   pickedId?: string | null;
   onClear?: () => void;
   pickedNote?: string;
+  pickedIds?: string[];
+  note?: ReactNode;
   children?: ReactNode;
 }) {
   const { presets } = usePresets();
   const text = usePresetText();
   if (presets.length === 0 && !children) return null;
-  const isOn = (preset: Preset) => (pickedId === undefined || pickedId === preset.id) && sameSelection(model, preset.modelSelection) && runtimeMode === preset.runtimeMode;
+  const isOn = (preset: Preset) =>
+    pickedIds ? pickedIds.includes(preset.id) : (pickedId === undefined || pickedId === preset.id) && sameSelection(model, preset.modelSelection) && runtimeMode === preset.runtimeMode;
   const picked = pickedId ? (presets.find((p) => p.id === pickedId && isOn(p)) ?? null) : null;
   return (
     <div className="form-field preset-field">
@@ -158,13 +165,18 @@ export function PresetChips({
           const { model: modelName, what, detail } = text(preset);
           const on = isOn(preset);
           const clears = on && onClear !== undefined;
+          const title = clears
+            ? `${preset.name}: ${modelName} · ${detail}. Click again to start from the defaults instead.`
+            : on && pickedIds
+              ? `${preset.name}: ${modelName} · ${detail}. Click again to leave them out.`
+              : `${modelName} · ${detail}`;
           return (
             <button
               key={preset.id}
               type="button"
               className={`preset-chip${on ? " on" : ""}`}
               aria-pressed={on}
-              title={clears ? `${preset.name}: ${modelName} · ${detail}. Click again to start from the defaults instead.` : `${modelName} · ${detail}`}
+              title={title}
               onClick={() => (clears ? onClear() : onPick(preset))}
             >
               <PresetIcon preset={preset} />
@@ -181,6 +193,7 @@ export function PresetChips({
           <strong>{picked.name}</strong>&rsquo;s settings are filled in below; change anything you like. {pickedNote ?? ""}
         </span>
       ) : null}
+      {note && presets.length > 0 ? <span className="hint preset-picked-note">{note}</span> : null}
     </div>
   );
 }
