@@ -3,7 +3,7 @@
  * by the room service. What you type goes to T3 as typed (no room briefing), like typing in T3 Code.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { api, ApiError, attachmentUrl } from "../api.ts";
+import { api, ApiError, attachmentUrl, useThreadCost } from "../api.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import {
@@ -26,6 +26,7 @@ import {
 } from "../types.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { Dialog } from "./Dialog.tsx";
+import { fmtTokens, money } from "./deskFormat.ts";
 import { PresetChips, usePresets } from "./presets.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -194,6 +195,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
               <span className={`pill pill-mode mode-${thread.runtimeMode}`}>{thread.runtimeMode}</span>
             </button>
             {view?.contextWindow ? <ContextMeter reading={view.contextWindow} compact /> : null}
+            <ThreadSpend threadId={thread.id} />
             {thread.branch ? (
               <span className="mono muted thread-branch" title={thread.worktreePath ?? undefined}>
                 ⎇ {thread.branch}
@@ -359,6 +361,25 @@ export function ArchivedThreadView({
         </Dialog>
       ) : null}
     </>
+  );
+}
+
+/** What the thread has used at list price, from its transcripts; nothing while there is no estimate. */
+function ThreadSpend({ threadId }: { threadId: string }) {
+  const cost = useThreadCost(threadId);
+  if (!cost?.available) return null;
+  const input = cost.total.inputTokens + cost.total.cachedInputTokens + cost.total.cacheWriteTokens;
+  const lines = [
+    `Estimated spend: ${money(cost.total.costUsd)} at list price, not what a subscription charges.`,
+    `${fmtTokens(input)} in · ${fmtTokens(cost.total.outputTokens)} out over ${cost.total.calls.toLocaleString()} calls.`,
+    ...(cost.subagents.calls > 0 ? [`Own ${money(cost.own.costUsd)} · subagents ${money(cost.subagents.costUsd)}.`] : []),
+    ...cost.models.map((m) => `${m.model}: ${fmtTokens(m.inputTokens + m.cachedInputTokens + m.cacheWriteTokens)} in · ${fmtTokens(m.outputTokens)} out · ${m.priced ? money(m.costUsd) : "unpriced"}`),
+  ];
+  return (
+    <span className="thread-spend mono" title={lines.join("\n")}>
+      {cost.priced ? "≈ " : "≥ "}
+      {money(cost.total.costUsd)}
+    </span>
   );
 }
 

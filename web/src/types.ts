@@ -347,6 +347,54 @@ export interface UsageWindow {
   resetsAt: string | null;
 }
 
+/** What a thread used, from the harness's own transcripts, and its list-price value (GET /api/rooms/:id/costs). */
+export interface TokenTotals {
+  /** Input sent uncached. */
+  inputTokens: number;
+  /** Input read from the provider's cache. */
+  cachedInputTokens: number;
+  /** Input written to the cache. */
+  cacheWriteTokens: number;
+  outputTokens: number;
+  calls: number;
+  /** List-price value of the priced calls. */
+  costUsd: number;
+}
+
+export interface ModelCost extends TokenTotals {
+  model: string;
+  /** False when the price table has no rate for the model: tokens are counted, cost is not. */
+  priced: boolean;
+  own: TokenTotals;
+  subagents: TokenTotals;
+}
+
+export interface ThreadCost {
+  available: boolean;
+  reason: "unsupported_provider" | "no_session" | "no_transcript" | "unreadable" | null;
+  provider: string | null;
+  total: TokenTotals;
+  own: TokenTotals;
+  subagents: TokenTotals;
+  /** Largest cost first. */
+  models: ModelCost[];
+  /** False when some model had no rate, so the cost is a lower bound. */
+  priced: boolean;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+
+export interface RoomCosts {
+  readAt: string;
+  pricesFetchedAt: string | null;
+  room: ThreadCost;
+  /** Participants with no estimate; the room's figure leaves them out. */
+  withoutEstimate: string[];
+  participants: Record<string, ThreadCost>;
+  /** Tasks with any usage while they ran. */
+  tasks: Record<string, ThreadCost>;
+}
+
 /** GET /api/t3/providers: one entry per harness provider known to T3. */
 export interface ProviderInfo {
   instanceId: string;

@@ -26,6 +26,7 @@ import { resolveLocalImage } from "./localImage.ts";
 import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoomCompare, worktreePathsOf } from "../git/reader.ts";
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
+import { ThreadCosts } from "../usage/threadCosts.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
   const room = stack.repos.getRoom(roomId);
@@ -61,6 +62,17 @@ export interface BrowserToolsHttp {
 export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp): Hono {
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
+  const costs = new ThreadCosts({
+    t3StateDb: join(config.t3UserDataDir, "state.sqlite"),
+    ratesPath: join(config.t3UserDataDir, "usage-model-rates.json"),
+    claudeProjectsDir: config.usage.claudeProjectsDir,
+    codexSessionsDir: config.usage.codexSessionsDir,
+    remember: (threadId, provider, sessionId) => {
+      // Only a session not yet known is written: this runs on every read.
+      if (!stack.repos.listThreadSessions(threadId).some((known) => known.sessionId === sessionId)) stack.repos.rememberThreadSession(threadId, provider, sessionId);
+    },
+    remembered: (threadId) => stack.repos.listThreadSessions(threadId),
+  });
 
   app.onError((error, c) => {
     if (error instanceof CommandValidationError) return c.json({ error: "invalid_command", message: error.message, issues: error.issues }, 400);
@@ -431,6 +443,51 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     if (!participant || participant.roomId !== c.req.param("roomId")) throw new RoomError("not_found", "participant not found", 404);
     return c.json(await deskFor(participant.id));
   });
+
+  /**
+   * What the room's threads have used and what that is worth at list price: per participant (every thread it has been
+   * bound to, removed participants too), per task (what its thread used while the task ran) and for the room.
+   */
+  app.get("/api/rooms/:roomId/costs", (c) => {
+    const roomId = c.req.param("roomId");
+    if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
+    const participants = stack.repos.listParticipants(roomId);
+    const bindings = stack.repos.listBindings(participants.map((p) => p.id));
+    const threadsOf = (participantId: string) => [...new Set(bindings.filter((b) => b.participantId === participantId).map((b) => b.threadId))];
+    const byParticipant: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
+    for (const participant of participants) byParticipant[participant.id] = costs.cost(threadsOf(participant.id));
+
+    const byTask: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
+    const now = Date.now();
+    const windows = new Map<string, Array<{ threadId: string; from: number; to: number }>>();
+    for (const run of stack.repos.listRunsForRoom(roomId)) {
+      // A message sent into a turn already running: that turn's task has the spend.
+      if (run.steered) continue;
+      const from = Date.parse(run.startedAt ?? run.acceptedAt ?? "");
+      if (!Number.isFinite(from)) continue;
+      const ended = run.completedAt ? Date.parse(run.completedAt) : now;
+      windows.set(run.taskId, [...(windows.get(run.taskId) ?? []), { threadId: run.threadId, from, to: Number.isFinite(ended) ? ended : now }]);
+    }
+    for (const [taskId, runs] of windows) {
+      const parts = runs.map((run) => costs.costBetween([run.threadId], run.from, run.to)).filter((part) => part.available && part.total.calls > 0);
+      const merged = mergeCosts(parts);
+      if (merged) byTask[taskId] = merged;
+    }
+
+    const room = costs.cost([...new Set(bindings.map((b) => b.threadId))]);
+    return c.json({
+      readAt: new Date().toISOString(),
+      pricesFetchedAt: costs.pricesFetchedAt(),
+      room,
+      /** Participants with no estimate (a provider without readable usage): the room's figure leaves them out. */
+      withoutEstimate: participants.filter((p) => !byParticipant[p.id]?.available).map((p) => p.id),
+      participants: byParticipant,
+      tasks: byTask,
+    });
+  });
+
+  /** The same for one thread used on its own. */
+  app.get("/api/t3/threads/:threadId/cost", (c) => c.json({ readAt: new Date().toISOString(), pricesFetchedAt: costs.pricesFetchedAt(), cost: costs.cost([c.req.param("threadId")]) }));
 
   /** All participants' desks in one call, for the inspector rail. Participants whose T3 read fails are reported, not fatal. */
   app.get("/api/rooms/:roomId/desk", async (c) => {
@@ -809,6 +866,42 @@ function runningPromptMessageBeforeOutput(messages: T3Message[], turnId: string)
   if (messages.some((m) => m.turnId === turnId && m.role !== "user")) return null;
   const last = messages[messages.length - 1];
   return last?.role === "user" ? last : null;
+}
+
+/** Several runs of one task as one figure. */
+function mergeCosts(parts: Array<ReturnType<ThreadCosts["cost"]>>): ReturnType<ThreadCosts["cost"]> | null {
+  const [first, ...rest] = parts;
+  if (!first) return null;
+  if (rest.length === 0) return first;
+  type Totals = (typeof first)["total"];
+  const sum = (into: Totals, from: Totals) => {
+    into.inputTokens += from.inputTokens;
+    into.cachedInputTokens += from.cachedInputTokens;
+    into.cacheWriteTokens += from.cacheWriteTokens;
+    into.outputTokens += from.outputTokens;
+    into.calls += from.calls;
+    into.costUsd += from.costUsd;
+  };
+  const merged = structuredClone(first);
+  for (const part of rest) {
+    sum(merged.total, part.total);
+    sum(merged.own, part.own);
+    sum(merged.subagents, part.subagents);
+    for (const model of part.models) {
+      const known = merged.models.find((m) => m.model === model.model);
+      if (!known) merged.models.push(structuredClone(model));
+      else {
+        sum(known, model);
+        sum(known.own, model.own);
+        sum(known.subagents, model.subagents);
+      }
+    }
+    merged.priced = merged.priced && part.priced;
+    if (part.firstAt && (!merged.firstAt || part.firstAt < merged.firstAt)) merged.firstAt = part.firstAt;
+    if (part.lastAt && (!merged.lastAt || part.lastAt > merged.lastAt)) merged.lastAt = part.lastAt;
+  }
+  merged.models.sort((a, b) => b.costUsd - a.costUsd);
+  return merged;
 }
 
 interface BackgroundTask {

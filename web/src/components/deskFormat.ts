@@ -1,8 +1,25 @@
 /** Small formatters shared by the side panel and the participant rows. */
 
 /** Token counts: thousands as "348k" (whole), millions as "1M" / "1.5M" (one decimal only when needed). */
+/** Dollars: cents under $100, whole dollars above. */
+export const money = (usd: number): string => (usd >= 100 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`);
+
+/** Why a thread has no cost estimate, in words. */
+export const costReason = (reason: string | null, provider: string | null): string =>
+  reason === "unsupported_provider"
+    ? `${provider ?? "this provider"} keeps no usage the room can read`
+    : reason === "no_transcript"
+      ? "its transcript was not found on this machine"
+      : reason === "unreadable"
+        ? "T3's records could not be read"
+        : "T3 has no session for it yet";
+
 export const fmtTokens = (n: number): string => {
   if (!Number.isFinite(n)) return "?";
+  if (n >= 999_500_000) {
+    const b = Math.round(n / 10_000_000) / 100;
+    return `${b.toFixed(b >= 10 ? 1 : 2)}B`;
+  }
   if (n >= 999_500) {
     const m = Math.round(n / 100_000) / 10;
     return `${Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)}M`;

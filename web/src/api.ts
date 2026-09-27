@@ -18,6 +18,8 @@ import type {
   UsageToday,
   Preset,
   Role,
+  RoomCosts,
+  ThreadCost,
   RoomCommand,
   RoomListItem,
   RoomSnapshot,
@@ -96,6 +98,8 @@ export const api = {
   live: (roomId: string, participantId: string): Promise<LiveView> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/participants/${encodeURIComponent(participantId)}/live`),
   desk: (roomId: string): Promise<DeskResponse> => get(`/api/rooms/${encodeURIComponent(roomId)}/desk`),
+  roomCosts: (roomId: string): Promise<RoomCosts> => get(`/api/rooms/${encodeURIComponent(roomId)}/costs`),
+  threadCost: (threadId: string): Promise<{ readAt: string; pricesFetchedAt: string | null; cost: ThreadCost }> => get(`/api/t3/threads/${encodeURIComponent(threadId)}/cost`),
   /** The room's working folders in brief, and (unless `summary`) the full git view of `path` (else the first folder). */
   git: (roomId: string, options: { path?: string | null; commits?: number; summary?: boolean } = {}): Promise<GitResponse> => {
     const query = new URLSearchParams();
@@ -208,6 +212,37 @@ export function useDesk(roomId: string | null, intervalMs: number): { desk: Desk
   }, [roomId, intervalMs]);
   return { desk, error };
 }
+
+/** Poll a value while `key` is set: the room's costs every half minute, a thread's every minute. Null until the first read. */
+function usePolled<T>(key: string | null, intervalMs: number, read: (key: string) => Promise<T>): T | null {
+  const [value, setValue] = useState<T | null>(null);
+  useEffect(() => {
+    setValue(null);
+    if (!key) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const next = await read(key);
+        if (!cancelled) setValue(next);
+      } catch {
+        // Costs are a courtesy: a failed read leaves the last figures, or none.
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, intervalMs);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, intervalMs]);
+  return value;
+}
+
+export const useRoomCosts = (roomId: string | null): RoomCosts | null => usePolled(roomId, 30_000, api.roomCosts);
+export const useThreadCost = (threadId: string | null): ThreadCost | null => usePolled(threadId, 60_000, (id) => api.threadCost(id).then((r) => r.cost));
 
 /**
  * The room's git state. While the Git tab is open (`detail`), the full view of the chosen folder every 4s;

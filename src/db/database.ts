@@ -236,6 +236,16 @@ const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // The harness sessions a T3 thread has had. T3 keeps only a thread's current session; a thread's cost counts all.
+  `
+  CREATE TABLE thread_sessions (
+    thread_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, session_id)
+  );
+  `,
 ];
 
 export class Database {

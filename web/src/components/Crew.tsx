@@ -18,7 +18,7 @@ import {
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
 import { ContextReadout } from "./ContextMeter.tsx";
-import { fmtTokens } from "./deskFormat.ts";
+import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
 import { InheritedLine, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
@@ -128,16 +128,26 @@ export function AddParticipantButton() {
 
 /** Sum of usedTokens across seated participants whose threads report context; hidden when nothing reports. */
 function CrewContextTotal() {
-  const { snapshot, desk } = useRoom();
+  const { snapshot, desk, costs } = useRoom();
   const readings = snapshot.participants
     .filter(isActiveParticipant)
     .map((p) => desk?.participants[p.id]?.contextWindow ?? null)
     .filter((r): r is NonNullable<typeof r> => r !== null);
-  if (readings.length === 0) return null;
   const total = readings.reduce((n, r) => n + r.usedTokens, 0);
+  // The room's spend counts everyone who was ever seated: a removed participant's work was still paid for.
+  const spend = costs?.room.available ? costs.room : null;
+  const left = costs?.withoutEstimate.length ?? 0;
+  if (readings.length === 0 && !spend) return null;
   return (
-    <span className="crew-total mono" title={`${readings.length} thread${readings.length === 1 ? "" : "s"} reporting context`}>
-      <span className="label">Total</span> crew context {fmtTokens(total)}
+    <span className="crew-total mono">
+      <span className="label">Total</span>
+      {readings.length > 0 ? <span title={`${readings.length} thread${readings.length === 1 ? "" : "s"} reporting context`}>crew context {fmtTokens(total)}</span> : null}
+      {spend ? (
+        <span title={`Estimated spend of every thread seated here, at list price${left > 0 ? `; ${left} participant${left === 1 ? "" : "s"} without an estimate` : ""}`}>
+          {readings.length > 0 ? " · " : ""}
+          spent {spend.priced && left === 0 ? "≈" : "≥"} {money(spend.total.costUsd)}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -175,7 +185,8 @@ function ParticipantChip({
     };
   }, [open]);
 
-  const { colorOf, snapshot } = useRoom();
+  const { colorOf, snapshot, costs } = useRoom();
+  const spend = costs?.participants[participant.id];
   const roleName = participant.roleId ? (snapshot.roles.find((r) => r.id === participant.roleId)?.name ?? null) : null;
   const described = describeStatus(status);
   const pick = (action: MenuAction) => {
@@ -213,11 +224,17 @@ function ParticipantChip({
           </span>
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
+          {spend?.available ? (
+            <span className="crew-spend mono" title={`Estimated spend at list price${spend.subagents.calls > 0 ? `: own ${money(spend.own.costUsd)}, subagents ${money(spend.subagents.costUsd)}` : ""}`}>
+              {spend.priced ? "≈ " : "≥ "}
+              {money(spend.total.costUsd)}
+            </span>
+          ) : null}
         </span>
       </button>
       {open ? (
         <Popover anchor={ref} menuRef={menuRef} className="menu-with-usage" role="menu" onClose={() => setOpen(false)}>
-          <ThreadUsageCard participant={participant} desk={desk} />
+          <ThreadUsageCard participant={participant} desk={desk} cost={costs ? (costs.participants[participant.id] ?? null) : null} pricesFetchedAt={costs?.pricesFetchedAt ?? null} />
           <button type="button" role="menuitem" onClick={() => pick("open")}>
             Open in T3
           </button>
