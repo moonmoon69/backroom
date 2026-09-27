@@ -38,7 +38,7 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 
 ## What Backroom adds to T3 Code
 
-Each part below starts from what T3 Code does (read from [its source and docs](https://github.com/pingdotgg/t3code)), then shows what Backroom adds. The screenshots come from a demo room: the fake T3 with scripted replies (`scripts/readme-demo.ts`).
+Each part below starts from what T3 Code does (read from [its source and docs](https://github.com/pingdotgg/t3code)), then shows what Backroom adds. The screenshots come from a demo room: the fake T3 with scripted replies and the usage records a harness would leave (`scripts/readme-demo.ts`).
 
 ### Agents that work together
 
@@ -72,9 +72,19 @@ T3 Code's agent browser runs inside its desktop app: it works while that app is 
 
 ![A room's browsers: two of three allowed, staging the default](assets/readme/browsers.png)
 
-### Cost per piece of work
+### What each thread and each reply cost
 
-T3 Code's Usage page reports tokens and estimated cost by day, provider and model. Backroom estimates it per thread, per reply (subagents included) and per room, so you can see what a task cost and which model is worth it for which job. See [Estimated spend](#estimated-spend).
+T3 Code's Usage page reports tokens and estimated cost by day, provider and model, across every thread: it can't say what one thread cost, or one answer. Backroom works that out from what is already on the machine (T3's record of each thread's harness sessions, the harnesses' own transcripts, T3's price table), priced the way T3 prices its totals, so the two agree.
+
+- **Every reply** carries what the turn behind it used: the cost, tokens in and out, the number of calls, and a row per model, subagents included. When several turns answered one message, it also shows the running total since that message.
+- **Every member** shows what its thread has used, and the room shows the total for everyone it ever seated. A thread on its own shows the same in its bar.
+- **A member's card** splits the thread's spend into its own calls and its subagents', per model.
+
+So you can see what a task cost before you ask for the next one, and which model is worth it for which job: here the review on GPT-6 Sol cost about $0.18, against $1.27 for Opus's build. The figures are list prices, a measure of consumption, not what a subscription charges. See [Estimated spend](#estimated-spend).
+
+![Opus's reply with what its turn cost, and each member's spend with the room's total](assets/readme/costs.png)
+
+<img src="assets/readme/cost-card.png" alt="A member's card: the thread's estimated spend, split into its own calls and its subagents', per model" width="311">
 
 ### What stays in T3 Code
 
@@ -694,7 +704,7 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
 | `scripts/t3-steer-check.ts` | Live check of mid-turn delivery per model (creates scratch threads) |
 | `scripts/repair-replies.ts` | One-off repair of stored final answers and prompts from T3's record (`--dry-run` first) |
-| `scripts/readme-demo.ts` | The demo behind the README's screenshots: the fake T3 with scripted replies, a crew and three rooms, in a throwaway data folder (build the UI first) |
+| `scripts/readme-demo.ts` | The demo behind the README's screenshots: the fake T3 with scripted replies and the usage records a harness would leave, a crew and three rooms, in a throwaway data folder (build the UI first) |
 | `tests/` | Acceptance tests driven through the fake adapter |
 
 ## How it works

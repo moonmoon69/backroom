@@ -26,6 +26,9 @@ interface PopoverProps {
 export function Popover({ anchor, menuRef, className, role, onClose, children, matchAnchorWidth, menuProps }: PopoverProps) {
   const sheet = useMediaQuery(MOBILE_QUERY);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
+  // Dialogs sit above menus, so one opened from a menu is in front; a menu opened from inside a dialog (the model list
+  // in a member's settings) goes above that dialog instead.
+  const layer = anchor.current?.closest(".dialog-backdrop") ? " in-dialog" : "";
 
   useLayoutEffect(() => {
     if (sheet) {
@@ -58,14 +61,14 @@ export function Popover({ anchor, menuRef, className, role, onClose, children, m
   }, [sheet, anchor, menuRef, matchAnchorWidth]);
 
   const menu = (
-    <div {...menuProps} ref={menuRef} className={`menu popover${sheet ? " popover-sheet" : ""}${className ? ` ${className}` : ""}`} role={role} style={style}>
+    <div {...menuProps} ref={menuRef} className={`menu popover${sheet ? " popover-sheet" : ""}${layer}${className ? ` ${className}` : ""}`} role={role} style={style}>
       {children}
     </div>
   );
   return createPortal(
     sheet ? (
       <>
-        <div className="popover-backdrop" onClick={onClose} aria-hidden="true" />
+        <div className={`popover-backdrop${layer}`} onClick={onClose} aria-hidden="true" />
         {menu}
       </>
     ) : (

@@ -9,10 +9,14 @@
  * What it sets up, in the order the README shows it: "Checkout discounts", where one message chains three members
  * (build, then review, then the release note); "Release 2.4" and "Search latency", which finish while you look
  * elsewhere (one replies, one fails); a thread on its own that finishes too; and the crew, for the Add member dialog.
+ * Every turn also leaves what a harness leaves on disk (a session in a stand-in T3 database, Claude or Codex transcript
+ * lines, a subagent's), so estimated spend has calls to price, with T3's price table copied from ~/.t3 when it is there.
  */
 import { serve } from "@hono/node-server";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FakeT3Adapter, type FakeTurnCompletion } from "../src/adapter/fake.ts";
@@ -26,13 +30,28 @@ import { createHttpApp } from "../src/server/http.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataDir = mkdtempSync(join(tmpdir(), "backroom-readme-"));
-const config = loadConfig({ ...process.env, ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: dataDir, ROOMS_PORT: process.env.ROOMS_PORT ?? "4420", ROOMS_BROWSER_MODE: "headless", ROOMS_SPEECH: "off" });
+const t3Dir = join(dataDir, "t3");
+const claudeDir = join(dataDir, "claude");
+const codexDir = join(dataDir, "codex");
+const config = loadConfig({
+  ...process.env,
+  ROOMS_ADAPTER: "fake",
+  ROOMS_DATA_DIR: dataDir,
+  ROOMS_PORT: process.env.ROOMS_PORT ?? "4420",
+  ROOMS_BROWSER_MODE: "headless",
+  ROOMS_SPEECH: "off",
+  T3_USERDATA_DIR: t3Dir,
+  CLAUDE_CONFIG_DIR: claudeDir,
+  CODEX_HOME: codexDir,
+});
 
 // ---- what the members answer: matched on their assignment ----
 
-const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
+/** A turn: what the member answers, and what it used (model calls, output tokens, calls made by a subagent). */
+const REPLIES: Array<{ match: RegExp; used: { calls: number; output: number; subagentCalls?: number }; reply: FakeTurnCompletion }> = [
   {
     match: /code field and validation/,
+    used: { calls: 14, output: 9800, subagentCalls: 6 },
     reply: {
       progress: ["Reading the checkout form and the discounts API.", "The API already validates codes; the form never sends one. Adding the field and wiring it in."],
       text: [
@@ -55,6 +74,7 @@ const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
   },
   {
     match: /review Opus's branch/,
+    used: { calls: 9, output: 4200 },
     reply: {
       progress: ["Reading Opus's diff on main.", "Running the discount tests and trying a few codes by hand."],
       text: [
@@ -71,6 +91,7 @@ const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
   },
   {
     match: /release note/,
+    used: { calls: 3, output: 1400 },
     reply: {
       text: [
         "> **Discount codes at checkout.** Enter a discount code at checkout and see the saving before you pay. Capitals don't matter, and a code that can't be used says why: expired, unknown, or below its minimum order.",
@@ -83,6 +104,7 @@ const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
   },
   {
     match: /changelog/,
+    used: { calls: 7, output: 3100 },
     reply: {
       progress: ["Listing the pull requests merged since v2.3."],
       text: [
@@ -99,9 +121,10 @@ const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
       ].join("\n"),
     },
   },
-  { match: /search takes/, reply: { text: "", outcome: "error" } },
+  { match: /search takes/, used: { calls: 4, output: 900 }, reply: { text: "", outcome: "error" } },
   {
     match: /date-fns/,
+    used: { calls: 8, output: 2600 },
     reply: {
       progress: ["Upgrading date-fns and running the type check."],
       text: "date-fns is on 4.1. Three call sites used the removed `format` tokens; they now use the new ones, and the tests pass.\n\n**Handoff**\n- `package.json`, `src/lib/dates.ts` and two components.\n- Uncommitted on `main`.",
@@ -115,7 +138,64 @@ const REPLIES: Array<{ match: RegExp; reply: FakeTurnCompletion }> = [
 
 function reply(input: StartTurnInput): FakeTurnCompletion {
   const assignment = /== Your assignment \([^)]+\) ==\n([^\n]+)/.exec(input.text)?.[1] ?? input.text;
-  return REPLIES.find((r) => r.match.test(assignment))?.reply ?? { text: "Done." };
+  const turn = REPLIES.find((r) => r.match.test(assignment));
+  if (turn) recordUsage(input.threadId, turn.used);
+  return turn?.reply ?? { text: "Done." };
+}
+
+// ---- what each turn used, where Backroom's estimate reads it ----
+
+mkdirSync(t3Dir, { recursive: true });
+const rates = join(process.env.T3_USERDATA_DIR ?? join(homedir(), ".t3", "userdata"), "usage-model-rates.json");
+if (existsSync(rates)) copyFileSync(rates, join(t3Dir, "usage-model-rates.json"));
+const t3State = new DatabaseSync(join(t3Dir, "state.sqlite"));
+t3State.exec("CREATE TABLE provider_session_runtime (thread_id TEXT PRIMARY KEY, provider_name TEXT, resume_cursor_json TEXT)");
+const sessions = new Map<string, string>();
+let callNumber = 0;
+
+/** A turn's model calls, ending now, written as its harness writes them: context grows call by call, mostly cached. */
+function recordUsage(threadId: string, used: { calls: number; output: number; subagentCalls?: number }): void {
+  const model = adapter.threads.get(threadId)?.shell.modelSelection;
+  if (!model) return;
+  let session = sessions.get(threadId);
+  if (!session) {
+    session = randomUUID();
+    sessions.set(threadId, session);
+    const cursor = model.instanceId === "codex" ? { threadId: session } : { resume: session };
+    t3State.prepare("INSERT INTO provider_session_runtime VALUES (?, ?, ?)").run(threadId, model.instanceId, JSON.stringify(cursor));
+  }
+  const calls = (n: number, offset: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      at: new Date(Date.now() - (n - i) * 120 - offset).toISOString(),
+      input: 1200 + 150 * i,
+      cacheRead: 28_000 + 7_000 * i,
+      cacheWrite: 2_500 + 400 * i,
+      output: Math.round(used.output / n),
+    }));
+  if (model.instanceId === "codex") {
+    const day = new Date().toISOString().slice(0, 10).split("-");
+    const dir = join(codexDir, "sessions", ...day);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `rollout-${day.join("-")}T12-00-00-${session}.jsonl`);
+    const lines = [{ timestamp: new Date().toISOString(), type: "turn_context", payload: { model: model.model } }];
+    for (const c of calls(used.calls, 0)) {
+      lines.push({ timestamp: c.at, type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: c.input + c.cacheRead, cached_input_tokens: c.cacheRead, output_tokens: c.output } } } } as never);
+    }
+    appendFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return;
+  }
+  const dir = join(claudeDir, "projects", "-srv-acme-shop");
+  const write = (file: string, list: ReturnType<typeof calls>) => {
+    mkdirSync(dirname(file), { recursive: true });
+    const lines = list.map((c) => {
+      callNumber += 1;
+      const usage = { input_tokens: c.input, cache_read_input_tokens: c.cacheRead, cache_creation_input_tokens: c.cacheWrite, output_tokens: c.output };
+      return JSON.stringify({ type: "assistant", timestamp: c.at, requestId: `req_${callNumber}`, message: { id: `msg_${callNumber}`, model: model.model, usage } });
+    });
+    appendFileSync(file, lines.join("\n") + "\n");
+  };
+  write(join(dir, `${session}.jsonl`), calls(used.calls, 0));
+  if (used.subagentCalls) write(join(dir, session, "subagents", `agent-${callNumber}.jsonl`), calls(used.subagentCalls, 60));
 }
 
 // ---- the service ----
