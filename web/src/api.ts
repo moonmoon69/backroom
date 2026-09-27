@@ -213,12 +213,17 @@ export function useDesk(roomId: string | null, intervalMs: number): { desk: Desk
   return { desk, error };
 }
 
-/** Poll a value while `key` is set: the room's costs every half minute, a thread's every minute. Null until the first read. */
-function usePolled<T>(key: string | null, intervalMs: number, read: (key: string) => Promise<T>): T | null {
+/**
+ * Poll a value while `key` is set: the room's costs every half minute, a thread's every minute. Null until the first
+ * read. A change of `nonce` reads again at once (a reply just arrived: its figure should not wait for the timer).
+ */
+function usePolled<T>(key: string | null, intervalMs: number, read: (key: string) => Promise<T>, nonce = 0): T | null {
   const [value, setValue] = useState<T | null>(null);
   useEffect(() => {
-    setValue(null);
-    if (!key) return;
+    if (!key) {
+      setValue(null);
+      return;
+    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
@@ -237,11 +242,12 @@ function usePolled<T>(key: string | null, intervalMs: number, read: (key: string
       if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, intervalMs]);
+  }, [key, intervalMs, nonce]);
   return value;
 }
 
-export const useRoomCosts = (roomId: string | null): RoomCosts | null => usePolled(roomId, 30_000, api.roomCosts);
+/** The room's costs; `replies` is how many replies the room holds, so a new one is priced at once. */
+export const useRoomCosts = (roomId: string | null, replies = 0): RoomCosts | null => usePolled(roomId, 30_000, api.roomCosts, replies);
 export const useThreadCost = (threadId: string | null): ThreadCost | null => usePolled(threadId, 60_000, (id) => api.threadCost(id).then((r) => r.cost));
 
 /**

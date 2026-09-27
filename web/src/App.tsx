@@ -244,7 +244,7 @@ export function App() {
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
-  const costs = useRoomCosts(snapshot ? snapshot.room.id : null);
+  const costs = useRoomCosts(snapshot ? snapshot.room.id : null, snapshot ? snapshot.events.filter((e) => e.kind === "assistant.reply" || e.kind === "t3.turn").length : 0);
 
   // Git: the folder and commit count the Git tab shows start over in each room.
   const [gitPath, setGitPath] = useState<string | null>(null);
