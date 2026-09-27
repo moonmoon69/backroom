@@ -437,7 +437,7 @@ T3 reports usage per day and model, never per thread. The room fills that gap fr
 | A participant's row in **People** | The thread's total, with own and subagent shares on hover |
 | The participant's usage card | The total, the own and subagent split, and a row per model with input tokens, output tokens and cost |
 | The **Total** line under **People** | Every thread ever seated in the room, removed participants included |
-| The foot of a reply in the timeline | What the turn behind it used: everything the thread used since its previous reply, subagents included. Turns the agent continued on its own carry their own figure; hovering adds the running total since your last message |
+| The foot of a reply in the timeline | What the turn behind it used: everything the thread used since its previous reply, subagents included, with tokens in and out, the number of calls and the running total since your last message. When several models were used or subagents ran, a row per model follows, saying whose calls they were. Turns the agent continued on its own carry their own figure |
 | A participant's row, while it works | What its thread has used since its last reply: the turn in progress |
 | A thread's bar, outside any room | Its total, with the breakdown on hover |
 
