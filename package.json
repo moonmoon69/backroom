@@ -5,7 +5,7 @@
   "description": "Backroom: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/moonmoon69/t3code-rooms.git"
+    "url": "https://github.com/moonmoon69/backroom.git"
   },
   "type": "module",
   "engines": {
