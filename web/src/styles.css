@@ -6283,19 +6283,20 @@ button:has(> .icon):not(.mobile-only) {
 
 /* ---- estimated spend: on the participant tile, the People total, task cards, a thread's bar, and the usage card ---- */
 .crew-spend,
-.task-spend,
+.reply-spend,
 .thread-spend {
   font-size: var(--text-xs);
   color: var(--fg-muted);
   white-space: nowrap;
 }
 
-.wo-head .task-spend {
-  margin-right: 6px;
+.crew-spend-open {
+  color: var(--fg-dim);
 }
 
-.wo-meta .task-spend::before {
-  content: " · ";
+.chat-head .reply-spend {
+  margin-left: auto;
+  padding-left: 8px;
 }
 
 .thread-spend {

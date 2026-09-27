@@ -16,6 +16,7 @@ import { BranchIcon } from "./icons.tsx";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { TaskCard } from "./TaskCard.tsx";
 
@@ -517,6 +518,7 @@ function MessageRow({
   // assistant.reply (answer to a room task) or t3.turn (a turn typed directly in T3 on this participant's thread;
   // shown for awareness only: never forwarded to other participants or counted toward a prerequisite).
   const direct = event.kind === "t3.turn";
+  const { costs } = useRoom();
   const participantId = event.speaker.type === "participant" ? event.speaker.participantId : null;
   const participant = participantId ? participantById(participantId) : undefined;
   const alias = participantId ? aliasOf(participantId) : "assistant";
@@ -565,12 +567,14 @@ function MessageRow({
             {tag}
             {branchTag}
             {selfMark}
+            <ReplySpend event={event} />
             {stamp}
           </div>
-        ) : selfMark || (tagChanged && tag) || newMinute ? (
+        ) : selfMark || (tagChanged && tag) || newMinute || costs?.replies[event.id] ? (
           <div className="chat-head sub">
             {selfMark ?? (tagChanged ? tag : null)}
             {tagChanged ? branchTag : null}
+            <ReplySpend event={event} />
             {stamp}
           </div>
         ) : null}
@@ -631,6 +635,43 @@ function revealEvent(sequence: number): void {
   element.classList.remove("flash");
   void element.offsetWidth;
   element.classList.add("flash");
+}
+
+/**
+ * What the turn behind a reply used, at list price: everything the thread used since its previous reply, subagents
+ * included. The tooltip adds the running total since the user's last message, over the turns since.
+ */
+function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speaker"] } }) {
+  const { snapshot, costs } = useRoom();
+  const spend = costs?.replies[event.id];
+  if (!spend || !spend.available || spend.total.calls === 0) return null;
+  const participantId = event.speaker.type === "participant" ? event.speaker.participantId : null;
+  // Back from this reply to the user's last message: this participant's replies in between, this one included.
+  let since = 0;
+  let turns = 0;
+  for (let index = snapshot.events.findIndex((e) => e.id === event.id); index >= 0; index -= 1) {
+    const earlier = snapshot.events[index] as RoomEvent;
+    if (earlier.kind === "user.message") break;
+    if (earlier.speaker.type === "participant" && earlier.speaker.participantId === participantId) {
+      const part = costs?.replies[earlier.id];
+      if (part?.available) {
+        since += part.total.costUsd;
+        turns += 1;
+      }
+    }
+  }
+  const input = spend.total.inputTokens + spend.total.cachedInputTokens + spend.total.cacheWriteTokens;
+  const lines = [
+    `This turn: ${fmtTokens(input)} in · ${fmtTokens(spend.total.outputTokens)} out over ${spend.total.calls} calls${spend.subagents.calls > 0 ? `, of which subagents ${money(spend.subagents.costUsd)}` : ""}.`,
+    ...(turns > 1 ? [`Since your last message: ${money(since)} over ${turns} turns.`] : []),
+    "List price, not what a subscription charges.",
+  ];
+  return (
+    <span className="reply-spend mono" title={lines.join("\n")}>
+      {spend.priced ? "≈ " : "≥ "}
+      {money(spend.total.costUsd)}
+    </span>
+  );
 }
 
 /**

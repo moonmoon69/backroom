@@ -187,6 +187,7 @@ function ParticipantChip({
 
   const { colorOf, snapshot, costs } = useRoom();
   const spend = costs?.participants[participant.id];
+  const inProgress = costs?.openTurns[participant.id];
   const roleName = participant.roleId ? (snapshot.roles.find((r) => r.id === participant.roleId)?.name ?? null) : null;
   const described = describeStatus(status);
   const pick = (action: MenuAction) => {
@@ -225,9 +226,13 @@ function ParticipantChip({
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
           {spend?.available ? (
-            <span className="crew-spend mono" title={`Estimated spend at list price${spend.subagents.calls > 0 ? `: own ${money(spend.own.costUsd)}, subagents ${money(spend.subagents.costUsd)}` : ""}`}>
+            <span
+              className="crew-spend mono"
+              title={`Estimated spend at list price${spend.subagents.calls > 0 ? `: own ${money(spend.own.costUsd)}, subagents ${money(spend.subagents.costUsd)}` : ""}${inProgress?.available ? `. Since its last reply: ${money(inProgress.total.costUsd)} over ${inProgress.total.calls} calls` : ""}`}
+            >
               {spend.priced ? "≈ " : "≥ "}
               {money(spend.total.costUsd)}
+              {inProgress?.available ? <span className="crew-spend-open"> · {money(inProgress.total.costUsd)} since last reply</span> : null}
             </span>
           ) : null}
         </span>
