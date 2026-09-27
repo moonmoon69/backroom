@@ -20,6 +20,7 @@ import type {
   Preset,
   Role,
   RoomCosts,
+  SpeechStatus,
   ThreadCost,
   ThreadCosts,
   RoomCommand,
@@ -102,6 +103,17 @@ export const api = {
   desk: (roomId: string): Promise<DeskResponse> => get(`/api/rooms/${encodeURIComponent(roomId)}/desk`),
   roomCosts: (roomId: string): Promise<RoomCosts> => get(`/api/rooms/${encodeURIComponent(roomId)}/costs`),
   threadCost: (threadId: string): Promise<{ readAt: string; pricesFetchedAt: string | null; cost: ThreadCost }> => get(`/api/t3/threads/${encodeURIComponent(threadId)}/cost`),
+  /** Whether the service reads aloud with its own voice, how it is doing, and its voices. Asking starts the model loading. */
+  speechStatus: (): Promise<SpeechStatus> => get("/api/speech/status"),
+  /** A piece of text as WAV in the service's voice. */
+  speechAudio: async (text: string, voice: string | null, speed: number, signal?: AbortSignal): Promise<Blob> => {
+    const response = await fetch("/api/speech", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, voice, speed }), signal: signal ?? null });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({ error: "http_error", message: response.statusText }))) as ApiErrorBody;
+      throw new ApiError(response.status, body);
+    }
+    return response.blob();
+  },
   /** A thread's spend as a room shows a member's: the total, a figure per reply, and the turn in progress. */
   threadCosts: (threadId: string): Promise<ThreadCosts> => get(`/api/t3/threads/${encodeURIComponent(threadId)}/costs`),
   /** The room's working folders in brief, and (unless `summary`) the full git view of `path` (else the first folder). */

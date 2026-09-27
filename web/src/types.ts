@@ -384,6 +384,16 @@ export interface ThreadCost {
   lastAt: string | null;
 }
 
+/** GET /api/speech/status: the service's own voice for reading aloud. */
+export interface SpeechStatus {
+  /** False when the service does not read aloud (ROOMS_SPEECH=off). */
+  available: boolean;
+  state: "off" | "idle" | "loading" | "ready" | "failed";
+  error: string | null;
+  voices: Array<{ id: string; name: string; language: string; gender: string; grade: string }>;
+  defaultVoice: string | null;
+}
+
 /** GET /api/t3/threads/:threadId/costs: a thread's spend as a room shows a member's. */
 export interface ThreadCosts {
   readAt: string;

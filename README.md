@@ -453,13 +453,23 @@ What to know when reading them:
 - **A thread's whole life.** An attached thread's estimate includes what it used before it joined the room. T3 keeps only a thread's current session; Backroom remembers every session it has seen a thread on, so a thread given a new session keeps its earlier spend.
 - **Where it reads.** T3's database (read-only) and `~/.claude/projects` and `~/.codex/sessions`, or `$CLAUDE_CONFIG_DIR/projects` and `$CODEX_HOME/sessions` when those are set. T3's database and the transcripts are not public interfaces; a change in them shows as "no estimate", never as a wrong number.
 
+### Read aloud
+
+Backroom can read replies to you, in its own voice: a small neural model ([Kokoro](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)) runs inside the service on the box's CPU and the audio plays on whatever device you are using, so a phone hears the same voice as a Mac. The model (about 90 MB) is downloaded once, into `data/models/`, when a Backroom page first opens after install; until it is there, and on a service without it, the browser's own built-in voice reads instead.
+
+- **One reply:** the speaker button at the foot of any reply bubble, in a room or a thread on its own, reads that reply in full and turns into a stop button while it does. The alias is said first, then the reply with its markup gone: a code block or a table is named rather than read, a path is its file name, and a link is its text.
+- **New replies as they arrive:** **Read new replies aloud** in a room's or a thread's **⋯** menu. From then on each new reply is read when it lands, and so is each new request for your approval or an answer ("claude needs your approval"). A reply read this way is its **Handoff** section when it has one, otherwise its opening sentences, with a word that the rest is on screen. What was already there when you turned it on is not read. The setting is per room or thread and per browser.
+- **Voice and speed:** the speaker button at the foot of the sidebar. **Backroom's voice on the box** lists Kokoro's voices with its grades (Heart, Bella, Nicole and Emma are the good ones; `ROOMS_SPEECH_VOICE` sets the default). **This browser's voice** uses the device's own list instead, which each device keeps for itself. **Try it** reads a sentence. The speed applies to both.
+
+Replies are read in sentence-sized pieces: the box makes the next piece while the current one plays (about twice real time on a desktop CPU), and each piece is kept for a while so a replay costs nothing. A browser only plays sound after you have tapped or clicked in the page once, and an iPhone stops the page's work when the app is in the background, so nothing is read while the screen is off. `ROOMS_SPEECH=off` turns the box voice off; the browser's stays.
+
 ### Background status
 
 A turn can end while subagents, background shells or watch loops keep running. T3 reports this, and Backroom shows it on the member and in the sidebar, so a quiet thread doesn't look finished or dead.
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles** and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls: the **T3** connection status ("T3 connected", or the problem; hover for host, version and pairing; click for the pairing and providers panel), **Roles**, the **Voice** replies are read aloud in (see [Read aloud](#read-aloud)) and the theme menu (System, Light, Dark). The header above each page carries only that page's controls.
 
 The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
 
@@ -560,12 +570,14 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a browser after this long without tab changes, unless a room using it has work in flight (`0` = never) |
 | `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
 | `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` to find the service; briefings pass it along when the data folder is elsewhere |
+| `ROOMS_SPEECH` | on | `off` stops the service reading aloud (see [Read aloud](#read-aloud)); the model is then never downloaded |
+| `ROOMS_SPEECH_VOICE` | `af_heart` | Kokoro voice used unless a browser chose another: `af_heart`, `af_bella`, `af_nicole`, `bf_emma`, … |
 
 ## Running, updating and backing up
 
 - **Restarting is safe.** Queued tasks resume, and in-flight runs are matched back to their T3 turns. A turn that finished while the service was down is picked up on the next poll.
 - **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "Backroom was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
-- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/` and `browser-api.json`. Keep the copy private: the T3 credential and every browser's logins are inside.
+- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/`, `browser-api.json` and the voice model under `models/` (which can be left out: it is downloaded again when missing). Keep the copy private: the T3 credential and every browser's logins are inside.
 - **Keep it running** with any process manager: the systemd user unit in [A headless box over Tailscale](#a-headless-box-over-tailscale), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
 
 ## Troubleshooting
@@ -612,6 +624,7 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `src/scheduler` | Durable queue: dependencies, dispatch outbox, steering, turn correlation, reconciliation |
 | `src/browser` | Browsers: the list and which rooms may use what (`catalog.ts`), each browser's Chrome process (and Xvfb/x11vnc/noVNC on Linux) with start, adopt and stop (`roomBrowsers.ts`), and the agents' tool behind `rooms-browser` (`tools.ts`) |
 | `src/briefing` | Exact context assembled for each delivery |
+| `src/speech` | Backroom's voice: Kokoro run in the service, one piece at a time, recent pieces kept |
 | `src/git` | Git read with the CLI on this machine: a folder's branch, uncommitted files, commits, worktrees and diffs (`reader.ts`), and where each member works (`workspaces.ts`) |
 | `src/adapter` | T3 boundary: HTTP + WebSocket RPC adapter with pairing, and an in-memory fake |
 | `src/server` | HTTP API and Server-Sent Events for the UI |

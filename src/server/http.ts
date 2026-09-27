@@ -27,6 +27,7 @@ import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoom
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 import { ThreadCosts } from "../usage/threadCosts.ts";
+import type { SpeechSynth } from "../speech/kokoro.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
   const room = stack.repos.getRoom(roomId);
@@ -59,7 +60,7 @@ export interface BrowserToolsHttp {
   command: string;
 }
 
-export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp): Hono {
+export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, speech?: SpeechSynth | null): Hono {
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
   const costs = new ThreadCosts({
@@ -809,6 +810,31 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     } catch (error) {
       if (error instanceof BrowserToolError) return c.json({ error: "browser_tool", message: error.message }, error.status as 400);
       throw error;
+    }
+  });
+
+  // ---- Backroom's voice ----
+  /**
+   * Whether the service can read aloud, and how it is doing: asking also starts loading the model, so the first
+   * reply read after the UI opens does not wait for it.
+   */
+  app.get("/api/speech/status", (c) => {
+    if (!speech) return c.json({ available: false, state: "off", error: null, voices: [], defaultVoice: null });
+    speech.warm();
+    return c.json({ available: true, ...speech.status() });
+  });
+  /** A sentence or two as WAV, in the voice and at the speed asked for. */
+  app.post("/api/speech", async (c) => {
+    if (!speech) throw new RoomError("speech_off", "This Backroom does not read aloud (ROOMS_SPEECH=off)", 503);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown; voice?: unknown; speed?: unknown };
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (!text) throw new RoomError("invalid_text", "text is required");
+    if (text.length > 1200) throw new RoomError("invalid_text", "text is too long for one piece; send it in pieces", 413);
+    try {
+      const wav = await speech.synthesize(text, typeof body.voice === "string" ? body.voice : speech.status().defaultVoice, typeof body.speed === "number" ? body.speed : 1);
+      return new Response(new Uint8Array(wav), { status: 200, headers: { "content-type": "audio/wav", "cache-control": "private, max-age=3600" } });
+    } catch (error) {
+      throw new RoomError("speech_failed", `The voice could not be produced: ${error instanceof Error ? error.message : String(error)}`, 500);
     }
   });
 

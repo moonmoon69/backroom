@@ -2812,7 +2812,9 @@ button.primary.destructive {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  /* Above the phone's sidebar drawer (120), the side panel (110) and popover menus (130), so a dialog opened from any
+     of them is in front; below the toasts (200). */
+  z-index: 150;
 }
 
 /* T3's dialog-popup: rounded-2xl with a border on the popover surface. */
@@ -6472,4 +6474,64 @@ button:has(> .icon):not(.mobile-only) {
 /* A thread's spend in its bar: a button, the card opens from it. */
 .thread-usage {
   gap: 6px;
+}
+
+/* The foot of a reply: read aloud, then what the turn used. */
+.bubble .reply-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.bubble .reply-foot:empty {
+  display: none;
+}
+
+.bubble .reply-foot .reply-spend {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.speak-button {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  margin: -3px 0 0 -4px;
+  color: var(--fg-dim);
+}
+
+.speak-button:hover,
+.speak-button.on {
+  color: var(--fg);
+}
+
+.speak-button.on {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Voice dialog: the speed slider at full width. */
+.form label input[type="range"] {
+  width: 100%;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+/* While the voice is being made: a spinner in the speaker's place (the composer's spinner is placed absolutely). */
+.speak-button .spinner,
+.dialog-actions .spinner {
+  position: static;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  vertical-align: -2px;
 }

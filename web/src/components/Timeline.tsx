@@ -17,6 +17,8 @@ import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
+import { speakableSummary, useAutoRead } from "../speech.ts";
+import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { TaskCard } from "./TaskCard.tsx";
 
@@ -142,7 +144,22 @@ const STICK_PX = 40;
 const JUMP_PX = 240;
 
 export function Timeline() {
-  const { snapshot, desk } = useRoom();
+  const { snapshot, desk, aliasOf } = useRoom();
+  // Read aloud, when the room's menu says so: each new reply (its Handoff, or its opening), and each new request
+  // for approval or an answer, named by who it is from.
+  const [autoRead] = useAutoRead(`room:${snapshot.room.id}`);
+  useAnnounceNew(
+    `room:${snapshot.room.id}`,
+    autoRead,
+    snapshot.events
+      .filter((event) => event.kind === "assistant.reply" && event.speaker.type === "participant" && event.text.trim().length > 0)
+      .map((event) => ({ id: event.id, text: `${event.speaker.type === "participant" ? aliasOf(event.speaker.participantId) : "reply"}. ${speakableSummary(event.text)}` })),
+  );
+  useAnnounceNew(
+    `room:${snapshot.room.id}:requests`,
+    autoRead,
+    snapshot.nativeRequests.map((request) => ({ id: request.requestId, text: `${aliasOf(request.participantId)} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })),
+  );
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -580,7 +597,10 @@ function MessageRow({
           {/* The reply is shown in full: it is what the user came to read. */}
           {event.text ? <Markdown text={event.text} /> : null}
           {event.artifacts.some((a) => !isWorkspaceArtifact(a)) ? <ChangedFiles artifacts={event.artifacts} /> : null}
-          <ReplySpend event={event} />
+          <div className="reply-foot">
+            {event.text ? <SpeakButton id={event.id} text={event.text} lead={alias} /> : null}
+            <ReplySpend event={event} />
+          </div>
         </div>
       </div>
     </div>

@@ -24,6 +24,11 @@ export interface Config {
     noVncDir: string;
     idleMinutes: number;
   };
+  /** Backroom's own voice for reading replies aloud (src/speech/kokoro.ts): on unless turned off, and which voice. */
+  speech: {
+    enabled: boolean;
+    voice: string;
+  };
   /** Where the harnesses keep their transcripts, read for a thread's usage and cost (src/usage/threadCosts.ts). */
   usage: {
     claudeProjectsDir: string;
@@ -69,6 +74,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       watchHost: env.ROOMS_BROWSER_HOST ?? null,
       noVncDir: env.ROOMS_BROWSER_NOVNC_DIR ?? "/usr/share/novnc",
       idleMinutes: Number(env.ROOMS_BROWSER_IDLE_MINUTES ?? 30),
+    },
+    speech: {
+      enabled: env.ROOMS_SPEECH !== "off",
+      voice: env.ROOMS_SPEECH_VOICE ?? "af_heart",
     },
     // The harnesses' own variables for their home, as T3 starts them with the same environment.
     usage: {
