@@ -6294,14 +6294,48 @@ button:has(> .icon):not(.mobile-only) {
   color: var(--fg-dim);
 }
 
-/* At the foot of the reply bubble, right-aligned under the text. */
+/* At the foot of the reply bubble: a summary line, then a row per model when there are several or subagents ran. */
 .bubble .reply-spend {
   margin-top: 8px;
-  text-align: right;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
   color: var(--fg-dim);
+  font-size: var(--text-xs);
 }
 
-.reply-spend-detail {
+/* Plain text flow, so the " · " separators keep their spaces and the line wraps where it must. */
+.reply-spend-line {
+  display: block;
+}
+
+/* On a narrow screen the rows scroll sideways rather than squeeze. */
+.bubble .reply-spend {
+  overflow-x: auto;
+}
+
+.reply-spend-total {
+  color: var(--fg-muted);
+}
+
+.reply-spend-table {
+  margin-top: 3px;
+  border-collapse: collapse;
+}
+
+.reply-spend-table td {
+  padding: 1px 12px 1px 0;
+  white-space: nowrap;
+}
+
+.reply-spend-table td:last-child {
+  padding-right: 0;
+}
+
+.reply-spend-table .num {
+  text-align: right;
+}
+
+.reply-spend-who {
   color: var(--fg-dim);
 }
 

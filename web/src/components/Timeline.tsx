@@ -658,17 +658,42 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
       }
     }
   }
-  const input = spend.total.inputTokens + spend.total.cachedInputTokens + spend.total.cacheWriteTokens;
-  const lines = [
-    `This turn: ${fmtTokens(input)} in · ${fmtTokens(spend.total.outputTokens)} out over ${spend.total.calls} calls${spend.subagents.calls > 0 ? `, of which subagents ${money(spend.subagents.costUsd)}` : ""}.`,
-    ...(turns > 1 ? [`Since your last message: ${money(since)} over ${turns} turns.`] : []),
-    "List price, not what a subscription charges.",
-  ];
+  const input = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) => t.inputTokens + t.cachedInputTokens + t.cacheWriteTokens;
+  const inputTitle = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) =>
+    `${t.inputTokens.toLocaleString()} uncached · ${t.cachedInputTokens.toLocaleString()} from cache · ${t.cacheWriteTokens.toLocaleString()} written to cache`;
+  const only = spend.models.length === 1 ? spend.models[0] : undefined;
+  // One model, no subagents: the summary line says it all. Otherwise a row per model, with whose calls they were.
+  const rows = only && only.subagents.calls === 0 ? [] : spend.models;
   return (
-    <div className="reply-spend mono" title={lines.join("\n")}>
-      {spend.priced ? "≈ " : "≥ "}
-      {money(spend.total.costUsd)}
-      {spend.subagents.calls > 0 ? <span className="reply-spend-detail"> · subagents {money(spend.subagents.costUsd)}</span> : null}
+    <div className="reply-spend mono" title="List price, not what a subscription charges">
+      <div className="reply-spend-line">
+        <span className="reply-spend-total">
+          {spend.priced ? "≈ " : "≥ "}
+          {money(spend.total.costUsd)}
+        </span>
+        {rows.length === 0 && only ? <span> · {only.model}</span> : null}
+        <span title={inputTitle(spend.total)}> · {fmtTokens(input(spend.total))} in</span>
+        <span> · {fmtTokens(spend.total.outputTokens)} out</span>
+        <span> · {spend.total.calls} call{spend.total.calls === 1 ? "" : "s"}</span>
+        {turns > 1 ? <span className="reply-spend-since"> · since your last message {money(since)} over {turns} turns</span> : null}
+      </div>
+      {rows.length > 0 ? (
+        <table className="reply-spend-table">
+          <tbody>
+            {rows.map((model) => (
+              <tr key={model.model}>
+                <td>{model.model}</td>
+                <td className="reply-spend-who">{model.own.calls > 0 && model.subagents.calls > 0 ? "own + subagents" : model.subagents.calls > 0 ? "subagents" : "own"}</td>
+                <td className="num" title={inputTitle(model)}>
+                  {fmtTokens(input(model))} in
+                </td>
+                <td className="num">{fmtTokens(model.outputTokens)} out</td>
+                <td className="num">{model.priced ? money(model.costUsd) : "unpriced"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </div>
   );
 }
