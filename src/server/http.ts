@@ -2,10 +2,12 @@
  * Backroom's HTTP API for its UI. Every mutation goes through POST /api/commands using the shared command contract.
  * Live updates use Server-Sent Events; the UI refetches the room snapshot on each notification.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { Readable } from "node:stream";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
@@ -737,22 +739,47 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // Images agents saved to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders them.
   // Only image files under the allowed roots are served; see localImage.ts.
-  app.get("/api/local-image", (c) => {
+  /**
+   * A media file an agent wrote to disk and referenced from a reply (image, video or audio under the home or temp
+   * folder), streamed with byte ranges so a video seeks and plays on every browser. /api/local-image is the older
+   * name for the same route.
+   */
+  const localFile = (c: Context) => {
     const resolved = resolveLocalImage(c.req.query("path") ?? "");
     if (!resolved.ok) {
       const code = resolved.status === 404 ? "not_found" : resolved.status === 400 ? "invalid_path" : "forbidden";
-      throw new RoomError(code, `local image: ${resolved.reason}`, resolved.status);
+      throw new RoomError(code, `local file: ${resolved.reason}`, resolved.status);
     }
-    return new Response(readFileSync(resolved.path), {
-      headers: {
-        "content-type": resolved.mimeType,
-        "content-length": String(resolved.size),
-        // Files under /tmp get overwritten (a re-run screenshot), so revalidate rather than cache forever.
-        "cache-control": "private, no-cache",
-        "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(basename(resolved.path))}`,
-      },
-    });
-  });
+    const headers: Record<string, string> = {
+      "content-type": resolved.mimeType,
+      "accept-ranges": "bytes",
+      // Files under /tmp get overwritten (a re-run screenshot), so revalidate rather than cache forever.
+      "cache-control": "private, no-cache",
+      "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(basename(resolved.path))}`,
+    };
+    const range = /^bytes=(\d*)-(\d*)$/.exec(c.req.header("range") ?? "");
+    let start = 0;
+    let end = resolved.size - 1;
+    let status = 200;
+    if (range && resolved.size > 0) {
+      if (range[1]) {
+        start = Number(range[1]);
+        if (range[2]) end = Math.min(Number(range[2]), end);
+      } else if (range[2]) {
+        start = Math.max(0, resolved.size - Number(range[2]));
+      }
+      if (!Number.isFinite(start) || start > end || start >= resolved.size) {
+        return new Response(null, { status: 416, headers: { "content-range": `bytes */${resolved.size}` } });
+      }
+      status = 206;
+      headers["content-range"] = `bytes ${start}-${end}/${resolved.size}`;
+    }
+    headers["content-length"] = String(end - start + 1);
+    if (c.req.method === "HEAD" || resolved.size === 0) return new Response(null, { status, headers });
+    return new Response(Readable.toWeb(createReadStream(resolved.path, { start, end })) as ReadableStream, { status, headers });
+  };
+  app.get("/api/local-file", localFile);
+  app.get("/api/local-image", localFile);
 
   // ---- browsers (a list named by purpose; processes on this machine) ----
   app.get("/api/browser/environment", (c) => c.json(stack.browsers ? stack.browsers.environment() : null));

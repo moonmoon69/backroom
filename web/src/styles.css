@@ -6401,7 +6401,10 @@ button:has(> .icon):not(.mobile-only) {
   background: var(--bg-1);
 }
 
-.folder-row {
+/* Specific enough to beat the icon-button rule (a button holding an icon is otherwise a flex line). */
+.folder-browse > button.folder-row {
+  /* A button does not stretch on its own; the note belongs at the right edge, as in the thread list. */
+  width: 100%;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   column-gap: 8px;
@@ -6437,7 +6440,9 @@ button:has(> .icon):not(.mobile-only) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 50%;
+  /* In ems, not a percentage: a percentage has nothing to resolve against inside an auto grid track. */
+  max-width: 24em;
+  justify-self: end;
 }
 
 .folder-browse > .hint {
@@ -6534,4 +6539,74 @@ button:has(> .icon):not(.mobile-only) {
   height: 12px;
   border-width: 1.5px;
   vertical-align: -2px;
+}
+
+/* A recording or a sound embedded in a reply: the player at the bubble's width, a caption under it. */
+.md-media {
+  display: block;
+  margin: 6px 0;
+}
+
+.md-video {
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.md-audio {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+}
+
+.md-media-caption {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+/*
+ * Alignment in a row of text: a label and its note share a baseline, whatever their fonts (a mono name next to a sans
+ * description centres a pixel or two off, more on a Mac, when their boxes are centred instead). Boxes in the same row
+ * (an icon, an avatar, a tile, a pill, a control) centre on the line. The Members list, the reply-to pill and the
+ * lane heads already did this; these are the rest.
+ */
+.preset-chip,
+.chat-head,
+.chip-head,
+.room-meta,
+.folder-row,
+.thread-item,
+.side-thread-tile,
+.usage-line,
+.git-row {
+  align-items: baseline;
+}
+
+.preset-chip > svg,
+.preset-chip > .icon,
+.chat-head > .avatar,
+.chat-head > .tag,
+.chat-head > .pill,
+.chat-head > .reply-to,
+.chat-head > button,
+.chip-head > .avatar,
+.chip-head > .stamp,
+.chip-head > .pill,
+.chip-head > .chip-toggle,
+.room-meta > .pill,
+.room-meta > .tag,
+.folder-row > svg,
+.thread-item > input,
+.side-thread-tile > .thread-dot,
+.side-thread-tile > svg,
+.side-thread-tile > .room-menu-button,
+.git-row > svg,
+.git-row > .avatar,
+.git-row > .tag,
+.git-row > .pill {
+  align-self: center;
 }

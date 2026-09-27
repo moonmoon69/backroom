@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState, type ComponentProps, type JSX, type 
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useToast } from "./Toast.tsx";
-import { fileBadge, imageSource, parseFileReference } from "./markdownFiles.ts";
+import { fileBadge, imageSource, isLocalPath, mediaKind, parseFileReference } from "./markdownFiles.ts";
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = ComponentProps<T> & { node?: unknown };
 
@@ -98,16 +98,36 @@ function Code({ node: _node, children, className, ...props }: MdProps<"code">) {
   );
 }
 
-/** Images: local paths are served by the room server; the frame links to the full-size file. */
+/**
+ * Embedded files: markdown writes them all as images, but a local path may be a recording or a sound as well. Local
+ * paths are served by the service; a video or audio file gets a player, an image a frame that links to the full size.
+ */
 function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
   const [broken, setBroken] = useState(false);
   const resolved = typeof src === "string" ? imageSource(src) : "";
   if (!resolved) return null;
+  const kind = typeof src === "string" ? mediaKind(src) : "image";
   if (broken) {
     return (
       <span className="md-img-broken" title={typeof src === "string" ? src : undefined}>
-        <span aria-hidden="true">🖼</span>
-        {alt || (typeof src === "string" ? src : "image")} (unavailable)
+        <span aria-hidden="true">{kind === "image" ? "🖼" : kind === "video" ? "🎬" : "🔊"}</span>
+        {alt || (typeof src === "string" ? src : kind)} (unavailable)
+      </span>
+    );
+  }
+  if (kind === "video") {
+    return (
+      <span className="md-media">
+        <video className="md-video" controls playsInline preload="metadata" src={resolved} title={title ?? alt ?? undefined} onError={() => setBroken(true)} />
+        {alt ? <span className="md-media-caption">{alt}</span> : null}
+      </span>
+    );
+  }
+  if (kind === "audio") {
+    return (
+      <span className="md-media">
+        <audio className="md-audio" controls preload="metadata" src={resolved} title={title ?? alt ?? undefined} onError={() => setBroken(true)} />
+        {alt ? <span className="md-media-caption">{alt}</span> : null}
       </span>
     );
   }
@@ -124,7 +144,8 @@ function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
  * local screenshots can be mapped to the room server's image route.
  */
 const components: Components = {
-  a: ({ node: _node, ...props }: MdProps<"a">) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  // A link to a media file on the machine opens it through the service, like an embedded one.
+  a: ({ node: _node, href, ...props }: MdProps<"a">) => <a {...props} href={typeof href === "string" && isLocalPath(href) && /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|m4v|webm|mov|ogv|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(href) ? imageSource(href) : href} target="_blank" rel="noopener noreferrer" />,
   // Wide GitHub tables scroll inside the bubble instead of stretching it.
   table: ({ node: _node, ...props }: MdProps<"table">) => (
     <div className="md-table">
