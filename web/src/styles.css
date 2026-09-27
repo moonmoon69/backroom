@@ -1014,6 +1014,14 @@ textarea.invalid,
   background: rgb(0 0 0 / 0.35);
 }
 
+/* A menu opened from inside a dialog (150): above that dialog, still below the toasts (200). */
+.menu.popover.in-dialog {
+  z-index: 160;
+}
+.popover-backdrop.in-dialog {
+  z-index: 159;
+}
+
 .menu button {
   text-align: left;
   background: transparent;
@@ -2939,7 +2947,7 @@ button.primary.destructive {
   align-items: center;
   justify-content: center;
   /* Above the phone's sidebar drawer (120), the side panel (110) and popover menus (130), so a dialog opened from any
-     of them is in front; below the toasts (200). */
+     of them is in front; below the toasts (200). A menu opened from inside a dialog goes above it (.in-dialog, 160). */
   z-index: 150;
 }
 
