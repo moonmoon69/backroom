@@ -499,7 +499,18 @@ textarea.invalid,
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: var(--text-xl);
+}
+
+/* The boss, cropped to the hat and glasses, beside the name. */
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex: none;
 }
 
 .room-list {

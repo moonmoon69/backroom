@@ -286,7 +286,10 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
       {open ? <div className="sidebar-backdrop mobile-only" onClick={onClose} aria-hidden="true" /> : null}
       <aside className={`sidebar${open ? " open" : ""}`} aria-label="Projects, rooms and threads">
         <div className="sidebar-header">
-          <span className="brand serif">Backroom</span>
+          <span className="brand serif">
+            <img src="/logo.png" alt="" className="brand-mark" width={22} height={22} />
+            Backroom
+          </span>
           <span className="sidebar-header-actions">
             <AddMenu
               label={
