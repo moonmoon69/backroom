@@ -36,7 +36,10 @@ const STATE_WORDS: Record<Task["state"], string> = {
   cancelled: "cancelled",
 };
 
-/** What the task's thread used while the task ran, at list price; nothing until there is a figure. */
+/**
+ * What the task's thread used from this task's delivery until the next task reached the thread, at list price: the
+ * answering turn, the turns the agent continued on its own, and its subagents meanwhile. Nothing until there is a figure.
+ */
 function TaskSpend({ taskId }: { taskId: string }) {
   const { costs } = useRoom();
   const spend = costs?.tasks[taskId];
@@ -44,7 +47,7 @@ function TaskSpend({ taskId }: { taskId: string }) {
   return (
     <span
       className="task-spend mono"
-      title={`While it ran: ${fmtTokens(spend.total.inputTokens + spend.total.cachedInputTokens + spend.total.cacheWriteTokens)} in · ${fmtTokens(spend.total.outputTokens)} out over ${spend.total.calls} calls${spend.subagents.calls > 0 ? `, subagents ${money(spend.subagents.costUsd)}` : ""}. List price, not what a subscription charges.`}
+      title={`From this task's delivery until the next one reached the thread, turns it continued on its own and subagents included: ${fmtTokens(spend.total.inputTokens + spend.total.cachedInputTokens + spend.total.cacheWriteTokens)} in · ${fmtTokens(spend.total.outputTokens)} out over ${spend.total.calls} calls${spend.subagents.calls > 0 ? `, of which subagents ${money(spend.subagents.costUsd)}` : ""}. List price, not what a subscription charges.`}
     >
       {spend.priced ? "≈ " : "≥ "}
       {money(spend.total.costUsd)}

@@ -457,19 +457,30 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const byParticipant: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
     for (const participant of participants) byParticipant[participant.id] = costs.cost(threadsOf(participant.id));
 
+    // A task's spend is everything its thread used from the task's delivery until the next task was delivered to
+    // that thread: the turn that answered it, the turns the agent then continued on its own (background work waking
+    // it), and its subagents in that time. So a thread's tasks divide its spend between them, with nothing counted
+    // twice and nothing between tasks left out.
     const byTask: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
     const now = Date.now();
-    const windows = new Map<string, Array<{ threadId: string; from: number; to: number }>>();
+    const starts = new Map<string, Array<{ taskId: string; at: number }>>();
     for (const run of stack.repos.listRunsForRoom(roomId)) {
       // A message sent into a turn already running: that turn's task has the spend.
       if (run.steered) continue;
-      const from = Date.parse(run.startedAt ?? run.acceptedAt ?? "");
-      if (!Number.isFinite(from)) continue;
-      const ended = run.completedAt ? Date.parse(run.completedAt) : now;
-      windows.set(run.taskId, [...(windows.get(run.taskId) ?? []), { threadId: run.threadId, from, to: Number.isFinite(ended) ? ended : now }]);
+      const at = Date.parse(run.startedAt ?? run.acceptedAt ?? "");
+      if (!Number.isFinite(at)) continue;
+      starts.set(run.threadId, [...(starts.get(run.threadId) ?? []), { taskId: run.taskId, at }]);
     }
-    for (const [taskId, runs] of windows) {
-      const parts = runs.map((run) => costs.costBetween([run.threadId], run.from, run.to)).filter((part) => part.available && part.total.calls > 0);
+    const spans = new Map<string, Array<{ threadId: string; from: number; to: number }>>();
+    for (const [threadId, list] of starts) {
+      list.sort((a, b) => a.at - b.at);
+      list.forEach((start, index) => {
+        const to = list[index + 1]?.at ?? now;
+        spans.set(start.taskId, [...(spans.get(start.taskId) ?? []), { threadId, from: start.at, to }]);
+      });
+    }
+    for (const [taskId, list] of spans) {
+      const parts = list.map((span) => costs.costBetween([span.threadId], span.from, span.to)).filter((part) => part.available && part.total.calls > 0);
       const merged = mergeCosts(parts);
       if (merged) byTask[taskId] = merged;
     }
