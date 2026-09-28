@@ -7,6 +7,7 @@ import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspector.tsx";
 import { PageTitle } from "./components/PageTitle.tsx";
+import { StreetMode } from "./components/street/StreetMode.tsx";
 import { MenuIcon } from "./components/icons.tsx";
 import { AppControls } from "./components/AppControls.tsx";
 import { MEMBER_ACCENT } from "./components/Monogram.tsx";
@@ -21,6 +22,7 @@ import { UpdatesButton } from "./components/Updates.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
+import { useSkin } from "./skin.ts";
 import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
 import { roomKey, threadKey, useFinishNotifications, useLooking } from "./news.ts";
@@ -121,6 +123,9 @@ export function App() {
   const [followUp, setFollowUp] = useState<FollowUpPrefill | null>(null);
   const followUpNonce = useRef(0);
   const [theme, setTheme] = useTheme();
+  const [skin] = useSkin();
+  // Out on the street (Look → Street), the room last opened stays open but is not the one being looked at.
+  const [outside, setOutside] = useState(false);
 
   const report = useCallback(
     (error: unknown) => toast(error instanceof ApiError ? error.message : error instanceof Error ? error.message : String(error)),
@@ -240,12 +245,13 @@ export function App() {
 
   // ---- news: what finished while you were not looking (see news.ts) ----
   const looking = useLooking();
+  const lookingHere = looking && !(skin === "street" && outside);
   const openKey = selection?.kind === "room" ? roomKey(selection.id) : selection?.kind === "thread" ? threadKey(selection.id) : null;
   const openNewsAt =
     selection?.kind === "room" ? rooms.find((r) => r.id === selection.id)?.news?.latest?.at : selection?.kind === "thread" ? threads.find((t) => t.id === selection.id)?.news?.at : undefined;
   // The open room or thread is seen up to its newest finish while you look at it, on every device.
   useEffect(() => {
-    if (!openKey || !openNewsAt || !looking) return;
+    if (!openKey || !openNewsAt || !lookingHere) return;
     api.markSeen(openKey, openNewsAt).then(
       () => {
         setRooms((list) => list.map((room) => (roomKey(room.id) === openKey && room.news?.latest?.at === openNewsAt ? { ...room, news: { unseen: 0, latest: null } } : room)));
@@ -254,15 +260,15 @@ export function App() {
       // A service older than marks: its lists carry no news either.
       () => undefined,
     );
-  }, [openKey, openNewsAt, looking]);
+  }, [openKey, openNewsAt, lookingHere]);
   // The sidebar leaves out the news of what you are looking at, so it does not flash before the mark lands.
   const sideRooms = useMemo(
-    () => (looking && selection?.kind === "room" ? rooms.map((room) => (room.id === selection.id && room.news?.unseen ? { ...room, news: { unseen: 0, latest: null } } : room)) : rooms),
-    [rooms, looking, selection],
+    () => (lookingHere && selection?.kind === "room" ? rooms.map((room) => (room.id === selection.id && room.news?.unseen ? { ...room, news: { unseen: 0, latest: null } } : room)) : rooms),
+    [rooms, lookingHere, selection],
   );
   const sideThreads = useMemo(
-    () => (looking && selection?.kind === "thread" ? threads.map((thread) => (thread.id === selection.id && thread.news ? { ...thread, news: null } : thread)) : threads),
-    [threads, looking, selection],
+    () => (lookingHere && selection?.kind === "thread" ? threads.map((thread) => (thread.id === selection.id && thread.news ? { ...thread, news: null } : thread)) : threads),
+    [threads, lookingHere, selection],
   );
   // The tab's title counts what is new, so a background tab shows it: "(3) Backroom".
   const newCount = sideRooms.reduce((sum, room) => sum + (room.news?.unseen ?? 0), 0) + sideThreads.filter((thread) => thread.news).length;
@@ -421,6 +427,52 @@ export function App() {
       {alert}
     </button>
   ) : null;
+
+  // Look → Street: the whole page is the street; the same data, rooms and dialogs.
+  if (skin === "street") {
+    return (
+      <PresetsContext.Provider value={presetsValue}>
+        <StreetMode
+          status={status}
+          rooms={sideRooms}
+          projects={projects}
+          threads={sideThreads}
+          t3Error={t3Error}
+          selection={selection}
+          onSelect={setSelection}
+          onOutside={setOutside}
+          room={contextValue}
+          followUp={followUp}
+          panel={inspectorOpen ? inspectorTab : null}
+          onPanel={(tab) => {
+            if (tab) {
+              setInspectorTab(tab);
+              setInspectorOpen(true);
+            } else setInspectorOpen(false);
+          }}
+          runCommand={runCommand}
+          onSeatPreset={seatPreset}
+          onT3Changed={loadT3}
+          onThreadChanged={markThread}
+          browsers={browsers}
+          onBrowsersChanged={loadBrowsers}
+          theme={theme}
+          onTheme={setTheme}
+          onOpenConnection={() => setPairingOpen(true)}
+          onOpenLibrary={() => setLibraryOpen(true)}
+          needsPairing={needsPairing}
+          staleUi={staleUi}
+        />
+        {pairingOpen ? (
+          <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>
+            <PairingPanel status={status} onPaired={onPaired} embedded />
+            <ProvidersSection />
+          </Dialog>
+        ) : null}
+        {libraryOpen ? <RolesDialog runCommand={runCommand} onClose={() => setLibraryOpen(false)} /> : null}
+      </PresetsContext.Provider>
+    );
+  }
 
   return (
     <PresetsContext.Provider value={presetsValue}>

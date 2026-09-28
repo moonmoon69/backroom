@@ -5,7 +5,7 @@ import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { BellIcon, DeskIcon, GameIcon, HatIcon, LeafIcon, MonitorIcon, MoonIcon, NoteIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { BellIcon, DeskIcon, MonitorIcon, MoonIcon, NoteIcon, SettingsIcon, SpeakerIcon, StopIcon, StreetIcon, SunIcon } from "./icons.tsx";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
@@ -18,9 +18,7 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
 
 const LOOKS: Array<{ key: SkinChoice; label: string; hint: string; icon: ReactNode }> = [
   { key: "desk", label: "Desk", hint: "The ordinary chat", icon: <DeskIcon /> },
-  { key: "grok", label: "Grok", hint: "Grok's pixel room: villagers around a table, click one to talk", icon: <GameIcon /> },
-  { key: "opus", label: "Opus", hint: "Opus's back room: the crew at the boss's table, doing what their threads are doing", icon: <HatIcon /> },
-  { key: "astra", label: "Astra", hint: "Astra's clubhouse: desks, a task noticeboard, day and evening", icon: <LeafIcon /> },
+  { key: "street", label: "Street", hint: "The whole of Backroom as a street: a business per project, a back room per room", icon: <StreetIcon /> },
 ];
 
 /**

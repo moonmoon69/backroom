@@ -1,19 +1,18 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
 /**
- * Desk is the ordinary chat UI. The others are the pixel rooms the crew made, named after who made them: Grok's
- * villagers around a table (GameScene), Opus's back room (OpusLook), Astra's clubhouse (AstraLook).
+ * Desk is the ordinary UI: sidebar, header, panels. Street replaces all of it with one block of Mulberry Street
+ * (components/street/StreetMode.tsx); either way it is the same rooms and threads, and you can switch back and forth.
  */
-export type SkinChoice = "desk" | "grok" | "opus" | "astra";
+export type SkinChoice = "desk" | "street";
 
 const KEY = "backroom.skin";
 const SkinContext = createContext<[SkinChoice, (choice: SkinChoice) => void] | null>(null);
 
 export function readSkin(): SkinChoice {
   const stored = localStorage.getItem(KEY);
-  // Grok's look was first called Game.
-  if (stored === "game") return "grok";
-  return stored === "grok" || stored === "opus" || stored === "astra" ? stored : "desk";
+  // The room looks that came before the street (Game, then Grok, Opus and Astra) open the street.
+  return stored === "street" || stored === "game" || stored === "grok" || stored === "opus" || stored === "astra" ? "street" : "desk";
 }
 
 export function applySkin(choice: SkinChoice): void {

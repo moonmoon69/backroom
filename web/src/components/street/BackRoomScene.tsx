@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useRoom } from "../context.tsx";
-import { describeStatus, type MemberActivity } from "../memberActivity.ts";
-import { BOSS_SEAT, drawFrame, drawRoom, drawTable, MAX_SEATS, SCENE_H, SCENE_W, seatOf, seedOf, TABLE_TOP, type Actor, type Flight, type Seat } from "../looks/opusScene.ts";
-import { HATS } from "../looks/opusSprites.ts";
-import { showInLog, useSceneLog } from "../looks/sceneLog.ts";
-import "../looks/opus.css";
-import { useSkin } from "../skin.ts";
-import { speakable } from "../speechText.ts";
-import { ACTIVE_STATES, isActiveParticipant, type Participant, type RoomEvent, type Task } from "../types.ts";
-import { useCatalog } from "./catalog.ts";
+import { useRoom } from "../../context.tsx";
+import { describeStatus, type MemberActivity } from "../../memberActivity.ts";
+import { speakable } from "../../speechText.ts";
+import { BOSS_SEAT, drawFrame, drawRoom, drawTable, MAX_SEATS, OBJECTS, SCENE_H, SCENE_W, seatOf, seedOf, TABLE_TOP, type Actor, type Flight, type Seat } from "../../street/backroomScene.ts";
+import { money } from "../../street/books.ts";
+import { HATS } from "../../street/sprites.ts";
+import { ACTIVE_STATES, isActiveParticipant, PENDING_STATES, type Participant, type RoomEvent, type Task } from "../../types.ts";
+import { useCatalog } from "../catalog.ts";
+import type { InspectorTab } from "../Inspector.tsx";
 
 /** The hat band and tie of each harness, in its logo's colour where it has one. */
 const HARNESS_COLOUR: Record<string, string> = {
@@ -21,6 +20,17 @@ const HARNESS_COLOUR: Record<string, string> = {
 };
 const SPARE_COLOURS = ["#c65d7b", "#6cc3c1", "#b48ede", "#e0a458", "#8cc084", "#d4d4aa"];
 const SOUND_KEY = "backroom.scene.sound";
+
+/** Put @alias in the room's composer (Composer.tsx listens). */
+export function mentionInComposer(alias: string) {
+  window.dispatchEvent(new CustomEvent("backroom:mention", { detail: alias }));
+}
+
+/** Scroll the conversation to an event. */
+function showInLog(sequence: number, openLog: (open: boolean) => void) {
+  openLog(true);
+  window.setTimeout(() => document.querySelector(`[data-sequence="${sequence}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 60);
+}
 /** How long a new line stays over the speaker's head. */
 const SAY_MS = 14000;
 
@@ -96,12 +106,16 @@ function useBlips(enabled: boolean) {
   );
 }
 
-/** Settings → Look → Opus: the room as the back room, above its conversation. */
-export function OpusLook({ onTalk }: { onTalk: (alias: string) => void }) {
-  const [skin] = useSkin();
-  const { snapshot } = useRoom();
-  if (skin !== "opus") return null;
-  return <BackRoom key={snapshot.room.id} onTalk={onTalk} />;
+export interface BackRoomSceneProps {
+  night: boolean;
+  /** The project the room belongs to, for the plaque. */
+  projectTitle: string | null;
+  logOpen: boolean;
+  onLog: (open: boolean) => void;
+  /** Out through the door, back to the street. */
+  onLeave: () => void;
+  /** Open one of the room's things: the board (tasks), the ledger (people and their spend), the phone, the cabinet. */
+  onPanel: (tab: InspectorTab) => void;
 }
 
 /**
@@ -110,9 +124,9 @@ export function OpusLook({ onTalk }: { onTalk: (alias: string) => void }) {
  * only monitors run, a "!" when they need an approval, a "?" for a question, asleep when their session stopped.
  * Envelopes fly out with each new assignment and a sheet comes back with each answer. Click someone to hear them.
  */
-function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
-  const { snapshot, desk, costs, aliasOf } = useRoom();
-  const [logOpen, setLogOpen] = useSceneLog();
+export function BackRoomScene({ night, projectTitle, logOpen, onLog, onLeave, onPanel }: BackRoomSceneProps) {
+  const { snapshot, desk, costs, aliasOf, git } = useRoom();
+  const setLogOpen = onLog;
   const catalog = useCatalog();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -142,7 +156,13 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
   const actorsRef = useRef<Actor[]>([]);
   actorsRef.current = seated.map((s) => s.actor);
   const flightsRef = useRef<Flight[]>([]);
-  const roomRef = useRef<{ seats: number; canvas: HTMLCanvasElement } | null>(null);
+  const roomRef = useRef<{ seats: number; night: boolean; canvas: HTMLCanvasElement } | null>(null);
+  const openTasks = snapshot.tasks.filter((t) => PENDING_STATES.has(t.state) || ACTIVE_STATES.has(t.state)).length;
+  const tasksAlert = snapshot.nativeRequests.length > 0 || snapshot.tasks.some((t) => t.state === "needs_input");
+  const boardRef = useRef({ open: openTasks, alert: tasksAlert });
+  boardRef.current = { open: openTasks, alert: tasksAlert };
+  const nightRef = useRef(night);
+  nightRef.current = night;
   const tableRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -158,7 +178,7 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
       if (t - last < (motion ? 33 : 1000)) return;
       last = t;
       const seats = actorsRef.current.length;
-      if (roomRef.current?.seats !== seats) roomRef.current = { seats, canvas: drawRoom(seats) };
+      if (roomRef.current?.seats !== seats || roomRef.current.night !== nightRef.current) roomRef.current = { seats, night: nightRef.current, canvas: drawRoom(seats, nightRef.current) };
       flightsRef.current = flightsRef.current.filter((f) => t < f.start + f.duration);
       drawFrame(ctx, {
         room: roomRef.current.canvas,
@@ -166,6 +186,8 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
         actors: actorsRef.current,
         boss: { colour: "#1b1c1f", mark: null },
         flights: flightsRef.current,
+        tasks: boardRef.current,
+        night: nightRef.current,
         t: motion ? t : 0,
         now: new Date(),
         motion,
@@ -175,19 +197,24 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
     return () => cancelAnimationFrame(frame);
   }, [motion]);
 
-  // ---- the scene fills the space in whole pixels ----
+  // ---- the scene in whole pixels: as large as fits in about half the screen with the log open, all of it without ----
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
     const fit = () => {
-      const fitted = Math.min(stage.clientWidth / SCENE_W, stage.clientHeight / SCENE_H);
+      const height = logOpen ? window.innerHeight * 0.55 : stage.clientHeight;
+      const fitted = Math.min(stage.clientWidth / SCENE_W, height / SCENE_H);
       setScale(fitted >= 2 ? Math.floor(fitted) : Math.max(1, fitted));
     };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(stage);
-    return () => observer.disconnect();
-  }, []);
+    window.addEventListener("resize", fit);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [logOpen]);
 
   // ---- new assignments fly out, answers come back, the latest line shows over its speaker ----
   const seen = useRef<{ tasks: Set<string>; sequence: number } | null>(null);
@@ -242,24 +269,76 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
   const working = seated.filter((s) => s.actor.pose === "work").length;
   const needYou = seated.filter((s) => s.actor.mark === "!" || s.actor.mark === "?").length;
   const spent = costs?.room.total.costUsd ?? null;
+  const uncommitted = git.data?.folders.filter((folder) => folder.isRepo).reduce((n, folder) => n + folder.changed, 0) ?? null;
+  const browser = snapshot.room.browserEnabled ? snapshot.browser : null;
 
   const pct = (value: number, of: number) => `${(value / of) * 100}%`;
+  const place = (r: { x: number; y: number; w: number; h: number }): CSSProperties => ({ left: pct(r.x, SCENE_W), top: pct(r.y, SCENE_H), width: pct(r.w, SCENE_W), height: pct(r.h, SCENE_H) });
   const saidSeat = said ? (said.speakerId ? seated.find((s) => s.participant.id === said.speakerId)?.seat : BOSS_SEAT) : null;
 
   return (
-    <section className="opus-room look-scene" ref={stageRef} aria-label="The back room">
-      <div className="opus-stage" style={{ width: SCENE_W * scale, height: SCENE_H * scale, "--px": `${scale}px` } as CSSProperties}>
-        <canvas ref={canvasRef} className="opus-canvas" width={SCENE_W} height={SCENE_H} aria-hidden="true" />
+    <section className={`br-room${night ? " is-night" : " is-day"}`} ref={stageRef} aria-label="The back room" style={logOpen ? { height: SCENE_H * scale } : undefined}>
+      <div className="br-stage" style={{ width: SCENE_W * scale, height: SCENE_H * scale, "--px": `${scale}px` } as CSSProperties}>
+        <canvas ref={canvasRef} className="br-canvas" width={SCENE_W} height={SCENE_H} aria-hidden="true" />
 
-        <div className="opus-hud">
-          <span>
-            {seated.length} at the table
-            {working > 0 ? ` · ${working} working` : ""}
-            {needYou > 0 ? <strong> · {needYou} need{needYou === 1 ? "s" : ""} you</strong> : null}
+        <div className="br-hud">
+          <span className="br-plaque">
+            {projectTitle ? <span className="br-plaque-project">{projectTitle} · </span> : null}
+            {snapshot.room.title}
           </span>
-          {spent !== null && spent > 0 ? <span className="opus-bells">${spent.toFixed(2)}</span> : null}
+          {needYou > 0 ? (
+            <strong>
+              {needYou} need{needYou === 1 ? "s" : ""} you
+            </strong>
+          ) : working > 0 ? (
+            <span>{working} working</span>
+          ) : null}
         </div>
-        <div className="opus-tools">
+
+        <button type="button" className="br-thing br-door" style={place(OBJECTS.door)} onClick={onLeave} title="Back to the street (Esc)" aria-label="Back out to the street">
+          <span className="br-tag">← Street</span>
+        </button>
+        <button
+          type="button"
+          className="br-thing"
+          style={place(OBJECTS.phone)}
+          onClick={() => onPanel("browser")}
+          title="The telephone: this room's browser"
+          aria-label={`The room's browser${browser ? `: ${browser.browser.name}, ${browser.status.state === "running" ? "running" : browser.status.state}` : ": none"}`}
+        >
+          {browser ? <span className={`br-badge${browser.status.state === "running" ? " is-on" : ""}`}>{browser.status.state === "running" ? "on" : "off"}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="br-thing"
+          style={place(OBJECTS.board)}
+          onClick={() => onPanel("tasks")}
+          title="The noticeboard: the room's tasks"
+          aria-label={`Tasks: ${openTasks} open${tasksAlert ? ", one needs you" : ""}`}
+        >
+          {openTasks > 0 ? <span className={`br-badge${tasksAlert ? " is-alert" : ""}`}>{openTasks}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="br-thing"
+          style={place(OBJECTS.cabinet)}
+          onClick={() => onPanel("git")}
+          title="The filing cabinet: git, branches and uncommitted files"
+          aria-label={`Git${uncommitted !== null ? `: ${uncommitted} uncommitted file${uncommitted === 1 ? "" : "s"}` : ""}`}
+        >
+          {uncommitted ? <span className="br-badge">{uncommitted}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="br-thing br-ledger"
+          style={place(OBJECTS.ledger)}
+          onClick={() => onPanel("people")}
+          title="The books: what each member's thread has used, estimated at list price"
+          aria-label={`The books${spent !== null ? `: ${money(spent)} estimated` : ""}`}
+        >
+          {spent !== null && spent > 0 ? <span className="br-badge br-money">{money(spent)}</span> : null}
+        </button>
+        <div className="br-tools">
           <button type="button" aria-pressed={logOpen} title={logOpen ? "Hide the conversation and sit with the table" : "Show the conversation under the table"} onClick={() => setLogOpen(!logOpen)}>
             {logOpen ? "Hide log" : "Show log"}
           </button>
@@ -279,7 +358,7 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
 
         <button
           type="button"
-          className="opus-seat"
+          className="br-seat"
           style={{ left: pct(BOSS_SEAT.x - 14, SCENE_W), top: pct(BOSS_SEAT.y - 4, SCENE_H), width: pct(28, SCENE_W), height: pct(TABLE_TOP + 8 - BOSS_SEAT.y, SCENE_H) }}
           aria-label="You, the boss: the room at a glance"
           onClick={() => setOpen("boss")}
@@ -288,7 +367,7 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
           <button
             key={participant.id}
             type="button"
-            className={`opus-seat${seat.near ? " near" : ""}${open === participant.id ? " open" : ""}`}
+            className={`br-seat${seat.near ? " near" : ""}${open === participant.id ? " open" : ""}`}
             style={{
               left: pct(seat.x - 13, SCENE_W),
               top: pct(seat.y - 2, SCENE_H),
@@ -299,14 +378,14 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
             title={`${participant.alias} · ${activity.label}${activity.detail ? ` · ${activity.detail}` : ""}`}
             onClick={() => setOpen(participant.id)}
           >
-            <span className={`opus-card tone-${activity.tone}`}>{participant.alias}</span>
+            <span className={`br-card tone-${activity.tone}`}>{participant.alias}</span>
           </button>
         ))}
 
         {said && saidSeat ? (
           <div
             key={said.at}
-            className="opus-say"
+            className="br-say"
             style={{ left: `clamp(18%, ${pct(saidSeat.x, SCENE_W)}, 82%)`, top: pct(saidSeat.y - 14, SCENE_H) }}
             aria-live="polite"
           >
@@ -326,9 +405,13 @@ function BackRoom({ onTalk }: { onTalk: (alias: string) => void }) {
             onClose={() => setOpen(null)}
             onTalk={(alias) => {
               setOpen(null);
-              onTalk(alias);
+              mentionInComposer(alias);
             }}
             onShow={(sequence) => showInLog(sequence, setLogOpen)}
+            onCard={() => {
+              setOpen(null);
+              onPanel("people");
+            }}
           />
         ) : null}
       </div>
@@ -348,10 +431,12 @@ interface DialogueProps {
   onTalk: (alias: string) => void;
   /** Scroll the conversation to an event. */
   onShow: (sequence: number) => void;
+  /** The member's card: settings, thread, spend. */
+  onCard: () => void;
 }
 
 /** The dialogue box at the foot of the scene: a name tag, the words typed out, ▼ when there is no more. */
-function Dialogue({ who, seated, events, tasks, motion, blip, onClose, onTalk, onShow }: DialogueProps) {
+function Dialogue({ who, seated, events, tasks, motion, blip, onClose, onTalk, onShow, onCard }: DialogueProps) {
   const member = who === "boss" ? null : seated.find((s) => s.participant.id === who) ?? null;
   const { name, colour, text, status, shown: shownEvent } = useMemo(() => {
     if (!member) {
@@ -385,16 +470,16 @@ function Dialogue({ who, seated, events, tasks, motion, blip, onClose, onTalk, o
   const done = shown >= text.length;
 
   return (
-    <div className="opus-dialogue" role="dialog" aria-label={`${name} says`}>
-      <span className="opus-nametag" style={{ background: colour, color: colour === "#1b1c1f" ? "#f2ecd9" : "#1b1510" }}>
+    <div className="br-dialogue" role="dialog" aria-label={`${name} says`}>
+      <span className="br-nametag" style={{ background: colour, color: colour === "#1b1c1f" ? "#f2ecd9" : "#1b1510" }}>
         {name}
       </span>
-      <p className="opus-status">{status}</p>
-      <p className="opus-words" onClick={() => setShown(text.length)} aria-label={text}>
+      <p className="br-status">{status}</p>
+      <p className="br-words" onClick={() => setShown(text.length)} aria-label={text}>
         <span aria-hidden="true">{text.slice(0, shown)}</span>
-        {done ? <span className="opus-more" aria-hidden="true">▼</span> : null}
+        {done ? <span className="br-more" aria-hidden="true">▼</span> : null}
       </p>
-      <div className="opus-choices">
+      <div className="br-choices">
         {member ? (
           <button type="button" onClick={() => onTalk(member.participant.alias)} title={`Put @${member.participant.alias} in the composer`}>
             Talk
@@ -403,6 +488,11 @@ function Dialogue({ who, seated, events, tasks, motion, blip, onClose, onTalk, o
         {shownEvent ? (
           <button type="button" onClick={() => onShow(shownEvent.sequence)}>
             Show in log
+          </button>
+        ) : null}
+        {member ? (
+          <button type="button" onClick={onCard}>
+            Card
           </button>
         ) : null}
         <button type="button" onClick={onClose} autoFocus>

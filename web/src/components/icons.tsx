@@ -215,29 +215,12 @@ export const DeskIcon = () => (
   </Icon>
 );
 
-/** A little house: the pixel game look. */
-export const GameIcon = () => (
+/** A shop front with its awning: the street look. */
+export const StreetIcon = () => (
   <Icon>
-    <path d="M2 8.5 8 3l6 5.5" />
-    <path d="M3.5 8v5.5h9V8" />
-    <path d="M6.5 13.5v-3h3v3" />
-  </Icon>
-);
-
-/** A fedora: Opus's back room look. */
-export const HatIcon = () => (
-  <Icon>
-    <path d="M1.5 11c1.5 1 11.5 1 13 0" />
-    <path d="M4 10.5 5 5c.2-1 1.4-1.5 3-.4 1.6-1.1 2.8-.6 3 .4l1 5.5" />
-    <path d="M4.5 8.5h7" />
-  </Icon>
-);
-
-/** A leaf: Astra's clubhouse look. */
-export const LeafIcon = () => (
-  <Icon>
-    <path d="M3 13C3 7 6.5 3 13 3c0 6.5-4 10-10 10Z" />
-    <path d="M3 13 9 7" />
+    <path d="M2.5 13.5v-7M13.5 13.5v-7M1.5 13.5h13" />
+    <path d="M2 3h12l.5 3.5h-13Z" />
+    <path d="M6.5 13.5V9.5h3v4" />
   </Icon>
 );
 

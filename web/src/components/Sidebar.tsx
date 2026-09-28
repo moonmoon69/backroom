@@ -963,7 +963,7 @@ function AddMenu({
   );
 }
 
-function NewRoomDialog({
+export function NewRoomDialog({
   initialProjectId,
   onClose,
   onCreate,
@@ -1098,7 +1098,7 @@ function useFolderListing(typed: string): { path: string; listing: FolderListing
  * or not the path ends in "/", so browsing into a folder and pressing Add adds it. Only T3's own picker clones from a
  * Git URL or GitHub; add such a project in T3 Code and it shows here.
  */
-function NewProjectDialog({
+export function NewProjectDialog({
   projects,
   onClose,
   onCreate,

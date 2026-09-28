@@ -7,7 +7,6 @@ import { SkinProvider, applySkin, readSkin } from "./skin.ts";
 import { applyTheme, readTheme } from "./theme.ts";
 import { installViewportFit } from "./viewportFit.ts";
 import "./styles.css";
-import "./game.css";
 
 applyTheme(readTheme());
 applySkin(readSkin());

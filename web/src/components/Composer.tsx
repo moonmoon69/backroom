@@ -44,9 +44,6 @@ import {
 } from "./composerText.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
-import { AstraLook } from "./AstraLook.tsx";
-import { GameScene } from "./GameScene.tsx";
-import { OpusLook } from "./OpusLook.tsx";
 import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
 
 interface Props {
@@ -373,6 +370,19 @@ export function Composer({ followUp }: Props) {
   const insertMentionAtCaret = (alias: string) => {
     applyEdit(insertMention(text, textarea.current?.selectionStart ?? text.length, alias));
   };
+  // Talking to someone at the street's table puts @them here (street/BackRoomScene.tsx).
+  const mentionRef = useRef(insertMentionAtCaret);
+  mentionRef.current = insertMentionAtCaret;
+  useEffect(() => {
+    const onMention = (event: Event) => {
+      const alias = (event as CustomEvent<string>).detail;
+      if (!alias) return;
+      mentionRef.current(alias);
+      textarea.current?.focus();
+    };
+    window.addEventListener("backroom:mention", onMention);
+    return () => window.removeEventListener("backroom:mention", onMention);
+  }, []);
 
   // ---- plan + submit ----
 
@@ -535,10 +545,6 @@ export function Composer({ followUp }: Props) {
       : [];
 
   return (
-    <>
-    <GameScene onTalk={insertMentionAtCaret} />
-    <OpusLook onTalk={insertMentionAtCaret} />
-    <AstraLook onTalk={insertMentionAtCaret} />
     <div className={`composer${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       {crew.length > 0 ? (
         <MentionChips
@@ -748,7 +754,6 @@ export function Composer({ followUp }: Props) {
         })()
       ) : null}
     </div>
-    </>
   );
 }
 
