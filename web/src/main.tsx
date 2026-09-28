@@ -3,11 +3,14 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { ToastProvider } from "./components/Toast.tsx";
 import { contextReadout, fmtTokens } from "./components/deskFormat.ts";
+import { SkinProvider, applySkin, readSkin } from "./skin.ts";
 import { applyTheme, readTheme } from "./theme.ts";
 import { installViewportFit } from "./viewportFit.ts";
 import "./styles.css";
+import "./game.css";
 
 applyTheme(readTheme());
+applySkin(readSkin());
 installViewportFit();
 
 // Installable app: the service worker keeps the shell available offline, never touches /api, and shows the
@@ -28,7 +31,9 @@ if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
     <ToastProvider>
-      <App />
+      <SkinProvider>
+        <App />
+      </SkinProvider>
     </ToastProvider>
   </StrictMode>,
 );

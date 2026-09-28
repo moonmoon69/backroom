@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { preferredVoice, readBoxVoice, readRate, readSource, readVoiceURI, speak, speechSupported, stopSpeaking, useBoxStatus, useSpeaking, useVoices, writeBoxVoice, writeRate, writeSource, writeVoiceURI, type SpeechSource } from "../speech.ts";
+import { useSkin, type SkinChoice } from "../skin.ts";
 import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { BellIcon, MonitorIcon, MoonIcon, NoteIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { BellIcon, DeskIcon, GameIcon, MonitorIcon, MoonIcon, NoteIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
@@ -13,6 +14,11 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "system", label: "System", icon: <MonitorIcon /> },
   { key: "light", label: "Light", icon: <SunIcon /> },
   { key: "dark", label: "Dark", icon: <MoonIcon /> },
+];
+
+const LOOKS: Array<{ key: SkinChoice; label: string; hint: string; icon: ReactNode }> = [
+  { key: "desk", label: "Desk", hint: "The ordinary chat", icon: <DeskIcon /> },
+  { key: "game", label: "Game", hint: "Pixel room: crew around a table", icon: <GameIcon /> },
 ];
 
 /**
@@ -43,10 +49,11 @@ export function AppControls({
   );
 }
 
-/** Roles, notifications on this device, the voice replies are read in, and the theme. */
+/** Roles, notifications on this device, the voice replies are read in, the theme, and the look. */
 function SettingsMenu({ onOpenLibrary, rolesDisabled, theme, onTheme }: { onOpenLibrary: () => void; rolesDisabled: boolean; theme: ThemeChoice; onTheme: (choice: ThemeChoice) => void }) {
   const [open, setOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [skin, setSkin] = useSkin();
   const wrapper = useRef<HTMLSpanElement>(null);
   const notifyOn = useNotifyOn();
   const boxSpeech = Boolean(useBoxStatus()?.available);
@@ -76,7 +83,7 @@ function SettingsMenu({ onOpenLibrary, rolesDisabled, theme, onTheme }: { onOpen
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Settings"
-        title="Settings: roles, notifications, voice and theme"
+        title="Settings: roles, notifications, voice, theme and look"
         onClick={() => setOpen((v) => !v)}
       >
         <SettingsIcon />
@@ -120,6 +127,25 @@ function SettingsMenu({ onOpenLibrary, rolesDisabled, theme, onTheme }: { onOpen
           </div>
           {THEMES.map((option) => (
             <button key={option.key} type="button" role="menuitemradio" aria-checked={theme === option.key} className={theme === option.key ? "on" : ""} onClick={pick(() => onTheme(option.key))}>
+              <span className="menu-icon" aria-hidden="true">
+                {option.icon}
+              </span>
+              {option.label}
+            </button>
+          ))}
+          <div className="menu-heading" role="presentation">
+            Look
+          </div>
+          {LOOKS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={skin === option.key}
+              className={skin === option.key ? "on" : ""}
+              title={option.hint}
+              onClick={pick(() => setSkin(option.key))}
+            >
               <span className="menu-icon" aria-hidden="true">
                 {option.icon}
               </span>

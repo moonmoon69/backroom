@@ -207,6 +207,23 @@ export const MonitorIcon = () => (
   </Icon>
 );
 
+/** A chat window: the ordinary desk look. */
+export const DeskIcon = () => (
+  <Icon>
+    <rect x="2" y="3.5" width="12" height="9" rx="1.5" />
+    <path d="M2 7.5h12" />
+  </Icon>
+);
+
+/** A little house: the pixel game look. */
+export const GameIcon = () => (
+  <Icon>
+    <path d="M2 8.5 8 3l6 5.5" />
+    <path d="M3.5 8v5.5h9V8" />
+    <path d="M6.5 13.5v-3h3v3" />
+  </Icon>
+);
+
 export const SunIcon = () => (
   <Icon>
     <circle cx="8" cy="8" r="2.75" />
