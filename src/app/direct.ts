@@ -112,6 +112,8 @@ export class DirectThreads {
             messageId: randomUUID(),
             text: command.text,
             images: turnImages(command.images),
+            // A live session only switches model when the turn names one (see Scheduler.send).
+            modelSelection: shell.modelSelection,
             runtimeMode: shell.runtimeMode,
             interactionMode: shell.interactionMode,
           }),
