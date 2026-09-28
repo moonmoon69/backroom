@@ -443,27 +443,12 @@
 
 /* ---- cards over the street: a building's directory, the club ---- */
 
-/* Paper, whatever the theme: the app's own controls inside a card take its colours. */
-.st-card,
-.st-jump {
-  color-scheme: light;
-  --bg: #f6efdc;
-  --bg-1: #fffaf0;
-  --bg-2: #f1e8d2;
-  --bg-3: #ebe1c6;
-  --fg: #2a1d14;
-  --fg-dim: #4a3a2a;
-  --fg-muted: #6b5a44;
-  --line: #d9ccaa;
-  --line-strong: #bfae86;
-  --input: #fffaf0;
-}
 
 .st-card {
   position: absolute;
   top: 12px;
   right: 12px;
-  bottom: 12px;
+  max-height: calc(100% - 24px);
   z-index: 8;
   display: flex;
   flex-direction: column;
@@ -1072,4 +1057,265 @@
   .br-more {
     animation: none;
   }
+}
+
+/*
+ * ---- The window of the SNES Final Fantasies: every panel of the street, whatever the theme ----
+ * Blue in bands with a white frame, white text; the app's own controls inside take its colours. The glove points at
+ * what you are about to choose.
+ */
+
+.st-card,
+.st-jump,
+.st-tip,
+.br-dialogue,
+.br-say,
+.br-nametag,
+.street-room .composer,
+.street-room .street-room-log,
+.street-room > .inspector {
+  color-scheme: dark;
+  --bg: #1f3998;
+  --bg-1: rgb(255 255 255 / 8%);
+  --bg-2: rgb(255 255 255 / 12%);
+  --bg-3: rgb(255 255 255 / 18%);
+  --fg: #f4f6ff;
+  --fg-dim: #dfe4fa;
+  --fg-muted: #b4bfea;
+  --line: rgb(255 255 255 / 22%);
+  --line-strong: rgb(255 255 255 / 42%);
+  --input: rgb(8 16 60 / 45%);
+  --message: rgb(8 16 60 / 35%);
+  --accent: #f0d27a;
+  --accent-fg: #14226a;
+  --accent-hover: #ffe08a;
+  --shadow-xs: none;
+  color: var(--fg);
+  background: linear-gradient(180deg, #3a5ccc 0 12%, #3354c0 12% 25%, #2d4cb4 25% 37%, #2744a6 37% 50%, #213c98 50% 62%, #1c348a 62% 75%, #172d7c 75% 87%, #12266e 87% 100%);
+  border: 2px solid #eef1fb;
+  border-radius: 5px;
+  box-shadow: 0 0 0 2px #14142a, inset 0 0 0 1px #8499e4, 0 5px 0 rgb(0 0 0 / 35%);
+  text-shadow: 1px 1px 0 rgb(6 12 50 / 80%);
+}
+
+.st-card .muted,
+.st-card-head p,
+.st-card-body h3,
+.st-row-label,
+.st-tip span,
+.st-jump li button span,
+.st-jump-none {
+  color: #b4bfea;
+}
+
+.st-card-head {
+  border-bottom-color: rgb(255 255 255 / 25%);
+}
+
+.st-card-head h2 {
+  letter-spacing: 0.02em;
+}
+
+.st-card-head button {
+  color: #f4f6ff;
+}
+
+.st-card .st-row,
+.st-jump li button {
+  position: relative;
+  color: #f4f6ff;
+}
+
+.st-card .st-row:hover:not(:disabled),
+.st-jump li button.is-on,
+.st-jump li button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 10%);
+}
+
+/* The glove. */
+.st-card .st-row::before,
+.st-jump li button::before,
+.st-card-actions button::before,
+.br-choices button::before {
+  content: "";
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  width: 18px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 9' shape-rendering='crispEdges'%3E%3Crect x='2' y='0' width='4' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='1' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='1' width='4' height='1' fill='%23fff'/%3E%3Crect x='6' y='1' width='6' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='2' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='2' width='11' height='1' fill='%23fff'/%3E%3Crect x='12' y='2' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='3' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='3' width='5' height='1' fill='%23fff'/%3E%3Crect x='6' y='3' width='6' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='4' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='4' width='7' height='1' fill='%23fff'/%3E%3Crect x='8' y='4' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='5' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='5' width='5' height='1' fill='%23fff'/%3E%3Crect x='6' y='5' width='3' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='6' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='6' width='7' height='1' fill='%23fff'/%3E%3Crect x='8' y='6' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='7' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='7' width='4' height='1' fill='%23fff'/%3E%3Crect x='6' y='7' width='2' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='8' width='4' height='1' fill='%231a1a2a'/%3E%3C/svg%3E") no-repeat center / contain;
+  image-rendering: pixelated;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.st-card .st-row:hover::before,
+.st-card .st-row:focus-visible::before,
+.st-jump li button.is-on::before,
+.st-jump li button:hover::before,
+.st-card-actions button:hover::before,
+.st-card-actions button:focus-visible::before,
+.br-choices button:hover::before,
+.br-choices button:focus-visible::before {
+  opacity: 1;
+  animation: st-point 0.6s steps(2) infinite;
+}
+
+@keyframes st-point {
+  50% {
+    translate: -2px 0;
+  }
+}
+
+.st-card-body {
+  padding-left: 26px;
+}
+
+.st-card-actions button,
+.br-choices button {
+  position: relative;
+}
+
+.st-card .st-dot {
+  background: #b4bfea;
+}
+
+.st-card .st-dot.is-dark {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px #b4bfea;
+}
+
+.st-card .st-dot.is-needs {
+  background: #f0a040;
+}
+
+.st-card .st-dot.is-failed {
+  background: #ff6a5a;
+}
+
+.st-card .st-dot.is-working {
+  background: #7ce08a;
+}
+
+.st-jump input {
+  color: #f4f6ff;
+  background: rgb(8 16 60 / 45%);
+  border-color: rgb(255 255 255 / 35%);
+}
+
+.st-tip {
+  border-radius: 4px;
+}
+
+.st-tip b {
+  color: #fff;
+}
+
+/* The member's dialogue: the classic box along the bottom, the speaker's name in a little window of its own. */
+.br-dialogue {
+  border-radius: 5px;
+  animation: br-rise 160ms steps(4) both;
+}
+
+.br-dialogue .br-words {
+  color: #f4f6ff;
+}
+
+.br-dialogue .br-status {
+  color: #b4bfea;
+}
+
+.br-dialogue .br-more {
+  color: #f0d27a;
+}
+
+.br-nametag {
+  transform: none;
+  color: #f4f6ff !important;
+  font-weight: 700;
+}
+
+.br-choices button {
+  color: #f4f6ff;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.br-choices button:hover:not(:disabled) {
+  color: #fff;
+  background: rgb(255 255 255 / 10%);
+}
+
+.br-say {
+  border-radius: 4px;
+}
+
+.br-say b {
+  color: #f0d27a;
+}
+
+/* Inside a room: the conversation, the composer and the panels are windows too. */
+.street-room {
+  background: #0c0f24;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+.street-room.is-day {
+  background: #2a2c44;
+}
+
+.street-room .street-room-log {
+  margin: 0 8px;
+  overflow: hidden;
+}
+
+.street-room .composer {
+  margin: 0 8px;
+}
+
+.street-room .composer textarea,
+.street-room .composer .composer-backdrop {
+  color: #f4f6ff;
+}
+
+.street-room > .inspector {
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+}
+
+.street-room .timeline-wrap .timeline {
+  scrollbar-color: rgb(255 255 255 / 35%) transparent;
+}
+
+@media (max-width: 720px) {
+  .st-card-body {
+    padding-left: 22px;
+  }
+}
+
+.br-nametag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.br-nametag-mark {
+  width: 8px;
+  height: 8px;
+  border: 1px solid #eef1fb;
+}
+
+.br-dialogue {
+  padding-top: calc(var(--px) * 5);
+}
+
+.br-dialogue .br-nametag {
+  top: calc(var(--px) * -3.5);
+  left: calc(var(--px) * 4);
+  padding: calc(var(--px) * 0.5) calc(var(--px) * 3);
+  box-shadow: 0 0 0 2px #14142a;
 }

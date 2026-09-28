@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { boardRect, clubLampRect, displayRect, doorRect, drawStreet, groundOf, mailboxRect, MIN_VIEW_H, plateRect, signRect, windowRect, type Rect } from "../../street/art.ts";
+import { boardRect, clubLampRect, displayRect, doorRect, drawStreet, groundOf, mailboxRect, neededHeight, plateRect, signRect, windowRect, type Rect } from "../../street/art.ts";
 import { money, type Books } from "../../street/books.ts";
 import { LOT_W, type Lot, type Street, type StreetWindow } from "../../street/layout.ts";
 
@@ -37,9 +37,12 @@ let lastCam: number | null = null;
 
 const motionAllowed = () => !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** Whole pixels, as large as fits: the tallest building with some sky, and a whole building across (a phone shows one at a time). */
-function fitScale(w: number, h: number): number {
-  const byHeight = Math.floor(h / MIN_VIEW_H);
+/**
+ * Whole pixels, as large as fits: this street's tallest building with a strip of sky (so a street of low buildings is
+ * drawn bigger rather than under a lot of sky), and a whole building across (a phone shows one at a time).
+ */
+function fitScale(w: number, h: number, needed: number): number {
+  const byHeight = Math.floor(h / needed);
   const byWidth = Math.floor(w / (LOT_W * 1.05));
   return Math.max(1, Math.min(6, byHeight, byWidth));
 }
@@ -56,7 +59,8 @@ export function StreetView({ street, night, books, crew, t3Notice, focus, jumpIt
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const scale = size.w > 0 ? fitScale(size.w, size.h) : 3;
+  const needed = useMemo(() => neededHeight(street), [street]);
+  const scale = size.w > 0 ? fitScale(size.w, size.h, needed) : 3;
   const viewW = Math.ceil(size.w / scale);
   const viewH = Math.ceil(size.h / scale);
   const ground = groundOf(viewH);

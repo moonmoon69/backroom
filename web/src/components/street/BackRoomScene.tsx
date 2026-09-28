@@ -471,7 +471,8 @@ function Dialogue({ who, seated, events, tasks, motion, blip, onClose, onTalk, o
 
   return (
     <div className="br-dialogue" role="dialog" aria-label={`${name} says`}>
-      <span className="br-nametag" style={{ background: colour, color: colour === "#1b1c1f" ? "#f2ecd9" : "#1b1510" }}>
+      <span className="br-nametag">
+        <i className="br-nametag-mark" style={{ background: colour }} aria-hidden="true" />
         {name}
       </span>
       <p className="br-status">{status}</p>

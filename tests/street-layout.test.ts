@@ -65,6 +65,14 @@ test("a project's business and colours come from its id, so renaming changes onl
   assert.equal(after.project?.title, "New name");
 });
 
+test("no two businesses share a trade while there are trades left, whatever the sidebar's order", () => {
+  const ids = ["6758aa0b-b813-4f51-9b50-17922b80d766", "c6b36e26-b091-45cb-b78d-2cff3d582a93", "ebb32ba3-f82b-4acf-9998-d24d772204af", "p4", "p5"];
+  const trades = (order: string[]) => new Map(layoutStreet(order.map((id) => project(id)), [], []).lots.filter((l) => l.project).map((l) => [l.project!.id, l.business?.key]));
+  const forward = trades(ids);
+  assert.equal(new Set(forward.values()).size, ids.length);
+  assert.deepEqual(trades([...ids].reverse()), forward);
+});
+
 test("a few standard heights: one floor per three windows, never more than the tallest", () => {
   const rooms = (n: number) => Array.from({ length: n }, (_, i) => room(`r${i}`, "p"));
   assert.equal(layoutStreet([project("p")], [], []).lots[1]!.floors, 1);
