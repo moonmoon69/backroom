@@ -9,6 +9,7 @@
  * blue; what gives light (lit windows, lamps, the moon) keeps its own colour.
  */
 import { GAP, hashOf, WINDOWS_PER_FLOOR, type Business, type Facade, type Lot, type Street, type StreetWindow } from "./layout.ts";
+import { cycle, dither, fillWith, mix, pattern, rect, tile, toned, type Ctx, type Tone } from "./pixels.ts";
 import { sprite, type Grid } from "./sprites.ts";
 
 export const SHOP_H = 40;
@@ -85,99 +86,6 @@ export function boardRect(lot: Lot, ground: number): Rect {
 }
 /** The club's street lamp: clicking it turns day into night and back. */
 export const clubLampRect = (lot: Lot, ground: number): Rect => ({ x: lot.x - 5, y: ground - 40, w: 12, h: 62 });
-
-type Ctx = CanvasRenderingContext2D;
-type Tone = (hex: string) => string;
-
-// ---- colour ----
-
-function parse(hex: string): [number, number, number] {
-  const v = Number.parseInt(hex.slice(1), 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-
-function mix(a: string, b: string, t: number): string {
-  const [ar, ag, ab] = parse(a);
-  const [br, bg, bb] = parse(b);
-  const c = (x: number, y: number) => Math.round(x + (y - x) * t);
-  return `#${((c(ar, br) << 16) | (c(ag, bg) << 8) | c(ab, bb)).toString(16).padStart(6, "0")}`;
-}
-
-const toneCache = new Map<string, string>();
-/** A surface lit only by the sky: as it is by day, towards night blue at night. */
-function toned(night: boolean): Tone {
-  if (!night) return (hex) => hex;
-  return (hex) => {
-    let out = toneCache.get(hex);
-    if (!out) {
-      out = mix(hex, "#0e1438", 0.55);
-      toneCache.set(hex, out);
-    }
-    return out;
-  };
-}
-
-function rect(ctx: Ctx, x: number, y: number, w: number, h: number, colour: string) {
-  ctx.fillStyle = colour;
-  ctx.fillRect(Math.round(x), Math.round(y), w, h);
-}
-
-function cycle(t: number, period: number, seed: number): number {
-  return ((((t + seed * period) % period) + period) % period) / period;
-}
-
-// ---- tiles and dither, as canvas patterns anchored to the street ----
-
-const tileCache = new Map<string, HTMLCanvasElement>();
-const patternCache = new WeakMap<Ctx, Map<string, CanvasPattern>>();
-
-function tile(key: string, w: number, h: number, paint: (put: (x: number, y: number, colour: string) => void) => void): HTMLCanvasElement {
-  let canvas = tileCache.get(key);
-  if (!canvas) {
-    canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const c = canvas.getContext("2d")!;
-    paint((x, y, colour) => {
-      c.fillStyle = colour;
-      c.fillRect(x, y, 1, 1);
-    });
-    tileCache.set(key, canvas);
-  }
-  return canvas;
-}
-
-function pattern(ctx: Ctx, key: string, make: () => HTMLCanvasElement): CanvasPattern {
-  let map = patternCache.get(ctx);
-  if (!map) {
-    map = new Map();
-    patternCache.set(ctx, map);
-  }
-  let p = map.get(key);
-  if (!p) {
-    p = ctx.createPattern(make(), "repeat")!;
-    map.set(key, p);
-  }
-  return p;
-}
-
-function fillWith(ctx: Ctx, p: CanvasPattern, x: number, y: number, w: number, h: number) {
-  ctx.fillStyle = p;
-  ctx.fillRect(Math.round(x), Math.round(y), w, h);
-}
-
-/** Half the pixels, checkerboard: the SNES way to shade and to light. */
-function dither(ctx: Ctx, x: number, y: number, w: number, h: number, colour: string) {
-  if (w <= 0 || h <= 0) return;
-  fillWith(
-    ctx,
-    pattern(ctx, `dither:${colour}`, () => tile(`dither:${colour}`, 2, 2, (put) => (put(0, 0, colour), put(1, 1, colour)))),
-    x,
-    y,
-    w,
-    h,
-  );
-}
 
 function wallTile(facade: Facade, tone: Tone, key: string): HTMLCanvasElement {
   const base = tone(facade.base);

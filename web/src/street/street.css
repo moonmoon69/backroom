@@ -1073,7 +1073,13 @@
 .br-nametag,
 .street-room .composer,
 .street-room .street-room-log,
-.street-room > .inspector {
+.street-room > .inspector,
+.street-page > .room-header,
+.street-page .timeline-wrap,
+.street-page .composer,
+.street-page .thread-start,
+.street-page .browser-page,
+.street-page .br-office-plate {
   color-scheme: dark;
   --bg: #1f3998;
   --bg-1: rgb(255 255 255 / 8%);
@@ -1318,4 +1324,82 @@
   left: calc(var(--px) * 4);
   padding: calc(var(--px) * 0.5) calc(var(--px) * 3);
   box-shadow: 0 0 0 2px #14142a;
+}
+
+/* A thread, a new thread or a browser on the street: the page's own parts as windows, on the night-blue ground. */
+.street-page {
+  color-scheme: dark;
+  --bg: #1f3998;
+  --bg-1: rgb(255 255 255 / 8%);
+  --bg-2: rgb(255 255 255 / 12%);
+  --bg-3: rgb(255 255 255 / 18%);
+  --fg: #f4f6ff;
+  --fg-dim: #dfe4fa;
+  --fg-muted: #b4bfea;
+  --line: rgb(255 255 255 / 22%);
+  --line-strong: rgb(255 255 255 / 42%);
+  --input: rgb(8 16 60 / 45%);
+  --message: rgb(8 16 60 / 35%);
+  --accent: #f0d27a;
+  --accent-fg: #14226a;
+  --accent-hover: #ffe08a;
+  --shadow-xs: none;
+  gap: 6px;
+  padding-bottom: 6px;
+  color: var(--fg);
+  background: #0c0f24;
+}
+
+.street-page.is-day {
+  background: #2a2c44;
+}
+
+.street-page > .room-header {
+  margin: 6px 8px 0;
+  border-bottom: 2px solid #eef1fb;
+}
+
+.street-page .timeline-wrap,
+.street-page .composer,
+.street-page .thread-start {
+  margin-left: 8px;
+  margin-right: 8px;
+}
+
+.street-page > .br-office {
+  flex: none;
+}
+
+.br-office-plate {
+  position: absolute;
+  transform: translate(-50%, 0);
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  max-width: 80%;
+  padding: 1px 10px;
+  white-space: nowrap;
+  font-size: max(11px, calc(var(--px) * 3.2));
+}
+
+.br-office-plate b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-office-plate span {
+  color: #b4bfea;
+}
+
+.br-office-plate.tone-input span {
+  color: #f0a040;
+}
+
+.br-office-plate.tone-working span {
+  color: #7ce08a;
+}
+
+.br-office-plate.tone-error span {
+  color: #ff6a5a;
 }

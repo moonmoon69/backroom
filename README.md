@@ -28,11 +28,12 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 12. [Room browser](#room-browser)
 13. [What the room shows](#what-the-room-shows)
 14. [Managing rooms, members and roles](#managing-rooms-members-and-roles)
-15. [Configuration](#configuration)
-16. [Running, updating and backing up](#running-updating-and-backing-up)
-17. [Troubleshooting](#troubleshooting)
-18. [Development](#development)
-19. [How it works](#how-it-works)
+15. [The street](#the-street)
+16. [Configuration](#configuration)
+17. [Running, updating and backing up](#running-updating-and-backing-up)
+18. [Troubleshooting](#troubleshooting)
+19. [Development](#development)
+20. [How it works](#how-it-works)
 
 ---
 
@@ -636,6 +637,22 @@ Your **crew** are the people you bring into rooms: each one a name with a model 
 
 Seated in a room, a crew member takes their name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. Capitals make no difference to a name: a room with `@Alice` has `alice` taken, and there is one crew member per name whatever its capitals. Name fields drop spaces as you type or paste. The seated member is the room's own from then on: renaming it or changing its model does not touch the crew, and editing or removing someone from the crew does not touch members or threads made from them. A crew member who works in a new worktree works in the project folder where the project is not a git repository.
 
+## The street
+
+**Settings → Look → Street** turns the whole of Backroom into one block of a New York street, drawn like a SNES town: at night with the dark theme, by day with the light one. **Look → Desk**, or **Back to the desk** in the social club, brings the ordinary interface back; the room you were in stays open either way.
+
+![The street at night: the social club, a business per project, the shop to rent](assets/readme/street.png)
+
+- **Each project is a business** along the street, in the sidebar's order. What it sells, its walls, roof and door come from the project, so renaming it changes only the sign, and no two share a trade while there are trades left. The last lot is a shop to rent: click it to add a project.
+- **Each room and thread is a window.** It is lit while someone works in it, shows a card when someone needs you (with an arrow at the edge of the screen when that building is off it), a crooked CLOSED sign after a failed turn, and a letter on the sill for a reply you have not seen. The mailbox counts new replies, the chalkboard shows what the business has spent, and the brass plate by the door opens its directory: every room and thread, settled ones too, and a new room or thread.
+- **The social club** on the corner holds your crew (seat someone in a room, or start a thread with them), the browsers, what the street has spent, and the settings. Its street lamp turns night into day.
+- **Going in:** a window, or the door (the room you were last in there), leads into the room's back room: the crew at the table doing what their threads are doing, the noticeboard (tasks), the ledger (what each member has spent), the telephone (the room's browser) and the filing cabinet (git), with the conversation and the composer underneath. Click someone at the table to read their last reply or to address them. A thread on its own opens in an office, its member at a desk. The door, or Esc, goes back out.
+- **Moving along:** drag, scroll or use the arrow keys, or type a name to jump to a building, room or thread. A phone shows one building at a time.
+
+![Inside a room: two members at work, the conversation and the composer underneath](assets/readme/street-room.png)
+
+Nothing about the street is stored: it is drawn from the projects, rooms and threads Backroom already has.
+
 ## Configuration
 
 The service reads environment variables only; it does **not** load `.env`. Set variables inline, for example `ROOMS_PORT=4500 npm start`, or in the systemd unit.
@@ -718,6 +735,7 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `src/adapter` | T3 boundary: HTTP + WebSocket RPC adapter with pairing, and an in-memory fake |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
+| `web/src/street`, `web/src/components/street` | The Street look: the block's layout rules (`layout.ts`), its pixel art, the back rooms and offices, what each business has spent |
 | `bin/rooms-browser` | The agents' browser command (plain Node; talks to the service over `data/browser-api.json`) |
 | `scripts/t3-pair.ts` | Pair from the command line |
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |

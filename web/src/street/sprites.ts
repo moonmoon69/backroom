@@ -168,3 +168,48 @@ export function capySprite(colour: string, boss: boolean, hat = HATS[0]!, silhou
   const palette = { ...BASE_PALETTE, B: colour, T: boss ? "#15161a" : colour, H: hat, h: shade(hat, -0.3), L: shade(hat, 0.18) };
   return sprite(`${boss ? "boss" : "capy"}:${colour}:${hat}`, boss ? BOSS : CAPY, palette, silhouette);
 }
+
+/** A crew member at the near side of the table, seen from behind: the hat and its band, the back of the head, the suit. */
+export const CAPY_BACK: Grid = [
+  "........KKKKKK........",
+  "......KKHLLHHHKK......",
+  ".....KHHHLHHHHHHK.....",
+  ".....KHHHHHHHHhHK.....",
+  ".....KBBBBBBBBBBK.....",
+  "..KHHHHHHHHHHHHHHHHK..",
+  ".KhhhhhhhhhhhhhhhhhhK.",
+  "..KKKFFFFFFFFFFFFKKK..",
+  "...KfFFFFFFFFFFFFFfK..",
+  "...KfFFFFFFFFFFFFFfK..",
+  "...KffFFFFFFFFFFFffK..",
+  "....KffFFFFFFFFFffK...",
+  ".....KKffffffffKK.....",
+  "..KKSSSSSWWWWSSSSSKK..",
+  ".KSSSSSSSSSSSSSSSSSSK.",
+  "KSSsSSSSSSSSSSSSSSsSSK",
+  "KSSsSSSSSSsSSSSSSSsSSK",
+  "KSSsSSSSSSsSSSSSSSsSSK",
+  "KSSsSSSSSSsSSSSSSSsSSK",
+  "KSSsSSSSSSsSSSSSSSsSSK",
+];
+
+/** The same capybara from behind, in the member's colour and hat. */
+export function capyBackSprite(colour: string, hat = HATS[0]!, silhouette?: string): HTMLCanvasElement {
+  const palette = { ...BASE_PALETTE, B: colour, H: hat, h: shade(hat, -0.3), L: shade(hat, 0.18) };
+  return sprite(`capyback:${colour}:${hat}`, CAPY_BACK, palette, silhouette);
+}
+
+/** An open laptop seen from the screen side, lit. */
+export const LAPTOP_FRONT: Grid = [
+  "KKKKKKKKKKKKKK",
+  "KAAAAAAAAAAAAK",
+  "KAssssssssssAK",
+  "KAsggsssssssAK",
+  "KAsssgggsssAAK",
+  "KAsggsssssssAK",
+  "KAssssgggsssAK",
+  "KAssssssssssAK",
+  "KKKKKKKKKKKKKK",
+  "KbbbbbbbbbbbbK",
+];
+export const LAPTOP_FRONT_PALETTE = { K: "#17120e", A: "#8b929c", s: "#1c3a5a", g: "#7fe0a0", b: "#5c626b" };

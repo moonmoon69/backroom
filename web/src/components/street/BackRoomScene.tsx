@@ -10,7 +10,7 @@ import { useCatalog } from "../catalog.ts";
 import type { InspectorTab } from "../Inspector.tsx";
 
 /** The hat band and tie of each harness, in its logo's colour where it has one. */
-const HARNESS_COLOUR: Record<string, string> = {
+export const HARNESS_COLOUR: Record<string, string> = {
   claudeAgent: "#d97757",
   codex: "#10a37f",
   cursor: "#8fb4ff",
@@ -18,7 +18,7 @@ const HARNESS_COLOUR: Record<string, string> = {
   opencode: "#f2c14e",
   antigravity: "#4f8cf7",
 };
-const SPARE_COLOURS = ["#c65d7b", "#6cc3c1", "#b48ede", "#e0a458", "#8cc084", "#d4d4aa"];
+export const SPARE_COLOURS = ["#c65d7b", "#6cc3c1", "#b48ede", "#e0a458", "#8cc084", "#d4d4aa"];
 const SOUND_KEY = "backroom.scene.sound";
 
 /** Put @alias in the room's composer (Composer.tsx listens). */
@@ -163,13 +163,13 @@ export function BackRoomScene({ night, projectTitle, logOpen, onLog, onLeave, on
   boardRef.current = { open: openTasks, alert: tasksAlert };
   const nightRef = useRef(night);
   nightRef.current = night;
-  const tableRef = useRef<HTMLCanvasElement | null>(null);
+  const tableRef = useRef<{ night: boolean; canvas: HTMLCanvasElement } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
-    tableRef.current ??= drawTable();
+
     let frame = 0;
     let last = 0;
     const draw = (t: number) => {
@@ -179,10 +179,11 @@ export function BackRoomScene({ night, projectTitle, logOpen, onLog, onLeave, on
       last = t;
       const seats = actorsRef.current.length;
       if (roomRef.current?.seats !== seats || roomRef.current.night !== nightRef.current) roomRef.current = { seats, night: nightRef.current, canvas: drawRoom(seats, nightRef.current) };
+      if (tableRef.current?.night !== nightRef.current) tableRef.current = { night: nightRef.current, canvas: drawTable(nightRef.current) };
       flightsRef.current = flightsRef.current.filter((f) => t < f.start + f.duration);
       drawFrame(ctx, {
         room: roomRef.current.canvas,
-        table: tableRef.current!,
+        table: tableRef.current.canvas,
         actors: actorsRef.current,
         boss: { colour: "#1b1c1f", mark: null },
         flights: flightsRef.current,
@@ -372,7 +373,7 @@ export function BackRoomScene({ night, projectTitle, logOpen, onLog, onLeave, on
               left: pct(seat.x - 13, SCENE_W),
               top: pct(seat.y - 2, SCENE_H),
               width: pct(26, SCENE_W),
-              height: pct(seat.near ? 26 : TABLE_TOP + 22 - seat.y, SCENE_H),
+              height: pct(seat.near ? 32 : TABLE_TOP + 20 - seat.y, SCENE_H),
             }}
             aria-label={`${participant.alias}: ${activity.label}${activity.detail ? `, ${activity.detail}` : ""}`}
             title={`${participant.alias} · ${activity.label}${activity.detail ? ` · ${activity.detail}` : ""}`}

@@ -15,6 +15,7 @@ import { ArchivedThreadView, NewThreadView, ThreadView } from "../ThreadView.tsx
 import { BackRoom } from "./BackRoom.tsx";
 import { ClubCard, DirectoryCard } from "./StreetPanels.tsx";
 import { StreetView, type JumpItem } from "./StreetView.tsx";
+import { ThreadScene } from "./ThreadScene.tsx";
 
 /** Where you are: out on the street, or inside somewhere. */
 type Place =
@@ -191,6 +192,20 @@ export function StreetMode(props: Props) {
         ? `T3 did not answer: ${props.t3Error}`
         : null;
 
+  // Esc leaves a thread, a new thread or a browser for the street (a room's back room has its own), unless you are
+  // writing or a dialog is open.
+  useEffect(() => {
+    if (place.kind === "street" || place.kind === "room") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("textarea, input, select, [role='dialog'], .menu") || document.querySelector(".dialog-backdrop")) return;
+      leave();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [place.kind, leave]);
+
   // Esc closes what is open over the street.
   useEffect(() => {
     if (place.kind !== "street" || (!directory && !clubOpen)) return;
@@ -237,6 +252,7 @@ export function StreetMode(props: Props) {
       );
   } else if (place.kind === "thread") {
     const archived = threads.find((t) => t.id === place.id && t.archivedAt) ?? null;
+    const threadShell = threads.find((t) => t.id === place.id) ?? null;
     inside = archived ? (
       <ArchivedThreadView
         thread={archived}
@@ -253,6 +269,8 @@ export function StreetMode(props: Props) {
         headerStart={back}
       />
     ) : (
+      <>
+      {threadShell ? <ThreadScene thread={threadShell} night={night} onLeave={leave} /> : null}
       <ThreadView
         threadId={place.id}
         rooms={rooms}
@@ -270,6 +288,7 @@ export function StreetMode(props: Props) {
         onOpenRoom={(roomId) => enter({ kind: "room", id: roomId })}
         headerStart={back}
       />
+      </>
     );
   } else if (place.kind === "new-thread") {
     inside = (
@@ -375,7 +394,7 @@ export function StreetMode(props: Props) {
           ) : null}
         </div>
       ) : (
-        <div className="street-inside">{inside}</div>
+        <div className={`street-inside${place.kind === "room" ? "" : " street-page"}${night ? " is-night" : " is-day"}`}>{inside}</div>
       )}
       {dialog?.kind === "project" ? (
         <NewProjectDialog
