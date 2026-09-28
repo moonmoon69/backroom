@@ -4623,12 +4623,29 @@ span.reply-to {
   min-width: 0;
 }
 
-/* Sidebar room row: drag handle is the whole row; the ⋯ menu appears on hover or when the room is selected. */
+/* Sidebar room row: the whole row drags (a long press on a phone); the ⋯ menu appears on hover or when the room is selected. */
 .room-item {
   position: relative;
 }
-.room-item.dragging {
-  opacity: 0.45;
+/* Dragged to a new place (sortable.ts): the row, or a project's head, moves through the list, lifted. */
+.room-item.dragging,
+.project-group.dragging > .project-head {
+  background: var(--bg-3);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.project-group.dragging > .project-items {
+  opacity: 0.5;
+}
+/* A long press drags instead of selecting text or opening the phone's menu. */
+[data-sort] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+body.sorting,
+body.sorting * {
+  cursor: grabbing !important;
 }
 .room-menu {
   position: absolute;
@@ -4921,25 +4938,146 @@ span.reply-to {
   line-height: 1;
   justify-content: center;
 }
-.theme-menu {
+/* The settings menu at the foot of the sidebar: roles, notifications, voice, then the theme under a heading. */
+.settings-menu {
   position: relative;
 }
-.theme-menu .menu {
+.settings-menu .menu {
   left: auto;
   right: 0;
-  min-width: 140px;
+  min-width: 190px;
 }
-.theme-menu .menu button {
+.settings-menu .menu button {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.theme-menu .menu button.on {
+.settings-menu .menu button.on {
   color: var(--fg);
   font-weight: 600;
 }
-.theme-icon {
+.menu-icon {
   display: inline-flex;
+  color: var(--fg-muted);
+}
+.menu .menu-value {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.menu .menu-heading {
+  margin: 4px 0 0;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+/* Updates: an arrow in a circle, with the number of updates that can be started in a small badge. */
+.updates-button {
+  position: relative;
+}
+.updates-button.has-updates {
+  color: var(--fg);
+}
+.updates-button .spinner {
+  position: static;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+.updates-count {
+  position: absolute;
+  top: 0;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+/* The Updates popup: a row for T3, then one per harness. */
+.update-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.update-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.update-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+}
+.update-name {
+  font-weight: 600;
+}
+.update-versions {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.update-versions strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+.update-status {
+  margin-top: 4px;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.update-status .spinner {
+  position: static;
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
+  vertical-align: -1px;
+}
+.update-ok {
+  color: var(--ok);
+}
+.update-output pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  color: var(--fg-muted);
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+}
+.update-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  font-size: var(--text-sm);
+}
+.update-confirm-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.dialog-actions .update-checked {
+  font-size: var(--text-xs);
 }
 
 /* Participants above the composer: click to insert @alias at the caret. */
@@ -5926,6 +6064,9 @@ span.reply-to {
 .rail-foot {
   width: 100%;
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   justify-content: center;
   padding: 6px 0;
   border-top: 1px solid var(--line);
@@ -5973,10 +6114,9 @@ span.reply-to {
   width: 100%;
 }
 
-/* The connection first, then roles and the theme at the right. */
-.sidebar-footer .connection-chip {
-  order: -1;
-  margin-right: auto;
+/* The connection and the updates on the left, the settings at the right. */
+.sidebar-footer .settings-menu {
+  margin-left: auto;
 }
 
 /* Menus at the foot of the sidebar open upwards. */
@@ -6632,7 +6772,7 @@ button:has(> .icon):not(.mobile-only) {
   gap: 6px;
 }
 
-/* The foot of a reply: read aloud, then what the turn used. */
+/* The foot of a reply: copy, read aloud, then what the turn used. */
 .bubble .reply-foot {
   display: flex;
   align-items: flex-start;
@@ -6655,19 +6795,62 @@ button:has(> .icon):not(.mobile-only) {
   min-width: 0;
 }
 
-.speak-button {
+.speak-button,
+.copy-button {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
   min-height: 0;
   padding: 0;
-  margin: -3px 0 0 -4px;
+  margin: -3px 0 0;
   color: var(--fg-dim);
 }
 
+/* The first button's icon lines up with the reply's text above it. */
+.reply-foot > button:first-child {
+  margin-left: -4px;
+}
+
 .speak-button:hover,
-.speak-button.on {
+.speak-button.on,
+.copy-button:hover {
   color: var(--fg);
+}
+
+.copy-button.done {
+  color: var(--ok);
+}
+
+/* The user's own bubble with a copy button beside its last line: shown while the pointer is over the message or the
+   button has focus, and always on touch screens, which have no hover. */
+.bubble-line {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.bubble-line > .bubble {
+  min-width: 0;
+}
+
+.copy-button.bubble-side {
+  margin: 0 0 4px;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms;
+}
+
+.chat-row:hover .bubble-side,
+.bubble-side:focus-visible,
+.bubble-side.done {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .copy-button.bubble-side {
+    opacity: 1;
+  }
 }
 
 .speak-button.on {

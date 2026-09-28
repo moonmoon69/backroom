@@ -13,6 +13,7 @@ import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task, type ThreadCost } from "../types.ts";
 import { BranchIcon } from "./icons.tsx";
+import { CopyTextButton } from "./CopyText.tsx";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -492,6 +493,7 @@ function MessageRow({
     const note = event.kind === "note";
     const fromT3 = event.kind === "t3.prompt" || event.kind === "t3.message";
     const attachments = event.attachmentIds ?? [];
+    const shownText = event.text && fromT3 ? withoutT3ContextRefs(event.text, attachments.length > 0) : event.text;
     return (
       <div className={`chat-row from-user${note ? " is-note" : ""}${continued ? " continued" : ""}`} data-sequence={event.sequence}>
         <div className="chat-stack">
@@ -516,9 +518,12 @@ function MessageRow({
           ) : newMinute ? (
             <div className="chat-head sub">{stamp}</div>
           ) : null}
-          <div className={`bubble ${note ? "bubble-note" : "bubble-user"}${fromT3 ? " bubble-user-t3" : ""}`}>
-            {event.text ? <UserText text={fromT3 ? withoutT3ContextRefs(event.text, attachments.length > 0) : event.text} /> : null}
-            {attachments.length > 0 ? <AttachedImages ids={attachments} /> : null}
+          <div className="bubble-line">
+            <div className={`bubble ${note ? "bubble-note" : "bubble-user"}${fromT3 ? " bubble-user-t3" : ""}`}>
+              {shownText ? <UserText text={shownText} /> : null}
+              {attachments.length > 0 ? <AttachedImages ids={attachments} /> : null}
+            </div>
+            <CopyTextButton text={shownText} label={note ? "Copy note" : "Copy message"} className="bubble-side" />
           </div>
           {tasks.length > 0 ? (
             <div className="chat-tasks">
@@ -598,6 +603,7 @@ function MessageRow({
           {event.text ? <Markdown text={event.text} /> : null}
           {event.artifacts.some((a) => !isWorkspaceArtifact(a)) ? <ChangedFiles artifacts={event.artifacts} /> : null}
           <div className="reply-foot">
+            <CopyTextButton text={event.text} label="Copy reply" />
             {event.text ? <SpeakButton id={event.id} text={event.text} lead={alias} /> : null}
             <ReplySpend event={event} />
           </div>

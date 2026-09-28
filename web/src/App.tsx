@@ -17,6 +17,7 @@ import { RolesDialog } from "./components/RolesLibrary.tsx";
 import { PresetDropZone, PresetsContext } from "./components/presets.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
 import { ConnectionChip, PairingPanel } from "./components/StatusStrip.tsx";
+import { UpdatesButton } from "./components/Updates.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
@@ -313,7 +314,7 @@ export function App() {
           if (command.type === "room.browser") loadBrowsers();
         } else if (command.type.startsWith("browser.")) loadBrowsers();
         else if (command.type.startsWith("preset.")) loadPresets();
-        else if (command.type === "project.create" || command.type.startsWith("thread.")) loadT3();
+        else if (command.type === "project.create" || command.type === "project.reorder" || command.type.startsWith("thread.")) loadT3();
         else {
           onRoomChanged();
           // Seating or removing a participant moves a thread into or out of the sidebar's thread list.
@@ -462,7 +463,12 @@ export function App() {
           selection={selection}
           onSelect={setSelection}
           onExpand={() => setSidebarCollapsed(false)}
-          connection={<ConnectionChip status={status} onOpen={() => setPairingOpen(true)} compact />}
+          connection={
+            <>
+              <ConnectionChip status={status} onOpen={() => setPairingOpen(true)} compact />
+              <UpdatesButton compact />
+            </>
+          }
         />
       ) : null}
       <div className="main">

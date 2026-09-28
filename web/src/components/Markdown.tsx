@@ -1,20 +1,11 @@
 import { memo, useEffect, useRef, useState, type ComponentProps, type JSX, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { copyText } from "./CopyText.tsx";
 import { useToast } from "./Toast.tsx";
 import { fileBadge, imageSource, isLocalPath, mediaKind, parseFileReference } from "./markdownFiles.ts";
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = ComponentProps<T> & { node?: unknown };
-
-async function copyText(text: string, toast: (message: string, kind?: "error" | "info" | "success") => void): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    toast("Clipboard unavailable; select and copy manually");
-    return false;
-  }
-}
 
 /**
  * Fenced code block with a copy button that appears on hover (or keyboard focus). The text is read

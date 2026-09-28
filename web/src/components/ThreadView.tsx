@@ -26,6 +26,7 @@ import {
   type WorkspaceChoice,
 } from "../types.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
+import { CopyTextButton } from "./CopyText.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { money } from "./deskFormat.ts";
 import { PresetChips, PresetIcon, usePresets } from "./presets.tsx";
@@ -865,6 +866,7 @@ function splitBrowserInstructions(text: string): { instructions: string | null; 
 
 function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user" }>; continued: boolean }) {
   const { instructions, rest } = splitBrowserInstructions(item.text);
+  const shownText = rest ? withoutT3ContextRefs(rest, item.attachmentIds.length > 0) : "";
   return (
     <div className={`chat-row from-user${continued ? " continued" : ""}`}>
       <div className="chat-stack">
@@ -874,25 +876,28 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
             <span className="time mono">{time(item.at)}</span>
           </div>
         ) : null}
-        <div className="bubble bubble-user">
-          {instructions ? (
-            <details className="reply-progress browser-instructions">
-              <summary className="mono" title="Sent in front of the message so the agent can use the shared browsers">
-                browser instructions
-              </summary>
-              <div className="browser-instructions-text">{instructions}</div>
-            </details>
-          ) : null}
-          {rest ? <div className="user-text">{withoutT3ContextRefs(rest, item.attachmentIds.length > 0)}</div> : null}
-          {item.attachmentIds.length > 0 ? (
-            <div className="event-images">
-              {item.attachmentIds.map((id) => (
-                <a key={id} href={attachmentUrl(id)} target="_blank" rel="noreferrer" title="Open full size">
-                  <img src={attachmentUrl(id)} alt="Attached image" loading="lazy" />
-                </a>
-              ))}
-            </div>
-          ) : null}
+        <div className="bubble-line">
+          <div className="bubble bubble-user">
+            {instructions ? (
+              <details className="reply-progress browser-instructions">
+                <summary className="mono" title="Sent in front of the message so the agent can use the shared browsers">
+                  browser instructions
+                </summary>
+                <div className="browser-instructions-text">{instructions}</div>
+              </details>
+            ) : null}
+            {shownText ? <div className="user-text">{shownText}</div> : null}
+            {item.attachmentIds.length > 0 ? (
+              <div className="event-images">
+                {item.attachmentIds.map((id) => (
+                  <a key={id} href={attachmentUrl(id)} target="_blank" rel="noreferrer" title="Open full size">
+                    <img src={attachmentUrl(id)} alt="Attached image" loading="lazy" />
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <CopyTextButton text={shownText} label="Copy message" className="bubble-side" />
         </div>
       </div>
     </div>
@@ -934,6 +939,7 @@ function ReplyRow({ item, speaker, spend, lead }: { item: Extract<ThreadItem, { 
             </div>
           ) : null}
           <div className="reply-foot">
+            <CopyTextButton text={item.text} label="Copy reply" />
             <SpeakButton id={item.id} text={item.text} lead={lead} />
             {spend ? <SpendFoot spend={spend.spend} since={spend.since} turns={spend.turns} /> : null}
           </div>

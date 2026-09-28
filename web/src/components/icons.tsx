@@ -73,6 +73,38 @@ export const SpeakerIcon = () => (
   </Icon>
 );
 
+/** Two overlapping sheets: copy. */
+export const CopyIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+    <path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" />
+  </Icon>
+);
+
+/** A tick: done (copied). */
+export const CheckIcon = () => (
+  <Icon strokeWidth={1.5}>
+    <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+  </Icon>
+);
+
+/** An arrow rising in a circle: updates. */
+export const UpdateIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <circle cx="8" cy="8" r="5.75" />
+    <path d="M8 10.75v-5.5M5.75 7.5 8 5.25l2.25 2.25" />
+  </Icon>
+);
+
+/** Two sliders: settings. */
+export const SettingsIcon = () => (
+  <Icon strokeWidth={1.25}>
+    <path d="M2.5 5h6.5M12.5 5h1M2.5 11h1M7 11h6.5" />
+    <circle cx="10.75" cy="5" r="1.6" />
+    <circle cx="5.25" cy="11" r="1.6" />
+  </Icon>
+);
+
 /** A bell: notifications; struck through while they are off. */
 export const BellIcon = ({ off = false }: { off?: boolean }) => (
   <Icon strokeWidth={1.25}>

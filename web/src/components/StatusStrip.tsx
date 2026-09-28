@@ -49,7 +49,8 @@ export function ConnectionChip({ status, onOpen, compact }: { status: StatusResp
       <span className={`dot dot-${tone}`} aria-hidden="true" />
       {compact ? null : (
         <>
-          T3{adapter === "fake" ? " demo" : problem ? "" : " connected"}
+          {/* The green dot says connected; words only for the demo or a problem. */}
+          T3{adapter === "fake" ? " demo" : ""}
           {problem ? <span className={tone === "err" ? "status-error" : "muted"}> · {problem}</span> : null}
         </>
       )}

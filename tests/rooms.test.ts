@@ -14,6 +14,19 @@ test("rooms can be renamed and reordered", async (t) => {
   assert.deepEqual(stack.repos.listRooms().map((r) => r.title), ["second", "payments v2"]);
 });
 
+test("projects are listed in the sidebar order Backroom keeps; ones never placed follow in T3's order", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-order", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  stack.fake.projects.push({ id: "project_b", title: "b", workspaceRoot: "/tmp/b", defaultModelSelection: null }, { id: "project_c", title: "c", workspaceRoot: "/tmp/c", defaultModelSelection: null });
+  const listed = async () => ((await (await app.request("/api/t3/projects")).json()) as Array<{ id: string }>).map((p) => p.id);
+  assert.deepEqual(await listed(), ["project_demo", "project_b", "project_c"], "T3's order until one is placed");
+  await stack.run({ type: "project.reorder", projectIds: ["project_c", "project_demo", "project_c"] });
+  // A project added in T3 later goes after the placed ones.
+  stack.fake.projects.push({ id: "project_d", title: "d", workspaceRoot: "/tmp/d", defaultModelSelection: null });
+  assert.deepEqual(await listed(), ["project_c", "project_demo", "project_b", "project_d"]);
+});
+
 test("deleting a room removes its data and applies the chosen action to each thread in T3", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());

@@ -18,10 +18,11 @@ export interface TestStack extends AppStack {
 export async function createTestStack(
   options: FakeAdapterOptions = { autoCompleteMs: null },
   aliases = ["sol1", "sol2", "claude"],
-  extra: { browsers?: Parameters<typeof createStack>[0]["browsers"] } = {},
+  extra: { browsers?: Parameters<typeof createStack>[0]["browsers"]; latestRelease?: Parameters<typeof createStack>[0]["latestRelease"] } = {},
 ): Promise<TestStack> {
   const fake = new FakeT3Adapter(options);
-  const stack = createStack({ dbPath: ":memory:", adapter: fake, briefingBudgetChars: 60000, ...(extra.browsers ? { browsers: extra.browsers } : {}) });
+  // Tests never ask npm: no newer T3 unless a test says so.
+  const stack = createStack({ dbPath: ":memory:", adapter: fake, briefingBudgetChars: 60000, latestRelease: extra.latestRelease ?? (async () => null), ...(extra.browsers ? { browsers: extra.browsers } : {}) });
   const run = async (command: RoomCommandInput) => stack.service.execute(parseCommand(command));
   const created = (await run({ type: "room.create", projectId: "project_demo", title: "payments" })) as { roomId: string };
   const roomId = created.roomId;

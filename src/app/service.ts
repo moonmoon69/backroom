@@ -38,6 +38,7 @@ export type CommandResult =
   | { type: "room.created"; roomId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
+  | { type: "projects.reordered" }
   | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }> }
   | { type: "role.saved"; roleId: string }
   | { type: "role.deleted"; roleId: string }
@@ -61,6 +62,23 @@ export type CommandResult =
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
+
+const PROJECT_ORDER_KEY = "sidebar.projectOrder";
+
+/** T3's projects in the sidebar's order (project.reorder); ones never placed keep T3's order, after the placed ones. */
+export function orderProjects<T extends { id: string }>(repos: Repos, projects: T[]): T[] {
+  let order: string[] = [];
+  try {
+    order = JSON.parse(repos.getKv(PROJECT_ORDER_KEY) ?? "[]") as string[];
+  } catch {
+    order = [];
+  }
+  const rank = new Map(order.map((id, index) => [id, index]));
+  return projects
+    .map((project, index) => ({ project, index }))
+    .sort((a, b) => (rank.get(a.project.id) ?? order.length + a.index) - (rank.get(b.project.id) ?? order.length + b.index))
+    .map(({ project }) => project);
+}
 
 export class RoomService {
   private readonly db: Database;
@@ -175,6 +193,9 @@ export class RoomService {
         this.db.transaction(() => this.repos.setRoomOrder(command.roomIds));
         return { type: "rooms.reordered" };
       }
+      case "project.reorder":
+        this.repos.setKv(PROJECT_ORDER_KEY, JSON.stringify([...new Set(command.projectIds)]));
+        return { type: "projects.reordered" };
       case "room.delete":
         return this.deleteRoom(command);
       case "participant.create":

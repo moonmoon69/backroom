@@ -4,7 +4,8 @@ import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { BellIcon, MonitorIcon, MoonIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { BellIcon, MonitorIcon, MoonIcon, NoteIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
 
@@ -14,7 +15,10 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "dark", label: "Dark", icon: <MoonIcon /> },
 ];
 
-/** App-wide controls at the foot of the sidebar: roles, the T3 connection, notifications, the voice, and the theme. */
+/**
+ * App-wide controls at the foot of the sidebar: the T3 connection and the updates on the left, the settings on the
+ * right. Roles, notifications, the voice and the theme are set once in a while, so they share one settings menu.
+ */
 export function AppControls({
   status,
   onOpenConnection,
@@ -30,58 +34,102 @@ export function AppControls({
   theme: ThemeChoice;
   onTheme: (choice: ThemeChoice) => void;
 }) {
-  const boxSpeech = Boolean(useBoxStatus()?.available);
   return (
     <span className="app-controls">
-      <button type="button" className="small ghost" onClick={onOpenLibrary} disabled={rolesDisabled} title="Roles: named sets of rules assigned to members">
-        Roles
-      </button>
       <ConnectionChip status={status} onOpen={onOpenConnection} />
-      {notificationsSupported ? <NotifyButton /> : null}
-      {speechSupported || boxSpeech ? <VoiceButton /> : null}
-      <ThemeMenu theme={theme} onTheme={onTheme} />
+      <UpdatesButton />
+      <SettingsMenu onOpenLibrary={onOpenLibrary} rolesDisabled={rolesDisabled} theme={theme} onTheme={onTheme} />
     </span>
   );
 }
 
-/** Notifications on this device when a member finishes while Backroom is open but not in front. */
-function NotifyButton() {
-  const on = useNotifyOn();
-  const { toast } = useToast();
-  const [busy, setBusy] = useState(false);
-  const label = on
-    ? "Notifications on: this device tells you when a member finishes while Backroom is in the background. Click to turn them off."
-    : "Notifications off: click to be told on this device when a member finishes while Backroom is in the background.";
-  return (
-    <button
-      type="button"
-      className="small ghost icon-only"
-      aria-pressed={on}
-      aria-label={on ? "Notifications on" : "Notifications off"}
-      title={label}
-      disabled={busy}
-      onClick={async () => {
-        setBusy(true);
-        const problem = await setNotify(!on);
-        setBusy(false);
-        if (problem) toast(problem);
-      }}
-    >
-      <BellIcon off={!on} />
-    </button>
-  );
-}
-
-/** The voice replies are read in: Backroom's own on the box, or this browser's, and a speed, tried on a sentence. */
-function VoiceButton() {
+/** Roles, notifications on this device, the voice replies are read in, and the theme. */
+function SettingsMenu({ onOpenLibrary, rolesDisabled, theme, onTheme }: { onOpenLibrary: () => void; rolesDisabled: boolean; theme: ThemeChoice; onTheme: (choice: ThemeChoice) => void }) {
   const [open, setOpen] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const wrapper = useRef<HTMLSpanElement>(null);
+  const notifyOn = useNotifyOn();
+  const boxSpeech = Boolean(useBoxStatus()?.available);
+  const { toast } = useToast();
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const pick = (action: () => void) => () => {
+    setOpen(false);
+    action();
+  };
   return (
-    <>
-      <button type="button" className="small ghost icon-only" aria-label="Voice for reading aloud" title="Voice: the voice and speed replies are read aloud in" onClick={() => setOpen(true)}>
-        <SpeakerIcon />
+    <span className="settings-menu" ref={wrapper}>
+      <button
+        type="button"
+        className="small ghost icon-only"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Settings"
+        title="Settings: roles, notifications, voice and theme"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <SettingsIcon />
       </button>
-      {open ? <VoiceDialog onClose={() => setOpen(false)} /> : null}
-    </>
+      {open ? (
+        <div className="menu" role="menu" aria-label="Settings">
+          <button type="button" role="menuitem" disabled={rolesDisabled} title="Named sets of rules assigned to members" onClick={pick(onOpenLibrary)}>
+            <span className="menu-icon" aria-hidden="true">
+              <NoteIcon />
+            </span>
+            Roles…
+          </button>
+          {notificationsSupported ? (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={notifyOn}
+              title={notifyOn ? "This device tells you when a member finishes while Backroom is in the background. Click to turn them off." : "Be told on this device when a member finishes while Backroom is in the background."}
+              onClick={pick(async () => {
+                const problem = await setNotify(!notifyOn);
+                if (problem) toast(problem);
+              })}
+            >
+              <span className="menu-icon" aria-hidden="true">
+                <BellIcon off={!notifyOn} />
+              </span>
+              Notifications
+              <span className="menu-value">{notifyOn ? "on" : "off"}</span>
+            </button>
+          ) : null}
+          {speechSupported || boxSpeech ? (
+            <button type="button" role="menuitem" title="The voice and speed replies are read aloud in" onClick={pick(() => setVoiceOpen(true))}>
+              <span className="menu-icon" aria-hidden="true">
+                <SpeakerIcon />
+              </span>
+              Voice…
+            </button>
+          ) : null}
+          <div className="menu-heading" role="presentation">
+            Theme
+          </div>
+          {THEMES.map((option) => (
+            <button key={option.key} type="button" role="menuitemradio" aria-checked={theme === option.key} className={theme === option.key ? "on" : ""} onClick={pick(() => onTheme(option.key))}>
+              <span className="menu-icon" aria-hidden="true">
+                {option.icon}
+              </span>
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {voiceOpen ? <VoiceDialog onClose={() => setVoiceOpen(false)} /> : null}
+    </span>
   );
 }
 
@@ -194,60 +242,5 @@ function VoiceDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </Dialog>
-  );
-}
-function ThemeMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice: ThemeChoice) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapper = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  const current = THEMES.find((t) => t.key === theme) ?? THEMES[0]!;
-  return (
-    <span className="theme-menu" ref={wrapper}>
-      <button
-        type="button"
-        className="small ghost icon-only"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Theme: ${current.label}`}
-        title={`Theme: ${current.label}`}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {current.icon}
-      </button>
-      {open ? (
-        <div className="menu" role="menu" aria-label="Theme">
-          {THEMES.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              role="menuitemradio"
-              aria-checked={theme === option.key}
-              className={theme === option.key ? "on" : ""}
-              onClick={() => {
-                onTheme(option.key);
-                setOpen(false);
-              }}
-            >
-              <span className="theme-icon" aria-hidden="true">
-                {option.icon}
-              </span>
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </span>
   );
 }

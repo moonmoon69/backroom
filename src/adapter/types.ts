@@ -79,6 +79,51 @@ export interface T3ProviderInfo {
   slashCommands?: Array<{ name: string; description: string | null; hint: string | null }>;
 }
 
+/** Where T3 is with one harness update (T3's updateState): queued behind another, running, or how it ended. */
+export interface T3HarnessUpdateState {
+  status: "idle" | "queued" | "running" | "succeeded" | "failed" | "unchanged";
+  startedAt: string | null;
+  finishedAt: string | null;
+  message: string | null;
+  /** The updater's output (T3 keeps up to 10,000 characters). */
+  output: string | null;
+}
+
+/** One harness's version as T3 checks it: installed, the newest published, and whether T3 can run its updater. */
+export interface T3HarnessVersion {
+  instanceId: string;
+  driver: string;
+  displayName: string;
+  enabled: boolean;
+  version: string | null;
+  latestVersion: string | null;
+  status: "current" | "behind_latest" | "unknown";
+  /**
+   * T3 would offer its one-click update: the harness is behind, T3 knows the command to update it, and T3 has not
+   * flagged the newest version as broken or unsupported. The same rule as T3 Code's update prompt.
+   */
+  updatable: boolean;
+  /** Why a harness that is behind cannot be updated from here, or T3's advisory. */
+  note: string | null;
+  checkedAt: string | null;
+  update: T3HarnessUpdateState | null;
+}
+
+/** T3's own version, how it can update itself, and its harnesses' versions. */
+export interface T3Versions {
+  serverVersion: string | null;
+  /**
+   * How T3 updates itself (its serverSelfUpdate capability): "boot-service" (its service launcher installs and
+   * restarts), "desktop-managed" (the desktop app on that machine), or null (it has to be updated by hand).
+   */
+  selfUpdate: string | null;
+  /** A desktop-managed T3 whose app takes the update over RPC. */
+  desktopAppUpdate: boolean;
+  /** T3 can keep running turns going across its restart. */
+  threadContinuation: boolean;
+  harnesses: T3HarnessVersion[];
+}
+
 export type T3SessionStatus = "idle" | "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
 export type T3TurnState = "running" | "interrupted" | "completed" | "error";
 
@@ -285,6 +330,17 @@ export interface T3Adapter {
    * Deleted threads are in neither: T3 serves no record of them.
    */
   listArchivedThreads?(): Promise<T3ThreadShell[]>;
+  /** T3's version and its harnesses' (server.getConfig); `fresh` skips the adapter's short cache. */
+  versions(fresh?: boolean): Promise<T3Versions>;
+  /** Ask T3 to check its harnesses again, versions included (server.refreshProviders). */
+  refreshProviders(): Promise<void>;
+  /** Run a harness's updater through T3 (server.updateProvider). Resolves when T3 has finished; its state tells how. */
+  updateHarness(input: { instanceId: string; driver: string }): Promise<void>;
+  /**
+   * Install an exact T3 version and hand over to it (server.updateServer). Resolves at the handover, just before T3
+   * restarts; with `continueRunningThreads`, turns that are running carry on in the new process.
+   */
+  updateServer(input: { targetVersion: string; continueRunningThreads: boolean }): Promise<void>;
 }
 
 export type ThreadLifecycleAction = "settle" | "unsettle" | "archive" | "unarchive" | "delete";

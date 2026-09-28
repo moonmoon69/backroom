@@ -426,6 +426,47 @@ export interface RoomCosts {
 }
 
 /** GET /api/t3/providers: one entry per harness provider known to T3. */
+/** One harness's version as T3 checks it, with T3's progress on an update (GET /api/t3/updates). */
+export interface HarnessUpdate {
+  instanceId: string;
+  driver: string;
+  displayName: string;
+  enabled: boolean;
+  version: string | null;
+  latestVersion: string | null;
+  status: "current" | "behind_latest" | "unknown";
+  /** T3 can run its updater: behind, with an update command, and the newest version not flagged. */
+  updatable: boolean;
+  note: string | null;
+  checkedAt: string | null;
+  update: { status: "idle" | "queued" | "running" | "succeeded" | "failed" | "unchanged"; startedAt: string | null; finishedAt: string | null; message: string | null; output: string | null } | null;
+  /** Asked for; T3 has not finished it yet. */
+  pending: boolean;
+  /** T3 refused the request itself. */
+  error: string | null;
+}
+
+/** What can be updated: T3 itself and its harnesses. Nothing updates unless the user starts it. */
+export interface UpdatesView {
+  reachable: boolean;
+  error: string | null;
+  server: {
+    version: string | null;
+    channel: string | null;
+    latest: string | null;
+    newer: boolean;
+    canUpdate: boolean;
+    manual: string | null;
+    keepsTurns: boolean;
+    releaseCheckedAt: string | null;
+    releaseError: string | null;
+    job: { targetVersion: string; state: "installing" | "restarting" | "done" | "failed"; startedAt: string; finishedAt: string | null; error: string | null } | null;
+  };
+  harnesses: HarnessUpdate[];
+  /** Updates that can be started from the popup: the count on the sidebar's button. */
+  available: number;
+}
+
 export interface ProviderInfo {
   instanceId: string;
   displayName: string;
@@ -904,6 +945,7 @@ export type RoomCommand =
   | { type: "browser.update"; browserId: string; name?: string; description?: string }
   | { type: "browser.delete"; browserId: string }
   | { type: "room.reorder"; roomIds: string[] }
+  | { type: "project.reorder"; projectIds: string[] }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
   | {
       type: "participant.create";
@@ -981,6 +1023,7 @@ export type CommandResult =
   | { type: "room.created"; roomId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
+  | { type: "projects.reordered" }
   | {
       type: "room.deleted";
       roomId: string;
