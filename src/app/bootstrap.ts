@@ -6,6 +6,7 @@ import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
+import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
 
 export class ChangeHub {
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -41,6 +42,8 @@ export interface AppStack {
   hub: ChangeHub;
   /** Room browsers, when this service may start them (the server; not the tests). */
   browsers: RoomBrowsers | null;
+  /** T3's and its harnesses' updates, started only when asked for. */
+  updates: T3Updates;
   close(): void;
 }
 
@@ -53,6 +56,8 @@ export function createStack(input: {
   browserCommand?: string;
   /** Builds the room browser manager once the repos and change hub exist. */
   browsers?: (deps: { repos: Repos; notify: (roomId: string) => void }) => RoomBrowsers;
+  /** Where T3's newest release is looked up (npm by default; tests pass their own). */
+  latestRelease?: ReleaseLookup;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
@@ -82,6 +87,7 @@ export function createStack(input: {
     scheduler,
     hub,
     browsers,
+    updates: new T3Updates(input.adapter, input.latestRelease),
     close() {
       scheduler.stop();
       browsers?.detach();

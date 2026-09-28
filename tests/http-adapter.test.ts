@@ -175,3 +175,31 @@ test("a T3 that accepts a request but never answers counts as unreachable after 
   await assert.rejects(adapter.listProjects(), (error: Error) => error instanceof T3Unavailable && /did not answer GET \/api\/orchestration\/shell within 50ms/.test(error.message));
   assert.ok(Date.now() - started < 2000, "gives up at the limit");
 });
+
+test("versions read T3's own version and each harness's, offering an update only where T3 would", async () => {
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.test", accessToken: "tok" });
+  const checkedAt = "2026-09-28T07:23:22.886Z";
+  const advisory = (status: string, currentVersion: string, latestVersion: string | null, updateCommand: string | null) => ({ status, currentVersion, latestVersion, updateCommand, canUpdate: updateCommand !== null, checkedAt, message: "Install the update now or review provider settings." });
+  // server.getConfig as the running T3 answers it, trimmed to what versions() reads.
+  adapter.getServerConfig = async () => ({
+    environment: { serverVersion: "0.0.43-nightly.20260926.2282", capabilities: { serverSelfUpdate: "boot-service", serverSelfUpdateProgress: true, serverUpdateThreadContinuation: true } },
+    providers: [
+      { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", enabled: true, version: "2.1.282", versionAdvisory: advisory("behind_latest", "2.1.282", "2.1.283", "/home/me/.local/bin/claude update") },
+      { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, version: "0.157.0", versionAdvisory: advisory("behind_latest", "0.157.0", "0.158.0", null) },
+      { instanceId: "cursor", driver: "cursor", displayName: "Cursor", enabled: true, version: "2026.09.23-86fc751", versionAdvisory: advisory("unknown", "2026.09.23-86fc751", null, "/home/me/.local/bin/cursor-agent update") },
+      { instanceId: "opencode", driver: "opencode", displayName: "OpenCode", enabled: true, version: "1.2.0", versionAdvisory: advisory("behind_latest", "1.2.0", "1.3.0", "npm i -g opencode-ai"), compatibilityAdvisory: { latestVersionStatus: "broken", message: "OpenCode 1.3.0 breaks T3's session resume." } },
+      { instanceId: "grok", driver: "grok", enabled: false, version: null },
+    ],
+  });
+  const versions = await adapter.versions();
+  assert.deepEqual([versions.serverVersion, versions.selfUpdate, versions.threadContinuation], ["0.0.43-nightly.20260926.2282", "boot-service", true]);
+  const by = Object.fromEntries(versions.harnesses.map((h) => [h.instanceId, h]));
+  assert.equal(by.claudeAgent!.updatable, true);
+  assert.equal(by.claudeAgent!.latestVersion, "2.1.283");
+  assert.equal(by.codex!.updatable, false, "no update command: T3 cannot update it");
+  assert.match(by.codex!.note ?? "", /cannot update this install/);
+  assert.equal(by.cursor!.updatable, false, "newest unknown");
+  assert.equal(by.opencode!.updatable, false, "T3 flags the newest version as broken");
+  assert.equal(by.opencode!.note, "OpenCode 1.3.0 breaks T3's session resume.");
+  assert.deepEqual([by.grok!.enabled, by.grok!.status, by.grok!.displayName], [false, "unknown", "grok"]);
+});

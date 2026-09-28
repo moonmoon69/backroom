@@ -11,6 +11,7 @@ import { threadActivity } from "./ThreadView.tsx";
 import { useToast } from "./Toast.tsx";
 import { ChevronIcon, CloseIcon, FolderIcon, MoreIcon, PlusIcon, SidebarIcon, UpFolderIcon } from "./icons.tsx";
 import { carriesPreset, droppedPresetId, PresetDialog, PresetIcon, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
+import { useSortable } from "./sortable.ts";
 
 /** What the main area shows: a room, a thread used on its own, or a new thread being started in a project. */
 export type Selection =
@@ -213,13 +214,38 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
       return next;
     });
   };
-  // Drag to reorder rooms within their project: the order shown while dragging, committed on drop.
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [order, setOrder] = useState<string[] | null>(null);
-  const ordered = order ? order.map((id) => rooms.find((r) => r.id === id)).filter((r): r is RoomListItem => Boolean(r)) : rooms;
+  // Drag projects, and rooms within their project, to reorder them (a long press first on a phone). Both orders are
+  // kept by the service, so every device shows the same.
+  const listRef = useRef<HTMLUListElement>(null);
+  const roomIds = useMemo(() => rooms.map((r) => r.id), [rooms]);
+  const projectOfRoom = useMemo(() => new Map(rooms.map((r) => [r.id, r.projectId])), [rooms]);
+  const roomSort = useSortable({
+    name: "room",
+    ids: roomIds,
+    scopeOf: (id) => projectOfRoom.get(id) ?? "",
+    container: listRef,
+    ignore: ".room-menu, .menu",
+    onCommit: (ids) => onCommand({ type: "room.reorder", roomIds: ids }),
+  });
+  const projectIds = useMemo(() => (projects ?? []).map((p) => p.id), [projects]);
+  const projectSort = useSortable({
+    name: "project",
+    ids: projectIds,
+    container: listRef,
+    ignore: ".project-add, .menu",
+    onCommit: (ids) => onCommand({ type: "project.reorder", projectIds: ids }),
+  });
+  const ordered = useMemo(() => {
+    const byId = new Map(rooms.map((r) => [r.id, r]));
+    return roomSort.order.map((id) => byId.get(id)).filter((r): r is RoomListItem => Boolean(r));
+  }, [rooms, roomSort.order]);
+  const orderedProjects = useMemo(() => {
+    const byId = new Map((projects ?? []).map((p) => [p.id, p]));
+    return projectSort.order.map((id) => byId.get(id)).filter((p): p is T3Project => Boolean(p));
+  }, [projects, projectSort.order]);
 
   const groups = useMemo<Group[]>(() => {
-    const list: Group[] = (projects ?? []).map((p) => ({ id: p.id, title: p.title, workspaceRoot: p.workspaceRoot, rooms: [], threads: [], settled: [], archived: [] }));
+    const list: Group[] = orderedProjects.map((p) => ({ id: p.id, title: p.title, workspaceRoot: p.workspaceRoot, rooms: [], threads: [], settled: [], archived: [] }));
     const byId = new Map(list.map((g) => [g.id, g]));
     for (const room of ordered) {
       let group = byId.get(room.projectId);
@@ -242,7 +268,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
       group.archived.sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
     }
     return list;
-  }, [projects, ordered, threads]);
+  }, [projects, orderedProjects, ordered, threads]);
 
   const toggleCollapsed = (projectId: string) => {
     setCollapsed((current) => {
@@ -262,26 +288,6 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
     if (!known) return;
     rememberProject(known);
     onSelect({ kind: "new-thread", projectId: known, ...(presetId ? { presetId } : {}) });
-  };
-
-  const moveOver = (targetId: string) => {
-    if (!dragId || dragId === targetId) return;
-    const current = order ?? rooms.map((r) => r.id);
-    const dragged = rooms.find((r) => r.id === dragId);
-    const target = rooms.find((r) => r.id === targetId);
-    if (!dragged || !target || dragged.projectId !== target.projectId) return;
-    const from = current.indexOf(dragId);
-    const to = current.indexOf(targetId);
-    const ids = current.filter((id) => id !== dragId);
-    const at = ids.indexOf(targetId);
-    ids.splice(from < to ? at + 1 : at, 0, dragId);
-    setOrder(ids);
-  };
-  const finishDrag = async () => {
-    const ids = order;
-    setDragId(null);
-    if (ids && ids.join() !== rooms.map((r) => r.id).join()) await onCommand({ type: "room.reorder", roomIds: ids });
-    setOrder(null);
   };
 
   useEffect(() => {
@@ -336,7 +342,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             </button>
           </span>
         </div>
-        <ul className="room-list project-list">
+        <ul className="room-list project-list" ref={listRef}>
           {nothing ? (
             <li className="room-empty">
               <p className="serif muted">{projects === null && !t3Error ? "Loading projects…" : "No projects or rooms yet."}</p>
@@ -354,8 +360,9 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
             const fresh = group.threads.some((t) => t.news) || group.rooms.some((r) => (r.news?.unseen ?? 0) > 0);
             const known = projects?.some((p) => p.id === group.id) ?? false;
             return (
-              <li key={group.id} className="project-group">
+              <li key={group.id} className={`project-group${projectSort.dragging === group.id ? " dragging" : ""}`}>
                 <div
+                  {...(known ? projectSort.handle(group.id) : {})}
                   className={`project-head${presetOver === `project:${group.id}` ? " preset-over" : ""}`}
                   onDragOver={(event) => {
                     if (!known || !carriesPreset(event)) return;
@@ -406,36 +413,23 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                     {group.rooms.map((room) => (
                       <li
                         key={room.id}
-                        className={`room-item${dragId === room.id ? " dragging" : ""}${presetOver === room.id ? " preset-over" : ""}`}
-                        draggable
-                        onDragStart={(event) => {
-                          setDragId(room.id);
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData("text/plain", room.id);
-                        }}
+                        {...roomSort.handle(room.id)}
+                        className={`room-item${roomSort.dragging === room.id ? " dragging" : ""}${presetOver === room.id ? " preset-over" : ""}`}
+                        // A crew member dragged from the list below is seated in the room it is dropped on.
                         onDragOver={(event) => {
-                          if (carriesPreset(event)) {
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = "copy";
-                            setPresetOver(room.id);
-                            return;
-                          }
-                          if (!dragId) return;
+                          if (!carriesPreset(event)) return;
                           event.preventDefault();
-                          moveOver(room.id);
+                          event.dataTransfer.dropEffect = "copy";
+                          setPresetOver(room.id);
                         }}
                         onDragLeave={() => setPresetOver((current) => (current === room.id ? null : current))}
                         onDrop={(event) => {
-                          event.preventDefault();
                           const presetId = droppedPresetId(event);
-                          if (presetId) {
-                            setPresetOver(null);
-                            void onSeatPreset(room.id, presetId);
-                            return;
-                          }
-                          void finishDrag();
+                          if (!presetId) return;
+                          event.preventDefault();
+                          setPresetOver(null);
+                          void onSeatPreset(room.id, presetId);
                         }}
-                        onDragEnd={() => void finishDrag()}
                       >
                         <RoomTile room={room} selected={selection?.kind === "room" && selection.id === room.id} onSelect={() => onSelect({ kind: "room", id: room.id })} />
                         <RoomMenu room={room} onCommand={onCommand} />

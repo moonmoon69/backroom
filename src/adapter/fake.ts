@@ -22,6 +22,7 @@ import type {
   T3Ref,
   T3ThreadDetail,
   T3ThreadShell,
+  T3Versions,
 } from "./types.ts";
 import { T3CommandRejected } from "./types.ts";
 
@@ -54,6 +55,8 @@ export interface FakeAdapterOptions {
    * observed live): gets its own turn, requested now and started when the running one ends.
    */
   midTurn?: "steer" | "new-turn";
+  /** How long a harness or server update takes, in milliseconds (0: at once). */
+  updateMs?: number;
 }
 
 export class FakeT3Adapter implements T3Adapter {
@@ -76,11 +79,30 @@ export class FakeT3Adapter implements T3Adapter {
   dropAcks = false;
   /** When set, T3 records the user message but the provider fails to start the turn with this error. */
   startFailure: string | null = null;
+  /**
+   * What versions() reports; tests and the demo change it. A T3 on the nightly channel with a Claude update it can
+   * run and a Codex update it cannot. updateHarness and updateServer move it along the way T3 does.
+   */
+  readonly versionState: T3Versions = {
+    serverVersion: "0.0.43-nightly.20260926.2282",
+    selfUpdate: "boot-service",
+    desktopAppUpdate: false,
+    threadContinuation: true,
+    harnesses: [
+      { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", enabled: true, version: "2.1.282", latestVersion: "2.1.283", status: "behind_latest", updatable: true, note: null, checkedAt: new Date().toISOString(), update: null },
+      { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, version: "0.157.0", latestVersion: "0.158.0", status: "behind_latest", updatable: false, note: "T3 cannot update this install; update it where it was installed.", checkedAt: new Date().toISOString(), update: null },
+    ],
+  };
+  /** When set, the next harness update fails with this message (T3 answers, with the failure in its state) and a server update is refused. */
+  updateFailure: string | null = null;
+  /** Server updates asked for, in order. */
+  readonly serverUpdates: Array<{ targetVersion: string; continueRunningThreads: boolean }> = [];
   private readonly options: Required<FakeAdapterOptions>;
 
   constructor(options: FakeAdapterOptions = {}) {
     this.options = {
       midTurn: options.midTurn ?? "steer",
+      updateMs: options.updateMs ?? 0,
       autoCompleteMs: options.autoCompleteMs === undefined ? 10 : options.autoCompleteMs,
       autoReply:
         options.autoReply ??
@@ -102,6 +124,46 @@ export class FakeT3Adapter implements T3Adapter {
 
   private guard(): void {
     if (this.outage) throw this.outage;
+  }
+
+  async versions(): Promise<T3Versions> {
+    this.guard();
+    return structuredClone(this.versionState);
+  }
+
+  async refreshProviders(): Promise<void> {
+    this.guard();
+    for (const harness of this.versionState.harnesses) harness.checkedAt = new Date().toISOString();
+  }
+
+  async updateHarness(input: { instanceId: string; driver: string }): Promise<void> {
+    this.guard();
+    const harness = this.versionState.harnesses.find((h) => h.instanceId === input.instanceId);
+    if (!harness) throw new T3CommandRejected(`T3 RPC server.updateProvider failed: no provider ${input.instanceId}`, 500, null);
+    const startedAt = new Date().toISOString();
+    harness.update = { status: "running", startedAt, finishedAt: null, message: "Updating provider.", output: null };
+    if (this.options.updateMs > 0) await new Promise((resolve) => setTimeout(resolve, this.options.updateMs));
+    const finishedAt = new Date().toISOString();
+    if (this.updateFailure) {
+      harness.update = { status: "failed", startedAt, finishedAt, message: this.updateFailure, output: `${this.updateFailure}\nexit code 1` };
+      this.updateFailure = null;
+      return;
+    }
+    Object.assign(harness, { version: harness.latestVersion, status: "current", updatable: false, note: null });
+    harness.update = { status: "succeeded", startedAt, finishedAt, message: `Updated to ${harness.latestVersion}.`, output: null };
+  }
+
+  async updateServer(input: { targetVersion: string; continueRunningThreads: boolean }): Promise<void> {
+    this.guard();
+    if (this.updateFailure) {
+      const reason = this.updateFailure;
+      this.updateFailure = null;
+      throw new T3CommandRejected(`T3 RPC server.updateServer failed: ${reason}`, 500, null);
+    }
+    this.serverUpdates.push(input);
+    if (this.options.updateMs > 0) await new Promise((resolve) => setTimeout(resolve, this.options.updateMs));
+    // Handed over: the restarted T3 runs the new version.
+    this.versionState.serverVersion = input.targetVersion;
   }
 
   async describe(): Promise<T3Environment> {

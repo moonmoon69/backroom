@@ -24,12 +24,14 @@ import type {
   StartTurnInput,
   T3Adapter,
   T3Environment,
+  T3HarnessUpdateState,
   T3Project,
   T3ProviderInfo,
   T3Ref,
   T3SessionStatus,
   T3ThreadDetail,
   T3ThreadShell,
+  T3Versions,
 } from "./types.ts";
 import { T3CommandRejected, T3Unavailable } from "./types.ts";
 
@@ -53,6 +55,10 @@ interface ShellSnapshot {
 
 /** Minimal typing of the parts of server.getConfig the room reads. */
 interface ServerConfigLike {
+  environment?: {
+    serverVersion?: string;
+    capabilities?: { serverSelfUpdate?: string; desktopAppUpdate?: boolean; serverUpdateThreadContinuation?: boolean };
+  };
   providers?: Array<{
     instanceId: string;
     driver?: string;
@@ -66,6 +72,17 @@ interface ServerConfigLike {
     slashCommands?: Array<{ name: string; description?: string; input?: { hint?: string } }>;
     auth?: { status?: string; type?: string; label?: string };
     usageLimits?: { checkedAt?: string; windows?: Array<{ id: string; kind?: string; label?: string; usedPercent?: number; resetsAt?: string }> };
+    versionAdvisory?: {
+      status?: string;
+      currentVersion?: string | null;
+      latestVersion?: string | null;
+      updateCommand?: string | null;
+      canUpdate?: boolean;
+      checkedAt?: string | null;
+      message?: string | null;
+    };
+    compatibilityAdvisory?: { latestVersionStatus?: string; message?: string | null };
+    updateState?: T3HarnessUpdateState;
     models?: Array<{
       slug: string;
       name?: string;
@@ -285,6 +302,66 @@ export class HttpT3Adapter implements T3Adapter {
         hint: command.input?.hint ?? null,
       })),
     }));
+  }
+
+  async versions(fresh = false): Promise<T3Versions> {
+    const config = await this.getServerConfig(fresh ? 0 : undefined);
+    const capabilities = config.environment?.capabilities ?? {};
+    return {
+      serverVersion: config.environment?.serverVersion ?? null,
+      selfUpdate: capabilities.serverSelfUpdate ?? null,
+      desktopAppUpdate: capabilities.desktopAppUpdate === true,
+      threadContinuation: capabilities.serverUpdateThreadContinuation === true,
+      harnesses: (config.providers ?? []).map((provider) => {
+        const advisory = provider.versionAdvisory;
+        const status = advisory?.status === "current" || advisory?.status === "behind_latest" ? advisory.status : "unknown";
+        const latestFlagged = provider.compatibilityAdvisory?.latestVersionStatus === "broken" || provider.compatibilityAdvisory?.latestVersionStatus === "unsupported";
+        const canRun = advisory?.canUpdate === true && Boolean(advisory.updateCommand);
+        const updatable = Boolean(provider.enabled) && status === "behind_latest" && canRun && !latestFlagged;
+        const note =
+          status !== "behind_latest" || updatable
+            ? null
+            : latestFlagged
+              ? (provider.compatibilityAdvisory?.message ?? "T3 has not cleared the newest version for use yet.")
+              : "T3 cannot update this install; update it where it was installed.";
+        return {
+          instanceId: provider.instanceId,
+          driver: provider.driver ?? provider.instanceId,
+          displayName: provider.displayName ?? provider.instanceId,
+          enabled: Boolean(provider.enabled),
+          version: provider.version ?? advisory?.currentVersion ?? null,
+          latestVersion: advisory?.latestVersion ?? null,
+          status,
+          updatable,
+          note,
+          checkedAt: advisory?.checkedAt ?? null,
+          update: provider.updateState ?? null,
+        };
+      }),
+    };
+  }
+
+  async refreshProviders(): Promise<void> {
+    await this.rpc("server.refreshProviders", {}, 60_000);
+    this.configCache = null;
+  }
+
+  async updateHarness(input: { instanceId: string; driver: string }): Promise<void> {
+    // T3 answers when the updater has finished (it queues behind another harness's update).
+    try {
+      await this.rpc("server.updateProvider", { provider: input.driver, instanceId: input.instanceId }, 15 * 60_000);
+    } finally {
+      this.configCache = null;
+    }
+  }
+
+  async updateServer(input: { targetVersion: string; continueRunningThreads: boolean }): Promise<void> {
+    // T3 downloads and stages the version, then answers just before its launcher restarts it.
+    try {
+      await this.rpc("server.updateServer", { targetVersion: input.targetVersion, ...(input.continueRunningThreads ? { continueRunningThreads: true } : {}) }, 15 * 60_000);
+    } finally {
+      this.configCache = null;
+    }
   }
 
   private async shell(force = false): Promise<ShellSnapshot> {

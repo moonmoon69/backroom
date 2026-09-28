@@ -1,6 +1,7 @@
 /** Typed fetch helpers for the Backroom HTTP API plus the SSE room-stream hook. */
 import { useEffect, useRef, useState } from "react";
 import type {
+  UpdatesView,
   ApiErrorBody,
   RoomBrowserStatus,
   Attachment,
@@ -135,6 +136,10 @@ export const api = {
     return get(`/api/rooms/${encodeURIComponent(roomId)}/git/diff?${query}`);
   },
   providers: (): Promise<ProviderInfo[]> => get("/api/t3/providers"),
+  updates: (fresh = false): Promise<UpdatesView> => get(`/api/t3/updates${fresh ? "?fresh=1" : ""}`),
+  checkUpdates: (): Promise<UpdatesView> => post("/api/t3/updates/check", {}),
+  updateHarness: (instanceId: string): Promise<UpdatesView> => post("/api/t3/updates/harness", { instanceId }),
+  updateT3: (targetVersion: string): Promise<UpdatesView> => post("/api/t3/updates/server", { targetVersion }),
   usageToday: (): Promise<UsageToday> => get(`/api/t3/usage/today?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   /** T3's default model for a project; null when T3 has none configured. */
   defaultModel: (projectId: string): Promise<{ modelSelection: ModelSelection | null }> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/default-model`),

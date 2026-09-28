@@ -30,6 +30,7 @@ import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 import { ThreadCosts } from "../usage/threadCosts.ts";
 import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
+import { orderProjects } from "../app/service.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
@@ -149,9 +150,22 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json({ paired: true, scope: auth.scope, expiresAt: auth.expiresAt });
   });
 
-  app.get("/api/t3/projects", async (c) => c.json(await stack.adapter.listProjects()));
+  app.get("/api/t3/projects", async (c) => c.json(orderProjects(stack.repos, await stack.adapter.listProjects())));
   app.get("/api/t3/catalog", async (c) => c.json(await stack.adapter.listCatalog()));
   app.get("/api/t3/providers", async (c) => c.json(await stack.adapter.listProviders()));
+  // Updates for T3 and its harnesses. Nothing updates by itself: each POST starts the one update the user clicked.
+  app.get("/api/t3/updates", async (c) => c.json(await stack.updates.view(c.req.query("fresh") === "1")));
+  app.post("/api/t3/updates/check", async (c) => c.json(await stack.updates.check()));
+  app.post("/api/t3/updates/harness", async (c) => {
+    const body = (await c.req.json()) as { instanceId?: unknown };
+    if (typeof body.instanceId !== "string" || !body.instanceId) throw new RoomError("missing_instance", "instanceId is required");
+    return c.json(await stack.updates.updateHarness(body.instanceId));
+  });
+  app.post("/api/t3/updates/server", async (c) => {
+    const body = (await c.req.json()) as { targetVersion?: unknown };
+    if (typeof body.targetVersion !== "string" || !body.targetVersion) throw new RoomError("missing_version", "targetVersion is required");
+    return c.json(await stack.updates.updateServer(body.targetVersion));
+  });
   app.get("/api/t3/projects/:projectId/default-model", async (c) => c.json({ modelSelection: await stack.adapter.defaultModelSelection(c.req.param("projectId")) }));
   /**
    * What a new thread of the project can work in: its branches (with the worktree each is checked out in), the project

@@ -114,6 +114,12 @@ export const BrowserDeleteCommand = z.object({ type: z.literal("browser.delete")
 export const RoomReorderCommand = z.object({ type: z.literal("room.reorder"), roomIds: z.array(nonEmpty).min(1) }).strict();
 
 /**
+ * Sidebar order of T3's projects, top to bottom. Kept by Backroom (T3 Code keeps its own order in each browser), so
+ * every device shows the same; projects not listed follow in T3's order.
+ */
+export const ProjectReorderCommand = z.object({ type: z.literal("project.reorder"), projectIds: z.array(nonEmpty).min(1) }).strict();
+
+/**
  * Delete a room and everything the room stored (messages, tasks, runs, images). Its T3 threads are separate: per
  * participant, keep them (default), settle them, archive them, or delete them in T3. Threads also bound in another
  * room are always kept. Turns running in T3 keep running; the room only stops coordinating them.
@@ -476,6 +482,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   BrowserUpdateCommand,
   BrowserDeleteCommand,
   RoomReorderCommand,
+  ProjectReorderCommand,
   RoomDeleteCommand,
   ParticipantCreateCommand,
   ParticipantUpdateCommand,
