@@ -32,7 +32,8 @@ import { money } from "./deskFormat.ts";
 import { PresetChips, PresetIcon, usePresets } from "./presets.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
-import { identityStyle, participantColor } from "./Monogram.tsx";
+import { identityStyle, MEMBER_ACCENT } from "./Monogram.tsx";
+import { ModelIcon } from "./ProviderIcon.tsx";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
@@ -47,7 +48,7 @@ import { CloseIcon, ImageIcon, MoreIcon } from "./icons.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
-const AGENT_COLOR = participantColor(0);
+const AGENT_COLOR = MEMBER_ACCENT;
 const STICK_PX = 40;
 
 const time = (iso: string): string => {
@@ -787,9 +788,12 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
   }
   const thread = view.thread;
   const speaker = (
-    <span className="speaker mono identity" style={identityStyle(AGENT_COLOR)}>
-      {thread.modelSelection.model}
-    </span>
+    <>
+      <ModelIcon selection={thread.modelSelection} size={14} />
+      <span className="speaker mono identity" style={identityStyle(AGENT_COLOR)}>
+        {thread.modelSelection.model}
+      </span>
+    </>
   );
   return (
     <div

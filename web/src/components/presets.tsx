@@ -9,7 +9,7 @@ import type { CatalogEntry, CommandResult, ModelSelection, Preset, Role, RoomCom
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
-import { ProviderIcon } from "./ProviderIcon.tsx";
+import { ModelIcon } from "./ProviderIcon.tsx";
 import { RUNTIME_MODE_INFO, ThreadSettingsRow } from "./pickers.tsx";
 
 export interface PresetsValue {
@@ -116,8 +116,7 @@ export function usePresetText(): (preset: Preset) => { model: string; what: stri
 }
 
 export function PresetIcon({ preset, size = 14 }: { preset: Preset; size?: number }) {
-  const entry = entryOf(useCatalog(), preset.modelSelection);
-  return <ProviderIcon driver={entry?.driver} instanceId={preset.modelSelection.instanceId} name={entry?.providerName ?? preset.modelSelection.instanceId} size={size} />;
+  return <ModelIcon selection={preset.modelSelection} size={size} />;
 }
 
 const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): boolean => JSON.stringify(a) === JSON.stringify(b);

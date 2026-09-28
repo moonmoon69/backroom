@@ -20,6 +20,7 @@ import { NameInput } from "./NameInput.tsx";
 import { ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
+import { describeStatus } from "../memberActivity.ts";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
 import { InheritedLine, RUNTIME_MODE_INFO, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
@@ -32,32 +33,6 @@ import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
 type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
 
-export function describeStatus(status: ParticipantStatus | undefined): { label: string; tone: string } {
-  if (!status) return { label: "unknown", tone: "unknown" };
-  // A deleted T3 thread outranks everything: the participant cannot receive work until rebound or removed.
-  if (status.threadMissing) return { label: "thread deleted in T3", tone: "missing" };
-  // Waiting for input is the most prominent state, then working, then busy in T3, then idle/ready.
-  if (status.pendingApprovals || status.pendingUserInput) return { label: "needs input", tone: "input" };
-  if (status.activeRunId || status.session === "running") return { label: "working", tone: "working" };
-  if (status.externalActivity) return { label: "busy in T3", tone: "busy" };
-  // Between turns but not done: the agent will wake itself when its background work finishes.
-  if (status.background === "working") return { label: "background work", tone: "busy" };
-  if (status.background === "monitoring") return { label: "monitoring", tone: "busy" };
-  switch (status.session) {
-    case "error":
-      return { label: "error", tone: "error" };
-    case "starting":
-      return { label: "starting", tone: "working" };
-    case "idle":
-    case "ready":
-      return { label: status.session, tone: "idle" };
-    case "interrupted":
-    case "stopped":
-      return { label: status.session, tone: "stopped" };
-    default:
-      return { label: "unknown", tone: "unknown" };
-  }
-}
 
 /**
  * The People tab of the room's side panel: everyone seated, each opening its thread menu (open in T3, details,
@@ -95,9 +70,12 @@ export function CrewPanel() {
  * are added, and each one's status and thread menu are). Hover lists who is doing what.
  */
 export function CrewButton({ active, onClick }: { active: boolean; onClick: () => void }) {
-  const { snapshot } = useRoom();
+  const { snapshot, desk } = useRoom();
   const crew = snapshot.participants.filter(isActiveParticipant);
-  const statuses = crew.map((p) => `@${p.alias}: ${describeStatus(snapshot.participantStatus[p.id]).label}`);
+  const statuses = crew.map((p) => {
+    const activity = describeStatus(snapshot.participantStatus[p.id], desk?.participants[p.id]);
+    return `@${p.alias}: ${activity.label}${activity.detail ? ` (${activity.detail})` : ""}`;
+  });
   return (
     <button
       type="button"
@@ -189,13 +167,14 @@ function ParticipantChip({
   const spend = costs?.participants[participant.id];
   const inProgress = costs?.openTurns[participant.id];
   const roleName = participant.roleId ? (snapshot.roles.find((r) => r.id === participant.roleId)?.name ?? null) : null;
-  const described = describeStatus(status);
+  const described = describeStatus(status, desk);
+  const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
   const pick = (action: MenuAction) => {
     setOpen(false);
     onAction(action);
   };
   return (
-    <div className="participant-chip" ref={ref} style={identityStyle(colorOf(participant.id))}>
+    <div className={`participant-chip${described.motion ? ` activity-${described.motion}` : ""}${attention}`} ref={ref} style={identityStyle(colorOf(participant.id))}>
       <button
         type="button"
         className="participant-button"
@@ -205,10 +184,10 @@ function ParticipantChip({
         title={
           described.tone === "missing"
             ? "Rebind to another thread or remove the member"
-            : `${participant.alias} · ${participant.modelSelection.model} · ${described.label}`
+            : `${participant.alias} · ${participant.modelSelection.model} · ${described.label}${described.detail ? ` (${described.detail})` : ""}`
         }
       >
-        <Monogram participant={participant} size="md" ring={described.tone} pulse={described.tone === "working"} />
+        <Monogram participant={participant} size="md" />
         <span className="crew-text">
           <span className="alias mono identity">
             {participant.alias}
@@ -224,6 +203,7 @@ function ParticipantChip({
             {effortOf(participant.modelSelection) ? ` · ${effortOf(participant.modelSelection)}` : ""}
           </span>
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
+          {described.detail ? <span className={`crew-activity mono status-${described.tone}`}>{described.detail}</span> : null}
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
           {spend?.available ? (
             <span

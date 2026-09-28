@@ -99,21 +99,11 @@
 }
 
 /*
- * Identity text colour. Declared on the elements that carry the inline --pc so var(--pc) resolves
- * per participant (a :root declaration would freeze it to the root fallback). Darkened on paper.
+ * A member's name is in the text colour, as in the sidebar's crew list; the inline --pc (MEMBER_ACCENT) is only the
+ * quiet accent of the bars and tints that mark whose a row is. Their harness's logo tells members apart.
  */
 [style*="--pc:"] {
-  --pc-text: var(--pc);
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) [style*="--pc:"] {
-    --pc-text: color-mix(in oklab, var(--pc) 78%, black);
-  }
-}
-
-:root[data-theme="light"] [style*="--pc:"] {
-  --pc-text: color-mix(in oklab, var(--pc) 78%, black);
+  --pc-text: var(--fg);
 }
 
 * {
@@ -391,14 +381,14 @@ textarea.invalid,
   background: var(--fg-dim);
 }
 
+/* A member's mark: its harness's logo (Monogram.tsx), bare, as in the sidebar's crew list. */
 .avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-family: var(--mono);
   font-weight: 700;
-  color: var(--pc-text);
-  background: color-mix(in srgb, var(--pc) 14%, transparent); /* T3 ProjectMonogram */
+  color: var(--fg-muted);
   border-radius: 25%;
   flex-shrink: 0;
 }
@@ -417,35 +407,15 @@ textarea.invalid,
 }
 
 .avatar-md {
-  width: 30px;
-  height: 30px;
-  font-size: 12px;
-  border-radius: 5px;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
 }
 
-.avatar.ring {
-  box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3.5px var(--ring, var(--fg-dim));
-}
-
-.ring-idle {
-  --ring: var(--ok);
-}
-
-.ring-working {
-  --ring: var(--accent);
-}
-
-.ring-input {
-  --ring: var(--input);
-}
-
-.ring-busy {
-  --ring: var(--busy);
-}
-
-.ring-error,
-.ring-missing {
-  --ring: var(--err);
+/* In the Members list the logo stands by the member's name, as it does by a crew member's in the sidebar. */
+.participant-button > .avatar {
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 .dot-missing {
@@ -456,24 +426,7 @@ textarea.invalid,
   color: var(--err) !important;
 }
 
-.ring-stopped,
-.ring-unknown {
-  --ring: var(--fg-dim);
-}
 
-.avatar.pulse {
-  animation: ring-pulse 2s ease-in-out infinite;
-}
-
-@keyframes ring-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3.5px var(--ring);
-  }
-  50% {
-    box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3.5px color-mix(in srgb, var(--ring) 35%, transparent);
-  }
-}
 
 /* ---- layout ---- */
 .app {
@@ -874,7 +827,7 @@ textarea.invalid,
 }
 
 .crew-context.meter-ok {
-  --meter: var(--ok);
+  --meter: var(--fg-muted);
 }
 
 .crew-context.meter-warn {
@@ -951,6 +904,60 @@ textarea.invalid,
   grid-column: 1;
 }
 
+/* What runs besides the turn ("2 subagents · 1 shell"), across the card under the model. */
+.crew-text .crew-activity {
+  grid-column: 1 / -1;
+  font-size: var(--text-xs);
+}
+
+/* A member at work: its card breathes in the working colour, slower and fainter while it only monitors. One that
+   needs you (an approval, an answer, a plan) or failed gets a steady border in that colour instead. */
+.participant-chip.activity-working > .participant-button {
+  animation: card-working 1.8s ease-in-out infinite;
+}
+.participant-chip.activity-monitoring > .participant-button {
+  animation: card-monitoring 3.6s ease-in-out infinite;
+}
+@keyframes card-working {
+  0%,
+  100% {
+    border-color: var(--line);
+    background: var(--bg-2);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+  }
+}
+@keyframes card-monitoring {
+  0%,
+  100% {
+    border-color: var(--line);
+    background: var(--bg-2);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-2));
+  }
+}
+.participant-chip.attention-approval > .participant-button {
+  border-color: color-mix(in srgb, var(--warn) 60%, var(--line));
+}
+.participant-chip.attention-input > .participant-button {
+  border-color: color-mix(in srgb, var(--input) 60%, var(--line));
+}
+.participant-chip.attention-error > .participant-button,
+.participant-chip.attention-missing > .participant-button {
+  border-color: color-mix(in srgb, var(--err) 60%, var(--line));
+}
+@media (prefers-reduced-motion: reduce) {
+  .participant-chip.activity-working > .participant-button,
+  .participant-chip.activity-monitoring > .participant-button {
+    animation: none;
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  }
+}
+
 .crew-text .status-label {
   font-size: var(--text-xs);
   color: var(--fg-dim);
@@ -965,8 +972,8 @@ textarea.invalid,
   color: var(--input) !important;
 }
 
-.status-busy {
-  color: var(--busy) !important;
+.status-approval {
+  color: var(--warn) !important;
 }
 
 .status-error {
@@ -2633,6 +2640,20 @@ button.primary.destructive {
   opacity: 0.75;
 }
 
+/* A recipient in the plan: its harness's logo, then its name. */
+.plan-recipient {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+/* The row lines up on the name's text, with the logo centred beside it. */
+.plan-recipient > .avatar {
+  align-self: center;
+}
+.plan-recipient + .plan-recipient {
+  margin-left: 6px;
+}
+
 .plan-row {
   display: grid;
   grid-template-columns: 16px auto minmax(0, 1fr) auto;
@@ -3348,7 +3369,7 @@ legend {
 }
 
 .context-meter.meter-ok {
-  --meter: var(--ok);
+  --meter: var(--fg-muted);
 }
 
 .context-meter.meter-warn {
@@ -4082,7 +4103,7 @@ legend {
 }
 
 .usage-meter.meter-ok {
-  --meter: var(--ok);
+  --meter: var(--fg-muted);
 }
 
 .usage-meter.meter-warn {

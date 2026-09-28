@@ -15,7 +15,7 @@ export interface RoomContextValue {
   refetch: () => void;
   participantById: (id: string) => Participant | undefined;
   aliasOf: (id: string) => string;
-  /** Stable identity colour for a participant (by roster index). */
+  /** The accent that marks a participant's rows: one quiet colour for everyone (MEMBER_ACCENT); logos tell them apart. */
   colorOf: (id: string) => string;
   /** Prefill the composer with an after_all schedule on the given task revisions. */
   addFollowUp: (prerequisites: FollowUpPrefill["prerequisites"]) => void;

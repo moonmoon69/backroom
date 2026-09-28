@@ -9,7 +9,7 @@ import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspect
 import { PageTitle } from "./components/PageTitle.tsx";
 import { MenuIcon } from "./components/icons.tsx";
 import { AppControls } from "./components/AppControls.tsx";
-import { participantColor } from "./components/Monogram.tsx";
+import { MEMBER_ACCENT } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
 import { rememberProject, Sidebar, SidebarRail, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
@@ -355,14 +355,13 @@ export function App() {
   const contextValue = useMemo<RoomContextValue | null>(() => {
     if (!snapshot) return null;
     const byId = new Map(snapshot.participants.map((p) => [p.id, p]));
-    const indexById = new Map(snapshot.participants.map((p, index) => [p.id, index]));
     return {
       snapshot,
       runCommand,
       refetch: onRoomChanged,
       participantById: (id) => byId.get(id),
       aliasOf: (id) => byId.get(id)?.alias ?? id,
-      colorOf: (id) => participantColor(indexById.get(id) ?? 0),
+      colorOf: () => MEMBER_ACCENT,
       addFollowUp: (prerequisites) => {
         followUpNonce.current += 1;
         setFollowUp({ prerequisites, nonce: followUpNonce.current });
