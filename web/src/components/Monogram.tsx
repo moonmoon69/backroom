@@ -1,21 +1,13 @@
 import type { CSSProperties } from "react";
 import { useRoom } from "../context.tsx";
 import type { Participant } from "../types.ts";
+import { ModelIcon } from "./ProviderIcon.tsx";
 
-/** Stable identity hues, assigned by roster index: T3's project-monogram palette (Tailwind 400 shades). */
-export const PARTICIPANT_PALETTE = [
-  "oklch(70.7% 0.165 254.624)", // blue-400
-  "oklch(75% 0.183 55.934)", // orange-400
-  "oklch(79.2% 0.209 151.711)", // green-400
-  "oklch(71.8% 0.202 349.761)", // pink-400
-  "oklch(82.8% 0.189 84.429)", // amber-400
-  "oklch(77.7% 0.152 181.912)", // teal-400
-  "oklch(70.2% 0.183 293.541)", // violet-400
-  "oklch(70.4% 0.191 22.216)", // red-400
-];
-
-export const participantColor = (index: number): string =>
-  PARTICIPANT_PALETTE[((index % PARTICIPANT_PALETTE.length) + PARTICIPANT_PALETTE.length) % PARTICIPANT_PALETTE.length] as string;
+/**
+ * Members share one quiet accent (the bars and tints that mark whose a row is); their harness's logo and their name
+ * tell them apart, as in the sidebar's crew list. Names themselves are in the text colour.
+ */
+export const MEMBER_ACCENT = "var(--fg-muted)";
 
 /** Two-letter monogram: "sol2" -> "S2", "claude" -> "CL", "a" -> "A". */
 export function monogramOf(alias: string): string {
@@ -36,24 +28,22 @@ export function titleMonogram(title: string): string {
 export const identityStyle = (color: string): CSSProperties => ({ "--pc": color } as CSSProperties);
 
 interface MonogramProps {
-  participant: Pick<Participant, "id" | "alias">;
+  participant: Pick<Participant, "id" | "alias"> & { modelSelection?: Participant["modelSelection"] };
   size?: "xs" | "sm" | "md";
-  /** Status tone for the ring (people list and the header's monograms). */
-  ring?: string;
-  pulse?: boolean;
 }
 
-/** Rounded-square avatar tinted with the participant's hue. */
-export function Monogram({ participant, size = "sm", ring, pulse }: MonogramProps) {
-  const { colorOf } = useRoom();
-  const color = colorOf(participant.id);
+const LOGO_SIZE = { xs: 14, sm: 16, md: 16 } as const;
+
+/**
+ * A member's mark: the logo of the harness it runs on, bare, as the sidebar's crew list shows it. Its status is said
+ * in words beside it. The alias's letters only when the member is not known here.
+ */
+export function Monogram({ participant, size = "sm" }: MonogramProps) {
+  const { participantById } = useRoom();
+  const selection = participant.modelSelection ?? participantById(participant.id)?.modelSelection;
   return (
-    <span
-      className={`avatar avatar-${size}${ring ? ` ring ring-${ring}` : ""}${pulse ? " pulse" : ""}`}
-      style={identityStyle(color)}
-      aria-hidden="true"
-    >
-      {monogramOf(participant.alias)}
+    <span className={`avatar avatar-${size}`} aria-hidden="true">
+      {selection ? <ModelIcon selection={selection} size={LOGO_SIZE[size]} /> : monogramOf(participant.alias)}
     </span>
   );
 }

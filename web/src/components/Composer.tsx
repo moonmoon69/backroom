@@ -924,9 +924,9 @@ function PlanPreview({
           <PlanRow key={index} index={index} color={color} hover={hover} notes={notes}>
             <span className="plan-to mono">
               {assignment.recipients.length > 0 ? (
-                assignment.recipients.map((id, i) => (
-                  <span key={id} className="identity" style={identityStyle(colorOf(id))}>
-                    {i > 0 ? " " : ""}@{aliasOf(id)}
+                assignment.recipients.map((id) => (
+                  <span key={id} className="identity plan-recipient" style={identityStyle(colorOf(id))}>
+                    <Monogram participant={{ id, alias: aliasOf(id) }} size="xs" />@{aliasOf(id)}
                   </span>
                 ))
               ) : (

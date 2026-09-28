@@ -4,6 +4,8 @@
  * T3 Code shows for the same providers.
  */
 import type { ReactNode } from "react";
+import type { ModelSelection } from "../types.ts";
+import { useCatalog } from "./catalog.ts";
 
 interface Mark {
   viewBox: string;
@@ -77,4 +79,13 @@ export function ProviderIcon({ driver, instanceId, name, size = 16 }: { driver?:
       {mark.body}
     </svg>
   );
+}
+
+/**
+ * The logo of the harness a model runs on: a crew member's, a room member's. The catalog names the harness of a
+ * custom provider instance; T3's own instances are known by their id alone.
+ */
+export function ModelIcon({ selection, size = 16 }: { selection: ModelSelection; size?: number }) {
+  const entry = useCatalog()?.find((e) => e.instanceId === selection.instanceId && e.model === selection.model);
+  return <ProviderIcon driver={entry?.driver} instanceId={selection.instanceId} name={entry?.providerName ?? selection.instanceId} size={size} />;
 }

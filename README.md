@@ -475,7 +475,17 @@ Every page's header names what is open as a small breadcrumb: `project / room` (
 
 ### Members
 
-The **Members** tab of the side panel lists everyone seated, with the total context across them; the button at its top (a person with a plus) brings in a member. Each member shows status (idle, working, waiting on you, busy in T3), model, and context usage (for example `348k / 1M · 35%`). Claude and Codex report context to T3; Cursor and Antigravity do not.
+Members appear everywhere in a room (the timeline, the task rows, the composer's chips and plan, this list) the way the sidebar's crew list shows them: the logo of the harness they run on, then their name. The name tells two members on the same harness apart. Colour is kept for what needs a look: a member's status is in words beside it, coloured only while it works, waits on you or fails, and context and usage meters stay grey until they run high (amber from 60%, red above 85%).
+
+The **Members** tab of the side panel lists everyone seated, with the total context across them; the button at its top (a person with a plus) brings in a member. Each member shows its model, context usage (for example `348k / 1M · 35%`) and what it is doing, ranked as T3 Code ranks its thread statuses:
+
+- **needs approval** or **waiting for your answer**, then **plan ready**: the card gets a steady border in that colour;
+- **working** (a room task), **working in T3** (a turn typed in T3 Code) or **starting**: the card pulses;
+- **subagents running** or **background work**, when the turn ended but its subagents or workflows run on: the card pulses;
+- **monitoring**, when only watch loops or background shells are left: the card pulses slower and fainter;
+- then **ready**, **error**, **interrupted** or **stopped**.
+
+A line under the model says what runs beside the turn, as T3 lists it: "2 subagents · 1 shell". With reduced motion turned on in the system, a working card keeps a steady border instead of pulsing. Claude and Codex report context to T3; Cursor and Antigravity do not.
 
 **Click a member** for its menu, headed by the usage card. The card shows:
 
