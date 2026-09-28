@@ -44,7 +44,9 @@ import {
 } from "./composerText.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
+import { AstraLook } from "./AstraLook.tsx";
 import { GameScene } from "./GameScene.tsx";
+import { OpusLook } from "./OpusLook.tsx";
 import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
 
 interface Props {
@@ -535,6 +537,8 @@ export function Composer({ followUp }: Props) {
   return (
     <>
     <GameScene onTalk={insertMentionAtCaret} />
+    <OpusLook onTalk={insertMentionAtCaret} />
+    <AstraLook onTalk={insertMentionAtCaret} />
     <div className={`composer${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       {crew.length > 0 ? (
         <MentionChips

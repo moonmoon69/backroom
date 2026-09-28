@@ -224,6 +224,23 @@ export const GameIcon = () => (
   </Icon>
 );
 
+/** A fedora: Opus's back room look. */
+export const HatIcon = () => (
+  <Icon>
+    <path d="M1.5 11c1.5 1 11.5 1 13 0" />
+    <path d="M4 10.5 5 5c.2-1 1.4-1.5 3-.4 1.6-1.1 2.8-.6 3 .4l1 5.5" />
+    <path d="M4.5 8.5h7" />
+  </Icon>
+);
+
+/** A leaf: Astra's clubhouse look. */
+export const LeafIcon = () => (
+  <Icon>
+    <path d="M3 13C3 7 6.5 3 13 3c0 6.5-4 10-10 10Z" />
+    <path d="M3 13 9 7" />
+  </Icon>
+);
+
 export const SunIcon = () => (
   <Icon>
     <circle cx="8" cy="8" r="2.75" />

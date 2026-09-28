@@ -1,13 +1,19 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
-/** Desk is the ordinary chat UI. Game is the pixel room: crew around a table, speech bubbles, dialogue box. */
-export type SkinChoice = "desk" | "game";
+/**
+ * Desk is the ordinary chat UI. The others are the pixel rooms the crew made, named after who made them: Grok's
+ * villagers around a table (GameScene), Opus's back room (OpusLook), Astra's clubhouse (AstraLook).
+ */
+export type SkinChoice = "desk" | "grok" | "opus" | "astra";
 
 const KEY = "backroom.skin";
 const SkinContext = createContext<[SkinChoice, (choice: SkinChoice) => void] | null>(null);
 
 export function readSkin(): SkinChoice {
-  return localStorage.getItem(KEY) === "game" ? "game" : "desk";
+  const stored = localStorage.getItem(KEY);
+  // Grok's look was first called Game.
+  if (stored === "game") return "grok";
+  return stored === "grok" || stored === "opus" || stored === "astra" ? stored : "desk";
 }
 
 export function applySkin(choice: SkinChoice): void {

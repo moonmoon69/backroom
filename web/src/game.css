@@ -1,9 +1,9 @@
 /*
- * Pixel "back room" skin. Opt-in via data-skin="game" (Settings → Look).
+ * Grok's pixel "back room" look. Opt-in via data-skin="grok" (Settings → Look → Grok).
  * Desk UI is unchanged when the attribute is absent.
  */
 
-:root[data-skin="game"] {
+:root[data-skin="grok"] {
   --game-ink: #2a1810;
   --game-paper: #fff6e0;
   --game-paper-2: #f4e4c1;
@@ -28,7 +28,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root[data-skin="game"]:not([data-theme="light"]) {
+  :root[data-skin="grok"]:not([data-theme="light"]) {
     --game-ink: #f4e4c1;
     --game-paper: #3a2a1c;
     --game-paper-2: #2a1c12;
@@ -51,7 +51,7 @@
   }
 }
 
-:root[data-skin="game"][data-theme="dark"] {
+:root[data-skin="grok"][data-theme="dark"] {
   --game-ink: #f4e4c1;
   --game-paper: #3a2a1c;
   --game-paper-2: #2a1c12;
@@ -73,7 +73,7 @@
   --message: #3a2a1c;
 }
 
-:root[data-skin="game"][data-theme="light"] {
+:root[data-skin="grok"][data-theme="light"] {
   --sidebar-bg: #f4e4c1;
   --bg: #fff6e0;
   --bg-1: #fffaf0;
@@ -86,7 +86,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root[data-skin="game"]:not([data-theme="dark"]) {
+  :root[data-skin="grok"]:not([data-theme="dark"]) {
     --sidebar-bg: #f4e4c1;
     --bg: #fff6e0;
     --bg-1: #fffaf0;
@@ -99,64 +99,64 @@
   }
 }
 
-:root[data-skin="game"] body,
-:root[data-skin="game"] .app {
+:root[data-skin="grok"] body,
+:root[data-skin="grok"] .app {
   font-family: var(--game-font);
 }
 
-:root[data-skin="game"] .brand {
+:root[data-skin="grok"] .brand {
   letter-spacing: 0.04em;
   font-weight: 800;
 }
 
-:root[data-skin="game"] .brand-mark {
+:root[data-skin="grok"] .brand-mark {
   border-radius: 2px;
   image-rendering: pixelated;
 }
 
-:root[data-skin="game"] .sidebar {
+:root[data-skin="grok"] .sidebar {
   background:
     repeating-linear-gradient(90deg, rgb(42 24 16 / 6%) 0 2px, transparent 2px 12px),
     var(--sidebar-bg);
 }
 
-:root[data-skin="game"] button,
-:root[data-skin="game"] .room-tile,
-:root[data-skin="game"] .menu {
+:root[data-skin="grok"] button,
+:root[data-skin="grok"] .room-tile,
+:root[data-skin="grok"] .menu {
   border-radius: 2px;
 }
 
 /* ---- the room scene sits above the ordinary timeline ---- */
 
-:root[data-skin="game"] .room-centre {
+:root[data-skin="grok"] .room-centre {
   display: grid;
   grid-template-columns: 1fr;
   grid-template-rows: minmax(220px, 42vh) minmax(0, 1fr) auto auto;
 }
 
-:root[data-skin="game"] .game-scene {
+:root[data-skin="grok"] .game-scene {
   grid-row: 1;
   min-height: 0;
 }
 
-:root[data-skin="game"] .timeline-wrap {
+:root[data-skin="grok"] .timeline-wrap {
   grid-row: 2;
   min-height: 0;
 }
 
-:root[data-skin="game"] .background-bar {
+:root[data-skin="grok"] .background-bar {
   grid-row: 3;
 }
 
-:root[data-skin="game"] .composer {
+:root[data-skin="grok"] .composer {
   grid-row: 4;
 }
 
-:root[data-skin="game"][data-game-diary="min"] .room-centre {
+:root[data-skin="grok"][data-game-diary="min"] .room-centre {
   grid-template-rows: minmax(0, 1fr) 0 auto auto;
 }
 
-:root[data-skin="game"][data-game-diary="min"] .timeline-wrap {
+:root[data-skin="grok"][data-game-diary="min"] .timeline-wrap {
   overflow: hidden;
   visibility: hidden;
   pointer-events: none;
@@ -623,7 +623,7 @@
 }
 
 /* Animal Crossing-ish dialogue box for the composer */
-:root[data-skin="game"] .composer {
+:root[data-skin="grok"] .composer {
   margin: 8px 12px 12px;
   padding: 10px 12px 8px;
   background: var(--game-paper);
@@ -636,25 +636,25 @@
     0 6px 0 var(--game-shadow);
 }
 
-:root[data-skin="game"] .composer-field textarea,
-:root[data-skin="game"] .composer-backdrop {
+:root[data-skin="grok"] .composer-field textarea,
+:root[data-skin="grok"] .composer-backdrop {
   font-family: var(--game-font);
 }
 
-:root[data-skin="game"] .empty-state .serif {
+:root[data-skin="grok"] .empty-state .serif {
   font-family: var(--game-font);
   font-weight: 800;
 }
 
-:root[data-skin="game"] .room-header {
+:root[data-skin="grok"] .room-header {
   background: var(--game-wood);
   color: var(--game-paper);
   border-bottom: 4px solid var(--game-wood-deep);
 }
 
-:root[data-skin="game"] .page-title,
-:root[data-skin="game"] .page-name,
-:root[data-skin="game"] .page-crumb {
+:root[data-skin="grok"] .page-title,
+:root[data-skin="grok"] .page-name,
+:root[data-skin="grok"] .page-crumb {
   color: var(--game-paper);
 }
 
@@ -733,7 +733,7 @@
 }
 
 @media (max-width: 720px) {
-  :root[data-skin="game"] .room-centre {
+  :root[data-skin="grok"] .room-centre {
     grid-template-rows: minmax(180px, 34vh) minmax(0, 1fr) auto auto;
   }
 

@@ -149,13 +149,13 @@ export function GameScene({ onTalk }: { onTalk: (alias: string) => void }) {
   const newestId = snapshot.events.at(-1)?.id;
   const [clock, setClock] = useState(() => new Date());
   useEffect(() => {
-    if (skin !== "game") return;
+    if (skin !== "grok") return;
     const id = window.setInterval(() => setClock(new Date()), 30_000);
     return () => window.clearInterval(id);
   }, [skin]);
 
   useEffect(() => {
-    if (skin !== "game") {
+    if (skin !== "grok") {
       delete document.documentElement.dataset.gameDiary;
       return;
     }
@@ -166,7 +166,7 @@ export function GameScene({ onTalk }: { onTalk: (alias: string) => void }) {
     };
   }, [skin, diaryOpen]);
 
-  if (skin !== "game") return null;
+  if (skin !== "grok") return null;
 
   const hour = clock.getHours();
   const night = hour < 7 || hour >= 19;

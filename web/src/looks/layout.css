@@ -1,0 +1,53 @@
+/*
+ * The Opus and Astra looks (Settings → Look): the scene sits above the room's ordinary conversation, as in Grok's look
+ * (game.css), and "Hide log" gives the scene the whole height.
+ */
+
+:root[data-skin="opus"] .room-centre,
+:root[data-skin="astra"] .room-centre {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(240px, 52vh) minmax(0, 1fr) auto auto;
+}
+
+:root[data-skin="opus"] .look-scene,
+:root[data-skin="astra"] .look-scene {
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+:root[data-skin="opus"] .timeline-wrap,
+:root[data-skin="astra"] .timeline-wrap {
+  grid-row: 2;
+  min-height: 0;
+}
+
+:root[data-skin="opus"] .background-bar,
+:root[data-skin="astra"] .background-bar {
+  grid-row: 3;
+}
+
+:root[data-skin="opus"] .composer,
+:root[data-skin="astra"] .composer {
+  grid-row: 4;
+}
+
+:root[data-skin="opus"][data-game-diary="min"] .room-centre,
+:root[data-skin="astra"][data-game-diary="min"] .room-centre {
+  grid-template-rows: minmax(0, 1fr) 0 auto auto;
+}
+
+:root[data-skin="opus"][data-game-diary="min"] .timeline-wrap,
+:root[data-skin="astra"][data-game-diary="min"] .timeline-wrap {
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  :root[data-skin="opus"] .room-centre,
+  :root[data-skin="astra"] .room-centre {
+    grid-template-rows: minmax(180px, 36vh) minmax(0, 1fr) auto auto;
+  }
+}
