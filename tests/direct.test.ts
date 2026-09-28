@@ -72,6 +72,11 @@ test("direct thread commands work on loose threads and refuse threads seated in 
   await stack.run({ type: "thread.interrupt", threadId });
   assert.equal(stack.fake.threads.get(threadId)?.shell.latestTurn?.state, "interrupted");
   await assert.rejects(stack.run({ type: "thread.model.set", threadId, modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5-1" } }), (error: RoomError) => error.code === "provider_fixed");
+  // A live session keeps its model unless the turn names one, so every send carries the thread's current model.
+  await stack.run({ type: "thread.model.set", threadId, modelSelection: { instanceId: "codex", model: "gpt-6-astra" } });
+  await stack.run({ type: "thread.send", threadId, text: "third" });
+  const third = stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === threadId)[2]?.payload as { modelSelection?: { model: string } };
+  assert.equal(third.modelSelection?.model, "gpt-6-astra");
   await stack.run({ type: "thread.runtimeMode.set", threadId, runtimeMode: "full-access" });
   assert.equal(stack.fake.threads.get(threadId)?.shell.runtimeMode, "full-access");
   await stack.run({ type: "thread.lifecycle", threadId, action: "delete" });

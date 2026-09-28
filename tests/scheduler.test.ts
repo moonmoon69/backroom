@@ -334,11 +334,17 @@ test("the room follows the thread: model changes made in T3 are mirrored, and th
   await stack.run({ type: "participant.model.set", participantId: added.participantId, modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-5", options: [{ id: "effort", value: "low" }] } });
   assert.equal(thread.shell.modelSelection.model, "claude-sonnet-5");
   await assert.rejects(stack.run({ type: "participant.model.set", participantId: added.participantId, modelSelection: { instanceId: "codex", model: "gpt-6-sol" } }), /cannot switch provider/);
-  // Dispatch does not pin a model: T3 applies whatever the thread currently has.
+  // Every turn names the thread's current model: a live session keeps the model it started with unless the turn names one.
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [added.participantId], instruction: "hello", schedule: { mode: "now" } });
   await stack.tick();
-  const start = stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === thread.shell.id)[0]!;
-  assert.equal((start.payload as { modelSelection?: unknown }).modelSelection, undefined);
+  const starts = () => stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === thread.shell.id).map((c) => (c.payload as { modelSelection?: unknown }).modelSelection);
+  assert.deepEqual(starts()[0], { instanceId: "claudeAgent", model: "claude-sonnet-5", options: [{ id: "effort", value: "low" }] });
+  // A change made in T3 Code between turns is what the next turn names.
+  stack.fake.completeTurn(thread.shell.id, { text: "hi" });
+  thread.shell.modelSelection = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [added.participantId], instruction: "again", schedule: { mode: "now" } });
+  await stack.tick();
+  assert.deepEqual(starts()[1], { instanceId: "claudeAgent", model: "claude-opus-5-5" });
 });
 
 test("attaching an existing thread inherits its model, options, and permission mode from T3", async (t) => {

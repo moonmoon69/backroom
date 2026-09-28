@@ -887,13 +887,16 @@ export class Scheduler {
   private async send(run: Run, task: Task, participant: Participant, binding: SessionBinding): Promise<void> {
     this.repos.updateRun({ ...run, status: "dispatched", updatedAt: now() });
     try {
-      // No modelSelection: T3 applies the thread's current model and options, so changes made in T3 Code take effect.
+      // Name the model, as T3 Code's composer does: a live session (Claude, Cursor, Grok, Antigravity) keeps the model it
+      // started with unless the turn names one; the thread's stored model alone doesn't switch it. The participant mirrors
+      // the thread (observe syncs it just before dispatch), so changes made in T3 Code still take effect.
       await this.adapter.startTurn({
         commandId: run.commandId,
         threadId: run.threadId,
         messageId: run.messageId,
         text: run.briefing,
         ...(task.attachmentIds.length > 0 ? { images: this.loadImages(task.attachmentIds) } : {}),
+        modelSelection: participant.modelSelection,
         runtimeMode: participant.runtimeMode,
         interactionMode: participant.interactionMode,
         titleSeed: `${participant.alias}: ${task.instruction.slice(0, 60)}`,
