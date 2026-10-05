@@ -22,9 +22,13 @@ const thread = (id: string, projectId: string, over: Partial<T3ThreadShell> = {}
     id,
     projectId,
     title: id,
-    session: { status: "ready", activeTurnId: null, lastError: null },
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
+    status: "completed",
+    activeRunId: null,
+    latestRunId: null,
+    latestRunCompletedAt: null,
+    lastError: null,
+    pendingRequest: null,
+    pendingBackgroundTasks: [],
     backgroundLiveness: null,
     settledAt: null,
     archivedAt: null,
@@ -103,7 +107,7 @@ test("windows say what their room or thread is doing", () => {
       room("failed", "p", { news: { unseen: 1, latest: { at: "2026-09-28T08:00:00Z", alias: "sol", kind: "failed", preview: "" } } }),
       room("empty", "p", { participantCount: 0 }),
     ],
-    [thread("asks", "p", { hasPendingUserInput: true }), thread("busy", "p", { session: { status: "running", activeTurnId: "t", lastError: null } })],
+    [thread("asks", "p", { pendingRequest: { id: "q", kind: "user_input", createdAt: "2026-09-28T08:00:00Z" } }), thread("busy", "p", { status: "running", activeRunId: "r" })],
   ).lots[1]!;
   const state = Object.fromEntries(lot.windows.map((w) => [w.id, w.state]));
   assert.deepEqual(state, { working: "working", failed: "failed", empty: "dark", asks: "needs", busy: "working" });

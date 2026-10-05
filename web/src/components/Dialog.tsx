@@ -8,6 +8,8 @@ interface DialogProps {
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** For looking at something (a file): about 90% of the window, whatever its size, and its body fills it. */
+  large?: boolean;
 }
 
 /**
@@ -16,7 +18,7 @@ interface DialogProps {
  * Initial focus goes to the element marked `data-autofocus`, otherwise the first enabled field.
  * Focus is set exactly once when the dialog opens; background re-renders never move it.
  */
-export function Dialog({ title, onClose, children, footer, wide }: DialogProps) {
+export function Dialog({ title, onClose, children, footer, wide, large }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -49,7 +51,7 @@ export function Dialog({ title, onClose, children, footer, wide }: DialogProps) 
   return createPortal(
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
-        className={`dialog${wide ? " dialog-wide" : ""}`}
+        className={`dialog${wide ? " dialog-wide" : ""}${large ? " dialog-large" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}

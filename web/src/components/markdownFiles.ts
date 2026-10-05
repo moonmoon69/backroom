@@ -5,13 +5,15 @@
  */
 
 export interface FileReference {
-  /** Full text as written, including any :line[:col] suffix. */
+  /** Full text as written, including any :line[:col] or :line-line suffix. */
   raw: string;
-  /** Path without the :line[:col] suffix. */
+  /** Path without the suffix. */
   path: string;
   basename: string;
   extension: string;
   line?: number;
+  /** Last line of a range (`http.ts:869-891`). */
+  endLine?: number;
   column?: number;
 }
 
@@ -30,7 +32,7 @@ export function parseFileReference(text: string): FileReference | null {
   if (!raw || raw.length > 260 || /\s/.test(raw)) return null;
   // Not URLs, not shell, not expressions.
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /[(){}<>|;&$*'"`=,]/.test(raw)) return null;
-  const match = /^(.+?)(?::(\d+)(?::(\d+))?)?$/.exec(raw);
+  const match = /^(.+?)(?::(\d+)(?:-(\d+)|:(\d+))?)?$/.exec(raw);
   if (!match) return null;
   const path = match[1] as string;
   if (path.endsWith("/") || path === "." || path === "..") return null;
@@ -47,7 +49,8 @@ export function parseFileReference(text: string): FileReference | null {
   if (hasDirectory && !/^(?:[~.]{0,2}\/|[A-Za-z]:\\|[\w.@-]+[\\/])/.test(path)) return null;
   const reference: FileReference = { raw, path, basename, extension };
   if (match[2]) reference.line = Number(match[2]);
-  if (match[3]) reference.column = Number(match[3]);
+  if (match[3]) reference.endLine = Number(match[3]);
+  if (match[4]) reference.column = Number(match[4]);
   return reference;
 }
 
@@ -81,9 +84,11 @@ export const isLocalPath = (src: string): boolean => src.startsWith("file://") |
  * Sources agents write as absolute paths (`/tmp/shot.png`, `file:///home/me/demo.mp4`) become Backroom URLs, served
  * by the service from the machine it runs on. Web URLs, data URLs, and the app's own routes pass through untouched.
  */
-export function imageSource(src: string): string {
+export function imageSource(src: string, base: string | null = null): string {
   if (src.startsWith("file://")) return LOCAL_FILE_ENDPOINT + encodeURIComponent(decodeURIComponent(src.slice("file://".length)));
   if (isLocalPath(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(src);
+  // Relative to the folder the text was written in (a previewed document's, a reply's): `assets/banner.jpg`.
+  if (base && !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(`${base.replace(/\/+$/, "")}/${src.replace(/^\.\//, "")}`);
   return src;
 }
 
@@ -93,3 +98,33 @@ const AUDIO = /\.(wav|mp3|m4a|aac|ogg|oga|flac)(\?|#|$)/i;
 
 /** What a source plays as, by its extension: markdown writes every embedded file as an image. */
 export const mediaKind = (src: string): MediaKind => (VIDEO.test(src) ? "video" : AUDIO.test(src) ? "audio" : "image");
+
+/**
+ * GitHub's anchor for a heading, so a document's own links work (`[How it works](#how-it-works)`): lower case,
+ * punctuation dropped, each space a hyphen.
+ */
+export function headingAnchor(text: string): string {
+  return text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+}
+
+/** Where a link points: a heading of the same text, a file on the machine (with GitHub's #L10 or #L10-L20), or the web. */
+export type LinkTarget = { kind: "anchor"; anchor: string } | { kind: "file"; path: string; line?: number; endLine?: number } | { kind: "web" };
+
+export function linkTarget(href: string): LinkTarget {
+  if (href.startsWith("#")) return { kind: "anchor", anchor: safeDecode(href.slice(1)) };
+  // A scheme (https:, mailto:) or a protocol-relative URL is the web; file: URLs and paths are files.
+  if (href.startsWith("//") || (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("file:"))) return { kind: "web" };
+  const [location = "", hash = ""] = href.replace(/^file:\/\//, "").split("#");
+  const path = safeDecode(location.split("?")[0] ?? "");
+  if (!path) return { kind: "web" };
+  const lines = /^L(\d+)(?:-L?(\d+))?$/.exec(hash);
+  return { kind: "file", path, ...(lines ? { line: Number(lines[1]), ...(lines[2] ? { endLine: Number(lines[2]) } : {}) } : {}) };
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}

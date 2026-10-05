@@ -60,7 +60,6 @@ interface Props {
   theme: ThemeChoice;
   onTheme: (choice: ThemeChoice) => void;
   onOpenConnection: () => void;
-  onOpenLibrary: () => void;
   needsPairing: boolean;
   staleUi: boolean;
 }
@@ -382,8 +381,6 @@ export function StreetMode(props: Props) {
               theme={theme}
               onTheme={onTheme}
               onOpenConnection={props.onOpenConnection}
-              onOpenLibrary={props.onOpenLibrary}
-              rolesDisabled={props.needsPairing}
               onSeat={(roomId, presetId) => void props.onSeatPreset(roomId, presetId)}
               onNewThread={(preset) => newThread(localStorage.getItem("backroom.lastProject"), preset.id)}
               onEditPreset={(preset) => setDialog({ kind: "preset", preset })}

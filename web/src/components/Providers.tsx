@@ -1,13 +1,16 @@
 import { useProviders } from "../api.ts";
 import type { ProviderInfo, UsageWindow } from "../types.ts";
-import { meterTone, resetsIn, timeOf } from "./deskFormat.ts";
+import { meterTone, resetsIn, timeOf, usageReset } from "./deskFormat.ts";
 
-/** Tiny usage meter: "Weekly 61%" with the reset time as a tooltip. */
-export function UsageMeter({ window }: { window: UsageWindow }) {
-  const percent = window.usedPercent;
+/** Tiny usage meter: "Weekly 61%" with the reset time as a tooltip. A reading from before the reset shows no share. */
+export function UsageMeter({ window, checkedAt }: { window: UsageWindow; checkedAt: string | null }) {
+  const wasReset = usageReset(window.resetsAt, checkedAt);
+  const percent = wasReset ? null : window.usedPercent;
   const tone = percent === null ? "unknown" : meterTone(percent);
   const reset = resetsIn(window.resetsAt);
-  const title = `${window.label} ${percent === null ? "unknown" : `${Math.round(percent)}% used`}${reset ? ` · ${reset}` : ""}`;
+  const title = wasReset
+    ? `${window.label} reset at ${timeOf(window.resetsAt)} · checking again`
+    : `${window.label} ${percent === null ? "unknown" : `${Math.round(percent)}% used`}${reset ? ` · ${reset}` : ""}`;
   return (
     <span className={`usage-meter meter-${tone}`} title={title} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined} aria-label={title}>
       <span className="usage-label mono">{window.label}</span>
@@ -27,7 +30,7 @@ export function ProviderLine({ provider }: { provider: ProviderInfo }) {
       <span className="provider-auth">{provider.authLabel ?? provider.authStatus}</span>
       <span className="muted"> · {status}</span>
       {provider.usageWindows.map((window) => (
-        <UsageMeter key={window.id} window={window} />
+        <UsageMeter key={window.id} window={window} checkedAt={provider.usageCheckedAt} />
       ))}
     </span>
   );
@@ -59,7 +62,7 @@ export function ProvidersSection() {
               {provider.usageWindows.length > 0 ? (
                 <div className="provider-usage">
                   {provider.usageWindows.map((window) => (
-                    <UsageMeter key={window.id} window={window} />
+                    <UsageMeter key={window.id} window={window} checkedAt={provider.usageCheckedAt} />
                   ))}
                   {provider.usageCheckedAt ? <span className="muted mono checked-at">checked {timeOf(provider.usageCheckedAt)}</span> : null}
                 </div>

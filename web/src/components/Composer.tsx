@@ -86,7 +86,12 @@ export function Composer({ followUp }: Props) {
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
   const { providers } = useProviders(true, 120_000);
   /** Examples built from this room (its participants and latest task), so every placeholder can be run as is. */
-  const placeholders = useMemo(() => roomPlaceholders(crew.map((p) => p.alias), snapshot.tasks[snapshot.tasks.length - 1]?.number ?? null), [crew, snapshot.tasks]);
+  const placeholders = useMemo(() => {
+    const consigliere = crew.find((p) => p.id === snapshot.room.consigliereId);
+    // With a Consigliere the plain message is his; the other examples would teach the wrong habit.
+    if (consigliere) return [`Message ${consigliere.alias}  ·  he hands the work to the others and reports back`, `@name tells ${consigliere.alias} who you want on it  ·  everything goes through him`];
+    return roomPlaceholders(crew.map((p) => p.alias), snapshot.tasks[snapshot.tasks.length - 1]?.number ?? null);
+  }, [crew, snapshot.tasks, snapshot.room.consigliereId]);
   /** T3 slash commands offered to every one of these participants (a command must exist for each recipient). */
   const commandsFor = useCallback(
     (participantIds: string[]) => {
@@ -119,10 +124,11 @@ export function Composer({ followUp }: Props) {
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
   // Parsed in the browser on every keystroke: the plan and the highlighting always match the text exactly.
-  const { participants, tasks, roles, participantStatus } = snapshot;
+  const { participants, tasks, participantStatus } = snapshot;
+  const consigliereId = snapshot.room.consigliereId;
   const parsedDraft = useMemo(
-    () => (text.trim().length === 0 ? null : parseDraft(text, { participants, tasks, roles, participantStatus })),
-    [text, participants, tasks, roles, participantStatus],
+    () => (text.trim().length === 0 ? null : parseDraft(text, { participants, tasks, participantStatus, room: { consigliereId } })),
+    [text, participants, tasks, participantStatus, consigliereId],
   );
   // A leading slash command must be one of the recipients' T3 commands (checked once T3's list is loaded).
   const draft = useMemo(() => {
@@ -386,7 +392,7 @@ export function Composer({ followUp }: Props) {
 
   // ---- plan + submit ----
 
-  const crewDraft = draft && (draft.kind === "participant.add" || draft.kind === "participant.remove" || draft.kind === "participant.role") ? draft : null;
+  const crewDraft = draft && (draft.kind === "participant.add" || draft.kind === "participant.remove") ? draft : null;
   const noteOn = isNote(text);
   const plan = evaluate(draft, readyIds.length, uploading, attachedCount);
   const canSubmit = plan.ready && !submitting;
@@ -407,10 +413,8 @@ export function Composer({ followUp }: Props) {
     try {
       const result =
         draft.kind === "participant.add" && draft.add
-          ? await runCommand({ type: "participant.create", roomId, alias: draft.add.alias, roleId: draft.add.roleId ?? null, thread: { mode: "create" } })
-          : draft.kind === "participant.role" && draft.participant && draft.role
-            ? await runCommand({ type: "participant.update", participantId: draft.participant.participantId, roleId: draft.role.roleId || null })
-            : draft.kind === "note"
+          ? await runCommand({ type: "participant.create", roomId, alias: draft.add.alias, thread: { mode: "create" } })
+          : draft.kind === "note"
               ? await runCommand({ type: "room.note.create", roomId, text: draft.instruction })
               : draft.kind === "task"
                 ? await runCommand({
@@ -762,9 +766,6 @@ function evaluate(draft: Draft | null, readyImages: number, uploading: boolean, 
   const blocked = (label: string, reason: string | null): Plan => ({ ready: false, label, reason });
   if (!draft || draft.kind === "empty") return blocked("Send", attached > 0 ? "Address someone with @name" : null);
   if (draft.kind === "participant.add") return draft.add && draft.unresolved.length === 0 ? { ready: true, label: "Add", reason: null } : blocked("Add", firstMessage(draft.unresolved));
-  if (draft.kind === "participant.role") {
-    return draft.participant && draft.role && draft.unresolved.length === 0 ? { ready: true, label: "Apply", reason: null } : blocked("Apply", firstMessage(draft.unresolved));
-  }
   if (draft.kind === "participant.remove") return draft.participant ? { ready: true, label: "Remove…", reason: null } : blocked("Remove…", firstMessage(draft.unresolved));
   if (draft.kind === "note") {
     if (attached > 0) return blocked("Post note", "Notes cannot carry images");
@@ -1143,12 +1144,9 @@ function IssueLine({ issues }: { issues: Unresolved[] }) {
 function crewSummary(draft: Draft): string {
   if (draft.kind === "participant.add") {
     if (!draft.add) return "Add a member on a new thread";
-    const base = `Add @${draft.add.alias} with T3's default model`;
-    return draft.add.roleName ? `${base} as ${draft.add.roleName}` : base;
+    return `Add @${draft.add.alias} with T3's default model`;
   }
-  if (draft.kind === "participant.remove") return draft.participant ? `Remove @${draft.participant.alias}` : "Remove a crew member";
-  if (!draft.participant || !draft.role) return "Change a crew member's role";
-  return draft.role.roleId ? `Give @${draft.participant.alias} the role ${draft.role.name}` : `Remove @${draft.participant.alias}'s role`;
+  return draft.participant ? `Remove @${draft.participant.alias}` : "Remove a crew member";
 }
 
 // ---- in-text highlighting (mirrored backdrop behind a transparent-text textarea) ----
@@ -1291,8 +1289,7 @@ const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | n
   { name: "now", description: "Start now, without waiting for anything", hint: null },
   { name: "steer", description: "If they are mid-turn, send into the running turn", hint: null },
   { name: "note", description: "Room note for everyone; no task", hint: "text" },
-  { name: "add", description: "Seat a new member on a new T3 thread", hint: "name [role <role>]" },
-  { name: "role", description: "Give a member a role (or none)", hint: "@name role" },
+  { name: "add", description: "Seat a new member on a new T3 thread", hint: "name" },
   { name: "remove", description: "Remove a member from the room", hint: "@name" },
 ];
 const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["after", "hold", "now", "steer"].includes(c.name));
@@ -1307,7 +1304,7 @@ function roomPlaceholders(aliases: string[], lastTask: number | null): string[] 
       `/steer also check the logs  ·  /hold save this for later`,
       `/compact  ·  type / for the room's and ${a}'s commands`,
       lastTask ? `/after task${lastTask} review it  ·  /note keep the public API` : `/note keep the public API`,
-      `/add new-name role accountant  ·  /role @${a} none`,
+      `/add new-name  ·  /remove @${a}`,
     ];
   }
   const examples = [
@@ -1315,7 +1312,7 @@ function roomPlaceholders(aliases: string[], lastTask: number | null): string[] 
     aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} /steer also check the logs`,
     `@${a} /compact  ·  type / for the room's and ${a}'s commands`,
     lastTask ? `/after task${lastTask} @${b} review it  ·  /hold @${a} save this for later` : `/hold @${a} save this for later  ·  /note keep the public API`,
-    `/add new-name role accountant  ·  /role @${a} none  ·  /remove @${b}`,
+    `/add new-name  ·  /remove @${b}`,
   ];
   return examples;
 }

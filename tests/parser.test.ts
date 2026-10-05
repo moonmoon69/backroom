@@ -11,8 +11,8 @@ const participants = [
 
 function task(number: number, participantId: string, state: Task["state"], revision = 1): Task {
   return {
-    id: `t${number}`, roomId: "r", number, revision, sourceEventId: "e", participantId, instruction: `work ${number}`, sourceText: null, attachmentIds: [], delivery: "queue", slashCommand: false,
-    scheduleMode: "now", prerequisites: [], state, stateReason: null, currentRunId: null, userOutcome: null, createdAt: "", updatedAt: "",
+    id: `t${number}`, roomId: "r", number, revision, sourceEventId: "e", participantId, instruction: `work ${number}`, sourceText: null, kind: "assignment", attachmentIds: [], delivery: "queue", slashCommand: false,
+    scheduleMode: "now", prerequisites: [], state, stateReason: null, currentRunId: null, userOutcome: null, dismissedAt: null, createdAt: "", updatedAt: "",
   };
 }
 
@@ -206,21 +206,14 @@ test("spoken forms are derived from the alias, so no spoken aliases need configu
   assert.deepEqual(parseExplicit("/remove sol two", bare, []).participant, { participantId: "p2", alias: "sol2" });
 });
 
-test("/add with a role and /role assign over finite lists", () => {
-  const roles = [{ id: "r1", name: "accountant" }];
-  const add = parseExplicit("/add alice role accountant", participants, [], roles);
+test("/add seats a new member by name", () => {
+  const add = parseExplicit("/add alice", participants, []);
   assert.equal(add.kind, "participant.add");
-  assert.deepEqual(add.add, { alias: "alice", roleId: "r1", roleName: "accountant" });
-  const badRole = parseExplicit("/add alice role wizard", participants, [], roles);
-  assert.ok(badRole.unresolved.some((u) => u.message.includes("available: accountant")));
-  const assign = parseExplicit("/role @sol1 accountant", participants, [], roles);
-  assert.equal(assign.kind, "participant.role");
-  assert.deepEqual(assign.participant, { participantId: "p1", alias: "sol1" });
-  assert.deepEqual(assign.role, { roleId: "r1", name: "accountant" });
-  const clear = parseExplicit("/role sol one none", participants, [], roles);
-  assert.deepEqual(clear.role, { roleId: "", name: "none" });
-  const which = parseExplicit("/role @sol1", participants, [], roles);
-  assert.ok(which.unresolved.some((u) => u.message.includes("which role")));
+  assert.deepEqual(add.add, { alias: "alice" });
+  const taken = parseExplicit("/add sol1", participants, []);
+  assert.ok(taken.unresolved.some((u) => u.message.includes("already in this room")));
+  const none = parseExplicit("/add", participants, []);
+  assert.ok(none.unresolved.some((u) => u.severity === "incomplete"));
 });
 
 test("conditions: 'when X finishes, @Y …', trailing 'when X finishes', and pronouns make an assignment wait", () => {

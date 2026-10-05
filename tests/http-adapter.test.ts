@@ -1,9 +1,12 @@
-/** HTTP adapter contract tests against a mocked transport: request shapes, auth handling, and response mapping. */
+/**
+ * Adapter contract tests against a mocked transport (HTTP reads, the WebSocket RPC for commands): request shapes,
+ * auth handling, protocol negotiation and response mapping, in the shapes T3's Orchestrator V2 serves.
+ */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl } from "../src/adapter/auth.ts";
-import { T3CommandRejected, T3Unavailable } from "../src/adapter/types.ts";
+import { T3CommandRejected, T3ProtocolMismatch, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
 
 interface Recorded {
   url: string;
@@ -36,106 +39,272 @@ function mockFetch(routes: Record<string, (recorded: Recorded) => { status: numb
   return { fetchImpl, calls };
 }
 
-const shell = {
-  snapshotSequence: 10,
-  projects: [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" } }],
-  threads: [
-    {
-      id: "thread-1", projectId: "proj", title: "t", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access",
-      interactionMode: "default", branch: null, worktreePath: null, session: { status: "running", activeTurnId: "turn-1", lastError: null },
-      latestTurn: { turnId: "turn-1", state: "running", completedAt: null, assistantMessageId: null }, hasPendingApprovals: false,
-      hasPendingUserInput: true, archivedAt: null, deletedAt: null, updatedAt: "2026-09-23T00:00:00.000Z",
-    },
-  ],
-  updatedAt: "2026-09-23T00:00:00.000Z",
+/** An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames). */
+function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
+  const frames: Array<{ tag: string; payload: any; url: string }> = [];
+  class Socket {
+    private readonly listeners = new Map<string, Array<(event: any) => void>>();
+    readonly url: string;
+    constructor(url: string) {
+      this.url = url;
+      queueMicrotask(() => this.emit("open", {}));
+    }
+    addEventListener(type: string, listener: (event: any) => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+    private emit(type: string, event: unknown): void {
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
+    }
+    send(data: string): void {
+      const frame = JSON.parse(data) as { id: string; tag: string; payload: unknown };
+      frames.push({ tag: frame.tag, payload: frame.payload, url: this.url });
+      queueMicrotask(() => {
+        let exit: unknown;
+        try {
+          exit = { _tag: "Success", value: handlers[frame.tag]?.(frame.payload) ?? null };
+        } catch (error) {
+          exit = { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] };
+        }
+        this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
+      });
+    }
+    close(): void {
+      this.emit("close", {});
+    }
+  }
+  return { Socket, frames };
+}
+
+const ENVIRONMENT = { environmentId: "env", label: "box", serverVersion: "0.0.46-nightly.20261003.2610", orchestrationProtocolVersion: 2 };
+const base = {
+  "GET /.well-known/t3/environment": () => ({ status: 200, body: ENVIRONMENT }),
+  "POST /api/auth/websocket-ticket": () => ({ status: 200, body: { ticket: "tk" } }),
 };
 
-test("thread.turn.start is dispatched with the contract's required fields and a bearer header", async () => {
-  const { fetchImpl, calls } = mockFetch({ "POST /api/orchestration/dispatch": () => ({ status: 200, body: { sequence: 11 } }) });
-  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773/", accessToken: "secret-token", fetchImpl });
-  await adapter.startTurn({
-    commandId: "cmd-1", threadId: "thread-1", messageId: "msg-1", text: "hello", runtimeMode: "approval-required", interactionMode: "default",
-    modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, titleSeed: "sol1: hello",
+const RUN = "run:thread:thread-1:ordinal:1";
+const threadShell = {
+  createdBy: "user", creationSource: "web", id: "thread-1", projectId: "proj", title: "t", providerInstanceId: "codex",
+  modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
+  lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" }, forkedFrom: null, activeProviderThreadId: null,
+  // T3's shell status is the latest run's: a message queued behind the running run makes it "queued".
+  latestRunId: "run:thread:thread-1:ordinal:2", activeRunId: RUN, activityRunStatus: "running", status: "queued", lastError: null,
+  pendingRuntimeRequest: { id: "req-2", kind: "user_input", createdAt: "2026-10-03T00:00:02.000Z" }, latestVisibleMessage: null, latestUserMessageAt: "2026-10-03T00:00:00.000Z",
+  hasActionableProposedPlan: false, pendingBackgroundTasks: [], itemCount: 3, visibleItemCount: 3, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:02.000Z",
+  archivedAt: null, settledOverride: null, settledAt: null, deletedAt: null,
+};
+const shell = {
+  schemaVersion: 2,
+  snapshotSequence: 10,
+  projects: [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" }, scripts: [] }],
+  threads: [threadShell],
+  archivedThreads: [{ ...threadShell, id: "thread-old", archivedAt: "2026-10-01T00:00:00.000Z", status: "completed", activeRunId: null, activityRunStatus: null, pendingRuntimeRequest: null }],
+};
+
+test("a message is dispatched over the RPC socket with the contract's fields; every request names the protocol", async () => {
+  const { fetchImpl, calls } = mockFetch(base);
+  const { Socket, frames } = mockSocket({ "orchestration.dispatchCommand": () => ({ sequence: 11 }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773/", accessToken: "secret-token", fetchImpl, webSocketImpl: Socket });
+  await adapter.sendMessage({ commandId: "cmd-1", threadId: "thread-1", messageId: "msg-1", text: "hello", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, titleSeed: "sol1: hello", mode: { type: "start" } });
+  const frame = frames[0]!;
+  assert.equal(frame.tag, "orchestration.dispatchCommand");
+  assert.deepEqual(frame.payload, {
+    type: "message.dispatch", createdBy: "user", creationSource: "web", commandId: "cmd-1", threadId: "thread-1", messageId: "msg-1", text: "hello", attachments: [],
+    modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, titleSeed: "sol1: hello", dispatchMode: { type: "start_immediately" },
   });
-  const call = calls[0]!;
-  assert.equal(call.url, "http://t3.local:3773/api/orchestration/dispatch");
-  assert.equal(call.headers.authorization, "Bearer secret-token");
-  const body = JSON.parse(call.body!);
-  assert.equal(body.type, "thread.turn.start");
-  assert.equal(body.commandId, "cmd-1");
-  assert.deepEqual(body.message, { messageId: "msg-1", role: "user", text: "hello", attachments: [] });
-  assert.equal(body.runtimeMode, "approval-required");
-  assert.equal(body.interactionMode, "default");
-  assert.equal(body.titleSeed, "sol1: hello");
-  assert.match(body.createdAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.ok(!("bootstrap" in body), "no bootstrap block; threads are created explicitly");
+  const socketUrl = new URL(frame.url);
+  assert.deepEqual([socketUrl.protocol, socketUrl.pathname, socketUrl.searchParams.get("wsTicket"), socketUrl.searchParams.get("orchestrationProtocol")], ["ws:", "/ws", "tk", "2"]);
+  for (const call of calls) {
+    assert.equal(call.headers.authorization, "Bearer secret-token");
+    assert.equal(call.headers["x-t3-orchestration-protocol"], "2");
+  }
+  // Queued behind the active run, or steered into it: the same command with another dispatch mode.
+  await adapter.sendMessage({ commandId: "cmd-2", threadId: "thread-1", messageId: "msg-2", text: "later", mode: { type: "queue" } });
+  await adapter.sendMessage({ commandId: "cmd-3", threadId: "thread-1", messageId: "msg-3", text: "also", mode: { type: "steer", runId: RUN } });
+  assert.deepEqual(frames.slice(1).map((f) => f.payload.dispatchMode), [{ type: "queue_after_active" }, { type: "steer_active", targetRunId: RUN }]);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 1, "commands share one socket");
+  adapter.close();
 });
 
-test("thread.create sends null branch/worktree so the agent owns its workspace strategy", async () => {
-  const { fetchImpl, calls } = mockFetch({ "POST /api/orchestration/dispatch": () => ({ status: 200, body: { sequence: 12 } }) });
-  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
-  await adapter.createThread({ commandId: "c", threadId: "t", projectId: "proj", title: "room · sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access", interactionMode: "default" });
-  const body = JSON.parse(calls[0]!.body!);
-  assert.equal(body.type, "thread.create");
-  assert.equal(body.branch, null);
-  assert.equal(body.worktreePath, null);
-  assert.equal(body.projectId, "proj");
+test("images are stored in T3 first, and the message names the stored attachments", async () => {
+  const { fetchImpl } = mockFetch(base);
+  const stored = [{ type: "image", id: "att-1", name: "shot.png", mimeType: "image/png", sizeBytes: 3 }];
+  const { Socket, frames } = mockSocket({ "assets.persistChatAttachments": () => ({ attachments: stored }), "orchestration.dispatchCommand": () => ({ sequence: 1 }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  await adapter.sendMessage({ commandId: "c", threadId: "thread-1", messageId: "m", text: "look", images: [{ name: "shot.png", mimeType: "image/png", sizeBytes: 3, dataUrl: "data:image/png;base64,AAAA" }], mode: { type: "start" } });
+  assert.deepEqual(frames.map((f) => f.tag), ["assets.persistChatAttachments", "orchestration.dispatchCommand"]);
+  assert.deepEqual(frames[0]!.payload, { threadId: "thread-1", messageId: "m", attachments: [{ type: "image", name: "shot.png", mimeType: "image/png", sizeBytes: 3, dataUrl: "data:image/png;base64,AAAA" }] });
+  assert.deepEqual(frames[1]!.payload.attachments, stored);
+  adapter.close();
 });
 
-test("shell snapshot maps projects and thread shells, including pending-input flags", async () => {
-  const { fetchImpl, calls } = mockFetch({ "GET /api/orchestration/shell": () => ({ status: 200, body: shell }) });
+test("a thread is launched with its workspace and, when given, its first message; other commands use V2's names", async () => {
+  const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }) });
+  const projection = { thread: { ...threadShell, id: "t", branch: "payments/sol1", worktreePath: "/wt/payments-sol1" }, runs: [], messages: [], turnItems: [], runtimeRequests: [] };
+  const { Socket, frames } = mockSocket({ "orchestration.launchThread": () => ({ threadId: "t", projection, resumed: false }), "orchestration.dispatchCommand": () => ({ sequence: 1 }), "projects.mutate": () => ({}) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  const launched = await adapter.launchThread({
+    commandId: "c", threadId: "t", projectId: "proj", title: "room · sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access", interactionMode: "default",
+    workspace: { type: "worktree", baseRef: "main", branch: "payments/sol1" },
+  });
+  assert.deepEqual(frames[0]!.payload, {
+    commandId: "c", creationSource: "web", threadId: "t", projectId: "proj", title: "room · sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access", interactionMode: "default",
+    workspaceStrategy: { type: "worktree", baseRef: "main", branch: "payments/sol1" },
+  });
+  assert.deepEqual([launched.id, launched.status, launched.branch, launched.worktreePath], ["t", "idle", "payments/sol1", "/wt/payments-sol1"]);
+  await adapter.interruptRun({ commandId: "c1", threadId: "thread-1", runId: RUN });
+  await adapter.interruptRun({ commandId: "c2", threadId: "thread-1", runId: null });
+  await adapter.respondApproval({ commandId: "c3", threadId: "thread-1", requestId: "req-1", decision: "accept" });
+  await adapter.respondUserInput({ commandId: "c4", threadId: "thread-1", requestId: "req-2", answers: { "Proceed?": "yes" } });
+  await adapter.dismissUserInput({ commandId: "c5", threadId: "thread-1", requestId: "req-2" });
+  await adapter.setThreadModel({ commandId: "c6", threadId: "thread-1", modelSelection: { instanceId: "codex", model: "gpt-6-astra" } });
+  await adapter.setRuntimeMode({ commandId: "c7", threadId: "thread-1", runtimeMode: "approval-required" });
+  await adapter.setThreadLifecycle({ commandId: "c8", threadId: "thread-1", action: "unsettle" });
+  await adapter.createProject({ commandId: "c9", projectId: "p2", title: "new", workspaceRoot: "~/new", createIfMissing: true });
+  assert.deepEqual(frames.slice(1).map((f) => [f.tag, f.payload.type]), [
+    ["orchestration.dispatchCommand", "run.interrupt"],
+    ["orchestration.dispatchCommand", "run.interrupt"],
+    ["orchestration.dispatchCommand", "runtime-request.respond"],
+    ["orchestration.dispatchCommand", "runtime-request.respond"],
+    ["orchestration.dispatchCommand", "thread.user-input.dismiss"],
+    ["orchestration.dispatchCommand", "thread.model-selection.set"],
+    ["orchestration.dispatchCommand", "thread.runtime-mode.set"],
+    ["orchestration.dispatchCommand", "thread.unsettle"],
+    ["projects.mutate", "project.create"],
+  ]);
+  assert.equal(frames[2]!.payload.runId, RUN, "no run named: the thread's active run");
+  assert.deepEqual([frames[3]!.payload.decision, frames[4]!.payload.answers, frames[8]!.payload.reason], ["accept", { "Proceed?": "yes" }, "user"]);
+  assert.deepEqual(frames[9]!.payload, { type: "project.create", commandId: "c9", projectId: "p2", title: "new", workspaceRoot: "~/new", createWorkspaceRootIfMissing: true });
+  adapter.close();
+});
+
+test("a thread launched into a new worktree without a first message is returned once T3 has made the worktree", async () => {
+  // T3 answers the launch as soon as the thread exists; the worktree is recorded on it a moment later.
+  let reads = 0;
+  const fresh = { ...threadShell, id: "t", status: "idle", activeRunId: null, activityRunStatus: null, latestRunId: null, pendingRuntimeRequest: null, branch: "payments/sol1" };
+  const { fetchImpl } = mockFetch({
+    ...base,
+    "GET /api/orchestration/shell": () => {
+      reads += 1;
+      return { status: 200, body: { ...shell, threads: [{ ...fresh, worktreePath: reads >= 3 ? "/wt/payments-sol1" : null }] } };
+    },
+  });
+  const { Socket } = mockSocket({ "orchestration.launchThread": () => ({ threadId: "t", projection: { thread: { ...fresh, worktreePath: null }, runs: [] }, resumed: false }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, worktreePollMs: 5 });
+  const launch = { commandId: "c", threadId: "t", projectId: "proj", title: "room · sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access" as const, interactionMode: "default" as const };
+  const launched = await adapter.launchThread({ ...launch, workspace: { type: "worktree", baseRef: "main", branch: "payments/sol1" } });
+  assert.deepEqual([launched.worktreePath, reads], ["/wt/payments-sol1", 3]);
+  // With a first message the thread is returned at once: its run waits for the workspace in T3.
+  reads = 0;
+  const started = await adapter.launchThread({ ...launch, commandId: "c2", workspace: { type: "worktree", baseRef: "main" }, initialMessage: { messageId: "m", text: "go" } });
+  assert.deepEqual([started.worktreePath, reads], [null, 0]);
+  adapter.close();
+});
+
+test("shell snapshot maps projects and thread shells: the active run's status, the pending request, archived threads apart", async () => {
+  const { fetchImpl, calls } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }) });
   const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, shellCacheMs: 10_000 });
   const projects = await adapter.listProjects();
   assert.deepEqual(projects, [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" }, defaultThreadEnvMode: null }]);
   const thread = await adapter.getThreadShell("thread-1");
-  assert.equal(thread?.session?.activeTurnId, "turn-1");
-  assert.equal(thread?.hasPendingUserInput, true);
-  assert.equal(calls.length, 1, "shell snapshot is cached within a tick");
+  assert.deepEqual([thread?.status, thread?.activeRunId, thread?.latestRunId], ["running", RUN, "run:thread:thread-1:ordinal:2"], "the status is the active run's, not the queued one's");
+  assert.deepEqual(thread?.pendingRequest, { id: "req-2", kind: "user_input", createdAt: "2026-10-03T00:00:02.000Z" });
+  assert.deepEqual((await adapter.listThreads()).map((t) => t.id), ["thread-1"]);
+  // T3 keeps listing a question the agent went on without after its run ended; with no run in progress nothing waits.
+  const done = adapter["toShell"]({ ...threadShell, status: "completed", activeRunId: null, activityRunStatus: null });
+  assert.deepEqual([done.status, done.pendingRequest], ["completed", null]);
+  assert.deepEqual((await adapter.listArchivedThreads()).map((t) => t.id), ["thread-old"]);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/orchestration/shell")).length, 1, "shell snapshot is cached within a tick");
   const catalog = await adapter.listCatalog();
   assert.ok(catalog.some((c) => c.instanceId === "codex" && c.model === "gpt-6-sol" && c.source === "observed"));
 });
 
-test("thread detail derives pending requests from activities and returns null for 404", async () => {
-  const detail = {
-    snapshotSequence: 10,
-    thread: {
-      ...shell.threads[0],
-      messages: [
-        { id: "msg-1", role: "user", text: "hi", turnId: "turn-1", streaming: false, createdAt: "2026-09-23T00:00:00.000Z", updatedAt: "" },
-        { id: "assistant:1", role: "assistant", text: "partial", turnId: "turn-1", streaming: true, createdAt: "2026-09-23T00:00:01.000Z", updatedAt: "" },
-      ],
-      activities: [
-        { id: "a1", tone: "approval", kind: "approval.requested", summary: "Approval", payload: { requestId: "req-1", requestType: "command" }, turnId: "turn-1", createdAt: "" },
-        { id: "a2", tone: "approval", kind: "approval.resolved", summary: "Approval", payload: { requestId: "req-1", decision: "accept" }, turnId: "turn-1", createdAt: "" },
-        { id: "a3", tone: "info", kind: "user-input.requested", summary: "Question", payload: { requestId: "req-2", questions: [] }, turnId: "turn-1", createdAt: "" },
-      ],
-      checkpoints: [],
-    },
+test("thread detail: runs by the message that started them or was steered into them, and requests with what they ask", async () => {
+  const item = (ordinal: number, runId: string, fields: Record<string, unknown>) => ({ id: `item-${ordinal}`, threadId: "thread-1", runId, nodeId: `node-${ordinal}`, providerThreadId: null, providerTurnId: null, nativeItemRef: null, parentItemId: null, ordinal, status: "completed", title: null, startedAt: "2026-10-03T00:00:01.000Z", completedAt: "2026-10-03T00:00:01.000Z", updatedAt: "2026-10-03T00:00:01.000Z", ...fields });
+  const message = (id: string, role: string, runId: string, text: string, createdBy = "user") => ({ id, threadId: "thread-1", runId, nodeId: null, role, text, attachments: [], streaming: false, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:00.000Z", createdBy, creationSource: "web" });
+  const run = (ordinal: number, userMessageId: string, status: string) => ({ id: `run:thread:thread-1:ordinal:${ordinal}`, threadId: "thread-1", ordinal, providerInstanceId: "codex", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, userMessageId, status, queuePosition: status === "queued" ? 1 : null, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: status === "queued" ? null : "2026-10-03T00:00:00.500Z", completedAt: null, checkpointId: null });
+  const request = (id: string, kind: string, status: string, capability: string) => ({ id, nodeId: `node-${id}`, providerTurnId: null, nativeRequestRef: null, kind, status, responseCapability: { type: capability }, createdAt: "2026-10-03T00:00:02.000Z", resolvedAt: status === "pending" ? null : "2026-10-03T00:00:03.000Z", ...(status === "resolved" && kind !== "user_input" ? { decision: "accept" } : {}) });
+  const projection = {
+    thread: { ...threadShell },
+    runs: [run(1, "msg-1", "running"), run(2, "msg-3", "queued")],
+    messages: [message("msg-1", "user", RUN, "hi"), message("msg-2", "user", RUN, "also this"), message("assistant:1", "assistant", RUN, "partial", "agent"), message("msg-3", "user", "run:thread:thread-1:ordinal:2", "next")],
+    turnItems: [
+      item(1000001, RUN, { type: "user_message", messageId: "msg-1", text: "hi", attachments: [], inputIntent: "turn_start", createdBy: "user", creationSource: "web" }),
+      item(1000002, RUN, { type: "approval_request", requestId: "req-1", requestKind: "command", prompt: "npm test" }),
+      item(1000003, RUN, { type: "user_message", messageId: "msg-2", text: "also this", attachments: [], inputIntent: "steer", createdBy: "user", creationSource: "web" }),
+      item(1000004, RUN, { type: "user_input_request", requestId: "req-2", questions: [{ id: "Proceed?", header: "Confirm", question: "Proceed?", options: [{ label: "yes", description: "Proceed" }] }], responseMode: "message" }),
+      item(1000005, RUN, { type: "mystery_item" }),
+    ],
+    runtimeRequests: [request("req-1", "command", "resolved", "live"), request("req-2", "user_input", "pending", "message"), request("req-3", "dynamic_tool_call", "pending", "live")],
+    nodes: [], attempts: [], subagents: [], providerSessions: [], providerTurns: [], plans: [], checkpoints: [], checkpointScopes: [], contextHandoffs: [], contextTransfers: [], visibleTurnItems: [],
+    providerThreads: [{ id: "pt", driver: "codex", providerInstanceId: "codex", status: "active", nativeThreadRef: { driver: "codex", nativeId: "codex-session-1", strength: "strong" }, pendingBackgroundTasks: [], contextUsage: { usedTokens: 1000, maxTokens: 258000 }, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:00.000Z" }],
+    updatedAt: "2026-10-03T00:00:02.000Z",
   };
   const { fetchImpl, calls } = mockFetch({
-    "GET /api/orchestration/threads/thread-1": () => ({ status: 200, body: detail }),
+    ...base,
+    "GET /api/orchestration/shell": () => ({ status: 200, body: shell }),
+    "GET /api/orchestration/threads/thread-1": () => ({ status: 200, body: { snapshotSequence: 10, projection } }),
+    "GET /api/orchestration/threads/thread-1/bounded": () => ({ status: 200, body: { snapshotSequence: 10, projection, historyCursor: "c", hasMoreHistory: true, latestLocalTurnOrdinal: 1 } }),
     "GET /api/orchestration/threads/missing": () => ({ status: 404, body: { error: "not found" } }),
   });
   const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
-  const loaded = await adapter.getThreadDetail("thread-1", { turnLimit: 3 });
-  assert.ok(calls[0]!.url.endsWith("/api/orchestration/threads/thread-1?turnLimit=3"));
-  assert.equal(loaded?.shell.hasPendingApprovals, false, "resolved approval is not pending");
-  assert.equal(loaded?.shell.hasPendingUserInput, true);
-  assert.equal(loaded?.messages.find((m) => m.id === "msg-1")?.turnId, "turn-1");
+  const loaded = await adapter.getThreadDetail("thread-1");
+  assert.ok(loaded);
+  assert.deepEqual([loaded.shell.status, loaded.shell.activeRunId, loaded.partial], ["running", RUN, false]);
+  assert.equal(runForMessage(loaded, "msg-1")?.id, RUN, "the run a message started");
+  assert.equal(runForMessage(loaded, "msg-2")?.id, RUN, "the run a message was steered into");
+  assert.deepEqual([runForMessage(loaded, "msg-3")?.status, runForMessage(loaded, "nope")], ["queued", null]);
+  assert.deepEqual(loaded.runtimeRequests.map((r) => [r.id, r.type, r.status, r.responseMode, r.runId, r.prompt ?? r.questions[0]?.question]), [
+    ["req-1", "approval", "resolved", "live", RUN, "npm test"],
+    ["req-2", "user-input", "pending", "message", RUN, "Proceed?"],
+  ]);
+  assert.deepEqual(loaded.turnItems.at(-1), { id: "item-1000005", runId: RUN, nodeId: "node-1000005", providerTurnId: null, ordinal: 1000005, status: "completed", title: null, startedAt: "2026-10-03T00:00:01.000Z", completedAt: "2026-10-03T00:00:01.000Z", updatedAt: "2026-10-03T00:00:01.000Z", type: "other", itemType: "mystery_item" }, "an item type Backroom does not read is kept by name");
+  assert.equal(loaded.providerThreads[0]?.nativeId, "codex-session-1");
+  assert.deepEqual(openRequests(loaded).map((r) => r.id), ["req-2"], "a question asked in message mode waits while its run is active");
+  // The run ends without the answer (Codex goes on): nothing is waiting, whatever T3 still lists as pending.
+  const ended = { ...loaded, runs: loaded.runs.map((r) => (r.id === RUN ? { ...r, status: "completed" as const } : r)) };
+  assert.deepEqual(openRequests(ended), []);
+  const bounded = await adapter.getThreadDetail("thread-1", { bounded: true });
+  assert.ok(calls.some((c) => c.url.endsWith("/api/orchestration/threads/thread-1/bounded")));
+  assert.equal(bounded?.partial, true, "a bounded read says when T3 holds older history");
   assert.equal(await adapter.getThreadDetail("missing"), null);
+});
+
+test("a server on another orchestration protocol is refused with what to do, and can still be asked for its version", async () => {
+  const { fetchImpl } = mockFetch({
+    ...base,
+    // A V1 server: no protocol version in its descriptor, and a shell of another shape.
+    "GET /.well-known/t3/environment": () => ({ status: 200, body: { environmentId: "env", label: "box", serverVersion: "0.0.45-nightly.20261002.2595" } }),
+    "GET /api/orchestration/shell": () => ({ status: 200, body: { snapshotSequence: 1, projects: [], threads: [] } }),
+  });
+  const { Socket, frames } = mockSocket({ "server.getConfig": () => ({ environment: { serverVersion: "0.0.45-nightly.20261002.2595", capabilities: { serverSelfUpdate: "boot-service" } }, providers: [] }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  const mismatch = (error: unknown) => error instanceof T3ProtocolMismatch && error instanceof T3Unavailable && /speaks orchestration protocol 1; Backroom needs protocol 2/.test(error.message) && /Update T3/.test(error.message);
+  await assert.rejects(adapter.listThreads(), mismatch);
+  await assert.rejects(adapter.getThreadDetail("thread-1"), mismatch);
+  await assert.rejects(adapter.sendMessage({ commandId: "c", threadId: "thread-1", messageId: "m", text: "x", mode: { type: "start" } }), mismatch);
+  assert.equal(frames.length, 0, "no command reaches a server that would misread it");
+  assert.deepEqual([(await adapter.versions()).serverVersion, (await adapter.versions()).selfUpdate], ["0.0.45-nightly.20261002.2595", "boot-service"], "its version and update path are still read, so it can be updated from here");
+  adapter.close();
 });
 
 test("401/403 and network failures are T3Unavailable; 4xx rejections are T3CommandRejected", async () => {
   const { fetchImpl } = mockFetch({
+    ...base,
     "GET /api/orchestration/shell": () => ({ status: 401, body: { error: "unauthorized" } }),
-    "POST /api/orchestration/dispatch": () => ({ status: 422, body: { error: "invalid command" } }),
   });
-  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "expired", fetchImpl });
+  const { Socket } = mockSocket({
+    "orchestration.dispatchCommand": () => {
+      throw new Error("Run run:nope is not interruptible.");
+    },
+  });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "expired", fetchImpl, webSocketImpl: Socket });
   await assert.rejects(adapter.listThreads(), (error: unknown) => error instanceof T3Unavailable && /pair Backroom again/.test(error.message));
+  // T3 refuses a command with its reason; the adapter passes the reason on.
   await assert.rejects(
-    adapter.interruptTurn({ commandId: "c", threadId: "t", turnId: null }),
-    (error: unknown) => error instanceof T3CommandRejected && error.status === 422,
+    adapter.interruptRun({ commandId: "c", threadId: "t", runId: "run:nope" }),
+    (error: unknown) => error instanceof T3CommandRejected && /T3 refused orchestration.dispatchCommand: Run run:nope is not interruptible\./.test(error.message),
   );
+  adapter.close();
   const offline = new HttpT3Adapter({
     baseUrl: "http://t3.local:3773",
     accessToken: "tok",
@@ -172,7 +341,7 @@ test("a T3 that accepts a request but never answers counts as unreachable after 
     new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
   const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl: silent, requestTimeoutMs: 50 });
   const started = Date.now();
-  await assert.rejects(adapter.listProjects(), (error: Error) => error instanceof T3Unavailable && /did not answer GET \/api\/orchestration\/shell within 50ms/.test(error.message));
+  await assert.rejects(adapter.listProjects(), (error: Error) => error instanceof T3Unavailable && /did not answer GET \/\.well-known\/t3\/environment within 50ms/.test(error.message));
   assert.ok(Date.now() - started < 2000, "gives up at the limit");
 });
 
@@ -182,7 +351,7 @@ test("versions read T3's own version and each harness's, offering an update only
   const advisory = (status: string, currentVersion: string, latestVersion: string | null, updateCommand: string | null) => ({ status, currentVersion, latestVersion, updateCommand, canUpdate: updateCommand !== null, checkedAt, message: "Install the update now or review provider settings." });
   // server.getConfig as the running T3 answers it, trimmed to what versions() reads.
   adapter.getServerConfig = async () => ({
-    environment: { serverVersion: "0.0.43-nightly.20260926.2282", capabilities: { serverSelfUpdate: "boot-service", serverSelfUpdateProgress: true, serverUpdateThreadContinuation: true } },
+    environment: { serverVersion: "0.0.46-nightly.20261003.2610", capabilities: { serverSelfUpdate: "boot-service", serverSelfUpdateProgress: true, serverUpdateThreadContinuation: true } },
     providers: [
       { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", enabled: true, version: "2.1.282", versionAdvisory: advisory("behind_latest", "2.1.282", "2.1.283", "/home/me/.local/bin/claude update") },
       { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, version: "0.157.0", versionAdvisory: advisory("behind_latest", "0.157.0", "0.158.0", null) },
@@ -192,7 +361,7 @@ test("versions read T3's own version and each harness's, offering an update only
     ],
   });
   const versions = await adapter.versions();
-  assert.deepEqual([versions.serverVersion, versions.selfUpdate, versions.threadContinuation], ["0.0.43-nightly.20260926.2282", "boot-service", true]);
+  assert.deepEqual([versions.serverVersion, versions.selfUpdate, versions.threadContinuation], ["0.0.46-nightly.20261003.2610", "boot-service", true]);
   const by = Object.fromEntries(versions.harnesses.map((h) => [h.instanceId, h]));
   assert.equal(by.claudeAgent!.updatable, true);
   assert.equal(by.claudeAgent!.latestVersion, "2.1.283");

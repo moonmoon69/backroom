@@ -43,6 +43,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const browserApiFile = join(config.dataDir, "browser-api.json");
 const quote = (path: string) => (/\s/.test(path) ? `'${path}'` : path);
 const browserCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-browser"))}`;
+const boardCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-board"))}`;
 let browserTools: BrowserTools | null = null;
 
 const stack = createStack({
@@ -50,6 +51,7 @@ const stack = createStack({
   adapter,
   briefingBudgetChars: config.briefingBudgetChars,
   browserCommand,
+  boardCommand,
   log,
   browsers: ({ repos, notify }) =>
     new RoomBrowsers({
@@ -89,7 +91,7 @@ if (adapter instanceof FakeT3Adapter) {
     const participant = stack.repos.getParticipant(binding.participantId);
     const room = participant ? stack.repos.getRoom(participant.roomId) : null;
     if (!participant || !room || adapter.threads.has(binding.threadId)) continue;
-    await adapter.createThread({
+    await adapter.launchThread({
       commandId: `restore:${binding.threadId}`,
       threadId: binding.threadId,
       projectId: room.projectId,
@@ -97,6 +99,7 @@ if (adapter instanceof FakeT3Adapter) {
       modelSelection: participant.modelSelection,
       runtimeMode: participant.runtimeMode,
       interactionMode: participant.interactionMode,
+      workspace: { type: "root" },
     });
     restored += 1;
   }
@@ -104,12 +107,13 @@ if (adapter instanceof FakeT3Adapter) {
 }
 // Backroom's voice: loaded when the UI first asks (the model is fetched once into data/models), off with ROOMS_SPEECH=off.
 const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
-const app = createHttpApp(stack, config, resolve("web/dist"), { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
+const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
 stack.scheduler.start(config.tickMs);
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {
   log(`listening on http://127.0.0.1:${info.port} (db ${config.dbPath})`);
-  if (browserTools) {
+  // rooms-board needs the file too, so it is written whether or not this service runs browsers.
+  {
     writeFileSync(browserApiFile, `${JSON.stringify({ url: `http://127.0.0.1:${info.port}`, token: browserApiToken }, null, 2)}\n`, { mode: 0o600 });
   }
 });

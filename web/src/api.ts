@@ -1,6 +1,7 @@
 /** Typed fetch helpers for the Backroom HTTP API plus the SSE room-stream hook. */
 import { useEffect, useRef, useState } from "react";
 import type {
+  FilePreviewResponse,
   UpdatesView,
   ApiErrorBody,
   RoomBrowserStatus,
@@ -19,7 +20,6 @@ import type {
   ProviderInfo,
   UsageToday,
   Preset,
-  Role,
   RoomCosts,
   SpeechStatus,
   ThreadCost,
@@ -32,6 +32,8 @@ import type {
   T3Project,
   T3ThreadShell,
   ThreadView,
+  OverviewRoom,
+  OverviewThread,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -136,6 +138,11 @@ export const api = {
     return get(`/api/rooms/${encodeURIComponent(roomId)}/git/diff?${query}`);
   },
   providers: (): Promise<ProviderInfo[]> => get("/api/t3/providers"),
+  /** Ask T3 to check its providers again now (one, or all); with `models` it also looks for new models. */
+  refreshProviders: (input: { instanceId?: string; models?: boolean } = {}): Promise<ProviderInfo[]> => post("/api/t3/providers/refresh", input),
+  /** This page's state, so Backroom can hold T3's client lease while someone is using it. */
+  presence: (input: { pageId: string; visible: boolean; focused: boolean; interactedAt: number | null }): Promise<{ ok: true }> => post("/api/t3/presence", input),
+  filePreview: (path: string, base: string | null): Promise<FilePreviewResponse> => get(`/api/file-preview?${new URLSearchParams({ path, ...(base ? { base } : {}) })}`),
   updates: (fresh = false): Promise<UpdatesView> => get(`/api/t3/updates${fresh ? "?fresh=1" : ""}`),
   checkUpdates: (): Promise<UpdatesView> => post("/api/t3/updates/check", {}),
   updateHarness: (instanceId: string): Promise<UpdatesView> => post("/api/t3/updates/harness", { instanceId }),
@@ -147,8 +154,13 @@ export const api = {
   projectRefs: (projectId: string): Promise<ProjectRefs> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/refs`),
   /** The folders T3 lists for a path being typed: "/a/b/" lists b's subfolders, "/a/b" those of a whose names start with b. */
   folders: (path: string): Promise<FolderListing> => get(`/api/t3/folders?path=${encodeURIComponent(path)}`),
-  roles: (): Promise<Role[]> => get("/api/roles"),
   presets: (): Promise<Preset[]> => get("/api/presets"),
+  overview: (): Promise<{ rooms: OverviewRoom[]; threads: OverviewThread[]; readAt: string }> => get("/api/overview"),
+  /** App-wide settings: which saved crew member is the Consigliere of new conversations. */
+  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string } }> => get("/api/settings"),
+  /** Reasons designating this member may not work (plan mode, approvals, an untried harness); it is allowed anyway. */
+  consigliereWarnings: (roomId: string, participantId: string): Promise<{ warnings: string[] }> =>
+    get(`/api/rooms/${encodeURIComponent(roomId)}/participants/${encodeURIComponent(participantId)}/consigliere-warnings`),
   browsers: (): Promise<BrowserListItem[]> => get("/api/browsers"),
   /** One browser, with its profile size. */
   browser: (browserId: string): Promise<BrowserListItem> => get(`/api/browsers/${encodeURIComponent(browserId)}`),

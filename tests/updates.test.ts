@@ -6,7 +6,8 @@ import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
 
-const NEWEST = "0.0.43-nightly.20260928.2375";
+// Newer than the T3 the fake runs (0.0.46-nightly.20261003.2610).
+const NEWEST = "0.0.46-nightly.20261005.2690";
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 test("versions order like semver, nightlies by date and run; the channel is the prerelease name", () => {
@@ -74,7 +75,7 @@ test("a harness updates when asked, through T3; one T3 cannot update is refused"
 test("T3 updates to the newest release shown, keeps running turns going, and is done when it answers on it", async (t) => {
   const stack = await createTestStack({ autoCompleteMs: null, updateMs: 30 }, undefined, { latestRelease: async () => NEWEST });
   t.after(() => stack.close());
-  await assert.rejects(stack.updates.updateServer("0.0.43-nightly.20260927.2331"), /newest T3 is now/);
+  await assert.rejects(stack.updates.updateServer("0.0.46-nightly.20261004.2650"), /newest T3 is now/);
   const started = await stack.updates.updateServer(NEWEST);
   assert.equal(started.server.job?.state, "installing");
   await assert.rejects(stack.updates.updateServer(NEWEST), /already being updated/);

@@ -34,6 +34,11 @@ export interface Room {
   defaultBrowserId: string | null;
   /** Browsers the room's agents may use; null means all of them. */
   allowedBrowserIds: string[] | null;
+  /**
+   * The room's Consigliere, when it has one: the seated member the user talks to, who hands the work to the others
+   * and reports back. A mark on a member; it carries no model or preset of its own.
+   */
+  consigliereId: ParticipantId | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,8 +85,6 @@ export interface Participant {
   id: ParticipantId;
   roomId: RoomId;
   alias: string;
-  /** Role assigned in this room; its rules are delivered with every assignment. */
-  roleId: string | null;
   /** Mirror of the bound thread's current configuration in T3, refreshed by the scheduler. */
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
@@ -90,15 +93,6 @@ export interface Participant {
   bindingGeneration: number;
   /** Set when the participant was removed from the room; kept for attribution of past events. */
   retiredAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** A named set of rules ("accountant"), assignable to any participant in any room. */
-export interface Role {
-  id: string;
-  name: string;
-  rules: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -112,7 +106,6 @@ export interface Preset {
   name: string;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
-  roleId: string | null;
   /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
   workspaceMode: "local" | "worktree";
   createdAt: string;
@@ -139,12 +132,19 @@ export type RoomEventKind =
   | "t3.turn"
   /** A message the user typed in T3 into a turn the room started (a mid-turn note). Display only, like t3.turn. */
   | "t3.message"
+  /**
+   * A message one member's agent sent to another member's thread with T3's tools: work handed out, a steer, a queued
+   * follow-up, a question, an answer. Display only, like t3.turn; members read it with rooms-board.
+   */
+  | "member.message"
   | "task.status"
   | "system";
 
 export type Speaker =
   | { type: "user" }
   | { type: "participant"; participantId: ParticipantId; bindingId: BindingId }
+  /** member.message: a sender whose thread is not a member of the room, named by its thread's title. */
+  | { type: "outside"; threadId: string; title: string }
   | { type: "system" };
 
 export interface ArtifactRef {
@@ -178,8 +178,12 @@ export interface RoomEvent {
   progress: Array<{ text: string; at: string }>;
   /** t3.turn: the prompt typed in T3 that started the turn. */
   prompt: string | null;
-  /** Source identity for deduplicating imported T3 content. */
-  sourceRef: { threadId: string; messageId: string; turnId: string | null } | null;
+  /** member.message: the member whose thread the message arrived in. */
+  to: ParticipantId | null;
+  /** t3.turn: how the turn ended, from the T3 run's status. Null on other kinds and on turns recorded before this existed. */
+  outcome: "completed" | "interrupted" | "failed" | null;
+  /** Source identity for deduplicating imported T3 content: the thread, the message, and the T3 run it belongs to. */
+  sourceRef: { threadId: string; messageId: string; t3RunId: string | null } | null;
   createdAt: string;
 }
 
@@ -246,6 +250,13 @@ export interface Task {
   delivery: "queue" | "steer";
   /** A T3 slash command ("/compact …"): the instruction is sent verbatim as the turn text, without a briefing. */
   slashCommand: boolean;
+  /**
+   * "seat": the standing facts Backroom sends a member of a room that has a Consigliere (his messages arrive bare).
+   * Its briefing carries no room messages: the member reads the board by number instead.
+   * "wake": Backroom's own task for a member who posted work on the board: it waits on the task that post made and
+   * runs when that task ends, however it ends, bringing the answer. The poster never waits in a tool call.
+   */
+  kind: "assignment" | "seat" | "wake";
   scheduleMode: ScheduleMode;
   prerequisites: PrerequisiteRef[];
   state: TaskState;
@@ -254,6 +265,8 @@ export interface Task {
   currentRunId: RunId | null;
   /** Explicit user outcome override: the user marked the task blocked. */
   userOutcome: "blocked" | null;
+  /** When the user took a failed task off their list without retrying it; a retry clears it. */
+  dismissedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -277,9 +290,10 @@ export interface Run {
   threadId: string;
   /** Stable T3 command identity for identical retries. */
   commandId: string;
-  /** T3 user message identity used to correlate the turn. */
+  /** The id of the user message sent to T3 for this run; T3 names it on the run it starts (or steers it into one). */
   messageId: string;
-  turnId: string | null;
+  /** The T3 run that carries this run's message, once T3 reports it. Several room runs steered into one T3 run share it. */
+  t3RunId: string | null;
   status: RunStatus;
   /** True when this run's message was sent into a turn that was already running (steering). */
   steered: boolean;
@@ -308,7 +322,6 @@ export interface NativeRequest {
 export interface RoomSnapshot {
   room: Room;
   participants: Participant[];
-  roles: Role[];
   bindings: SessionBinding[];
   tasks: Task[];
   runs: Run[];
@@ -331,17 +344,21 @@ export interface BrowserListItem extends Browser {
 import type { RoomBrowserStatus } from "../browser/roomBrowsers.ts";
 
 export interface ParticipantStatus {
-  session: "idle" | "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" | "unknown";
+  /**
+   * The thread's status in T3: idle before its first run, otherwise its active run's status (preparing, queued,
+   * starting, running, waiting) or how its latest run ended (completed, interrupted, failed, cancelled, rolled_back).
+   */
+  status: "idle" | "preparing" | "queued" | "starting" | "running" | "waiting" | "completed" | "interrupted" | "failed" | "cancelled" | "rolled_back" | "unknown";
   /** True when T3 was reachable but no longer has the bound thread (deleted in T3). */
   threadMissing: boolean;
-  /** True when the thread is running a turn the room did not dispatch. */
+  /** True when the thread is running a run the room did not dispatch. */
   externalActivity: boolean;
   pendingApprovals: boolean;
   pendingUserInput: boolean;
   activeRunId: RunId | null;
   /**
-   * T3's backgroundLiveness: "working" while subagents or background jobs run (the agent will wake itself when they
-   * finish), "monitoring" when only watch loops remain, null when nothing runs in the background.
+   * Work T3 reports as still running after the run settled: "working" while subagents or commands run (the agent
+   * wakes itself when they finish), "monitoring" when only monitors remain, null when nothing runs in the background.
    */
   background: "working" | "monitoring" | null;
 }

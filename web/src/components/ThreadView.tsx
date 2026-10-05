@@ -8,6 +8,7 @@ import type { ThreadCost, ThreadCosts } from "../types.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import {
+  isRunActive,
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_TOTAL_BYTES,
   ATTACHMENT_MIME_TYPES,
@@ -34,6 +35,7 @@ import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, MEMBER_ACCENT } from "./Monogram.tsx";
 import { ModelIcon } from "./ProviderIcon.tsx";
+import { FileBaseContext } from "./filePreviewContext.ts";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
@@ -59,13 +61,13 @@ const time = (iso: string): string => {
 export type ThreadActivity = { label: string; tone: "input" | "working" | "background" | "error" | "idle" };
 
 /** What a thread is doing, as one short label: needs you, working, background, error, or idle. */
-export function threadActivity(thread: Pick<T3ThreadShell, "session" | "hasPendingApprovals" | "hasPendingUserInput" | "backgroundLiveness">): ThreadActivity {
-  if (thread.hasPendingApprovals || thread.hasPendingUserInput) return { label: "needs you", tone: "input" };
-  const status = thread.session?.status;
-  if (status === "running" || status === "starting") return { label: status === "starting" ? "starting" : "working", tone: "working" };
+export function threadActivity(thread: Pick<T3ThreadShell, "status" | "pendingRequest" | "backgroundLiveness">): ThreadActivity {
+  if (thread.pendingRequest) return { label: "needs you", tone: "input" };
+  const status = thread.status;
+  if (isRunActive(status)) return { label: status === "running" || status === "waiting" ? "working" : "starting", tone: "working" };
   if (thread.backgroundLiveness === "working") return { label: "background", tone: "background" };
   if (thread.backgroundLiveness === "monitoring") return { label: "monitoring", tone: "background" };
-  if (status === "error") return { label: "error", tone: "error" };
+  if (status === "failed") return { label: "error", tone: "error" };
   return { label: "idle", tone: "idle" };
 }
 
@@ -98,7 +100,7 @@ function useThreadView(threadId: string, onGone: () => void): { view: ThreadView
         setError(null);
         seen.current = true;
         misses.current = 0;
-        busy = busy || data.running !== null || data.requests.length > 0 || data.thread.session?.status === "starting";
+        busy = busy || data.running !== null || data.requests.length > 0 || isRunActive(data.thread.status);
       } catch (caught) {
         if (cancelled) return;
         if (caught instanceof ApiError && caught.status === 404) {
@@ -177,7 +179,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
     autoRead,
     view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })) : null,
   );
-  const activity = thread ? threadActivity({ ...thread, hasPendingApprovals: thread.hasPendingApprovals || (view?.requests.length ?? 0) > 0 }) : null;
+  const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }) : null;
   const running = view?.running ?? null;
 
   const lifecycle = async (action: "settle" | "unsettle" | "archive" | "delete") => {
@@ -616,7 +618,7 @@ const MODE_KEY = "backroom.directMode";
 // Kept here, like the thread's browser: T3 knows nothing of the crew, and the thread's settings are its own from the
 // start. The name is stored too, so it outlives the crew member.
 const THREAD_CREW_KEY = "backroom.threadCrew.";
-const threadCrew = (threadId: string): { presetId: string; name: string } | null => {
+export const threadCrew = (threadId: string): { presetId: string; name: string } | null => {
   try {
     const raw = localStorage.getItem(THREAD_CREW_KEY + threadId);
     return raw ? (JSON.parse(raw) as { presetId: string; name: string }) : null;
@@ -807,52 +809,55 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
       }}
     >
       <div className="timeline-content">
-        {view.partial ? <div className="chat-status mono thread-partial">Earlier turns are in T3 Code</div> : null}
-        {view.items.length === 0 && !view.running ? <p className="muted thread-loading">No messages yet.</p> : null}
-        {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} lead={lead} />))}
-        {view.running ? (
-          <div className="chat-row from-agent live-turn wide" style={identityStyle(AGENT_COLOR)} aria-live="off">
-            <div className="chat-stack">
-              <div className="chat-head">
-                {speaker}
-                <span className="live-working mono">
-                  <span className="dot dot-working" aria-hidden="true" /> {view.requests.length > 0 ? "needs you" : "working"}
-                </span>
-              </div>
-              <div className="bubble bubble-agent bubble-live">
-                <LiveFeed items={view.running.feed} placeholder="Thinking…" className="live-feed-chat" />
+        {/* Files the replies name are looked for in the thread's worktree first (else the projects'). */}
+        <FileBaseContext.Provider value={thread.worktreePath ?? null}>
+          {view.partial ? <div className="chat-status mono thread-partial">Earlier turns are in T3 Code</div> : null}
+          {view.items.length === 0 && !view.running ? <p className="muted thread-loading">No messages yet.</p> : null}
+          {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} lead={lead} />))}
+          {view.running ? (
+            <div className="chat-row from-agent live-turn wide" style={identityStyle(AGENT_COLOR)} aria-live="off">
+              <div className="chat-stack">
+                <div className="chat-head">
+                  {speaker}
+                  <span className="live-working mono">
+                    <span className="dot dot-working" aria-hidden="true" /> {view.requests.length > 0 ? "needs you" : "working"}
+                  </span>
+                </div>
+                <div className="bubble bubble-agent bubble-live">
+                  <LiveFeed items={view.running.feed} placeholder="Thinking…" className="live-feed-chat" />
+                </div>
               </div>
             </div>
-          </div>
-        ) : null}
-        {view.requests.length > 0 ? (
-          <div className="native-requests thread-requests" role="group" aria-label="Waiting for you">
-            {view.requests.map((request) =>
-              request.kind === "approval" ? (
-                <ApprovalRequestCard
-                  key={request.requestId}
-                  payload={request.payload}
-                  speaker={speaker}
-                  onRespond={(decision) => onRespond({ type: "thread.approval.respond", threadId: thread.id, requestId: request.requestId, decision })}
-                />
-              ) : (
-                <UserInputRequestCard
-                  key={request.requestId}
-                  requestId={request.requestId}
-                  payload={request.payload}
-                  speaker={speaker}
-                  onSubmit={(answers) => onRespond({ type: "thread.userInput.respond", threadId: thread.id, requestId: request.requestId, answers })}
-                />
-              ),
-            )}
-          </div>
-        ) : null}
-        {thread.session?.status === "error" && thread.session.lastError ? (
-          <div className="chat-status chat-system thread-error" role="alert">
-            <span className="status-text">T3: {thread.session.lastError}</span>
-          </div>
-        ) : null}
-        {error ? <div className="chat-status mono thread-partial">Showing the last reading; T3 did not answer: {error}</div> : null}
+          ) : null}
+          {view.requests.length > 0 ? (
+            <div className="native-requests thread-requests" role="group" aria-label="Waiting for you">
+              {view.requests.map((request) =>
+                request.kind === "approval" ? (
+                  <ApprovalRequestCard
+                    key={request.requestId}
+                    payload={request.payload}
+                    speaker={speaker}
+                    onRespond={(decision) => onRespond({ type: "thread.approval.respond", threadId: thread.id, requestId: request.requestId, decision })}
+                  />
+                ) : (
+                  <UserInputRequestCard
+                    key={request.requestId}
+                    requestId={request.requestId}
+                    payload={request.payload}
+                    speaker={speaker}
+                    onSubmit={(answers) => onRespond({ type: "thread.userInput.respond", threadId: thread.id, requestId: request.requestId, answers })}
+                  />
+                ),
+              )}
+            </div>
+          ) : null}
+          {thread.status === "failed" && thread.lastError ? (
+            <div className="chat-status chat-system thread-error" role="alert">
+              <span className="status-text">T3: {thread.lastError}</span>
+            </div>
+          ) : null}
+          {error ? <div className="chat-status mono thread-partial">Showing the last reading; T3 did not answer: {error}</div> : null}
+        </FileBaseContext.Provider>
       </div>
     </div>
   );
@@ -974,7 +979,7 @@ const readDataUrl = (file: File): Promise<string> =>
   });
 
 /** Plain composer for a direct thread: Enter sends (Shift+Enter for a new line), images by button, paste or drop. */
-function ThreadComposer({
+export function ThreadComposer({
   placeholder,
   disabled,
   running,

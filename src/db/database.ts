@@ -256,6 +256,30 @@ const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // T3's Orchestrator V2: a run's work in T3 is a run (it was a turn in V1), and its id is what Backroom keeps.
+  `
+  ALTER TABLE runs RENAME COLUMN turn_id TO t3_run_id;
+  ALTER TABLE events RENAME COLUMN source_turn_id TO source_t3_run_id;
+  `,
+  // The board: who a member's message was sent to, and how a turn the room did not start ended.
+  `
+  ALTER TABLE events ADD COLUMN to_participant_id TEXT;
+  ALTER TABLE events ADD COLUMN outcome TEXT;
+  `,
+  // The Consigliere: a mark on one member of a room; and the seat briefing, a task Backroom writes itself.
+  `
+  ALTER TABLE rooms ADD COLUMN consigliere_participant_id TEXT;
+  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'assignment';
+  `,
+  // A failed task the user took off their list without retrying it.
+  `ALTER TABLE tasks ADD COLUMN dismissed_at TEXT;`,
+  // Roles (named rule sets) are gone: the Consigliere's rules are an app setting, and what a member is to do travels
+  // in the assignment itself.
+  `
+  DROP TABLE roles;
+  ALTER TABLE participants DROP COLUMN role_id;
+  ALTER TABLE presets DROP COLUMN role_id;
+  `,
 ];
 
 export class Database {

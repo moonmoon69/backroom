@@ -46,13 +46,13 @@ export function TaskLanes() {
     if (withTask.has(participant.id)) return [];
     const status = snapshot.participantStatus[participant.id];
     const d = desk?.participants[participant.id];
-    if (d?.runningTurn && !d.runningTurn.startedByRoom) {
-      return [{ participant, label: "turn typed in T3", detail: d.runningTurn.prompt }];
+    if (d?.runningRun && !d.runningRun.startedByRoom) {
+      return [{ participant, label: d.runningRun.prompt ? "turn typed in T3" : "turn in T3", detail: d.runningRun.prompt }];
     }
-    if (d?.runningTurn || status?.externalActivity) return [{ participant, label: "turn in T3", detail: null }];
+    if (d?.runningRun || status?.externalActivity) return [{ participant, label: "turn in T3", detail: null }];
     const liveness = d?.backgroundLiveness ?? status?.background ?? null;
     if (!liveness) return [];
-    const jobs = (d?.backgroundTasks ?? []).map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : "shell"})`);
+    const jobs = (d?.backgroundTasks ?? []).map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"})`);
     return [{ participant, label: liveness === "monitoring" ? "monitoring" : "background work", detail: jobs.join(" · ") || null }];
   });
   return (

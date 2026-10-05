@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * Live adapter contract check against a real T3 Code server.
+ * Live adapter contract check against a real T3 Code server (Orchestrator V2, orchestration protocol 2).
  *
- *   npm run t3:check                 read-only: descriptor, auth policy, projects, catalog, threads
+ *   npm run t3:check                 read-only: descriptor and protocol, auth policy, projects, catalog, threads
  *   npm run t3:check -- --write --project <projectId> [--model instanceId/model]
- *                                    also creates one thread, sends one short turn, waits for the correlated
- *                                    completion, reads the reply, and requests an interrupt on a second turn.
+ *                                    also launches one thread, sends one short message, follows its run to the end
+ *                                    by the message id, reads the reply, queues a message behind a running run,
+ *                                    steers one into it, and interrupts a run.
  *
  * Exit code 0 when every executed check passed. Nothing is deleted; created threads are titled "Backroom contract check".
  */
 import { randomUUID } from "node:crypto";
 import { readStoredAuth } from "../src/adapter/auth.ts";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
-import { resolveTurnForMessage } from "../src/adapter/correlate.ts";
-import { T3Unavailable } from "../src/adapter/types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, isRunActive, runForMessage, runReplies } from "../src/adapter/types.ts";
 import { loadConfig } from "../src/config.ts";
 
 const args = process.argv.slice(2);
@@ -44,6 +44,8 @@ console.log(`credentials: ${adapter.hasCredentials ? "present" : "missing"}`);
 try {
   const environment = await adapter.describe();
   ok("descriptor", `${environment.label} ${environment.serverVersion} (${environment.environmentId})`);
+  if (environment.orchestrationProtocolVersion === ORCHESTRATION_PROTOCOL_VERSION) ok("protocol", `orchestration protocol ${environment.orchestrationProtocolVersion}`);
+  else fail("protocol", `the server speaks orchestration protocol ${environment.orchestrationProtocolVersion ?? 1}; Backroom needs ${ORCHESTRATION_PROTOCOL_VERSION} (T3 Code 0.0.46 or newer)`);
 } catch (error) {
   fail("descriptor", (error as Error).message);
 }
@@ -99,9 +101,11 @@ try {
   const longest = threads.length > 0 ? threads[0] : null;
   ok("threads", `${threads.length} threads visible`);
   if (longest) {
-    const detail = await adapter.getThreadDetail(longest.id, { turnLimit: 2 });
+    const detail = await adapter.getThreadDetail(longest.id, { bounded: true });
     const maxLength = Math.max(0, ...(detail?.messages.map((m) => m.text.length) ?? [0]));
-    ok("thread detail", `${detail?.messages.length ?? 0} messages in the last 2 turns; longest ${maxLength} chars (no client-side cap)`);
+    ok("thread detail", `${detail?.runs.length ?? 0} runs, ${detail?.messages.length ?? 0} messages in the recent window; longest ${maxLength} chars (no client-side cap)`);
+    const archived = await adapter.listArchivedThreads();
+    ok("archived threads", `${archived.length} listed apart`);
   }
 } catch (error) {
   fail("thread detail", (error as Error).message);
@@ -134,8 +138,21 @@ if (!modelSelection) {
 console.log(`using model ${modelSelection.instanceId}/${modelSelection.model} in project ${project.title}`);
 
 const threadId = randomUUID();
+const prompt = (text: string) => `This is an automated contract check from Backroom. ${text} Do not run tools.`;
+const finished = async (messageId: string, limitMs: number): Promise<{ status: string; reply: string; runId: string } | null> => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < limitMs) {
+    await sleep(1000);
+    const detail = await adapter.getThreadDetail(threadId, { bounded: true });
+    const run = detail ? runForMessage(detail, messageId) : null;
+    if (detail && run && !isRunActive(run.status)) return { status: run.status, reply: runReplies(detail, run.id).map((m) => m.text).join("\n"), runId: run.id };
+  }
+  return null;
+};
+
+const firstMessage = randomUUID();
 try {
-  await adapter.createThread({
+  const shell = await adapter.launchThread({
     commandId: randomUUID(),
     threadId,
     projectId: project.id,
@@ -143,100 +160,87 @@ try {
     modelSelection,
     runtimeMode: "approval-required",
     interactionMode: "default",
+    workspace: { type: "root" },
+    initialMessage: { messageId: firstMessage, text: prompt("Reply with exactly: CONTRACT-CHECK-OK.") },
   });
-  const shell = await adapter.getThreadShell(threadId);
-  if (shell) ok("thread.create", `thread ${threadId} visible in shell snapshot`);
-  else fail("thread.create", "thread not visible after creation");
+  const listed = await adapter.getThreadShell(threadId);
+  if (listed) ok("orchestration.launchThread", `thread ${threadId} listed; status ${shell.status}`);
+  else fail("orchestration.launchThread", "thread not listed after launch");
 } catch (error) {
-  fail("thread.create", (error as Error).message);
+  fail("orchestration.launchThread", (error as Error).message);
   process.exit(1);
 }
 
-const messageId = randomUUID();
-const commandId = randomUUID();
+{
+  const detail = await adapter.getThreadDetail(threadId, { bounded: true });
+  const run = detail ? runForMessage(detail, firstMessage) : null;
+  if (run) ok("run by message id", `message ${firstMessage} → ${run.id} (${run.status})`);
+  else fail("run by message id", "T3 lists no run for the launch message");
+  const first = await finished(firstMessage, 180_000);
+  if (!first) fail("run completion", "the run did not end within 3 minutes (is the provider signed in?)");
+  else if (first.status === "completed") ok("run completion", `status=${first.status}; reply ${JSON.stringify(first.reply.slice(0, 80))}`);
+  else fail("run completion", `status=${first.status}`);
+  const after = await adapter.getThreadDetail(threadId, { bounded: true });
+  const checkpoint = after?.checkpoints.find((c) => c.runId === first?.runId);
+  if (checkpoint) ok("checkpoint", `status=${checkpoint.status} files=${checkpoint.files.length}`);
+  const usage = after?.providerTurns.at(-1)?.tokenUsage;
+  if (usage) ok("context reading", `${usage.usedTokens} of ${usage.maxTokens ?? "?"} tokens`);
+  const session = after?.providerThreads.at(-1)?.nativeId;
+  if (session) ok("harness session", `native id ${session} (what the cost reader looks up)`);
+}
+
+// A resend with the same command id must not start a second run (T3 keeps a receipt per command).
 try {
-  await adapter.startTurn({
-    commandId,
-    threadId,
-    messageId,
-    text: "This is an automated contract check from Backroom. Reply with exactly: CONTRACT-CHECK-OK. Do not run tools.",
-    modelSelection,
-    runtimeMode: "approval-required",
-    interactionMode: "default",
-    titleSeed: "Backroom contract check",
-  });
-  ok("thread.turn.start", "accepted");
-  // Idempotency: an identical resend must not create a second prompt.
-  await adapter.startTurn({ commandId, threadId, messageId, text: "IGNORED DUPLICATE", modelSelection, runtimeMode: "approval-required", interactionMode: "default" });
-  ok("thread.turn.start (identical resend)", "accepted without error");
+  const messageId = randomUUID();
+  const commandId = randomUUID();
+  const message = { commandId, threadId, messageId, text: prompt("Reply with exactly: SECOND-OK."), modelSelection, mode: { type: "start" } as const };
+  await adapter.sendMessage(message);
+  await adapter.sendMessage(message);
+  const second = await finished(messageId, 180_000);
+  const detail = await adapter.getThreadDetail(threadId, { bounded: true });
+  const copies = detail?.messages.filter((m) => m.id === messageId).length ?? 0;
+  if (copies === 1 && second?.status === "completed") ok("message.dispatch (identical resend)", "one message, one run");
+  else fail("message.dispatch (identical resend)", `${copies} copies of the message; run ${second?.status ?? "not finished"}`);
 } catch (error) {
-  fail("thread.turn.start", (error as Error).message);
+  fail("message.dispatch", (error as Error).message);
 }
 
-let turnId: string | null = null;
-const startedAt = Date.now();
-while (Date.now() - startedAt < 180_000) {
-  await sleep(1500);
-  const detail = await adapter.getThreadDetail(threadId, { turnLimit: 3 });
-  if (!detail) continue;
-  const userMessages = detail.messages.filter((m) => m.role === "user");
-  if (userMessages.length > 1) fail("idempotent resend", `${userMessages.length} user messages exist; expected 1`);
-  const resolution = resolveTurnForMessage(detail, messageId);
-  if ((resolution.kind === "active" || resolution.kind === "resolved") && !turnId) {
-    turnId = resolution.turnId;
-    ok("turn correlation", `message ${messageId} → turn ${turnId} (${resolution.kind})`);
-  }
-  if (turnId && detail.shell.latestTurn?.turnId === turnId && detail.shell.latestTurn.state !== "running") {
-    const reply = detail.messages.filter((m) => m.turnId === turnId && m.role === "assistant" && !m.streaming).map((m) => m.text).join("\n");
-    const state = detail.shell.latestTurn.state;
-    if (state === "completed") ok("turn completion", `state=${state}; reply ${JSON.stringify(reply.slice(0, 80))}`);
-    else fail("turn completion", `state=${state} lastError=${detail.shell.session?.lastError ?? "none"}`);
-    const checkpoint = detail.checkpoints.find((c) => c.turnId === turnId);
-    if (checkpoint) ok("checkpoint", `status=${checkpoint.status} files=${checkpoint.files.length}`);
-    break;
-  }
-}
-if (!turnId) fail("turn correlation", "the user message never received a turn id within 3 minutes (is the provider signed in?)");
-
-// Interrupt check on a second turn.
+// While a run is going: a queued message gets its own run after it, a steered message joins it, and it can be interrupted.
 try {
-  const secondMessage = randomUUID();
-  await adapter.startTurn({
-    commandId: randomUUID(),
-    threadId,
-    messageId: secondMessage,
-    text: "Count slowly from 1 to 200, one number per line. Do not run tools.",
-    modelSelection,
-    runtimeMode: "approval-required",
-    interactionMode: "default",
-  });
-  let secondTurn: string | null = null;
+  const longMessage = randomUUID();
+  await adapter.sendMessage({ commandId: randomUUID(), threadId, messageId: longMessage, text: prompt("Count slowly from 1 to 300, one number per line."), modelSelection, mode: { type: "start" } });
+  let running: string | null = null;
   const t0 = Date.now();
-  while (Date.now() - t0 < 60_000 && !secondTurn) {
-    await sleep(250);
-    const detail = await adapter.getThreadDetail(threadId, { turnLimit: 2 });
-    const second = detail ? resolveTurnForMessage(detail, secondMessage) : null;
-    if (second && (second.kind === "active" || second.kind === "resolved")) secondTurn = second.turnId;
-  }
-  if (!secondTurn) throw new Error("second turn never started");
-  await adapter.interruptTurn({ commandId: randomUUID(), threadId, turnId: secondTurn });
-  let observed: string | null = null;
-  const t1 = Date.now();
-  while (Date.now() - t1 < 60_000 && !observed) {
-    await sleep(1000);
+  while (Date.now() - t0 < 60_000 && !running) {
+    await sleep(300);
     const shell = await adapter.getThreadShell(threadId);
-    if (shell?.latestTurn?.turnId === secondTurn && shell.latestTurn.state !== "running") observed = shell.latestTurn.state;
+    if (shell?.status === "running" && shell.activeRunId) running = shell.activeRunId;
   }
-  if (observed === "interrupted") ok("thread.turn.interrupt", "observed state=interrupted");
-  else if (observed) ok("thread.turn.interrupt", `turn finished before the interrupt took effect (state=${observed}); recorded as observed, not as interrupted`);
-  else fail("thread.turn.interrupt", "no terminal state observed within 60s");
+  if (!running) throw new Error("the long run never started");
+  const queuedMessage = randomUUID();
+  await adapter.sendMessage({ commandId: randomUUID(), threadId, messageId: queuedMessage, text: prompt("Reply with exactly: QUEUED-OK."), modelSelection, mode: { type: "queue" } });
+  const steeredMessage = randomUUID();
+  await adapter.sendMessage({ commandId: randomUUID(), threadId, messageId: steeredMessage, text: "Stop counting at 20.", modelSelection, mode: { type: "steer", runId: running } });
+  const during = await adapter.getThreadDetail(threadId, { bounded: true });
+  const queuedRun = during ? runForMessage(during, queuedMessage) : null;
+  const steeredRun = during ? runForMessage(during, steeredMessage) : null;
+  if (queuedRun && queuedRun.id !== running) ok("queue", `a queued message has its own run (${queuedRun.status}${queuedRun.queuePosition ? `, position ${queuedRun.queuePosition}` : ""})`);
+  else fail("queue", `queued message → ${queuedRun?.id ?? "no run"}`);
+  if (steeredRun?.id === running) ok("steer", "a steered message joined the running run");
+  else fail("steer", `steered message → ${steeredRun?.id ?? "no run"}; expected ${running}`);
+  await adapter.interruptRun({ commandId: randomUUID(), threadId, runId: running });
+  const long = await finished(longMessage, 60_000);
+  if (long?.status === "interrupted") ok("run.interrupt", "observed status=interrupted");
+  else if (long) ok("run.interrupt", `the run ended before the interrupt took effect (status=${long.status}); recorded as observed, not as interrupted`);
+  else fail("run.interrupt", "no terminal status observed within 60s");
+  const queued = await finished(queuedMessage, 180_000);
+  if (queued?.status === "completed") ok("queue drains", `the queued run ran after it; reply ${JSON.stringify(queued.reply.slice(0, 40))}`);
+  else fail("queue drains", `queued run ${queued?.status ?? "did not finish"} (T3 holds a queue after an interrupt until it is resumed, when asked to)`);
 } catch (error) {
-  fail("thread.turn.interrupt", (error as Error).message);
+  fail("queue, steer and interrupt", (error as Error).message);
 }
 
+adapter.close();
 console.log(`\ncreated thread ${threadId} ("Backroom contract check") in project ${project.title}; delete it in T3 if you do not want to keep it.`);
 console.log(failures === 0 ? "all checks passed" : `${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
-
-// Keep the T3Unavailable import referenced for clearer stack traces in --write mode.
-void T3Unavailable;

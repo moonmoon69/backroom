@@ -7,11 +7,10 @@ const sol = { instanceId: "codex", model: "gpt-6-sol", options: [{ id: "reasonin
 test("a preset keeps a participant's settings and seats them in a room on a new thread", async (t) => {
   const stack = await createTestStack({ autoCompleteMs: null }, []);
   t.after(() => stack.close());
-  const role = (await stack.run({ type: "role.create", name: "reviewer", rules: "Review twice." })) as { roleId: string };
-  const saved = (await stack.run({ type: "preset.create", name: "sol", modelSelection: sol, runtimeMode: "auto", roleId: role.roleId })) as { presetId: string };
+  const saved = (await stack.run({ type: "preset.create", name: "sol", modelSelection: sol, runtimeMode: "auto" })) as { presetId: string };
   assert.deepEqual(
-    stack.repos.listPresets().map((p) => [p.name, p.modelSelection, p.runtimeMode, p.roleId, p.workspaceMode]),
-    [["sol", sol, "auto", role.roleId, "local"]],
+    stack.repos.listPresets().map((p) => [p.name, p.modelSelection, p.runtimeMode, p.workspaceMode]),
+    [["sol", sol, "auto", "local"]],
   );
 
   const first = (await stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId })) as { participantId: string; threadId: string };
@@ -23,7 +22,6 @@ test("a preset keeps a participant's settings and seats them in a room on a new 
   for (const participant of seated) {
     assert.deepEqual(participant.modelSelection, sol);
     assert.equal(participant.runtimeMode, "auto");
-    assert.equal(participant.roleId, role.roleId);
   }
   assert.ok(named.participantId);
   const thread = await stack.fake.getThreadShell(first.threadId);
@@ -31,11 +29,10 @@ test("a preset keeps a participant's settings and seats them in a room on a new 
   assert.equal(thread?.runtimeMode, "auto");
 });
 
-test("presets are renamed, changed and deleted; names are unique and a deleted role leaves the preset without one", async (t) => {
+test("presets are renamed, changed and deleted; names are unique", async (t) => {
   const stack = await createTestStack({ autoCompleteMs: null }, []);
   t.after(() => stack.close());
-  const role = (await stack.run({ type: "role.create", name: "reviewer", rules: "Review twice." })) as { roleId: string };
-  const a = (await stack.run({ type: "preset.create", name: "sol", modelSelection: sol, roleId: role.roleId })) as { presetId: string };
+  const a = (await stack.run({ type: "preset.create", name: "sol", modelSelection: sol })) as { presetId: string };
   await stack.run({ type: "preset.create", name: "fable", modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5-1" }, workspaceMode: "worktree" });
   assert.deepEqual(stack.repos.listPresets().map((p) => p.name), ["sol", "fable"], "in the order they were made");
 
@@ -49,11 +46,6 @@ test("presets are renamed, changed and deleted; names are unique and a deleted r
   assert.equal(updated?.runtimeMode, "approval-required");
   assert.deepEqual(updated?.modelSelection, sol, "what was not sent stays");
   assert.deepEqual(stack.repos.listPresets().map((p) => p.name), ["sol-high", "fable"], "an update keeps its place");
-
-  await stack.run({ type: "role.delete", roleId: role.roleId });
-  assert.equal(stack.repos.getPreset(a.presetId)?.roleId, null);
-  const seated = (await stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: a.presetId })) as { participantId: string };
-  assert.equal(stack.repos.getParticipant(seated.participantId)?.roleId, null);
 
   await stack.run({ type: "preset.delete", presetId: a.presetId });
   assert.deepEqual(stack.repos.listPresets().map((p) => p.name), ["fable"]);

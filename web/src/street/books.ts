@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.ts";
-import type { T3ThreadShell } from "../types.ts";
+import { isRunActive, type T3ThreadShell } from "../types.ts";
 
 interface Entry {
   cost: number;
@@ -17,7 +17,7 @@ interface Entry {
 const cache = new Map<string, Entry>();
 
 function ttl(thread: T3ThreadShell): number {
-  const busy = thread.session?.status === "running" || thread.session?.status === "starting" || Boolean(thread.backgroundLiveness);
+  const busy = isRunActive(thread.status) || Boolean(thread.backgroundLiveness);
   if (busy) return 60_000;
   if (thread.settledAt || thread.archivedAt) return 30 * 60_000;
   return 5 * 60_000;

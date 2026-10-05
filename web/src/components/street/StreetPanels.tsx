@@ -148,8 +148,6 @@ export function ClubCard({
   theme,
   onTheme,
   onOpenConnection,
-  onOpenLibrary,
-  rolesDisabled,
   onSeat,
   onNewThread,
   onEditPreset,
@@ -165,8 +163,6 @@ export function ClubCard({
   theme: ThemeChoice;
   onTheme: (choice: ThemeChoice) => void;
   onOpenConnection: () => void;
-  onOpenLibrary: () => void;
-  rolesDisabled: boolean;
   onSeat: (roomId: string, presetId: string) => void;
   onNewThread: (preset: Preset) => void;
   onEditPreset: (preset: Preset | null) => void;
@@ -192,13 +188,13 @@ export function ClubCard({
       </p>
       <h3>House rules</h3>
       <div className="st-club-controls">
-        <AppControls status={status} onOpenConnection={onOpenConnection} onOpenLibrary={onOpenLibrary} rolesDisabled={rolesDisabled} theme={theme} onTheme={onTheme} />
+        <AppControls status={status} onOpenConnection={onOpenConnection} theme={theme} onTheme={onTheme} />
         <button type="button" className="primary small" onClick={onDesk}>
           Back to the desk
         </button>
       </div>
       <h3>The family · {presets.length}</h3>
-      {presets.length === 0 ? <p className="muted">Nobody yet. Add someone: a name with a model, a role and where they work.</p> : null}
+      {presets.length === 0 ? <p className="muted">Nobody yet. Add someone: a name with a model and where they work.</p> : null}
       <ul className="st-rows">
         {presets.map((preset) => {
           const text = presetText(preset);

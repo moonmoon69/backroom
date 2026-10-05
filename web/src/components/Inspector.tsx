@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { AddParticipantButton, CrewButton, CrewPanel } from "./Crew.tsx";
 import { GitTab } from "./GitTab.tsx";
-import { BranchIcon, CloseIcon, TasksIcon } from "./icons.tsx";
+import { BranchIcon, CloseIcon } from "./icons.tsx";
 import { ageOf } from "./deskFormat.ts";
 import { TaskLanes, taskCount } from "./QueueDrawer.tsx";
 import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
@@ -20,38 +20,32 @@ function useUncommitted(): { count: number; branch: string | null; folders: numb
 }
 
 /**
- * The room header's switches for the side panel, as icons with counts: people, browser, tasks and git. Each opens
- * the panel on its tab; the tab already showing closes it. Hover says what each is.
+ * The room header's switches for the side panel, as icons with counts: people, browser and git. Each opens the panel
+ * on its tab; the tab already showing closes it. Hover says what each is. (What the tasks are doing is the status
+ * bar above the conversation; the Tasks tab itself is still opened by the Street look's noticeboard.)
  */
 export function PanelButtons({ open, tab, onToggle }: { open: boolean; tab: InspectorTab; onToggle: (tab: InspectorTab) => void }) {
-  const { snapshot } = useRoom();
-  const tasks = taskCount(snapshot.tasks, snapshot.nativeRequests.length);
-  const needInput = snapshot.nativeRequests.length;
-  const uncommitted = useUncommitted();
   const on = (key: InspectorTab) => open && tab === key;
-  const tasksTitle = `Tasks: ${tasks} waiting, running or needing input${needInput > 0 ? `; ${needInput} need${needInput === 1 ? "s" : ""} your answer` : ""}`;
-  const gitTitle = uncommitted
-    ? `Git: ${uncommitted.count} uncommitted file${uncommitted.count === 1 ? "" : "s"}${uncommitted.branch ? ` on ${uncommitted.branch}` : uncommitted.folders > 1 ? ` across ${uncommitted.folders} folders` : ""}; commits, worktrees`
-    : "Git: branches, commits, worktrees and uncommitted changes";
   return (
     <span className="panel-buttons" role="group" aria-label="Side panel">
       <CrewButton active={on("people")} onClick={() => onToggle("people")} />
       <RoomBrowserButton active={on("browser")} onClick={() => onToggle("browser")} />
-      <button type="button" className={`small${on("tasks") ? " active" : ""}`} aria-pressed={on("tasks")} aria-label={tasksTitle} title={tasksTitle} onClick={() => onToggle("tasks")}>
-        <TasksIcon />
-        {tasks > 0 ? <span className="panel-count mono">{tasks}</span> : null}
-        {needInput > 0 ? (
-          <span className="pill pill-input">
-            {needInput}
-            <span className="pill-words"> need input</span>
-          </span>
-        ) : null}
-      </button>
-      <button type="button" className={`small${on("git") ? " active" : ""}`} aria-pressed={on("git")} aria-label={gitTitle} title={gitTitle} onClick={() => onToggle("git")}>
-        <BranchIcon />
-        {uncommitted?.count ? <span className="panel-count mono">{uncommitted.count}</span> : null}
-      </button>
+      <GitButton active={on("git")} onClick={() => onToggle("git")} />
     </span>
+  );
+}
+
+/** The header's Git switch: the branch icon with the count of uncommitted files; hover says the branch. */
+export function GitButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const uncommitted = useUncommitted();
+  const gitTitle = uncommitted
+    ? `Git: ${uncommitted.count} uncommitted file${uncommitted.count === 1 ? "" : "s"}${uncommitted.branch ? ` on ${uncommitted.branch}` : uncommitted.folders > 1 ? ` across ${uncommitted.folders} folders` : ""}; commits, worktrees`
+    : "Git: branches, commits, worktrees and uncommitted changes";
+  return (
+    <button type="button" className={`small${active ? " active" : ""}`} aria-pressed={active} aria-label={gitTitle} title={gitTitle} onClick={onClick}>
+      <BranchIcon />
+      {uncommitted?.count ? <span className="panel-count mono">{uncommitted.count}</span> : null}
+    </button>
   );
 }
 

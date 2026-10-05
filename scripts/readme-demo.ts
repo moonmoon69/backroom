@@ -1,5 +1,5 @@
 /**
- * A demo Backroom for the README's screenshots: the fake T3 with scripted replies, a crew with roles, shared browsers,
+ * A demo Backroom for the README's screenshots: the fake T3 with scripted replies, a crew, shared browsers,
  * three rooms and a thread on its own, in a throwaway data folder. It touches neither your data nor T3, and never
  * starts a browser.
  *
@@ -19,8 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FakeT3Adapter, type FakeTurnCompletion } from "../src/adapter/fake.ts";
-import type { StartTurnInput } from "../src/adapter/types.ts";
+import { FakeT3Adapter, type FakeRunCompletion } from "../src/adapter/fake.ts";
 import { createStack } from "../src/app/bootstrap.ts";
 import { RoomBrowsers } from "../src/browser/roomBrowsers.ts";
 import { loadConfig } from "../src/config.ts";
@@ -48,7 +47,7 @@ const config = loadConfig({
 // ---- what the members answer: matched on their assignment ----
 
 /** A turn: what the member answers, and what it used (model calls, output tokens, calls made by a subagent). */
-const REPLIES: Array<{ match: RegExp; used: { calls: number; output: number; subagentCalls?: number }; reply: FakeTurnCompletion }> = [
+const REPLIES: Array<{ match: RegExp; used: { calls: number; output: number; subagentCalls?: number }; reply: FakeRunCompletion }> = [
   {
     match: /code field and validation/,
     used: { calls: 14, output: 9800, subagentCalls: 6 },
@@ -136,7 +135,7 @@ const REPLIES: Array<{ match: RegExp; used: { calls: number; output: number; sub
   },
 ];
 
-function reply(input: StartTurnInput): FakeTurnCompletion {
+function reply(input: { threadId: string; text: string }): FakeRunCompletion {
   const assignment = /== Your assignment \([^)]+\) ==\n([^\n]+)/.exec(input.text)?.[1] ?? input.text;
   const turn = REPLIES.find((r) => r.match.test(assignment));
   if (turn) recordUsage(input.threadId, turn.used);
@@ -148,8 +147,9 @@ function reply(input: StartTurnInput): FakeTurnCompletion {
 mkdirSync(t3Dir, { recursive: true });
 const rates = join(process.env.T3_USERDATA_DIR ?? join(homedir(), ".t3", "userdata"), "usage-model-rates.json");
 if (existsSync(rates)) copyFileSync(rates, join(t3Dir, "usage-model-rates.json"));
-const t3State = new DatabaseSync(join(t3Dir, "state.sqlite"));
-t3State.exec("CREATE TABLE provider_session_runtime (thread_id TEXT PRIMARY KEY, provider_name TEXT, resume_cursor_json TEXT)");
+// T3's V2 database, as far as the estimate reads it: each thread's provider thread names the harness's own session.
+const t3State = new DatabaseSync(join(t3Dir, "statev2.sqlite"));
+t3State.exec("CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT PRIMARY KEY, thread_id TEXT, driver TEXT, payload_json TEXT)");
 const sessions = new Map<string, string>();
 let callNumber = 0;
 
@@ -161,8 +161,9 @@ function recordUsage(threadId: string, used: { calls: number; output: number; su
   if (!session) {
     session = randomUUID();
     sessions.set(threadId, session);
-    const cursor = model.instanceId === "codex" ? { threadId: session } : { resume: session };
-    t3State.prepare("INSERT INTO provider_session_runtime VALUES (?, ?, ?)").run(threadId, model.instanceId, JSON.stringify(cursor));
+    t3State
+      .prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?, ?)")
+      .run(`provider-thread:${threadId}`, threadId, model.instanceId, JSON.stringify({ nativeThreadRef: { driver: model.instanceId, nativeId: session, strength: "strong" } }));
   }
   const calls = (n: number, offset: number) =>
     Array.from({ length: n }, (_, i) => ({
@@ -235,15 +236,12 @@ const settled = async (roomId: string) => {
 
 // ---- the scenario ----
 
-const builder = await run({ type: "role.create", name: "builder", rules: "Build what is asked, with tests. Keep public APIs as they are unless told otherwise." });
-const reviewer = await run({ type: "role.create", name: "reviewer", rules: "Review for correctness first, then clarity. Name file and line for every finding; don't change code yourself." });
-const writer = await run({ type: "role.create", name: "writer", rules: "Write for customers: short, concrete, no internal names." });
 const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
 const fable = { instanceId: "claudeAgent", model: "claude-fable-5-1", options: [{ id: "effort", value: "high" }] };
 const sol = { instanceId: "codex", model: "gpt-6-sol" };
 const presets: Record<string, string> = {};
-for (const [name, modelSelection, roleId] of [["Opus", opus, builder.roleId], ["Sol", sol, reviewer.roleId], ["Fable", fable, writer.roleId]] as const) {
-  presets[name] = (await run({ type: "preset.create", name, modelSelection, runtimeMode: "full-access", roleId, workspaceMode: "local" })).presetId!;
+for (const [name, modelSelection] of [["Opus", opus], ["Sol", sol], ["Fable", fable]] as const) {
+  presets[name] = (await run({ type: "preset.create", name, modelSelection, runtimeMode: "full-access", workspaceMode: "local" })).presetId!;
 }
 const staging = await run({ type: "browser.create", name: "staging", description: "The staging shop, signed in as the QA customer." });
 await run({ type: "browser.create", name: "payments-sandbox", description: "The payment provider's test dashboard, signed in." });

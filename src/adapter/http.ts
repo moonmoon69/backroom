@@ -1,39 +1,62 @@
 /**
- * HTTP adapter for a T3 Code server (contracts: packages/contracts/src/environmentHttp.ts).
+ * HTTP and WebSocket adapter for a T3 Code server speaking orchestration protocol 2 (Orchestrator V2; contracts:
+ * packages/contracts/src/orchestrationV2.ts, rpc.ts, environmentHttp.ts).
  *
- * Dispatch:     POST /api/orchestration/dispatch  (ClientOrchestrationCommand -> { sequence })
- * Observation:  GET  /api/orchestration/shell     (lightweight projects + thread shells)
- *               GET  /api/orchestration/threads/:threadId[?turnLimit=N]
- * Discovery:    GET  /.well-known/t3/environment
+ * Reads:     GET /api/orchestration/shell                   projects, thread shells, archived thread shells
+ *            GET /api/orchestration/threads/:id[/bounded]   a thread's projection: runs, messages, items, requests
+ *            GET /.well-known/t3/environment                the server and its protocol version
+ * Commands:  orchestration.dispatchCommand (WebSocket RPC)  message.dispatch, run.interrupt, runtime-request.respond, thread.*
+ *            orchestration.launchThread                     a thread with its workspace, optionally started
+ *            projects.mutate, assets.persistChatAttachments, vcs.*, filesystem.browse, server.*
  *
- * Observation is bounded polling of persisted read models. Turn correlation uses the
- * client-supplied messageId (user message -> turnId) and latestTurn/checkpoints on the thread.
+ * Every request names the protocol (x-t3-orchestration-protocol header, orchestrationProtocol on the socket). A server
+ * on another protocol is reported as T3ProtocolMismatch; only server.* calls are still made to it, so it can be
+ * updated from here. A run is found by the id of the user message that started it: T3 records it on the run.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelSelection } from "../domain/types.ts";
 import type {
+  ApprovalDecision,
   ThreadLifecycleAction,
   UsageBucket,
   UsageSummary,
   CatalogEntry,
+  ClientActivity,
   CreateProjectInput,
-  CreateThreadInput,
   FolderListing,
+  LaunchThreadInput,
   ModelOptionDescriptor,
-  StartTurnInput,
+  SendMessageInput,
   T3Adapter,
+  T3ApprovalOption,
+  T3BackgroundTask,
+  T3Checkpoint,
+  T3CheckpointFile,
   T3Environment,
   T3HarnessUpdateState,
+  T3Message,
+  T3MessageAttachment,
+  T3Plan,
   T3Project,
   T3ProviderInfo,
+  T3ProviderThread,
+  T3ProviderTurn,
   T3Ref,
-  T3SessionStatus,
+  T3Run,
+  T3RuntimeRequest,
+  T3RuntimeRequestKind,
+  T3Subagent,
   T3ThreadDetail,
   T3ThreadShell,
+  T3ThreadStatus,
+  T3TokenUsage,
+  T3TurnItem,
+  T3UserInputQuestion,
   T3Versions,
+  TurnImage,
 } from "./types.ts";
-import { T3CommandRejected, T3Unavailable } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -41,16 +64,22 @@ export interface HttpAdapterOptions {
   /** Local T3 userdata directory used as a catalog fallback when the server is local. */
   userDataDir?: string;
   fetchImpl?: typeof fetch;
+  /** The WebSocket to open RPC connections with (the runtime's own by default). */
+  webSocketImpl?: new (url: string) => WebSocketLike;
   /** Reuse the shell snapshot for this many milliseconds between calls (one poll per scheduler tick). */
   shellCacheMs?: number;
   /** How long a read waits for T3 to answer (a dispatch waits twice as long). Default 30s. */
   requestTimeoutMs?: number;
+  /** How often a launched thread's worktree is looked for while T3 makes it. Default 500ms. */
+  worktreePollMs?: number;
 }
 
 interface ShellSnapshot {
+  schemaVersion?: number;
   snapshotSequence: number;
   projects: Array<Record<string, unknown>>;
   threads: Array<Record<string, unknown>>;
+  archivedThreads?: Array<Record<string, unknown>>;
 }
 
 /** Minimal typing of the parts of server.getConfig the room reads. */
@@ -113,12 +142,271 @@ function parseAutoCompactWindow(raw: unknown): number | null {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
-interface WebSocketLike {
+export interface WebSocketLike {
   send(data: string): void;
   close(): void;
   addEventListener(type: "open", listener: () => void): void;
   addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
   addEventListener(type: "error", listener: () => void): void;
+  addEventListener(type: "close", listener: () => void): void;
+}
+
+type RpcExit = { _tag: string; value?: unknown; cause?: unknown };
+
+/** What T3 says went wrong, from an RPC failure's cause (a list of failures, each with T3's error and its message). */
+function rpcFailure(cause: unknown): string {
+  const failures = Array.isArray(cause) ? cause : [cause];
+  for (const failure of failures) {
+    const error = (failure as { error?: { message?: unknown; detail?: unknown; _tag?: unknown } } | null)?.error;
+    if (typeof error?.message === "string" && error.message.length > 0) return error.message;
+    if (typeof error?.detail === "string" && error.detail.length > 0) return error.detail;
+    if (typeof error?._tag === "string") return error._tag;
+  }
+  return JSON.stringify(cause ?? null).slice(0, 300);
+}
+
+/**
+ * One socket to T3's WebSocket RPC (Effect RPC, JSON frames), for a single request or for several over time. Once it
+ * closes or fails, every request still waiting fails and the connection is spent.
+ */
+class RpcConnection {
+  closed = false;
+  private nextId = 1;
+  private readonly waiting = new Map<string, (exit: RpcExit | Error) => void>();
+  private readonly open: Promise<void>;
+  private failOpen: (error: Error) => void = () => {};
+  private readonly socket: WebSocketLike;
+  private readonly onEnd: (() => void) | undefined;
+
+  constructor(socket: WebSocketLike, onEnd?: () => void) {
+    this.socket = socket;
+    this.onEnd = onEnd;
+    this.open = new Promise<void>((resolve, reject) => {
+      socket.addEventListener("open", () => resolve());
+      this.failOpen = reject;
+    });
+    // Awaited by opened(); a failure after that has nobody waiting on this promise.
+    this.open.catch(() => {});
+    socket.addEventListener("error", () => this.end("websocket error"));
+    socket.addEventListener("close", () => this.end("connection closed"));
+    socket.addEventListener("message", (event) => {
+      let message: { _tag?: string; requestId?: string; exit?: RpcExit };
+      try {
+        message = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if (message._tag !== "Exit" || !message.requestId || !message.exit) return;
+      const settle = this.waiting.get(message.requestId);
+      this.waiting.delete(message.requestId);
+      settle?.(message.exit);
+    });
+  }
+
+  async opened(tag: string, timeoutMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new T3Unavailable(`T3 RPC ${tag} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+      await Promise.race([this.open, timeout]);
+    } catch (error) {
+      this.close();
+      throw error instanceof T3Unavailable ? error : new T3Unavailable(`T3 RPC ${tag}: ${(error as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  request<T>(tag: string, payload: unknown, timeoutMs: number): Promise<T> {
+    if (this.closed) return Promise.reject(new T3Unavailable(`T3 RPC ${tag}: connection closed`));
+    const id = String(this.nextId++);
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new T3Unavailable(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.waiting.set(id, (exit) => {
+        clearTimeout(timer);
+        if (exit instanceof Error) reject(new T3Unavailable(`T3 RPC ${tag}: ${exit.message}`));
+        else if (exit._tag === "Success") resolve(exit.value as T);
+        else reject(new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+      });
+      this.socket.send(JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] }));
+    });
+  }
+
+  close(): void {
+    this.end("connection closed");
+    this.socket.close();
+  }
+
+  private end(reason: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    const error = new Error(reason);
+    this.failOpen(error);
+    for (const settle of this.waiting.values()) settle(error);
+    this.waiting.clear();
+    this.onEnd?.();
+  }
+}
+
+/** Backroom is a web client of T3: what T3 records as the source of the threads and messages it creates. */
+const CREATION_SOURCE = "web";
+
+const text = (value: unknown): string | null => (typeof value === "string" && value.length > 0 ? value : null);
+const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+function toBackgroundTasks(raw: unknown): T3BackgroundTask[] {
+  return ((raw as Array<Record<string, unknown>> | undefined) ?? []).map((task) => ({
+    taskId: String(task.taskId ?? ""),
+    kind: task.kind === "subagent" || task.kind === "command" || task.kind === "monitor" ? task.kind : "background_task",
+    description: text(task.description),
+    childThreadId: text(task.childThreadId),
+  }));
+}
+
+function toAttachments(raw: unknown): T3MessageAttachment[] {
+  return ((raw as Array<Record<string, unknown>> | undefined) ?? [])
+    .filter((attachment) => typeof attachment.id === "string")
+    .map((attachment) => ({
+      id: attachment.id as string,
+      name: text(attachment.name) ?? "attachment",
+      mimeType: text(attachment.mimeType) ?? "application/octet-stream",
+      sizeBytes: Number(attachment.sizeBytes ?? 0),
+      type: attachment.type === "image" || attachment.type === "file" ? attachment.type : "unknown",
+    }));
+}
+
+function toCheckpointFiles(raw: unknown): T3CheckpointFile[] {
+  return ((raw as Array<Record<string, unknown>> | undefined) ?? []).map((file) => ({
+    path: String(file.path ?? ""),
+    kind: String(file.kind ?? "modified"),
+    additions: Number(file.additions ?? 0),
+    deletions: Number(file.deletions ?? 0),
+  }));
+}
+
+function toTokenUsage(raw: unknown): T3TokenUsage | null {
+  const usage = raw as Record<string, unknown> | null | undefined;
+  if (!usage || typeof usage.usedTokens !== "number") return null;
+  return {
+    usedTokens: usage.usedTokens,
+    maxTokens: num(usage.maxTokens),
+    inputTokens: num(usage.inputTokens),
+    cachedInputTokens: num(usage.cachedInputTokens),
+    outputTokens: num(usage.outputTokens),
+    reasoningOutputTokens: num(usage.reasoningOutputTokens),
+    updatedAt: text(usage.updatedAt) ?? "",
+  };
+}
+
+function toRun(run: Record<string, unknown>): T3Run {
+  return {
+    id: run.id as string,
+    threadId: run.threadId as string,
+    ordinal: Number(run.ordinal ?? 0),
+    userMessageId: run.userMessageId as string,
+    status: run.status as T3Run["status"],
+    queuePosition: num(run.queuePosition),
+    queueHeld: run.queueHeld === true,
+    requestedAt: run.requestedAt as string,
+    startedAt: text(run.startedAt),
+    completedAt: text(run.completedAt),
+    checkpointId: text(run.checkpointId),
+    providerInstanceId: String(run.providerInstanceId ?? ""),
+    modelSelection: run.modelSelection as ModelSelection,
+  };
+}
+
+function toMessage(message: Record<string, unknown>): T3Message {
+  return {
+    id: message.id as string,
+    threadId: message.threadId as string,
+    role: message.role as T3Message["role"],
+    text: (message.text as string) ?? "",
+    runId: text(message.runId),
+    nodeId: text(message.nodeId),
+    streaming: Boolean(message.streaming),
+    createdAt: message.createdAt as string,
+    updatedAt: text(message.updatedAt) ?? (message.createdAt as string),
+    createdBy: (text(message.createdBy) as T3Message["createdBy"] | null) ?? "system",
+    creationSource: text(message.creationSource) ?? "server",
+    senderThreadId: text(message.senderThreadId),
+    attachments: toAttachments(message.attachments),
+  };
+}
+
+function toProviderThread(thread: Record<string, unknown>): T3ProviderThread {
+  return {
+    id: thread.id as string,
+    driver: String(thread.driver ?? ""),
+    providerInstanceId: String(thread.providerInstanceId ?? ""),
+    status: thread.status as T3ProviderThread["status"],
+    nativeId: text((thread.nativeThreadRef as { nativeId?: unknown } | null | undefined)?.nativeId),
+    contextUsage: toTokenUsage(thread.contextUsage),
+    pendingBackgroundTasks: toBackgroundTasks(thread.pendingBackgroundTasks),
+    createdAt: text(thread.createdAt) ?? "",
+    updatedAt: text(thread.updatedAt) ?? "",
+  };
+}
+
+function toTurnItem(item: Record<string, unknown>): T3TurnItem {
+  const base = {
+    id: item.id as string,
+    runId: text(item.runId),
+    nodeId: text(item.nodeId),
+    providerTurnId: text(item.providerTurnId),
+    ordinal: Number(item.ordinal ?? 0),
+    status: item.status as T3TurnItem["status"],
+    title: text(item.title),
+    startedAt: text(item.startedAt),
+    completedAt: text(item.completedAt),
+    updatedAt: text(item.updatedAt) ?? "",
+  };
+  switch (item.type) {
+    case "user_message":
+      return { ...base, type: "user_message", messageId: item.messageId as string, text: (item.text as string) ?? "", attachments: toAttachments(item.attachments), inputIntent: (text(item.inputIntent) as "turn_start" | "queued_turn" | "steer" | "promoted_queued_to_steer" | null) ?? "turn_start" };
+    case "assistant_message":
+      return { ...base, type: "assistant_message", messageId: item.messageId as string, text: (item.text as string) ?? "", streaming: Boolean(item.streaming) };
+    case "reasoning":
+      return { ...base, type: "reasoning", text: (item.text as string) ?? "", streaming: Boolean(item.streaming) };
+    case "proposed_plan":
+      return { ...base, type: "proposed_plan", planId: item.planId as string, markdown: (item.markdown as string) ?? "", streaming: Boolean(item.streaming) };
+    case "todo_list":
+      return { ...base, type: "todo_list", planId: item.planId as string, steps: (item.steps as Array<{ id: string; text: string; status: "pending" | "running" | "completed" }> | undefined) ?? [], explanation: text(item.explanation) };
+    case "user_input_request":
+      return { ...base, type: "user_input_request", requestId: item.requestId as string, questions: (item.questions as T3UserInputQuestion[] | undefined) ?? [], responseMode: item.responseMode === "message" ? "message" : null };
+    case "approval_request":
+      return { ...base, type: "approval_request", requestId: item.requestId as string, requestKind: String(item.requestKind ?? "command"), prompt: text(item.prompt), appName: text(item.appName), options: (item.options as T3ApprovalOption[] | undefined) ?? null };
+    case "file_change":
+      return { ...base, type: "file_change", fileName: String(item.fileName ?? ""), additions: num(item.additions), deletions: num(item.deletions) };
+    case "command_execution":
+      return { ...base, type: "command_execution", input: (item.input as string) ?? "", output: text(item.output), exitCode: num(item.exitCode), outputIndicatesFailure: item.outputIndicatesFailure === true };
+    case "file_search":
+      return { ...base, type: "file_search", pattern: text(item.pattern) };
+    case "web_search":
+      return { ...base, type: "web_search", patterns: (item.patterns as string[] | undefined) ?? [] };
+    case "dynamic_tool":
+      return { ...base, type: "dynamic_tool", toolName: text(item.toolName), input: item.input, output: item.output };
+    case "checkpoint":
+      return { ...base, type: "checkpoint", checkpointId: item.checkpointId as string, files: toCheckpointFiles(item.files) };
+    case "error": {
+      const failure = (item.failure ?? {}) as { message?: unknown; class?: unknown };
+      return { ...base, type: "error", message: text(failure.message) ?? "provider error", failureClass: text(failure.class), retrying: item.retry !== undefined && item.retry !== null };
+    }
+    case "compaction":
+      return { ...base, type: "compaction", summary: text(item.summary), beforeTokenCount: num(item.beforeTokenCount), afterTokenCount: num(item.afterTokenCount) };
+    case "subagent":
+      return { ...base, type: "subagent", subagentId: item.subagentId as string, origin: item.origin === "app_owned" ? "app_owned" : "provider_native", childThreadId: text(item.childThreadId), prompt: (item.prompt as string) ?? "", progress: text(item.progress), result: text(item.result) };
+    case "system_notice":
+    case "run_interrupt_request":
+    case "run_interrupt_result":
+      return { ...base, type: item.type, message: (item.message as string) ?? "" };
+    default:
+      return { ...base, type: "other", itemType: String(item.type ?? "unknown") };
+  }
 }
 
 export class HttpT3Adapter implements T3Adapter {
@@ -126,25 +414,31 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly baseUrl: string;
   private accessToken: string | null;
   private readonly fetchImpl: typeof fetch;
+  private readonly webSocketImpl: (new (url: string) => WebSocketLike) | undefined;
   private readonly userDataDir: string | undefined;
   private readonly shellCacheMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly worktreePollMs: number;
   private shellCache: { at: number; value: ShellSnapshot } | null = null;
-  /** Archived threads come over the WebSocket RPC (one socket per read), so the sidebar's polls share a reading. */
-  private archivedCache: { at: number; value: T3ThreadShell[] } | null = null;
+  /** The last protocol check: a server on protocol 2 is trusted for a minute, a mismatch is checked again within seconds. */
+  private protocolCheck: { at: number; error: T3ProtocolMismatch | null } | null = null;
 
   constructor(options: HttpAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.accessToken = options.accessToken;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.webSocketImpl = options.webSocketImpl;
     this.userDataDir = options.userDataDir;
     this.shellCacheMs = options.shellCacheMs ?? 750;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.worktreePollMs = options.worktreePollMs ?? 500;
   }
 
   setAccessToken(token: string | null): void {
     this.accessToken = token;
     this.shellCache = null;
+    this.protocolCheck = null;
+    this.dropCommandLink();
   }
 
   get hasCredentials(): boolean {
@@ -152,7 +446,7 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   private async request(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = { accept: "application/json", "x-t3-orchestration-protocol": String(ORCHESTRATION_PROTOCOL_VERSION) };
     if (this.accessToken) headers.authorization = `Bearer ${this.accessToken}`;
     if (body !== undefined) headers["content-type"] = "application/json";
     // A T3 that accepts the connection but never answers (seen while it restarts after an update) would otherwise hold
@@ -205,8 +499,32 @@ export class HttpT3Adapter implements T3Adapter {
       environmentId: string;
       label: string;
       serverVersion: string;
+      orchestrationProtocolVersion?: number;
     };
-    return { environmentId: descriptor.environmentId, label: descriptor.label, serverVersion: descriptor.serverVersion, baseUrl: this.baseUrl };
+    return {
+      environmentId: descriptor.environmentId,
+      label: descriptor.label,
+      serverVersion: descriptor.serverVersion,
+      // Servers from before protocol negotiation (V1) do not say; they speak protocol 1.
+      orchestrationProtocolVersion: typeof descriptor.orchestrationProtocolVersion === "number" ? descriptor.orchestrationProtocolVersion : null,
+      baseUrl: this.baseUrl,
+    };
+  }
+
+  /**
+   * Orchestration reads and commands only make sense against protocol 2: a V1 server answers some of the same routes
+   * with other shapes. Checked against the server's descriptor, not assumed, since T3 can be updated while this runs.
+   */
+  private async ensureProtocol(): Promise<void> {
+    const check = this.protocolCheck;
+    if (check && Date.now() - check.at < (check.error ? 5_000 : 60_000)) {
+      if (check.error) throw check.error;
+      return;
+    }
+    const environment = await this.describe();
+    const error = environment.orchestrationProtocolVersion === ORCHESTRATION_PROTOCOL_VERSION ? null : new T3ProtocolMismatch(environment.serverVersion, environment.orchestrationProtocolVersion);
+    this.protocolCheck = { at: Date.now(), error };
+    if (error) throw error;
   }
 
   /** Auth descriptor and session state; used by the pairing UI to explain what the server allows. */
@@ -227,42 +545,108 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   // ---------------- WebSocket RPC (Effect RPC, JSON frames) ----------------
-  // Used for reads that have no HTTP route (server.getConfig). One short-lived socket per call, ticket-authenticated.
+  // Used for reads that have no HTTP route (server.getConfig). One short-lived socket per call, ticket-authenticated;
+  // the one exception is the activity connection below, which stays open.
 
-  private async rpc<T>(tag: string, payload: unknown, timeoutMs = 15000): Promise<T> {
+  private async connect(tag: string, timeoutMs: number, onEnd?: () => void): Promise<RpcConnection> {
     const ticket = (await this.request("POST", "/api/auth/websocket-ticket")) as { ticket: string };
     const url = new URL("/ws", this.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("wsTicket", ticket.ticket);
-    const SocketCtor = (globalThis as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
+    url.searchParams.set("orchestrationProtocol", String(ORCHESTRATION_PROTOCOL_VERSION));
+    const SocketCtor = this.webSocketImpl ?? (globalThis as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
     if (!SocketCtor) throw new T3Unavailable("WebSocket is not available in this runtime");
-    return new Promise<T>((resolve, reject) => {
-      const socket = new SocketCtor(url.toString());
-      const timer = setTimeout(() => {
-        socket.close();
-        reject(new T3Unavailable(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ _tag: "Request", id: "1", tag, payload, headers: [] }));
+    const connection = new RpcConnection(new SocketCtor(url.toString()), onEnd);
+    await connection.opened(tag, timeoutMs);
+    return connection;
+  }
+
+  // Commands and short reads share one socket, as T3's own client keeps one: a dispatch is then a single frame. It is
+  // closed after a quiet spell, and dropped when a request on it times out or it fails. A call that may take minutes
+  // (a worktree checkout, an update) gets a socket of its own, so its wait never rides on the shared one.
+  private commandLink: Promise<RpcConnection> | null = null;
+  private commandLinkIdle: ReturnType<typeof setTimeout> | null = null;
+
+  private dropCommandLink(): void {
+    const link = this.commandLink;
+    this.commandLink = null;
+    if (this.commandLinkIdle) clearTimeout(this.commandLinkIdle);
+    this.commandLinkIdle = null;
+    void link?.then((connection) => connection.close(), () => undefined);
+  }
+
+  /** Close the sockets this adapter keeps open (a script calls this before it ends). */
+  close(): void {
+    this.dropCommandLink();
+    void this.reportActivity(null).catch(() => undefined);
+  }
+
+  private async rpc<T>(tag: string, payload: unknown, timeoutMs = 15000): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
+    if (timeoutMs > 60_000) {
+      const connection = await this.connect(tag, timeoutMs);
+      try {
+        return await connection.request<T>(tag, payload, Math.max(1, deadline - Date.now()));
+      } finally {
+        connection.close();
+      }
+    }
+    let link = this.commandLink;
+    if (!link || (await link.catch(() => null))?.closed !== false) {
+      link = this.connect(tag, timeoutMs, () => {
+        if (this.commandLink === link) this.commandLink = null;
       });
-      socket.addEventListener("message", (event) => {
-        let message: { _tag?: string; requestId?: string; exit?: { _tag: string; value?: unknown; cause?: unknown } };
-        try {
-          message = JSON.parse(String(event.data));
-        } catch {
-          return;
-        }
-        if (message._tag !== "Exit" || message.requestId !== "1" || !message.exit) return;
-        clearTimeout(timer);
-        socket.close();
-        if (message.exit._tag === "Success") resolve(message.exit.value as T);
-        else reject(new T3CommandRejected(`T3 RPC ${tag} failed: ${JSON.stringify(message.exit.cause).slice(0, 300)}`, 500, message.exit));
+      this.commandLink = link;
+      link.catch(() => {
+        if (this.commandLink === link) this.commandLink = null;
       });
-      socket.addEventListener("error", () => {
-        clearTimeout(timer);
-        reject(new T3Unavailable(`T3 RPC ${tag}: websocket error`));
+    }
+    const connection = await link;
+    if (this.commandLinkIdle) clearTimeout(this.commandLinkIdle);
+    this.commandLinkIdle = setTimeout(() => this.dropCommandLink(), 30_000);
+    this.commandLinkIdle.unref?.();
+    try {
+      return await connection.request<T>(tag, payload, Math.max(1, deadline - Date.now()));
+    } catch (error) {
+      // No answer in time, or the socket went: the link is in doubt, and the next call opens a new one.
+      if (error instanceof T3Unavailable && this.commandLink === link) this.dropCommandLink();
+      throw error;
+    }
+  }
+
+  // T3 checks its providers (plan usage included) every few minutes only while a client in view holds a lease. Leases
+  // are reported on a connection of their own, kept open while Backroom is in use, as T3's window keeps its socket.
+  private activityLink: Promise<RpcConnection> | null = null;
+
+  async reportActivity(activity: ClientActivity | null): Promise<void> {
+    if (!activity) {
+      const link = this.activityLink;
+      this.activityLink = null;
+      (await link?.catch(() => null))?.close();
+      return;
+    }
+    let link = this.activityLink;
+    if (!link || (await link.catch(() => null))?.closed !== false) {
+      link = this.connect("server.reportClientActivity", 15_000, () => {
+        if (this.activityLink === link) this.activityLink = null;
       });
-    });
+      this.activityLink = link;
+      link.catch(() => {
+        if (this.activityLink === link) this.activityLink = null;
+      });
+    }
+    const connection = await link;
+    await connection.request("server.reportClientActivity", {
+      clientId: "backroom",
+      clientKind: "web",
+      visible: activity.visible,
+      focused: activity.focused,
+      recentlyInteracted: activity.recentlyInteracted,
+      appState: activity.visible ? "active" : "background",
+      scopes: [{ type: "provider-status" }],
+      ttlMs: activity.ttlMs,
+      observedAt: new Date().toISOString(),
+    }, 15_000);
   }
 
   private configCache: { at: number; value: ServerConfigLike } | null = null;
@@ -341,9 +725,12 @@ export class HttpT3Adapter implements T3Adapter {
     };
   }
 
-  async refreshProviders(): Promise<void> {
-    await this.rpc("server.refreshProviders", {}, 60_000);
-    this.configCache = null;
+  async refreshProviders(input: { instanceId?: string; refreshModels?: boolean } = {}): Promise<void> {
+    try {
+      await this.rpc("server.refreshProviders", { ...(input.instanceId ? { instanceId: input.instanceId } : {}), ...(input.refreshModels ? { refreshModels: true } : {}) }, input.refreshModels ? 3 * 60_000 : 60_000);
+    } finally {
+      this.configCache = null;
+    }
   }
 
   async updateHarness(input: { instanceId: string; driver: string }): Promise<void> {
@@ -367,6 +754,7 @@ export class HttpT3Adapter implements T3Adapter {
   private async shell(force = false): Promise<ShellSnapshot> {
     const now = Date.now();
     if (!force && this.shellCache && now - this.shellCache.at < this.shellCacheMs) return this.shellCache.value;
+    await this.ensureProtocol();
     const value = (await this.request("GET", "/api/orchestration/shell")) as ShellSnapshot;
     this.shellCache = { at: now, value };
     return value;
@@ -475,40 +863,189 @@ export class HttpT3Adapter implements T3Adapter {
     return [...entries.values()].sort((a, b) => a.label.localeCompare(b.label));
   }
 
+  // ---------------- threads: T3's V2 projections, normalized ----------------
+
   private toShell(thread: Record<string, unknown>): T3ThreadShell {
-    const session = thread.session as { status: T3SessionStatus; activeTurnId: string | null; lastError: string | null } | null;
-    const latestTurn = thread.latestTurn as { turnId: string; state: "running" | "interrupted" | "completed" | "error"; requestedAt?: string | null; completedAt: string | null; assistantMessageId: string | null } | null;
+    const pending = thread.pendingRuntimeRequest as { id: string; kind: T3RuntimeRequestKind; createdAt: string } | null | undefined;
+    const lineage = (thread.lineage ?? {}) as { parentThreadId?: string | null; relationshipToParent?: "fork" | "subagent" | null; rootThreadId?: string };
+    const modelSelection = thread.modelSelection as ModelSelection;
+    // T3's shell status is its latest run's (a queued message makes it "queued"); the run that owns the activity
+    // is named apart, and that is the status Backroom shows.
+    const status = ((text(thread.activityRunStatus) ?? text(thread.status)) as T3ThreadStatus | null) ?? "idle";
     return {
       id: thread.id as string,
       projectId: thread.projectId as string,
-      title: thread.title as string,
-      modelSelection: thread.modelSelection as ModelSelection,
+      title: text(thread.title) ?? "",
+      providerInstanceId: text(thread.providerInstanceId) ?? modelSelection.instanceId,
+      modelSelection,
       runtimeMode: thread.runtimeMode as T3ThreadShell["runtimeMode"],
       interactionMode: (thread.interactionMode as T3ThreadShell["interactionMode"]) ?? "default",
-      branch: (thread.branch as string | null) ?? null,
-      worktreePath: (thread.worktreePath as string | null) ?? null,
-      session: session ? { status: session.status, activeTurnId: session.activeTurnId ?? null, lastError: session.lastError ?? null } : null,
-      latestTurn: latestTurn
-        ? { turnId: latestTurn.turnId, state: latestTurn.state, requestedAt: latestTurn.requestedAt ?? null, completedAt: latestTurn.completedAt ?? null, assistantMessageId: latestTurn.assistantMessageId ?? null }
-        : null,
-      hasPendingApprovals: Boolean(thread.hasPendingApprovals),
-      hasPendingUserInput: Boolean(thread.hasPendingUserInput),
+      branch: text(thread.branch),
+      worktreePath: text(thread.worktreePath),
+      status,
+      activeRunId: text(thread.activeRunId),
+      latestRunId: text(thread.latestRunId),
+      latestRunRequestedAt: text(thread.latestRunRequestedAt),
+      latestRunStartedAt: text(thread.latestRunStartedAt),
+      latestRunCompletedAt: text(thread.latestRunCompletedAt),
+      lastError: text(thread.lastError),
+      // Tool calls and credential refreshes the provider routes through T3 are not the user's to answer. And a
+      // request only waits while a run is in progress: T3 keeps listing a question the agent went on without
+      // (Codex asks in "message" mode) after its run has ended, when nothing waits on it any more.
+      pendingRequest:
+        pending && isRunActive(status) && pending.kind !== "dynamic_tool_call" && pending.kind !== "auth_refresh" ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
+      pendingBackgroundTasks: toBackgroundTasks(thread.pendingBackgroundTasks),
       hasActionableProposedPlan: Boolean(thread.hasActionableProposedPlan),
       pullRequests: ((thread.pullRequests as Array<Record<string, unknown>> | undefined) ?? []).map((pr) => ({
         repository: String(pr.repository ?? ""),
         number: Number(pr.number ?? 0),
         url: String(pr.url ?? ""),
-        source: (pr.source as string | undefined) ?? null,
+        source: text(pr.source),
         snapshot: pr.snapshot ?? null,
       })),
       linkedPullRequest: (thread.linkedPullRequest as { repository: string; number: number; url: string } | null | undefined) ?? null,
-      planProgress: (thread.planProgress as { step: string; completedSteps: number; totalSteps: number } | null | undefined) ?? null,
-      backgroundLiveness: (thread.backgroundLiveness as "working" | "monitoring" | null | undefined) ?? null,
-      latestUserMessageAt: (thread.latestUserMessageAt as string | null | undefined) ?? null,
-      settledAt: (thread.settledAt as string | null | undefined) ?? null,
-      archivedAt: (thread.archivedAt as string | null) ?? null,
-      deletedAt: (thread.deletedAt as string | null) ?? null,
-      updatedAt: thread.updatedAt as string,
+      lineage: { parentThreadId: lineage.parentThreadId ?? null, relationshipToParent: lineage.relationshipToParent ?? null, rootThreadId: lineage.rootThreadId ?? (thread.id as string) },
+      historyOrigin: thread.historyOrigin === "v1_import" || thread.historyOrigin === "native" ? thread.historyOrigin : null,
+      latestUserMessageAt: text(thread.latestUserMessageAt),
+      settledAt: text(thread.settledAt),
+      archivedAt: text(thread.archivedAt),
+      deletedAt: text(thread.deletedAt),
+      createdAt: text(thread.createdAt) ?? "",
+      updatedAt: text(thread.updatedAt) ?? "",
+    };
+  }
+
+  /**
+   * A thread's projection as Backroom reads it. The projection's own thread record has no status: T3 computes that
+   * for its shell from the runs, and so does this (the shell read at the start of a tick can be older than the detail
+   * read since). `listed` is the thread's shell entry, for what only the shell carries (pull requests, plan flag).
+   */
+  private toDetail(snapshot: { snapshotSequence?: number; projection: Record<string, unknown>; hasMoreHistory?: boolean }, listed: T3ThreadShell | null): T3ThreadDetail {
+    const projection = snapshot.projection;
+    const list = (key: string): Array<Record<string, unknown>> => (projection[key] as Array<Record<string, unknown>> | undefined) ?? [];
+    const runs = list("runs").map(toRun).sort((a, b) => a.ordinal - b.ordinal);
+    const turnItems = list("turnItems").map(toTurnItem).sort((a, b) => a.ordinal - b.ordinal);
+    const messages = list("messages").map(toMessage);
+    const nodes = new Map(list("nodes").map((node) => [node.id as string, node]));
+    const itemByRequest = new Map<string, T3TurnItem>();
+    for (const item of turnItems) if (item.type === "approval_request" || item.type === "user_input_request") itemByRequest.set(item.requestId, item);
+    const runtimeRequests: T3RuntimeRequest[] = list("runtimeRequests")
+      // Tool calls and credential refreshes the provider routes through T3 are not the user's to answer.
+      .filter((request) => request.kind !== "dynamic_tool_call" && request.kind !== "auth_refresh")
+      .map((request) => {
+        const item = itemByRequest.get(request.id as string);
+        const capability = (request.responseCapability as { type?: string } | undefined)?.type;
+        return {
+          id: request.id as string,
+          kind: request.kind as T3RuntimeRequestKind,
+          type: request.kind === "user_input" ? "user-input" : "approval",
+          status: request.status as T3RuntimeRequest["status"],
+          responseMode: capability === "message" || capability === "not_resumable" ? capability : "live",
+          runId: item?.runId ?? text(nodes.get(request.nodeId as string)?.runId),
+          nodeId: request.nodeId as string,
+          createdAt: request.createdAt as string,
+          resolvedAt: text(request.resolvedAt),
+          prompt: item?.type === "approval_request" ? item.prompt : null,
+          options: item?.type === "approval_request" ? item.options : null,
+          questions: item?.type === "user_input_request" ? item.questions : [],
+          decision: (text(request.decision) as ApprovalDecision | null) ?? null,
+          answers: (request.answers as Record<string, unknown> | undefined) ?? null,
+        };
+      });
+    const providerThreads = list("providerThreads").map(toProviderThread);
+    const thread = projection.thread as Record<string, unknown>;
+    const active = runs.find((run) => run.status !== "queued" && isRunActive(run.status)) ?? null;
+    const started = runs.filter((run) => run.status !== "queued");
+    const latest = started[started.length - 1] ?? runs[runs.length - 1] ?? null;
+    const pending = openRequests({ runtimeRequests, runs })[0] ?? null;
+    const failure = latest && (latest.status === "failed" || latest.status === "interrupted") ? turnItems.filter((item) => item.runId === latest.id && item.type === "error").pop() : undefined;
+    const activeProviderThread = providerThreads.find((p) => p.id === thread.activeProviderThreadId) ?? providerThreads[providerThreads.length - 1] ?? null;
+    const shell: T3ThreadShell = {
+      ...(listed ?? this.toShell({ ...thread, status: "idle" })),
+      // The thread record is the fresher source for what both carry.
+      title: text(thread.title) ?? listed?.title ?? "",
+      modelSelection: thread.modelSelection as ModelSelection,
+      runtimeMode: thread.runtimeMode as T3ThreadShell["runtimeMode"],
+      interactionMode: (thread.interactionMode as T3ThreadShell["interactionMode"]) ?? "default",
+      branch: text(thread.branch),
+      worktreePath: text(thread.worktreePath),
+      archivedAt: text(thread.archivedAt),
+      deletedAt: text(thread.deletedAt),
+      settledAt: text(thread.settledAt),
+      status: active ? active.status : runs.some((run) => run.status === "queued") ? "queued" : (latest?.status ?? "idle"),
+      activeRunId: active?.id ?? null,
+      latestRunId: latest?.id ?? null,
+      latestRunRequestedAt: latest?.requestedAt ?? null,
+      latestRunStartedAt: latest?.startedAt ?? null,
+      latestRunCompletedAt: latest?.completedAt ?? null,
+      lastError: failure?.type === "error" ? failure.message : latest?.status === "failed" ? (listed?.lastError ?? null) : null,
+      pendingRequest: pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
+      pendingBackgroundTasks: active ? [] : (activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? []),
+    };
+    return {
+      snapshotSequence: snapshot.snapshotSequence ?? 0,
+      shell,
+      runs,
+      messages,
+      turnItems,
+      runtimeRequests,
+      checkpoints: list("checkpoints").map((checkpoint) => ({
+        id: checkpoint.id as string,
+        runId: text(checkpoint.runId),
+        status: checkpoint.status as T3Checkpoint["status"],
+        files: toCheckpointFiles(checkpoint.files),
+        capturedAt: checkpoint.capturedAt as string,
+      })),
+      subagents: list("subagents").map((subagent) => ({
+        id: subagent.id as string,
+        runId: text(subagent.runId),
+        origin: subagent.origin as T3Subagent["origin"],
+        driver: String(subagent.driver ?? ""),
+        providerInstanceId: String(subagent.providerInstanceId ?? ""),
+        childThreadId: text(subagent.childThreadId),
+        title: text(subagent.title),
+        model: text(subagent.model),
+        prompt: text(subagent.prompt) ?? "",
+        status: subagent.status as T3Subagent["status"],
+        progress: text(subagent.progress),
+        result: text(subagent.result),
+        startedAt: text(subagent.startedAt),
+        completedAt: text(subagent.completedAt),
+        updatedAt: subagent.updatedAt as string,
+      })),
+      providerTurns: list("providerTurns").map((turn) => {
+        const usage = turn.turnTokenUsage as Record<string, unknown> | undefined;
+        return {
+          id: turn.id as string,
+          nodeId: turn.nodeId as string,
+          providerThreadId: turn.providerThreadId as string,
+          status: turn.status as T3ProviderTurn["status"],
+          startedAt: text(turn.startedAt),
+          completedAt: text(turn.completedAt),
+          tokenUsage: toTokenUsage(turn.tokenUsage),
+          turnTokenUsage: usage
+            ? {
+                usageStatus: (text(usage.usageStatus) as "complete" | "partial" | "unavailable" | null) ?? "unavailable",
+                inputTokens: num(usage.inputTokens),
+                outputTokens: num(usage.outputTokens),
+                cachedInputTokens: num(usage.cachedInputTokens),
+                cacheCreationTokens: num(usage.cacheCreationTokens),
+                reasoningTokens: num(usage.reasoningTokens),
+                hasSubagents: usage.hasSubagents === true,
+              }
+            : null,
+        };
+      }),
+      providerThreads,
+      plans: list("plans").map((plan) => ({
+        id: plan.id as string,
+        kind: plan.kind as T3Plan["kind"],
+        runId: text(plan.runId),
+        status: plan.status as T3Plan["status"],
+        markdown: text(plan.markdown),
+        steps: ((plan.steps as Array<{ id: string; text: string; status: "pending" | "running" | "completed" }> | undefined) ?? []).map((step) => ({ id: step.id, text: step.text, status: step.status })),
+      })),
+      partial: snapshot.hasMoreHistory === true,
     };
   }
 
@@ -516,7 +1053,12 @@ export class HttpT3Adapter implements T3Adapter {
     const shell = await this.shell();
     return shell.threads
       .map((thread) => this.toShell(thread))
-      .filter((thread) => thread.deletedAt === null && (!projectId || thread.projectId === projectId));
+      .filter((thread) => thread.deletedAt === null && thread.archivedAt === null && (!projectId || thread.projectId === projectId));
+  }
+
+  async listArchivedThreads(): Promise<T3ThreadShell[]> {
+    const shell = await this.shell();
+    return (shell.archivedThreads ?? []).map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
   }
 
   async getThreadShell(threadId: string): Promise<T3ThreadShell | null> {
@@ -525,82 +1067,30 @@ export class HttpT3Adapter implements T3Adapter {
     return found ? this.toShell(found) : null;
   }
 
-  async getThreadDetail(threadId: string, options: { turnLimit?: number } = {}): Promise<T3ThreadDetail | null> {
-    const query = options.turnLimit ? `?turnLimit=${options.turnLimit}` : "";
-    let detail: { thread: Record<string, unknown> };
+  async getThreadDetail(threadId: string, options: { bounded?: boolean } = {}): Promise<T3ThreadDetail | null> {
+    await this.ensureProtocol();
+    let snapshot: { snapshotSequence?: number; projection: Record<string, unknown>; hasMoreHistory?: boolean };
     try {
-      detail = (await this.request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}${query}`)) as { thread: Record<string, unknown> };
+      snapshot = (await this.request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}${options.bounded ? "/bounded" : ""}`)) as typeof snapshot;
     } catch (error) {
       if (error instanceof T3CommandRejected && error.status === 404) return null;
       throw error;
     }
-    const thread = detail.thread;
-    const shell = this.toShell({ ...thread, hasPendingApprovals: false, hasPendingUserInput: false });
-    const activities = (thread.activities as Array<Record<string, unknown>>) ?? [];
-    const pendingApprovals = new Set<string>();
-    const pendingInputs = new Set<string>();
-    for (const activity of activities) {
-      const payload = activity.payload as { requestId?: string } | undefined;
-      const requestId = payload?.requestId;
-      if (!requestId) continue;
-      if (activity.kind === "approval.requested") pendingApprovals.add(requestId);
-      if (activity.kind === "approval.resolved") pendingApprovals.delete(requestId);
-      if (activity.kind === "user-input.requested") pendingInputs.add(requestId);
-      if (activity.kind === "user-input.resolved") pendingInputs.delete(requestId);
-    }
-    shell.hasPendingApprovals = pendingApprovals.size > 0;
-    shell.hasPendingUserInput = pendingInputs.size > 0;
-    return {
-      shell,
-      messages: ((thread.messages as Array<Record<string, unknown>>) ?? []).map((message) => ({
-        id: message.id as string,
-        role: message.role as "user" | "assistant" | "system" | "reasoning",
-        text: (message.text as string) ?? "",
-        turnId: (message.turnId as string | null) ?? null,
-        streaming: Boolean(message.streaming),
-        createdAt: message.createdAt as string,
-        attachments: ((message.attachments as Array<Record<string, unknown>> | undefined) ?? [])
-          .filter((a) => a.type === "image" && typeof a.id === "string")
-          .map((a) => ({ id: a.id as string, name: (a.name as string) ?? "image", mimeType: (a.mimeType as string) ?? "image/png", sizeBytes: Number(a.sizeBytes ?? 0) })),
-      })),
-      activities: activities.map((activity) => ({
-        id: activity.id as string,
-        tone: activity.tone as "info" | "tool" | "approval" | "error",
-        kind: activity.kind as string,
-        summary: activity.summary as string,
-        payload: activity.payload,
-        turnId: (activity.turnId as string | null) ?? null,
-        createdAt: activity.createdAt as string,
-      })),
-      checkpoints: ((thread.checkpoints as Array<Record<string, unknown>>) ?? []).map((checkpoint) => ({
-        turnId: checkpoint.turnId as string,
-        status: checkpoint.status as "ready" | "missing" | "error",
-        files: (checkpoint.files as Array<{ path: string; kind: string; additions: number; deletions: number }>) ?? [],
-        assistantMessageId: (checkpoint.assistantMessageId as string | null) ?? null,
-        completedAt: checkpoint.completedAt as string,
-      })),
-      proposedPlans: ((thread.proposedPlans as Array<Record<string, unknown>> | undefined) ?? []).map((plan) => ({
-        id: plan.id as string,
-        turnId: (plan.turnId as string | null) ?? null,
-        planMarkdown: (plan.planMarkdown as string) ?? "",
-        implementedAt: (plan.implementedAt as string | null) ?? null,
-        createdAt: plan.createdAt as string,
-      })),
-    };
+    const shell = await this.shell();
+    const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);
+    return this.toDetail(snapshot, listed ? this.toShell(listed) : null);
   }
 
+  // ---------------- commands ----------------
+
+  /** One orchestration command (orchestration.dispatchCommand). T3 keeps a receipt per command id, so a resend is safe. */
   private async dispatch(command: Record<string, unknown>): Promise<void> {
-    await this.request("POST", "/api/orchestration/dispatch", command);
-    this.shellCache = null;
-    this.archivedCache = null;
-  }
-
-  async listArchivedThreads(): Promise<T3ThreadShell[]> {
-    if (this.archivedCache && Date.now() - this.archivedCache.at < 20_000) return this.archivedCache.value;
-    const snapshot = await this.rpc<ShellSnapshot>("orchestration.getArchivedShellSnapshot", {});
-    const value = snapshot.threads.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
-    this.archivedCache = { at: Date.now(), value };
-    return value;
+    await this.ensureProtocol();
+    try {
+      await this.rpc("orchestration.dispatchCommand", command, this.requestTimeoutMs * 2);
+    } finally {
+      this.shellCache = null;
+    }
   }
 
   async defaultModelSelection(projectId: string): Promise<ModelSelection | null> {
@@ -614,41 +1104,88 @@ export class HttpT3Adapter implements T3Adapter {
     }
   }
 
+  async setThreadTitle(input: { commandId: string; threadId: string; title: string }): Promise<void> {
+    await this.dispatch({ type: "thread.metadata.update", commandId: input.commandId, threadId: input.threadId, title: input.title, regenerateTitle: false });
+    this.shellCache = null;
+  }
+
   async setThreadModel(input: { commandId: string; threadId: string; modelSelection: ModelSelection }): Promise<void> {
-    await this.dispatch({
-      type: "thread.meta.update",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      modelSelection: input.modelSelection,
-    });
+    await this.dispatch({ type: "thread.model-selection.set", commandId: input.commandId, threadId: input.threadId, modelSelection: input.modelSelection });
   }
 
   async createProject(input: CreateProjectInput): Promise<void> {
-    await this.dispatch({
-      type: "project.create",
-      commandId: input.commandId,
-      projectId: input.projectId,
-      title: input.title,
-      workspaceRoot: input.workspaceRoot,
-      createWorkspaceRootIfMissing: input.createIfMissing,
-      createdAt: new Date().toISOString(),
-    });
+    await this.ensureProtocol();
+    try {
+      await this.rpc("projects.mutate", {
+        type: "project.create",
+        commandId: input.commandId,
+        projectId: input.projectId,
+        title: input.title,
+        workspaceRoot: input.workspaceRoot,
+        createWorkspaceRootIfMissing: input.createIfMissing,
+      });
+    } finally {
+      this.shellCache = null;
+    }
   }
 
-  async createThread(input: CreateThreadInput): Promise<void> {
-    await this.dispatch({
-      type: "thread.create",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      projectId: input.projectId,
-      title: input.title,
-      modelSelection: input.modelSelection,
-      runtimeMode: input.runtimeMode,
-      interactionMode: input.interactionMode,
-      branch: input.branch ?? null,
-      worktreePath: input.worktreePath ?? null,
-      createdAt: new Date().toISOString(),
-    });
+  /** Images as T3 stores them for a message (assets.persistChatAttachments): uploaded first, then named in the message. */
+  private async persistImages(threadId: string, messageId: string, images: TurnImage[] | undefined): Promise<unknown[]> {
+    if (!images || images.length === 0) return [];
+    const stored = await this.rpc<{ attachments: unknown[] }>(
+      "assets.persistChatAttachments",
+      { threadId, messageId, attachments: images.map((image) => ({ type: "image", ...image })) },
+      this.requestTimeoutMs * 2,
+    );
+    return stored.attachments;
+  }
+
+  async launchThread(input: LaunchThreadInput): Promise<T3ThreadShell> {
+    await this.ensureProtocol();
+    try {
+      const attachments = input.initialMessage ? await this.persistImages(input.threadId, input.initialMessage.messageId, input.initialMessage.images) : [];
+      // T3 answers when the thread exists and its workspace is ready; checking out a large repository takes a while.
+      const launched = await this.rpc<{ threadId: string; projection: Record<string, unknown> }>(
+        "orchestration.launchThread",
+        {
+          commandId: input.commandId,
+          creationSource: CREATION_SOURCE,
+          threadId: input.threadId,
+          projectId: input.projectId,
+          title: input.title,
+          ...(input.generateTitle ? { generateTitle: true } : {}),
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          workspaceStrategy: input.workspace,
+          ...(input.initialMessage ? { initialMessage: { messageId: input.initialMessage.messageId, text: input.initialMessage.text, attachments } } : {}),
+        },
+        300_000,
+      );
+      const shell = this.toDetail({ projection: launched.projection }, null).shell;
+      // T3 answers once the thread exists and makes a new worktree after that (fetch, checkout, setup script). A
+      // thread with a first message waits for it by itself (its run is "preparing"); one without is wanted for
+      // its folder, so wait until T3 records it.
+      if (input.workspace.type === "worktree" && !input.initialMessage && !shell.worktreePath) return await this.awaitWorktree(input.threadId);
+      return shell;
+    } finally {
+      this.shellCache = null;
+    }
+  }
+
+  private async awaitWorktree(threadId: string): Promise<T3ThreadShell> {
+    const deadline = Date.now() + 300_000;
+    let missing = 0;
+    for (;;) {
+      this.shellCache = null;
+      const listed = await this.getThreadShell(threadId);
+      if (listed?.worktreePath) return listed;
+      // T3 removes a thread whose workspace it could not make.
+      missing = listed ? 0 : missing + 1;
+      if (missing >= 5) throw new T3CommandRejected("T3 could not make the thread's worktree, and removed the thread", 500, null);
+      if (Date.now() > deadline) throw new T3CommandRejected("T3 has not finished making the thread's worktree after 5 minutes", 504, null);
+      await new Promise((resolve) => setTimeout(resolve, this.worktreePollMs));
+    }
   }
 
   async listRefs(cwd: string): Promise<{ isRepo: boolean; refs: T3Ref[] }> {
@@ -661,79 +1198,49 @@ export class HttpT3Adapter implements T3Adapter {
     return { parentPath: value.parentPath, entries: value.entries.map((entry) => ({ name: entry.name, fullPath: entry.fullPath })) };
   }
 
-  async createWorktree(input: { cwd: string; baseBranch: string; branch: string }): Promise<{ path: string; branch: string }> {
-    // Checking out a large repository takes a while; T3 answers when the worktree is ready.
-    const value = await this.rpc<{ worktree: { path: string; refName: string } }>(
-      "vcs.createWorktree",
-      { cwd: input.cwd, refName: input.baseBranch, newRefName: input.branch, baseRefName: input.baseBranch, path: null },
-      300_000,
-    );
-    return { path: value.worktree.path, branch: value.worktree.refName };
-  }
-
-  async removeWorktree(input: { cwd: string; path: string }): Promise<void> {
-    await this.rpc("vcs.removeWorktree", { cwd: input.cwd, path: input.path, force: true }, 60_000);
-  }
-
-  async startTurn(input: StartTurnInput): Promise<void> {
+  async sendMessage(input: SendMessageInput): Promise<void> {
+    await this.ensureProtocol();
+    const attachments = await this.persistImages(input.threadId, input.messageId, input.images);
     await this.dispatch({
-      type: "thread.turn.start",
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: CREATION_SOURCE,
       commandId: input.commandId,
       threadId: input.threadId,
-      message: {
-        messageId: input.messageId,
-        role: "user",
-        text: input.text,
-        attachments: (input.images ?? []).map((image) => ({ type: "image", ...image })),
-      },
+      messageId: input.messageId,
+      text: input.text,
+      attachments,
       ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       ...(input.titleSeed ? { titleSeed: input.titleSeed } : {}),
-      runtimeMode: input.runtimeMode,
-      interactionMode: input.interactionMode,
-      createdAt: new Date().toISOString(),
+      dispatchMode:
+        input.mode.type === "steer"
+          ? { type: "steer_active", targetRunId: input.mode.runId }
+          : input.mode.type === "queue"
+            ? { type: "queue_after_active" }
+            : { type: "start_immediately" },
     });
   }
 
-  async interruptTurn(input: { commandId: string; threadId: string; turnId: string | null }): Promise<void> {
-    await this.dispatch({
-      type: "thread.turn.interrupt",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      ...(input.turnId ? { turnId: input.turnId } : {}),
-      createdAt: new Date().toISOString(),
-    });
+  async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {
+    const runId = input.runId ?? (await this.getThreadShell(input.threadId))?.activeRunId ?? null;
+    if (!runId) return;
+    await this.dispatch({ type: "run.interrupt", commandId: input.commandId, threadId: input.threadId, runId });
   }
 
-  async respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: string }): Promise<void> {
-    await this.dispatch({
-      type: "thread.approval.respond",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      requestId: input.requestId,
-      decision: input.decision,
-      createdAt: new Date().toISOString(),
-    });
+  async respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: ApprovalDecision }): Promise<void> {
+    await this.dispatch({ type: "runtime-request.respond", commandId: input.commandId, threadId: input.threadId, requestId: input.requestId, decision: input.decision });
   }
 
   async respondUserInput(input: { commandId: string; threadId: string; requestId: string; answers: Record<string, unknown> }): Promise<void> {
-    await this.dispatch({
-      type: "thread.user-input.respond",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      requestId: input.requestId,
-      answers: input.answers,
-      createdAt: new Date().toISOString(),
-    });
+    await this.dispatch({ type: "runtime-request.respond", commandId: input.commandId, threadId: input.threadId, requestId: input.requestId, answers: input.answers });
+  }
+
+  async dismissUserInput(input: { commandId: string; threadId: string; requestId: string }): Promise<void> {
+    await this.dispatch({ type: "thread.user-input.dismiss", commandId: input.commandId, threadId: input.threadId, requestId: input.requestId });
   }
 
   async setRuntimeMode(input: { commandId: string; threadId: string; runtimeMode: T3ThreadShell["runtimeMode"] }): Promise<void> {
-    await this.dispatch({
-      type: "thread.runtime-mode.set",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      runtimeMode: input.runtimeMode,
-      createdAt: new Date().toISOString(),
-    });
+    await this.dispatch({ type: "thread.runtime-mode.set", commandId: input.commandId, threadId: input.threadId, runtimeMode: input.runtimeMode });
   }
 
   async setThreadLifecycle(input: { commandId: string; threadId: string; action: ThreadLifecycleAction }): Promise<void> {

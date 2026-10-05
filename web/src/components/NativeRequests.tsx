@@ -104,6 +104,9 @@ function UserInputCard({ request }: { request: NativeRequest }) {
       onSubmit={async (answers) => {
         await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers });
       }}
+      onDismiss={async () => {
+        await runCommand({ type: "native.userInput.dismiss", participantId: request.participantId, requestId: request.requestId });
+      }}
     />
   );
 }
@@ -114,11 +117,14 @@ export function UserInputRequestCard({
   payload: raw,
   speaker,
   onSubmit,
+  onDismiss,
 }: {
   requestId: string;
   payload: unknown;
   speaker: ReactNode;
   onSubmit: (answers: Record<string, unknown>) => Promise<void>;
+  /** Drop the question without answering it, where that can be done. */
+  onDismiss?: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const payload = asRecord(raw);
@@ -215,6 +221,24 @@ export function UserInputRequestCard({
         <button type="button" className="small primary" disabled={busy || !complete} onClick={submit}>
           Submit answers
         </button>
+        {onDismiss ? (
+          <button
+            type="button"
+            className="small ghost"
+            disabled={busy}
+            title="Drop the question without answering: the agent goes on, or ends its turn, without it"
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onDismiss();
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Dismiss
+          </button>
+        ) : null}
       </div>
     </article>
   );

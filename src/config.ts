@@ -13,6 +13,8 @@ export interface Config {
   t3UserDataDir: string;
   /** Scheduler tick interval in milliseconds. */
   tickMs: number;
+  /** The built UI the service serves. */
+  webDistDir: string;
   /** Delivery budget for a single briefing, in characters. */
   briefingBudgetChars: number;
   /** Room browsers (see src/browser/roomBrowsers.ts). */
@@ -66,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     t3AccessToken: env.T3_ACCESS_TOKEN ?? null,
     t3UserDataDir,
     tickMs: Number(env.ROOMS_TICK_MS ?? 1500),
+    webDistDir: resolve(env.ROOMS_WEB_DIST ?? "web/dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
     browser: {
       mode: parseBrowserMode(env.ROOMS_BROWSER_MODE),

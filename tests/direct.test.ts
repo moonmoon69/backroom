@@ -48,9 +48,16 @@ test("thread.start creates a thread and sends the text as typed, without a room 
   assert.ok(thread);
   assert.equal(thread.shell.title, "Why is the parser slow on big files?");
   assert.deepEqual(thread.shell.modelSelection, { instanceId: "claudeAgent", model: "claude-fable-5-1", options: [{ id: "effort", value: "medium" }] }, "T3's default model");
-  const turn = stack.fake.commands.find((c) => c.type === "thread.turn.start" && c.threadId === started.threadId)?.payload as { text: string; titleSeed: string };
-  assert.equal(turn.text, "Why is the parser slow on big files?\nLook at src/parser.ts");
-  assert.equal(turn.titleSeed, "Why is the parser slow on big files?");
+  // One call creates the thread and starts it on the message: T3 names the thread from it, and no separate send follows.
+  const sent = stack.fake.commands.filter((c) => c.threadId === started.threadId);
+  assert.deepEqual(sent.map((c) => c.type), ["thread.launch"]);
+  const launch = sent[0]?.payload as { title: string; generateTitle?: boolean; workspace: { type: string }; initialMessage?: { messageId: string; text: string } };
+  assert.equal(launch.initialMessage?.text, "Why is the parser slow on big files?\nLook at src/parser.ts");
+  assert.equal(launch.title, "Why is the parser slow on big files?");
+  assert.equal(launch.generateTitle, true);
+  assert.deepEqual(launch.workspace, { type: "root" });
+  assert.equal(thread.shell.status, "running", "the first message started a run");
+  assert.deepEqual(thread.messages.map((m) => [m.id, m.role, m.text]), [[launch.initialMessage?.messageId, "user", "Why is the parser slow on big files?\nLook at src/parser.ts"]]);
 
   await assert.rejects(stack.run({ type: "thread.start", projectId: "nope", text: "hi" }), (error: RoomError) => error.code === "unknown_project");
 });
@@ -61,22 +68,39 @@ test("direct thread commands work on loose threads and refuse threads seated in 
   await assert.rejects(stack.run({ type: "thread.send", threadId: stack.threadOf("sol1"), text: "psst" }), (error: RoomError) => error.code === "thread_in_room" && error.status === 409);
 
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "first", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "approval-required" })) as { threadId: string };
-  stack.fake.completeTurn(threadId, { text: "first answer" });
+  const launch = stack.fake.commands.find((c) => c.type === "thread.launch" && c.threadId === threadId)?.payload as { runtimeMode: string };
+  assert.equal(launch.runtimeMode, "approval-required");
+  stack.fake.completeRun(threadId, { text: "first answer" });
   const png = `data:image/png;base64,${Buffer.from("89504e470d0a1a0a", "hex").toString("base64")}`;
   await stack.run({ type: "thread.send", threadId, text: "second", images: [{ name: "shot.png", dataUrl: png }] });
-  const send = stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === threadId)[1]?.payload as { text: string; runtimeMode: string; images: Array<{ name: string; mimeType: string; sizeBytes: number }> };
+  const dispatches = () => stack.fake.commands.filter((c) => c.type === "message.dispatch" && c.threadId === threadId).map((c) => c.payload as { text: string; mode: { type: string; runId?: string }; modelSelection?: { model: string }; images: Array<{ name: string; mimeType: string; sizeBytes: number }> });
+  const send = dispatches()[0]!;
   assert.equal(send.text, "second");
-  assert.equal(send.runtimeMode, "approval-required", "the thread's own permission mode");
+  assert.deepEqual(send.mode, { type: "start" }, "the thread was idle, so the message starts a run");
+  // A message carries no permission mode in V2: the run uses the thread's own, set when it was launched.
+  assert.equal(stack.fake.threads.get(threadId)?.shell.runtimeMode, "approval-required", "the thread's own permission mode");
   assert.deepEqual(send.images.map((i) => [i.name, i.mimeType, i.sizeBytes]), [["shot.png", "image/png", 8]]);
 
+  const secondRun = stack.fake.threads.get(threadId)?.shell.activeRunId;
+  assert.ok(secondRun, "the second message's run is running");
   await stack.run({ type: "thread.interrupt", threadId });
-  assert.equal(stack.fake.threads.get(threadId)?.shell.latestTurn?.state, "interrupted");
+  assert.deepEqual((stack.fake.commands.find((c) => c.type === "run.interrupt" && c.threadId === threadId)?.payload as { runId: string | null }).runId, secondRun);
+  assert.equal(stack.fake.threads.get(threadId)?.shell.status, "interrupted");
+  assert.equal(stack.fake.threads.get(threadId)?.shell.activeRunId, null);
   await assert.rejects(stack.run({ type: "thread.model.set", threadId, modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5-1" } }), (error: RoomError) => error.code === "provider_fixed");
-  // A live session keeps its model unless the turn names one, so every send carries the thread's current model.
+  // A live session keeps its model unless the message names one, so every send carries the thread's current model.
   await stack.run({ type: "thread.model.set", threadId, modelSelection: { instanceId: "codex", model: "gpt-6-astra" } });
   await stack.run({ type: "thread.send", threadId, text: "third" });
-  const third = stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === threadId)[2]?.payload as { modelSelection?: { model: string } };
+  assert.ok(stack.fake.commands.some((c) => c.type === "thread.model-selection.set" && c.threadId === threadId));
+  const third = dispatches()[1]!;
   assert.equal(third.modelSelection?.model, "gpt-6-astra");
+  assert.deepEqual(third.mode, { type: "start" });
+  // A message sent while a run is running is steered into it, as T3 Code's composer does.
+  const thirdRun = stack.fake.threads.get(threadId)?.shell.activeRunId;
+  await stack.run({ type: "thread.send", threadId, text: "and one more thing" });
+  assert.deepEqual(dispatches()[2]?.mode, { type: "steer", runId: thirdRun });
+  assert.equal(stack.fake.steeredMessages, 1);
+  assert.equal(stack.fake.threads.get(threadId)?.runs.length, 3, "a steered message starts no run of its own");
   await stack.run({ type: "thread.runtimeMode.set", threadId, runtimeMode: "full-access" });
   assert.equal(stack.fake.threads.get(threadId)?.shell.runtimeMode, "full-access");
   await stack.run({ type: "thread.lifecycle", threadId, action: "delete" });
@@ -84,33 +108,40 @@ test("direct thread commands work on loose threads and refuse threads seated in 
   await assert.rejects(stack.run({ type: "thread.send", threadId, text: "anyone?" }), (error: RoomError) => error.code === "not_found");
 });
 
-test("the thread view shows one reply per turn, streams the running turn, and lists open approvals", async (t) => {
+test("the thread view shows one reply per run, streams the running run, and lists open approvals", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
   const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-direct", ROOMS_PORT: "0" }), "/nonexistent/dist");
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "fix the parser" })) as { threadId: string };
-  stack.fake.completeTurn(threadId, { text: "Fixed it.", progress: ["Reading the parser.", "Editing now."], files: [{ path: "src/parser.ts", kind: "modified", additions: 4, deletions: 1 }] });
+  stack.fake.completeRun(threadId, { text: "Fixed it.", progress: ["Reading the parser.", "Editing now."], files: [{ path: "src/parser.ts", kind: "modified", additions: 4, deletions: 1 }] });
   await stack.run({ type: "thread.send", threadId, text: "now the tests" });
   const approval = stack.fake.raiseApproval(threadId);
 
   const view = (await (await app.request(`/api/threads/${threadId}`)).json()) as {
     thread: { boundToRoom: boolean; title: string };
     project: { id: string } | null;
-    items: Array<{ kind: string; text: string; progress?: Array<{ text: string }>; files?: { count: number; additions: number } | null }>;
-    running: { turnId: string } | null;
-    requests: Array<{ requestId: string; kind: string }>;
-    contextWindow: { maxTokens: number } | null;
+    items: Array<{ kind: string; text: string; runId?: string; progress?: Array<{ text: string }>; files?: { count: number; additions: number } | null }>;
+    running: { runId: string; feed: Array<{ kind: string; labels?: string[] }> } | null;
+    requests: Array<{ requestId: string; kind: string; payload: { requestId: string; requestType: string; detail: string | null; responseMode: string } }>;
+    contextWindow: { usedTokens: number; maxTokens: number } | null;
   };
   assert.equal(view.thread.boundToRoom, false);
   assert.equal(view.project?.id, "project_demo");
   assert.deepEqual(view.items.map((i) => [i.kind, i.text]), [["user", "fix the parser"], ["reply", "Fixed it."], ["user", "now the tests"]]);
   assert.deepEqual(view.items[1]?.progress?.map((p) => p.text), ["Reading the parser.", "Editing now."]);
   assert.deepEqual(view.items[1]?.files, { count: 1, additions: 4, deletions: 1 });
-  assert.ok(view.running, "the second turn is running");
+  const runs = stack.fake.threads.get(threadId)!.runs.map((r) => r.id);
+  assert.equal(view.items[1]?.runId, runs[0], "the reply names the run that produced it");
+  assert.ok(view.running, "the second run is running");
+  assert.equal(view.running.runId, runs[1]);
+  assert.deepEqual(view.running.feed.map((f) => [f.kind, f.labels]), [["tools", ["Read"]]], "the running run's items, not the finished one's");
   assert.deepEqual(view.requests.map((r) => [r.requestId, r.kind]), [[approval, "approval"]]);
+  assert.deepEqual(view.requests[0]?.payload, { requestId: approval, requestType: "command", detail: "run tests", options: null, questions: [], responseMode: "live" });
   assert.equal(view.contextWindow?.maxTokens, 200000);
+  assert.equal(view.contextWindow?.usedTokens, 12000 + 5 * 3500, "the latest run's reading");
 
   await stack.run({ type: "thread.approval.respond", threadId, requestId: approval, decision: "accept" });
+  assert.ok(stack.fake.commands.some((c) => c.type === "runtime-request.respond" && c.threadId === threadId));
   const after = (await (await app.request(`/api/threads/${threadId}`)).json()) as { requests: unknown[] };
   assert.equal(after.requests.length, 0);
   assert.equal((await app.request("/api/threads/missing")).status, 404);
@@ -132,7 +163,7 @@ test("threads can be settled and archived and brought back; archived ones are li
   t.after(() => stack.close());
   const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-direct", ROOMS_PORT: "0" }), "/nonexistent/dist");
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "tidy up" })) as { threadId: string };
-  stack.fake.completeTurn(threadId, { text: "tidied" });
+  stack.fake.completeRun(threadId, { text: "tidied" });
   const listed = async (query = "") =>
     ((await (await app.request(`/api/t3/threads${query}`)).json()) as Array<{ id: string; settledAt: string | null; archivedAt: string | null }>).find((x) => x.id === threadId);
 
@@ -145,10 +176,17 @@ test("threads can be settled and archived and brought back; archived ones are li
   await stack.run({ type: "thread.lifecycle", threadId, action: "archive" });
   assert.equal(await listed(), undefined, "T3 leaves archived threads out of the live list");
   assert.ok((await listed("?includeArchived=1"))?.archivedAt, "listed as archived on request");
-  assert.equal((await app.request(`/api/threads/${threadId}`)).status, 404, "T3 does not serve an archived thread's conversation");
+  // T3 V2 reads a thread by id whether or not it is archived, so its conversation can still be opened.
+  const archived = await app.request(`/api/threads/${threadId}`);
+  assert.equal(archived.status, 200);
+  const archivedView = (await archived.json()) as { thread: { archivedAt: string | null }; items: Array<{ kind: string; text: string }> };
+  assert.ok(archivedView.thread.archivedAt, "shown as archived");
+  assert.deepEqual(archivedView.items.map((i) => [i.kind, i.text]), [["user", "tidy up"], ["reply", "tidied"]]);
 
   // Found through T3's archived list, so it can be restored (or deleted) from the room.
   await stack.run({ type: "thread.lifecycle", threadId, action: "unarchive" });
   assert.equal((await listed())?.archivedAt, null);
-  assert.equal((await app.request(`/api/threads/${threadId}`)).status, 200);
+  const restored = await app.request(`/api/threads/${threadId}`);
+  assert.equal(restored.status, 200);
+  assert.equal(((await restored.json()) as { thread: { archivedAt: string | null } }).thread.archivedAt, null);
 });

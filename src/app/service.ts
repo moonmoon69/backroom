@@ -12,7 +12,8 @@ import type { Assignment, RoomCommand, Schedule, WorkspaceChoice } from "../doma
 import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
 import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
-import { discardWorkspace, prepareWorkspace } from "./workspaceChoice.ts";
+import { resolveWorkspace } from "./workspaceChoice.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, conversationTitle, movedInstruction, seatInstruction, startAttemptKey } from "./consigliere.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
@@ -20,7 +21,6 @@ import {
   type Participant,
   type PrerequisiteRef,
   type Preset,
-  type Role,
   type Room,
   type RoomEvent,
   type Attachment,
@@ -40,10 +40,10 @@ export type CommandResult =
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
   | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }> }
-  | { type: "role.saved"; roleId: string }
-  | { type: "role.deleted"; roleId: string }
   | { type: "preset.saved"; presetId: string }
   | { type: "preset.deleted"; presetId: string }
+  | { type: "settings.updated" }
+  | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "participant.created"; participantId: string; threadId: string; alias: string }
   | {
       type: "participant.updated";
@@ -62,6 +62,15 @@ export type CommandResult =
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
+
+/** The first words of an instruction, for a note that points at it. */
+const headOf = (text: string, max = 80): string => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+};
+
+/** A member's thread is named after its room and alias, so T3's list and Backroom's agree. */
+export const threadTitleFor = (room: Pick<Room, "title">, participant: Pick<Participant, "alias">): string => `${room.title} · ${participant.alias}`;
 
 const PROJECT_ORDER_KEY = "sidebar.projectOrder";
 
@@ -109,6 +118,8 @@ export class RoomService {
     attachmentIds?: string[];
     progress?: RoomEvent["progress"];
     prompt?: string | null;
+    to?: string | null;
+    outcome?: RoomEvent["outcome"];
     sourceRef?: RoomEvent["sourceRef"];
     createdAt?: string;
   }): RoomEvent {
@@ -127,6 +138,8 @@ export class RoomService {
         attachmentIds: input.attachmentIds ?? [],
         progress: input.progress ?? [],
         prompt: input.prompt ?? null,
+        to: input.to ?? null,
+        outcome: input.outcome ?? null,
         sourceRef: input.sourceRef ?? null,
         createdAt: input.createdAt ?? now(),
       };
@@ -145,11 +158,45 @@ export class RoomService {
     return updated;
   }
 
-  /** Block pending dependents of a task with a visible reason. Returns the tasks that were blocked. */
+  /**
+   * A "wake" task: Backroom's own task for a member, run when something they are waiting for has happened. After a
+   * task, it waits on it and carries its answer; without one it runs at once and its instruction says what happened.
+   */
+  createWake(roomId: string, poster: Participant, sourceEventId: string, instruction: string, after: Task | null): Task {
+    const wake: Task = {
+      id: randomUUID(),
+      roomId,
+      number: this.repos.nextTaskNumber(roomId),
+      revision: 1,
+      sourceEventId,
+      participantId: poster.id,
+      instruction,
+      sourceText: null,
+      attachmentIds: [],
+      delivery: "queue",
+      slashCommand: false,
+      kind: "wake",
+      scheduleMode: after ? "after_all" : "now",
+      prerequisites: after ? [{ taskId: after.id, revision: after.revision }] : [],
+      state: "queued",
+      stateReason: after ? `after ${taskLabel(after)}` : null,
+      currentRunId: null,
+      userOutcome: null,
+      dismissedAt: null,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    this.repos.insertTask(wake);
+    this.statusEvent(wake, after ? `${taskLabel(wake)} → @${poster.alias}: wakes him when ${taskLabel(after)} ends` : `${taskLabel(wake)} → @${poster.alias}: wakes him now`);
+    return wake;
+  }
+
+  /** Block pending dependents of a task with a visible reason. Returns the tasks that were blocked. A "wake" task is
+   *  not blocked by its work ending badly: that is what it is for, and the scheduler runs it with the outcome. */
   blockPendingDependents(task: Task, reason: string): Task[] {
     const blocked: Task[] = [];
     for (const dependent of dependentsOf(task.id, this.repos.listTasks(task.roomId))) {
-      if (!PENDING_TASK_STATES.has(dependent.state) || dependent.state === "blocked") continue;
+      if (!PENDING_TASK_STATES.has(dependent.state) || dependent.state === "blocked" || dependent.kind === "wake") continue;
       blocked.push(this.setTaskState(dependent, "blocked", reason));
       this.statusEvent(dependent, `${taskLabel(dependent)} blocked: ${reason}`);
     }
@@ -198,27 +245,41 @@ export class RoomService {
         return { type: "projects.reordered" };
       case "room.delete":
         return this.deleteRoom(command);
+      case "member.post":
+        return this.createMemberPost(command);
       case "participant.create":
         return this.createParticipant(command);
       case "participant.update":
         return this.updateParticipant(command);
-      case "role.create":
-        return this.createRole(command);
-      case "role.update":
-        return this.updateRole(command);
-      case "role.delete":
-        return this.deleteRole(command);
       case "preset.create":
         return this.createPreset(command);
       case "preset.update":
         return this.updatePreset(command);
       case "preset.delete": {
-        const removed = this.db.transaction(() => this.repos.deletePreset(command.presetId));
+        const removed = this.db.transaction(() => {
+          // The Consigliere setting follows its saved crew member out; members already seated from it stay as they are.
+          if (this.repos.getKv(CONSIGLIERE_PRESET_KEY) === command.presetId) this.repos.deleteKv(CONSIGLIERE_PRESET_KEY);
+          return this.repos.deletePreset(command.presetId);
+        });
         if (!removed) throw notFound("preset", command.presetId);
         return { type: "preset.deleted", presetId: command.presetId };
       }
       case "participant.fromPreset":
         return this.seatPreset(command);
+      case "room.consigliere.set":
+        return this.setConsigliere(command);
+      case "consigliere.preset.set": {
+        if (command.presetId !== null && !this.repos.getPreset(command.presetId)) throw notFound("preset", command.presetId);
+        if (command.presetId === null) this.repos.deleteKv(CONSIGLIERE_PRESET_KEY);
+        else this.repos.setKv(CONSIGLIERE_PRESET_KEY, command.presetId);
+        return { type: "settings.updated" };
+      }
+      case "consigliere.rules.set":
+        if (command.rules === null) this.repos.deleteKv(CONSIGLIERE_RULES_KEY);
+        else this.repos.setKv(CONSIGLIERE_RULES_KEY, command.rules);
+        return { type: "settings.updated" };
+      case "consigliere.start":
+        return this.startConversation(command);
       case "participant.rebind":
         return this.rebindParticipant(command);
       case "participant.retire":
@@ -257,6 +318,19 @@ export class RoomService {
         return this.markBlocked(command);
       case "task.unblock":
         return this.unblockTask(command);
+      case "task.dismiss": {
+        const task = this.repos.getTask(command.taskId);
+        if (!task) throw notFound("task", command.taskId);
+        if (task.state !== "failed") throw invalidTransition(taskLabel(task), task.state, "dismiss; only a failed task can be taken off your list");
+        this.db.transaction(() => {
+          this.repos.updateTask({ ...task, dismissedAt: now(), updatedAt: now() });
+          this.statusEvent(task, `${taskLabel(task)}: failure dismissed by user`);
+        });
+        this.notify(task.roomId);
+        return { type: "task.updated", taskId: task.id, revision: task.revision };
+      }
+      case "native.userInput.dismiss":
+        return this.dismissUserInput(command);
       case "native.approval.respond":
         return this.respondApproval(command);
       case "native.userInput.respond":
@@ -319,11 +393,14 @@ export class RoomService {
       browserEnabled: false,
       defaultBrowserId: null,
       allowedBrowserIds: null,
+      consigliereId: null,
       createdAt: now(),
       updatedAt: now(),
     };
     this.db.transaction(() => this.repos.insertRoom(room));
     this.notify(room.id);
+    // A room opens with the Consigliere seated, when one is chosen in Settings: he is the one you talk to in it.
+    if (command.consigliere) await this.seatConsigliere(room);
     return { type: "room.created", roomId: room.id };
   }
 
@@ -463,16 +540,12 @@ export class RoomService {
     }
   }
 
-  private requireRoleId(roleId: string | null): string | null {
-    if (roleId === null) return null;
-    if (!this.repos.getRole(roleId)) throw notFound("role", roleId);
-    return roleId;
-  }
-
   private async bindThread(
     room: Room,
     participant: Pick<Participant, "alias" | "modelSelection" | "runtimeMode" | "interactionMode">,
     thread: { mode: "create"; workspace?: WorkspaceChoice | undefined } | { mode: "attach"; threadId: string },
+    /** Ids chosen ahead for a new thread, so an attempt that is retried asks T3 for the same thread again. */
+    ids?: { threadId: string; commandId: string },
   ): Promise<{ threadId: string; runtimeMode: Participant["runtimeMode"]; modelSelection: Participant["modelSelection"]; interactionMode: Participant["interactionMode"] }> {
     try {
       if (thread.mode === "attach") {
@@ -486,27 +559,21 @@ export class RoomService {
         // An attached thread keeps what T3 has for it: model, options, permission mode, interaction mode.
         return { threadId: shell.id, runtimeMode: shell.runtimeMode, modelSelection: shell.modelSelection, interactionMode: shell.interactionMode };
       }
-      const threadId = randomUUID();
-      const commandId = randomUUID();
-      // The folder first (a new worktree is made now), so T3 starts the agent in it.
-      const workspace = await prepareWorkspace(this.adapter, room.projectId, thread.workspace, { roomTitle: room.title, alias: participant.alias });
+      const threadId = ids?.threadId ?? randomUUID();
+      const commandId = ids?.commandId ?? randomUUID();
+      // T3 makes the thread with its folder (a new worktree is checked out now), so the agent starts in it.
+      const workspace = await resolveWorkspace(this.adapter, room.projectId, thread.workspace, { roomTitle: room.title, alias: participant.alias });
       this.repos.logCommand(commandId, "thread.create", threadId, "pending", null);
-      try {
-        await this.adapter.createThread({
-          commandId,
-          threadId,
-          projectId: room.projectId,
-          title: `${room.title} · ${participant.alias}`,
-          modelSelection: participant.modelSelection,
-          runtimeMode: participant.runtimeMode,
-          interactionMode: participant.interactionMode,
-          branch: workspace.branch,
-          worktreePath: workspace.worktreePath,
-        });
-      } catch (error) {
-        await discardWorkspace(this.adapter, workspace);
-        throw error;
-      }
+      await this.adapter.launchThread({
+        commandId,
+        threadId,
+        projectId: room.projectId,
+        title: threadTitleFor(room, participant),
+        modelSelection: participant.modelSelection,
+        runtimeMode: participant.runtimeMode,
+        interactionMode: participant.interactionMode,
+        workspace,
+      });
       this.repos.logCommand(commandId, "thread.create", threadId, "accepted", null);
       return { threadId, runtimeMode: participant.runtimeMode, modelSelection: participant.modelSelection, interactionMode: participant.interactionMode };
     } catch (error) {
@@ -532,7 +599,6 @@ export class RoomService {
       command.roomId,
       {
         alias: command.alias,
-        roleId: this.requireRoleId(command.roleId),
         // Placeholder for attach; bindThread replaces it with the thread's own selection.
         modelSelection: modelSelection ?? { instanceId: "inherited", model: "inherited" },
         runtimeMode: command.runtimeMode ?? "full-access",
@@ -584,17 +650,17 @@ export class RoomService {
 
   private async seatParticipant(
     roomId: string,
-    spec: Pick<Participant, "alias" | "roleId" | "modelSelection" | "runtimeMode" | "interactionMode">,
+    spec: Pick<Participant, "alias" | "modelSelection" | "runtimeMode" | "interactionMode">,
     thread: { mode: "create" } | { mode: "attach"; threadId: string },
+    ids?: { participantId: string; threadId: string; commandId: string },
   ): Promise<CommandResult> {
     const room = this.requireRoom(roomId);
     this.assertAliasFree(room.id, spec.alias, null);
-    const bound = await this.bindThread(room, spec, thread);
+    const bound = await this.bindThread(room, spec, thread, ids);
     const participant: Participant = {
-      id: randomUUID(),
+      id: ids?.participantId ?? randomUUID(),
       roomId: room.id,
       alias: spec.alias,
-      roleId: spec.roleId,
       modelSelection: bound.modelSelection,
       runtimeMode: bound.runtimeMode,
       interactionMode: bound.interactionMode,
@@ -624,6 +690,9 @@ export class RoomService {
       speaker: { type: "system" },
       text: `@${participant.alias} joined (${participant.modelSelection.model}, ${command.thread.mode === "create" ? "new thread" : "attached thread"})`,
     });
+    // In a room that has a Consigliere his messages arrive bare, so a new member is told the standing facts first.
+    const consigliere = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
+    if (consigliere && !consigliere.retiredAt) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
     this.notify(room.id);
     return { type: "participant.created", participantId: participant.id, threadId: bound.threadId, alias: participant.alias };
   }
@@ -631,20 +700,10 @@ export class RoomService {
   private async updateParticipant(command: Extract<RoomCommand, { type: "participant.update" }>): Promise<CommandResult> {
     const participant = this.requireParticipant(command.participantId);
     if (command.alias !== undefined) this.assertAliasFree(participant.roomId, command.alias, participant.id);
-    const roleId = command.roleId === undefined ? participant.roleId : this.requireRoleId(command.roleId);
-    const updated: Participant = { ...participant, alias: command.alias ?? participant.alias, roleId, updatedAt: now() };
+    const updated: Participant = { ...participant, alias: command.alias ?? participant.alias, updatedAt: now() };
     this.db.transaction(() => this.repos.updateParticipant(updated));
     if (participant.alias !== updated.alias) {
       this.appendEvent({ roomId: participant.roomId, kind: "system", speaker: { type: "system" }, text: `@${participant.alias} renamed to @${updated.alias}` });
-    }
-    if (participant.roleId !== updated.roleId) {
-      const role = updated.roleId ? this.repos.getRole(updated.roleId) : null;
-      this.appendEvent({
-        roomId: participant.roomId,
-        kind: "system",
-        speaker: { type: "system" },
-        text: role ? `@${updated.alias} now has the role "${role.name}"` : `@${updated.alias} no longer has a role`,
-      });
     }
     this.notify(participant.roomId);
     return { type: "participant.updated", participantId: participant.id };
@@ -664,7 +723,6 @@ export class RoomService {
       name: command.name,
       modelSelection: command.modelSelection,
       runtimeMode: command.runtimeMode,
-      roleId: this.requireRoleId(command.roleId),
       workspaceMode: command.workspaceMode,
       createdAt: now(),
       updatedAt: now(),
@@ -682,7 +740,6 @@ export class RoomService {
       name: command.name ?? preset.name,
       modelSelection: command.modelSelection ?? preset.modelSelection,
       runtimeMode: command.runtimeMode ?? preset.runtimeMode,
-      roleId: command.roleId === undefined ? preset.roleId : this.requireRoleId(command.roleId),
       workspaceMode: command.workspaceMode ?? preset.workspaceMode,
       updatedAt: now(),
     };
@@ -720,7 +777,7 @@ export class RoomService {
     }
   }
 
-  private async seatPreset(command: Extract<RoomCommand, { type: "participant.fromPreset" }>): Promise<CommandResult> {
+  private async seatPreset(command: Extract<RoomCommand, { type: "participant.fromPreset" }>, ids?: { participantId: string; threadId: string; commandId: string }): Promise<CommandResult> {
     const room = this.requireRoom(command.roomId);
     const preset = this.repos.getPreset(command.presetId);
     if (!preset) throw notFound("preset", command.presetId);
@@ -729,44 +786,146 @@ export class RoomService {
       room.id,
       {
         alias: command.alias ?? this.freeAlias(room.id, preset.name),
-        // A role deleted since the preset was saved is cleared from it, so this one exists.
-        roleId: preset.roleId && this.repos.getRole(preset.roleId) ? preset.roleId : null,
         modelSelection: preset.modelSelection,
         runtimeMode: preset.runtimeMode,
         interactionMode: "default",
       },
       { mode: "create", ...(workspace ? { workspace } : {}) },
+      ids,
     );
   }
 
-  // ---------- roles (named rule sets) ----------
+  // ---------- the Consigliere ----------
 
-  private assertRoleNameFree(name: string, exceptId: string | null): void {
-    const existing = this.repos.findRoleByName(name);
-    if (existing && existing.id !== exceptId) throw new RoomError("role_name_taken", `a role named "${name}" already exists`, 409);
+  /**
+   * A task Backroom writes itself for one member: the seat briefing, or the line that names a new Consigliere. It is
+   * delivered like any assignment (so it is retried, shown and answered on the board) but carries no room messages.
+   */
+  private sendSeatBriefing(room: Room, participant: Participant, instruction: string, label: string): Task {
+    return this.db.transaction(() => {
+      const source = this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `${label} sent to @${participant.alias}` });
+      const task: Task = {
+        id: randomUUID(),
+        roomId: room.id,
+        number: this.repos.nextTaskNumber(room.id),
+        revision: 1,
+        sourceEventId: source.id,
+        participantId: participant.id,
+        instruction,
+        sourceText: null,
+        attachmentIds: [],
+        delivery: "queue",
+        slashCommand: false,
+        kind: "seat",
+        scheduleMode: "now",
+        prerequisites: [],
+        state: "queued",
+        stateReason: "ready",
+        currentRunId: null,
+        userOutcome: null,
+        dismissedAt: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      this.repos.insertTask(task);
+      this.statusEvent(task, `${taskLabel(task)} → @${participant.alias}: ${label.toLowerCase()}`);
+      return task;
+    });
   }
 
-  private async createRole(command: Extract<RoomCommand, { type: "role.create" }>): Promise<CommandResult> {
-    this.assertRoleNameFree(command.name, null);
-    const role: Role = { id: randomUUID(), name: command.name, rules: command.rules, createdAt: now(), updatedAt: now() };
-    this.db.transaction(() => this.repos.upsertRole(role));
-    return { type: "role.saved", roleId: role.id };
+  /**
+   * Designate a member as the room's Consigliere, move the mark, or clear it. A room's first Consigliere means every
+   * other member gets the seat briefing; a move tells every member, in one line, who he is now.
+   */
+  private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>): Promise<CommandResult> {
+    const room = this.requireRoom(command.roomId);
+    const previous = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
+    if (command.participantId === null) {
+      if (room.consigliereId === null) return { type: "room.updated", roomId: room.id };
+      this.db.transaction(() => {
+        this.repos.setRoomConsigliere(room.id, null, now());
+        this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `${previous ? `@${previous.alias} is no longer the Consigliere; this` : "This"} room has no Consigliere` });
+      });
+      this.notify(room.id);
+      return { type: "room.updated", roomId: room.id };
+    }
+    const participant = this.requireParticipant(command.participantId);
+    if (participant.roomId !== room.id) throw new RoomError("unknown_participant", `member ${command.participantId} is not in this room`);
+    if (room.consigliereId === participant.id) return { type: "room.updated", roomId: room.id };
+    const threadId = this.repos.currentBinding(participant.id)?.threadId ?? null;
+    const moved = previous !== null && !previous.retiredAt;
+    this.db.transaction(() => {
+      this.repos.setRoomConsigliere(room.id, participant.id, now());
+      this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${participant.alias} is now the Consigliere of this room` });
+      for (const other of this.repos.listActiveParticipants(room.id)) {
+        if (other.id === participant.id) continue;
+        if (moved) this.sendSeatBriefing(room, other, movedInstruction(participant, threadId), "New Consigliere");
+        else this.sendSeatBriefing(room, other, seatInstruction(participant, threadId), "Seat briefing");
+      }
+    });
+    this.notify(room.id);
+    return { type: "room.updated", roomId: room.id };
   }
 
-  private async updateRole(command: Extract<RoomCommand, { type: "role.update" }>): Promise<CommandResult> {
-    const role = this.repos.getRole(command.roleId);
-    if (!role) throw notFound("role", command.roleId);
-    if (command.name) this.assertRoleNameFree(command.name, role.id);
-    const updated: Role = { ...role, name: command.name ?? role.name, rules: command.rules ?? role.rules, updatedAt: now() };
-    this.db.transaction(() => this.repos.upsertRole(updated));
-    return { type: "role.saved", roleId: role.id };
+  /**
+   * Start a conversation with the Consigliere: a room in the project, the saved crew member the setting names seated
+   * and designated, and the user's message delivered to him. What the attempt intends (the room, the member, the
+   * thread and its T3 command) is written down before T3 is called, so the same request sent again, after an error or
+   * a restart, carries on with them and makes nothing twice.
+   */
+  /**
+   * Seat the Consigliere chosen in Settings in a new room and designate him. Nothing happens without a choice. When T3
+   * cannot seat him the room stays, with a note saying so, and Members can seat him later.
+   */
+  private async seatConsigliere(room: Room): Promise<void> {
+    const presetId = this.repos.getKv(CONSIGLIERE_PRESET_KEY);
+    const preset = presetId ? this.repos.getPreset(presetId) : null;
+    if (!preset) return;
+    try {
+      const seated = (await this.seatPreset({ type: "participant.fromPreset", roomId: room.id, presetId: preset.id })) as { participantId: string };
+      await this.setConsigliere({ type: "room.consigliere.set", roomId: room.id, participantId: seated.participantId });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `${preset.name} could not be seated as the Consigliere: ${reason}. Seat him from Members and make him the Consigliere.` });
+      this.notify(room.id);
+    }
   }
 
-  private async deleteRole(command: Extract<RoomCommand, { type: "role.delete" }>): Promise<CommandResult> {
-    // Participants holding the role keep working without one; the repository clears their role_id.
-    const removed = this.db.transaction(() => this.repos.deleteRole(command.roleId));
-    if (!removed) throw notFound("role", command.roleId);
-    return { type: "role.deleted", roleId: command.roleId };
+  private async startConversation(command: Extract<RoomCommand, { type: "consigliere.start" }>): Promise<CommandResult> {
+    const key = startAttemptKey(command.requestId);
+    type Attempt = { roomId: string; participantId: string; threadId: string; threadCommandId: string; seated: boolean; delivered: boolean };
+    let attempt = JSON.parse(this.repos.getKv(key) ?? "null") as Attempt | null;
+    const save = (next: Attempt) => {
+      attempt = next;
+      this.repos.setKv(key, JSON.stringify(next));
+    };
+    if (attempt?.delivered) return { type: "consigliere.started", roomId: attempt.roomId, participantId: attempt.participantId };
+    const presetId = this.repos.getKv(CONSIGLIERE_PRESET_KEY);
+    const preset = presetId ? this.repos.getPreset(presetId) : null;
+    if (!preset) throw new RoomError("no_consigliere", "No Consigliere is chosen: pick one of your saved crew in Settings first", 409);
+    if (!attempt) {
+      const created = (await this.createRoom({ type: "room.create", projectId: command.projectId, title: conversationTitle(command.text), consigliere: false })) as { roomId: string };
+      save({ roomId: created.roomId, participantId: randomUUID(), threadId: randomUUID(), threadCommandId: randomUUID(), seated: false, delivered: false });
+    }
+    let current = attempt as unknown as Attempt;
+    if (!current.seated) {
+      // The member may be seated already: the attempt stopped after seating him and before saying so.
+      if (!this.repos.getParticipant(current.participantId)) {
+        await this.seatPreset({ type: "participant.fromPreset", roomId: current.roomId, presetId: preset.id }, { participantId: current.participantId, threadId: current.threadId, commandId: current.threadCommandId });
+      }
+      save({ ...current, seated: true });
+      current = { ...current, seated: true };
+    }
+    await this.setConsigliere({ type: "room.consigliere.set", roomId: current.roomId, participantId: current.participantId });
+    // Delivered already when the room has the message: the attempt stopped before saying so.
+    if (!this.repos.listEvents(current.roomId).some((event) => event.kind === "user.message")) await this.createMessage({
+      roomId: current.roomId,
+      sourceText: command.text,
+      attachmentIds: [],
+      assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), schedule: { mode: "now" }, after: [], delivery: "queue", slashCommand: false }],
+    });
+    save({ ...current, delivered: true });
+    return { type: "consigliere.started", roomId: current.roomId, participantId: current.participantId };
   }
 
   private async setParticipantRuntimeMode(command: Extract<RoomCommand, { type: "participant.runtimeMode.set" }>): Promise<CommandResult> {
@@ -860,6 +1019,8 @@ export class RoomService {
     this.db.transaction(() => {
       if (binding) this.repos.updateBinding({ ...binding, retiredAt: now() });
       this.repos.updateParticipant({ ...participant, retiredAt: now(), updatedAt: now() });
+      // A room's Consigliere who leaves takes the mark with him: the room has none until the user names another.
+      if (this.repos.getRoom(participant.roomId)?.consigliereId === participant.id) this.repos.setRoomConsigliere(participant.roomId, null, now());
       for (const task of pending) {
         if (command.pendingTasks === "cancel") {
           const cancelled = this.setTaskState(task, "cancelled", `cancelled: @${participant.alias} was removed from the room`);
@@ -968,7 +1129,20 @@ export class RoomService {
    * One user message: a single room event and one task per recipient per assignment. An assignment's "after"
    * indices become prerequisites on every task created for those earlier assignments, pinned at revision 1.
    */
-  private async createMessage(input: { roomId: string; sourceText: string; attachmentIds: string[]; assignments: Assignment[] }): Promise<CommandResult> {
+  /**
+   * A member's post on the board: work for other members, from one of them. The post is a member.message on the
+   * board (from, to, text); each recipient gets a task as from the user, and the poster gets a "wake" task after each
+   * of them: Backroom runs it with the answer when the work ends, so the poster hands out and goes idle.
+   */
+  private async createMemberPost(command: Extract<RoomCommand, { type: "member.post" }>): Promise<CommandResult> {
+    const poster = this.requireParticipant(command.participantId);
+    if (poster.roomId !== command.roomId) throw new RoomError("unknown_participant", `member ${command.participantId} is not in this room`);
+    if (poster.retiredAt) throw new RoomError("participant_retired", `@${poster.alias} was removed from the room`, 409);
+    if (command.assignments.some((assignment) => assignment.recipients.includes(poster.id))) throw new RoomError("self_addressed", "a post is for other members, not for its poster");
+    return this.createMessage({ roomId: command.roomId, sourceText: command.sourceText, attachmentIds: [], assignments: command.assignments, from: poster });
+  }
+
+  private async createMessage(input: { roomId: string; sourceText: string; attachmentIds: string[]; assignments: Assignment[]; from?: Participant }): Promise<CommandResult> {
     const room = this.requireRoom(input.roomId);
     const participants = this.participantsById(room.id);
     for (const assignment of input.assignments) {
@@ -978,6 +1152,8 @@ export class RoomService {
         if (participant.retiredAt) throw new RoomError("participant_retired", `@${participant.alias} was removed from the room`, 409);
       }
     }
+    const from = input.from ?? null;
+    const fromBinding = from ? this.repos.currentBinding(from.id) : null;
     this.requireAttachments(room.id, input.attachmentIds);
     await this.requireSlashCommands(input.assignments, participants);
     const tasksById = new Map(this.repos.listTasks(room.id).map((task) => [task.id, task]));
@@ -991,10 +1167,11 @@ export class RoomService {
     const event = this.db.transaction(() => {
       const sourceEvent = this.appendEvent({
         roomId: room.id,
-        kind: "user.message",
-        speaker: { type: "user" },
+        kind: from ? "member.message" : "user.message",
+        speaker: from && fromBinding ? { type: "participant", participantId: from.id, bindingId: fromBinding.id } : { type: "user" },
         text: input.sourceText,
         attachmentIds: input.attachmentIds,
+        to: from ? (input.assignments[0]?.recipients[0] ?? null) : null,
       });
       const tasksByAssignment: Task[][] = [];
       for (const assignment of input.assignments) {
@@ -1019,12 +1196,14 @@ export class RoomService {
             attachmentIds: input.attachmentIds,
             delivery: assignment.delivery,
             slashCommand: assignment.slashCommand,
+            kind: "assignment",
             scheduleMode: schedule.mode,
             prerequisites,
             state: schedule.mode === "manual" ? "held" : "queued",
             stateReason: this.describeSchedule(schedule, tasksById),
             currentRunId: null,
             userOutcome: null,
+            dismissedAt: null,
             createdAt: now(),
             updatedAt: now(),
           };
@@ -1034,6 +1213,10 @@ export class RoomService {
           created.push(task);
           const alias = participants.get(recipient)?.alias ?? recipient;
           this.statusEvent(task, `${taskLabel(task)} → @${alias}: ${task.state} (${task.stateReason})`);
+          // The poster is woken with the answer when the work ends, however it ends (see Scheduler.prerequisiteReadiness).
+          if (from) {
+            this.createWake(room.id, from, sourceEvent.id, `${taskLabel(task)} (@${alias}: ${headOf(task.instruction)}) has ended. Its answer is above, among the results; carry on with what you asked it for. If it failed or was stopped, decide what to do about that.`, task);
+          }
         }
         tasksByAssignment.push(group);
       }
@@ -1149,7 +1332,7 @@ export class RoomService {
     }
     const commandId = randomUUID();
     try {
-      await this.adapter.interruptTurn({ commandId, threadId: run.threadId, turnId: run.turnId });
+      await this.adapter.interruptRun({ commandId, threadId: run.threadId, runId: run.t3RunId });
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
@@ -1169,7 +1352,7 @@ export class RoomService {
       throw invalidTransition(taskLabel(task), task.state, "retry; only failed or interrupted work can be retried");
     }
     this.db.transaction(() => {
-      const updated = this.setTaskState(task, "queued", "retry requested; ready", { currentRunId: null, userOutcome: null });
+      const updated = this.setTaskState(task, "queued", "retry requested; ready", { currentRunId: null, userOutcome: null, dismissedAt: null });
       const dependents = dependentsOf(task.id, this.repos.listTasks(task.roomId)).filter((d) => d.state === "blocked");
       for (const dependent of dependents) {
         if (command.reattachDependents) {
@@ -1228,6 +1411,24 @@ export class RoomService {
     const commandId = randomUUID();
     try {
       await this.adapter.respondApproval({ commandId, threadId: binding.threadId, requestId: command.requestId, decision: command.decision });
+    } catch (error) {
+      if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
+      if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
+      throw error;
+    }
+    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.notify(participant.roomId);
+    return { type: "native.responded", requestId: command.requestId };
+  }
+
+  private async dismissUserInput(command: Extract<RoomCommand, { type: "native.userInput.dismiss" }>): Promise<CommandResult> {
+    const participant = this.requireParticipant(command.participantId);
+    const binding = this.repos.currentBinding(participant.id);
+    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
+    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
+    if (!request || request.kind !== "user-input") throw notFound("user-input request", command.requestId);
+    try {
+      await this.adapter.dismissUserInput({ commandId: randomUUID(), threadId: binding.threadId, requestId: command.requestId });
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);

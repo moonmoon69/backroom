@@ -2,8 +2,9 @@ import { memo, useEffect, useRef, useState, type ComponentProps, type JSX, type 
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "./CopyText.tsx";
+import { useFileBase, useOpenFilePreview } from "./filePreviewContext.ts";
 import { useToast } from "./Toast.tsx";
-import { fileBadge, imageSource, isLocalPath, mediaKind, parseFileReference } from "./markdownFiles.ts";
+import { fileBadge, headingAnchor, imageSource, isLocalPath, linkTarget, mediaKind, parseFileReference } from "./markdownFiles.ts";
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = ComponentProps<T> & { node?: unknown };
 
@@ -53,11 +54,14 @@ const textOf = (children: ReactNode): string | null => {
 
 /**
  * Inline code: when it names a file (`web/src/App.tsx:42`), render T3 Code's style of file chip, showing the
- * basename with a type badge and the full path as a tooltip. Fenced blocks carry a trailing newline from
- * remark, which is how they are told apart here; everything else stays a plain <code>.
+ * basename with a type badge and the full path as a tooltip. A click opens the file's preview (FilePreview.tsx),
+ * looked for from the folder the reply was written in. Fenced blocks carry a trailing newline from remark, which is
+ * how they are told apart here; everything else stays a plain <code>.
  */
 function Code({ node: _node, children, className, ...props }: MdProps<"code">) {
   const { toast } = useToast();
+  const openPreview = useOpenFilePreview();
+  const base = useFileBase();
   const text = textOf(children);
   const reference = text !== null && !text.includes("\n") && !className ? parseFileReference(text) : null;
   if (!reference) {
@@ -68,13 +72,14 @@ function Code({ node: _node, children, className, ...props }: MdProps<"code">) {
     );
   }
   const badge = fileBadge(reference);
-  const location = reference.line !== undefined ? `:${reference.line}${reference.column !== undefined ? `:${reference.column}` : ""}` : "";
+  const location = reference.line !== undefined ? `:${reference.line}${reference.endLine !== undefined ? `-${reference.endLine}` : reference.column !== undefined ? `:${reference.column}` : ""}` : "";
   return (
     <button
       type="button"
       className="md-file"
-      title={`${reference.raw}\nClick to copy path`}
+      title={openPreview ? `${reference.raw}\nClick to preview` : `${reference.raw}\nClick to copy path`}
       onClick={async () => {
+        if (openPreview) return openPreview({ path: reference.path, line: reference.line, endLine: reference.endLine, base });
         if (await copyText(reference.raw, toast)) toast("Copied path", "success");
       }}
     >
@@ -95,7 +100,8 @@ function Code({ node: _node, children, className, ...props }: MdProps<"code">) {
  */
 function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
   const [broken, setBroken] = useState(false);
-  const resolved = typeof src === "string" ? imageSource(src) : "";
+  const base = useFileBase();
+  const resolved = typeof src === "string" ? imageSource(src, base) : "";
   if (!resolved) return null;
   const kind = typeof src === "string" ? mediaKind(src) : "image";
   if (broken) {
@@ -129,14 +135,87 @@ function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
   );
 }
 
+/** The text of a markdown node (a heading with code or emphasis in it), as GitHub reads it for its anchor. */
+const textOfNode = (node: unknown): string => {
+  const element = node as { type?: string; value?: string; children?: unknown[] } | undefined;
+  if (!element) return "";
+  if (element.type === "text") return element.value ?? "";
+  return (element.children ?? []).map(textOfNode).join("");
+};
+
+/** A heading that the text's own links can reach: `#how-it-works` scrolls to "How it works". */
+function heading(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+  return function Heading({ node, ...props }: MdProps<typeof Tag>) {
+    return <Tag {...props} data-anchor={headingAnchor(textOfNode(node))} />;
+  };
+}
+
+/**
+ * Links go where they point without leaving the app: `#…` scrolls to that heading of the same text, a file on the
+ * machine (relative to the text's folder, absolute, or file://) opens its preview, and only the web opens a new tab.
+ */
+function Link({ node: _node, href, children, ...props }: MdProps<"a">) {
+  const openPreview = useOpenFilePreview();
+  const base = useFileBase();
+  const target = typeof href === "string" && href ? linkTarget(href) : { kind: "web" as const };
+  if (target.kind === "anchor") {
+    return (
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          const root = event.currentTarget.closest(".md");
+          const heading = root?.querySelector(`[data-anchor="${CSS.escape(target.anchor.toLowerCase())}"]`);
+          if (!root || !heading) return;
+          const reveal = () => heading.scrollIntoView({ block: "start" });
+          reveal();
+          // Pictures load as they come into view and push the heading down; keep it at the top while they do.
+          const loading = [...root.querySelectorAll("img")].filter((image) => !image.complete);
+          for (const image of loading) image.addEventListener("load", reveal, { once: true });
+          setTimeout(() => loading.forEach((image) => image.removeEventListener("load", reveal)), 3000);
+        }}
+      >
+        {children}
+      </a>
+    );
+  }
+  if (target.kind === "file" && openPreview) {
+    return (
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          openPreview({ path: target.path, line: target.line, endLine: target.endLine, base });
+        }}
+      >
+        {children}
+      </a>
+    );
+  }
+  // Outside the app a file link can only be fetched: a media file through the service, like an embedded one.
+  const media = typeof href === "string" && isLocalPath(href) && /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|m4v|webm|mov|ogv|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(href);
+  return (
+    <a {...props} href={media ? imageSource(href) : href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
+
 /**
  * Participant replies as GitHub-flavoured markdown. Raw HTML is never rendered (no rehype-raw), and
  * react-markdown's default URL transform drops javascript: and similar links; file: URLs are kept so
  * local screenshots can be mapped to the room server's image route.
  */
 const components: Components = {
-  // A link to a media file on the machine opens it through the service, like an embedded one.
-  a: ({ node: _node, href, ...props }: MdProps<"a">) => <a {...props} href={typeof href === "string" && isLocalPath(href) && /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|m4v|webm|mov|ogv|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(href) ? imageSource(href) : href} target="_blank" rel="noopener noreferrer" />,
+  a: Link,
+  h1: heading("h1"),
+  h2: heading("h2"),
+  h3: heading("h3"),
+  h4: heading("h4"),
+  h5: heading("h5"),
+  h6: heading("h6"),
   // Wide GitHub tables scroll inside the bubble instead of stretching it.
   table: ({ node: _node, ...props }: MdProps<"table">) => (
     <div className="md-table">

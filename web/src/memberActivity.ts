@@ -8,31 +8,30 @@ export interface MemberActivity {
   tone: string;
   /** The card moves while work runs: "working" (a turn, subagents), "monitoring" (only watch loops: slower, fainter). */
   motion: "working" | "monitoring" | null;
-  /** What runs besides the turn, when T3 lists it: "2 subagents · 1 shell". */
+  /** What runs besides the run, when T3 lists it: "2 subagents · 1 command". */
   detail: string | null;
 }
 
-const MONITOR_TYPES = new Set(["monitor", "monitor_mcp"]);
-
-/** T3's open task.* jobs on the thread, counted by kind: subagents (and workflows), monitors, shells. */
+/** What still runs on the thread, counted by T3's kinds: subagents, monitors, commands (and work it cannot name). */
 function jobsDetail(desk: Desk | null | undefined): { detail: string | null; agents: number } {
   const jobs = desk?.backgroundTasks ?? [];
   const agents = jobs.filter((job) => job.kind === "agent").length;
-  const monitors = jobs.filter((job) => job.kind !== "agent" && MONITOR_TYPES.has(job.type ?? "")).length;
-  const shells = jobs.length - agents - monitors;
+  const monitors = jobs.filter((job) => job.kind !== "agent" && job.type === "monitor").length;
+  const commands = jobs.length - agents - monitors;
   const count = (n: number, word: string) => (n > 0 ? `${n} ${word}${n === 1 ? "" : "s"}` : null);
-  const parts = [count(agents, "subagent"), count(monitors, "monitor"), count(shells, "shell")].filter(Boolean);
+  const parts = [count(agents, "subagent"), count(monitors, "monitor"), count(commands, "command")].filter(Boolean);
   return { detail: parts.length > 0 ? parts.join(" · ") : null, agents };
 }
 
 /**
  * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
  * question), working (a room turn, a turn typed in T3, connecting), work left running after the turn (subagents,
- * then only watch loops: monitoring), a plan ready to act on, then the session's own state. `desk` adds what runs.
+ * then only monitors: monitoring), a plan ready to act on, then how its last run ended. `desk` adds what runs.
  */
 export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null): MemberActivity {
   const idle = (label: string, tone: string): MemberActivity => ({ label, tone, motion: null, detail: null });
-  if (!status) return idle("unknown", "unknown");
+  // Not read yet (a member seated a moment ago, before the scheduler's first look at its thread): ready for work.
+  if (!status) return idle("ready", "idle");
   // A deleted T3 thread outranks everything: the participant cannot receive work until rebound or removed.
   if (status.threadMissing) return idle("thread deleted in T3", "missing");
   if (status.pendingApprovals) return idle("needs approval", "approval");
@@ -41,21 +40,25 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   const working = (label: string): MemberActivity => ({ label, tone: "working", motion: "working", detail: jobs.detail });
   if (status.activeRunId) return working("working");
   if (status.externalActivity) return working("working in T3");
-  if (status.session === "running") return working("working");
-  if (status.session === "starting") return working("starting");
+  if (status.status === "running" || status.status === "waiting") return working("working");
+  if (status.status === "preparing" || status.status === "queued" || status.status === "starting") return working("starting");
   // Between turns but not done: the agent wakes itself when its background work finishes.
   if (status.background === "working") return working(jobs.agents > 0 ? "subagents running" : "background work");
   if (status.background === "monitoring") return { label: "monitoring", tone: "working", motion: "monitoring", detail: jobs.detail };
   if (desk?.interactionMode === "plan" && desk.proposedPlan && !desk.proposedPlan.implementedAt) return idle("plan ready", "input");
-  switch (status.session) {
-    case "error":
+  // Between runs: how the last one ended. A run that completed, or a thread with none yet, is ready for the next.
+  switch (status.status) {
+    case "failed":
       return idle("error", "error");
-    case "idle":
-    case "ready":
-      return idle(status.session, "idle");
     case "interrupted":
-    case "stopped":
-      return idle(status.session, "stopped");
+    case "cancelled":
+      return idle("interrupted", "stopped");
+    case "rolled_back":
+      return idle("rolled back", "stopped");
+    case "idle":
+    case "completed":
+    case "unknown":
+      return idle("ready", "idle");
     default:
       return idle("unknown", "unknown");
   }

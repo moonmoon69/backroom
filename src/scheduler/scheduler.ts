@@ -1,36 +1,37 @@
 /**
  * Durable queue driver. One tick:
- *   1. observe   — poll thread shells for every active binding; correlate runs to turns; ingest results.
+ *   1. observe   — read thread shells for every active binding; follow each room run's T3 run; ingest results.
  *   2. dispatch  — release queued tasks whose prerequisites all succeeded and whose assignee is free.
- * Runs are persisted before submission and resent with the same T3 commandId when the acknowledgement was lost.
+ * Runs are persisted before submission and resent with the same T3 commandId when the acknowledgement was lost
+ * (T3 keeps a receipt per command, so a resend never starts a second run).
+ *
+ * A room run is one user message sent to T3. T3 (Orchestrator V2) names that message on the run it starts, or names
+ * the run on the message when it was steered into one, so the room finds its run by the message id it chose and
+ * reads the outcome from the run's status.
  */
 import { randomUUID } from "node:crypto";
-import type { T3Adapter, T3Message, T3ThreadDetail, T3ThreadShell, TurnImage } from "../adapter/types.ts";
-import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
+import type { T3Adapter, T3RuntimeRequest, T3ThreadDetail, T3ThreadShell, TurnImage } from "../adapter/types.ts";
+import { T3CommandRejected, T3Unavailable, backgroundOf, isRunActive, openRequests, runForMessage, runPrompt, runReplies } from "../adapter/types.ts";
 import { assembleBriefing, type PrerequisiteResult } from "../briefing/assemble.ts";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
 import type { BrowsersBriefing } from "../briefing/assemble.ts";
 import { agentKey, browsersForRoom } from "../browser/catalog.ts";
-import { promptMessageForTurn, resolveTurnForMessage, type TurnResolution } from "../adapter/correlate.ts";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { Participant, ParticipantStatus, Room, RoomEvent, Run, SessionBinding, Task } from "../domain/types.ts";
 import { taskLabel } from "../domain/types.ts";
 import { roomWorkspaces, workspaceArtifact, type Workspace } from "../git/workspaces.ts";
-import { dependentsOf } from "../domain/graph.ts";
-import { now, type RoomService } from "../app/service.ts";
+import { now, threadTitleFor, type RoomService } from "../app/service.ts";
+import { CONSIGLIERE_RULES_KEY } from "../app/consigliere.ts";
+import { requestPayload } from "../app/threadView.ts";
 
 const ACTIVE_RUN_STATUSES = new Set<Run["status"]>(["pending", "dispatched", "accepted", "running", "needs_input"]);
-const VANISHED_TURN = "T3 no longer reports this turn";
-/** How long a run failed as vanished keeps being re-checked (T3 may show its turn after all). */
-const VANISHED_RECHECK_MS = 30 * 60 * 1000;
-/** A turn this recent is never declared vanished: T3's reads can briefly disagree right after a turn starts. */
-const TURN_VANISH_GRACE_MS = 2 * 60 * 1000;
-/** How long an accepted command may sit without a recorded turn before the run is failed visibly. */
-const ACCEPT_WITHOUT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
-/** While a room turn runs, the thread is re-read for notes the user types into it in T3 whenever its shell changes,
- * and at least this often as a fallback. */
-const MID_TURN_SCAN_MS = 4000;
+/** How long an accepted command may sit without T3 recording its message before the run is failed visibly. */
+const ACCEPT_WITHOUT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** kv key: when this service first recorded members' messages (see the constructor). */
+const BOARD_SINCE_KEY = "board.memberMessagesSince";
+
 const BRIEFING_EVENT_KINDS = new Set<RoomEvent["kind"]>(["user.message", "note", "assistant.reply"]);
 
 export interface SchedulerOptions {
@@ -42,6 +43,8 @@ export interface SchedulerOptions {
   };
   /** How agents run rooms-browser (absolute path to bin/rooms-browser, with any environment it needs). */
   browserCommand?: string;
+  /** How agents run rooms-board, the same way. */
+  boardCommand?: string;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -49,13 +52,14 @@ export class Scheduler {
   private ticking: Promise<void> | null = null;
   private timer: NodeJS.Timeout | null = null;
   private readonly statuses = new Map<string, ParticipantStatus>();
-  /** Last latest-turn state seen per binding, so direct-turn import reads thread detail only when a turn finishes. */
-  private readonly seenLatestTurn = new Map<string, string>();
-  /** Last mid-turn note scan per binding: when, and the shell stamp it saw (see importMidTurnMessages). */
-  private readonly midTurnScans = new Map<string, { at: number; stamp: string }>();
-  /** Per thread: requestedAt → turnId for turns seen as T3's latestTurn (T3 only exposes the latest one). */
-  private readonly turnRequests = new Map<string, Map<string, string>>();
+  /** Last latest-run state seen per binding, so direct runs are imported only when a run finishes. */
+  private readonly seenLatestRun = new Map<string, string>();
+  /** Each binding's newest user message as last scanned, so members' messages are read when one arrives. */
+  private readonly seenUserMessage = new Map<string, string>();
+  /** Each participant's active T3 run as last observed: what a steered message is sent into. */
+  private readonly activeT3Runs = new Map<string, string | null>();
   private readonly log: (message: string, detail?: unknown) => void;
+  private readonly boardSince: string;
   /** Last error from T3 connectivity, surfaced to the UI, and when it happened; cleared by the next good tick. */
   lastAdapterError: string | null = null;
   lastAdapterErrorAt: string | null = null;
@@ -82,6 +86,11 @@ export class Scheduler {
     this.options = options;
     this.notify = notify;
     this.log = options.log ?? (() => {});
+    // Members' messages are recorded from the first start that could record them: older ones stay in T3 only, so a
+    // board does not open with months of old messages appended as new posts.
+    const since = repos.getKv(BOARD_SINCE_KEY);
+    this.boardSince = since ?? now();
+    if (!since) repos.setKv(BOARD_SINCE_KEY, this.boardSince);
   }
 
   start(intervalMs: number): void {
@@ -98,7 +107,7 @@ export class Scheduler {
   participantStatus(participantId: string): ParticipantStatus {
     return (
       this.statuses.get(participantId) ?? {
-        session: "unknown",
+        status: "unknown",
         threadMissing: false,
         externalActivity: false,
         pendingApprovals: false,
@@ -154,19 +163,32 @@ export class Scheduler {
     if (bindings.length === 0) return;
     const shells = new Map<string, T3ThreadShell>();
     for (const shell of await this.adapter.listThreads()) shells.set(shell.id, shell);
-    // Several runs can be active on one thread when messages were sent into a running turn (steering).
+    // Several room runs can be active on one thread when messages were steered into its running run.
     const activeRuns = new Map<string, Run[]>();
     for (const run of this.repos.listRunsByStatus([...ACTIVE_RUN_STATUSES])) activeRuns.set(run.bindingId, [...(activeRuns.get(run.bindingId) ?? []), run]);
+
+    // Who each thread is, to name the sender of a message one member's agent sent another.
+    const members = new Map<string, { participant: Participant; binding: SessionBinding }>();
+    for (const binding of bindings) {
+      const participant = this.repos.getParticipant(binding.participantId);
+      if (participant && !participant.retiredAt) members.set(`${participant.roomId}:${binding.threadId}`, { participant, binding });
+    }
+    const senderOf = (roomId: string, threadId: string): RoomEvent["speaker"] => {
+      const member = members.get(`${roomId}:${threadId}`);
+      if (member) return { type: "participant", participantId: member.participant.id, bindingId: member.binding.id };
+      return { type: "outside", threadId, title: shells.get(threadId)?.title ?? "a thread outside the room" };
+    };
 
     for (const binding of bindings) {
       const participant = this.repos.getParticipant(binding.participantId);
       if (!participant) continue;
-      const shell = shells.get(binding.threadId) ?? (await this.adapter.getThreadShell(binding.threadId));
+      const shell = shells.get(binding.threadId) ?? null;
       const runs = activeRuns.get(binding.id) ?? [];
       const run = runs[0] ?? null;
       if (!shell) {
-        // T3 answered but does not have this thread any more (deleted there). Surface it and stop any in-flight run.
-        this.statuses.set(participant.id, { session: "unknown", threadMissing: true, externalActivity: false, pendingApprovals: false, pendingUserInput: false, activeRunId: run?.id ?? null, background: null });
+        // T3 answered but does not list this thread any more (deleted or archived there). Surface it and stop any in-flight run.
+        this.statuses.set(participant.id, { status: "unknown", threadMissing: true, externalActivity: false, pendingApprovals: false, pendingUserInput: false, activeRunId: run?.id ?? null, background: null });
+        this.activeT3Runs.delete(participant.id);
         for (const run of runs.filter((r) => r.status !== "pending")) {
           const task = this.repos.getTask(run.taskId);
           if (task) {
@@ -182,37 +204,41 @@ export class Scheduler {
         }
         continue;
       }
-      if (shell.latestTurn?.requestedAt) {
-        const known = this.turnRequests.get(binding.threadId) ?? new Map<string, string>();
-        known.set(shell.latestTurn.requestedAt, shell.latestTurn.turnId);
-        if (known.size > 50) known.delete(known.keys().next().value as string);
-        this.turnRequests.set(binding.threadId, known);
-      }
       // The room follows the thread: mirror model/options/permission changes made in T3.
       if (this.service.syncParticipantFromThread(participant, shell)) touched.add(participant.roomId);
-      const ourTurns = new Set(runs.map((r) => r.turnId).filter((id): id is string => id !== null));
-      const activeTurn = shell.session?.activeTurnId ?? null;
-      const externalActivity =
-        (shell.session?.status === "running" || shell.session?.status === "starting") && activeTurn !== null && !ourTurns.has(activeTurn) && !runs.some((r) => r.turnId === null);
+      // The thread follows the room's name: "room · alias", after a room rename, a member rename, or a title T3
+      // generated for it. Once per tick at most, never twice for the same title.
+      await this.alignThreadTitle(participant, shell);
+      const ours = new Set(runs.map((r) => r.t3RunId).filter((id): id is string => id !== null));
+      const activeT3Run = isRunActive(shell.status) ? shell.activeRunId : null;
+      this.activeT3Runs.set(participant.id, activeT3Run);
+      // Busy in T3: its active run is not one the room sent, and no room message is still waiting to be matched to its run.
+      const externalActivity = activeT3Run !== null && !ours.has(activeT3Run) && !runs.some((r) => r.t3RunId === null);
       this.statuses.set(participant.id, {
-        session: shell.session?.status ?? "idle",
+        status: shell.status,
         threadMissing: false,
         externalActivity,
-        pendingApprovals: shell.hasPendingApprovals,
-        pendingUserInput: shell.hasPendingUserInput,
+        pendingApprovals: shell.pendingRequest !== null && shell.pendingRequest.kind !== "user_input",
+        pendingUserInput: shell.pendingRequest?.kind === "user_input",
         activeRunId: run?.id ?? null,
-        background: shell.backgroundLiveness,
+        background: backgroundOf(shell),
       });
 
       let detail: T3ThreadDetail | null = null;
       const loadDetail = async (): Promise<T3ThreadDetail | null> => {
-        if (detail === null) detail = await this.adapter.getThreadDetail(binding.threadId, { turnLimit: 6 });
+        if (detail === null) detail = await this.adapter.getThreadDetail(binding.threadId, { bounded: true });
         return detail;
       };
 
-      if (shell.hasPendingApprovals || shell.hasPendingUserInput) {
+      if (shell.pendingRequest) {
         const loaded = await loadDetail();
-        if (loaded && this.syncNativeRequests(participant, binding, loaded)) touched.add(participant.roomId);
+        if (loaded) {
+          // The projection says what is asked, and whether a question still holds a run (see openRequests).
+          const open = openRequests(loaded);
+          const status = this.statuses.get(participant.id);
+          if (status) this.statuses.set(participant.id, { ...status, pendingApprovals: open.some((r) => r.type === "approval"), pendingUserInput: open.some((r) => r.type === "user-input") });
+          if (this.syncNativeRequests(participant, binding, open)) touched.add(participant.roomId);
+        }
       } else if (this.repos.listOpenNativeRequests([participant.id]).length > 0) {
         this.db.transaction(() => {
           for (const request of this.repos.listOpenNativeRequests([participant.id])) this.repos.resolveNativeRequest(request.threadId, request.requestId);
@@ -224,59 +250,120 @@ export class Scheduler {
         const changed = await this.observeRun(active, participant, binding, shell, loadDetail);
         if (changed) touched.add(participant.roomId);
       }
-      if (await this.reviveVanishedRuns(participant, binding, loadDetail)) touched.add(participant.roomId);
 
-      // Mirror turns started directly in T3 into the timeline once they finish (display only).
-      const latest = shell.latestTurn;
-      const seenKey = `${latest?.turnId ?? ""}:${latest?.state ?? ""}`;
-      if (latest && this.seenLatestTurn.get(binding.id) !== seenKey) {
+      // Messages other agents sent this thread with T3's tools go on the board as they arrive: read the thread when
+      // it has a new user message, and whenever it was read for another reason.
+      const seenKey = `${shell.latestRunId ?? ""}:${shell.status}`;
+      const runChanged = shell.latestRunId !== null && this.seenLatestRun.get(binding.id) !== seenKey;
+      const messageKey = shell.latestUserMessageAt ?? "";
+      const read = runChanged || this.seenUserMessage.get(binding.id) !== messageKey ? await loadDetail() : (detail as T3ThreadDetail | null);
+      if (read) {
+        if (this.importMemberMessages(participant, binding, read, senderOf)) touched.add(participant.roomId);
+        this.seenUserMessage.set(binding.id, messageKey);
+      }
+
+      // Mirror runs started directly in T3 (or by an agent) into the timeline once they finish (display only).
+      if (runChanged) {
         const loaded = await loadDetail();
-        if (loaded && this.importDirectTurns(participant, binding, loaded)) touched.add(participant.roomId);
-        this.seenLatestTurn.set(binding.id, seenKey);
+        if (loaded && this.importDirectRuns(participant, binding, loaded)) touched.add(participant.roomId);
+        this.seenLatestRun.set(binding.id, seenKey);
       }
     }
   }
 
-  /**
-   * Turns on a participant's thread that the room did not start (someone typed in T3 Code) appear in the timeline as
-   * "t3.turn" events: the prompt, the progress messages, and the final answer. They are not room messages: they are
-   * never delivered in briefings and never satisfy prerequisites. Only turns finished after the thread joined the room.
-   */
-  private importDirectTurns(participant: Participant, binding: SessionBinding, detail: T3ThreadDetail): boolean {
-    const finished = new Map<string, { assistantMessageId: string | null; completedAt: string }>();
-    for (const checkpoint of detail.checkpoints) finished.set(checkpoint.turnId, { assistantMessageId: checkpoint.assistantMessageId, completedAt: checkpoint.completedAt });
-    const latest = detail.shell.latestTurn;
-    if (latest && latest.state !== "running" && latest.completedAt && !finished.has(latest.turnId)) {
-      finished.set(latest.turnId, { assistantMessageId: latest.assistantMessageId, completedAt: latest.completedAt });
+  /** Thread titles already asked for this tick cycle, so T3 is not asked again while it catches up. */
+  private readonly titlesAsked = new Map<string, string>();
+
+  private async alignThreadTitle(participant: Participant, shell: T3ThreadShell): Promise<void> {
+    const room = this.repos.getRoom(participant.roomId);
+    if (!room) return;
+    const wanted = threadTitleFor(room, participant);
+    if (shell.title === wanted) {
+      this.titlesAsked.delete(shell.id);
+      return;
     }
-    const imports: Array<{ turnId: string; completedAt: string; prompt: string | null; promptImages: string[]; final: string; finalId: string; progress: Array<{ text: string; at: string }> }> = [];
-    for (const [turnId, turn] of finished) {
-      if (turn.completedAt < binding.createdAt) continue;
-      if (turnId === detail.shell.session?.activeTurnId) continue;
-      if (this.repos.isRunTurn(binding.threadId, turnId) || this.repos.hasEventForTurn(binding.threadId, turnId)) continue;
-      const messages = detail.messages.filter((m) => m.turnId === turnId && m.role === "assistant" && !m.streaming && m.text.trim().length > 0);
-      if (messages.length === 0) continue;
-      const finalMessage = messages[messages.length - 1] as T3Message; // the last message, not the checkpoint's (see observeRun)
-      // Null for turns the agent started itself (a background task finishing wakes it): see promptForTurn. Also null
-      // when the prompt is already in the timeline as a note typed into the previous room turn (t3.message).
-      const promptMessage = promptMessageForTurn(detail.messages, turnId);
+    if (this.titlesAsked.get(shell.id) === wanted) return;
+    this.titlesAsked.set(shell.id, wanted);
+    try {
+      await this.adapter.setThreadTitle({ commandId: randomUUID(), threadId: shell.id, title: wanted });
+    } catch (error) {
+      this.log("thread title not set", (error as Error).message);
+    }
+  }
+
+  /**
+   * Messages another agent sent to this member's thread with T3's tools (work handed out, a steer, a queued follow-up,
+   * a question, an answer: all the same kind of T3 message, which names its sender's thread) appear on the board as
+   * "member.message" events, each once, as soon as they are seen. This covers turns the room started too, so a steer
+   * into one is recorded. Display only: never delivered in briefings.
+   */
+  private importMemberMessages(participant: Participant, binding: SessionBinding, detail: T3ThreadDetail, senderOf: (roomId: string, threadId: string) => RoomEvent["speaker"]): boolean {
+    const sent = detail.messages.filter(
+      (m) =>
+        m.role === "user" &&
+        m.createdBy === "agent" &&
+        m.senderThreadId !== null &&
+        m.createdAt >= binding.createdAt &&
+        m.createdAt >= this.boardSince &&
+        m.text.trim().length > 0 &&
+        this.repos.findEventIdForSource(binding.threadId, m.id) === null,
+    );
+    if (sent.length === 0) return false;
+    this.db.transaction(() => {
+      for (const message of sent) {
+        this.service.appendEvent({
+          roomId: participant.roomId,
+          kind: "member.message",
+          speaker: senderOf(participant.roomId, message.senderThreadId as string),
+          to: participant.id,
+          text: message.text,
+          sourceRef: { threadId: binding.threadId, messageId: message.id, t3RunId: runForMessage(detail, message.id)?.id ?? message.runId },
+          createdAt: message.createdAt,
+        });
+      }
+    });
+    return true;
+  }
+
+  /**
+   * Runs on a participant's thread that the room did not send (someone typed in T3 Code, another member's agent sent
+   * it work, or the agent woke itself when its background work finished) appear in the timeline as "t3.turn" events:
+   * the prompt a person typed, the progress messages, the final answer, and how the run ended. A run that was
+   * interrupted or failed before it answered is recorded too, with empty text. They are not room messages: they are
+   * never delivered in briefings and never satisfy prerequisites. Only runs finished after the thread joined the room.
+   */
+  private importDirectRuns(participant: Participant, binding: SessionBinding, detail: T3ThreadDetail): boolean {
+    const imports: Array<{ t3RunId: string; completedAt: string; selfStarted: boolean; prompt: string | null; promptImages: string[]; final: string; finalId: string; progress: Array<{ text: string; at: string }>; outcome: NonNullable<RoomEvent["outcome"]> }> = [];
+    for (const t3Run of detail.runs) {
+      if (isRunActive(t3Run.status) || !t3Run.completedAt || t3Run.completedAt < binding.createdAt) continue;
+      if (this.repos.isRunT3Run(binding.threadId, t3Run.id) || this.repos.hasTurnForT3Run(binding.threadId, t3Run.id)) continue;
+      const replies = runReplies(detail, t3Run.id);
+      const finalMessage = replies[replies.length - 1];
+      const outcome = t3Run.status === "completed" ? "completed" : t3Run.status === "interrupted" || t3Run.status === "cancelled" ? "interrupted" : "failed";
+      // A completed run that said nothing has nothing to show; one that was stopped or failed is still a fact of the room.
+      if (!finalMessage && (outcome === "completed" || t3Run.completedAt < this.boardSince)) continue;
+      // Null for a run the agent started itself (T3 writes its notice, not a person). Also null when the prompt is
+      // already in the timeline as a note typed into a room run (t3.message).
+      const promptMessage = runPrompt(detail, t3Run);
       const promptShown = promptMessage !== null && this.repos.findEventIdForSource(binding.threadId, promptMessage.id) === null;
       imports.push({
-        turnId,
-        completedAt: turn.completedAt,
+        t3RunId: t3Run.id,
+        completedAt: t3Run.completedAt,
+        selfStarted: promptMessage === null,
         prompt: promptShown ? promptMessage.text : null,
         // The prompt's images (T3 files named by id), shown with the prompt like a room message's.
-        promptImages: promptShown ? (promptMessage.attachments ?? []).map((a) => a.id) : [],
-        final: finalMessage.text.trim(),
-        finalId: finalMessage.id,
-        progress: messages.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt })),
+        promptImages: promptShown ? promptMessage.attachments.filter((a) => a.type === "image").map((a) => a.id) : [],
+        final: finalMessage?.text.trim() ?? "",
+        finalId: finalMessage?.id ?? `run:${t3Run.id}`,
+        progress: replies.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt })),
+        outcome,
       });
     }
     if (imports.length === 0) return false;
     imports.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
     this.db.transaction(() => {
       for (const turn of imports) {
-        this.service.appendEvent({
+        const event = this.service.appendEvent({
           roomId: participant.roomId,
           kind: "t3.turn",
           speaker: { type: "participant", participantId: participant.id, bindingId: binding.id },
@@ -284,34 +371,49 @@ export class Scheduler {
           progress: turn.progress,
           prompt: turn.prompt,
           attachmentIds: turn.promptImages,
-          sourceRef: { threadId: binding.threadId, messageId: turn.finalId, turnId: turn.turnId },
+          outcome: turn.outcome,
+          sourceRef: { threadId: binding.threadId, messageId: turn.finalId, t3RunId: turn.t3RunId },
           createdAt: turn.completedAt,
         });
+        if (turn.selfStarted && turn.completedAt >= this.boardSince) this.wakePosterOfLatestJob(participant, event, turn.outcome);
       }
     });
     return true;
   }
 
-  private syncNativeRequests(participant: Participant, binding: SessionBinding, detail: T3ThreadDetail): boolean {
-    const open = new Map<string, { kind: "approval" | "user-input"; payload: unknown; createdAt: string }>();
-    for (const activity of detail.activities) {
-      const payload = activity.payload as { requestId?: string } | null;
-      const requestId = payload?.requestId;
-      if (!requestId) continue;
-      if (activity.kind === "approval.requested") open.set(requestId, { kind: "approval", payload: activity.payload, createdAt: activity.createdAt });
-      if (activity.kind === "user-input.requested") open.set(requestId, { kind: "user-input", payload: activity.payload, createdAt: activity.createdAt });
-      if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") open.delete(requestId);
-    }
+  /**
+   * A member continued on its own (background work finished and woke it) and that run has ended: whoever posted the
+   * member's latest job on the board is woken with it, as they were with the first answer. A job from the user needs
+   * no wake: the continuation is news to the user already.
+   */
+  private wakePosterOfLatestJob(participant: Participant, turn: RoomEvent, outcome: NonNullable<RoomEvent["outcome"]>): void {
+    const job = this.repos
+      .listTasks(participant.roomId)
+      .filter((task) => task.participantId === participant.id && task.kind === "assignment")
+      .sort((a, b) => b.number - a.number)[0];
+    if (!job) return;
+    const post = this.repos.getEvent(job.sourceEventId);
+    if (!post || post.kind !== "member.message" || post.sourceRef !== null || post.speaker.type !== "participant") return;
+    const poster = this.repos.getParticipant(post.speaker.participantId);
+    if (!poster || poster.retiredAt) return;
+    const head = turn.text.replace(/\s+/g, " ").trim().slice(0, 600);
+    const instruction = `@${participant.alias} continued on its own after ${taskLabel(job)} and that run has ${outcome === "completed" ? "ended" : outcome}: post #${turn.sequence}${head ? `. It says: ${head}${turn.text.length > 600 ? "…" : ""}` : ""}. Read the post for the whole of it and carry on.`;
+    this.service.createWake(participant.roomId, poster, post.id, instruction, null);
+  }
+
+  /** Mirror T3's open approvals and questions for the participant: new ones are recorded, the rest are closed. */
+  private syncNativeRequests(participant: Participant, binding: SessionBinding, open: T3RuntimeRequest[]): boolean {
+    const byId = new Map(open.map((request) => [request.id, request]));
     let changed = false;
     this.db.transaction(() => {
       for (const existing of this.repos.listOpenNativeRequests([participant.id])) {
-        if (!open.has(existing.requestId)) {
+        if (!byId.has(existing.requestId)) {
           this.repos.resolveNativeRequest(existing.threadId, existing.requestId);
           changed = true;
         }
       }
-      for (const [requestId, request] of open) {
-        if (this.repos.upsertNativeRequest({ participantId: participant.id, threadId: binding.threadId, requestId, kind: request.kind, payload: request.payload, createdAt: request.createdAt })) {
+      for (const request of open) {
+        if (this.repos.upsertNativeRequest({ participantId: participant.id, threadId: binding.threadId, requestId: request.id, kind: request.type, payload: requestPayload(request), createdAt: request.createdAt })) {
           changed = true;
         }
       }
@@ -320,25 +422,22 @@ export class Scheduler {
   }
 
   /**
-   * Notes the user types in T3 Code into a turn the room started (Claude delivers them inside the running turn, so
-   * the room's reply answers them too) appear in the timeline as "t3.message" events with their images, ahead of the
-   * reply. Display only: never delivered in briefings. The room's own prompts and steers on the thread are skipped,
-   * as is anything after the turn's final answer (that is the next turn's prompt).
+   * Notes the user types in T3 Code into a run the room started (T3 steers them into it, so the room's reply answers
+   * them too) appear in the timeline as "t3.message" events with their images, ahead of the reply. Display only: never
+   * delivered in briefings. The room's own messages on the thread are skipped.
    */
-  private importMidTurnMessages(run: Run, task: Task, participant: Participant, binding: SessionBinding, detail: T3ThreadDetail, completed: boolean): boolean {
+  private importMidRunMessages(run: Run, task: Task, binding: SessionBinding, detail: T3ThreadDetail): boolean {
+    if (!run.t3RunId) return false;
     const own = detail.messages.find((m) => m.id === run.messageId);
-    if (!own) return false;
-    const finalAt = completed
-      ? (detail.messages.filter((m) => m.turnId === run.turnId && m.role === "assistant" && !m.streaming).at(-1)?.createdAt ?? null)
-      : null;
+    const since = own?.createdAt ?? run.createdAt;
     const notes = detail.messages.filter(
       (m) =>
         m.role === "user" &&
+        m.createdBy === "user" &&
+        m.runId === run.t3RunId &&
         m.id !== run.messageId &&
-        m.createdAt > own.createdAt &&
-        (m.turnId === null || m.turnId === run.turnId) &&
-        (finalAt === null || m.createdAt <= finalAt) &&
-        (m.text.trim().length > 0 || (m.attachments?.length ?? 0) > 0) &&
+        m.createdAt > since &&
+        (m.text.trim().length > 0 || m.attachments.length > 0) &&
         !this.repos.isRunMessage(binding.threadId, m.id) &&
         this.repos.findEventIdForSource(binding.threadId, m.id) === null,
     );
@@ -352,8 +451,8 @@ export class Scheduler {
           text: note.text.trim(),
           taskId: task.id,
           runId: run.id,
-          attachmentIds: (note.attachments ?? []).map((a) => a.id),
-          sourceRef: { threadId: binding.threadId, messageId: note.id, turnId: run.turnId },
+          attachmentIds: note.attachments.filter((a) => a.type === "image").map((a) => a.id),
+          sourceRef: { threadId: binding.threadId, messageId: note.id, t3RunId: run.t3RunId },
           createdAt: note.createdAt,
         });
       }
@@ -361,154 +460,107 @@ export class Scheduler {
     return true;
   }
 
-  private async observeRun(
-    run: Run,
-    participant: Participant,
-    binding: SessionBinding,
-    shell: T3ThreadShell,
-    loadDetail: () => Promise<T3ThreadDetail | null>,
-  ): Promise<boolean> {
+  private failRun(run: Run, task: Task, reason: string, dependents: string): void {
+    this.db.transaction(() => {
+      this.repos.updateRun({ ...run, status: "failed", completedAt: now(), error: reason, updatedAt: now() });
+      this.service.setTaskState(task, "failed", reason, { currentRunId: run.id });
+      this.service.statusEvent(task, `${taskLabel(task)} failed: ${reason}`, run.id);
+      this.service.blockPendingDependents(task, dependents);
+    });
+  }
+
+  private async observeRun(run: Run, participant: Participant, binding: SessionBinding, shell: T3ThreadShell, loadDetail: () => Promise<T3ThreadDetail | null>): Promise<boolean> {
     const task = this.repos.getTask(run.taskId);
     if (!task) return false;
+    let detail = await loadDetail();
+    if (!detail) return false;
 
-    // Resolve the turn id from our message id. T3 never stamps the user message; see adapter/correlate.ts.
-    if (run.turnId === null) {
-      let detail = await loadDetail();
-      const knownTurns = this.turnRequests.get(binding.threadId);
-      let resolution: TurnResolution = detail ? resolveTurnForMessage(detail, run.messageId, knownTurns) : { kind: "missing" };
-      if (resolution.kind === "missing" && detail) {
-        // The windowed read may not reach our message if other turns happened since; read the full thread once.
-        detail = await this.adapter.getThreadDetail(binding.threadId);
-        resolution = detail ? resolveTurnForMessage(detail, run.messageId, knownTurns) : { kind: "missing" };
-      }
-      if (resolution.kind === "missing") {
+    // The T3 run for our message: the run it started, or the run it was steered into. T3 records both.
+    if (run.t3RunId === null) {
+      const t3Run = runForMessage(detail, run.messageId);
+      if (!t3Run) {
         if (run.status === "dispatched") {
-          // Acknowledgement was lost and T3 does not show the message: resend identically.
+          // Acknowledgement was lost and T3 does not show the message: resend identically (T3 keeps a receipt per command).
           await this.send(run, task, participant, binding);
           return true;
         }
         // Accepted by T3 but the message never materialised: fail visibly after a bounded wait instead of hanging.
-        const waitedMs = Date.now() - Date.parse(run.acceptedAt ?? run.createdAt);
-        if (waitedMs > ACCEPT_WITHOUT_TURN_TIMEOUT_MS) {
-          const reason = "T3 accepted the command but never recorded the message; check the provider in T3 and retry";
-          this.db.transaction(() => {
-            this.repos.updateRun({ ...run, status: "failed", completedAt: now(), error: reason, updatedAt: now() });
-            this.service.setTaskState(task, "failed", reason, { currentRunId: run.id });
-            this.service.statusEvent(task, `${taskLabel(task)} failed: ${reason}`, run.id);
-            this.service.blockPendingDependents(task, `prerequisite ${taskLabel(task)} failed to start`);
-          });
+        if (Date.now() - Date.parse(run.acceptedAt ?? run.createdAt) > ACCEPT_WITHOUT_RUN_TIMEOUT_MS) {
+          this.failRun(run, task, "T3 accepted the command but never recorded the message; check the provider in T3 and retry", `prerequisite ${taskLabel(task)} failed to start`);
           return true;
         }
         return false;
       }
-      if (resolution.kind === "not_started" || resolution.kind === "superseded") {
-        // Message recorded but no turn for it. A provider start failure shows up as a session error; surface it.
-        const startFailed = (shell.session?.status === "error" && shell.session.activeTurnId === null) || resolution.kind === "superseded";
-        const waitedMs = Date.now() - Date.parse(run.acceptedAt ?? run.createdAt);
-        if (startFailed || waitedMs > ACCEPT_WITHOUT_TURN_TIMEOUT_MS) {
-          const reason =
-            resolution.kind === "superseded"
-              ? "T3 recorded the message but no turn ran for it before another message was sent"
-              : startFailed
-                ? `provider failed to start the turn: ${shell.session?.lastError ?? "unknown error"}`
-                : "T3 recorded the message but no turn started within the wait limit";
-          this.db.transaction(() => {
-            this.repos.updateRun({ ...run, status: "failed", completedAt: now(), error: reason, updatedAt: now() });
-            this.service.setTaskState(task, "failed", reason, { currentRunId: run.id });
-            this.service.statusEvent(task, `${taskLabel(task)} failed: ${reason}`, run.id);
-            this.service.blockPendingDependents(task, `prerequisite ${taskLabel(task)} failed to start`);
-          });
-          return true;
-        }
-        if (run.status !== "accepted") {
-          this.repos.updateRun({ ...run, status: "accepted", acceptedAt: run.acceptedAt ?? now(), updatedAt: now() });
-          return true;
-        }
-        return false;
-      }
-      const turnId = resolution.turnId;
-      const started: Run = { ...run, status: "running", turnId, acceptedAt: run.acceptedAt ?? now(), startedAt: now(), updatedAt: now() };
-      this.db.transaction(() => {
-        this.repos.updateRun(started);
-        this.service.setTaskState(task, "running", `running on @${participant.alias}`, { currentRunId: run.id });
-        this.service.statusEvent(task, `${taskLabel(task)} started on @${participant.alias}`, run.id);
-      });
-      // Fall through with the resolved turn so a turn that already finished is settled in this same tick.
-      run = started;
+      run = { ...run, t3RunId: t3Run.id, acceptedAt: run.acceptedAt ?? now(), updatedAt: now() };
+      this.repos.updateRun(run);
     }
 
-    // Correlate the outcome of our specific turn.
-    let outcome: "running" | "completed" | "error" | "interrupted" | null = null;
-    let errorText: string | null = null;
-    if (shell.latestTurn?.turnId === run.turnId) {
-      outcome = shell.latestTurn.state;
-      errorText = shell.session?.lastError ?? null;
-    } else {
-      // The thread list read at the start of the tick can be older than the detail read since (a turn that just
-      // started is in the detail but not yet in the list): decide from the fresher detail shell.
-      const detail = await loadDetail();
-      const fresh = detail?.shell ?? shell;
-      const checkpoint = detail?.checkpoints.find((c) => c.turnId === run.turnId);
-      const startedMs = Date.now() - Date.parse(run.startedAt ?? run.acceptedAt ?? run.createdAt);
-      if (fresh.latestTurn?.turnId === run.turnId) {
-        outcome = fresh.latestTurn.state;
-        errorText = fresh.session?.lastError ?? null;
-      } else if (checkpoint) {
-        outcome = checkpoint.status === "error" ? "error" : "completed";
-      } else if (fresh.session?.activeTurnId === run.turnId || shell.session?.activeTurnId === run.turnId) {
-        outcome = "running";
-      } else if (startedMs < TURN_VANISH_GRACE_MS) {
-        // Just started and not visible yet in every read: wait instead of declaring it gone.
-        outcome = "running";
-      } else {
-        // Our turn is neither active nor recorded: treat as failed with a visible reason rather than guessing success.
-        outcome = "error";
-        errorText = `${VANISHED_TURN} (thread may have been reverted or history rewritten)`;
-      }
+    const t3Run = detail.runs.find((candidate) => candidate.id === run.t3RunId);
+    if (!t3Run) {
+      // T3 has no such run: the thread was rolled back past it, or its history came from T3's V1 import (messages only).
+      this.failRun(run, task, "T3 no longer has this run (the thread was rolled back, or T3 was migrated while it ran)", `prerequisite ${taskLabel(task)} failed: its run is gone in T3`);
+      this.statuses.set(participant.id, { ...this.participantStatus(participant.id), activeRunId: null });
+      return true;
     }
 
-    if (outcome === "running") {
-      // Notes the user types into this turn in T3 show up while it runs, not only when it ends.
-      let noted = false;
-      const stamp = `${shell.updatedAt}|${shell.latestUserMessageAt ?? ""}`;
-      const lastScan = this.midTurnScans.get(binding.id);
-      if (!lastScan || lastScan.stamp !== stamp || Date.now() - lastScan.at >= MID_TURN_SCAN_MS) {
-        this.midTurnScans.set(binding.id, { at: Date.now(), stamp });
-        const scanned = await loadDetail();
-        if (scanned) noted = this.importMidTurnMessages(run, task, participant, binding, scanned, false);
-      }
-      const needsInput = shell.hasPendingApprovals || shell.hasPendingUserInput;
-      const nextStatus: Run["status"] = needsInput ? "needs_input" : "running";
-      if (run.status === nextStatus && task.state === (needsInput ? "needs_input" : "running")) return noted;
+    if (t3Run.status === "preparing" || t3Run.status === "queued" || t3Run.status === "starting") {
+      // T3 has the message; the provider has not started on it yet (its workspace is prepared, or another run is ahead).
+      const reason = t3Run.status === "queued" ? `queued in T3 behind @${participant.alias}'s running turn` : `accepted by T3; waiting for @${participant.alias} to start`;
+      if (run.status === "accepted" && task.stateReason === reason) return false;
       this.db.transaction(() => {
-        this.repos.updateRun({ ...run, status: nextStatus, updatedAt: now() });
-        this.service.setTaskState(task, needsInput ? "needs_input" : "running", needsInput ? `@${participant.alias} is waiting for a native permission or question` : `running on @${participant.alias}`, { currentRunId: run.id });
-        if (needsInput && task.state !== "needs_input") this.service.statusEvent(task, `${taskLabel(task)} needs input from you in T3 or the room`, run.id);
+        this.repos.updateRun({ ...run, status: "accepted", updatedAt: now() });
+        this.service.setTaskState(task, "dispatching", reason, { currentRunId: run.id });
       });
       return true;
     }
 
-    const detail = await loadDetail();
-    if (detail) this.importMidTurnMessages(run, task, participant, binding, detail, true);
-    this.midTurnScans.delete(binding.id);
-    const checkpoint = detail?.checkpoints.find((c) => c.turnId === run.turnId);
-    // T3 keeps each assistant message of a turn separately: progress notes between tool calls, then the final answer.
+    if (t3Run.status === "running" || t3Run.status === "waiting") {
+      let changed = false;
+      if (run.startedAt === null) {
+        run = { ...run, status: "running", startedAt: now(), updatedAt: now() };
+        this.db.transaction(() => {
+          this.repos.updateRun(run);
+          this.service.setTaskState(task, "running", `running on @${participant.alias}`, { currentRunId: run.id });
+          this.service.statusEvent(task, `${taskLabel(task)} started on @${participant.alias}`, run.id);
+        });
+        changed = true;
+      }
+      // Notes the user types into this run in T3 show up while it runs, not only when it ends.
+      if (this.importMidRunMessages(run, task, binding, detail)) changed = true;
+      // An approval, or a question that holds the run, is waiting on the user.
+      const needsInput = openRequests(detail).some((request) => request.runId === t3Run.id && request.responseMode !== "message");
+      const nextStatus: Run["status"] = needsInput ? "needs_input" : "running";
+      if (run.status === nextStatus && task.state === nextStatus) return changed;
+      this.db.transaction(() => {
+        this.repos.updateRun({ ...run, status: nextStatus, updatedAt: now() });
+        this.service.setTaskState(task, nextStatus, needsInput ? `@${participant.alias} is waiting for your approval or answer` : `running on @${participant.alias}`, { currentRunId: run.id });
+        if (needsInput && task.state !== "needs_input") this.service.statusEvent(task, `${taskLabel(task)} needs your approval or answer`, run.id);
+      });
+      return true;
+    }
+
+    // The run ended. The recent window carries its last messages; a long run's earlier ones need the whole thread.
+    if (detail.partial) detail = (await this.adapter.getThreadDetail(binding.threadId)) ?? detail;
+    this.importMidRunMessages(run, task, binding, detail);
+    // T3 keeps each assistant message of a run separately: progress notes between tool calls, then the final answer.
     // The final one is the reply (and what dependents receive); the earlier ones are kept as progress.
-    const turnMessages = (detail?.messages ?? []).filter((m) => m.turnId === run.turnId && m.role === "assistant" && !m.streaming && m.text.trim().length > 0);
-    // The final answer is the turn's LAST assistant message. Not checkpoint.assistantMessageId: T3 attaches a checkpoint
-    // to the message the file changes belong to, which can be an earlier progress note (verified live 2026-09-24).
-    const finalMessage = turnMessages[turnMessages.length - 1] ?? null;
+    const replies = runReplies(detail, t3Run.id);
+    const finalMessage = replies[replies.length - 1] ?? null;
     const replyText = finalMessage?.text.trim() ?? "";
-    const progress = turnMessages.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt }));
-    const assistantMessageId = finalMessage?.id ?? `assistant:${run.turnId}`;
+    const progress = replies.filter((m) => m !== finalMessage).map((m) => ({ text: m.text.trim(), at: m.createdAt }));
+    const assistantMessageId = finalMessage?.id ?? `assistant:${t3Run.id}`;
+    const checkpoint = detail.checkpoints.filter((c) => c.runId === t3Run.id).pop();
     const files = (checkpoint?.files ?? []).map((file) => ({ path: file.path, kind: file.kind, additions: file.additions, deletions: file.deletions }));
     // Where the work is (folder, branch, commit, what is uncommitted), so whoever builds on it looks in the right place.
     const where = workspaceArtifact((await this.workspaces(participant.roomId, participant.id))?.[0]);
     const artifacts = where ? [where, ...files] : files;
+    const outcome: Run["status"] = t3Run.status === "completed" ? "succeeded" : t3Run.status === "interrupted" || t3Run.status === "cancelled" ? "interrupted" : "failed";
+    const lastError = detail.turnItems.filter((item) => item.runId === t3Run.id && item.type === "error").pop();
+    const errorText = t3Run.status === "rolled_back" ? "the run was rolled back in T3" : lastError?.type === "error" ? lastError.message : (shell.lastError ?? detail.shell.lastError ?? "provider reported an error");
 
     this.db.transaction(() => {
-      // A steered turn answers several tasks with one final message: the first run to finish records the reply and
-      // the others point at the same event.
+      // A run several room messages were steered into answers them with one final message: the first room run to
+      // finish records the reply and the others point at the same event.
       let resultEventId: string | null = this.repos.findEventIdForSource(binding.threadId, assistantMessageId);
       if (replyText.length > 0 && resultEventId === null) {
         const event = this.service.appendEvent({
@@ -520,21 +572,19 @@ export class Scheduler {
           runId: run.id,
           artifacts,
           progress,
-          sourceRef: { threadId: binding.threadId, messageId: assistantMessageId, turnId: run.turnId },
+          sourceRef: { threadId: binding.threadId, messageId: assistantMessageId, t3RunId: t3Run.id },
         });
         resultEventId = event.id;
       }
-      const status: Run["status"] = outcome === "completed" ? "succeeded" : outcome === "interrupted" ? "interrupted" : "failed";
-      this.repos.updateRun({ ...run, status, completedAt: now(), resultEventId, error: outcome === "error" ? errorText ?? "provider reported an error" : null, updatedAt: now() });
-      if (status === "succeeded") {
-        this.repos.updateBinding({ ...binding, deliveredCursor: Math.max(binding.deliveredCursor, run.includedToSequence) });
+      this.repos.updateRun({ ...run, status: outcome, startedAt: run.startedAt ?? t3Run.startedAt ?? now(), completedAt: now(), resultEventId, error: outcome === "failed" ? errorText : null, updatedAt: now() });
+      // Context delivered before a failure is still delivered; do not replay it on retry.
+      this.repos.updateBinding({ ...binding, deliveredCursor: Math.max(binding.deliveredCursor, run.includedToSequence) });
+      if (outcome === "succeeded") {
         this.service.setTaskState(task, "succeeded", "completed", { currentRunId: run.id });
         this.service.statusEvent(task, `${taskLabel(task)} succeeded on @${participant.alias}${files.length > 0 ? ` (${files.length} file(s) changed)` : ""}`, run.id);
       } else {
-        const reason = status === "interrupted" ? "interrupted" : `failed: ${errorText ?? "provider error"}`;
-        // Context delivered before the failure is still delivered; do not replay it on retry.
-        this.repos.updateBinding({ ...binding, deliveredCursor: Math.max(binding.deliveredCursor, run.includedToSequence) });
-        this.service.setTaskState(task, status, reason, { currentRunId: run.id });
+        const reason = outcome === "interrupted" ? "interrupted" : `failed: ${errorText}`;
+        this.service.setTaskState(task, outcome, reason, { currentRunId: run.id });
         this.service.statusEvent(task, `${taskLabel(task)} ${reason} on @${participant.alias}`, run.id);
         this.service.blockPendingDependents(task, `prerequisite ${taskLabel(task)} ${reason}`);
       }
@@ -604,11 +654,11 @@ export class Scheduler {
         continue;
       }
       const sessionBusy = status ? status.externalActivity || status.pendingApprovals || status.pendingUserInput : false;
-      // Steering: send into the turn that is running now (T3 feeds it to the same provider turn). Only into a turn that
+      // Steering: send into the run that is running now (T3 steers it into the provider's turn). Only into a run that
       // has started (not one still being dispatched), never while a native approval or question is open, and only on a
       // thread that already received the room's bootstrap briefing.
-      const turnRunning = status?.session === "running" && !status.pendingApprovals && !status.pendingUserInput;
-      if (task.delivery === "steer" && turnRunning && binding.bootstrapDeliveredAt !== null && !this.hasUnstartedRun(participant.id)) {
+      const runRunning = status?.status === "running" && (this.activeT3Runs.get(participant.id) ?? null) !== null && !status.pendingApprovals && !status.pendingUserInput;
+      if (task.delivery === "steer" && runRunning && binding.bootstrapDeliveredAt !== null && !this.hasUnstartedRun(participant.id)) {
         const run = this.prepareRun(room, task, participant, binding, tasks, readiness.results, { steer: true });
         await this.send(run, task, participant, binding);
         touched.add(room.id);
@@ -663,6 +713,15 @@ export class Scheduler {
     };
   }
 
+  /** What a member's thread is still doing after its reply, in a few words; null when it is idle. */
+  private continuingNote(participantId: string): string | null {
+    const status = this.participantStatus(participantId);
+    if (status.activeRunId || status.externalActivity || status.status === "running" || status.status === "waiting") return "already in another turn";
+    if (status.background === "working") return "still working after this reply (subagents or commands running; it continues on its own when they finish)";
+    if (status.background === "monitoring") return "still monitoring something after this reply";
+    return null;
+  }
+
   private prerequisiteReadiness(
     task: Task,
     tasks: Map<string, Task>,
@@ -685,8 +744,15 @@ export class Scheduler {
         }
         case "failed":
         case "interrupted":
-        case "cancelled":
+        case "cancelled": {
+          // A wake task runs however the work ended: the poster is told what happened and decides.
+          if (task.kind === "wake") {
+            const assignee = this.repos.getParticipant(prerequisite.participantId);
+            results.push({ task: prerequisite, assigneeAlias: assignee?.alias ?? prerequisite.participantId, resultEvent: null });
+            break;
+          }
           return { kind: "blocked", reason: `prerequisite ${taskLabel(prerequisite)} ${prerequisite.state}` };
+        }
         default:
           waiting.push(taskLabel(prerequisite));
       }
@@ -706,58 +772,11 @@ export class Scheduler {
     return /^[\s,]*(?:(?:@[a-z0-9][a-z0-9_-]*|\/(?:now|hold|steer)|\/after\s+[^\s]+)[\s,]*)*$/i.test(prefix);
   }
 
-  /**
-   * A run failed because T3 did not report its turn may have been a false alarm (reads disagreeing for a moment). If
-   * the turn shows up afterwards, resume tracking it instead of leaving work that is actually running as failed; a
-   * retry that is queued but not yet sent is dropped, so the task is not delivered twice. Runs whose task already
-   * sent a newer attempt are left alone (that duplicate cannot be recalled).
-   */
-  private async reviveVanishedRuns(participant: Participant, binding: SessionBinding, loadDetail: () => Promise<T3ThreadDetail | null>): Promise<boolean> {
-    const since = Date.now() - VANISHED_RECHECK_MS;
-    const candidates = this.repos
-      .listRunsByStatus(["failed"])
-      .filter((run) => run.bindingId === binding.id && run.turnId !== null && (run.error ?? "").startsWith(VANISHED_TURN) && Date.parse(run.completedAt ?? run.updatedAt) >= since);
-    if (candidates.length === 0) return false;
-    const detail = await loadDetail();
-    if (!detail) return false;
-    let changed = false;
-    for (const run of candidates) {
-      const visible =
-        detail.shell.latestTurn?.turnId === run.turnId ||
-        detail.shell.session?.activeTurnId === run.turnId ||
-        detail.checkpoints.some((c) => c.turnId === run.turnId) ||
-        detail.messages.some((m) => m.turnId === run.turnId);
-      if (!visible) continue;
-      const task = this.repos.getTask(run.taskId);
-      if (!task) continue;
-      const newer = this.repos.listRunsForTask(task.id).some((other) => other.attempt > run.attempt);
-      const revivable = !newer && (task.state === "failed" || task.state === "queued") && (task.currentRunId === null || task.currentRunId === run.id);
-      if (!revivable) continue;
-      this.db.transaction(() => {
-        this.repos.updateRun({ ...run, status: "running", error: null, completedAt: null, updatedAt: now() });
-        const wasRetry = task.state === "queued";
-        this.service.setTaskState(task, "running", `running on @${participant.alias}`, { currentRunId: run.id });
-        this.service.statusEvent(
-          task,
-          `${taskLabel(task)}: T3 does report its turn after all; tracking attempt ${run.attempt} again${wasRetry ? " (the queued retry was not sent)" : ""}`,
-          run.id,
-        );
-        for (const dependent of dependentsOf(task.id, this.repos.listTasks(task.roomId))) {
-          if (dependent.state === "blocked" && (dependent.stateReason ?? "").includes(taskLabel(task))) {
-            this.service.setTaskState(dependent, "queued", `waiting for ${taskLabel(task)}`);
-          }
-        }
-      });
-      changed = true;
-    }
-    return changed;
-  }
-
-  /** A room run for this participant that T3 has not started a turn for yet: steering must wait for it. */
+  /** A room run for this participant that T3 has not matched to a run yet: steering must wait for it. */
   private hasUnstartedRun(participantId: string): boolean {
     return this.repos
       .listRunsByStatus(["pending", "dispatched", "accepted"])
-      .some((run) => this.repos.getTask(run.taskId)?.participantId === participantId && run.turnId === null);
+      .some((run) => this.repos.getTask(run.taskId)?.participantId === participantId && run.t3RunId === null);
   }
 
   private prepareRun(
@@ -775,8 +794,8 @@ export class Scheduler {
       const current = this.repos.getRoom(room.id) as Room;
       const cutoff = current.nextSequence - 1;
       const participantsById = new Map(this.repos.listParticipants(room.id).map((p) => [p.id, p]));
-      const unseen = this.repos
-        .listEvents(room.id, binding.deliveredCursor + 1, cutoff)
+      // A seat briefing carries no room messages: the member reads the board by number when it is pointed at posts.
+      const unseen = (task.kind === "seat" ? [] : this.repos.listEvents(room.id, binding.deliveredCursor + 1, cutoff))
         .filter((event) => BRIEFING_EVENT_KINDS.has(event.kind))
         .filter((event) => !(event.speaker.type === "participant" && event.speaker.bindingId === binding.id))
         // The user's message that is nothing but this assignment would be delivered twice (as a room message and as
@@ -785,16 +804,18 @@ export class Scheduler {
       const briefing = assembleBriefing({
         room: current,
         participant,
-        role: participant.roleId ? this.repos.getRole(participant.roleId) : null,
         participantsById,
         task,
         unseenEvents: unseen,
-        prerequisiteResults,
+        // A wake carries each answer with a word on whether that member's thread is still busy after it.
+        prerequisiteResults: task.kind === "wake" ? prerequisiteResults.map((result) => ({ ...result, continuing: this.continuingNote(result.task.participantId) })) : prerequisiteResults,
         attachmentNames: task.attachmentIds.map((id) => this.repos.getAttachment(id)?.name ?? "image"),
         bootstrap: binding.bootstrapDeliveredAt === null,
         budgetChars: this.options.briefingBudgetChars,
         browsers: options.browsers ?? null,
         workspaces: options.workspaces ?? null,
+        board: { command: this.options.boardCommand ?? "rooms-board", as: agentKey(participant.alias, room.id) },
+        consigliereRules: this.repos.getKv(CONSIGLIERE_RULES_KEY),
       });
       const attempt = this.repos.listRunsForTask(task.id).length + 1;
       const run: Run = {
@@ -806,7 +827,7 @@ export class Scheduler {
         threadId: binding.threadId,
         commandId: randomUUID(),
         messageId: randomUUID(),
-        turnId: null,
+        t3RunId: null,
         status: "pending",
         steered: false,
         briefing: briefing.text,
@@ -829,8 +850,8 @@ export class Scheduler {
   }
 
   /**
-   * A message sent into the participant's running turn. The session already holds the room briefing and the context
-   * of the turn, so this is only the user's words (plus images). It claims no room events as delivered: whatever the
+   * A message sent into the participant's running run. The session already holds the room briefing and the context
+   * of the run, so this is only the user's words (plus images). It claims no room events as delivered: whatever the
    * participant has not seen yet still comes with its next ordinary briefing.
    */
   private prepareSteerRun(room: Room, task: Task, participant: Participant, binding: SessionBinding, options: { verbatim?: boolean } = {}): Run {
@@ -851,7 +872,7 @@ export class Scheduler {
         threadId: binding.threadId,
         commandId: randomUUID(),
         messageId: randomUUID(),
-        turnId: null,
+        t3RunId: null,
         status: "pending",
         steered: !options.verbatim,
         briefing: text,
@@ -887,19 +908,22 @@ export class Scheduler {
   private async send(run: Run, task: Task, participant: Participant, binding: SessionBinding): Promise<void> {
     this.repos.updateRun({ ...run, status: "dispatched", updatedAt: now() });
     try {
-      // Name the model, as T3 Code's composer does: a live session (Claude, Cursor, Grok, Antigravity) keeps the model it
-      // started with unless the turn names one; the thread's stored model alone doesn't switch it. The participant mirrors
-      // the thread (observe syncs it just before dispatch), so changes made in T3 Code still take effect.
-      await this.adapter.startTurn({
+      // A steered message goes into the run that is active now; when that run has ended meanwhile, it starts one.
+      // Any other message starts a run (T3 queues it behind a run that slipped in since the last look).
+      const steerInto = run.steered ? (this.activeT3Runs.get(participant.id) ?? null) : null;
+      // Name the model, as T3 Code's composer does: a live session keeps the model it started with unless the message
+      // names one. The participant mirrors the thread (observe syncs it just before dispatch), so changes made in T3
+      // Code still take effect. The permission and interaction modes are the thread's own in T3.
+      await this.adapter.sendMessage({
         commandId: run.commandId,
         threadId: run.threadId,
         messageId: run.messageId,
         text: run.briefing,
         ...(task.attachmentIds.length > 0 ? { images: this.loadImages(task.attachmentIds) } : {}),
         modelSelection: participant.modelSelection,
-        runtimeMode: participant.runtimeMode,
-        interactionMode: participant.interactionMode,
-        titleSeed: `${participant.alias}: ${task.instruction.slice(0, 60)}`,
+        // No title seed: the thread is named "room · alias" at launch, and a seed on a thread's first message makes T3
+        // generate a title from it instead (that is how T3 titles its own new threads).
+        mode: steerInto ? { type: "steer", runId: steerInto } : { type: "start" },
       });
     } catch (error) {
       if (error instanceof T3Unavailable) {

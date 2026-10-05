@@ -20,7 +20,7 @@ test("a room's news counts replies and failed runs since it was last seen", asyn
   await later();
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!, stack.participants.sol2!], instruction: "fix it", schedule: { mode: "now" } });
   await stack.tick(2);
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "Fixed the parser." });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "Fixed the parser." });
   await stack.tick(2);
   const first = await news();
   assert.equal(first?.unseen, 1);
@@ -34,7 +34,7 @@ test("a room's news counts replies and failed runs since it was last seen", asyn
 
   // A run that fails without a reply is news too.
   await later();
-  stack.fake.completeTurn(stack.threadOf("sol2"), { text: "", outcome: "error" });
+  stack.fake.completeRun(stack.threadOf("sol2"), { text: "", outcome: "error" });
   await stack.tick(2);
   const failed = await news();
   assert.equal(failed?.unseen, 1);
@@ -53,10 +53,10 @@ test("a thread outside rooms has news when its turn finishes after it was last s
   await later();
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "hi", modelSelection: { instanceId: "codex", model: "gpt-6-sol" } })) as { threadId: string };
   assert.equal((await threads()).find((x) => x.id === threadId)?.news, null, "still running");
-  stack.fake.completeTurn(threadId, { text: "hello" });
+  stack.fake.completeRun(threadId, { text: "hello" });
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "go", schedule: { mode: "now" } });
   await stack.tick(2);
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "done" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "done" });
   await stack.tick(2);
 
   const list = await threads();

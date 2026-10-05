@@ -42,7 +42,7 @@ test("briefings say where everyone works; replies record where their work is; de
   assert.doesNotMatch(sol2Briefing, /Choose your own workspace strategy/);
   assert.doesNotMatch(sol2Briefing, /You share your folder/);
 
-  stack.fake.completeTurn(stack.threadOf("sol2"), { text: "Added b.txt.", files: [{ path: "b.txt", kind: "added", additions: 1, deletions: 0 }] });
+  stack.fake.completeRun(stack.threadOf("sol2"), { text: "Added b.txt.", files: [{ path: "b.txt", kind: "added", additions: 1, deletions: 0 }] });
   await stack.tick(2);
   const reply = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "assistant.reply")!;
   const where = reply.artifacts.find(isWorkspaceArtifact)!;

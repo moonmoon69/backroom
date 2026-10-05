@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+
+/** How long the overview's drawer takes to slide in (styles.css, ov-slide). */
+const SLIDE_MS = 160;
 import { api, ApiError, useDesk, useGit, useRoomCosts, useRoomStream } from "./api.ts";
-import { BackgroundBar } from "./components/BackgroundBar.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { BrowserView } from "./components/BrowserView.tsx";
-import { Composer } from "./components/Composer.tsx";
 import { Dialog } from "./components/Dialog.tsx";
 import { Inspector, PanelButtons, type InspectorTab } from "./components/Inspector.tsx";
 import { PageTitle } from "./components/PageTitle.tsx";
@@ -14,19 +15,24 @@ import { MEMBER_ACCENT } from "./components/Monogram.tsx";
 import { RoomHeaderMenu } from "./components/RoomActions.tsx";
 import { rememberProject, Sidebar, SidebarRail, type Selection } from "./components/Sidebar.tsx";
 import { ArchivedThreadView, NewThreadView, ThreadView } from "./components/ThreadView.tsx";
-import { RolesDialog } from "./components/RolesLibrary.tsx";
 import { PresetDropZone, PresetsContext } from "./components/presets.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
 import { ConnectionChip, PairingPanel } from "./components/StatusStrip.tsx";
 import { UpdatesButton } from "./components/Updates.tsx";
-import { Timeline } from "./components/Timeline.tsx";
+import { FilePreviewHost } from "./components/FilePreview.tsx";
+import { RoomCentre } from "./components/RoomCentre.tsx";
+import { ConsigliereStart } from "./components/ConsigliereStart.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
 import { useSkin } from "./skin.ts";
+import { Overview } from "./components/Overview.tsx";
+import { OverviewRoom } from "./components/OverviewRoom.tsx";
+import { CloseIcon } from "./components/icons.tsx";
 import { useTheme } from "./theme.ts";
 import { MOBILE_QUERY, mediaMatches, useMediaQuery } from "./useMediaQuery.ts";
 import { roomKey, threadKey, useFinishNotifications, useLooking } from "./news.ts";
-import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, RoomSnapshot, StatusResponse, T3Project, T3ThreadShell } from "./types.ts";
+import { usePresence } from "./presence.ts";
+import { isRunActive, type BrowserListItem, type CommandResult, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project, type T3ThreadShell } from "./types.ts";
 
 const SELECTION_KEY = "backroom.selection";
 /** The room side panel's last tab and whether it was open, so a reload keeps the layout. */
@@ -37,12 +43,13 @@ const SIDEBAR_COLLAPSED_KEY = "backroom.sidebarCollapsed";
 
 function storedPanel(): { open: boolean; tab: InspectorTab } {
   // Phones start with the panel closed: it covers the timeline there.
-  const fallback = { open: !mediaMatches(MOBILE_QUERY), tab: "tasks" as InspectorTab };
+  const fallback = { open: !mediaMatches(MOBILE_QUERY), tab: "people" as InspectorTab };
   try {
     const parsed = JSON.parse(localStorage.getItem(PANEL_KEY) ?? "null") as { open?: unknown; tab?: unknown } | null;
     if (!parsed) return fallback;
     // Tabs since renamed: Board is Tasks, Changes is Git.
-    const renamed = parsed.tab === "board" ? "tasks" : parsed.tab === "changes" ? "git" : parsed.tab;
+    // Tasks has no header button any more (the status bar above the conversation took its place): Members opens instead.
+    const renamed = parsed.tab === "board" || parsed.tab === "tasks" ? "people" : parsed.tab === "changes" ? "git" : parsed.tab;
     const tab = PANEL_TABS.includes(renamed as InspectorTab) ? (renamed as InspectorTab) : fallback.tab;
     return { open: mediaMatches(MOBILE_QUERY) ? false : parsed.open !== false, tab };
   } catch {
@@ -56,7 +63,7 @@ function storedSelection(): Selection | null {
   try {
     const parsed = JSON.parse(localStorage.getItem(SELECTION_KEY) ?? "null") as Selection | null;
     if (parsed && (parsed.kind === "room" || parsed.kind === "thread" || parsed.kind === "browser") && typeof parsed.id === "string") return parsed;
-    if (parsed && parsed.kind === "new-thread" && typeof parsed.projectId === "string") return parsed;
+    if (parsed && (parsed.kind === "new-thread" || parsed.kind === "consigliere") && typeof parsed.projectId === "string") return parsed;
   } catch {
     // fall through
   }
@@ -119,13 +126,25 @@ export function App() {
     [inspectorOpen, inspectorTab],
   );
   const [pairingOpen, setPairingOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [followUp, setFollowUp] = useState<FollowUpPrefill | null>(null);
   const followUpNonce = useRef(0);
   const [theme, setTheme] = useTheme();
   const [skin] = useSkin();
-  // Out on the street (Look → Street), the room last opened stays open but is not the one being looked at.
+  // Out on the street (Look → Street) or on the overview page (Look → Overview), the room last opened stays open but
+  // is not the one being looked at.
   const [outside, setOutside] = useState(false);
+  // Look → Overview opens on the overview page; a room opened from there shows without the sidebar, with a way back.
+  useEffect(() => {
+    if (skin === "overview") setOutside(true);
+  }, [skin]);
+  useEffect(() => {
+    if (skin !== "overview" || outside) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open], .dialog")) setOutside(true);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [skin, outside]);
 
   const report = useCallback(
     (error: unknown) => toast(error instanceof ApiError ? error.message : error instanceof Error ? error.message : String(error)),
@@ -208,16 +227,21 @@ export function App() {
   // The page you were on before "New thread", so cancelling it goes back there.
   const lastPage = useRef<Selection | null>(null);
   useEffect(() => {
-    if (selection && selection.kind !== "new-thread") lastPage.current = selection;
+    if (selection && selection.kind !== "new-thread" && selection.kind !== "consigliere") lastPage.current = selection;
   }, [selection]);
   const cancelNewThread = useCallback(() => {
+    // From the overview, leaving the new-thread page is closing the drawer.
+    if (skin === "overview") {
+      setOutside(true);
+      return;
+    }
     const back = lastPage.current;
     // Back to the page before, if it still exists; otherwise no selection (the first room opens by itself).
     const exists =
       back &&
       (back.kind === "room" ? rooms.some((r) => r.id === back.id) : back.kind === "thread" ? threads.some((t) => t.id === back.id) : back.kind === "browser" ? Boolean(browsers?.some((b) => b.id === back.id)) : false);
     setSelection(exists ? back : null);
-  }, [rooms, threads, browsers]);
+  }, [rooms, threads, browsers, skin]);
 
   useEffect(() => {
     if (selection) localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
@@ -229,23 +253,26 @@ export function App() {
     loadSnapshot();
   }, [selectedRoomId, loadSnapshot]);
 
-  // Pick the first room automatically when nothing is selected.
+  // Pick the first room automatically when nothing is selected (the overview starts on its page of cards instead).
   useEffect(() => {
+    if (skin === "overview") return;
     if (!selection && rooms.length > 0) {
       const first = rooms[0];
       if (first) setSelection({ kind: "room", id: first.id });
     }
-  }, [rooms, selection]);
+  }, [rooms, selection, skin]);
 
   const onRoomChanged = useCallback(() => {
     loadSnapshot();
     loadRooms();
   }, [loadSnapshot, loadRooms]);
   useRoomStream(selectedRoomId, onRoomChanged);
+  // Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while this page is in use.
+  usePresence();
 
   // ---- news: what finished while you were not looking (see news.ts) ----
   const looking = useLooking();
-  const lookingHere = looking && !(skin === "street" && outside);
+  const lookingHere = looking && !((skin === "street" || skin === "overview") && outside);
   const openKey = selection?.kind === "room" ? roomKey(selection.id) : selection?.kind === "thread" ? threadKey(selection.id) : null;
   const openNewsAt =
     selection?.kind === "room" ? rooms.find((r) => r.id === selection.id)?.news?.latest?.at : selection?.kind === "thread" ? threads.find((t) => t.id === selection.id)?.news?.at : undefined;
@@ -285,7 +312,7 @@ export function App() {
   // Changes is visible or any participant's thread is running a turn (the timeline shows turns typed in T3 live).
   const [deskRunning, setDeskRunning] = useState(false);
   const snapshotRunning = snapshot
-    ? Object.values(snapshot.participantStatus).some((s) => s.session === "running" || s.session === "starting" || s.externalActivity)
+    ? Object.values(snapshot.participantStatus).some((s) => isRunActive(s.status) || s.externalActivity)
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
@@ -300,7 +327,7 @@ export function App() {
   }, [snapshot?.room.id]);
   const gitRead = useGit(snapshot ? snapshot.room.id : null, { detail: inspectorOpen && inspectorTab === "git", path: gitPath, commits: gitCommits });
   useEffect(() => {
-    setDeskRunning(desk ? Object.values(desk.participants).some((d) => Boolean(d.runningTurn)) : false);
+    setDeskRunning(desk ? Object.values(desk.participants).some((d) => Boolean(d.runningRun)) : false);
   }, [desk]);
 
   const runCommand = useCallback(
@@ -308,8 +335,12 @@ export function App() {
       try {
         const result = await api.command(command);
         if (command.type === "room.delete") {
-          // Leave the deleted room for the next one in the list (or none).
-          if (selectedRoomId === command.roomId) {
+          // Leave the deleted room: on the desk for the next one in the list (or none); from the overview, back to
+          // the page of cards.
+          if (skin === "overview") {
+            if (selectedRoomId === command.roomId) setSelection(null);
+            setOutside(true);
+          } else if (selectedRoomId === command.roomId) {
             const next = rooms.find((room) => room.id !== command.roomId);
             setSelection(next ? { kind: "room", id: next.id } : null);
           }
@@ -328,7 +359,6 @@ export function App() {
           // A preset may be seated in a room other than the open one: its count in the list changes.
           if (command.type === "participant.fromPreset") loadRooms();
           // A deleted role is cleared from the presets that had it.
-          if (command.type === "role.delete") loadPresets();
         }
         return result;
       } catch (error) {
@@ -345,7 +375,7 @@ export function App() {
         return null;
       }
     },
-    [loadRooms, loadT3, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId, rooms],
+    [loadRooms, loadT3, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId, rooms, skin],
   );
 
   const seatPreset = useCallback(
@@ -409,8 +439,6 @@ export function App() {
     <AppControls
       status={status}
       onOpenConnection={() => setPairingOpen(true)}
-      onOpenLibrary={() => setLibraryOpen(true)}
-      rolesDisabled={needsPairing}
       theme={theme}
       onTheme={setTheme}
     />
@@ -428,54 +456,303 @@ export function App() {
     </button>
   ) : null;
 
+  // Look → Overview: a room opens over the page of cards, and this closes it.
+  const overviewButton =
+    skin === "overview" ? (
+      <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the overview" title="Back to the overview (Esc)" onClick={() => setOutside(true)}>
+        <CloseIcon />
+      </button>
+    ) : null;
+
+  // The page for what is selected: a room, a thread, a browser, a new thread. The desk puts it beside the sidebar;
+  // the overview shows it over its cards.
+  const mainBlock = (
+      <div className="main">
+        {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
+        <ErrorBoundary
+          key={selection ? `${selection.kind}:${selection.kind === "new-thread" || selection.kind === "consigliere" ? selection.projectId : selection.id}` : "none"}
+          onReset={() => setSelection(null)}
+          header={
+            <div className="room-header app-header-only">{overviewButton ?? roomsButton}</div>
+          }
+        >
+        {selection?.kind === "thread" && selectedArchived && !needsPairing ? (
+          <ArchivedThreadView
+            thread={selectedArchived}
+            project={projects?.find((p) => p.id === selectedArchived.projectId) ?? null}
+            runCommand={runCommand}
+            onUnarchived={() => {
+              markThread(selectedArchived.id, { archivedAt: null });
+              loadT3();
+            }}
+            onGone={() => {
+              setSelection(null);
+              loadT3();
+            }}
+            headerStart={overviewButton ?? roomsButton}
+          />
+        ) : selection?.kind === "thread" && !needsPairing ? (
+          <ThreadView
+            threadId={selection.id}
+            rooms={rooms}
+            browsers={browsers}
+            runCommand={runCommand}
+            onGone={() => {
+              setSelection(null);
+              loadT3();
+            }}
+            onChanged={loadT3}
+            onArchived={() => {
+              markThread(selection.id, { archivedAt: new Date().toISOString() });
+              loadT3();
+            }}
+            onOpenRoom={(roomId) => {
+              setSelection({ kind: "room", id: roomId });
+              loadRooms();
+              loadT3();
+            }}
+            headerStart={overviewButton ?? roomsButton}
+          />
+        ) : selection?.kind === "browser" ? (
+          <BrowserView
+            browserId={selection.id}
+            runCommand={runCommand}
+            onGone={() => {
+              setSelection(null);
+              loadBrowsers();
+            }}
+            onChanged={loadBrowsers}
+            onOpenRoom={(roomId) => setSelection({ kind: "room", id: roomId })}
+            headerStart={overviewButton ?? roomsButton}
+          />
+        ) : selection?.kind === "consigliere" && !needsPairing ? (
+          <ConsigliereStart
+            projectId={selection.projectId}
+            projects={projects ?? []}
+            runCommand={runCommand}
+            onStarted={(roomId) => {
+              loadRooms();
+              loadT3();
+              setSelection({ kind: "room", id: roomId });
+            }}
+            onCancel={cancelNewThread}
+            headerStart={overviewButton ?? roomsButton}
+          />
+        ) : selection?.kind === "new-thread" && !needsPairing ? (
+          <NewThreadView
+            projectId={selection.projectId}
+            presetId={selection.presetId ?? null}
+            projects={projects ?? []}
+            browsers={browsers}
+            runCommand={runCommand}
+            onProject={(projectId) => {
+              rememberProject(projectId);
+              setSelection({ kind: "new-thread", projectId, ...(selection.presetId ? { presetId: selection.presetId } : {}) });
+            }}
+            onStarted={(threadId) => {
+              setSelection({ kind: "thread", id: threadId });
+              loadT3();
+            }}
+            onCancel={cancelNewThread}
+            headerStart={overviewButton ?? roomsButton}
+          />
+        ) : contextValue ? (
+          <RoomContext.Provider value={contextValue}>
+            <div className="room-header">
+              {overviewButton ?? roomsButton}
+              <PageTitle
+                context={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null}
+                contextTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.workspaceRoot}
+                name={contextValue.snapshot.room.title}
+              />
+              <span className="spacer" />
+              <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
+              <RoomHeaderMenu projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null} />
+            </div>
+            {/* Everything under the header: on phones the side panel covers exactly this area. */}
+            <PresetDropZone
+              className="room-under"
+              label={`Drop to seat them in ${contextValue.snapshot.room.title}`}
+              onDropPreset={(presetId) => void seatPreset(contextValue.snapshot.room.id, presetId)}
+            >
+              <div className="room-body">
+                <RoomCentre followUp={followUp} />
+                {inspectorOpen ? (
+                  <Inspector
+                    tab={inspectorTab}
+                    onClose={() => setInspectorOpen(false)}
+                    onManageBrowser={(browserId) => {
+                      const target = browserId ?? browsers?.[0]?.id;
+                      if (target) setSelection({ kind: "browser", id: target });
+                    }}
+                  />
+                ) : null}
+              </div>
+            </PresetDropZone>
+          </RoomContext.Provider>
+        ) : (
+          <>
+          <div className="room-header app-header-only">{overviewButton ?? roomsButton}</div>
+          <div className="empty-state">
+            {needsPairing ? null : selection?.kind === "room" ? (
+              <p className="serif muted">Loading room…</p>
+            ) : (
+              <>
+                <p className="serif">Start a thread on its own, or open a room to hand out work orders to a crew.</p>
+                <p className="mono muted">New → New thread · New → New room → add a member → @alias do the thing</p>
+              </>
+            )}
+          </div>
+          </>
+        )}
+        </ErrorBoundary>
+      </div>
+  );
+
+  // Look → Overview: one page of every room and member; a room or thread opened from it slides in over the page.
+  if (skin === "overview") {
+    const open = !outside && selection !== null;
+    return (
+      <PresetsContext.Provider value={presetsValue}>
+        <FilePreviewHost>
+          {staleUi ? (
+            <div className="update-banner" role="status">
+              <span>Backroom was updated.</span>
+              <button type="button" className="primary" onClick={() => window.location.reload()}>
+                Reload
+              </button>
+            </div>
+          ) : null}
+          {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
+          <Overview
+            rooms={sideRooms}
+            projects={projects}
+            threads={sideThreads}
+            controls={appControls}
+            onOpenRoom={(roomId) => {
+              setSelection({ kind: "room", id: roomId });
+              setOutside(false);
+            }}
+            onOpenThread={(threadId) => {
+              setSelection({ kind: "thread", id: threadId });
+              setOutside(false);
+            }}
+            onCommand={runCommand}
+            onT3Changed={loadT3}
+          />
+          {open ? (
+            // A click on the dark page outside the drawer closes it; a click inside, or in a dialog it opened, does not.
+            <div
+              className="ov-scrim"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setOutside(true);
+              }}
+            >
+              <div className="ov-drawer" role="dialog" aria-label="Room">
+                <AfterSlide
+                  placeholder={
+                    <div className="sheet sheet-loading">
+                      <header className="sheet-head">
+                        {overviewButton}
+                        <div className="sheet-title">
+                          <h1>{selection?.kind === "room" ? rooms.find((room) => room.id === selection.id)?.title ?? "" : ""}</h1>
+                        </div>
+                      </header>
+                    </div>
+                  }
+                >
+                  {selection?.kind === "room" && !needsPairing ? (
+                    contextValue ? (
+                      <RoomContext.Provider value={contextValue}>
+                        <ErrorBoundary key={`sheet:${selection.id}`} onReset={() => setSelection(null)} header={<div className="sheet-head">{overviewButton}</div>}>
+                          <OverviewRoom
+                            project={projects?.find((p) => p.id === contextValue.snapshot.room.projectId) ?? null}
+                            followUp={followUp}
+                            onClose={() => setOutside(true)}
+                            onManageBrowser={(browserId) => {
+                              const target = browserId ?? browsers?.[0]?.id;
+                              if (target) setSelection({ kind: "browser", id: target });
+                            }}
+                          />
+                        </ErrorBoundary>
+                      </RoomContext.Provider>
+                    ) : (
+                      <div className="sheet sheet-loading">
+                        <header className="sheet-head">
+                          {overviewButton}
+                          <div className="sheet-title">
+                            <h1>{rooms.find((room) => room.id === selection.id)?.title ?? ""}</h1>
+                            <span className="sheet-sub muted">opening…</span>
+                          </div>
+                        </header>
+                      </div>
+                    )
+                  ) : (
+                    mainBlock
+                  )}
+                </AfterSlide>
+              </div>
+            </div>
+          ) : null}
+          {pairingOpen ? (
+            <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>
+              <PairingPanel status={status} onPaired={onPaired} embedded />
+              <ProvidersSection />
+            </Dialog>
+          ) : null}
+        </FilePreviewHost>
+      </PresetsContext.Provider>
+    );
+  }
   // Look → Street: the whole page is the street; the same data, rooms and dialogs.
   if (skin === "street") {
     return (
       <PresetsContext.Provider value={presetsValue}>
-        <StreetMode
-          status={status}
-          rooms={sideRooms}
-          projects={projects}
-          threads={sideThreads}
-          t3Error={t3Error}
-          selection={selection}
-          onSelect={setSelection}
-          onOutside={setOutside}
-          room={contextValue}
-          followUp={followUp}
-          panel={inspectorOpen ? inspectorTab : null}
-          onPanel={(tab) => {
-            if (tab) {
-              setInspectorTab(tab);
-              setInspectorOpen(true);
-            } else setInspectorOpen(false);
-          }}
-          runCommand={runCommand}
-          onSeatPreset={seatPreset}
-          onT3Changed={loadT3}
-          onThreadChanged={markThread}
-          browsers={browsers}
-          onBrowsersChanged={loadBrowsers}
-          theme={theme}
-          onTheme={setTheme}
-          onOpenConnection={() => setPairingOpen(true)}
-          onOpenLibrary={() => setLibraryOpen(true)}
-          needsPairing={needsPairing}
-          staleUi={staleUi}
-        />
-        {pairingOpen ? (
-          <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>
-            <PairingPanel status={status} onPaired={onPaired} embedded />
-            <ProvidersSection />
-          </Dialog>
-        ) : null}
-        {libraryOpen ? <RolesDialog runCommand={runCommand} onClose={() => setLibraryOpen(false)} /> : null}
+        <FilePreviewHost>
+          <StreetMode
+            status={status}
+            rooms={sideRooms}
+            projects={projects}
+            threads={sideThreads}
+            t3Error={t3Error}
+            selection={selection}
+            onSelect={setSelection}
+            onOutside={setOutside}
+            room={contextValue}
+            followUp={followUp}
+            panel={inspectorOpen ? inspectorTab : null}
+            onPanel={(tab) => {
+              if (tab) {
+                setInspectorTab(tab);
+                setInspectorOpen(true);
+              } else setInspectorOpen(false);
+            }}
+            runCommand={runCommand}
+            onSeatPreset={seatPreset}
+            onT3Changed={loadT3}
+            onThreadChanged={markThread}
+            browsers={browsers}
+            onBrowsersChanged={loadBrowsers}
+            theme={theme}
+            onTheme={setTheme}
+            onOpenConnection={() => setPairingOpen(true)}
+            needsPairing={needsPairing}
+            staleUi={staleUi}
+          />
+          {pairingOpen ? (
+            <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>
+              <PairingPanel status={status} onPaired={onPaired} embedded />
+              <ProvidersSection />
+            </Dialog>
+          ) : null}
+        </FilePreviewHost>
       </PresetsContext.Provider>
     );
   }
 
   return (
     <PresetsContext.Provider value={presetsValue}>
+    <FilePreviewHost>
     <div className={`app${isMobile ? " app-mobile" : ""}${collapsed ? " sidebar-collapsed" : ""}`}>
       {staleUi ? (
         <div className="update-banner" role="status">
@@ -522,147 +799,25 @@ export function App() {
           }
         />
       ) : null}
-      <div className="main">
-        {needsPairing ? <PairingPanel status={status} onPaired={onPaired} /> : null}
-        <ErrorBoundary
-          key={selection ? `${selection.kind}:${selection.kind === "new-thread" ? selection.projectId : selection.id}` : "none"}
-          onReset={() => setSelection(null)}
-          header={
-            <div className="room-header app-header-only">{roomsButton}</div>
-          }
-        >
-        {selection?.kind === "thread" && selectedArchived && !needsPairing ? (
-          <ArchivedThreadView
-            thread={selectedArchived}
-            project={projects?.find((p) => p.id === selectedArchived.projectId) ?? null}
-            runCommand={runCommand}
-            onUnarchived={() => {
-              markThread(selectedArchived.id, { archivedAt: null });
-              loadT3();
-            }}
-            onGone={() => {
-              setSelection(null);
-              loadT3();
-            }}
-            headerStart={roomsButton}
-          />
-        ) : selection?.kind === "thread" && !needsPairing ? (
-          <ThreadView
-            threadId={selection.id}
-            rooms={rooms}
-            browsers={browsers}
-            runCommand={runCommand}
-            onGone={() => {
-              setSelection(null);
-              loadT3();
-            }}
-            onChanged={loadT3}
-            onArchived={() => {
-              markThread(selection.id, { archivedAt: new Date().toISOString() });
-              loadT3();
-            }}
-            onOpenRoom={(roomId) => {
-              setSelection({ kind: "room", id: roomId });
-              loadRooms();
-              loadT3();
-            }}
-            headerStart={roomsButton}
-          />
-        ) : selection?.kind === "browser" ? (
-          <BrowserView
-            browserId={selection.id}
-            runCommand={runCommand}
-            onGone={() => {
-              setSelection(null);
-              loadBrowsers();
-            }}
-            onChanged={loadBrowsers}
-            onOpenRoom={(roomId) => setSelection({ kind: "room", id: roomId })}
-            headerStart={roomsButton}
-          />
-        ) : selection?.kind === "new-thread" && !needsPairing ? (
-          <NewThreadView
-            projectId={selection.projectId}
-            presetId={selection.presetId ?? null}
-            projects={projects ?? []}
-            browsers={browsers}
-            runCommand={runCommand}
-            onProject={(projectId) => {
-              rememberProject(projectId);
-              setSelection({ kind: "new-thread", projectId, ...(selection.presetId ? { presetId: selection.presetId } : {}) });
-            }}
-            onStarted={(threadId) => {
-              setSelection({ kind: "thread", id: threadId });
-              loadT3();
-            }}
-            onCancel={cancelNewThread}
-            headerStart={roomsButton}
-          />
-        ) : contextValue ? (
-          <RoomContext.Provider value={contextValue}>
-            <div className="room-header">
-              {roomsButton}
-              <PageTitle
-                context={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null}
-                contextTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.workspaceRoot}
-                name={contextValue.snapshot.room.title}
-              />
-              <span className="spacer" />
-              <PanelButtons open={inspectorOpen} tab={inspectorTab} onToggle={togglePanel} />
-              <RoomHeaderMenu projectTitle={projects?.find((p) => p.id === contextValue.snapshot.room.projectId)?.title ?? null} />
-            </div>
-            {/* Everything under the header: on phones the side panel covers exactly this area. */}
-            <PresetDropZone
-              className="room-under"
-              label={`Drop to seat them in ${contextValue.snapshot.room.title}`}
-              onDropPreset={(presetId) => void seatPreset(contextValue.snapshot.room.id, presetId)}
-            >
-              <div className="room-body">
-                <div className="room-centre">
-                  <Timeline />
-                  <BackgroundBar />
-                  <Composer followUp={followUp} />
-                </div>
-                {inspectorOpen ? (
-                  <Inspector
-                    tab={inspectorTab}
-                    onClose={() => setInspectorOpen(false)}
-                    onManageBrowser={(browserId) => {
-                      const target = browserId ?? browsers?.[0]?.id;
-                      if (target) setSelection({ kind: "browser", id: target });
-                    }}
-                  />
-                ) : null}
-              </div>
-            </PresetDropZone>
-          </RoomContext.Provider>
-        ) : (
-          <>
-          <div className="room-header app-header-only">{roomsButton}</div>
-          <div className="empty-state">
-            {needsPairing ? null : selection?.kind === "room" ? (
-              <p className="serif muted">Loading room…</p>
-            ) : (
-              <>
-                <p className="serif">Start a thread on its own, or open a room to hand out work orders to a crew.</p>
-                <p className="mono muted">New → New thread · New → New room → add a member → @alias do the thing</p>
-              </>
-            )}
-          </div>
-          </>
-        )}
-        </ErrorBoundary>
-      </div>
+      {mainBlock}
       {pairingOpen ? (
         <Dialog title="T3 connection" onClose={() => setPairingOpen(false)} wide>
           <PairingPanel status={status} onPaired={onPaired} embedded />
           <ProvidersSection />
         </Dialog>
       ) : null}
-      {libraryOpen ? (
-        <RolesDialog runCommand={runCommand} onClose={() => setLibraryOpen(false)} />
-      ) : null}
     </div>
+    </FilePreviewHost>
     </PresetsContext.Provider>
   );
+}
+
+/** The drawer's content, mounted once its slide-in has played: the room's first draw and the animation do not fight. */
+function AfterSlide({ placeholder, children }: { placeholder: ReactNode; children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setReady(true), SLIDE_MS + 30);
+    return () => clearTimeout(timer);
+  }, []);
+  return <>{ready ? children : placeholder}</>;
 }

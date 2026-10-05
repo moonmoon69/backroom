@@ -12,6 +12,8 @@ import { useToast } from "./Toast.tsx";
 import { ChevronIcon, CloseIcon, FolderIcon, MoreIcon, PlusIcon, SidebarIcon, UpFolderIcon } from "./icons.tsx";
 import { carriesPreset, droppedPresetId, PresetDialog, PresetIcon, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
 import { useSortable } from "./sortable.ts";
+import { useConsigliereSetting } from "../consigliere.ts";
+import { isSubagentThread } from "../types.ts";
 
 /** What the main area shows: a room, a thread used on its own, or a new thread being started in a project. */
 export type Selection =
@@ -19,6 +21,8 @@ export type Selection =
   | { kind: "thread"; id: string }
   /** With a preset, the new thread's settings start from it. */
   | { kind: "new-thread"; projectId: string; presetId?: string }
+  /** "Talk to the Consigliere": an empty chat in a project; its first message starts the room. */
+  | { kind: "consigliere"; projectId: string }
   | { kind: "browser"; id: string };
 
 interface Props {
@@ -41,7 +45,7 @@ interface Props {
   onBrowsersChanged: () => void;
   /** Leave the "New thread" page without starting one (its row in the list offers it). */
   onCancelNewThread?: (() => void) | undefined;
-  /** App-wide controls (roles, the T3 connection, the theme), at the foot of the sidebar. */
+  /** App-wide controls (the T3 connection, updates, settings), at the foot of the sidebar. */
   footer?: ReactNode;
   /** Hide the sidebar (desktops), or keep it open when it is shown over the page from the rail; absent on phones. */
   onCollapse?: (() => void) | undefined;
@@ -185,6 +189,17 @@ export function rememberProject(projectId: string): void {
 export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect, onCommand, onSeatPreset, onT3Changed, browsers, onBrowsersChanged, onCancelNewThread, footer, onCollapse, disabled, open, onClose }: Props) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "browser" } | { kind: "preset"; preset: Preset | null } | null>(null);
   const { presets } = usePresets();
+  // The saved crew member who is the Consigliere of new conversations, when the setting names one.
+  const consigliereSetting = useConsigliereSetting();
+  const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
+  const talkTo = (projectId: string | null) => {
+    const here = selection?.kind === "new-thread" || selection?.kind === "consigliere" ? selection.projectId : (openRoom?.projectId ?? null);
+    const target = projectId ?? here ?? localStorage.getItem(LAST_PROJECT_KEY) ?? projects?.[0]?.id ?? null;
+    const known = target && projects?.some((p) => p.id === target) ? target : projects?.[0]?.id;
+    if (!known) return;
+    rememberProject(known);
+    onSelect({ kind: "consigliere", projectId: known });
+  };
   const presetText = usePresetText();
   // Where a dragged preset would land: a room (it is seated there) or a project (a thread starts there).
   const [presetOver, setPresetOver] = useState<string | null>(null);
@@ -259,7 +274,8 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
     }
     for (const thread of threads) {
       const group = byId.get(thread.projectId);
-      if (!group || thread.boundToRoom || thread.deletedAt) continue;
+      // A member's subagent threads are not loose threads of the project (T3's own list leaves them out too).
+      if (!group || thread.boundToRoom || thread.deletedAt || isSubagentThread(thread)) continue;
       (thread.archivedAt ? group.archived : thread.settledAt ? group.settled : group.threads).push(thread);
     }
     for (const group of list) {
@@ -321,6 +337,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
               title="Start a thread, create a room, or add a project"
               disabled={disabled}
               items={[
+                ...(consigliere ? [{ label: `Talk to ${consigliere.name}`, onPick: () => talkTo(null), disabled: !projects || projects.length === 0 }] : []),
                 { label: "New thread", onPick: () => newThread(null), disabled: !projects || projects.length === 0 },
                 { label: "New room…", onPick: () => setDialog({ kind: "room", projectId: null }) },
                 { label: "New project…", onPick: () => setDialog({ kind: "project" }), disabled: !projects },
@@ -402,6 +419,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                       className="project-add"
                       disabled={disabled}
                       items={[
+                        ...(consigliere ? [{ label: `Talk to ${consigliere.name}`, onPick: () => talkTo(group.id) }] : []),
                         { label: "New thread", onPick: () => newThread(group.id) },
                         { label: "New room…", onPick: () => setDialog({ kind: "room", projectId: group.id }) },
                       ]}
@@ -497,7 +515,7 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
                   className="project-toggle"
                   aria-expanded={!collapsed.has(PRESETS_KEY)}
                   onClick={() => toggleCollapsed(PRESETS_KEY)}
-                  title="Your crew: the people you bring into rooms, each a model with its options, permission mode, role and where it works"
+                  title="Your crew: the people you bring into rooms, each a model with its options, permission mode and where it works"
                 >
                   <ChevronIcon dir={collapsed.has(PRESETS_KEY) ? "right" : "down"} />
                   <span className="project-name">Crew</span>
@@ -639,8 +657,18 @@ export function Sidebar({ rooms, projects, threads, t3Error, selection, onSelect
   );
 }
 
+/** A room's activity as two numbers for its tile: what needs you, and how many members are busy (and with what, for the hover). */
+function roomCounts(room: RoomListItem): { needs: number; busy: number; working: number; title: string } {
+  const working = Math.max(room.working, room.activity?.turn ?? 0);
+  const background = room.activity?.background ?? 0;
+  const monitoring = room.activity?.monitoring ?? 0;
+  const parts = [working > 0 ? `${working} working` : null, background > 0 ? `${background} with background work` : null, monitoring > 0 ? `${monitoring} monitoring` : null, room.waiting > 0 ? `${room.waiting} waiting` : null].filter(Boolean);
+  return { needs: room.activity?.needsInput ?? 0, busy: working + background + monitoring, working, title: parts.join(" · ") };
+}
+
 function RoomTile({ room, selected, onSelect }: { room: RoomListItem; selected: boolean; onSelect: () => void }) {
   const news = room.news && room.news.unseen > 0 ? room.news : null;
+  const counts = roomCounts(room);
   return (
     <button type="button" className={`room-tile${selected ? " selected" : ""}${news ? " has-news" : ""}`} onClick={onSelect} aria-current={selected ? "true" : undefined} title={news ? newsLabel(news) : undefined}>
       <span className="room-mono serif" aria-hidden="true">
@@ -651,29 +679,15 @@ function RoomTile({ room, selected, onSelect }: { room: RoomListItem; selected: 
         <span className="room-title">{room.title}</span>
         <span className="room-meta mono">
           <span title="Members seated">{room.participantCount} member{room.participantCount === 1 ? "" : "s"}</span>
-          {room.activity && room.activity.needsInput > 0 ? (
-            <span className="pill pill-input" title="Waiting for your approval or answer">
-              {room.activity.needsInput} needs you
+          {/* Two numbers at most: what needs you, and how many are busy. The room's status bar has the detail. */}
+          {counts.needs > 0 ? (
+            <span className="pill pill-input" title={`${counts.needs} need${counts.needs === 1 ? "s" : ""} you: an approval or answer, held or blocked work, or a failure`}>
+              {counts.needs}
             </span>
           ) : null}
-          {room.working > 0 || (room.activity?.turn ?? 0) > 0 ? (
-            <span className="pill pill-working" title="Mid-turn (room tasks or typed in T3)">
-              {Math.max(room.working, room.activity?.turn ?? 0)} working
-            </span>
-          ) : null}
-          {room.activity && room.activity.background > 0 ? (
-            <span className="pill pill-background" title="Between turns, with subagents or background jobs running: not done yet">
-              {room.activity.background} background
-            </span>
-          ) : null}
-          {room.activity && room.activity.monitoring > 0 ? (
-            <span className="pill pill-background" title="Only watch loops running">
-              {room.activity.monitoring} monitoring
-            </span>
-          ) : null}
-          {room.waiting > 0 ? (
-            <span className="pill pill-waiting" title="Waiting">
-              {room.waiting} waiting
+          {counts.busy > 0 ? (
+            <span className={`pill ${counts.working > 0 ? "pill-working" : "pill-background"}`} title={counts.title}>
+              {counts.busy}
             </span>
           ) : null}
         </span>
@@ -896,7 +910,7 @@ function PresetMenu({
   );
 }
 
-function AddMenu({
+export function AddMenu({
   label,
   title,
   className,
@@ -977,6 +991,9 @@ export function NewRoomDialog({
   const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const { presets } = usePresets();
+  const consigliereSetting = useConsigliereSetting();
+  const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -1040,6 +1057,11 @@ export function NewRoomDialog({
           Room title
           <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} required data-autofocus />
         </label>
+        <span className="hint">
+          {consigliere
+            ? `${consigliere.name} is seated as the room's Consigliere: the one you talk to there. He brings in the others.`
+            : "No Consigliere is chosen (Settings → Consigliere…), so the room opens empty; add members from Members."}
+        </span>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             Cancel

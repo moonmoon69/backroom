@@ -11,12 +11,14 @@ import {
 } from "react";
 import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type Task, type ThreadCost } from "../types.ts";
+import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type RoomSnapshot, type Task, type ThreadCost } from "../types.ts";
 import { BranchIcon } from "./icons.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
+import { FileBaseContext } from "./filePreviewContext.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { speakableSummary, useAutoRead } from "../speech.ts";
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
@@ -68,6 +70,8 @@ const GROUP_GAP_MS = 10 * 60 * 1000;
 type TimelineItem =
   | { type: "day"; key: string; label: string }
   | { type: "message"; event: ChatMessage; previous: RoomEvent | ChatMessage | null }
+  /** A turn one member's agent asked of another: what was sent into it (in order), and its answer once it ended. */
+  | { type: "turn"; messages: RoomEvent[]; answer: RoomEvent | null }
   | { type: "status-run"; events: RoomEvent[] }
   | { type: "system"; event: RoomEvent };
 
@@ -81,8 +85,29 @@ const speakerKey = (event: RoomEvent | ChatMessage): string => {
  * Chat items: day separators (only when the room spans more than one day), messages (with the previous message
  * when it continues the same speaker's group), runs of consecutive task.status events, and system lines.
  */
-function buildItems(events: RoomEvent[], taskIds: ReadonlySet<string>): TimelineItem[] {
+/** The T3 run a board post belongs to, on its thread: what a member's messages and their answer share. */
+const turnKey = (event: RoomEvent): string => `${event.sourceRef?.threadId ?? ""}:${event.sourceRef?.t3RunId ?? event.id}`;
+
+function buildItems(events: RoomEvent[], taskIds: ReadonlySet<string>, tasksByEvent: ReadonlyMap<string, Task[]> = new Map()): TimelineItem[] {
   const items: TimelineItem[] = [];
+  // Turns between members are one row each: every message sent into the turn, with the answer underneath.
+  const sentInto = new Map<string, RoomEvent[]>();
+  for (const event of events) if (event.kind === "member.message") sentInto.set(turnKey(event), [...(sentInto.get(turnKey(event)) ?? []), event]);
+  const answers = new Map<string, RoomEvent>();
+  for (const event of events) if (event.kind === "t3.turn" && sentInto.has(turnKey(event))) answers.set(turnKey(event), event);
+  // A board post (a member's message with no T3 source) is answered by the reply to the task it made.
+  const postOfTask = new Map<string, string>();
+  for (const event of events) {
+    if (event.kind !== "member.message" || event.sourceRef !== null) continue;
+    for (const task of tasksByEvent.get(event.id) ?? []) if (task.kind !== "wake") postOfTask.set(task.id, event.id);
+  }
+  const postAnswers = new Map<string, RoomEvent>();
+  for (const event of events) {
+    const post = event.kind === "assistant.reply" && event.taskId ? postOfTask.get(event.taskId) : undefined;
+    if (post) postAnswers.set(post, event);
+  }
+  const shownAnswers = new Set([...postAnswers.values()].map((event) => event.id));
+  const shownTurns = new Set<string>();
   const spansDays = events.length > 0 && dayKey(events[0]!.createdAt) !== dayKey(events[events.length - 1]!.createdAt);
   let lastDay: string | null = null;
   let previous: RoomEvent | ChatMessage | null = null;
@@ -96,6 +121,18 @@ function buildItems(events: RoomEvent[], taskIds: ReadonlySet<string>): Timeline
       previous = null;
     }
     if (day) lastDay = day;
+    if (event.kind === "member.message") {
+      const key = turnKey(event);
+      if (!shownTurns.has(key)) {
+        shownTurns.add(key);
+        items.push({ type: "turn", messages: sentInto.get(key) ?? [event], answer: answers.get(key) ?? postAnswers.get(event.id) ?? null });
+        previous = null;
+      }
+      continue;
+    }
+    // An answer already under its turn's row.
+    if (event.kind === "t3.turn" && answers.get(turnKey(event)) === event) continue;
+    if (event.kind === "assistant.reply" && shownAnswers.has(event.id)) continue;
     if (isMessage(event)) {
       // A turn typed directly in T3 reads like a room exchange: its prompt as the user's bubble, then the reply.
       if (event.kind === "t3.turn" && event.prompt) {
@@ -144,21 +181,48 @@ const STICK_PX = 40;
 /** Distance from the bottom (px) beyond which "Jump to latest" appears. */
 const JUMP_PX = 240;
 
-export function Timeline() {
+/**
+ * The user's conversation with the room's Consigliere, as a view of the board: the messages addressed to him and his
+ * replies to them. Nothing is stored for the chat alone; every message in it is a post on the board.
+ */
+function consigliereChat(snapshot: RoomSnapshot): RoomEvent[] {
+  const him = snapshot.room.consigliereId;
+  const tasks = snapshot.tasks.filter((task) => task.participantId === him && task.kind !== "seat");
+  const asked = new Set(tasks.map((task) => task.sourceEventId));
+  const taskIds = new Set(tasks.map((task) => task.id));
+  // A turn of his that no member asked for (he woke himself when a watch tripped, or typed in T3) is a note to the user.
+  const askedByMember = new Set(snapshot.events.filter((e) => e.kind === "member.message" && e.to === him).map(turnKey));
+  return snapshot.events.filter(
+    (event) =>
+      (event.kind === "user.message" && asked.has(event.id)) ||
+      (event.kind === "assistant.reply" && event.speaker.type === "participant" && event.speaker.participantId === him) ||
+      (event.kind === "t3.turn" && event.speaker.type === "participant" && event.speaker.participantId === him && !askedByMember.has(turnKey(event))) ||
+      (event.kind === "t3.message" && event.taskId !== null && taskIds.has(event.taskId)),
+  );
+}
+
+/**
+ * The room's posts, oldest first. "board" (the default) is every post; "chat" is the conversation with the room's
+ * Consigliere (see consigliereChat). A room without a Consigliere shows the board alone.
+ */
+export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat"; limit?: number } = {}) {
   const { snapshot, desk, aliasOf } = useRoom();
+  const chat = view === "chat";
+  const consigliereId = snapshot.room.consigliereId;
+  const events = useMemo(() => (chat ? consigliereChat(snapshot) : snapshot.events), [chat, snapshot]);
   // Read aloud, when the room's menu says so: each new reply (its Handoff, or its opening), and each new request
   // for approval or an answer, named by who it is from.
   const [autoRead] = useAutoRead(`room:${snapshot.room.id}`);
   useAnnounceNew(
     `room:${snapshot.room.id}`,
-    autoRead,
+    autoRead && !chat,
     snapshot.events
       .filter((event) => event.kind === "assistant.reply" && event.speaker.type === "participant" && event.text.trim().length > 0)
       .map((event) => ({ id: event.id, text: `${event.speaker.type === "participant" ? aliasOf(event.speaker.participantId) : "reply"}. ${speakableSummary(event.text)}` })),
   );
   useAnnounceNew(
     `room:${snapshot.room.id}:requests`,
-    autoRead,
+    autoRead && !chat,
     snapshot.nativeRequests.map((request) => ({ id: request.requestId, text: `${aliasOf(request.participantId)} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })),
   );
   const scroller = useRef<HTMLDivElement>(null);
@@ -177,7 +241,26 @@ export function Timeline() {
     return map;
   }, [snapshot.tasks]);
   const taskById = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
-  const items = useMemo(() => buildItems(snapshot.events, new Set(taskById.keys())), [snapshot.events, taskById]);
+  const allItems = useMemo(() => buildItems(events, new Set(taskById.keys()), tasksByEvent), [events, taskById, tasksByEvent]);
+  // With a limit, only the latest posts are drawn at first (a long board opens at once); "earlier" draws the next
+  // window above, keeping what is in view where it is.
+  const [shown, setShown] = useState(limit);
+  useEffect(() => setShown(limit), [limit, snapshot.room.id]);
+  const items = limit > 0 && allItems.length > shown ? allItems.slice(allItems.length - shown) : allItems;
+  const earlier = allItems.length - items.length;
+  const keepPlace = useRef<{ height: number; top: number } | null>(null);
+  const showEarlier = () => {
+    const el = scroller.current;
+    if (el) keepPlace.current = { height: el.scrollHeight, top: el.scrollTop };
+    setShown((n) => n + limit);
+  };
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const place = keepPlace.current;
+    if (!el || !place) return;
+    keepPlace.current = null;
+    el.scrollTop = place.top + (el.scrollHeight - place.height);
+  }, [shown]);
   // Replies say which branch they were made on once the room's replies come from more than one branch.
   const showBranches = useMemo(
     () => new Set(snapshot.events.flatMap((e) => (e.kind === "assistant.reply" ? e.artifacts.filter(isWorkspaceArtifact).map((a) => a.branch ?? "") : []))).size > 1,
@@ -187,16 +270,17 @@ export function Timeline() {
 
   // Turns typed directly in T3 that are still running: shown live at the bottom until the server imports them.
   const liveTurns = useMemo(() => {
-    if (!desk) return [];
-    const imported = new Set(snapshot.events.filter((e) => e.kind === "t3.turn" && e.sourceRef?.turnId).map((e) => e.sourceRef?.turnId));
+    // The chat is the user's conversation; a turn someone else started is the board's.
+    if (!desk || chat) return [];
+    const imported = new Set(snapshot.events.filter((e) => e.kind === "t3.turn" && e.sourceRef?.t3RunId).map((e) => e.sourceRef?.t3RunId));
     return snapshot.participants
       .filter(isActiveParticipant)
       .map((participant) => ({ participant, desk: desk.participants[participant.id] }))
       .filter(
         (entry): entry is { participant: Participant; desk: Desk } =>
-          Boolean(entry.desk?.runningTurn) && !entry.desk?.runningTurn?.startedByRoom && !imported.has(entry.desk?.runningTurn?.turnId),
+          Boolean(entry.desk?.runningRun) && !entry.desk?.runningRun?.startedByRoom && !imported.has(entry.desk?.runningRun?.runId),
       );
-  }, [desk, snapshot.events, snapshot.participants]);
+  }, [desk, chat, snapshot.events, snapshot.participants]);
 
   // Room tasks being worked on: the reply builds up as the participant's bubble at the bottom, like a chat. Tasks sent
   // into the same running turn (steering) share one bubble.
@@ -204,14 +288,15 @@ export function Timeline() {
     const byParticipant = new Map<string, Task[]>();
     for (const task of snapshot.tasks) {
       if (task.state !== "dispatching" && task.state !== "running" && task.state !== "needs_input") continue;
+      if (chat && task.participantId !== consigliereId) continue;
       byParticipant.set(task.participantId, [...(byParticipant.get(task.participantId) ?? []), task]);
     }
     return [...byParticipant.entries()]
       .map(([participantId, tasks]) => ({ tasks, participant: snapshot.participants.find((p) => p.id === participantId), desk: desk?.participants[participantId] }))
       .filter((entry): entry is { tasks: Task[]; participant: Participant; desk: Desk | undefined } => Boolean(entry.participant));
-  }, [snapshot.tasks, snapshot.participants, desk]);
+  }, [snapshot.tasks, snapshot.participants, desk, chat, consigliereId]);
 
-  const lastSequence = snapshot.events[snapshot.events.length - 1]?.sequence ?? 0;
+  const lastSequence = events[events.length - 1]?.sequence ?? 0;
   const scrollToBottom = useCallback((smooth = false) => {
     const el = scroller.current;
     if (!el) return;
@@ -241,6 +326,26 @@ export function Timeline() {
     return () => observer.disconnect();
   }, [scrollToBottom]);
 
+  // A panel that was put away (the board hidden, the chat or board switched on a narrow screen) comes back at the
+  // top, because a hidden element loses its scroll position: show it at the latest again. A width change (the other
+  // panel hidden or shown) keeps the bottom in view when it was in view.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let height = el.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const shown = height === 0 && el.clientHeight > 0;
+      height = el.clientHeight;
+      if (shown) {
+        stickToBottom.current = true;
+        setFar(false);
+      }
+      if (stickToBottom.current) scrollToBottom();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [scrollToBottom]);
+
   useEffect(() => {
     if (!far) setSeenSequence(lastSequence);
   }, [far, lastSequence]);
@@ -254,16 +359,27 @@ export function Timeline() {
     if (isFar !== far) setFar(isFar);
   };
 
-  const unseen = far ? snapshot.events.filter((e) => e.sequence > seenSequence && (e.kind === "assistant.reply" || e.kind === "t3.turn")).length : 0;
+  const unseen = far ? events.filter((e) => e.sequence > seenSequence && (e.kind === "assistant.reply" || e.kind === "t3.turn")).length : 0;
   const scrollControl = useMemo(() => ({ release: () => (stickToBottom.current = false) }), []);
   const noCrew = !snapshot.participants.some(isActiveParticipant);
 
   return (
     <ScrollControl.Provider value={scrollControl}>
       <div className="timeline-wrap">
-        <div className="timeline" ref={scroller} onScroll={onScroll} aria-label="Timeline" role="log">
+        <div className="timeline" ref={scroller} onScroll={onScroll} aria-label={chat ? "Conversation with the Consigliere" : consigliereId ? "Board" : "Timeline"} role="log">
           <div className="timeline-content" ref={content}>
-            {snapshot.events.length === 0 || noCrew ? (
+            {earlier > 0 ? (
+              <button type="button" className="small ghost earlier-posts mono" onClick={showEarlier}>
+                {earlier} earlier · show {Math.min(earlier, limit)} more
+              </button>
+            ) : null}
+            {chat && events.length === 0 && liveTasks.length === 0 ? (
+              <div className="timeline-empty">
+                <p className="serif">Tell {consigliereId ? aliasOf(consigliereId) : "the Consigliere"} what you need. He brings in the others, hands out the work and reports back.</p>
+                <p className="muted">Everything he and the members send each other is on the board.</p>
+              </div>
+            ) : null}
+            {!chat && (snapshot.events.length === 0 || noCrew) ? (
               <div className="timeline-empty">
                 <p className="serif">
                   {noCrew
@@ -290,6 +406,7 @@ export function Timeline() {
                 return <StatusRun key={latest.id} events={item.events} taskFor={taskFor} />;
               }
               if (item.type === "system") return <SystemLine key={item.event.id} event={item.event} />;
+              if (item.type === "turn") return <TurnRow key={(item.messages[0] as RoomEvent).id} messages={item.messages} answer={item.answer} />;
               return (
                 <MessageRow
                   key={item.event.id}
@@ -302,10 +419,10 @@ export function Timeline() {
               );
             })}
             {liveTurns.map(({ participant, desk: participantDesk }) => (
-              <Fragment key={participantDesk.runningTurn?.turnId ?? participant.id}>
-                {participantDesk.runningTurn?.prompt ? (
+              <Fragment key={participantDesk.runningRun?.runId ?? participant.id}>
+                {participantDesk.runningRun?.prompt ? (
                   <MessageRow
-                    event={livePromptMessage(participantDesk.runningTurn.turnId, participantDesk.runningTurn.prompt, participantDesk.runningTurn.promptImages ?? [])}
+                    event={livePromptMessage(participantDesk.runningRun.runId, participantDesk.runningRun.prompt, participantDesk.runningRun.promptImages ?? [])}
                     previous={null}
                     tasks={[]}
                     taskFor={taskFor}
@@ -480,8 +597,10 @@ function MessageRow({
   const events = snapshot.events;
   const continued = previous !== null;
   const seqTitle = `room event #${event.sequence} · ${fullTime(event.createdAt)}`;
+  // In a room with a Consigliere posts are cited by number, so each message shows its own.
   const stamp = (
     <span className="time mono" title={seqTitle}>
+      {snapshot.room.consigliereId && event.sequence > 0 ? <span className="post-number">#{event.sequence} · </span> : null}
       {time(event.createdAt)}
     </span>
   );
@@ -568,6 +687,7 @@ function MessageRow({
   // A turn the agent started itself (no prompt: background work finished and woke it). Its last message is a real
   // final answer, so it keeps its own bubble; the marker says nobody asked for it.
   const selfStarted = direct && !event.prompt;
+  const stopped = direct && event.outcome && event.outcome !== "completed" ? <TurnState state={event.outcome} /> : null;
   const selfMark = selfStarted ? (
     <span className="self-started mono" title="The agent continued on its own (background work finished and woke it); no new prompt">
       ↻ continued on its own
@@ -588,6 +708,7 @@ function MessageRow({
             {tag}
             {branchTag}
             {selfMark}
+            {stopped}
             {stamp}
           </div>
         ) : selfMark || (tagChanged && tag) || newMinute ? (
@@ -598,9 +719,12 @@ function MessageRow({
           </div>
         ) : null}
         <div className="bubble bubble-agent">
-          {(event.progress ?? []).length > 0 ? <ProgressUpdates progress={event.progress} /> : null}
-          {/* The reply is shown in full: it is what the user came to read. */}
-          {event.text ? <Markdown text={event.text} /> : null}
+          {/* Files the reply names are looked for in the folder it was written in first. */}
+          <FileBaseContext.Provider value={where?.path ?? null}>
+            {(event.progress ?? []).length > 0 ? <ProgressUpdates progress={event.progress} /> : null}
+            {/* The reply is shown in full: it is what the user came to read. */}
+            {event.text ? <Markdown text={event.text} /> : null}
+          </FileBaseContext.Provider>
           {event.artifacts.some((a) => !isWorkspaceArtifact(a)) ? <ChangedFiles artifacts={event.artifacts} /> : null}
           <div className="reply-foot">
             <CopyTextButton text={event.text} label="Copy reply" />
@@ -613,17 +737,143 @@ function MessageRow({
   );
 }
 
+/** How a turn between members stands: working, or how it ended. */
+function TurnState({ state }: { state: "working" | "sent" | "completed" | "interrupted" | "failed" }) {
+  const title = {
+    working: "The member is working on it",
+    sent: "Sent; T3 has not started the turn yet, or it is part of another turn",
+    completed: "The turn completed",
+    interrupted: "The turn was interrupted before it finished",
+    failed: "The turn failed",
+  }[state];
+  return (
+    <span className={`turn-state mono turn-${state}`} title={title}>
+      {state === "working" ? <span className="dot dot-working" aria-hidden="true" /> : null}
+      {state}
+    </span>
+  );
+}
+
+/** What one member sent another: its first line, opening to the whole text. A short single line is shown as it is. */
+function SentText({ event, lead }: { event: RoomEvent; lead: ReactNode }) {
+  const firstLine = (event.text.trim().split("\n")[0] ?? "").trim();
+  const short = event.text.trim() === firstLine && firstLine.length <= 160;
+  const summary = firstLine.length > 160 ? `${firstLine.slice(0, 160)}…` : firstLine;
+  const head = (
+    <>
+      {lead}
+      <span className="post-number mono" title={`room event #${event.sequence} · ${fullTime(event.createdAt)}`}>
+        #{event.sequence}
+      </span>
+    </>
+  );
+  if (short) {
+    return (
+      <div className="sent-text" data-sequence={event.sequence}>
+        {head} <span className="sent-line">{firstLine}</span>
+      </div>
+    );
+  }
+  return (
+    <details className="sent-text" data-sequence={event.sequence}>
+      <summary>
+        {head} <span className="sent-line">{summary}</span>
+      </summary>
+      <div className="sent-full">
+        <Markdown text={event.text} />
+        <CopyTextButton text={event.text} label="Copy message" />
+      </div>
+    </details>
+  );
+}
+
+/**
+ * A turn one member's agent asked of another, as one row of the board: who sent it and to whom, the first line of
+ * what was sent, how it stands, everything else sent into the same turn (steers, questions, answers), and the answer
+ * underneath when it arrives.
+ */
+function TurnRow({ messages, answer }: { messages: RoomEvent[]; answer: RoomEvent | null }) {
+  const { aliasOf, colorOf, participantById, snapshot, desk } = useRoom();
+  const first = messages[0] as RoomEvent;
+  const name = (event: RoomEvent): string => (event.speaker.type === "participant" ? aliasOf(event.speaker.participantId) : event.speaker.type === "outside" ? event.speaker.title : event.speaker.type);
+  const sender = first.speaker.type === "participant" ? participantById(first.speaker.participantId) : undefined;
+  const receiver = first.to ? participantById(first.to) : undefined;
+  const t3RunId = first.sourceRef?.t3RunId ?? null;
+  // A board post's work is the tasks it made; a message sent with T3's tools runs on the receiver's thread.
+  const posted = first.sourceRef === null ? snapshot.tasks.filter((task) => task.sourceEventId === first.id && task.kind !== "wake") : [];
+  const running =
+    (first.to !== null && t3RunId !== null && desk?.participants[first.to]?.runningRun?.runId === t3RunId) ||
+    posted.some((task) => task.state === "running" || task.state === "dispatching" || task.state === "needs_input");
+  // A message sent into a turn the room started is answered by that turn's reply, further down the board.
+  const roomTurn = t3RunId !== null && snapshot.runs.some((run) => run.t3RunId === t3RunId);
+  const ended = posted.find((task) => task.state === "failed" || task.state === "cancelled" || task.state === "interrupted");
+  const state = answer ? (answer.outcome ?? "completed") : running ? "working" : ended ? (ended.state === "failed" ? "failed" : "interrupted") : "sent";
+  return (
+    <div className="turn-row" style={identityStyle(sender ? colorOf(sender.id) : "var(--fg-muted)")}>
+      <div className="turn-head">
+        {sender ? <Monogram participant={sender} size="xs" /> : null}
+        <span className="speaker mono identity">{name(first)}</span>
+        {first.speaker.type === "outside" ? (
+          <span className="tag mono direct-tag" title="Sent by a thread that is not a member of this room">
+            outside the room
+          </span>
+        ) : null}
+        <span className="turn-arrow" aria-label="to">
+          →
+        </span>
+        {receiver ? <Monogram participant={receiver} size="xs" /> : null}
+        <span className="speaker mono identity">{first.to ? aliasOf(first.to) : "?"}</span>
+        <TurnState state={state} />
+        {roomTurn && !answer ? <span className="muted turn-note">sent into a turn the room started; its reply is below</span> : null}
+        <span className="time mono" title={fullTime(first.createdAt)}>
+          {time(first.createdAt)}
+        </span>
+      </div>
+      <div className="turn-sent">
+        {messages.map((message, index) => (
+          <SentText key={message.id} event={message} lead={index > 0 ? <span className="sent-by mono">{name(message)} added</span> : null} />
+        ))}
+      </div>
+      {answer ? (
+        <div className="turn-answer" data-sequence={answer.sequence}>
+          <div className="turn-answer-head mono">
+            <span className="speaker identity">{first.to ? aliasOf(first.to) : "answer"}</span> answered
+            <span className="post-number" title={`room event #${answer.sequence} · ${fullTime(answer.createdAt)}`}>
+              #{answer.sequence}
+            </span>
+            <span className="time">{time(answer.createdAt)}</span>
+          </div>
+          <div className="bubble bubble-agent">
+            {(answer.progress ?? []).length > 0 ? <ProgressUpdates progress={answer.progress} /> : null}
+            {answer.text ? <Markdown text={answer.text} /> : <span className="muted">No answer: the turn {answer.outcome === "failed" ? "failed" : "was interrupted"} before it gave one.</span>}
+            {answer.text ? (
+              <div className="reply-foot">
+                <CopyTextButton text={answer.text} label="Copy answer" />
+                <SpeakButton id={answer.id} text={answer.text} lead={first.to ? aliasOf(first.to) : "answer"} />
+                <ReplySpend event={answer as ChatMessage} />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * A turn someone is typing directly in T3 on a participant's thread, still running: shown live at the bottom
  * (prompt, messages, tool bursts). When it finishes the server imports it as a t3.turn event and this goes away.
  */
 function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Participant; desk: Desk | undefined; tasks?: Task[] }) {
-  const { colorOf } = useRoom();
+  const { snapshot, colorOf, runCommand } = useRoom();
   const task = tasks[0];
   // A room task's bubble only shows the feed once T3 reports the task's own turn (not an earlier or direct one).
-  const feedIsOurs = !task || (desk?.runningTurn?.startedByRoom ?? false);
+  const feedIsOurs = !task || (desk?.runningRun?.startedByRoom ?? false);
   const items = feedIsOurs ? desk?.liveFeed ?? [] : [];
-  const needsYou = task?.state === "needs_input";
+  // What T3 is waiting on for this member: approvals and questions, answered here as in Tasks or in T3 itself.
+  const requests = snapshot.nativeRequests.filter((request) => request.participantId === participant.id);
+  const needsYou = task?.state === "needs_input" || requests.length > 0;
+  const speaker = <span className="speaker mono identity">{participant.alias}</span>;
   return (
     <div className="chat-row from-agent live-turn" style={identityStyle(colorOf(participant.id))} aria-live="off">
       <div className="chat-stack">
@@ -642,8 +892,39 @@ function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Partic
           </span>
         </div>
         <div className={`bubble bubble-agent bubble-live${task ? "" : " bubble-direct"}`} aria-label={`${participant.alias} is working`}>
-          {needsYou ? <div className="status-error">Waiting for your approval or answer: see Tasks, or respond in T3.</div> : null}
-          <LiveFeed items={items} placeholder={task?.state === "dispatching" ? "Sending to T3…" : "Thinking…"} className="live-feed-chat" />
+          {needsYou && requests.length === 0 ? <div className="status-error">Waiting for your approval or answer: see Tasks, or respond in T3.</div> : null}
+          {requests.length > 0 ? (
+            <div className="native-requests thread-requests" role="group" aria-label={`${participant.alias} is waiting for you`}>
+              {requests.map((request) =>
+                request.kind === "approval" ? (
+                  <ApprovalRequestCard
+                    key={request.requestId}
+                    payload={request.payload}
+                    speaker={speaker}
+                    onRespond={async (decision) => {
+                      await runCommand({ type: "native.approval.respond", participantId: request.participantId, requestId: request.requestId, decision });
+                    }}
+                  />
+                ) : (
+                  <UserInputRequestCard
+                    key={request.requestId}
+                    requestId={request.requestId}
+                    payload={request.payload}
+                    speaker={speaker}
+                    onSubmit={async (answers) => {
+                      await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers });
+                    }}
+                    onDismiss={async () => {
+                      await runCommand({ type: "native.userInput.dismiss", participantId: request.participantId, requestId: request.requestId });
+                    }}
+                  />
+                ),
+              )}
+            </div>
+          ) : null}
+          <FileBaseContext.Provider value={desk?.worktreePath ?? null}>
+            <LiveFeed items={items} placeholder={task?.state === "dispatching" ? "Sending to T3…" : "Thinking…"} className="live-feed-chat" />
+          </FileBaseContext.Provider>
         </div>
       </div>
     </div>
@@ -742,6 +1023,14 @@ function ReplyTo({ tasks }: { tasks: Task[] }) {
     .filter((e): e is RoomEvent => Boolean(e))
     .sort((a, b) => a.sequence - b.sequence);
   if (sources.length === 0) return null;
+  // A seat briefing is Backroom's message, not the user's: its acknowledgement says so.
+  if (tasks.every((t) => t.kind === "seat")) {
+    return (
+      <span className="reply-to mono" title="Acknowledges the standing facts Backroom sent this member when it joined a room that has a Consigliere">
+        ↩ seat briefing
+      </span>
+    );
+  }
   const labels = tasks.map((t) => taskLabel(t)).join(", ");
   return (
     <span className="reply-to mono" title={`Reply to ${sources.length === 1 ? "your message" : "your messages"} (${labels}); click a time to show it`}>
@@ -816,6 +1105,8 @@ function livePromptMessage(turnId: string, prompt: string, images: string[]): Ch
     attachmentIds: images,
     progress: [],
     prompt: null,
+    to: null,
+    outcome: null,
     sourceRef: null,
     createdAt: new Date().toISOString(),
   };

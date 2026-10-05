@@ -62,6 +62,8 @@ export const RoomCreateCommand = z
     type: z.literal("room.create"),
     projectId: nonEmpty,
     title: nonEmpty,
+    /** Seat the Consigliere chosen in Settings (when there is one) and designate him. */
+    consigliere: z.boolean().default(true),
   })
   .strict();
 
@@ -141,8 +143,6 @@ export const ParticipantCreateCommand = z
     type: z.literal("participant.create"),
     roomId: nonEmpty,
     alias: ALIAS,
-    /** Role assigned in this room (a named rule set). */
-    roleId: nonEmpty.nullable().default(null),
     /**
      * Only meaningful when creating a thread; omitted means T3's default model for the project.
      * When attaching, the thread's own model, options, and permission mode are inherited from T3 and these are ignored.
@@ -166,14 +166,12 @@ export const ParticipantModelSetCommand = z
   })
   .strict();
 
-/** Change a seated participant's alias and/or role. Model and permission mode have their own commands. */
+/** Change a seated participant's alias. Model and permission mode have their own commands. */
 export const ParticipantUpdateCommand = z
   .object({
     type: z.literal("participant.update"),
     participantId: nonEmpty,
     alias: ALIAS.optional(),
-    /** null clears the role; omitted leaves it unchanged. */
-    roleId: nonEmpty.nullable().optional(),
   })
   .strict();
 
@@ -187,19 +185,6 @@ export const ParticipantRebindCommand = z
   })
   .strict();
 
-const ROLE_NAME = nonEmpty.regex(/^[a-z0-9][a-z0-9_-]{0,31}$/i, "name must be alphanumeric, dash or underscore");
-
-/** A named set of rules, assignable to participants in any room. */
-export const RoleCreateCommand = z
-  .object({ type: z.literal("role.create"), name: ROLE_NAME, rules: z.string() })
-  .strict();
-
-export const RoleUpdateCommand = z
-  .object({ type: z.literal("role.update"), roleId: nonEmpty, name: ROLE_NAME.optional(), rules: z.string().optional() })
-  .strict();
-
-export const RoleDeleteCommand = z.object({ type: z.literal("role.delete"), roleId: nonEmpty }).strict();
-
 /**
  * A participant's settings under a name. The name follows the alias rules: it is the alias the preset takes in a room.
  */
@@ -209,7 +194,6 @@ export const PresetCreateCommand = z
     name: ALIAS,
     modelSelection: ModelSelectionSchema,
     runtimeMode: RuntimeModeSchema.default("full-access"),
-    roleId: nonEmpty.nullable().default(null),
     workspaceMode: z.enum(["local", "worktree"]).default("local"),
   })
   .strict();
@@ -221,7 +205,6 @@ export const PresetUpdateCommand = z
     name: ALIAS.optional(),
     modelSelection: ModelSelectionSchema.optional(),
     runtimeMode: RuntimeModeSchema.optional(),
-    roleId: nonEmpty.nullable().optional(),
     workspaceMode: z.enum(["local", "worktree"]).optional(),
   })
   .strict();
@@ -234,6 +217,30 @@ export const PresetDeleteCommand = z.object({ type: z.literal("preset.delete"), 
  */
 export const ParticipantFromPresetCommand = z
   .object({ type: z.literal("participant.fromPreset"), roomId: nonEmpty, presetId: nonEmpty, alias: ALIAS.optional() })
+  .strict();
+
+/**
+ * Make a seated member the room's Consigliere, move the mark to another member, or clear it (participantId null).
+ * A room has at most one.
+ */
+export const RoomConsigliereSetCommand = z.object({ type: z.literal("room.consigliere.set"), roomId: nonEmpty, participantId: nonEmpty.nullable() }).strict();
+
+/** The saved crew member who is the Consigliere of new conversations, or none (presetId null). Backroom names no model. */
+export const ConsiglierePresetSetCommand = z.object({ type: z.literal("consigliere.preset.set"), presetId: nonEmpty.nullable() }).strict();
+
+/**
+ * The Consigliere's rules in the user's own words: the text every briefing Backroom writes for a Consigliere carries.
+ * null goes back to Backroom's wording.
+ */
+export const ConsigliereRulesSetCommand = z.object({ type: z.literal("consigliere.rules.set"), rules: z.string().trim().min(1).max(20000).nullable() }).strict();
+
+/**
+ * Start a conversation with the Consigliere in a project: a room titled with the start of the message, that saved crew
+ * member seated and designated, and the message delivered to him. requestId names the attempt: sending the command
+ * again with the same id carries on where it stopped and never makes a second room.
+ */
+export const ConsigliereStartCommand = z
+  .object({ type: z.literal("consigliere.start"), projectId: nonEmpty, text: nonEmpty, requestId: z.string().uuid() })
   .strict();
 
 export const ParticipantRetireCommand = z
@@ -284,6 +291,20 @@ export const AssignmentSchema = z
     delivery: z.enum(["queue", "steer"]).default("queue"),
     /** The instruction is one of the recipient's T3 slash commands ("/compact …"), sent verbatim without a briefing. */
     slashCommand: z.boolean().default(false),
+  })
+  .strict();
+
+/**
+ * A member's post on the board (bin/rooms-board post): the same shape as the user's message, from a member. One task
+ * per recipient, and for each a "wake" task for the poster that runs with the answer when it ends.
+ */
+export const MemberPostCommand = z
+  .object({
+    type: z.literal("member.post"),
+    roomId: nonEmpty,
+    participantId: nonEmpty,
+    sourceText: z.string().trim().min(1),
+    assignments: z.array(AssignmentSchema).min(1).max(20),
   })
   .strict();
 
@@ -365,6 +386,12 @@ export const TaskRetryCommand = z
     reattachDependents: z.boolean(),
   })
   .strict();
+
+/** Take a failed task off the user's list without retrying it (it stays failed on the board). */
+export const TaskDismissCommand = z.object({ type: z.literal("task.dismiss"), taskId: nonEmpty }).strict();
+
+/** Drop a question the user will not answer (T3 dismisses it; the agent goes on, or its turn ends, without the answer). */
+export const NativeUserInputDismissCommand = z.object({ type: z.literal("native.userInput.dismiss"), participantId: nonEmpty, requestId: nonEmpty }).strict();
 
 export const TaskMarkBlockedCommand = z
   .object({
@@ -490,15 +517,17 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ParticipantRetireCommand,
   ParticipantRuntimeModeCommand,
   ParticipantModelSetCommand,
-  RoleCreateCommand,
-  RoleUpdateCommand,
-  RoleDeleteCommand,
   PresetCreateCommand,
   PresetUpdateCommand,
   PresetDeleteCommand,
   ParticipantFromPresetCommand,
+  RoomConsigliereSetCommand,
+  ConsiglierePresetSetCommand,
+  ConsigliereRulesSetCommand,
+  ConsigliereStartCommand,
   TaskCreateCommand,
   MessageCreateCommand,
+  MemberPostCommand,
   RoomNoteCreateCommand,
   TaskUpdateCommand,
   TaskReleaseCommand,
@@ -506,6 +535,8 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   TaskInterruptCommand,
   TaskRetryCommand,
   TaskMarkBlockedCommand,
+  TaskDismissCommand,
+  NativeUserInputDismissCommand,
   TaskUnblockCommand,
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,

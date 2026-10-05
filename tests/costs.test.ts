@@ -38,15 +38,18 @@ function machine(t: TestContext) {
   const codex = join(root, "codex", "sessions");
   for (const dir of [userdata, join(claude, "-work-app"), join(codex, "2026", "09", "26")]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(userdata, "usage-model-rates.json"), JSON.stringify({ fetchedAtMs: Date.parse("2026-09-26T00:00:00Z"), document: RATES }));
-  const db = new DatabaseSync(join(userdata, "state.sqlite"));
-  db.exec("CREATE TABLE provider_session_runtime (thread_id TEXT PRIMARY KEY, provider_name TEXT, resume_cursor_json TEXT)");
-  const bind = (threadId: string, provider: string, cursor: unknown) =>
-    db.prepare("INSERT OR REPLACE INTO provider_session_runtime (thread_id, provider_name, resume_cursor_json) VALUES (?, ?, ?)").run(threadId, provider, JSON.stringify(cursor));
+  // T3's V2 database: each of a thread's provider threads names the harness's own conversation (its native id).
+  const db = new DatabaseSync(join(userdata, "statev2.sqlite"));
+  db.exec("CREATE TABLE orchestration_v2_projection_provider_threads (provider_thread_id TEXT PRIMARY KEY, thread_id TEXT, driver TEXT, payload_json TEXT)");
+  const bind = (threadId: string, provider: string, sessionId: string) =>
+    db
+      .prepare("INSERT OR REPLACE INTO orchestration_v2_projection_provider_threads (provider_thread_id, thread_id, driver, payload_json) VALUES (?, ?, ?, ?)")
+      .run(`provider-thread:${threadId}`, threadId, provider, JSON.stringify({ nativeThreadRef: { driver: provider, nativeId: sessionId, strength: "strong" } }));
   t.after(() => db.close());
   const past = new Map<string, Array<{ provider: string; sessionId: string }>>();
   const costs = () =>
     new ThreadCosts({
-      t3StateDb: join(userdata, "state.sqlite"),
+      t3StateDb: join(userdata, "statev2.sqlite"),
       ratesPath: join(userdata, "usage-model-rates.json"),
       claudeProjectsDir: claude,
       codexSessionsDir: codex,
@@ -61,7 +64,7 @@ function machine(t: TestContext) {
 
 test("a Claude thread: its own calls and its subagents', per model, each message once", (t) => {
   const m = machine(t);
-  m.bind("thread-1", "claudeAgent", { resume: "sess-1" });
+  m.bind("thread-1", "claudeAgent", "sess-1");
   const own = claudeLine("a", "claude-fable", "2026-09-26T10:00:00Z", { input: 100, read: 1000, write: 200, output: 50 });
   writeFileSync(
     join(m.claudeProject, "sess-1.jsonl"),
@@ -100,7 +103,7 @@ test("a Claude thread: its own calls and its subagents', per model, each message
 test("a Codex thread: cached input is part of its input, and the turn names the model", (t) => {
   const m = machine(t);
   const session = "01a0dd5f-d44c-7a82-bea6-0b079927dec1";
-  m.bind("thread-2", "codex", { threadId: session });
+  m.bind("thread-2", "codex", session);
   writeFileSync(
     join(m.codexDay, `rollout-2026-09-26T11-00-00-${session}.jsonl`),
     [
@@ -119,7 +122,7 @@ test("a Codex thread: cached input is part of its input, and the turn names the 
 
 test("a transcript that grows is read from where it was left, a line still being written waits", (t) => {
   const m = machine(t);
-  m.bind("thread-1", "claudeAgent", { resume: "sess-1" });
+  m.bind("thread-1", "claudeAgent", "sess-1");
   const path = join(m.claudeProject, "sess-1.jsonl");
   const second = claudeLine("b", "claude-fable", "2026-09-26T10:05:00Z", { input: 1, read: 0, write: 0, output: 20 });
   writeFileSync(path, claudeLine("a", "claude-fable", "2026-09-26T10:00:00Z", { input: 1, read: 0, write: 0, output: 10 }) + "\n" + second.slice(0, 40));
@@ -136,7 +139,7 @@ test("a transcript that grows is read from where it was left, a line still being
 
 test("what a thread used between two moments, for a task's run", (t) => {
   const m = machine(t);
-  m.bind("thread-1", "claudeAgent", { resume: "sess-1" });
+  m.bind("thread-1", "claudeAgent", "sess-1");
   writeFileSync(
     join(m.claudeProject, "sess-1.jsonl"),
     ["10:00", "10:10", "10:20"].map((time, index) => claudeLine(String(index), "claude-fable", `2026-09-26T${time}:00Z`, { input: 0, read: 0, write: 0, output: 10 * (index + 1) })).join("\n") + "\n",
@@ -149,9 +152,9 @@ test("what a thread used between two moments, for a task's run", (t) => {
 
 test("no estimate is said with its reason, and a model without a price counts tokens only", (t) => {
   const m = machine(t);
-  m.bind("thread-cursor", "cursor", { sessionId: "whatever" });
-  m.bind("thread-lost", "claudeAgent", { resume: "sess-gone" });
-  m.bind("thread-new", "claudeAgent", { resume: "sess-new" });
+  m.bind("thread-cursor", "cursor", "whatever");
+  m.bind("thread-lost", "claudeAgent", "sess-gone");
+  m.bind("thread-new", "claudeAgent", "sess-new");
   writeFileSync(
     join(m.claudeProject, "sess-new.jsonl"),
     [claudeLine("a", "claude-next", "2026-09-26T10:00:00Z", { input: 10, read: 0, write: 0, output: 10 }), claudeLine("b", "claude-fable", "2026-09-26T10:01:00Z", { input: 0, read: 0, write: 0, output: 10 })].join("\n") + "\n",
@@ -175,12 +178,12 @@ test("no estimate is said with its reason, and a model without a price counts to
 
 test("a thread given a new session keeps what its earlier session used", (t) => {
   const m = machine(t);
-  m.bind("thread-1", "claudeAgent", { resume: "sess-1" });
+  m.bind("thread-1", "claudeAgent", "sess-1");
   writeFileSync(join(m.claudeProject, "sess-1.jsonl"), claudeLine("a", "claude-fable", "2026-09-26T10:00:00Z", { input: 0, read: 0, write: 0, output: 10 }) + "\n");
   writeFileSync(join(m.claudeProject, "sess-2.jsonl"), claudeLine("b", "claude-fable", "2026-09-26T12:00:00Z", { input: 0, read: 0, write: 0, output: 30 }) + "\n");
   const costs = m.costs();
   assert.equal(costs.cost(["thread-1"]).total.outputTokens, 10);
-  m.bind("thread-1", "claudeAgent", { resume: "sess-2" });
+  m.bind("thread-1", "claudeAgent", "sess-2");
   // T3's sessions are read again after ten seconds; a new reader stands for that here and shares what was remembered.
   assert.equal(m.costs().cost(["thread-1"]).total.outputTokens, 40);
 });
@@ -190,8 +193,8 @@ test("the room's costs: per participant, per reply and for the room", async (t) 
   const stack = await createTestStack({ autoCompleteMs: 1 }, ["sol1", "grok"]);
   t.after(() => stack.close());
   const sol = stack.threadOf("sol1");
-  m.bind(sol, "claudeAgent", { resume: "sess-sol" });
-  m.bind(stack.threadOf("grok"), "cursor", { sessionId: "x" });
+  m.bind(sol, "claudeAgent", "sess-sol");
+  m.bind(stack.threadOf("grok"), "cursor", "x");
 
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction: "do it", schedule: { mode: "now" } });
   await stack.tick();
@@ -236,7 +239,7 @@ test("a thread's replies divide its spend between them", async (t) => {
   const m = machine(t);
   const stack = await createTestStack({ autoCompleteMs: 1 }, ["sol1"]);
   t.after(() => stack.close());
-  m.bind(stack.threadOf("sol1"), "claudeAgent", { resume: "sess-sol" });
+  m.bind(stack.threadOf("sol1"), "claudeAgent", "sess-sol");
   for (const instruction of ["first", "second"]) {
     await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction, schedule: { mode: "now" } });
     await stack.tick();
@@ -272,11 +275,11 @@ test("a thread on its own gets a room member's figures: the total, one per reply
   const stack = await createTestStack();
   t.after(() => stack.close());
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "first", modelSelection: { instanceId: "claudeAgent", model: "claude-fable-5-1" } })) as { threadId: string };
-  m.bind(threadId, "claudeAgent", { resume: "sess-direct" });
-  stack.fake.completeTurn(threadId, { text: "first answer" });
+  m.bind(threadId, "claudeAgent", "sess-direct");
+  stack.fake.completeRun(threadId, { text: "first answer" });
   await new Promise((resolve) => setTimeout(resolve, 5));
   await stack.run({ type: "thread.send", threadId, text: "second" });
-  stack.fake.completeTurn(threadId, { text: "second answer" });
+  stack.fake.completeRun(threadId, { text: "second answer" });
 
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(m.root, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: m.userdata, CLAUDE_CONFIG_DIR: join(m.root, "claude"), CODEX_HOME: join(m.root, "codex") });
   const app = createHttpApp(stack, config, "/nonexistent/dist");

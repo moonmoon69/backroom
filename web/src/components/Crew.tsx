@@ -31,7 +31,7 @@ import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
-type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
+type MenuAction = "open" | "details" | "settings" | "rebind" | "remove" | "consigliere" | "unconsigliere";
 
 
 /**
@@ -39,9 +39,26 @@ type MenuAction = "open" | "details" | "settings" | "rebind" | "remove";
  * settings, rebind, remove), and a way to add someone.
  */
 export function CrewPanel() {
-  const { snapshot, desk } = useRoom();
-  const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant } | null>(null);
+  const { snapshot, desk, runCommand } = useRoom();
+  const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant; warnings?: string[] } | null>(null);
   const crew = snapshot.participants.filter(isActiveParticipant);
+  // Making a member the Consigliere is done at once, unless something says it may not work: then the user is told first.
+  const onAction = async (action: MenuAction, participant: Participant) => {
+    if (action === "unconsigliere") {
+      await runCommand({ type: "room.consigliere.set", roomId: snapshot.room.id, participantId: null });
+      return;
+    }
+    if (action === "consigliere") {
+      const { warnings } = await api.consigliereWarnings(snapshot.room.id, participant.id).catch(() => ({ warnings: [] as string[] }));
+      if (warnings.length === 0) {
+        await runCommand({ type: "room.consigliere.set", roomId: snapshot.room.id, participantId: participant.id });
+        return;
+      }
+      setDialog({ action, participant, warnings });
+      return;
+    }
+    setDialog({ action, participant });
+  };
 
   return (
     <div className="crew-list" aria-label="Members">
@@ -52,7 +69,7 @@ export function CrewPanel() {
           participant={participant}
           status={snapshot.participantStatus[participant.id]}
           desk={desk?.participants[participant.id] ?? null}
-          onAction={(action) => setDialog({ action, participant })}
+          onAction={(action) => void onAction(action, participant)}
         />
       ))}
       <CrewContextTotal />
@@ -61,6 +78,33 @@ export function CrewPanel() {
       {dialog?.action === "settings" ? <ParticipantSettingsDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "rebind" ? <RebindDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "remove" ? <RemoveParticipantDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
+      {dialog?.action === "consigliere" ? (
+        <Dialog title={`Make ${dialog.participant.alias} the Consigliere`} onClose={() => setDialog(null)}>
+          <p>This may not work as it stands:</p>
+          <ul className="consigliere-warnings">
+            {(dialog.warnings ?? []).map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+          <p className="muted hint">You can change his permission mode under Settings… in his menu, before or after.</p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setDialog(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={async () => {
+                const participant = dialog.participant;
+                setDialog(null);
+                await runCommand({ type: "room.consigliere.set", roomId: snapshot.room.id, participantId: participant.id });
+              }}
+            >
+              Make Consigliere anyway
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
     </div>
   );
 }
@@ -166,7 +210,7 @@ function ParticipantChip({
   const { colorOf, snapshot, costs } = useRoom();
   const spend = costs?.participants[participant.id];
   const inProgress = costs?.openTurns[participant.id];
-  const roleName = participant.roleId ? (snapshot.roles.find((r) => r.id === participant.roleId)?.name ?? null) : null;
+  const isConsigliere = snapshot.room.consigliereId === participant.id;
   const described = describeStatus(status, desk);
   const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
   const pick = (action: MenuAction) => {
@@ -197,7 +241,11 @@ function ParticipantChip({
               </span>
             ) : null}
           </span>
-          {roleName ? <span className="role">{roleName}</span> : null}
+          {isConsigliere ? (
+            <span className="role consigliere-mark" title="The member you talk to in this room: he hands the work to the others and reports back">
+              Consigliere
+            </span>
+          ) : null}
           <span className="model">
             {participant.modelSelection.model}
             {effortOf(participant.modelSelection) ? ` · ${effortOf(participant.modelSelection)}` : ""}
@@ -232,6 +280,15 @@ function ParticipantChip({
           <button type="button" role="menuitem" onClick={() => pick("rebind")}>
             Rebind thread…
           </button>
+          {isConsigliere ? (
+            <button type="button" role="menuitem" title="The room goes back to one board with the composer; nobody is removed" onClick={() => pick("unconsigliere")}>
+              Remove as Consigliere
+            </button>
+          ) : (
+            <button type="button" role="menuitem" title="You talk to him; he hands the work to the other members and reports back" onClick={() => pick("consigliere")}>
+              Make Consigliere
+            </button>
+          )}
           <button type="button" role="menuitem" className="danger" onClick={() => pick("remove")}>
             Remove from room…
           </button>
@@ -241,96 +298,11 @@ function ParticipantChip({
   );
 }
 
-/** Role picker over the room's roles, with an inline "New role…" form that posts role.create. */
-export function RoleSelect({
-  value,
-  onChange,
-  id,
-  autoFocus = false,
-}: {
-  value: string | null;
-  onChange: (roleId: string | null) => void;
-  id?: string;
-  /** Marks the select as the dialog's initial focus target (Dialog's data-autofocus). */
-  autoFocus?: boolean;
-}) {
-  const { snapshot, runCommand } = useRoom();
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const [rules, setRules] = useState("");
-  const [busy, setBusy] = useState(false);
-  const create = async () => {
-    if (!name.trim() || !rules.trim()) return;
-    setBusy(true);
-    const result = await runCommand({ type: "role.create", name: name.trim(), rules: rules.trim() });
-    setBusy(false);
-    if (result) {
-      const roleId = "roleId" in result && typeof result.roleId === "string" ? result.roleId : null;
-      onChange(roleId);
-      setCreating(false);
-      setName("");
-      setRules("");
-    }
-  };
-  return (
-    <div className="role-select">
-      <label>
-        Role
-        <select
-          id={id}
-          data-autofocus={autoFocus ? "" : undefined}
-          value={creating ? "__new__" : (value ?? "")}
-          onChange={(e) => {
-            if (e.target.value === "__new__") {
-              setCreating(true);
-              return;
-            }
-            setCreating(false);
-            onChange(e.target.value === "" ? null : e.target.value);
-          }}
-        >
-          <option value="">none</option>
-          {snapshot.roles.map((role) => (
-            <option key={role.id} value={role.id}>
-              {role.name}
-            </option>
-          ))}
-          <option value="__new__">New role…</option>
-        </select>
-        <span className="hint">A named set of rules delivered with every assignment while the role is held.</span>
-      </label>
-      {creating ? (
-        <div className="role-inline" role="group" aria-label="New role">
-          <label>
-            Role name
-            <NameInput value={name} onValue={setName} placeholder="accountant" autoFocus />
-          </label>
-          <label>
-            Rules
-            <textarea value={rules} onChange={(e) => setRules(e.target.value)} rows={3} placeholder="Reconcile every figure twice." />
-            <span className="hint">Delivered as plain text with every assignment for anyone holding this role; not an enforced permission.</span>
-          </label>
-          <div className="row">
-            <button type="button" className="small primary" disabled={busy || !name.trim() || !rules.trim()} onClick={() => void create()}>
-              Create role
-            </button>
-            <button type="button" className="small ghost" onClick={() => setCreating(false)}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-
 /** The field a settings entry point wants focused when the dialog opens. */
-export type SettingsField = "name" | "role" | "mode";
+export type SettingsField = "name" | "mode";
 
 interface SettingsValues {
   alias: string;
-  roleId: string | null;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
 }
@@ -339,7 +311,7 @@ const sameModel = (a: ModelSelection | null, b: ModelSelection | null) => JSON.s
 const errorText = (error: unknown) => (error instanceof ApiError ? error.message : error instanceof Error ? error.message : String(error));
 
 /**
- * One dialog for a seated participant's name, role, model and permission mode. Save sends only what
+ * One dialog for a seated participant's name, model and permission mode. Save sends only what
  * changed, in order: participant.update, participant.model.set, participant.runtimeMode.set. Each part
  * stands alone: a failure is reported inline by part while the parts that succeeded stay applied.
  */
@@ -356,12 +328,10 @@ export function ParticipantSettingsDialog({
   // What the server holds, advanced as each part of a save succeeds so a retry sends only what is still pending.
   const [saved, setSaved] = useState<SettingsValues>(() => ({
     alias: participant.alias,
-    roleId: participant.roleId,
     modelSelection: participant.modelSelection,
     runtimeMode: participant.runtimeMode,
   }));
   const [alias, setAlias] = useState(participant.alias);
-  const [roleId, setRoleId] = useState<string | null>(participant.roleId);
   const [model, setModel] = useState<ModelSelection | null>(participant.modelSelection);
   const [mode, setMode] = useState<RuntimeMode>(participant.runtimeMode);
   const [busy, setBusy] = useState(false);
@@ -372,10 +342,9 @@ export function ParticipantSettingsDialog({
     .filter(isActiveParticipant)
     .some((p) => p.id !== participant.id && p.alias.toLowerCase() === trimmed.toLowerCase());
   const aliasChanged = trimmed !== saved.alias;
-  const roleChanged = roleId !== saved.roleId;
   const modelChanged = model !== null && !sameModel(model, saved.modelSelection);
   const modeChanged = mode !== saved.runtimeMode;
-  const changed = aliasChanged || roleChanged || modelChanged || modeChanged;
+  const changed = aliasChanged || modelChanged || modeChanged;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -385,19 +354,13 @@ export function ParticipantSettingsDialog({
     const next = { ...saved };
     const failed: Array<{ part: string; message: string }> = [];
     let applied = false;
-    if (aliasChanged || roleChanged) {
+    if (aliasChanged) {
       try {
-        await api.command({
-          type: "participant.update",
-          participantId: participant.id,
-          ...(aliasChanged ? { alias: trimmed } : {}),
-          ...(roleChanged ? { roleId } : {}),
-        });
+        await api.command({ type: "participant.update", participantId: participant.id, alias: trimmed });
         next.alias = trimmed;
-        next.roleId = roleId;
         applied = true;
       } catch (error) {
-        failed.push({ part: aliasChanged && roleChanged ? "Name and role" : aliasChanged ? "Name" : "Role", message: errorText(error) });
+        failed.push({ part: "Name", message: errorText(error) });
       }
     }
     if (modelChanged && model) {
@@ -451,7 +414,6 @@ export function ParticipantSettingsDialog({
             T3&rsquo;s own settings for the thread; changes made in T3 Code show up here too. The provider stays {saved.modelSelection.instanceId}: rebind to a new thread to use another.
           </span>
         </div>
-        <RoleSelect value={roleId} onChange={setRoleId} autoFocus={focus === "role"} />
         {failures.length > 0 ? (
           <div className="settings-errors" role="alert">
             {failures.map((failure) => (
@@ -719,7 +681,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
   const [mode, setMode] = useState<"create" | "attach">(() => (localStorage.getItem(ADD_MODE_KEY) === "attach" ? "attach" : "create"));
   const [fields, setFields] = useState<CrewFieldsState>(emptyCrewFields);
-  const [roleId, setRoleId] = useState<string | null>(null);
   const [aliasTouched, setAliasTouched] = useState(false);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
@@ -786,7 +747,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     setFields({ alias: freeAlias(preset.name, seatedAliases()), model: preset.modelSelection, runtimeMode: preset.runtimeMode });
     setAliasTouched(true);
     setFromDefault(false);
-    setRoleId(preset.roleId && snapshot.roles.some((r) => r.id === preset.roleId) ? preset.roleId : null);
     setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
   };
 
@@ -798,7 +758,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     setFields({ ...emptyCrewFields(), model });
     setFromDefault(model !== null);
     setAliasTouched(false);
-    setRoleId(null);
     setWorkspacePrefer({ mode: "local", nonce: Date.now() });
   };
 
@@ -825,7 +784,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   const presetOfName = presets.find((p) => p.name.toLowerCase() === fields.alias.trim().toLowerCase()) ?? null;
   const savePreset = async () => {
     if (!aliasValid || !fields.model) return;
-    const values = { name: fields.alias.trim(), modelSelection: fields.model, runtimeMode: fields.runtimeMode, roleId, workspaceMode: workspace.mode === "worktree" ? ("worktree" as const) : ("local" as const) };
+    const values = { name: fields.alias.trim(), modelSelection: fields.model, runtimeMode: fields.runtimeMode, workspaceMode: workspace.mode === "worktree" ? ("worktree" as const) : ("local" as const) };
     const result = presetOfName ? await runCommand({ type: "preset.update", presetId: presetOfName.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     if (!result) return;
     reloadPresets();
@@ -871,7 +830,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
             type: "participant.create",
             roomId: snapshot.room.id,
             alias: fields.alias.trim(),
-            roleId,
             interactionMode: "default",
             thread: { mode: "attach", threadId: threadId as string },
           })
@@ -879,7 +837,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
             type: "participant.create",
             roomId: snapshot.room.id,
             alias: fields.alias.trim(),
-            roleId,
             // Still on T3's default: let the server resolve it rather than pinning a copy.
             ...(fromDefault ? {} : { modelSelection: fields.model as ModelSelection }),
             runtimeMode: fields.runtimeMode,
@@ -929,13 +886,12 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
                 <span>Joining</span>
                 <ul className="seat-list">
                   {picked.map((preset, index) => {
-                    const role = preset.roleId ? snapshot.roles.find((r) => r.id === preset.roleId) : undefined;
                     const where = preset.workspaceMode === "worktree" ? "new worktree" : "project folder";
                     return (
                       <li key={preset.id} className="seat-row">
                         <PresetIcon preset={preset} />
                         <span className="preset-chip-name">@{pickedAliases[index]}</span>
-                        <span className="preset-chip-what">{[presetText(preset).what, RUNTIME_MODE_INFO[preset.runtimeMode].label, where, role ? `${role.name} role` : null].filter(Boolean).join(" · ")}</span>
+                        <span className="preset-chip-what">{[presetText(preset).what, RUNTIME_MODE_INFO[preset.runtimeMode].label, where].join(" · ")}</span>
                       </li>
                     );
                   })}
@@ -951,7 +907,6 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
                   newBranchHint={`${branchSlug(snapshot.room.title, "room")}/${branchSlug(fields.alias || "name", "name")}`}
                   prefer={workspacePrefer}
                 />
-                <RoleSelect value={roleId} onChange={setRoleId} />
               </CrewFields>
             )}
             <div className="dialog-actions">
@@ -979,9 +934,7 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
           <>
             <ThreadList threads={threads} selectedId={threadId} onSelect={selectThread} name="add-thread-id" />
             {selectedThread ? <InheritedLine thread={selectedThread} /> : <span className="hint">Pick the thread this member should continue.</span>}
-            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} showModel={false}>
-              <RoleSelect value={roleId} onChange={setRoleId} />
-            </CrewFields>
+            <CrewFields value={fields} onChange={onFields} aliasTaken={aliasTaken} aliasRef={aliasRef} showModel={false} />
             <div className="dialog-actions">
               <button type="button" onClick={onClose}>
                 Cancel

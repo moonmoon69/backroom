@@ -122,8 +122,8 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
                 setOpen(false);
               }}
             >
-              <span className="setting-check">{autoRead ? "✓" : ""}</span>
               Read new replies aloud
+              <span className="menu-value">{autoRead ? "on" : "off"}</span>
             </button>
           ) : null}
           <button type="button" role="menuitem" onClick={() => pick("rename")}>

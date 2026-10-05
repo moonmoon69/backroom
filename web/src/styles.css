@@ -2189,6 +2189,15 @@ button.primary.destructive {
   color: var(--fg-muted);
 }
 
+.live-tools.active,
+.live-tool-running {
+  color: var(--fg-muted);
+}
+
+.live-notice.active {
+  font-style: italic;
+}
+
 .live-more {
   align-self: flex-start;
 }
@@ -3005,6 +3014,21 @@ button.primary.destructive {
 .dialog-body {
   padding: 8px 24px 20px;
   overflow: auto;
+}
+
+/* A dialog for looking at something (a file preview): 90% of the window either way, following it as it resizes;
+   the body takes the height, and what is in it scrolls inside. */
+.dialog.dialog-large {
+  width: 90vw;
+  height: 90vh;
+  height: 90dvh;
+  max-height: none;
+}
+.dialog-large .dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .dialog-footer {
@@ -4226,6 +4250,30 @@ legend {
   color: var(--warn);
 }
 
+.menu .model-refresh {
+  flex: none;
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+}
+
+.menu .model-refresh:hover:not(:disabled) {
+  background: transparent;
+  color: var(--fg);
+}
+
+.menu .model-refresh.busy .icon {
+  animation: spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu .model-refresh.busy .icon {
+    animation: none;
+  }
+}
+
 .model-legacy-toggle {
   color: var(--fg-muted);
 }
@@ -4314,15 +4362,6 @@ legend {
   flex: 1;
 }
 
-.role-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 /* ---- crew forms: name-first layout with an Advanced disclosure ---- */
 .form label .hint {
   margin-top: 1px;
@@ -4352,32 +4391,6 @@ legend {
   padding: 4px 12px;
 }
 
-/* ---- roles ---- */
-.role-select {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.role-inline {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius);
-}
-
-.desk-role .role-name {
-}
-
-.desk-role .role-rules {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-
 .link-button {
   background: transparent;
   border: none;
@@ -4386,41 +4399,6 @@ legend {
   font-size: var(--text-xs);
   text-decoration: underline;
   text-underline-offset: 2px;
-}
-
-.library-tabs {
-  display: flex;
-  gap: 2px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
-}
-
-.role-card {
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--bg-1);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.role-card .role-title {
-  font-size: var(--text-base);
-}
-
-.role-card .role-excerpt {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: var(--text-sm);
-  white-space: pre-wrap;
-}
-
-.role-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 .label-row {
@@ -5351,6 +5329,13 @@ body.sorting * {
     width: 100%;
     max-height: 100%;
     border-radius: 14px;
+  }
+
+  /* On a phone a large dialog is as wide as the margins leave, and 90% of the visible height (above the keyboard). */
+  .dialog.dialog-large {
+    width: 100%;
+    height: calc(var(--app-height, 100dvh) * 0.9);
+    max-height: 100%;
   }
 
   .dialog-header {
@@ -6967,4 +6952,1216 @@ button:has(> .icon):not(.mobile-only) {
 .git-row > .tag,
 .git-row > .pill {
   align-self: center;
+}
+
+/* File preview (FilePreview.tsx): a bar with the file's badge, path and size, Rendered/Source for a document, read
+   aloud and copy path; then the file, scrolling inside the dialog. */
+.file-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.file-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* Cut at the start when it does not fit, so the folder and file stay in view. */
+.file-preview-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.file-preview-path > bdi {
+  direction: ltr;
+}
+.file-preview-size {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+}
+.file-preview-bar .spacer {
+  flex: 1;
+}
+.file-preview-mode .segment {
+  background: transparent;
+  border-top: none;
+  border-bottom: none;
+  border-left: none;
+  border-radius: 0;
+  min-height: 0;
+  font-size: var(--text-xs);
+}
+.file-preview-bar .speak-button,
+.file-preview-bar .copy-button {
+  margin: 0;
+}
+.file-preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-1);
+}
+.file-doc {
+  padding: 12px 16px;
+}
+.file-preview-body > p {
+  margin: 0;
+  padding: 12px 16px;
+}
+.file-preview-note {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+.file-media {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  margin: 0 auto;
+}
+
+/* Code: Shiki's lines, numbered, in the dark or light colours it emits for both themes. */
+.file-code pre {
+  margin: 0;
+  padding: 8px 0;
+  background: transparent !important;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.file-code code {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  counter-reset: line;
+}
+.file-code .line {
+  min-height: 1.6em;
+  padding-right: 16px;
+  white-space: pre;
+}
+.file-code .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 4ch;
+  margin-right: 2ch;
+  text-align: right;
+  color: var(--fg-dim);
+  user-select: none;
+}
+.file-code .line.target {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+}
+.file-code .shiki span {
+  color: var(--shiki-dark);
+}
+.file-code .shiki.plain .line {
+  color: var(--fg);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .file-code .shiki span {
+    color: var(--shiki-light);
+  }
+}
+:root[data-theme="light"] .file-code .shiki span {
+  color: var(--shiki-light);
+}
+
+/* ---- The Consigliere: a room with one shows two panels, his chat and the board ---- */
+
+.room-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.room-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.board-pane {
+  border-left: 1px solid var(--line);
+  background: var(--bg-0, transparent);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 20px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pane-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.pane-role {
+  font-size: var(--text-xs);
+}
+
+/* Both panels show on a wide screen, so there is nothing to switch. */
+.pane-switch {
+  display: none;
+}
+
+/* Wide screens: the board can be put away. */
+@media (min-width: 1101px) {
+  .room-panes.board-hidden .board-pane {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .pane-wide {
+    display: none;
+  }
+
+  .room-panes[data-pane="chat"] .board-pane,
+  .room-panes[data-pane="board"] .consigliere-pane {
+    display: none;
+  }
+
+  .board-pane {
+    border-left: none;
+  }
+
+  .pane-switch {
+    display: inline-flex;
+  }
+}
+
+.post-number {
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+}
+
+/* A turn one member asked of another: one row of the board. */
+.turn-row {
+  margin-top: 12px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-1);
+  animation: fade-in 150ms ease-out;
+}
+
+.turn-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 18px;
+}
+
+.turn-head .speaker {
+  font-size: var(--text-sm);
+}
+
+.turn-head .time {
+  margin-left: auto;
+}
+
+.turn-arrow {
+  color: var(--fg-dim);
+}
+
+.turn-note {
+  font-size: var(--text-xs);
+}
+
+.turn-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--fg-muted);
+}
+
+.turn-state.turn-working {
+  color: var(--accent);
+}
+
+.turn-state.turn-working .dot {
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.turn-state.turn-completed {
+  color: var(--ok);
+}
+
+.turn-state.turn-interrupted {
+  color: var(--warn);
+}
+
+.turn-state.turn-failed {
+  color: var(--err);
+}
+
+.turn-sent {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sent-text {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  min-width: 0;
+}
+
+.sent-text > summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sent-text[open] > summary .sent-line {
+  display: none;
+}
+
+.sent-line {
+  color: var(--fg);
+}
+
+.sent-by {
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+  margin-right: 6px;
+}
+
+.sent-full {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--line);
+  color: var(--fg);
+}
+
+.turn-answer {
+  margin-top: 8px;
+}
+
+.turn-answer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 3px 4px;
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+}
+
+.turn-answer .bubble {
+  background: var(--bg-2, var(--bg-1));
+}
+
+.crew-text .role.consigliere-mark {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.consigliere-warnings {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+/* ---- The status bar above the conversation: what needs you, who is working, what waits ---- */
+
+.work-bar {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 20px;
+  font-size: var(--text-sm);
+}
+
+/* One or two lines; more than that scrolls inside the bar. */
+.work-groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  max-height: 56px;
+  overflow-y: auto;
+}
+
+.work-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.work-title {
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.work-needs .work-title {
+  color: var(--input);
+  font-weight: 600;
+}
+
+.work-working .work-title {
+  color: var(--accent);
+}
+
+.work-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 320px;
+  min-width: 0;
+  padding: 1px 8px 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: 20px;
+}
+
+button.work-chip {
+  cursor: pointer;
+}
+
+button.work-chip:hover,
+.work-chip.open {
+  background: var(--bg-3);
+}
+
+.work-needs .work-chip {
+  border-color: var(--input);
+}
+
+.work-what {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.work-text {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.work-open {
+  margin-top: 6px;
+  max-width: 720px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.work-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.work-open-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.consigliere-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.consigliere-rules textarea {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* ---- Look → Overview: every room and member on one page ---- */
+
+.overview {
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--bg-0, var(--bg-1));
+  z-index: 2;
+}
+
+/* The slogan sits in the middle of the header, whatever is on either side. */
+.overview-title {
+  font-size: var(--text-sm);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Phones: the header is one row (brand, add a project, the controls; the slogan has no room), a project's heading
+   drops its path, and nothing in either wraps. */
+@media (max-width: 760px) {
+  .overview-head {
+    gap: 8px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  }
+
+  .overview-title {
+    display: none;
+  }
+
+  .overview-new,
+  .ov-project-new {
+    white-space: nowrap;
+    flex: none;
+  }
+
+  .ov-project-title {
+    white-space: nowrap;
+  }
+
+  .ov-project-path {
+    display: none;
+  }
+}
+
+.overview-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 22px 28px 56px;
+}
+
+@media (max-width: 760px) {
+  .overview-grid {
+    gap: 22px;
+    padding: 14px 12px 40px;
+  }
+}
+
+/* A project is a section: its name as a heading over a hairline, then its rooms as tiles. */
+.ov-project {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ov-project-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.ov-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .ov-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ov-project-path {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ov-empty,
+.ov-loading {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.ov-loading {
+  padding: 0 14px 12px;
+}
+
+/* A room tile: its name and what it asks of you on top, its members under. A stripe down the left says needs you
+   (violet) or busy (blue). The whole tile is the way in. */
+.ov-room {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-1);
+  overflow: hidden;
+  transition: border-color 120ms ease-out, background 120ms ease-out;
+}
+
+.ov-room:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-2);
+}
+
+.ov-room.needs::before,
+.ov-room.busy::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+.ov-room.needs::before {
+  background: var(--input);
+}
+
+.ov-room-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  width: 100%;
+  padding: 12px 14px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The tile is the button: its hit area is stretched over the members too. */
+.ov-room-head::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+/* The card's ⋯: in the head's top right, above the stretched hit area; faint until the card is hovered. */
+.ov-room-menu {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  z-index: 1;
+}
+
+/* The sidebar's menu anchors itself at a corner; here the wrapper is the anchor. */
+.ov-room-menu .room-menu {
+  position: static;
+}
+
+.ov-room-menu .room-menu-button {
+  opacity: 0.35;
+}
+
+.ov-room:hover .ov-room-menu .room-menu-button,
+.ov-room-menu .room-menu-button[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.ov-room-head {
+  padding-right: 46px;
+}
+
+.ov-room-head:focus-visible {
+  outline: none;
+}
+
+.ov-room:has(.ov-room-head:focus-visible) {
+  border-color: var(--accent);
+}
+
+.ov-room-title {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.pill-new {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.ov-members {
+  list-style: none;
+  margin: 0;
+  padding: 0 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* One member: mark, name and state on one line, what they are at under it (two lines at most). */
+.ov-member {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "mark alias state when"
+    ". line line line";
+  align-items: center;
+  gap: 2px 8px;
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+
+.ov-member > .avatar {
+  grid-area: mark;
+}
+
+.ov-member .ov-alias {
+  grid-area: alias;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-member .ov-state {
+  grid-area: state;
+}
+
+.ov-member .ov-when {
+  grid-area: when;
+}
+
+.ov-member .ov-line {
+  grid-area: line;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.4;
+}
+
+.ov-alias {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.ov-mark {
+  margin-left: 4px;
+  color: var(--accent);
+  font-size: var(--text-xs);
+}
+
+.ov-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.ov-state .dot {
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.ov-line {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ov-when {
+  font-size: var(--text-xs);
+}
+
+.ov-threads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ov-thread {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ov-thread:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
+.ov-thread-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-more {
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+}
+
+/* The header's words sit on one baseline; the mark and the controls centre themselves. */
+.overview-head {
+  align-items: baseline;
+}
+
+.overview-head .brand {
+  align-items: baseline;
+}
+
+.overview-head .brand-mark,
+.overview-head .app-controls,
+.overview-head .status-error {
+  align-self: center;
+}
+
+/* A room or thread opened from the overview slides in over the cards, 80% wide; the rest of the page darkens and a
+   click there closes it. */
+.ov-scrim {
+  position: fixed;
+  inset: 0 0 auto 0;
+  /* As tall as the visible area, not the page: with the keyboard up on a phone --app-height (viewportFit.ts) is the
+     part above the keyboard, and iOS does not shrink a fixed, inset-0 layer for it, so the composer would sit under it. */
+  height: var(--app-height, 100dvh);
+  z-index: 20;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.ov-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 80%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  border-radius: 18px 0 0 18px;
+  box-shadow: -16px 0 40px rgb(0 0 0 / 0.4);
+  overflow: hidden;
+  /* The slide is 160ms (SLIDE_MS in App.tsx waits for it before the room is drawn). Transform only, on its own layer. */
+  animation: ov-slide 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+
+@keyframes ov-slide {
+  from {
+    transform: translateX(48px);
+  }
+}
+
+.ov-drawer > .main {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
+  .ov-drawer {
+    width: 100%;
+    border-left: 0;
+    border-radius: 0;
+  }
+}
+
+.overview-new {
+  margin-left: 6px;
+  align-self: center;
+}
+
+.ov-project-new {
+  align-self: center;
+  font-weight: 400;
+  font-size: var(--text-xs);
+}
+
+/* =====================================================================================================
+   Look → Overview: the sheet. A room opened from the page of cards. One header: back, the room's name, the
+   two views as tabs (the Consigliere's chat, the board), the crew, the side panels. Under it the status bar,
+   then the view, then the composer. The chat reads like a conversation (your lines tinted on the right, his as
+   plain text on the left); the board like a ledger (every post numbered, members' turns as cards with a
+   coloured edge). Both are the same Timeline, dressed for the sheet.
+   ===================================================================================================== */
+.sheet {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  --sheet-col: 860px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 8px 14px 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  gap: 1px;
+}
+
+.sheet-title h1 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet-sub {
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The two views, as a segmented switch. */
+.sheet-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 10px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.sheet-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.sheet-tabs button:hover {
+  color: var(--fg);
+}
+
+.sheet-tabs button.on {
+  background: var(--bg-1);
+  color: var(--fg);
+  box-shadow: var(--shadow-xs);
+}
+
+.sheet-count {
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+}
+
+.sheet-tabs button.on .sheet-count {
+  color: var(--fg-muted);
+}
+
+.sheet-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sheet-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.sheet-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-loading .sheet-head {
+  border-bottom-color: transparent;
+}
+
+/* The status bar sits flush under the header, on the card surface. */
+.sheet .work-bar {
+  padding: 7px 24px;
+  background: var(--bg-1);
+}
+
+.sheet .work-open {
+  margin: 6px auto 0;
+  max-width: var(--sheet-col);
+}
+
+/* Both views are one reading column. Rows are not faded in one by one (sixty at once is a stutter), and rows out
+   of view are not laid out until they scroll near. */
+.sheet .timeline {
+  padding: 14px 24px 28px;
+  --bubble-max: 100%;
+}
+
+.sheet .timeline-content {
+  max-width: var(--sheet-col);
+  margin: 0 auto;
+}
+
+.sheet .chat-row,
+.sheet .turn-row {
+  animation: none;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+
+.sheet .chat-row {
+  margin-top: 18px;
+}
+
+.sheet .chat-row.continued {
+  margin-top: 6px;
+}
+
+.sheet .earlier-posts {
+  display: block;
+  margin: 0 auto 8px;
+}
+
+.sheet .chat-day {
+  margin: 18px auto 6px;
+}
+
+/* The chat: your lines on the right in the accent's tint, no "you" label; his as text, his name and mark over it. */
+.sheet-chat .from-user .chat-stack {
+  max-width: 76%;
+}
+
+.sheet-chat .from-user .chat-head:not(.sub) {
+  display: none;
+}
+
+.sheet-chat .from-user .chat-head.sub {
+  margin: 2px 6px 0;
+  justify-content: flex-end;
+}
+
+.sheet-chat .bubble-user {
+  padding: 10px 14px;
+  border-radius: 18px 18px 6px 18px;
+  background: color-mix(in oklab, var(--accent) 16%, var(--bg-1));
+}
+
+.sheet-chat .bubble-user-t3 {
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-1));
+}
+
+.sheet-chat .from-agent .chat-stack {
+  width: 100%;
+}
+
+.sheet-chat .from-agent .chat-head {
+  margin: 0 0 2px;
+}
+
+.sheet-chat .bubble-agent {
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sheet-chat .bubble-live {
+  padding: 10px 14px;
+  border-color: var(--line);
+  background: var(--bg-1);
+}
+
+.sheet-chat .post-number {
+  display: none;
+}
+
+/* Everything typed in the chat goes to the Consigliere; the member chips are the board's. */
+.sheet-chat .mention-chips {
+  display: none;
+}
+
+.sheet-chat .reply-foot {
+  margin-top: 6px;
+}
+
+/* The board: a wider column, every post numbered; a turn between members is a card with its sender's colour down
+   its edge. */
+.sheet-board {
+  --sheet-col: 980px;
+}
+
+.sheet-board .bubble-agent {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sheet-board .turn-row {
+  margin-top: 14px;
+  padding: 10px 14px 12px;
+  border: 0;
+  border-left: 3px solid var(--pc, var(--line-strong));
+  border-radius: 0 12px 12px 0;
+  background: var(--bg-1);
+}
+
+.sheet-board .turn-answer .bubble-agent {
+  background: var(--bg-2);
+}
+
+/* The composer: one rounded field in the reading column, its words and buttons inside the same width. */
+.sheet .composer {
+  padding: 6px 24px 18px;
+  background: transparent;
+}
+
+.sheet .composer > * {
+  width: 100%;
+  max-width: var(--sheet-col);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.sheet .composer-field {
+  border-radius: 20px;
+  background: var(--bg-1);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.16);
+}
+
+.sheet .composer-field textarea,
+.sheet .composer-backdrop {
+  padding: 12px 16px 10px;
+  border-radius: 20px;
+}
+
+.sheet .composer-field textarea {
+  min-height: 52px;
+}
+
+.sheet .composer-hint {
+  display: none;
+}
+
+.sheet .composer-toolbar {
+  padding: 0 4px;
+}
+
+.sheet .composer-toolbar .primary {
+  padding: 5px 16px;
+  border-radius: 999px;
+}
+
+/* The side panel keeps its width; on a phone it covers the body, as in the desk look. */
+.sheet .queue-drawer {
+  border-left: 1px solid var(--line);
+}
+
+@media (max-width: 760px) {
+  .sheet-head {
+    gap: 6px;
+    min-height: 48px;
+    padding: calc(6px + env(safe-area-inset-top)) 8px 6px 6px;
+  }
+
+  .sheet-sub {
+    display: none;
+  }
+
+  .sheet-tabs {
+    margin-left: 2px;
+  }
+
+  .sheet-tabs button {
+    padding: 4px 9px;
+  }
+
+  .sheet .work-bar {
+    padding: 6px 12px;
+  }
+
+  .sheet .timeline {
+    padding: 10px 12px 20px;
+  }
+
+  .sheet-chat .from-user .chat-stack {
+    max-width: 88%;
+  }
+
+  .sheet .composer {
+    padding: 4px 10px calc(10px + env(safe-area-inset-bottom));
+  }
 }

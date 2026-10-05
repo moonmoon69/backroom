@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { drawOffice, OFFICE_DOOR, OFFICE_H, OFFICE_SEAT, OFFICE_W, type Actor } from "../../street/backroomScene.ts";
 import { HATS } from "../../street/sprites.ts";
-import type { T3ThreadShell } from "../../types.ts";
+import { isRunActive, pendingKind, type T3ThreadShell } from "../../types.ts";
 import { useCatalog } from "../catalog.ts";
 import { threadActivity } from "../ThreadView.tsx";
 import { HARNESS_COLOUR, SPARE_COLOURS } from "./BackRoomScene.tsx";
@@ -10,15 +10,16 @@ const motionAllowed = () => !window.matchMedia("(prefers-reduced-motion: reduce)
 
 /** What the member at the desk is doing, from the thread's state. */
 function actorOf(thread: T3ThreadShell, colour: string): Actor {
-  const status = thread.session?.status;
+  const status = thread.status;
+  const pending = pendingKind(thread);
   const base = { id: thread.id, alias: thread.title, colour, hat: HATS[Math.abs(thread.id.charCodeAt(0)) % HATS.length]!, subagents: 0, dizzy: false };
-  if (thread.hasPendingApprovals) return { ...base, pose: "idle", mark: "!" };
-  if (thread.hasPendingUserInput) return { ...base, pose: "idle", mark: "?" };
-  if (status === "running" || status === "starting") return { ...base, pose: "work", mark: "typing" };
+  if (pending === "approval") return { ...base, pose: "idle", mark: "!" };
+  if (pending === "question") return { ...base, pose: "idle", mark: "?" };
+  if (isRunActive(status)) return { ...base, pose: "work", mark: "typing" };
   if (thread.backgroundLiveness === "working") return { ...base, pose: "work", mark: null };
   if (thread.backgroundLiveness === "monitoring") return { ...base, pose: "read", mark: null };
-  if (status === "error") return { ...base, pose: "idle", mark: "x", dizzy: true };
-  if (status === "stopped" || status === "interrupted") return { ...base, pose: "sleep", mark: "z" };
+  if (status === "failed") return { ...base, pose: "idle", mark: "x", dizzy: true };
+  if (status === "interrupted" || status === "cancelled") return { ...base, pose: "sleep", mark: "z" };
   return { ...base, pose: "idle", mark: null };
 }
 

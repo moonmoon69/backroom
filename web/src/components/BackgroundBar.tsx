@@ -1,9 +1,9 @@
 import { useRoom } from "../context.tsx";
-import { isActiveParticipant } from "../types.ts";
+import { isActiveParticipant, isRunActive } from "../types.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 
 /**
- * Who is between turns but not done: T3 reports background work (subagents, shell jobs) or monitoring on the thread,
+ * Who is between turns but not done: T3 reports background work (subagents, commands) or monitoring on the thread,
  * and the agent will wake itself when it finishes. Mirrors T3's "Background work" strip above its composer.
  */
 export function BackgroundBar() {
@@ -12,7 +12,7 @@ export function BackgroundBar() {
     const status = snapshot.participantStatus[participant.id];
     const participantDesk = desk?.participants[participant.id];
     const liveness = participantDesk?.backgroundLiveness ?? status?.background ?? null;
-    const midTurn = status?.session === "running" || status?.session === "starting";
+    const midTurn = isRunActive(status?.status);
     if (!liveness || midTurn) return [];
     return [{ participant, liveness, jobs: participantDesk?.backgroundTasks ?? [] }];
   });
@@ -28,11 +28,11 @@ export function BackgroundBar() {
           <span className="mono">{liveness === "monitoring" ? "monitoring" : "background work"}</span>
           <span
             className="bg-jobs mono"
-            title={jobs.map((job) => `${job.kind === "agent" ? "subagent" : "shell"}: ${job.title}${job.detail ? ` · ${job.detail}` : ""}`).join("\n")}
+            title={jobs.map((job) => `${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}: ${job.title}${job.detail ? ` · ${job.detail}` : ""}`).join("\n")}
           >
             {jobs.length > 0
               ? jobs
-                  .map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : "shell"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`)
+                  .map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`)
                   .join(" · ")
               : "will continue when it finishes"}
           </span>

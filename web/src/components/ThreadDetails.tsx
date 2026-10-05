@@ -10,7 +10,7 @@ const ACTIVITY_COLLAPSED = 8;
 
 /**
  * What T3 reports about a participant's thread that the room shows nowhere else: session detail, branch and
- * worktree, pull requests, the proposed plan, per-turn checkpoints, and the tool log. Status, model, role and
+ * worktree, pull requests, the proposed plan, per-turn checkpoints, and the tool log. Status, model and
  * context are on the participant tile and its usage card; live output is in the timeline and in Tasks.
  */
 export function ThreadDetailsDialog({ participant, onClose }: { participant: Participant; onClose: () => void }) {
@@ -44,18 +44,18 @@ export function ThreadDetailsDialog({ participant, onClose }: { participant: Par
 }
 
 function SessionRow({ desk }: { desk: Desk }) {
-  if (!desk.session && !desk.latestTurn && !desk.backgroundLiveness && !desk.planProgress) return null;
+  if (!desk.status && !desk.backgroundLiveness && !desk.planProgress) return null;
   const parts: string[] = [];
-  if (desk.session) parts.push(desk.session.status);
-  if (desk.latestTurn) parts.push(`turn ${desk.latestTurn.state}`);
+  if (desk.status) parts.push(desk.status);
+  if (desk.latestRun && desk.latestRun.status !== desk.status) parts.push(`last run ${desk.latestRun.status}`);
   if (desk.backgroundLiveness) parts.push(`background: ${desk.backgroundLiveness}`);
   if (desk.planProgress) parts.push(`step ${desk.planProgress.completedSteps}/${desk.planProgress.totalSteps}: ${desk.planProgress.step}`);
   return (
     <div className="desk-row desk-session">
-      <span className="desk-label">Session</span>
+      <span className="desk-label">Thread</span>
       <span className="mono">{parts.join(" · ")}</span>
-      {desk.latestTurn?.completedAt ? <span className="muted mono"> · {timeOf(desk.latestTurn.completedAt)}</span> : null}
-      {desk.session?.lastError ? <div className="status-error">{desk.session.lastError}</div> : null}
+      {desk.latestRun?.completedAt ? <span className="muted mono"> · {timeOf(desk.latestRun.completedAt)}</span> : null}
+      {desk.lastError ? <div className="status-error">{desk.lastError}</div> : null}
     </div>
   );
 }
@@ -142,18 +142,18 @@ function CheckpointsRow({ checkpoints }: { checkpoints: DeskCheckpoint[] }) {
       <span className="desk-label">Checkpoints</span>
       <ul className="checkpoint-list">
         {checkpoints.map((checkpoint) => {
-          const isOpen = expanded[checkpoint.turnId] ?? false;
+          const isOpen = expanded[checkpoint.runId] ?? false;
           return (
-            <li key={checkpoint.turnId} className={`checkpoint status-${checkpoint.status}`}>
+            <li key={checkpoint.runId} className={`checkpoint status-${checkpoint.status}`}>
               <button
                 type="button"
                 className="checkpoint-row mono"
                 aria-expanded={isOpen}
                 disabled={checkpoint.files.length === 0}
-                onClick={() => setExpanded((state) => ({ ...state, [checkpoint.turnId]: !isOpen }))}
+                onClick={() => setExpanded((state) => ({ ...state, [checkpoint.runId]: !isOpen }))}
               >
                 {checkpoint.files.length === 0 ? <span className="icon chevron" aria-hidden="true" /> : <ChevronIcon dir={isOpen ? "down" : "right"} />}
-                <span>turn {shortId(checkpoint.turnId)}</span>
+                <span>run {shortId(checkpoint.runId)}</span>
                 <span>
                   <span className="add">+{checkpoint.additions}</span> <span className="del">−{checkpoint.deletions}</span>
                 </span>

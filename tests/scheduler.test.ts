@@ -10,7 +10,7 @@ test("parallel work: one message starts two participants without waiting", async
   await stack.tick();
   assert.equal(stack.task(1).state, "dispatching");
   assert.equal(stack.task(2).state, "dispatching");
-  const starts = stack.fake.commands.filter((c) => c.type === "thread.turn.start");
+  const starts = stack.fake.commands.filter((c) => c.type === "message.dispatch");
   assert.equal(starts.length, 2);
   await stack.tick();
   assert.equal(stack.task(1).state, "running");
@@ -27,9 +27,9 @@ test("sequential review waits for the implementation and receives its output exa
   await stack.tick(2);
   assert.equal(stack.task(2).state, "queued");
   assert.match(stack.task(2).stateReason ?? "", /waiting for task1/);
-  assert.equal(stack.fake.commands.filter((c) => c.type === "thread.turn.start").length, 1, "review not sent early");
+  assert.equal(stack.fake.commands.filter((c) => c.type === "message.dispatch").length, 1, "review not sent early");
 
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "Parser implemented in src/parser.ts.\n\nHandoff: branch feature/parser, commit abc123", files: [{ path: "src/parser.ts", kind: "modified", additions: 40, deletions: 2 }] });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "Parser implemented in src/parser.ts.\n\nHandoff: branch feature/parser, commit abc123", files: [{ path: "src/parser.ts", kind: "modified", additions: 40, deletions: 2 }] });
   await stack.tick(3);
   assert.equal(stack.task(1).state, "succeeded");
   assert.equal(stack.task(2).state, "running");
@@ -50,12 +50,12 @@ test("fan-in waits for both prerequisites; completion of one does not release it
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!, stack.participants.sol2!], instruction: "investigate", schedule: { mode: "now" } });
   await stack.tick();
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.claude!], instruction: "compare their findings", schedule: { mode: "after_all", prerequisites: [{ taskId: stack.task(1).id, revision: 1 }, { taskId: stack.task(2).id, revision: 1 }] } });
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "sol1 findings" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "sol1 findings" });
   await stack.tick(3);
   assert.equal(stack.task(1).state, "succeeded");
   assert.equal(stack.task(3).state, "queued");
   assert.match(stack.task(3).stateReason ?? "", /waiting for task2/);
-  stack.fake.completeTurn(stack.threadOf("sol2"), { text: "sol2 findings" });
+  stack.fake.completeRun(stack.threadOf("sol2"), { text: "sol2 findings" });
   await stack.tick(3);
   assert.equal(stack.task(3).state, "running");
   const briefing = stack.repos.listRunsForTask(stack.task(3).id)[0]!.briefing;
@@ -70,15 +70,16 @@ test("run correlation: an unrelated direct T3 turn cannot release a dependency",
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "implement", schedule: { mode: "now" } });
   await stack.tick(2);
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol2!], instruction: "review", schedule: { mode: "after_all", prerequisites: [{ taskId: stack.task(1).id, revision: 1 }] } });
-  // Someone types directly in T3 on sol1's thread while our turn is "running": in T3 that would queue, but the fake
-  // models the observable effect: a different active turn. Our run must not be treated as finished.
+  // Someone starts a run directly in T3 on sol1's thread right after ours finished: a different run, started by a
+  // message the room did not send. The room finds its own run by the message id it chose, never by adjacency.
   const thread = stack.fake.threads.get(stack.threadOf("sol1"))!;
-  const ourTurn = thread.shell.session!.activeTurnId!;
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "our result" });
-  const external = stack.fake.startExternalTurn(stack.threadOf("sol1"));
+  const ourTurn = thread.shell.activeRunId!;
+  assert.equal(stack.repos.listRunsForTask(stack.task(1).id)[0]!.t3RunId, ourTurn, "the room's run names the T3 run its message started");
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "our result" });
+  const external = stack.fake.startExternalRun(stack.threadOf("sol1"));
   assert.notEqual(external, ourTurn);
   await stack.tick(2);
-  // Our turn completed (checkpoint exists) so task1 succeeds via checkpoint correlation, not via latestTurn.
+  // Our run completed, so task1 succeeds by its own run, whatever the thread's latest run is now.
   assert.equal(stack.task(1).state, "succeeded");
   // But sol1 is busy externally now: the room must not dispatch new work to sol1 while that external turn runs.
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "follow-up", schedule: { mode: "now" } });
@@ -86,7 +87,7 @@ test("run correlation: an unrelated direct T3 turn cannot release a dependency",
   assert.equal(stack.task(3).state, "queued");
   assert.match(stack.task(3).stateReason ?? "", /busy in T3/);
   // And the external turn finishing does not satisfy anything for task3.
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "external reply" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "external reply" });
   await stack.tick(2);
   assert.equal(stack.task(3).state, "running");
   const replies = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "assistant.reply");
@@ -99,7 +100,7 @@ test("failed and interrupted prerequisites keep dependents blocked with the reas
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "implement", schedule: { mode: "now" } });
   await stack.tick(2);
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol2!], instruction: "review", schedule: { mode: "after_all", prerequisites: [{ taskId: stack.task(1).id, revision: 1 }] } });
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "API Error: 529 Overloaded", outcome: "error" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "API Error: 529 Overloaded", outcome: "error" });
   await stack.tick(3);
   assert.equal(stack.task(1).state, "failed");
   assert.equal(stack.task(2).state, "blocked");
@@ -112,7 +113,7 @@ test("failed and interrupted prerequisites keep dependents blocked with the reas
   const runs = stack.repos.listRunsForTask(stack.task(1).id);
   assert.equal(runs.length, 2);
   assert.notEqual(runs[0]!.commandId, runs[1]!.commandId, "a user retry is a new attempt with a new identity");
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "second attempt done" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "second attempt done" });
   await stack.tick(3);
   assert.equal(stack.task(1).state, "succeeded");
   assert.equal(stack.task(2).state, "running");
@@ -178,7 +179,7 @@ test("restart safety: a lost acknowledgement is resent with the same command id,
   assert.equal(run.status, "dispatched", "ack unknown");
   stack.fake.dropAcks = false;
   await stack.tick(2);
-  const starts = stack.fake.commands.filter((c) => c.type === "thread.turn.start");
+  const starts = stack.fake.commands.filter((c) => c.type === "message.dispatch");
   assert.ok(starts.length >= 1);
   assert.equal(new Set(starts.map((c) => c.commandId)).size, 1, "identical command id on resend");
   assert.equal(stack.fake.threads.get(stack.threadOf("sol1"))!.messages.filter((m) => m.role === "user").length, 1, "T3 received one prompt");
@@ -217,17 +218,49 @@ test("native approval requests surface in the room and are answered through T3",
   assert.equal(stack.task(1).state, "running");
 });
 
+test("a question holds its task while the agent waits for the answer; one the agent goes on without never does, and lapses with its run", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1 as string], instruction: "pick a colour" }, { recipients: [stack.participants.claude as string], instruction: "pick a shape" }] });
+  await stack.tick(2);
+  const [sol, claude] = [stack.threadOf("sol1"), stack.threadOf("claude")];
+  // Claude asks and waits (the question holds its run); Codex asks in "message" mode and carries on.
+  const held = stack.fake.raiseQuestion(claude, { responseMode: "live" });
+  const passing = stack.fake.raiseQuestion(sol, { responseMode: "message" });
+  await stack.tick();
+  const openRequests = () => stack.repos.listOpenNativeRequests([stack.participants.sol1 as string, stack.participants.claude as string]);
+  const open = openRequests();
+  assert.deepEqual(open.map((r) => [r.requestId, r.kind, (r.payload as { responseMode: string }).responseMode]).sort(), [[held, "user-input", "live"], [passing, "user-input", "message"]].sort());
+  assert.deepEqual([stack.task(1).state, stack.task(2).state], ["running", "needs_input"], "only the question that holds its run makes the task wait on you");
+  assert.equal(stack.scheduler.participantStatus(stack.participants.sol1 as string).pendingUserInput, true, "the question shows while its run goes on");
+
+  // Codex finishes without the answer. T3 still lists the question as pending; nothing waits on it any more.
+  stack.fake.completeRun(sol, { text: "Went with blue; tell me if you want red." });
+  await stack.tick();
+  assert.equal(stack.fake.threads.get(sol)!.runtimeRequests.find((r) => r.id === passing)?.status, "pending");
+  assert.equal(stack.task(1).state, "succeeded");
+  assert.deepEqual(openRequests().map((r) => r.requestId), [held]);
+  const after = stack.scheduler.participantStatus(stack.participants.sol1 as string);
+  assert.deepEqual([after.status, after.pendingUserInput], ["completed", false]);
+
+  // The held one is answered through the room, and its task runs on.
+  await stack.run({ type: "native.userInput.respond", participantId: stack.participants.claude as string, requestId: held, answers: { "Proceed?": "yes" } });
+  await stack.tick();
+  assert.equal(stack.fake.commands.filter((c) => c.type === "runtime-request.respond").length, 1);
+  assert.deepEqual([stack.task(2).state, openRequests().length], ["running", 0]);
+});
+
 test("context: earlier unseen decisions survive multiple sibling replies and own output is not replayed", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
   await stack.run({ type: "room.note.create", roomId: stack.roomId, text: "Decision: keep the public API stable." });
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "first", schedule: { mode: "now" } });
   await stack.tick(2);
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "first reply" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "first reply" });
   await stack.tick(2);
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "second", schedule: { mode: "now" } });
   await stack.tick(2);
-  stack.fake.completeTurn(stack.threadOf("sol1"), { text: "second reply" });
+  stack.fake.completeRun(stack.threadOf("sol1"), { text: "second reply" });
   await stack.tick(2);
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol2!], instruction: "review all", schedule: { mode: "now" } });
   await stack.tick(2);
@@ -303,22 +336,6 @@ test("a thread deleted in T3 is surfaced as missing, blocks new work, and the pa
   await stack.run({ type: "participant.create", roomId: stack.roomId, alias: "sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } });
 });
 
-test("roles: rules travel with every delivery and can change without touching the thread", async (t) => {
-  const stack = await createTestStack();
-  t.after(() => stack.close());
-  const role = (await stack.run({ type: "role.create", name: "accountant", rules: "Reconcile every figure twice." })) as { roleId: string };
-  await stack.run({ type: "participant.update", participantId: stack.participants.sol1!, roleId: role.roleId });
-  assert.equal(stack.repos.getParticipant(stack.participants.sol1!)!.roleId, role.roleId);
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "close the books", schedule: { mode: "now" } });
-  await stack.tick(2);
-  const firstRun = stack.repos.listRunsForTask(stack.task(1).id)[0]!;
-  assert.match(firstRun.briefing, /with the role "accountant"/);
-  assert.match(firstRun.briefing, /Reconcile every figure twice\./);
-  await stack.run({ type: "role.update", roleId: role.roleId, rules: "Reconcile once; flag anomalies." });
-  await stack.run({ type: "role.delete", roleId: role.roleId });
-  assert.equal(stack.repos.getParticipant(stack.participants.sol1!)!.roleId, null, "deleting a role clears it from holders");
-});
-
 test("the room follows the thread: model changes made in T3 are mirrored, and the room can change options through T3", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
@@ -337,10 +354,10 @@ test("the room follows the thread: model changes made in T3 are mirrored, and th
   // Every turn names the thread's current model: a live session keeps the model it started with unless the turn names one.
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [added.participantId], instruction: "hello", schedule: { mode: "now" } });
   await stack.tick();
-  const starts = () => stack.fake.commands.filter((c) => c.type === "thread.turn.start" && c.threadId === thread.shell.id).map((c) => (c.payload as { modelSelection?: unknown }).modelSelection);
+  const starts = () => stack.fake.commands.filter((c) => c.type === "message.dispatch" && c.threadId === thread.shell.id).map((c) => (c.payload as { modelSelection?: unknown }).modelSelection);
   assert.deepEqual(starts()[0], { instanceId: "claudeAgent", model: "claude-sonnet-5", options: [{ id: "effort", value: "low" }] });
   // A change made in T3 Code between turns is what the next turn names.
-  stack.fake.completeTurn(thread.shell.id, { text: "hi" });
+  stack.fake.completeRun(thread.shell.id, { text: "hi" });
   thread.shell.modelSelection = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [added.participantId], instruction: "again", schedule: { mode: "now" } });
   await stack.tick();
@@ -351,7 +368,7 @@ test("attaching an existing thread inherits its model, options, and permission m
   const stack = await createTestStack();
   t.after(() => stack.close());
   // A thread that already exists in T3 with its own configuration.
-  await stack.fake.createThread({ commandId: "c-ext", threadId: "thread-ext", projectId: "project_demo", title: "Existing work", modelSelection: { instanceId: "codex", model: "gpt-6-astra", options: [{ id: "reasoningEffort", value: "xhigh" }] }, runtimeMode: "approval-required", interactionMode: "plan" });
+  await stack.fake.launchThread({ commandId: "c-ext", threadId: "thread-ext", projectId: "project_demo", title: "Existing work", modelSelection: { instanceId: "codex", model: "gpt-6-astra", options: [{ id: "reasoningEffort", value: "xhigh" }] }, runtimeMode: "approval-required", interactionMode: "plan", workspace: { type: "root" } });
   const added = (await stack.run({ type: "participant.create", roomId: stack.roomId, alias: "legacy", thread: { mode: "attach", threadId: "thread-ext" } })) as { participantId: string };
   const participant = stack.repos.getParticipant(added.participantId)!;
   assert.deepEqual(participant.modelSelection, { instanceId: "codex", model: "gpt-6-astra", options: [{ id: "reasoningEffort", value: "xhigh" }] });

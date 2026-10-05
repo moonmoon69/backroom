@@ -3,14 +3,14 @@
  * the same few combinations are not chosen again each time. A preset is seated in a room on a new thread (dragged
  * onto the room, or picked in the Add member dialog, several at once if you like) or used to start a thread on its own.
  */
-import { createContext, useContext, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
-import { api } from "../api.ts";
-import type { CatalogEntry, CommandResult, ModelSelection, Preset, Role, RoomCommand, RuntimeMode } from "../types.ts";
+import { createContext, useContext, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RuntimeMode } from "../types.ts";
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
 import { ModelIcon } from "./ProviderIcon.tsx";
 import { RUNTIME_MODE_INFO, ThreadSettingsRow } from "./pickers.tsx";
+import { reloadConsigliereSetting, useConsigliereSetting } from "../consigliere.ts";
 
 export interface PresetsValue {
   presets: Preset[];
@@ -211,25 +211,13 @@ export function PresetDialog({
   onClose: () => void;
 }) {
   const { presets, reload } = usePresets();
+  const consigliereSetting = useConsigliereSetting();
   const [name, setName] = useState(preset?.name ?? "");
   const [model, setModel] = useState<ModelSelection | null>(preset?.modelSelection ?? null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(preset?.runtimeMode ?? "full-access");
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "worktree">(preset?.workspaceMode ?? "local");
-  const [roleId, setRoleId] = useState<string | null>(preset?.roleId ?? null);
-  const [roles, setRoles] = useState<Role[]>([]);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    api.roles().then(
-      (list) => !cancelled && setRoles(list),
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const trimmed = name.trim();
   const taken = presets.some((p) => p.id !== preset?.id && p.name.toLowerCase() === trimmed.toLowerCase());
@@ -240,7 +228,7 @@ export function PresetDialog({
     event.preventDefault();
     if (!ready || !model) return;
     setBusy(true);
-    const values = { name: trimmed, modelSelection: model, runtimeMode, roleId, workspaceMode };
+    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode };
     const result = preset ? await runCommand({ type: "preset.update", presetId: preset.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     setBusy(false);
     if (result) {
@@ -251,10 +239,13 @@ export function PresetDialog({
 
   const remove = async () => {
     if (!preset) return;
+    // Deleting the saved crew member new conversations start with is asked about first; seated members stay.
+    if (consigliereSetting === preset.id && !window.confirm(`${preset.name} is your Consigliere for new conversations. Delete it anyway? The setting is cleared; members already seated in rooms stay.`)) return;
     setBusy(true);
     const result = await runCommand({ type: "preset.delete", presetId: preset.id });
     setBusy(false);
     if (result) {
+      reloadConsigliereSetting();
       reload();
       onClose();
     }
@@ -289,18 +280,6 @@ export function PresetDialog({
               ? "A folder and branch of its own for every thread, made from the project's default branch."
               : "The project's own folder, shared with anyone else working there."}
           </span>
-        </label>
-        <label>
-          Role
-          <select value={roleId ?? ""} onChange={(e) => setRoleId(e.target.value || null)}>
-            <option value="">none</option>
-            {roles.map((role) => (
-              <option key={role.id} value={role.id}>
-                {role.name}
-              </option>
-            ))}
-          </select>
-          <span className="hint">Used when they are seated in a room; a thread on its own has no role.</span>
         </label>
         <div className="dialog-actions">
           {preset ? (

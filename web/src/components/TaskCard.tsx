@@ -337,7 +337,7 @@ export function TaskCard({
 function LiveSection({ task }: { task: Task }) {
   const { snapshot, aliasOf } = useRoom();
   const { live, error } = useLive(snapshot.room.id, task.participantId, true, 2000);
-  const status = [live?.session?.status, live?.latestTurn ? `turn ${live.latestTurn.state}` : null].filter(Boolean).join(" · ");
+  const status = [live?.status, live?.latestRun && live.latestRun.status !== live.status ? `last run ${live.latestRun.status}` : null].filter(Boolean).join(" · ");
   // What the thread is doing, as T3 reports it: plan step, tool count and last tool, branch.
   const tools = live?.toolSummary;
   const facts = [
@@ -595,8 +595,8 @@ function InspectDeliveryDialog({
           <dd>
             <code>{run.threadId}</code>
           </dd>
-          <dt>Turn</dt>
-          <dd>{run.turnId ? <code>{run.turnId}</code> : <span className="muted">not started</span>}</dd>
+          <dt>T3 run</dt>
+          <dd>{run.t3RunId ? <code>{run.t3RunId}</code> : <span className="muted">not started</span>}</dd>
           <dt>Context</dt>
           <dd>
             room events {run.includedFromSequence}–{run.includedToSequence}

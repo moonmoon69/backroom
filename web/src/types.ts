@@ -27,6 +27,8 @@ export interface Room {
   defaultBrowserId: string | null;
   /** Browsers the room's agents may use; null means all of them. */
   allowedBrowserIds: string[] | null;
+  /** The room's Consigliere, when it has one: the member the user talks to, who hands the work to the others. */
+  consigliereId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,8 +52,6 @@ export interface Participant {
   id: string;
   roomId: string;
   alias: string;
-  /** Role held in this room (a named set of rules), or null. */
-  roleId: string | null;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
@@ -76,11 +76,14 @@ export interface SessionBinding {
   retiredAt: string | null;
 }
 
-export type RoomEventKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.message" | "task.status" | "system";
+/** "member.message": a message one member's agent sent another's thread with T3's tools (work, a steer, a question, an answer). */
+export type RoomEventKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.message" | "member.message" | "task.status" | "system";
 
 export type Speaker =
   | { type: "user" }
   | { type: "participant"; participantId: string; bindingId: string }
+  /** member.message: a sender whose thread is not a member of the room, named by its thread's title. */
+  | { type: "outside"; threadId: string; title: string }
   | { type: "system" };
 
 export interface ArtifactRef {
@@ -112,8 +115,53 @@ export interface RoomEvent {
   progress: Array<{ text: string; at: string }>;
   /** t3.turn: the prompt typed directly in T3 that started the turn. */
   prompt: string | null;
-  sourceRef: { threadId: string; messageId: string; turnId: string | null } | null;
+  /** member.message: the member whose thread the message arrived in. */
+  to: string | null;
+  /** t3.turn: how the turn ended. Null on other kinds and on turns recorded before this was kept. */
+  outcome: "completed" | "interrupted" | "failed" | null;
+  sourceRef: { threadId: string; messageId: string; t3RunId: string | null } | null;
   createdAt: string;
+}
+
+/** GET /api/overview: a thread outside rooms, shown as a room of one. */
+export interface OverviewThread {
+  id: string;
+  projectId: string;
+  title: string;
+  modelSelection: ModelSelection;
+  status: T3ThreadStatus;
+  pendingRequest: { id: string; kind: string; createdAt: string } | null;
+  backgroundLiveness: "working" | "monitoring" | null;
+  latestRunCompletedAt: string | null;
+  updatedAt: string;
+  /** The agent's latest line while it works, else what it last said. */
+  line: string | null;
+  /** Its last run finished (or failed) after it was last looked at, on any device. */
+  news: { at: string; state: "completed" | "error" } | null;
+}
+
+/** GET /api/overview: every room with its members and what each is doing, for Look → Overview. */
+export interface OverviewRoom {
+  id: string;
+  projectId: string;
+  title: string;
+  consigliereId: string | null;
+  /** Things waiting on you in the room: approvals and questions, held or blocked work, failures. */
+  needs: number;
+  members: Array<{
+    id: string;
+    alias: string;
+    modelSelection: ModelSelection;
+    roleName: string | null;
+    consigliere: boolean;
+    status: ParticipantStatus;
+    /** The last line of a turn in progress: a progress note, or the tools running. */
+    live: string | null;
+    /** The room task the member is on, if any. */
+    doing: string | null;
+    lastReply: { at: string; text: string } | null;
+  }>;
+  updatedAt: string;
 }
 
 /** An image the user attached in the room (POST /api/rooms/:roomId/attachments). */
@@ -173,12 +221,17 @@ export interface Task {
   delivery: "queue" | "steer";
   /** A T3 slash command sent verbatim ("/compact …"). */
   slashCommand: boolean;
+  /** "seat": the standing facts Backroom sends a member of a room that has a Consigliere. "wake": Backroom's task
+   * for a member who posted work on the board, run with the answer when that work ends. */
+  kind: "assignment" | "seat" | "wake";
   scheduleMode: ScheduleMode;
   prerequisites: PrerequisiteRef[];
   state: TaskState;
   stateReason: string | null;
   currentRunId: string | null;
   userOutcome: "blocked" | null;
+  /** When you took a failed task off your list without retrying it; a retry clears it. */
+  dismissedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -202,9 +255,10 @@ export interface Run {
   threadId: string;
   commandId: string;
   messageId: string;
-  turnId: string | null;
+  /** The T3 run that carries this run's message, once T3 reports it. */
+  t3RunId: string | null;
   status: RunStatus;
-  /** Sent into a turn that was already running (steering); shares that turn's reply. */
+  /** Sent into a run that was already running (steering); shares that run's reply. */
   steered: boolean;
   briefing: string;
   includedFromSequence: number;
@@ -228,19 +282,33 @@ export interface NativeRequest {
   createdAt: string;
 }
 
+/**
+ * A thread's status in T3 (Orchestrator V2): idle before its first run, otherwise its active run's status, or how
+ * its latest run ended.
+ */
+export type T3ThreadStatus = "idle" | "preparing" | "queued" | "starting" | "running" | "waiting" | "completed" | "interrupted" | "failed" | "cancelled" | "rolled_back";
+
+/** A run in progress: T3 prepares it, queues it, starts it, runs it, or waits on a request for it. */
+export const isRunActive = (status: T3ThreadStatus | "unknown" | null | undefined): boolean =>
+  status === "preparing" || status === "queued" || status === "starting" || status === "running" || status === "waiting";
+
+/** What a thread waits on you for: an approval, a question, or nothing. */
+export const pendingKind = (thread: { pendingRequest: { kind: string } | null }): "approval" | "question" | null =>
+  thread.pendingRequest ? (thread.pendingRequest.kind === "user_input" ? "question" : "approval") : null;
+
 export interface ParticipantStatus {
-  session: "idle" | "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" | "unknown";
+  status: T3ThreadStatus | "unknown";
   externalActivity: boolean;
   pendingApprovals: boolean;
   pendingUserInput: boolean;
   activeRunId: string | null;
   /** True when T3 answered but the bound thread no longer exists (deleted in T3 Code). */
   threadMissing: boolean;
-  /** T3's backgroundLiveness: subagents or background jobs running ("working"), only watch loops ("monitoring"). */
+  /** Work T3 lists as still running after the run settled: subagents or commands ("working"), only monitors ("monitoring"). */
   background?: "working" | "monitoring" | null;
 }
 
-/** A background job still running on a thread (T3 task.* activities): a subagent or a shell job. */
+/** Work still running on a thread beside or after its run, as T3 lists it: a subagent ("agent"), or a command or monitor ("background"; `type` says which). */
 export interface BackgroundTask {
   taskId: string;
   title: string;
@@ -255,7 +323,6 @@ export interface BackgroundTask {
 export interface RoomSnapshot {
   room: Room;
   participants: Participant[];
-  roles: Role[];
   bindings: SessionBinding[];
   tasks: Task[];
   runs: Run[];
@@ -467,6 +534,12 @@ export interface UpdatesView {
   available: number;
 }
 
+/** GET /api/file-preview: a file a reply names, as text, as media to fetch, or just its size. */
+export type FilePreviewResponse =
+  | { ok: true; path: string; size: number; kind: "text"; content: string; truncated: boolean }
+  | { ok: true; path: string; size: number; kind: "image" | "video" | "audio"; url: string }
+  | { ok: true; path: string; size: number; kind: "binary" };
+
 export interface ProviderInfo {
   instanceId: string;
   displayName: string;
@@ -483,15 +556,6 @@ export interface ProviderInfo {
   slashCommands?: Array<{ name: string; description: string | null; hint: string | null }>;
 }
 
-/** A named set of rules assigned to participants in a room (GET /api/roles). */
-export interface Role {
-  id: string;
-  name: string;
-  rules: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /**
  * A participant's settings under a name (GET /api/presets): seated in a room on a new thread, or used to start a
  * thread. The name is the alias it takes in a room, numbered when the room already has it.
@@ -501,7 +565,6 @@ export interface Preset {
   name: string;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
-  roleId: string | null;
   /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
   workspaceMode: "local" | "worktree";
   createdAt: string;
@@ -517,20 +580,33 @@ export interface T3ThreadShell {
   interactionMode: InteractionMode;
   branch: string | null;
   worktreePath: string | null;
-  session: { status: string; activeTurnId: string | null; lastError: string | null } | null;
-  latestTurn: { turnId: string; state: string; completedAt: string | null; assistantMessageId: string | null } | null;
-  hasPendingApprovals: boolean;
-  hasPendingUserInput: boolean;
+  status: T3ThreadStatus;
+  /** The run in progress, if any. */
+  activeRunId: string | null;
+  latestRunId: string | null;
+  latestRunCompletedAt: string | null;
+  lastError: string | null;
+  /** The approval or question T3 is waiting on ("user_input" is a question; any other kind an approval). */
+  pendingRequest: { id: string; kind: string; createdAt: string } | null;
+  pendingBackgroundTasks: Array<{ taskId: string; kind: "subagent" | "command" | "monitor" | "background_task"; description: string | null; childThreadId: string | null }>;
   backgroundLiveness?: "working" | "monitoring" | null;
+  /** A subagent's or fork's parent, when the thread is one. */
+  lineage?: { parentThreadId: string | null; relationshipToParent: "fork" | "subagent" | null; rootThreadId: string };
   latestUserMessageAt?: string | null;
   settledAt?: string | null;
   archivedAt: string | null;
   deletedAt: string | null;
   updatedAt: string;
   boundToRoom: boolean;
-  /** Outside rooms: its last turn finished (or failed) after it was last seen on any device. */
+  /** Outside rooms: its last run finished (or failed) after it was last seen on any device. */
   news?: { at: string; state: "completed" | "error" } | null;
 }
+
+/**
+ * A thread a member made for part of its own task (its harness's subagent tool or T3's delegate_task). T3's own list
+ * leaves these out, and so does the sidebar: the parent member shows them as "subagents running".
+ */
+export const isSubagentThread = (thread: Pick<T3ThreadShell, "lineage">): boolean => thread.lineage?.relationshipToParent === "subagent";
 
 /** One entry of a direct thread's conversation (GET /api/threads/:threadId). */
 export type ThreadItem =
@@ -538,7 +614,7 @@ export type ThreadItem =
   | {
       kind: "reply";
       id: string;
-      turnId: string;
+      runId: string;
       text: string;
       progress: Array<{ text: string; at: string }>;
       at: string;
@@ -560,8 +636,8 @@ export interface ThreadView {
   project: T3Project | null;
   items: ThreadItem[];
   requests: ThreadRequest[];
-  /** The turn running now, streamed as T3 shows it. */
-  running: { turnId: string; feed: LiveFeedItem[] } | null;
+  /** The run in progress, streamed as T3 shows it. */
+  running: { runId: string; feed: LiveFeedItem[] } | null;
   contextWindow: ContextWindowReading | null;
   /** What its usage card shows besides context and spend, from what T3 reports about the thread. */
   usage: {
@@ -588,7 +664,7 @@ export interface T3Activity {
   kind: string;
   summary: string;
   payload: unknown;
-  turnId: string | null;
+  runId: string | null;
   createdAt: string;
 }
 
@@ -608,8 +684,8 @@ export interface DeskCheckpointFile {
 }
 
 export interface DeskCheckpoint {
-  turnId: string;
-  status: "ready" | "missing" | "error";
+  runId: string;
+  status: "ready" | "missing" | "error" | "stale";
   completedAt: string | null;
   files: DeskCheckpointFile[];
   additions: number;
@@ -730,7 +806,7 @@ export interface GitDiff {
 
 export interface ProposedPlan {
   id: string;
-  turnId: string | null;
+  runId: string | null;
   implementedAt: string | null;
   createdAt: string;
   markdown: string;
@@ -762,8 +838,11 @@ export interface Desk {
   projectId: string | null;
   bindingGeneration: number;
   title: string | null;
-  session: { status: string; activeTurnId: string | null; lastError: string | null } | null;
-  latestTurn: { turnId: string; state: string; completedAt: string | null; assistantMessageId: string | null } | null;
+  /** The thread's status in T3; null when the participant has no thread. */
+  status: T3ThreadStatus | null;
+  activeRunId: string | null;
+  latestRun: { runId: string; status: T3ThreadStatus; completedAt: string | null } | null;
+  lastError: string | null;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
@@ -790,22 +869,23 @@ export interface Desk {
   changedFiles: ChangedFile[];
   proposedPlan: ProposedPlan | null;
   toolSummary: { started: number; completed: number; errors: number; lastTool: string | null };
-  /** All assistant messages of the active/latest turn joined. Prefer liveFeed for display. */
+  /** All assistant messages of the active/latest run joined. Prefer liveFeed for display. */
   streamingText: string;
-  /** The active/latest turn as T3 shows it: each assistant message separately, tool calls between them collapsed. */
+  /** The active/latest run as T3 shows it: each assistant message separately, tool calls between them collapsed. */
   liveFeed: LiveFeedItem[];
   /**
-   * The turn running on the thread right now, or null. `startedByRoom` is false when someone typed into the
-   * thread directly in T3; `prompt` is that message (null for room-started turns).
+   * The run in progress on the thread, or null. `startedByRoom` is false when someone typed into the thread
+   * directly in T3 (or the agent woke itself); `prompt` is that message (null for room runs and self-started ones).
    */
-  runningTurn?: { turnId: string; startedByRoom: boolean; prompt: string | null; promptImages?: string[] } | null;
+  runningRun?: { runId: string; startedByRoom: boolean; prompt: string | null; promptImages?: string[] } | null;
   activities: T3Activity[];
   partial: boolean;
 }
 
 export type LiveFeedItem =
   | { kind: "message"; id: string; text: string; streaming: boolean; at: string }
-  | { kind: "tools"; count: number; errors: number; labels: string[]; at: string };
+  | { kind: "tools"; count: number; errors: number; labels: string[]; running: string[]; at: string }
+  | { kind: "notice"; id: string; text: string; active: boolean; at: string };
 
 /** The live route returns the same shape as one desk entry. */
 export type LiveView = Desk;
@@ -882,7 +962,7 @@ export interface DraftAssignment {
 }
 
 export interface Draft {
-  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove" | "participant.role";
+  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove";
   /** Note text (kind "note"). */
   instruction: string;
   /** Kind "task": the assignments in message order. */
@@ -896,12 +976,10 @@ export interface Draft {
   /** Non-blocking observations about the text (never disable submission). */
   hints: string[];
   consumed: string[];
-  /** For kind "participant.add": the alias to seat on a new thread with T3's default model, plus an optional role. */
-  add?: { alias: string; roleId?: string; roleName?: string };
-  /** For kinds "participant.remove" / "participant.role": the resolved participant. */
+  /** For kind "participant.add": the alias to seat on a new thread with T3's default model. */
+  add?: { alias: string };
+  /** For kind "participant.remove": the resolved participant. */
   participant?: { participantId: string; alias: string };
-  /** For kind "participant.role": the role to give; roleId "" with name "none" clears it. */
-  role?: { roleId: string; name: string };
 }
 
 // ---- Commands (mirror of src/domain/commands.ts, input shape) ----
@@ -936,7 +1014,19 @@ export type ApprovalDecision = "accept" | "acceptForSession" | "acceptAlways" | 
 export type ThreadLifecycleChoice = "keep" | "settle" | "archive" | "delete";
 
 export type RoomCommand =
-  | { type: "room.create"; projectId: string; title: string }
+  | { type: "room.create"; projectId: string; title: string; consigliere?: boolean }
+  /** Take a failed task off your list without retrying it. */
+  | { type: "task.dismiss"; taskId: string }
+  /** Drop a question you will not answer. */
+  | { type: "native.userInput.dismiss"; participantId: string; requestId: string }
+  /** Make a seated member the room's Consigliere, move the mark, or clear it (null). */
+  | { type: "room.consigliere.set"; roomId: string; participantId: string | null }
+  /** The Consigliere's rules in your own words; null goes back to Backroom's wording. */
+  | { type: "consigliere.rules.set"; rules: string | null }
+  /** The saved crew member who is the Consigliere of new conversations, or none. */
+  | { type: "consigliere.preset.set"; presetId: string | null }
+  /** Start a conversation with the Consigliere in a project; the same requestId sent again carries on the same attempt. */
+  | { type: "consigliere.start"; projectId: string; text: string; requestId: string }
   | { type: "room.update"; roomId: string; title: string }
   /** browserId omitted keeps the room's default; null falls back to "general". */
   | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
@@ -951,24 +1041,20 @@ export type RoomCommand =
       type: "participant.create";
       roomId: string;
       alias: string;
-      roleId?: string | null;
       /** Required when creating a thread; omitted when attaching (the server inherits the thread's model from T3). */
       modelSelection?: ModelSelection;
       runtimeMode?: RuntimeMode;
       interactionMode?: InteractionMode;
       thread: ThreadBindingInput;
     }
-  | { type: "participant.update"; participantId: string; alias?: string; roleId?: string | null }
+  | { type: "participant.update"; participantId: string; alias?: string }
   /** Changes the bound T3 thread's model/options; the provider (instanceId) cannot change (409 "cannot switch provider"). */
   | { type: "participant.model.set"; participantId: string; modelSelection: ModelSelection }
   | { type: "participant.rebind"; participantId: string; thread: ThreadBindingInput; outstandingTasks: "carry" | "block" }
   | { type: "participant.runtimeMode.set"; participantId: string; runtimeMode: RuntimeMode }
   | { type: "participant.retire"; participantId: string; pendingTasks: "cancel" | "keep"; thread?: ThreadLifecycleChoice }
-  | { type: "role.create"; name: string; rules: string }
-  | { type: "role.update"; roleId: string; name?: string; rules?: string }
-  | { type: "role.delete"; roleId: string }
-  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; roleId?: string | null; workspaceMode?: "local" | "worktree" }
-  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; roleId?: string | null; workspaceMode?: "local" | "worktree" }
+  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree" }
+  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree" }
   | { type: "preset.delete"; presetId: string }
   /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
   | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }
@@ -1021,6 +1107,8 @@ export type RoomCommand =
 
 export type CommandResult =
   | { type: "room.created"; roomId: string }
+  | { type: "settings.updated" }
+  | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
@@ -1046,7 +1134,7 @@ export type CommandResult =
   | { type: "thread.started"; threadId: string }
   | { type: "thread.updated"; threadId: string }
   /** Newer result kinds the UI does not need to distinguish. */
-  | { type: string; participantId?: string; roleId?: string; presetId?: string; alias?: string };
+  | { type: string; participantId?: string; presetId?: string; alias?: string };
 
 export interface ApiErrorBody {
   error: string;

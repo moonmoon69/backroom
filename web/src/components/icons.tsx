@@ -208,6 +208,15 @@ export const MonitorIcon = () => (
 );
 
 /** A chat window: the ordinary desk look. */
+export const GridIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+    <rect x="14" y="3" width="7" height="7" rx="1.5" />
+    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+    <rect x="14" y="14" width="7" height="7" rx="1.5" />
+  </svg>
+);
+
 export const DeskIcon = () => (
   <Icon>
     <rect x="2" y="3.5" width="12" height="9" rx="1.5" />
@@ -247,5 +256,13 @@ export const SearchIcon = () => (
   <Icon>
     <circle cx="7" cy="7" r="4.2" />
     <path d="M10.2 10.2 13.5 13.5" />
+  </Icon>
+);
+
+/** A circular arrow: check again. */
+export const RefreshIcon = () => (
+  <Icon>
+    <path d="M12.9 6.4A5.2 5.2 0 1 0 13 9.5" />
+    <path d="M13.2 3.2v3.3H9.9" />
   </Icon>
 );

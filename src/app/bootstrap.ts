@@ -6,6 +6,7 @@ import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
+import { T3Presence } from "./t3Presence.ts";
 import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
 
 export class ChangeHub {
@@ -44,6 +45,8 @@ export interface AppStack {
   browsers: RoomBrowsers | null;
   /** T3's and its harnesses' updates, started only when asked for. */
   updates: T3Updates;
+  /** Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while a page is open. */
+  presence: T3Presence;
   close(): void;
 }
 
@@ -54,6 +57,8 @@ export function createStack(input: {
   log?: (message: string, detail?: unknown) => void;
   /** How agents run rooms-browser; named in briefings. */
   browserCommand?: string;
+  /** How agents run rooms-board; named in briefings. */
+  boardCommand?: string;
   /** Builds the room browser manager once the repos and change hub exist. */
   browsers?: (deps: { repos: Repos; notify: (roomId: string) => void }) => RoomBrowsers;
   /** Where T3's newest release is looked up (npm by default; tests pass their own). */
@@ -66,6 +71,7 @@ export function createStack(input: {
   const notify = (roomId: string) => hub.notify(roomId);
   const service = new RoomService(db, repos, input.adapter, notify);
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;
+  const presence = new T3Presence(input.adapter, input.log ? { log: input.log } : {});
   const scheduler = new Scheduler(
     db,
     repos,
@@ -76,6 +82,7 @@ export function createStack(input: {
       ...(input.log ? { log: input.log } : {}),
       ...(browsers ? { browsers } : {}),
       ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
+      ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}),
     },
     notify,
   );
@@ -88,8 +95,10 @@ export function createStack(input: {
     hub,
     browsers,
     updates: new T3Updates(input.adapter, input.latestRelease),
+    presence,
     close() {
       scheduler.stop();
+      presence.stop();
       browsers?.detach();
       db.close();
     },

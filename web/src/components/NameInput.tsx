@@ -1,5 +1,5 @@
 /**
- * A field for a name that has no spaces in it (a participant's alias, a preset, a role): spaces typed or pasted are
+ * A field for a name that has no spaces in it (a participant's alias, a preset): spaces typed or pasted are
  * dropped as they arrive, so "  alice " is "alice". The cursor stays where it was rather than jumping to the end.
  */
 import { useLayoutEffect, useRef, type InputHTMLAttributes, type RefObject } from "react";

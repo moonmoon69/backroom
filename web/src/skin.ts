@@ -2,9 +2,10 @@ import { createContext, createElement, useCallback, useContext, useEffect, useSt
 
 /**
  * Desk is the ordinary UI: sidebar, header, panels. Street replaces all of it with one block of Mulberry Street
- * (components/street/StreetMode.tsx); either way it is the same rooms and threads, and you can switch back and forth.
+ * (components/street/StreetMode.tsx). Overview opens on one page of every room and member (components/Overview.tsx)
+ * and shows a room without the sidebar. Either way it is the same rooms and threads, and you can switch back and forth.
  */
-export type SkinChoice = "desk" | "street";
+export type SkinChoice = "desk" | "street" | "overview";
 
 const KEY = "backroom.skin";
 const SkinContext = createContext<[SkinChoice, (choice: SkinChoice) => void] | null>(null);
@@ -12,6 +13,7 @@ const SkinContext = createContext<[SkinChoice, (choice: SkinChoice) => void] | n
 export function readSkin(): SkinChoice {
   const stored = localStorage.getItem(KEY);
   // The room looks that came before the street (Game, then Grok, Opus and Astra) open the street.
+  if (stored === "overview") return "overview";
   return stored === "street" || stored === "game" || stored === "grok" || stored === "opus" || stored === "astra" ? "street" : "desk";
 }
 

@@ -1,19 +1,20 @@
 /**
  * Projects and direct threads: T3 threads used on their own, outside any room. Nothing here is stored by the room
  * service; T3 holds the projects, threads and messages, and the room only forwards commands and reads them back.
- * A direct message goes to T3 exactly as typed (no briefing), like typing in T3 Code. A thread seated in a room is
- * refused: the room coordinates it, and a message sent around the room would bypass its queue.
+ * A direct message goes to T3 exactly as typed (no briefing), like typing in T3 Code: it starts a run, or is steered
+ * into the run in progress. A thread seated in a room is refused: the room coordinates it, and a message sent around
+ * the room would bypass its queue. Reading a thread back is in threadView.ts.
  */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { posix } from "node:path";
 import type { Repos } from "../db/repos.ts";
-import type { T3Activity, T3Adapter, T3ThreadDetail, T3ThreadShell, TurnImage } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadShell, TurnImage } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import type { InlineImage, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES } from "../domain/types.ts";
-import { discardWorkspace, prepareWorkspace } from "./workspaceChoice.ts";
+import { resolveWorkspace } from "./workspaceChoice.ts";
 
 export type DirectCommand = Extract<
   RoomCommand,
@@ -106,24 +107,24 @@ export class DirectThreads {
       case "thread.send": {
         const shell = await this.requireLooseThread(command.threadId);
         await t3(() =>
-          this.adapter.startTurn({
+          this.adapter.sendMessage({
             commandId: randomUUID(),
             threadId: shell.id,
             messageId: randomUUID(),
             text: command.text,
             images: turnImages(command.images),
-            // A live session only switches model when the turn names one (see Scheduler.send).
+            // A live session only switches model when the message names one (see Scheduler.send).
             modelSelection: shell.modelSelection,
-            runtimeMode: shell.runtimeMode,
-            interactionMode: shell.interactionMode,
+            // Into the run in progress, as T3 Code's composer does by default; otherwise it starts a run (T3 queues
+            // it when a run is being prepared or waits on a request).
+            mode: shell.status === "running" && shell.activeRunId ? { type: "steer", runId: shell.activeRunId } : { type: "start" },
           }),
         );
         return { type: "thread.updated", threadId: shell.id };
       }
       case "thread.interrupt": {
         const shell = await this.requireLooseThread(command.threadId);
-        const turnId = shell.session?.activeTurnId ?? null;
-        await t3(() => this.adapter.interruptTurn({ commandId: randomUUID(), threadId: shell.id, turnId }));
+        await t3(() => this.adapter.interruptRun({ commandId: randomUUID(), threadId: shell.id, runId: shell.activeRunId }));
         return { type: "thread.updated", threadId: shell.id };
       }
       case "thread.approval.respond": {
@@ -220,129 +221,23 @@ export class DirectThreads {
     if (!modelSelection) throw new RoomError("no_model", "T3 has no default model for this project; pick one");
     const threadId = command.threadId ?? randomUUID();
     const title = threadTitleFor(command.text);
-    // A new worktree is made first so T3 starts the agent in it; its temporary branch is renamed by T3 from this message.
-    const workspace = await prepareWorkspace(this.adapter, command.projectId, command.workspace, null);
-    try {
-      await t3(() =>
-        this.adapter.createThread({
-          commandId: randomUUID(),
-          threadId,
-          projectId: command.projectId,
-          title,
-          modelSelection,
-          runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
-          branch: workspace.branch,
-          worktreePath: workspace.worktreePath,
-        }),
-      );
-    } catch (error) {
-      await discardWorkspace(this.adapter, workspace);
-      throw error;
-    }
-    try {
-      await t3(() =>
-        this.adapter.startTurn({
-          commandId: randomUUID(),
-          threadId,
-          messageId: randomUUID(),
-          text: command.text,
-          images,
-          runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
-          titleSeed: title,
-        }),
-      );
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new RoomError("first_message_failed", `The thread was created in T3, but its first message was not sent: ${reason}`, error instanceof RoomError ? error.status : 502);
-    }
+    // One call: T3 creates the thread, makes its worktree (naming the branch from this message when none was typed),
+    // and starts the agent on the message. The title stands until T3 names the thread from the message.
+    const workspace = await resolveWorkspace(this.adapter, command.projectId, command.workspace, null);
+    await t3(() =>
+      this.adapter.launchThread({
+        commandId: randomUUID(),
+        threadId,
+        projectId: command.projectId,
+        title,
+        generateTitle: true,
+        modelSelection,
+        runtimeMode: command.runtimeMode,
+        interactionMode: command.interactionMode,
+        workspace,
+        initialMessage: { messageId: randomUUID(), text: command.text, images },
+      }),
+    );
     return { type: "thread.started", threadId };
   }
-}
-
-// ---------------- thread view (read side) ----------------
-
-export type ThreadItem =
-  | { kind: "user"; id: string; text: string; attachmentIds: string[]; at: string }
-  | {
-      kind: "reply";
-      id: string;
-      turnId: string;
-      /** The turn's last message: the answer. */
-      text: string;
-      /** Earlier messages of the turn (notes between tool calls). */
-      progress: Array<{ text: string; at: string }>;
-      at: string;
-      /** How the turn ended when it did not complete normally. */
-      state: "error" | "interrupted" | null;
-      files: { count: number; additions: number; deletions: number } | null;
-    };
-
-/**
- * The conversation as T3 shows it: each user message, then one reply per turn (its last assistant message, with the
- * earlier ones as progress). The running turn is left out; the view streams it separately. A message typed into a
- * running turn splits that turn's reply around it, as it happened.
- */
-export function threadTranscript(detail: T3ThreadDetail, runningTurnId: string | null): ThreadItem[] {
-  const items: ThreadItem[] = [];
-  for (const message of detail.messages) {
-    if (message.role === "user") {
-      const attachmentIds = (message.attachments ?? []).map((a) => a.id);
-      if (message.text.trim().length === 0 && attachmentIds.length === 0) continue;
-      items.push({ kind: "user", id: message.id, text: message.text, attachmentIds, at: message.createdAt });
-      continue;
-    }
-    if (message.role !== "assistant" || !message.turnId || message.turnId === runningTurnId || message.text.trim().length === 0) continue;
-    const last = items[items.length - 1];
-    if (last?.kind === "reply" && last.turnId === message.turnId) {
-      last.progress.push({ text: last.text, at: last.at });
-      last.text = message.text;
-      last.at = message.createdAt;
-      last.id = message.id;
-      continue;
-    }
-    items.push({ kind: "reply", id: message.id, turnId: message.turnId, text: message.text, progress: [], at: message.createdAt, state: null, files: null });
-  }
-  // Outcome and changed files belong on the turn's last reply.
-  const lastReplyOfTurn = new Map<string, Extract<ThreadItem, { kind: "reply" }>>();
-  for (const item of items) if (item.kind === "reply") lastReplyOfTurn.set(item.turnId, item);
-  for (const checkpoint of detail.checkpoints) {
-    const reply = lastReplyOfTurn.get(checkpoint.turnId);
-    if (!reply || checkpoint.files.length === 0) continue;
-    reply.files = {
-      count: checkpoint.files.length,
-      additions: checkpoint.files.reduce((sum, f) => sum + f.additions, 0),
-      deletions: checkpoint.files.reduce((sum, f) => sum + f.deletions, 0),
-    };
-  }
-  const latest = detail.shell.latestTurn;
-  const latestReply = latest ? lastReplyOfTurn.get(latest.turnId) : undefined;
-  if (latest && latestReply && (latest.state === "error" || latest.state === "interrupted")) latestReply.state = latest.state;
-  return items;
-}
-
-/** Approvals and questions the thread is waiting on: requested and not yet resolved. */
-export function openRequests(activities: T3Activity[]): Array<{ requestId: string; kind: "approval" | "user-input"; payload: unknown; createdAt: string }> {
-  const open = new Map<string, { requestId: string; kind: "approval" | "user-input"; payload: unknown; createdAt: string }>();
-  for (const activity of activities) {
-    const requestId = (activity.payload as { requestId?: string } | null)?.requestId;
-    if (!requestId) continue;
-    if (activity.kind === "approval.requested") open.set(requestId, { requestId, kind: "approval", payload: activity.payload, createdAt: activity.createdAt });
-    if (activity.kind === "user-input.requested") open.set(requestId, { requestId, kind: "user-input", payload: activity.payload, createdAt: activity.createdAt });
-    if (activity.kind === "approval.resolved" || activity.kind === "user-input.resolved") open.delete(requestId);
-  }
-  return [...open.values()];
-}
-
-/** The latest context-window reading T3 reported for the thread. */
-export function latestContextWindow(activities: T3Activity[]): { usedTokens: number; maxTokens: number; percent: number; at: string } | null {
-  for (let index = activities.length - 1; index >= 0; index -= 1) {
-    const activity = activities[index] as T3Activity;
-    const payload = (activity.payload ?? {}) as { usedTokens?: unknown; maxTokens?: unknown };
-    if (activity.kind === "context-window.updated" && typeof payload.usedTokens === "number" && typeof payload.maxTokens === "number" && payload.maxTokens > 0) {
-      return { usedTokens: payload.usedTokens, maxTokens: payload.maxTokens, percent: Math.round((payload.usedTokens / payload.maxTokens) * 1000) / 10, at: activity.createdAt };
-    }
-  }
-  return null;
 }

@@ -14,6 +14,11 @@
  *   /note preserve the public API               -> room note
  *   Sol two, review the parser                  -> spoken alias at the start resolves to sol2
  *
+ * In a room that has a Consigliere, every message is for him, whoever it names: he reads the @names as who the user
+ * wants on it and hands the work out himself. It is sent into his turn when he is working, so it reaches him while he
+ * waits. Only a T3 slash command ("@bob /compact") still goes to the member it names, because a harness runs one only
+ * when it is the whole message on its own thread.
+ *
  * Only the addressing/command syntax is interpreted; the remaining text of each assignment is its verbatim instruction.
  * Incomplete or invalid syntax produces a draft with unresolved fields rather than an error.
  */
@@ -25,11 +30,6 @@ export interface ParticipantRef {
   alias: string;
   /** True when the participant is working (room run or direct T3 activity). Used for alias pools. */
   busy?: boolean;
-}
-
-export interface RoleRef {
-  id: string;
-  name: string;
 }
 
 export interface Unresolved {
@@ -86,13 +86,11 @@ export interface DraftAssignment {
 }
 
 export interface Draft {
-  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove" | "participant.role";
-  /** For participant.add: the alias to seat (with T3's default model unless the dialog picks one) and an optional role. */
-  add?: { alias: string; roleId?: string; roleName?: string };
-  /** For participant.remove and participant.role: the resolved participant. */
+  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove";
+  /** For participant.add: the alias to seat (with T3's default model unless the dialog picks one). */
+  add?: { alias: string };
+  /** For participant.remove: the resolved participant. */
   participant?: { participantId: string; alias: string };
-  /** For participant.role: the resolved role. */
-  role?: { roleId: string; name: string };
   /** Note text (kind "note"). */
   instruction: string;
   /** Kind "task": the assignments in message order. */
@@ -140,17 +138,26 @@ export function spokenVariants(alias: string): string[] {
 const matchesSpoken = (participant: ParticipantRef, wanted: string): boolean =>
   participant.alias.toLowerCase() === wanted || spokenVariants(participant.alias).includes(wanted);
 
-const matchesName = (name: string, wanted: string): boolean => name.toLowerCase() === wanted || spokenVariants(name).includes(wanted);
 
-export function parseExplicit(text: string, participants: ParticipantRef[], tasks: Task[], roles: RoleRef[] = []): Draft {
+export interface ParseOptions {
+  /** The room's Consigliere, when it has one: who an unaddressed message is for, and who @all leaves out. */
+  consigliereId?: string | null;
+  /**
+   * A member's post: names are delivered as written (the user's messages go to the Consigliere whole; a member's
+   * do not), and only text that addresses nobody goes to the Consigliere.
+   */
+  direct?: boolean;
+}
+
+export function parseExplicit(text: string, participants: ParticipantRef[], tasks: Task[], options: ParseOptions = {}): Draft {
   const sourceText = text;
   const trimmed = text.trim();
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
   const draft: Draft = { kind: "empty", instruction: "", assignments: [], preamble: "", mentions: [], sourceText, unresolved: [], consumed: [], hints: [] };
   if (trimmed.length === 0) return draft;
 
-  // /add <alias> [role <role>] — seat a new participant on a new T3 thread with T3's default model (bounded: roles are a finite list).
-  const addMatch = /^\/add\b\s*(\S+)?(?:\s+role\s+(\S+))?\s*$/i.exec(trimmed);
+  // /add <alias> — seat a new participant on a new T3 thread with T3's default model.
+  const addMatch = /^\/add\b\s*(\S+)?\s*$/i.exec(trimmed);
   if (addMatch) {
     draft.kind = "participant.add";
     draft.consumed.push("/add");
@@ -169,52 +176,6 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
       draft.unresolved.push({ severity: "error", field: "recipients", message: `@${alias} is already in this room` });
     }
     draft.add = { alias };
-    if (addMatch[2]) {
-      const role = roles.find((r) => matchesName(r.name, (addMatch[2] as string).toLowerCase()));
-      if (role) {
-        draft.add.roleId = role.id;
-        draft.add.roleName = role.name;
-      } else {
-        draft.unresolved.push({ severity: "error", field: "recipients", message: `no role named "${addMatch[2]}"${roles.length > 0 ? `; available: ${roles.map((r) => r.name).join(", ")}` : ""}` });
-      }
-    }
-    return draft;
-  }
-
-  // /role @alias <role> — assign (or with "none", clear) a role for a seated participant.
-  const roleMatch = /^\/role\b\s*@?(.*)$/i.exec(trimmed);
-  if (roleMatch) {
-    draft.kind = "participant.role";
-    draft.consumed.push("/role");
-    // The participant may be a spoken form with spaces ("sol one"); take the longest leading match, the rest is the role.
-    const tokens = (roleMatch[1] ?? "").trim().split(/\s+/).filter(Boolean);
-    let participant: ParticipantRef | undefined;
-    let consumedTokens = 0;
-    for (let count = Math.min(3, tokens.length); count >= 1 && !participant; count -= 1) {
-      const candidate = tokens.slice(0, count).join(" ").toLowerCase();
-      participant = participants.find((p) => matchesSpoken(p, candidate));
-      if (participant) consumedTokens = count;
-    }
-    const wantedRole = tokens.slice(consumedTokens).join(" ").toLowerCase();
-    if (!participant) {
-      draft.unresolved.push({ severity: "incomplete", field: "recipients", message: tokens.length > 0 ? `no member @${tokens[0]} in this room` : "which member?" });
-      return draft;
-    }
-    draft.participant = { participantId: participant.id, alias: participant.alias };
-    if (!wantedRole) {
-      draft.unresolved.push({ severity: "incomplete", field: "instruction", message: roles.length > 0 ? `which role? ${roles.map((r) => r.name).join(", ")} (or "none")` : "no roles defined yet" });
-      return draft;
-    }
-    if (wantedRole === "none") {
-      draft.role = { roleId: "", name: "none" };
-      return draft;
-    }
-    const role = roles.find((r) => matchesName(r.name, wantedRole));
-    if (!role) {
-      draft.unresolved.push({ severity: "error", field: "instruction", message: `no role named "${wantedRole}"${roles.length > 0 ? `; available: ${roles.map((r) => r.name).join(", ")}` : ""}` });
-      return draft;
-    }
-    draft.role = { roleId: role.id, name: role.name };
     return draft;
   }
 
@@ -244,7 +205,9 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
   draft.kind = "task";
   // Quoted text is literal: @names and /commands inside code blocks, inline code, "> " quotes, or written as \@name
   // address nobody. They are masked (same length, so offsets hold) while parsing and restored in the output.
-  const parsed = parseAssignments(maskQuoted(text), participants, tasks);
+  const consigliere = options.consigliereId ? (participants.find((p) => p.id === options.consigliereId) ?? null) : null;
+  const parsed = parseAssignments(maskQuoted(text), participants, tasks, consigliere?.id ?? null);
+  if (consigliere) routeToConsigliere(parsed, consigliere.id, text, options.direct === true);
   draft.assignments = parsed.assignments.map((a) => ({ ...a, instruction: unmask(a.instruction) }));
   draft.preamble = unmask(parsed.preamble);
   draft.mentions = parsed.mentions;
@@ -257,6 +220,52 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
     draft.unresolved.push({ field: "recipients", severity: "incomplete", message: "start with @name to address someone" });
   }
   return draft;
+}
+
+/**
+ * In a room that has a Consigliere, what addresses nobody is his: plain text becomes one assignment to him, and an
+ * assignment that only lacks a recipient ("/hold think about it") gets him. It is sent as a steer, which reaches him
+ * mid-turn (while he waits on the members) and starts a turn of its own when he is idle; a slash command and held or
+ * waiting work start their own turn as always.
+ */
+function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: string, direct = false): void {
+  // The user's message that names members goes to him whole, names and all. Slash commands keep their own path, and
+  // a member's post is delivered as written.
+  const named = !direct && parsed.assignments.some((assignment) => assignment.recipients.some((id) => id !== consigliereId) || assignment.unresolved.some((u) => u.field === "recipients" && u.severity === "error"));
+  if (named && !parsed.assignments.some((assignment) => assignment.slashCommand !== null) && text.trim().length > 0) {
+    const start = text.length - text.trimStart().length;
+    parsed.assignments = [{ ...emptyAssignment(start), recipients: [consigliereId], instruction: text.trim(), schedule: { mode: "now" }, delivery: "steer", end: text.trimEnd().length }];
+    parsed.preamble = "";
+    parsed.hints = [];
+    for (const mention of parsed.mentions) Object.assign(mention, { role: "reference", assignment: 0 });
+    return;
+  }
+  const steerable = (assignment: DraftAssignment) => assignment.slashCommand === null && assignment.timing === null && assignment.schedule?.mode === "now" && assignment.after.length === 0;
+  if (parsed.assignments.length === 0) {
+    const instruction = parsed.preamble.trim();
+    if (instruction.length === 0) return;
+    const start = text.length - text.trimStart().length;
+    const assignment: DraftAssignment = { ...emptyAssignment(start), recipients: [consigliereId], instruction, schedule: { mode: "now" }, end: text.trimEnd().length };
+    const command = /^\/([a-z0-9][\w:.-]*)/i.exec(instruction);
+    if (command) assignment.slashCommand = command[1] as string;
+    if (steerable(assignment)) assignment.delivery = "steer";
+    parsed.assignments.push(assignment);
+    parsed.preamble = "";
+    return;
+  }
+  parsed.assignments.forEach((assignment, index) => {
+    // Alone in the room he gets an unaddressed message already (one member needs no @name); it is sent the same way.
+    const addressed = parsed.mentions.some((mention) => mention.role === "address" && mention.assignment === index);
+    if (!addressed && assignment.recipients.length === 1 && assignment.recipients[0] === consigliereId && assignment.delivery === "queue" && steerable(assignment)) assignment.delivery = "steer";
+  });
+  for (const assignment of parsed.assignments) {
+    if (assignment.recipients.length > 0) continue;
+    const others = assignment.unresolved.filter((u) => !(u.field === "recipients" && u.severity === "incomplete"));
+    if (others.some((u) => u.field === "recipients")) continue;
+    assignment.recipients.push(consigliereId);
+    assignment.unresolved = others;
+    if (assignment.delivery === "queue" && steerable(assignment)) assignment.delivery = "steer";
+  }
 }
 
 /** Words that, directly before a mid-sentence @mention, make it a reference ("work with @alice") rather than a new address. */
@@ -328,7 +337,7 @@ interface Head {
  *   "/after @alice" on B waits for alice's assignment in this message.
  * - Text before the first address is a preamble; everyone receives the whole message as context.
  */
-function parseAssignments(text: string, participants: ParticipantRef[], tasks: Task[]): ParsedMessage {
+function parseAssignments(text: string, participants: ParticipantRef[], tasks: Task[], consigliereId: string | null = null): ParsedMessage {
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
   const byId = new Map(participants.map((p) => [p.id, p]));
   const nameForms = participants
@@ -438,9 +447,10 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
           span.participantId = participant.id;
           if (!assignment.recipients.includes(participant.id)) assignment.recipients.push(participant.id);
         } else if (alias.toLowerCase() === ALL_ALIAS) {
-          // @all: everyone seated in the room, one task each.
-          for (const everyone of participants) if (!assignment.recipients.includes(everyone.id)) assignment.recipients.push(everyone.id);
-          if (participants.length === 0) assignment.unresolved.push({ field: "recipients", severity: "error", message: "@all: nobody is in this room yet" });
+          // @all: everyone seated in the room, one task each; in a room with a Consigliere, the workers and never him.
+          const crew = participants.filter((p) => p.id !== consigliereId);
+          for (const everyone of crew) if (!assignment.recipients.includes(everyone.id)) assignment.recipients.push(everyone.id);
+          if (crew.length === 0) assignment.unresolved.push({ field: "recipients", severity: "error", message: "@all: nobody is in this room yet" });
         } else {
           // Alias pool: "@sol" selects an available member of sol1, sol2, ... not already addressed in this message.
           const pool = participants.filter((p) => new RegExp(`^${escapeRegExp(alias)}\\d+$`, "i").test(p.alias));

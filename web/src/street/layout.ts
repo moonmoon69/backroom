@@ -6,7 +6,7 @@
  * changes only its sign and reordering the sidebar only moves it; no two businesses share a trade while there are
  * trades left.
  */
-import type { RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import { isRunActive, pendingKind, type RoomListItem, type T3Project, type T3ThreadShell } from "../types.ts";
 
 /** Scene pixels: six 16-pixel tiles to a building, an alley between neighbours. */
 export const CLUB_W = 96;
@@ -140,21 +140,22 @@ export function roomWindow(room: RoomListItem): StreetWindow {
 }
 
 export function threadWindow(thread: T3ThreadShell): StreetWindow {
-  const status = thread.session?.status;
+  const status = thread.status;
+  const pending = pendingKind(thread);
   const unseen = thread.news ? 1 : 0;
   const state: WindowState =
-    thread.hasPendingApprovals || thread.hasPendingUserInput
+    pending
       ? "needs"
-      : thread.news?.state === "error" || status === "error"
+      : thread.news?.state === "error" || status === "failed"
         ? "failed"
-        : status === "running" || status === "starting"
+        : isRunActive(status)
           ? "working"
           : thread.backgroundLiveness
             ? "background"
             : "idle";
   const label =
     state === "needs"
-      ? thread.hasPendingApprovals
+      ? pending === "approval"
         ? "needs your approval"
         : "has a question for you"
       : state === "failed"

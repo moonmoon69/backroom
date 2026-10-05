@@ -6,7 +6,8 @@ const COLLAPSED_ITEMS = 8;
 
 /**
  * The running turn as T3 shows it: each assistant message as its own block (progress notes between tool calls,
- * then the final answer), with the tool calls between them collapsed to one line per burst. The newest message
+ * then the final answer), with the tool calls between them collapsed to one line per burst (naming the ones still
+ * running), and a line when the context is compacted. The newest message
  * is emphasized; the view follows the newest item unless the user scrolled up.
  */
 export function LiveFeed({ items, placeholder, className }: { items: LiveFeedItem[]; placeholder: string; className?: string }) {
@@ -22,7 +23,7 @@ export function LiveFeed({ items, placeholder, className }: { items: LiveFeedIte
   });
 
   const last = items[items.length - 1];
-  const signature = `${items.length}:${last?.at ?? ""}:${last?.kind === "message" ? last.text.length : (last?.count ?? 0)}`;
+  const signature = `${items.length}:${last?.at ?? ""}:${last?.kind === "message" ? last.text.length : last?.kind === "tools" ? `${last.count}/${last.running.length}` : (last?.text ?? "")}`;
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -50,10 +51,20 @@ export function LiveFeed({ items, placeholder, className }: { items: LiveFeedIte
           <div key={item.id} className={`live-message${index === latestMessage ? " latest" : ""}${item.streaming ? " streaming" : ""}`}>
             <Markdown text={item.text} />
           </div>
+        ) : item.kind === "notice" ? (
+          <div key={item.id} className={`live-tools live-notice mono${item.active ? " active" : ""}`}>
+            {item.text}
+          </div>
         ) : (
-          <div key={`tools-${hidden + index}`} className={`live-tools mono${item.errors > 0 ? " has-errors" : ""}`}>
-            ran {item.count} tool{item.count === 1 ? "" : "s"}
-            {item.labels.length > 0 ? <span className="live-tool-labels"> · {item.labels.join(", ")}</span> : null}
+          <div key={`tools-${hidden + index}`} className={`live-tools mono${item.errors > 0 ? " has-errors" : ""}${item.running.length > 0 ? " active" : ""}`}>
+            {item.running.length > 0 ? <span className="live-tool-running">running {item.running.join(", ")}</span> : null}
+            {item.running.length > 0 && item.count > item.running.length ? " · " : null}
+            {item.count > item.running.length || item.running.length === 0 ? (
+              <>
+                ran {item.count - item.running.length} tool{item.count - item.running.length === 1 ? "" : "s"}
+                {item.labels.length > 0 ? <span className="live-tool-labels"> · {item.labels.join(", ")}</span> : null}
+              </>
+            ) : null}
             {item.errors > 0 ? <span className="status-error"> · {item.errors} failed</span> : null}
           </div>
         ),

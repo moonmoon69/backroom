@@ -22,6 +22,7 @@
     "check": "npm run typecheck && npm test",
     "t3:check": "node --no-warnings=ExperimentalWarning scripts/t3-contract-check.ts",
     "t3:pair": "node --no-warnings=ExperimentalWarning scripts/t3-pair.ts",
+    "t3:v2": "node --no-warnings=ExperimentalWarning scripts/t3-v2-cutover.ts",
     "build:web": "npm --workspace web run build"
   },
   "dependencies": {

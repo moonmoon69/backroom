@@ -4,11 +4,11 @@
 
 Backroom is the back room where the boss hands out the work. It is a local companion for [T3 Code](https://github.com/pingdotgg/t3code): a **room** is one shared conversation, and the **members** seated in it are T3 threads, each under a short alias (`@claude`, `@grok`, …). You address them in plain text. Backroom queues the work, waits where one task depends on another, and passes each finished answer to whoever needs it next. You don't have to copy anything between threads yourself.
 
-Your **crew** are the people you bring into rooms: a name with a model and its options, a permission mode, a role and a place to work. Drag one onto a room and they are seated on a new thread; click one and a thread starts on its own.
+Your **crew** are the people you bring into rooms: a name with a model and its options, a permission mode and a place to work. Drag one onto a room and they are seated on a new thread; click one and a thread starts on its own.
 
 Backroom owns conversation and coordination. T3 owns execution: every member is a real T3 thread, with its own model, permissions and worktree, and you can still open it in T3 Code. No model reads your input on Backroom's side: every action is a direct control or a small explicit syntax, and the composer shows the plan before you send. [How it works](#how-it-works) at the end describes the delivery, correlation and completion rules.
 
-**Why Backroom.** T3 Code is a cockpit for each agent: a thread, a conversation, its terminal, diffs and worktree, and it can start several agents at once and tell you when each finishes. What it doesn't do is make them work together. Agents in different threads can't hear each other, wait on each other, or pass their results along; you do that by hand. A room is one conversation for several agents: you address them by name, say what waits for what, and each finished answer goes to whoever needs it next, with where the work is. T3 still runs every turn, and every member stays a thread you can open in T3 Code.
+**Why Backroom.** T3 Code is a cockpit for each agent: a thread, a conversation, its terminal, diffs and worktree, and it can start several agents at once and tell you when each finishes. Its agents can hand work to each other (an agent can delegate a task to a child agent on another model, and read or message other threads), but who does what is the agent's own decision as it goes, and each thread stays its own conversation. A room is one conversation for several agents that you direct: you address them by name, say what waits for what, and each finished answer goes to whoever needs it next, with where the work is. T3 still runs every turn, and every member stays a thread you can open in T3 Code.
 
 ---
 
@@ -25,15 +25,16 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 9. [Writing messages](#writing-messages)
 10. [Sending while someone is working](#sending-while-someone-is-working)
 11. [T3 slash commands](#t3-slash-commands)
-12. [Room browser](#room-browser)
-13. [What the room shows](#what-the-room-shows)
-14. [Managing rooms, members and roles](#managing-rooms-members-and-roles)
-15. [The street](#the-street)
-16. [Configuration](#configuration)
-17. [Running, updating and backing up](#running-updating-and-backing-up)
-18. [Troubleshooting](#troubleshooting)
-19. [Development](#development)
-20. [How it works](#how-it-works)
+12. [The Consigliere](#the-consigliere)
+13. [Room browser](#room-browser)
+14. [What the room shows](#what-the-room-shows)
+15. [Managing rooms and members](#managing-rooms-and-members)
+16. [The street](#the-street)
+17. [Configuration](#configuration)
+18. [Running, updating and backing up](#running-updating-and-backing-up)
+19. [Troubleshooting](#troubleshooting)
+20. [Development](#development)
+21. [How it works](#how-it-works)
 
 ---
 
@@ -43,9 +44,9 @@ Each part below starts from what T3 Code does (read from [its source and docs](h
 
 ### Agents that work together
 
-In T3 Code each thread is its own conversation, and its agent has no way to reach another thread: the tools T3 gives agents are its browser, simulators and pull-request links. Sending one prompt to several models is supported, as separate threads; what comes next is up to you, by copying and quoting between them.
+In T3 Code each thread is its own conversation. An agent can involve others: it can delegate a task to a child agent on any provider and wait for the result, and T3's tools let it read, message and start other threads. What gets delegated, to whom and in what order is decided by that agent while it works, and you see it in its thread afterwards.
 
-In a room, several threads share one conversation. One message chains the work: Opus builds, Sol reviews Opus's branch once Opus has succeeded, and Fable writes the release note once Sol has. Each receives the finished answers it waited for and where the work is (folder, branch, commit). The room's note, above the message, reaches all three.
+In a room, several threads share one conversation, and you decide who does what. One message chains the work: Opus builds, Sol reviews Opus's branch once Opus has succeeded, and Fable writes the release note once Sol has. Each receives the finished answers it waited for and where the work is (folder, branch, commit). The room's note, above the message, reaches all three.
 
 ![A room: a note, one message chaining three members, and the first reply](assets/readme/room.png)
 
@@ -57,7 +58,7 @@ T3 Code sends what you type to one agent. Backroom reads a message with fixed ru
 
 ### A crew instead of settings each time
 
-T3 Code remembers the last model, has favorites, custom models and a project default. A Backroom crew member bundles a model and its options, a permission mode, a role (rules sent with every assignment) and where they work. Drag one onto a room, or pick several in the Add member dialog and seat them at once.
+T3 Code remembers the last model, has favorites, custom models and a project default. A Backroom crew member bundles a model and its options, a permission mode and where they work. Drag one onto a room, or pick several in the Add member dialog and seat them at once.
 
 ![Add member with two crew members picked, and what each joins with](assets/readme/crew.png)
 
@@ -102,7 +103,7 @@ Running every turn, terminals, the preview browser with its annotations and reco
   - a headless server started with `t3 serve`, or installed with `t3 service install`.
 - The harnesses you want in rooms (Claude, Codex, Cursor, Grok, OpenCode, …) are set up and signed in **inside T3**. Backroom never talks to a harness directly.
 
-Tested against T3 Code 0.0.43, on macOS and on a headless Ubuntu box (see [A headless box over Tailscale](#a-headless-box-over-tailscale)).
+Backroom speaks T3 Code's **Orchestrator V2** (orchestration protocol 2): it needs a T3 server on **0.0.46 or newer**. Against an older server it says so in the T3 status at the foot of the sidebar and still offers T3's update there (see [Moving a server from T3's V1 to V2](#moving-a-server-from-t3s-v1-to-v2)). Tested against T3 Code 0.0.46-nightly.20261003 on a headless Ubuntu box (see [A headless box over Tailscale](#a-headless-box-over-tailscale)).
 
 ## Install
 
@@ -152,7 +153,7 @@ The link is exchanged for a bearer token, which is stored in `data/t3-auth.json`
 
 ```sh
 npm run t3:check                                   # read-only: server descriptor, auth policy, projects, models, threads
-npm run t3:check -- --write --project <projectId>  # creates one thread, sends one turn, checks correlation and interrupt
+npm run t3:check -- --write --project <projectId>  # launches one thread, follows its run, then checks a resend, queue, steer and interrupt
 ```
 
 The `--write` check leaves one thread titled "Backroom contract check" in T3; delete it there when you are done. Copy a project id from a room's **⋯** menu, its **Open in T3** dialog, or from T3 itself.
@@ -229,13 +230,13 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 
 ## Your first room
 
-1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ → New room** on a project), give it a title, and pick the T3 project it works in. Every member's thread belongs to that project.
+1. **Create a room.** Click **+ New → New room** in the sidebar (or **+ New room** on a project in the overview), give it a title, and pick the T3 project it works in. Every member's thread belongs to that project. When a Consigliere is chosen in Settings he is seated in the new room at once, as its Consigliere (see [The Consigliere](#the-consigliere)).
 2. **Bring in a member.** Click the members button (two-person icon) in the room header, then the add button at the top of the Members panel (a person with a plus), and choose one of:
-   - **New:** the member gets a new thread. Pick an alias, then the thread's T3 settings in one row, as in T3 Code's composer: the model (T3's default for the project is prefilled), its options (reasoning effort, context window and so on, in one dropdown) and the permission mode (Supervised, Auto-accept edits, Auto, Full access). A role is optional; it is the only part Backroom adds. Backroom creates the thread in T3.
+   - **New:** the member gets a new thread. Pick an alias, then the thread's T3 settings in one row, as in T3 Code's composer: the model (T3's default for the project is prefilled), its options (reasoning effort, context window and so on, in one dropdown) and the permission mode (Supervised, Auto-accept edits, Auto, Full access). Backroom creates the thread in T3.
 
      The model button opens a picker laid out like T3 Code's. A rail on the left lists your favorites and one icon per provider; the list beside it shows that provider's models, with its sign-in and usage above them and older models behind a **Legacy models** row. Typing searches every provider at once. The star on a row keeps the model under favorites (stored in this browser; T3's own favorites live in its app and are not shared). Keys: **↑/↓** move, **Enter** chooses, **←/→** change provider while the search field is empty, **Alt+1…9** (⌥ on a Mac) choose by position, **Esc** closes.
 
-     **Where it works** (as in T3 Code's new-thread toolbar): the **Project folder** (the project's own checkout, on whatever branch it has, shared with anyone else working there), a **New worktree** (a folder and branch of its own, made in T3's worktrees folder from the base branch you pick), or one of the project's **existing worktrees**. A new worktree's branch is named after the room and the member (`payments/builder`) unless you type a name, because a member does many tasks and no single one names it well. The worktree is made when you add the member, so the folder exists before any task and every briefing can name it; T3's worktree setup script (T3 runs it only when it makes the worktree at a thread's first message) is not run. The choice starts on T3's default for the project, and the worktree stays when the member is removed (the Git tab lists it).
+     **Where it works** (as in T3 Code's new-thread toolbar): the **Project folder** (the project's own checkout, on whatever branch it has, shared with anyone else working there), a **New worktree** (a folder and branch of its own, made in T3's worktrees folder from the base branch you pick), or one of the project's **existing worktrees**. A new worktree's branch is named after the room and the member (`payments/builder`) unless you type a name, because a member does many tasks and no single one names it well. T3 makes the worktree when you add the member (it fetches, checks out and runs the project's setup script, as for its own threads), so the folder exists before any task and every briefing can name it. The choice starts on T3's default for the project, and the worktree stays when the member is removed (the Git tab lists it).
    - **Existing:** pick one of the project's threads. The member continues that thread and keeps its model, options and permission mode.
 
    The alias is what you type after `@`, and it exists only inside this room.
@@ -248,7 +249,7 @@ The composer placeholder cycles through examples built from your room's actual m
 
 ## Projects, and threads without a room
 
-The sidebar lists T3's projects. Under each one are its rooms, then its T3 threads that no room holds, most recently used first (five, then **show more**). Below those, **Settled · N** and **Archived · N** fold open to T3's settled and archived threads for the project. Click a project's name to fold it.
+The sidebar lists T3's projects. Under each one are its rooms, then its T3 threads that no room holds, most recently used first (five, then **show more**). A thread an agent made as a subagent of its own is left out, as in T3's own list. Below those, **Settled · N** and **Archived · N** fold open to T3's settled and archived threads for the project. Click a project's name to fold it.
 
 A thread is in one of three states in T3:
 
@@ -258,12 +259,12 @@ A thread is in one of three states in T3:
 
 Deleted threads are gone: T3 keeps no record a client can list or restore.
 
-- **A thread on its own.** Pick **+ → New thread** on a project (or **+ New → New thread**), choose the model and permission mode (or click someone in your **crew** above the settings: theirs are filled in, a line under the row says so, and clicking them again goes back to the defaults; a thread started with them shows their name in its bar), and where it works (the project folder, a new worktree, or an existing one, as for a member; a new worktree's branch gets T3's temporary name, which T3 replaces with one made from your first message), and type. The first message creates the thread in T3 and starts it; T3 then names it. Until then nothing exists in T3: **×** in the page header or on the "New thread" row in the sidebar, or **Esc** while nothing is typed, cancels and returns to where you were. Messages go to T3 exactly as typed, with no room briefing and no queue, like typing in T3 Code. While a turn runs you can **Stop** it, or send another message and T3 handles it as its own client would. Approvals and questions appear in the conversation. Images work as in a room.
+- **A thread on its own.** Pick **+ → New thread** on a project (or **+ New → New thread**), choose the model and permission mode (or click someone in your **crew** above the settings: theirs are filled in, a line under the row says so, and clicking them again goes back to the defaults; a thread started with them shows their name in its bar), and where it works (the project folder, a new worktree, or an existing one, as for a member; a new worktree's branch is named by T3 from your first message unless you type one), and type. The first message creates the thread in T3, with its folder, and starts it in one step; T3 then names it. Until then nothing exists in T3: **×** in the page header or on the "New thread" row in the sidebar, or **Esc** while nothing is typed, cancels and returns to where you were. Messages go to T3 exactly as typed, with no room briefing and no queue, like typing in T3 Code. While a turn runs you can **Stop** it, or send another message: it goes into the running turn, as T3 Code's composer does by default. Approvals and questions appear in the conversation. Images work as in a room.
 - **Threads started in T3 Code** show up in the same list and open the same way.
 - **The ⋯ menu** on an open thread changes its model and permission mode, **adds it to a room** of the same project (it becomes a member under an alias and keeps its history), or settles (or unsettles), archives or deletes it in T3.
 - **A new project.** **+ New → New project** adds a T3 project for a folder on the machine T3 runs on. Type the path or browse: the list under the field shows the folders T3 finds for what is typed (a path ending in `/` lists that folder's subfolders; otherwise the folders whose names start with the last part), click one to go into it and `..` to go up; folders that are projects already say so. The folder the path names is the one added, so browsing into it and pressing **Add project** adds it. The folder must exist unless you tick **Create the folder**; T3 refuses a folder another project already uses. The title defaults to the folder name. Cloning from a Git URL or GitHub is T3 Code's own; a project added there shows here.
 
-The thread view reads the last 30 turns from T3 each time it polls; older turns stay in T3 Code. Nothing about a thread outside a room is stored by Backroom.
+The thread view reads T3's recent window of the thread each time it polls; older turns stay in T3 Code. Nothing about a thread outside a room is stored by Backroom.
 
 ## Writing messages
 
@@ -375,8 +376,6 @@ Type `/` at the start of the message to see these, each with a description:
 /steer @grok also cover the edge cases         deliver into grok's running turn (see below)
 /note preserve the public API                  a room note everyone sees; no task
 /add alice                                     seat a new member on a new thread (T3's default model)
-/add alice role accountant                     same, with a role
-/role @alice accountant                        assign a role ("none" clears it)
 /remove @alice                                 retire a member (asks about its pending tasks)
 ```
 
@@ -401,10 +400,7 @@ A plain send to a member who is mid-turn **waits**. The task starts when the cur
 
 This works like T3's own "steer" follow-up setting. The mid-turn message carries only your words and images, not the full room briefing. It is never sent while the agent is waiting on an approval or a question, or before the thread's first room briefing.
 
-Providers handle a steered message differently (verified live with `scripts/t3-steer-check.ts`):
-
-- **Cursor, Grok, OpenCode** take it into the running turn. One reply answers both messages and links back to both ("↩ your 3:49 and 3:50 PM messages").
-- **Claude** starts a separate turn for it straight away. You get two replies, each linked to its own message.
+T3 puts a steered message into the run that is going: the provider takes it into its turn. One reply answers both messages and links back to both ("↩ your 3:49 and 3:50 PM messages"). If that run has ended by the time the message reaches T3, the message starts a run of its own and gets its own reply.
 
 ## T3 slash commands
 
@@ -414,6 +410,44 @@ T3 publishes each provider's slash commands and skills. Claude exposes dozens (`
 - **Send:** `@claude /compact focus on the parser` is sent to claude's thread exactly as typed, with no room briefing around it, because a harness only runs a slash command when it is the first thing in the message. The plan row marks it **T3 command**.
 - **Unknown commands are blocked.** The plan and the server both refuse a command the recipient's provider doesn't have.
 - **Limits:** a T3 command can't be combined with `/steer`, and it doesn't count as the member having seen the room. Its next normal task still gets the full briefing.
+
+## The Consigliere
+
+Instead of handing out the work yourself, you can talk to one member and let him do it. "Research this with two others, discuss your differences, and bring me the result": he brings the others in, gives them work, reads their answers, runs the discussion and reports back. That member is the room's **Consigliere**. Any member can be one; Backroom ships no preset and names no model.
+
+The board does the carrying and Backroom keeps the record. The Consigliere gives work by posting on the board (`rooms-board post "@name the job"`); Backroom delivers each post as a task on that member's thread and, when it ends, wakes him with the answer as a new turn. He never waits: he posts, ends his turn with his note to you, and is woken when there is something to read. A steer (`@name /steer …`) goes into a member's running turn the same way. Backroom marks him, tells everyone the rules, records every post and answer, and shows it. Every judgement is his: who works on what, whether another round is needed, whether the members agree, when to stop. Backroom counts no votes and sets no limits; you see the spend grow and can stop anything.
+
+- **Choose one for new conversations.** **Settings → Consigliere…** lists your saved crew, with **None**. Once one is chosen, every new room opens with him seated as its Consigliere, and the sidebar's **+ New** also offers **Talk to \<name\>**: an empty chat whose first message creates the room (titled with the start of the message), seats him as its Consigliere and delivers the message. The first message is text only; images work once the room is open. Deleting that saved crew member asks first and clears the setting; members already seated stay.
+- **Or make one in a room you have.** Under **Members**, a member's menu has **Make Consigliere** and, on the one who is, **Remove as Consigliere**. You are told first, and may go on, when he is in plan mode or his permission mode asks for approval (he would be stopped at every board command), or when he runs on a harness other than Claude, Codex or Antigravity (untried there; the board command is a shell command, so any harness that runs commands should do). A room has at most one; removing him from the room clears the mark.
+- **Two panels.** A room with a Consigliere shows your **chat** with him on the left (the messages addressed to him and his replies, with the composer) and the **board** on the right (every post in the room). The chat is a view of the board; nothing is kept for it alone. **Hide** on the board puts it away and gives the chat the full width (**Show board** brings it back; the choice is kept on the device). On a narrow screen the chat shows first and a button switches to the board. Posts show their number (`#51`), because his reports cite them. 
+- **Every message is for him.** Whatever you type in such a room goes to the Consigliere, also when it names members: `@bob check the logs` tells him who you want on it, and he sends the work. It is sent as a steer: into his turn when he is working (so it reaches him while he waits on the members), as a turn of its own when he is idle. A T3 slash command (`@bob /compact`) still goes straight to the member it names, with no relay; he can also send one himself, as the whole message.
+- **Members, not subagents.** The people he brings in are seated members, each on its own T3 thread, so each keeps what it has read and said through every round. He seats them from your saved crew; in a room with a Consigliere only he may. Any member may still use subagents inside its own task.
+- **His rules are yours to change.** **Settings → Consigliere…** shows the rules as text; edit them to your liking and **Save rules**, or **Reset to default**. They apply to every Consigliere, in every room, from his next message.
+- **What he is told.** Every briefing Backroom writes for him carries his rules, by default: do the small things yourself (an answer you know, a quick look, a small fix: he may read, edit and run things like any member), hand out what is real work (research, a change of any size or risk, parallel work, anything worth a second view), and say what you changed yourself; work through the room's members only, give self-contained assignments that point at posts by number instead of quoting them, wait and wait again, let your new message outrank running work, get an explicit reply from each member before reporting agreement, cite the post where each stated its position, and never manufacture agreement.
+- **What the others are told.** His messages arrive on a member's thread bare, so each other member gets a **seat briefing** once, as its first turn: who the Consigliere is and his thread, that his messages are assignments on your behalf and other members' are statements, how to read the board, and that it may use subagents in its own task. It asks for a one-line acknowledgement. It is sent when a member is seated in such a room and to everyone already seated when a room gets its first Consigliere; when the mark moves, everyone is told who he is now.
+
+### The board, and `bin/rooms-board`
+
+The board is the room's saved record: every message and answer, who sent it, to whom, and how the turn ended. It holds no conclusions. Backroom never records that members agree or that an answer is right; the Consigliere says such things in his own words, citing posts, and you can open them and check him.
+
+- **What members send each other is recorded.** A post one member makes for another (`rooms-board post`) is on the board at once, with its sender and receiver, and the answer lands under it when the task ends. A message sent with T3's own thread tools instead (older rooms, or an agent that prefers them) becomes a post as soon as Backroom sees it, the same way. A sender whose thread is not in the room is recorded as outside it, with the thread's title. The answer is recorded with how its turn ended: completed, interrupted or failed; a turn stopped before it answered is still recorded.
+- **One row per turn.** On the board, a turn between members is one row: sender → receiver, the first line of what was sent (open it for the whole text), its state, anything else sent into the same turn, and the answer underneath.
+- **Members read the board with one command.** T3's tools read one thread at a time; `bin/rooms-board` reaches the room. Every briefing says how to call it, with the member's own key (the one `rooms-browser` uses), and every command works within that member's room only:
+
+  ```sh
+  bin/rooms-board index --as sol.a3a51677              # the posts: number, kind, sender → receiver, outcome, size; no text
+  bin/rooms-board index --after 51 --as sol.a3a51677   # only later posts; --all adds task status lines and system notes
+  bin/rooms-board read 51 53 --as sol.a3a51677         # the exact saved text; over 20,000 characters comes in pages (--page 2)
+  bin/rooms-board post "@opus write the plan" --as sol.a3a51677   # work for a member: a task on their thread; the poster is woken with the answer
+  bin/rooms-board members --as sol.a3a51677            # who is seated: alias, model, thread id, and who is the Consigliere
+  bin/rooms-board crew --as sol.a3a51677               # your saved crew
+  bin/rooms-board seat astra --as sol.a3a51677         # seats that saved crew member; prints its alias and thread id
+  bin/rooms-board help
+  ```
+
+  The `#51` a member is told to read is the `#51` you see. This also gives every member a way to read messages a long briefing shortened ("full text available in the room").
+
+Known limits: if T3 or the Consigliere's session restarts while he waits, nothing wakes him (the members' work is still on the board; tell him to carry on). T3 gives every member the same tools, so a worker can send another member work; the board shows it with its sender. A member's standing rules are in its seat briefing, not repeated with each assignment. Members' messages are recorded from the first start of a Backroom that can record them; older ones stay in T3.
 
 ## Room browser
 
@@ -460,17 +494,30 @@ Agents can use shared Chrome browsers on this machine for browser work. You can 
 ### Timeline
 
 - **The layout is a chat.** Your messages are on the left, and members' replies on the right, labelled with their alias. Each reply links back to the message(s) it answers.
-- **Progress, then the final answer.** T3 keeps each message an agent writes during a turn separately. While a turn runs, Backroom streams those progress notes, with the tool calls between them collapsed ("ran 4 tools · Read, Bash, Edit"). When the turn ends, the reply is the turn's final answer, and the notes sit under a collapsed "progress updates" disclosure. Dependent tasks receive only the final answer, which is why the briefing asks every agent to end with a **Handoff** section.
+- **Progress, then the final answer.** T3 keeps each message an agent writes during a turn separately. While a turn runs, Backroom streams those progress notes, with the tool calls between them collapsed ("ran 4 tools · Read, Bash, Edit"), naming the ones still running ("running Bash · ran 3 tools"). A `/compact` turn, and a compaction that happens by itself mid-turn, shows "Compacting context…", then what it saved ("Context compacted 264k → 8k tokens"). When the turn ends, the reply is the turn's final answer, and the notes sit under a collapsed "progress updates" disclosure. Dependent tasks receive only the final answer, which is why the briefing asks every agent to end with a **Handoff** section.
 - **Changed files** from a turn are listed under the reply, with line counts, collapsed by default, headed by where the work is: the folder, branch and commit when the task finished.
 - **Branch tags.** Once the room's replies come from more than one branch (members in different worktrees), each reply names the branch it was made on, so "I added X" isn't read as being in your checkout.
 - **Turns typed directly in T3 Code** also appear. Your prompt shows as your bubble, and the answer as the member's. A turn the agent started on its own, such as a background job finishing, is marked "↻ continued on its own". These turns are for awareness only: other members never receive them in briefings, and they never satisfy a room dependency.
+- **Approvals and questions** appear in the member's working bubble as they come, with T3's own choices (Accept, Accept for session, Always accept, Decline, Cancel turn, or the question's options and a custom answer). Answering there is the same as answering in the **Tasks** tab or in T3 Code; whichever you use first wins, and the bubble goes back to the live feed. A question the agent asks and then goes on without (Codex can, and says so in its reply) lapses when its turn ends: the member is **ready** again, and you answer in your next message.
+- **Messages between members** (a board post for another member, or a message sent to its thread with T3's tools) appear as one row per turn, with the answer underneath; see [The Consigliere](#the-consigliere).
 - **Notes typed into a running room turn** in T3 Code (Claude delivers them inside the turn, so the reply answers them too) appear as your bubble tagged "in T3", with any images, ahead of the reply. Like direct turns, they are for awareness only and never enter briefings.
-- **Replies render richly.** Code blocks have a copy button. Inline code that names a file (`src/parser.ts:42`) shows as a chip with a type badge and the basename; hover for the full path, click to copy it. Files an agent saves to disk and references by path render inline: an image (`![shot](/tmp/shot.png)`) as a picture, a recording (`![demo](/home/me/demo.mp4)`) with a video player, a sound with an audio player. Backroom serves only image, video and audio files under your home directory or the temp directory, resolving symlinks first, and streams video in ranges so it seeks and plays on a phone.
+- **Replies render richly.** Code blocks have a copy button. Inline code that names a file (`src/parser.ts:42`) shows as a chip with a type badge and the basename; hover for the full path, click to preview it (below). Files an agent saves to disk and references by path render inline: an image (`![shot](/tmp/shot.png)`) as a picture, a recording (`![demo](/home/me/demo.mp4)`) with a video player, a sound with an audio player. Backroom serves only image, video and audio files under your home directory or the temp directory, resolving symlinks first, and streams video in ranges so it seeks and plays on a phone.
+- **Preview a file.** A file chip opens the file in a dialog that takes 90% of the window (and follows it as it resizes): Markdown rendered (**Source** shows it as written), code highlighted with line numbers as T3 Code does it (with Shiki, loaded only when a preview opens), images, recordings and sounds shown. A chip with a line or a range (`http.ts:869-891`) scrolls to it and marks it. A relative path is looked for in the folder the reply was written in (its member's worktree), then in each project; a bare name (`Crew.tsx`) is looked for by name. Links inside a document or a reply stay in the app: `#…` scrolls to that heading, a link to a file (relative, absolute, or with GitHub's `#L10-L20`) opens its preview, and only web links open a new tab. Documents can be read aloud with the speaker button, and the path copied. Only files inside T3's project folders, its threads' worktrees and the temp folder are read, never ones that look like secrets (`.env`, keys, `t3-auth.json`), and text only up to 512 KB.
 - **Copy a whole message.** The copy button at the foot of a reply, beside the speaker, copies the reply as the Markdown it was written in, so it pastes with its formatting. Your own messages have one beside the bubble: it shows while the pointer is over the message, and always on a phone. Threads on their own have the same buttons.
+
+### Status bar
+
+Above the conversation, a line or two says what is going on in the room, one chip per thing, grouped by what it asks of you. With nothing going on there is no bar.
+
+- **Needs you:** a member waiting on an approval or a question, a task that is held or blocked, and a failure that is still the last thing its member was given (with the reason, such as a harness that is not signed in). In a room with a Consigliere a worker's failure is his to deal with, so only his own shows here; it is on the board either way.
+- **Working:** tasks that are running, and members busy with a turn the room did not start (typed in T3, or sent by another member: "for alice").
+- **Waiting:** tasks queued behind another.
+
+A chip moves from one group to the next as its state changes and goes away when it is done. Click one to open it under the bar. Each offers the same three kinds of action: the answer (the approval's choices, the question's options, **Release**, **Unblock** or **Retry**), **Dismiss** (drop a question without answering, or take a failure off your list; it stays failed on the board and a retry brings it back) and **Cancel** or **Stop** for the work itself. **more** opens the full task card: edit, the retry options, what was delivered. The same "needs you" count is the badge on the room in the sidebar, so you see it from any room.
 
 ### Room header
 
-The header carries the room's own controls. On the right, **Members** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)), **Tasks** (a checklist, with the count, and a violet "need input" pill when T3 is waiting on you) and **Git** (a branch, with the number of uncommitted files in the room's folders) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
+The header carries the room's own controls. On the right, **Members** (a two-person icon with the number seated; hover for who is doing what), **Browser** (a globe, with a green check while the room's agents may use browsers, the tab count while its default browser runs, and a red dot if it failed to start; it opens the room's browser settings, status and tabs, see [Room browser](#room-browser)) and **Git** (a branch, with the number of uncommitted files in the room's folders) open the side panel on that tab. They are icons; hover any of them for what it is and its counts. Clicking the tab already showing closes it. The **⋯** menu shows the room's T3 project (name and id, with a copy button) and holds **Rename…** and **Delete room…**. The panel stays open or closed, on its last tab, across reloads.
 
 Every page's header names what is open as a small breadcrumb: `project / room` (or thread; `Browsers / name` for a browser), so switching from the sidebar or the collapsed rail shows where you landed. Phones show the name alone.
 
@@ -483,10 +530,10 @@ The **Members** tab of the side panel lists everyone seated, with the total cont
 - **needs approval** or **waiting for your answer**, then **plan ready**: the card gets a steady border in that colour;
 - **working** (a room task), **working in T3** (a turn typed in T3 Code) or **starting**: the card pulses;
 - **subagents running** or **background work**, when the turn ended but its subagents or workflows run on: the card pulses;
-- **monitoring**, when only watch loops or background shells are left: the card pulses slower and fainter;
-- then **ready**, **error**, **interrupted** or **stopped**.
+- **monitoring**, when only monitors are left: the card pulses slower and fainter;
+- then **ready**, **error** or **interrupted**, as the last run ended.
 
-A line under the model says what runs beside the turn, as T3 lists it: "2 subagents · 1 shell". With reduced motion turned on in the system, a working card keeps a steady border instead of pulsing. Claude and Codex report context to T3; Cursor and Antigravity do not.
+A line under the model says what runs beside the turn, as T3 lists it: "2 subagents · 1 command". With reduced motion turned on in the system, a working card keeps a steady border instead of pulsing. Claude and Codex report context to T3; Cursor and Antigravity do not.
 
 **Click a member** for its menu, headed by the usage card. The card shows:
 
@@ -499,7 +546,7 @@ The menu has:
 
 - **Open in T3:** thread and project ids.
 - **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
-- **Settings…:** alias, role, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
+- **Settings…:** alias, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
 - **Rebind thread…:** point the member at another thread.
 - **Remove from room…**
 
@@ -540,11 +587,11 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### Sidebar and header
 
-The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls. On the left, the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel) and **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)). On the right, the settings menu (two sliders): **Roles…**, **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)) and the theme (System, Light, Dark). The header above each page carries only that page's controls.
+The sidebar holds projects, each with its rooms and its threads that are not in a room (see [Projects, and threads without a room](#projects-and-threads-without-a-room)), then the **Browsers** list (see [Room browser](#room-browser)). Its foot has the app-wide controls. On the left, the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel) and **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)). On the right, the settings menu (two sliders): **Consigliere…** (see [The Consigliere](#the-consigliere)), **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)) and the theme (System, Light, Dark). The header above each page carries only that page's controls.
 
 The sidebar button next to **+ New** collapses the sidebar to a narrow rail (**⌘B** / **Ctrl+B** toggles it too; it stays collapsed across reloads). The rail keeps a tile per room, grouped by project, with a dot when a room needs you (violet), has something new (green), is working (blue) or has background work (ring), so switching rooms is one click. The T3 connection's dot sits at its foot, with the Updates button under it while there is something to update. The button at the top of the rail brings the full sidebar back, with threads, browsers and **+ New**.
 
-Controls that open, close, toggle or add something are icons with a hover name (people, globe, checklist, branch, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
+Controls that open, close, toggle or add something are icons with a hover name (people, globe, branch, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Release**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
 Each room shows activity pills:
 
@@ -577,7 +624,7 @@ The **Updates** button at the foot of the sidebar shows how many updates you can
 
 ### Tasks and Git (side panel)
 
-- **Tasks:** the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists members busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
+- **Tasks:** (the Street look's noticeboard opens it; the ordinary look has the status bar instead, see below) the queue as lanes (needs input, running, waiting, held, blocked). Native T3 approvals and questions can be answered in place, as they can in the member's bubble in the timeline. Running cards show what the thread is doing: plan step, tool calls and the last tool, and branch, plus its live output. The Running lane also lists members busy outside the queue: a turn typed directly in T3, or background work and monitoring between turns.
 - **Git:** the git state of the folders the room's threads work in: each member's T3 worktree, or the project's folder (shown even when nobody works there). When members work in more than one folder, the tab opens with the room across them:
   - **Where everyone works:** one row per folder with its branch, who works there, how far it is ahead of or behind the main branch (origin's default, else `main` or `master`) and what is uncommitted. Click a row to show that folder below.
   - **Changed in more than one place:** files two folders both changed since their branches parted, committed or not, with a chip per folder. Merging those branches may conflict there. Branches that share a long history are compared from where they split, so the shared part is never flagged.
@@ -599,7 +646,7 @@ The **Updates** button at the foot of the sidebar shows how many updates you can
 - per-turn checkpoints with changed files;
 - the tool log.
 
-Status, model, role and context are on the member's row in **Members** and its usage card.
+Status, model and context are on the member's row in **Members** and its usage card.
 
 Terminals, the browser preview and full diff text stay in T3 Code.
 
@@ -615,16 +662,15 @@ It also installs as an app. Open Backroom over HTTPS (for example a Tailscale Se
 
 The installed app opens full screen, keeps its icon, and shows the last loaded shell when offline. Live data is never cached, so it always reflects the server once connected.
 
-## Managing rooms, members and roles
+## Managing rooms and members
 
 - **Members mirror their thread.** Change the model or effort in T3 Code and the room updates. Change it from the room and the thread is updated through T3. The provider never changes, because a thread belongs to one harness; to switch provider, rebind to a new thread.
 - **Removing a member** asks what happens to its queued, held and blocked tasks (cancel them, or keep them blocked so you can reassign them) and to its T3 thread: **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Deleting asks for a confirmation. A thread also seated in another room is always kept, and when T3 no longer has the thread the choice is skipped. Removal is refused while it has a run in progress. If T3 refuses the thread action, the member is still removed and the reason is shown.
 - **Deleting a room** removes the room's own record: messages, tasks and stored images. For each member's thread you choose **Keep in T3** (the default), **Settle**, **Archive**, or **Delete** in T3. Turns still running keep running in T3; the room just stops following them.
-- **Roles** are named sets of rules ("accountant: reconcile every figure twice"). Manage them under **Roles…** in the settings menu at the foot of the sidebar, and assign them from a member's Settings or with `/role`. A member's role rules are delivered as plain text with each of its assignments. Editing a role changes future deliveries for everyone holding it.
 
 ### Crew
 
-Your **crew** are the people you bring into rooms: each one a name with a model and its options, a permission mode, a role, and where it works (the project folder, or a new worktree from the project's default branch). The crew is listed under **Crew** in the sidebar and stored by the service, so every device you use sees the same people.
+Your **crew** are the people you bring into rooms: each one a name with a model and its options, a permission mode, and where it works (the project folder, or a new worktree from the project's default branch). The crew is listed under **Crew** in the sidebar and stored by the service, so every device you use sees the same people.
 
 | To | Do this |
 | --- | --- |
@@ -636,6 +682,10 @@ Your **crew** are the people you bring into rooms: each one a name with a model 
 | Change or remove them | Their **⋯** menu → **Edit…** |
 
 Seated in a room, a crew member takes their name as the alias, numbered when the room already has it (`@sol`, then `@sol2`), and always gets a new thread. Capitals make no difference to a name: a room with `@Alice` has `alice` taken, and there is one crew member per name whatever its capitals. Name fields drop spaces as you type or paste. The seated member is the room's own from then on: renaming it or changing its model does not touch the crew, and editing or removing someone from the crew does not touch members or threads made from them. A crew member who works in a new worktree works in the project folder where the project is not a git repository.
+
+## The overview
+
+**Settings → Look → Overview** opens on one page of everything: a section per project, its rooms as tiles, and in each tile the members with their state and a line or two of what each is doing now (a turn's latest note, the tools running, the task it is on) or last said and how long ago. A stripe down a tile's edge says the room needs you (violet) or is busy (blue). The project's loose threads are tiles too, as rooms of one. **+ New room** on a project opens a room there, with the Consigliere seated; **+ New project** in the header adds a folder. Click a tile and the room slides in over the page as a sheet, four fifths of the width, with the rest darkened; the × in its header, Esc, or a click on the darkened part closes it. The sheet has its own look: one header with the room's name, the two views as tabs (the Consigliere's name for your conversation with him, **Board · N** for every post), the crew's marks (click them for Members), the browser and git panels and the ⋯ menu; the status bar under it; then the view, then the composer, which goes the same way whichever view is showing. The chat reads like a conversation (your lines tinted on the right, his as plain text), the board like a ledger (every post numbered, members' turns as cards with a coloured edge). A room without a Consigliere has only the board. A long room opens at its latest posts; **N earlier** at the top draws the next window above. The page reads the service every five seconds.
 
 ## The street
 
@@ -667,6 +717,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token |
 | `T3_USERDATA_DIR` | `~/.t3/userdata` | Where to find T3's runtime file and local model catalog |
 | `ROOMS_TICK_MS` | `1500` | Scheduler poll interval |
+| `ROOMS_WEB_DIST` | `web/dist` | The built UI the service serves (a second instance can serve another build) |
 | `ROOMS_BRIEFING_BUDGET` | `60000` | Characters per delivery before older room context is condensed |
 | `ROOMS_BROWSER_MODE` | `auto` | Room browser: `vnc` (Xvfb + noVNC), `window`, `headless`, or `off`. `auto` picks `vnc` on Linux with the tools installed, otherwise `window` (macOS or a Linux desktop) or `headless` |
 | `ROOMS_BROWSER_CHROME` | found automatically | Path to Chrome or Chromium |
@@ -675,7 +726,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_BROWSER_NOVNC_DIR` | `/usr/share/novnc` | noVNC web files |
 | `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a browser after this long without tab changes, unless a room using it has work in flight (`0` = never) |
 | `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
-| `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` to find the service; briefings pass it along when the data folder is elsewhere |
+| `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` and `bin/rooms-board` to find the service; briefings pass it along when the data folder is elsewhere |
 | `ROOMS_SPEECH` | on | `off` stops the service reading aloud (see [Read aloud](#read-aloud)); the model is then never downloaded |
 | `ROOMS_SPEECH_VOICE` | `af_heart` | Kokoro voice used unless a browser chose another: `af_heart`, `af_bella`, `af_nicole`, `bf_emma`, … |
 
@@ -685,6 +736,34 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 - **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "Backroom was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
 - **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/`, `browser-api.json` and the voice model under `models/` (which can be left out: it is downloaded again when missing). Keep the copy private: the T3 credential and every browser's logins are inside.
 - **Keep it running** with any process manager: the systemd user unit in [A headless box over Tailscale](#a-headless-box-over-tailscale), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
+
+### Moving a server from T3's V1 to V2
+
+Backroom works with T3's Orchestrator V2 only (T3 Code 0.0.46 and newer). T3 0.0.45 and older run its V1 orchestrator; Backroom reads such a server's version, says in the T3 status that it needs updating, and can start the update, but no room or thread works until it is done.
+
+T3 makes the move itself the first time a V2 server starts: it copies its V1 database (`state.sqlite`) to a new one (`statev2.sqlite`) and migrates the copy. V1's file is left as it was, so going back to a V1 build shows everything as it stood at the move, and nothing done since.
+
+- **What comes across:** threads with their titles, projects, models, permission and interaction modes, branches and worktrees, archived, pinned and settled state, linked pull requests, and every user and assistant message.
+- **What does not:** the harness's live session, old checkpoints and diffs, tool activity, approval history and proposed plans. A member's first message after the move starts a fresh harness session; T3 hands it as much of the earlier conversation as fits, and the agent can look up the rest.
+- **Cursor has to be signed in again.** V2 runs Cursor through Cursor's SDK with a sign-in of its own: T3's provider settings (in T3 Code), or `CURSOR_API_KEY`. Until then a member on Cursor fails to start, with T3's message saying so. Claude and Codex keep their sign-ins.
+- **What to do first:** let running turns finish (or stop them), and answer or stop anything waiting on you, in every room and thread. A turn running during the move is cut off; a room task whose turn was under way fails with "T3 no longer has this run" and can be retried.
+
+Then, on the machine that runs both, one command does the rest:
+
+```sh
+npm run t3:v2               # waits until no thread is in a turn, then switches
+npm run t3:v2 -- --dry-run  # only says what it would do
+```
+
+It builds the UI, restarts the Backroom service (the systemd user unit `backroom.service`; `--unit <name>` for another), starts T3's update through Backroom, waits for T3 to answer on protocol 2, pairs again if T3 no longer takes the credential, and reads the threads back. Under systemd it runs as a unit of its own, so it outlives the session that started it; it writes what it does to `data/t3-v2-cutover.log`. `--now` skips the wait and cuts running turns off.
+
+By hand it is the same three steps:
+
+1. Update Backroom and restart it (`git pull && npm install && npm run build:web`, then restart the service).
+2. Open **Updates** at the foot of the sidebar and update T3. On the box itself, `t3 update` does the same.
+3. When T3 answers on the new version, the T3 status clears, and rooms, members and threads are where they were. If Backroom says the credential was rejected, pair again ([Connect to T3 Code](#connect-to-t3-code)).
+
+Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot talk to each other. What each thread used before the move stays in its spend: Backroom remembers the harness sessions it has seen.
 
 ## Troubleshooting
 
@@ -696,7 +775,8 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
 | A task sits in "dispatching" and then fails with "provider failed to start" | The harness behind that member isn't signed in, or its CLI is missing. Fix it in T3, then press Retry on the task card. |
 | A member shows "busy in T3" | Someone is driving that thread directly in T3 Code. The room waits for that turn to end. |
-| A task card shows "previous attempt: T3 no longer reports this turn" | T3 briefly stopped listing the turn. Backroom rechecks for a while and revives the run if the turn reappears, so a retry doesn't deliver the work twice. Retry only if the thread really shows no such turn. |
+| The T3 status says "T3 … speaks orchestration protocol 1; Backroom needs protocol 2" | The T3 server is older than 0.0.46 (it runs T3's V1 orchestrator). Update it: **Updates** at the foot of the sidebar still reaches it. See [Moving a server from T3's V1 to V2](#moving-a-server-from-t3s-v1-to-v2). |
+| A task failed with "T3 no longer has this run" | The thread was rolled back in T3 past that run, or T3 moved to V2 while it ran (the move keeps messages, not runs). Press Retry on the task card. |
 | `/name is not a T3 command for @x` | That member's provider doesn't offer the command. Type `@x /` to see what it has. |
 | The model picker is empty | The catalog comes from T3's server config. With the RPC unavailable, it falls back to `~/.t3/userdata` and existing threads. Create one thread in T3 with the model you want, or type the instance id and model manually. |
 | A member shows "thread deleted in T3" | Its thread was deleted in T3 Code. Backroom keeps the member and its past replies, and new work for it is blocked. Rebind it to another thread or remove it. Settling or archiving a thread does not cause this. |
@@ -727,26 +807,26 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `src/db` | SQLite persistence (`node:sqlite`, WAL) and migrations |
 | `src/app/service.ts` | The single command handler behind every input path |
 | `src/parser` | Composer syntax: mentions, assignments, waits, directives, slash commands (shared with the UI) |
-| `src/scheduler` | Durable queue: dependencies, dispatch outbox, steering, turn correlation, reconciliation |
+| `src/scheduler` | Durable queue: dependencies, dispatch outbox, steering, following each task's run in T3, reconciliation |
 | `src/browser` | Browsers: the list and which rooms may use what (`catalog.ts`), each browser's Chrome process (and Xvfb/x11vnc/noVNC on Linux) with start, adopt and stop (`roomBrowsers.ts`), and the agents' tool behind `rooms-browser` (`tools.ts`) |
 | `src/briefing` | Exact context assembled for each delivery |
 | `src/speech` | Backroom's voice: Kokoro run in the service, one piece at a time, recent pieces kept |
 | `src/git` | Git read with the CLI on this machine: a folder's branch, uncommitted files, commits, worktrees and diffs (`reader.ts`), and where each member works (`workspaces.ts`) |
-| `src/adapter` | T3 boundary: HTTP + WebSocket RPC adapter with pairing, and an in-memory fake |
+| `src/adapter` | T3 boundary (Orchestrator V2): HTTP reads and WebSocket RPC commands with pairing and protocol check, and an in-memory fake |
+| `src/app/threadView.ts` | What is shown of a T3 thread, from its projection: one reply per run, the run in progress, requests, context, background work, changed files |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
 | `web/src/street`, `web/src/components/street` | The Street look: the block's layout rules (`layout.ts`), its pixel art, the back rooms and offices, what each business has spent |
 | `bin/rooms-browser` | The agents' browser command (plain Node; talks to the service over `data/browser-api.json`) |
 | `scripts/t3-pair.ts` | Pair from the command line |
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
-| `scripts/t3-steer-check.ts` | Live check of mid-turn delivery per model (creates scratch threads) |
-| `scripts/repair-replies.ts` | One-off repair of stored final answers and prompts from T3's record (`--dry-run` first) |
+| `scripts/t3-v2-cutover.ts` | Moves the machine from T3's V1 to V2 together with Backroom (`npm run t3:v2`) |
 | `scripts/readme-demo.ts` | The demo behind the README's screenshots: the fake T3 with scripted replies and the usage records a harness would leave, a crew and three rooms, in a throwaway data folder (build the UI first) |
 | `tests/` | Acceptance tests driven through the fake adapter |
 
 ## How it works
 
-- **Delivery.** Each task goes to its member's thread as one T3 turn. The turn's message is a **briefing**: the room messages the member hasn't seen, the finished answers of the tasks it waited on, its role rules, and its assignment. Each message is delivered once. If a message was addressed only to this member and is already the assignment, it isn't repeated in the context.
+- **Delivery.** Each task goes to its member's thread as one T3 turn. The turn's message is a **briefing**: the room messages the member hasn't seen, the finished answers of the tasks it waited on, and its assignment. Each message is delivered once. If a message was addressed only to this member and is already the assignment, it isn't repeated in the context.
 - **Where everyone works.** Every briefing says which folder and branch are the agent's own (its thread's T3 worktree, or the project folder, read with git when the task is sent), where each other member works, and who shares its folder. It asks the agent to deliver its work in its own folder and branch, because T3 and Backroom follow changes only there. Extra worktrees are welcome for parallel work (sub-agents, experiments), based on the agent's branch (a harness's own worktrees often start from origin's default branch instead), with what it keeps merged back before it finishes and any it leaves listed in its Handoff. It also asks the agent to read the others' work with git without switching (`git diff <your branch>...<branch>`, `git -C <folder> diff`); never to edit another member's folder; and, when sharing a folder, not to switch branches, stash, reset or clean. A finished task records where its work is (folder, branch, commit and how many files were left uncommitted); a task that waited on it gets that line above the files, and room messages replied on another branch than the reader's are tagged with it.
-- **Completion.** T3 has no "turn completed" event and never stamps a turn id on the message that started a turn. The scheduler polls each thread and matches its own message to the turn exactly: the turn's `requestedAt` equals the message's `createdAt`. It then reads that turn's state and final answer. A steered message has no turn of its own. An outcome is decided from the freshest T3 read, with a grace period, so a stale list can't end a run early.
+- **Completion.** In T3 a thread's work is a sequence of runs, each started by one message. T3 names that message on the run, and names the run on a message steered into it, so Backroom finds each task's run by the id it gave its message. The scheduler reads every seated thread's status each tick and, where a room task is under way, the thread's runs: the run's own status says queued, running, waiting on you, completed, failed or interrupted, and its last assistant message is the answer. Sending again with the same command id never starts a second run: T3 keeps a receipt for each command.
 - **Direct turns** started in T3 Code are imported into the timeline for awareness. They mark the member busy but never satisfy a room dependency.

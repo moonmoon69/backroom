@@ -426,7 +426,7 @@ export function ThreadList({
           <span className="thread-meta">
             {thread.modelSelection.model}
             {thread.branch ? ` · ${thread.branch}` : ""}
-            {thread.session?.status ? ` · ${thread.session.status}` : ""}
+            {thread.status !== "idle" ? ` · ${thread.status}` : ""}
           </span>
         </label>
       ))}

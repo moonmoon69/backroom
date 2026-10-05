@@ -84,3 +84,14 @@ export const resetsIn = (iso: string | null, now = Date.now()): string | null =>
   return `resets in ${Math.round(h / 24)}d`;
 };
 export const optionLabel = (id: string): string => OPTION_LABELS[id] ?? id;
+
+/**
+ * Whether a usage window has reset since T3 read it: its used share is from before the reset and no longer holds.
+ * Backroom asks T3 to check such a provider again (see T3Presence), so this lasts until the next reading.
+ */
+export const usageReset = (resetsAt: string | null, checkedAt: string | null, now = Date.now()): boolean => {
+  const at = resetsAt ? Date.parse(resetsAt) : Number.NaN;
+  if (!Number.isFinite(at) || at > now) return false;
+  const checked = checkedAt ? Date.parse(checkedAt) : Number.NaN;
+  return !Number.isFinite(checked) || checked < at;
+};

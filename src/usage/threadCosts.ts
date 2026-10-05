@@ -5,7 +5,7 @@
  * T3 reports usage per day and model only (server.getUsageSummary), never per thread. The pieces to split it by thread
  * are on this machine, and this module reads them, never writes:
  *
- *   thread  -> session     T3's state database: provider_session_runtime.resume_cursor_json
+ *   thread  -> session     T3's state database (statev2.sqlite): the native id on each of the thread's provider threads
  *   session -> calls       the harness's own transcripts (Claude: ~/.claude/projects, Codex: ~/.codex/sessions)
  *   calls   -> money       T3's price table (usage-model-rates.json, LiteLLM's document)
  *
@@ -125,10 +125,13 @@ const unavailable = (reason: CostUnavailable, provider: string | null): ThreadCo
 
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
 
-/** T3's provider names to the harness whose transcripts hold the calls, and the field of the cursor naming the session. */
-const HARNESS: Record<string, { harness: "claude" | "codex"; session: (cursor: Record<string, unknown>) => unknown }> = {
-  claudeAgent: { harness: "claude", session: (cursor) => cursor.resume },
-  codex: { harness: "codex", session: (cursor) => cursor.threadId },
+/**
+ * T3's provider drivers to the harness whose transcripts hold the calls. T3 names the harness's own conversation on
+ * each provider thread (its native id): Claude's session id, Codex's thread id.
+ */
+const HARNESS: Record<string, "claude" | "codex"> = {
+  claudeAgent: "claude",
+  codex: "codex",
 };
 
 export class ThreadCosts {
@@ -138,7 +141,7 @@ export class ThreadCosts {
   private readonly claudeDirs = new Map<string, string>();
   private codexIndex: { at: number; paths: Map<string, string> } = { at: 0, paths: new Map() };
   private rates: { mtimeMs: number; document: Record<string, Rate> } | null = null;
-  private sessionsMemo: { at: number; rows: Map<string, { provider: string; cursor: Record<string, unknown> }> } | null = null;
+  private sessionsMemo: { at: number; rows: Map<string, Array<{ provider: string; sessionId: string | null }>> } | null = null;
 
   private readonly sources: ThreadCostSources;
 
@@ -248,47 +251,49 @@ export class ThreadCosts {
     const list = new Map<string, { harness: "claude" | "codex"; id: string }>();
     let provider: string | null = null;
     let reason: CostUnavailable | null = null;
-    const row = this.t3Sessions()?.get(threadId);
-    if (row) {
-      provider = row.provider;
-      const known = HARNESS[row.provider];
-      if (!known) reason = "unsupported_provider";
-      else {
-        const id = known.session(row.cursor);
-        if (typeof id === "string" && id.length > 0) {
-          list.set(`${known.harness}:${id}`, { harness: known.harness, id });
-          this.sources.remember?.(threadId, row.provider, id);
-        }
+    for (const row of this.t3Sessions()?.get(threadId) ?? []) {
+      provider ??= row.provider;
+      const harness = HARNESS[row.provider];
+      if (!harness) reason = "unsupported_provider";
+      else if (row.sessionId) {
+        list.set(`${harness}:${row.sessionId}`, { harness, id: row.sessionId });
+        this.sources.remember?.(threadId, row.provider, row.sessionId);
       }
     }
-    // Sessions the thread had before its current one: T3 keeps only the current, the room remembers the rest.
+    // Sessions seen before: a conversation imported from T3's V1 has no provider thread there until its next run, and
+    // a provider thread can be replaced; the room remembers every session it has seen for the thread.
     for (const past of this.sources.remembered?.(threadId) ?? []) {
-      const known = HARNESS[past.provider];
-      if (!known) continue;
+      const harness = HARNESS[past.provider];
+      if (!harness) continue;
       provider ??= past.provider;
-      list.set(`${known.harness}:${past.sessionId}`, { harness: known.harness, id: past.sessionId });
+      list.set(`${harness}:${past.sessionId}`, { harness, id: past.sessionId });
     }
     if (list.size > 0) return { provider, reason: null, list: [...list.values()] };
     return { provider, reason: reason ?? (this.t3Sessions() === null ? "unreadable" : "no_session"), list: [] };
   }
 
-  /** Every thread's current session, as T3 has it; null when T3's database cannot be read. Kept for ten seconds. */
-  private t3Sessions(): Map<string, { provider: string; cursor: Record<string, unknown> }> | null {
+  /**
+   * Every thread's harness conversations, as T3 projects them (a thread has one provider thread per harness
+   * conversation: more after a fork, a handoff or a provider switch); null when T3's database cannot be read. Kept
+   * for ten seconds.
+   */
+  private t3Sessions(): Map<string, Array<{ provider: string; sessionId: string | null }>> | null {
     if (this.sessionsMemo && Date.now() - this.sessionsMemo.at < 10_000) return this.sessionsMemo.rows;
     if (!existsSync(this.sources.t3StateDb)) return null;
     let db: DatabaseSync | null = null;
     try {
       db = new DatabaseSync(this.sources.t3StateDb, { readOnly: true });
-      const rows = new Map<string, { provider: string; cursor: Record<string, unknown> }>();
-      for (const row of db.prepare("SELECT thread_id, provider_name, resume_cursor_json FROM provider_session_runtime").all() as Array<Record<string, unknown>>) {
-        let cursor: Record<string, unknown> = {};
+      const rows = new Map<string, Array<{ provider: string; sessionId: string | null }>>();
+      for (const row of db.prepare("SELECT thread_id, driver, payload_json FROM orchestration_v2_projection_provider_threads").all() as Array<Record<string, unknown>>) {
+        let sessionId: string | null = null;
         try {
-          const parsed: unknown = JSON.parse(String(row.resume_cursor_json ?? "{}"));
-          if (parsed && typeof parsed === "object") cursor = parsed as Record<string, unknown>;
+          const payload = JSON.parse(String(row.payload_json ?? "{}")) as { nativeThreadRef?: { nativeId?: unknown } | null };
+          if (typeof payload.nativeThreadRef?.nativeId === "string" && payload.nativeThreadRef.nativeId.length > 0) sessionId = payload.nativeThreadRef.nativeId;
         } catch {
-          // A cursor that is not JSON names no session.
+          // A payload that is not JSON names no session.
         }
-        rows.set(String(row.thread_id), { provider: String(row.provider_name), cursor });
+        const threadId = String(row.thread_id);
+        rows.set(threadId, [...(rows.get(threadId) ?? []), { provider: String(row.driver), sessionId }]);
       }
       this.sessionsMemo = { at: Date.now(), rows };
       return rows;

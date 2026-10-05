@@ -25,23 +25,35 @@ export function selectionFor(entry: Pick<CatalogEntry, "instanceId" | "model" | 
 
 export const entryKey = (entry: Pick<CatalogEntry, "instanceId" | "model">): string => `${entry.instanceId}\u0000${entry.model}`;
 
-// T3's model catalog, read once per page and shared by every picker and options menu.
-let catalogLoad: Promise<CatalogEntry[]> | null = null;
-export function loadCatalog(): Promise<CatalogEntry[]> {
-  catalogLoad ??= api.catalog().catch((error: unknown) => {
-    catalogLoad = null;
-    throw error;
-  });
-  return catalogLoad;
+// T3's model catalog, shared by every picker and options menu, and read again once a minute old, so a model T3 has
+// added since the page loaded turns up the next time a picker opens. `fresh` reads it now (after a model refresh).
+const CATALOG_MAX_AGE_MS = 60_000;
+let catalogLoad: { at: number; value: Promise<CatalogEntry[]> } | null = null;
+let lastCatalog: CatalogEntry[] | null = null;
+export function loadCatalog(fresh = false): Promise<CatalogEntry[]> {
+  if (fresh || !catalogLoad || Date.now() - catalogLoad.at > CATALOG_MAX_AGE_MS) {
+    const value = api.catalog().then(
+      (entries) => (lastCatalog = entries),
+      (error: unknown) => {
+        if (catalogLoad?.value === value) catalogLoad = null;
+        throw error;
+      },
+    );
+    catalogLoad = { at: Date.now(), value };
+  }
+  return catalogLoad.value;
 }
 
+/** The last catalog read, to show while a newer one loads. */
+export const cachedCatalog = (): CatalogEntry[] | null => lastCatalog;
+
 export function useCatalog(): CatalogEntry[] | null {
-  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(cachedCatalog);
   useEffect(() => {
     let cancelled = false;
     loadCatalog().then(
       (entries) => !cancelled && setCatalog(entries),
-      () => !cancelled && setCatalog([]),
+      () => !cancelled && setCatalog((current) => current ?? []),
     );
     return () => {
       cancelled = true;

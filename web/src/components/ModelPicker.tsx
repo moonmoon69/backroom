@@ -9,15 +9,15 @@
  *   empty, Alt+1…9 choose by position, Escape closes.
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ApiError, useProviders } from "../api.ts";
+import { api, ApiError, useProviders } from "../api.ts";
 import type { CatalogEntry, ModelSelection, ProviderInfo } from "../types.ts";
 import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
-import { entryKey, loadCatalog, selectionFor } from "./catalog.ts";
+import { cachedCatalog, entryKey, loadCatalog, selectionFor } from "./catalog.ts";
 import { Popover } from "./Popover.tsx";
 import { ProviderIcon } from "./ProviderIcon.tsx";
 import { ProviderLine } from "./Providers.tsx";
 import { useToast } from "./Toast.tsx";
-import { ChevronIcon, SearchIcon, StarIcon } from "./icons.tsx";
+import { ChevronIcon, RefreshIcon, SearchIcon, StarIcon } from "./icons.tsx";
 
 // ---- favourites: a set of entry keys in localStorage, shared by every picker on the page ----
 const FAVORITES_KEY = "backroom.modelFavorites";
@@ -96,8 +96,9 @@ export function ModelPicker({
   providerFilter?: string;
 }) {
   const { toast } = useToast();
-  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(cachedCatalog);
   const { providers } = useProviders(true);
+  const [findingModels, setFindingModels] = useState(false);
   const favorites = useFavorites();
   const sheet = useMediaQuery(MOBILE_QUERY);
   const [open, setOpen] = useState(false);
@@ -119,7 +120,7 @@ export function ModelPicker({
       })
       .catch((error) => {
         if (!cancelled) {
-          setCatalog([]);
+          setCatalog((current) => current ?? []);
           toast(error instanceof ApiError ? error.message : String(error));
         }
       });
@@ -127,6 +128,24 @@ export function ModelPicker({
       cancelled = true;
     };
   }, [toast]);
+
+  // T3 looks for new models only when asked (it opens an agent session per harness to do it), as its settings do.
+  const findModels = async () => {
+    if (findingModels) return;
+    setFindingModels(true);
+    try {
+      await api.refreshProviders({ models: true });
+      const before = new Set((catalog ?? []).map(entryKey));
+      const entries = await loadCatalog(true);
+      setCatalog(entries);
+      const added = entries.filter((entry) => !before.has(entryKey(entry))).length;
+      toast(added > 0 ? `T3 found ${added} new model${added === 1 ? "" : "s"}` : "T3 has no new models");
+    } catch (error) {
+      toast(error instanceof ApiError ? error.message : String(error));
+    } finally {
+      setFindingModels(false);
+    }
+  };
 
   const providerById = useMemo(() => new Map((providers ?? []).map((p) => [p.instanceId, p])), [providers]);
 
@@ -363,6 +382,19 @@ export function ModelPicker({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
+              <button
+                type="button"
+                tabIndex={-1}
+                className={`model-refresh${findingModels ? " busy" : ""}`}
+                aria-label="Look for new models"
+                title={findingModels ? "T3 is looking for new models…" : "Look for new models"}
+                disabled={findingModels}
+                // The search field keeps the cursor.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void findModels()}
+              >
+                <RefreshIcon />
+              </button>
             </label>
             {sectionGroup?.provider ? (
               <div className="model-section-head">

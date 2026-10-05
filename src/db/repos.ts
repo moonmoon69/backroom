@@ -5,7 +5,6 @@ import type {
   NativeRequest,
   Participant,
   Preset,
-  Role,
   Room,
   RoomEvent,
   Run,
@@ -42,6 +41,7 @@ function rowToRoom(row: Row): Room {
     browserEnabled: n(row.browser_enabled) === 1,
     defaultBrowserId: ns(row.default_browser_id),
     allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
+    consigliereId: ns(row.consigliere_participant_id),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
   };
@@ -56,7 +56,6 @@ function rowToParticipant(row: Row): Participant {
     id: s(row.id),
     roomId: s(row.room_id),
     alias: s(row.alias),
-    roleId: ns(row.role_id),
     modelSelection: JSON.parse(s(row.model_selection_json)),
     runtimeMode: s(row.runtime_mode) as Participant["runtimeMode"],
     interactionMode: s(row.interaction_mode) as Participant["interactionMode"],
@@ -95,8 +94,10 @@ function rowToEvent(row: Row): RoomEvent {
     attachmentIds: JSON.parse(s(row.attachment_ids_json)),
     progress: JSON.parse(s(row.progress_json)),
     prompt: ns(row.prompt),
+    to: ns(row.to_participant_id),
+    outcome: ns(row.outcome) as RoomEvent["outcome"],
     sourceRef: sourceMessageId
-      ? { threadId: s(row.source_thread_id), messageId: sourceMessageId, turnId: ns(row.source_turn_id) }
+      ? { threadId: s(row.source_thread_id), messageId: sourceMessageId, t3RunId: ns(row.source_t3_run_id) }
       : null,
     createdAt: s(row.created_at),
   };
@@ -115,12 +116,14 @@ function rowToTask(row: Row): Task {
     attachmentIds: JSON.parse(s(row.attachment_ids_json)),
     delivery: s(row.delivery) === "steer" ? "steer" : "queue",
     slashCommand: n(row.slash_command) === 1,
+    kind: s(row.kind) === "seat" ? "seat" : s(row.kind) === "wake" ? "wake" : "assignment",
     scheduleMode: s(row.schedule_mode) as Task["scheduleMode"],
     prerequisites: JSON.parse(s(row.prerequisites_json)),
     state: s(row.state) as Task["state"],
     stateReason: ns(row.state_reason),
     currentRunId: ns(row.current_run_id),
     userOutcome: ns(row.user_outcome) as Task["userOutcome"],
+    dismissedAt: ns(row.dismissed_at),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
   };
@@ -136,7 +139,7 @@ function rowToRun(row: Row): Run {
     threadId: s(row.thread_id),
     commandId: s(row.command_id),
     messageId: s(row.message_id),
-    turnId: ns(row.turn_id),
+    t3RunId: ns(row.t3_run_id),
     steered: n(row.steered) === 1,
     status: s(row.status) as Run["status"],
     briefing: s(row.briefing),
@@ -195,6 +198,10 @@ export class Repos {
 
   updateRoomTitle(roomId: string, title: string, at: string): void {
     this.raw.prepare("UPDATE rooms SET title = ?, updated_at = ? WHERE id = ?").run(title, at, roomId);
+  }
+
+  setRoomConsigliere(roomId: string, participantId: string | null, at: string): void {
+    this.raw.prepare("UPDATE rooms SET consigliere_participant_id = ?, updated_at = ? WHERE id = ?").run(participantId, at, roomId);
   }
 
   setRoomBrowser(roomId: string, enabled: boolean, defaultBrowserId: string | null, at: string, allowedBrowserIds?: string[] | null): void {
@@ -299,12 +306,12 @@ export class Repos {
   insertParticipant(p: Participant): void {
     this.raw
       .prepare(
-        `INSERT INTO participants (id, room_id, alias, alias_key, role_id, model_selection_json,
+        `INSERT INTO participants (id, room_id, alias, alias_key, model_selection_json,
            runtime_mode, interaction_mode, binding_generation, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        p.id, p.roomId, p.alias, p.alias.toLowerCase(), p.roleId,
+        p.id, p.roomId, p.alias, p.alias.toLowerCase(),
         JSON.stringify(p.modelSelection), p.runtimeMode, p.interactionMode, p.bindingGeneration, p.createdAt, p.updatedAt,
       );
     if (p.retiredAt) this.updateParticipant(p);
@@ -313,12 +320,12 @@ export class Repos {
   updateParticipant(p: Participant): void {
     this.raw
       .prepare(
-        `UPDATE participants SET alias = ?, alias_key = ?, role_id = ?, model_selection_json = ?,
+        `UPDATE participants SET alias = ?, alias_key = ?, model_selection_json = ?,
            runtime_mode = ?, interaction_mode = ?, binding_generation = ?, retired_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         // A retired participant releases its alias for reuse; the unique key is suffixed with its id.
-        p.alias, p.retiredAt ? `${p.alias.toLowerCase()}#retired:${p.id}` : p.alias.toLowerCase(), p.roleId, JSON.stringify(p.modelSelection),
+        p.alias, p.retiredAt ? `${p.alias.toLowerCase()}#retired:${p.id}` : p.alias.toLowerCase(), JSON.stringify(p.modelSelection),
         p.runtimeMode, p.interactionMode, p.bindingGeneration, p.retiredAt, p.updatedAt, p.id,
       );
   }
@@ -390,12 +397,12 @@ export class Repos {
     this.raw
       .prepare(
         `INSERT INTO events (id, room_id, sequence, kind, speaker_json, text, task_id, run_id, artifacts_json, attachment_ids_json, progress_json, prompt,
-           source_thread_id, source_message_id, source_turn_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           to_participant_id, outcome, source_thread_id, source_message_id, source_t3_run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.roomId, e.sequence, e.kind, JSON.stringify(e.speaker), e.text, e.taskId, e.runId, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt,
-        e.sourceRef?.threadId ?? null, e.sourceRef?.messageId ?? null, e.sourceRef?.turnId ?? null, e.createdAt,
+        e.id, e.roomId, e.sequence, e.kind, JSON.stringify(e.speaker), e.text, e.taskId, e.runId, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt, e.to, e.outcome,
+        e.sourceRef?.threadId ?? null, e.sourceRef?.messageId ?? null, e.sourceRef?.t3RunId ?? null, e.createdAt,
       );
   }
 
@@ -404,13 +411,14 @@ export class Repos {
     return row ? rowToEvent(row) : null;
   }
 
-  hasEventForTurn(threadId: string, turnId: string): boolean {
-    return this.raw.prepare("SELECT 1 AS present FROM events WHERE source_thread_id = ? AND source_turn_id = ?").get(threadId, turnId) !== undefined;
+  /** Whether the T3 run's turn is already in the timeline (a member.message of the run is not its turn). */
+  hasTurnForT3Run(threadId: string, t3RunId: string): boolean {
+    return this.raw.prepare("SELECT 1 AS present FROM events WHERE source_thread_id = ? AND source_t3_run_id = ? AND kind <> 'member.message'").get(threadId, t3RunId) !== undefined;
   }
 
-  /** Whether a room run owns this T3 turn (so its reply arrives as assistant.reply, not as a direct T3 turn). */
-  isRunTurn(threadId: string, turnId: string): boolean {
-    return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND turn_id = ?").get(threadId, turnId) !== undefined;
+  /** Whether a room run owns this T3 run (so its reply arrives as assistant.reply, not as a direct T3 turn). */
+  isRunT3Run(threadId: string, t3RunId: string): boolean {
+    return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND t3_run_id = ?").get(threadId, t3RunId) !== undefined;
   }
 
   /** Whether a room run sent this T3 user message (the room's own prompt or steer, not a note typed in T3). */
@@ -469,11 +477,11 @@ export class Repos {
     this.raw
       .prepare(
         `INSERT INTO tasks (id, room_id, number, revision, source_event_id, participant_id, instruction, source_text, attachment_ids_json,
-           delivery, slash_command, schedule_mode, prerequisites_json, state, state_reason, current_run_id, user_outcome, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           delivery, slash_command, kind, schedule_mode, prerequisites_json, state, state_reason, current_run_id, user_outcome, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        t.id, t.roomId, t.number, t.revision, t.sourceEventId, t.participantId, t.instruction, t.sourceText, JSON.stringify(t.attachmentIds), t.delivery, t.slashCommand ? 1 : 0, t.scheduleMode,
+        t.id, t.roomId, t.number, t.revision, t.sourceEventId, t.participantId, t.instruction, t.sourceText, JSON.stringify(t.attachmentIds), t.delivery, t.slashCommand ? 1 : 0, t.kind, t.scheduleMode,
         JSON.stringify(t.prerequisites), t.state, t.stateReason, t.currentRunId, t.userOutcome, t.createdAt, t.updatedAt,
       );
     this.snapshotRevision(t);
@@ -483,11 +491,11 @@ export class Repos {
     this.raw
       .prepare(
         `UPDATE tasks SET revision = ?, participant_id = ?, instruction = ?, source_text = ?, schedule_mode = ?, prerequisites_json = ?,
-           state = ?, state_reason = ?, current_run_id = ?, user_outcome = ?, updated_at = ? WHERE id = ?`,
+           state = ?, state_reason = ?, current_run_id = ?, user_outcome = ?, dismissed_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         t.revision, t.participantId, t.instruction, t.sourceText, t.scheduleMode, JSON.stringify(t.prerequisites), t.state,
-        t.stateReason, t.currentRunId, t.userOutcome, t.updatedAt, t.id,
+        t.stateReason, t.currentRunId, t.userOutcome, t.dismissedAt, t.updatedAt, t.id,
       );
   }
 
@@ -518,13 +526,13 @@ export class Repos {
   insertRun(r: Run): void {
     this.raw
       .prepare(
-        `INSERT INTO runs (id, task_id, task_revision, attempt, binding_id, thread_id, command_id, message_id, turn_id, status, steered, briefing,
+        `INSERT INTO runs (id, task_id, task_revision, attempt, binding_id, thread_id, command_id, message_id, t3_run_id, status, steered, briefing,
            included_from_sequence, included_to_sequence, interrupt_requested_at, accepted_at, started_at, completed_at, result_event_id,
            error, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        r.id, r.taskId, r.taskRevision, r.attempt, r.bindingId, r.threadId, r.commandId, r.messageId, r.turnId, r.status, r.steered ? 1 : 0, r.briefing,
+        r.id, r.taskId, r.taskRevision, r.attempt, r.bindingId, r.threadId, r.commandId, r.messageId, r.t3RunId, r.status, r.steered ? 1 : 0, r.briefing,
         r.includedFromSequence, r.includedToSequence, r.interruptRequestedAt, r.acceptedAt, r.startedAt, r.completedAt,
         r.resultEventId, r.error, r.createdAt, r.updatedAt,
       );
@@ -533,11 +541,11 @@ export class Repos {
   updateRun(r: Run): void {
     this.raw
       .prepare(
-        `UPDATE runs SET turn_id = ?, status = ?, interrupt_requested_at = ?, accepted_at = ?, started_at = ?, completed_at = ?,
+        `UPDATE runs SET t3_run_id = ?, status = ?, interrupt_requested_at = ?, accepted_at = ?, started_at = ?, completed_at = ?,
            result_event_id = ?, error = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
-        r.turnId, r.status, r.interruptRequestedAt, r.acceptedAt, r.startedAt, r.completedAt, r.resultEventId, r.error,
+        r.t3RunId, r.status, r.interruptRequestedAt, r.acceptedAt, r.startedAt, r.completedAt, r.resultEventId, r.error,
         r.updatedAt, r.id,
       );
   }
@@ -612,40 +620,6 @@ export class Repos {
       .run(commandId, kind, threadId, status, error, now, now);
   }
 
-  // ---- roles (named rule sets) ----
-  private rowToRole(row: Row): Role {
-    return { id: s(row.id), name: s(row.name), rules: s(row.rules), createdAt: s(row.created_at), updatedAt: s(row.updated_at) };
-  }
-
-  upsertRole(r: Role): void {
-    this.raw
-      .prepare(
-        `INSERT INTO roles (id, name, name_key, rules, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, rules = excluded.rules, updated_at = excluded.updated_at`,
-      )
-      .run(r.id, r.name, r.name.toLowerCase(), r.rules, r.createdAt, r.updatedAt);
-  }
-
-  getRole(id: string): Role | null {
-    const row = this.raw.prepare("SELECT * FROM roles WHERE id = ?").get(id) as Row | undefined;
-    return row ? this.rowToRole(row) : null;
-  }
-
-  findRoleByName(name: string): Role | null {
-    const row = this.raw.prepare("SELECT * FROM roles WHERE name_key = ?").get(name.toLowerCase()) as Row | undefined;
-    return row ? this.rowToRole(row) : null;
-  }
-
-  listRoles(): Role[] {
-    return (this.raw.prepare("SELECT * FROM roles ORDER BY name_key").all() as Row[]).map((row) => this.rowToRole(row));
-  }
-
-  deleteRole(id: string): boolean {
-    this.raw.prepare("UPDATE participants SET role_id = NULL WHERE role_id = ?").run(id);
-    this.raw.prepare("UPDATE presets SET role_id = NULL WHERE role_id = ?").run(id);
-    return this.raw.prepare("DELETE FROM roles WHERE id = ?").run(id).changes > 0;
-  }
-
   // ---- presets (participant settings under a name) ----
   private rowToPreset(row: Row): Preset {
     return {
@@ -653,7 +627,6 @@ export class Repos {
       name: s(row.name),
       modelSelection: JSON.parse(s(row.model_selection_json)) as Preset["modelSelection"],
       runtimeMode: s(row.runtime_mode) as Preset["runtimeMode"],
-      roleId: (row.role_id as string | null) ?? null,
       workspaceMode: s(row.workspace_mode) === "worktree" ? "worktree" : "local",
       createdAt: s(row.created_at),
       updatedAt: s(row.updated_at),
@@ -664,12 +637,12 @@ export class Repos {
   upsertPreset(p: Preset): void {
     this.raw
       .prepare(
-        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, role_id, workspace_mode, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
+        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, model_selection_json = excluded.model_selection_json,
-           runtime_mode = excluded.runtime_mode, role_id = excluded.role_id, workspace_mode = excluded.workspace_mode, updated_at = excluded.updated_at`,
+           runtime_mode = excluded.runtime_mode, workspace_mode = excluded.workspace_mode, updated_at = excluded.updated_at`,
       )
-      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.roleId, p.workspaceMode, p.createdAt, p.updatedAt);
+      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.workspaceMode, p.createdAt, p.updatedAt);
   }
 
   getPreset(id: string): Preset | null {
@@ -684,6 +657,10 @@ export class Repos {
 
   listPresets(): Preset[] {
     return (this.raw.prepare("SELECT * FROM presets ORDER BY sort_order, created_at").all() as Row[]).map((row) => this.rowToPreset(row));
+  }
+
+  deleteKv(key: string): void {
+    this.raw.prepare("DELETE FROM kv WHERE key = ?").run(key);
   }
 
   deletePreset(id: string): boolean {
@@ -722,20 +699,23 @@ export class Repos {
    * What finished in a room after `after` (an ISO time), newest first, at most `limit`: members' replies (to room
    * tasks, or to turns typed in T3), and runs that failed without one. A run the user interrupted is not news.
    */
-  listRoomFinishes(roomId: string, after: string, limit: number): Array<{ at: string; participantId: string | null; kind: "reply" | "failed"; text: string }> {
+  listRoomFinishes(roomId: string, after: string, limit: number, onlyParticipantId: string | null = null): Array<{ at: string; participantId: string | null; kind: "reply" | "failed"; text: string }> {
+    // In a room with a Consigliere, the workers answer him, not the user: only his replies and failures are news.
+    const who = onlyParticipantId === null ? "" : " AND json_extract(speaker_json, '$.participantId') = ?";
+    const whose = onlyParticipantId === null ? "" : " AND bindings.participant_id = ?";
     const rows = this.raw
       .prepare(
         `SELECT at, participant_id, kind, text FROM (
            SELECT created_at AS at, json_extract(speaker_json, '$.participantId') AS participant_id, 'reply' AS kind, substr(text, 1, 400) AS text
              FROM events
-            WHERE room_id = ? AND kind IN ('assistant.reply', 't3.turn') AND json_extract(speaker_json, '$.type') = 'participant' AND created_at > ?
+            WHERE room_id = ? AND kind IN ('assistant.reply', 't3.turn') AND json_extract(speaker_json, '$.type') = 'participant' AND text <> '' AND created_at > ?${who}
            UNION ALL
            SELECT runs.completed_at, bindings.participant_id, 'failed', substr(COALESCE(runs.error, ''), 1, 400)
              FROM runs JOIN tasks ON tasks.id = runs.task_id JOIN bindings ON bindings.id = runs.binding_id
-            WHERE tasks.room_id = ? AND runs.status = 'failed' AND runs.result_event_id IS NULL AND runs.completed_at > ?
+            WHERE tasks.room_id = ? AND runs.status = 'failed' AND runs.result_event_id IS NULL AND runs.completed_at > ?${whose}
          ) ORDER BY at DESC LIMIT ?`,
       )
-      .all(roomId, after, roomId, after, limit) as Row[];
+      .all(...(onlyParticipantId === null ? [roomId, after, roomId, after, limit] : [roomId, after, onlyParticipantId, roomId, after, onlyParticipantId, limit])) as Row[];
     return rows.map((row) => ({ at: s(row.at), participantId: row.participant_id === null ? null : s(row.participant_id), kind: row.kind === "failed" ? "failed" : "reply", text: s(row.text) }));
   }
 }

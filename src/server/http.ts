@@ -4,7 +4,7 @@
  */
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { Readable } from "node:stream";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -13,18 +13,40 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStoredAuth } from "../adapter/auth.ts";
-import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
-import type { T3Activity, T3Message, T3ThreadDetail } from "../adapter/types.ts";
-import { promptMessageForTurn } from "../adapter/correlate.ts";
-import { latestContextWindow, openRequests, threadTranscript } from "../app/direct.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, backgroundOf, isRunActive, runPrompt } from "../adapter/types.ts";
+import type { T3ThreadDetail } from "../adapter/types.ts";
+import {
+  backgroundTasks,
+  changedFiles,
+  compactions,
+  contextReading,
+  liveFeed,
+  planProgress,
+  proposedPlan,
+  recentActivity,
+  recentCheckpoints,
+  requestCards,
+  runningRun,
+  streamingText,
+  subagentRows,
+  threadTranscript,
+  toolSummary,
+  type BackgroundTask,
+  type LiveFeedItem,
+  type SubagentRow,
+} from "../app/threadView.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
+import { tasksNeedingYou } from "../domain/workStatus.ts";
 import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
 import { browsersForRoom, effectiveBrowser, roomsUsingBrowser, threadKey } from "../browser/catalog.ts";
 import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
+import { Board, BoardError } from "../app/board.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings } from "../app/consigliere.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
+import { previewFile } from "./filePreview.ts";
 import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoomCompare, worktreePathsOf } from "../git/reader.ts";
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
@@ -43,7 +65,6 @@ export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 
   return {
     room,
     participants,
-    roles: stack.repos.listRoles(),
     bindings: stack.repos.listBindings(participantIds),
     tasks: stack.repos.listTasks(roomId),
     runs: stack.repos.listRunsForRoom(roomId).map((run) => ({ ...run, briefing: "" })),
@@ -68,7 +89,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
   const costs = new ThreadCosts({
-    t3StateDb: join(config.t3UserDataDir, "state.sqlite"),
+    // T3's Orchestrator V2 database (its V1 database, state.sqlite, stays beside it untouched).
+    t3StateDb: join(config.t3UserDataDir, "statev2.sqlite"),
     ratesPath: join(config.t3UserDataDir, "usage-model-rates.json"),
     claudeProjectsDir: config.usage.claudeProjectsDir,
     codexSessionsDir: config.usage.codexSessionsDir,
@@ -95,18 +117,17 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     // The scheduler's last error until its next good tick, or this request's own check of T3 when that fails.
     let error: string | null = stack.scheduler.lastAdapterError;
     let errorAt: string | null = stack.scheduler.lastAdapterErrorAt;
-    if (stack.adapter.kind === "fake" || (httpAdapter && httpAdapter.hasCredentials)) {
+    if (stack.adapter.kind === "fake" || httpAdapter) {
       try {
-        environment = await stack.adapter.describe();
+        const described = await stack.adapter.describe();
+        environment = described;
         if (httpAdapter) auth = await httpAdapter.authSession();
-      } catch (caught) {
-        error = (caught as Error).message;
-        errorAt = new Date().toISOString();
-      }
-    } else if (httpAdapter) {
-      try {
-        environment = await stack.adapter.describe();
-        auth = await httpAdapter.authSession();
+        // A server on another orchestration protocol (T3's V1) answers, but nothing in a room can work against it:
+        // say so here even when no room has asked it for anything yet. Its update is still offered under Updates.
+        if (described.orchestrationProtocolVersion !== ORCHESTRATION_PROTOCOL_VERSION) {
+          error = new T3ProtocolMismatch(described.serverVersion, described.orchestrationProtocolVersion).message;
+          errorAt = new Date().toISOString();
+        }
       } catch (caught) {
         error = (caught as Error).message;
         errorAt = new Date().toISOString();
@@ -153,6 +174,27 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/t3/projects", async (c) => c.json(orderProjects(stack.repos, await stack.adapter.listProjects())));
   app.get("/api/t3/catalog", async (c) => c.json(await stack.adapter.listCatalog()));
   app.get("/api/t3/providers", async (c) => c.json(await stack.adapter.listProviders()));
+  // Ask T3 to check again now: every provider or one, and with `models` look for new models too (T3 opens an agent
+  // session for that, so it waits for someone to ask). Answers with the providers as T3 then has them.
+  app.post("/api/t3/providers/refresh", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { instanceId?: unknown; models?: unknown };
+    const instanceId = typeof body.instanceId === "string" && body.instanceId ? body.instanceId : undefined;
+    await stack.adapter.refreshProviders({ ...(instanceId ? { instanceId } : {}), ...(body.models === true ? { refreshModels: true } : {}) });
+    return c.json(await stack.adapter.listProviders());
+  });
+  // Each open page says whether it is in view; Backroom holds T3's client lease for them (see T3Presence).
+  app.post("/api/t3/presence", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { pageId?: unknown; visible?: unknown; focused?: unknown; interactedAt?: unknown; closed?: unknown };
+    if (typeof body.pageId !== "string" || !body.pageId || body.pageId.length > 64) throw new RoomError("missing_page", "pageId is required");
+    void stack.presence.page({
+      pageId: body.pageId,
+      visible: body.visible === true,
+      focused: body.focused === true,
+      interactedAt: typeof body.interactedAt === "number" && Number.isFinite(body.interactedAt) ? body.interactedAt : null,
+      closed: body.closed === true,
+    });
+    return c.json({ ok: true });
+  });
   // Updates for T3 and its harnesses. Nothing updates by itself: each POST starts the one update the user clicked.
   app.get("/api/t3/updates", async (c) => c.json(await stack.updates.view(c.req.query("fresh") === "1")));
   app.post("/api/t3/updates/check", async (c) => c.json(await stack.updates.check()));
@@ -205,20 +247,20 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         console.warn(`[backroom] archived threads not read: ${(error as Error).message}`);
       }
     }
-    // A thread outside rooms has news when its last turn finished (or failed) after you last looked at it. A seated
-    // thread's turns are the room's news; settled and archived threads are done with.
+    // A thread outside rooms has news when its last run finished (or failed) after you last looked at it. A seated
+    // thread's runs are the room's news; settled and archived threads are done with.
     const seen = seenMarks(stack.repos);
     const news = (t: (typeof threads)[number]) => {
-      const turn = t.latestTurn;
-      if (bound.has(t.id) || t.archivedAt || t.settledAt || !turn?.completedAt || (turn.state !== "completed" && turn.state !== "error")) return null;
-      return isAfter(turn.completedAt, seen.of(`thread:${t.id}`)) ? { at: turn.completedAt, state: turn.state } : null;
+      const at = t.latestRunCompletedAt;
+      if (bound.has(t.id) || t.archivedAt || t.settledAt || !at || (t.status !== "completed" && t.status !== "failed")) return null;
+      return isAfter(at, seen.of(`thread:${t.id}`)) ? { at, state: t.status === "failed" ? "error" : "completed" } : null;
     };
-    return c.json(threads.map((t) => ({ ...t, boundToRoom: bound.has(t.id), news: news(t) })));
+    return c.json(threads.map((t) => ({ ...t, backgroundLiveness: backgroundOf(t), boundToRoom: bound.has(t.id), news: news(t) })));
   });
 
   /**
-   * One T3 thread used directly, outside any room: the conversation (last 30 turns), the running turn as it streams,
-   * the approvals and questions it waits on, and its latest context reading. Read from T3 on every call.
+   * One T3 thread used directly, outside any room: the conversation (T3's recent window of it), the run in progress
+   * as it streams, the approvals and questions it waits on, and its latest context reading. Read from T3 on every call.
    */
   // A thread's browsers as its header shows them: off until chosen, like a new room's; the default is the one it uses.
   const threadBrowsersView = (threadId: string) => {
@@ -229,27 +271,21 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   app.get("/api/threads/:threadId", async (c) => {
     const threadId = c.req.param("threadId");
-    const [detail, listed, projects] = await Promise.all([
-      stack.adapter.getThreadDetail(threadId, { turnLimit: 30 }),
-      stack.adapter.getThreadShell(threadId),
-      stack.adapter.listProjects(),
-    ]);
+    const [detail, projects] = await Promise.all([stack.adapter.getThreadDetail(threadId, { bounded: true }), stack.adapter.listProjects()]);
     if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
     const shell = detail.shell;
-    const running = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
-    const items = threadTranscript(detail, running);
+    const running = runningRun(detail);
     return c.json({
-      // The per-thread read omits background liveness; the thread list carries it.
-      thread: { ...shell, backgroundLiveness: listed?.backgroundLiveness ?? shell.backgroundLiveness, boundToRoom: stack.repos.listActiveBindings().some((b) => b.threadId === threadId) },
+      thread: { ...shell, backgroundLiveness: backgroundOf(shell), boundToRoom: stack.repos.listActiveBindings().some((b) => b.threadId === threadId) },
       project: projects.find((p) => p.id === shell.projectId) ?? null,
-      items,
-      requests: openRequests(detail.activities),
-      running: running ? { turnId: running, feed: buildLiveFeed(detail.messages, detail.activities, running) } : null,
-      contextWindow: latestContextWindow(detail.activities),
+      items: threadTranscript(detail),
+      requests: requestCards(detail),
+      running: running ? { runId: running.id, feed: liveFeed(detail, running.id) } : null,
+      contextWindow: contextReading(detail),
       usage: await threadUsage(detail),
       browsers: threadBrowsersView(threadId),
-      // T3 holds turns older than the window read here.
-      partial: new Set(items.filter((i) => i.kind === "reply").map((i) => (i.kind === "reply" ? i.turnId : ""))).size >= 30,
+      // T3 holds runs older than the window read here.
+      partial: detail.partial,
     });
   });
 
@@ -261,11 +297,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
    */
   app.get("/api/t3/threads/:threadId/costs", async (c) => {
     const threadId = c.req.param("threadId");
-    const detail = await stack.adapter.getThreadDetail(threadId, { turnLimit: 30 });
+    const detail = await stack.adapter.getThreadDetail(threadId, { bounded: true });
     if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
-    const shell = detail.shell;
-    const running = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
-    const replies = threadTranscript(detail, running)
+    const replies = threadTranscript(detail)
       .filter((item): item is Extract<typeof item, { kind: "reply" }> => item.kind === "reply")
       .map((item) => ({ id: item.id, at: Date.parse(item.at) }))
       .filter((reply) => Number.isFinite(reply.at))
@@ -287,7 +321,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
 
   // ---- crew library ----
-  app.get("/api/roles", (c) => c.json(stack.repos.listRoles()));
   app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
 
   // ---- rooms ----
@@ -295,8 +328,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const seen = seenMarks(stack.repos);
     const rooms = stack.repos.listRooms().map((room) => {
       const tasks = stack.repos.listTasks(room.id);
+      // A removed member's old tasks ask nothing of anyone.
+      const seated = new Set(stack.repos.listActiveParticipants(room.id).map((p) => p.id));
       // What finished since you last looked at the room (on any device), newest first.
-      const finishes = stack.repos.listRoomFinishes(room.id, seen.of(`room:${room.id}`), 100);
+      const finishes = stack.repos.listRoomFinishes(room.id, seen.of(`room:${room.id}`), 100, room.consigliereId);
       const newest = finishes[0];
       const alias = newest?.participantId ? (stack.repos.getParticipant(newest.participantId)?.alias ?? null) : null;
       return {
@@ -311,12 +346,14 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
           (acc, participant) => {
             const status = stack.scheduler.participantStatus(participant.id);
             if (status.pendingApprovals || status.pendingUserInput) acc.needsInput += 1;
-            else if (status.session === "running" || status.session === "starting") acc.turn += 1;
+            else if (status.status !== "unknown" && isRunActive(status.status)) acc.turn += 1;
             else if (status.background === "working") acc.background += 1;
             else if (status.background === "monitoring") acc.monitoring += 1;
             return acc;
           },
-          { turn: 0, background: 0, monitoring: 0, needsInput: 0 },
+          // Tasks that wait on you besides an approval or question (those are counted per member below): held,
+          // blocked, or a failure nobody has followed up. The status bar above the conversation lists the same.
+          { turn: 0, background: 0, monitoring: 0, needsInput: tasksNeedingYou(tasks.filter((task) => seated.has(task.participantId)), room.consigliereId).filter((task) => task.state !== "needs_input").length },
         ),
         news: { unseen: finishes.length, latest: newest ? { at: newest.at, alias, kind: newest.kind, preview: newest.text } : null },
       };
@@ -365,20 +402,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
    * its compactions, subagents, the files its turns changed, and whether its provider reports context at all.
    */
   const threadUsage = async (detail: T3ThreadDetail) => {
-    const compactions: Array<{ beforeTokens: number; afterTokens: number; at: string }> = [];
-    for (const activity of detail.activities) {
-      const payload = (activity.payload ?? {}) as Record<string, unknown>;
-      if (activity.kind === "context-compaction" && typeof payload.beforeTokens === "number" && typeof payload.afterTokens === "number") {
-        compactions.push({ beforeTokens: payload.beforeTokens, afterTokens: payload.afterTokens, at: activity.createdAt });
-      }
-    }
-    const files = new Map<string, { additions: number; deletions: number }>();
-    for (const checkpoint of detail.checkpoints) {
-      for (const file of checkpoint.files) {
-        const existing = files.get(file.path) ?? { additions: 0, deletions: 0 };
-        files.set(file.path, { additions: existing.additions + file.additions, deletions: existing.deletions + file.deletions });
-      }
-    }
+    const compacted = compactions(detail);
+    const files = changedFiles(detail);
     let contextReporting: boolean | null = null;
     try {
       contextReporting = (await providersCached()).find((p) => p.instanceId === detail.shell.modelSelection.instanceId)?.reportsContextWindow ?? null;
@@ -386,12 +411,12 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       // Provider info is a decoration.
     }
     return {
-      lastCompaction: compactions[compactions.length - 1] ?? null,
-      subagents: subagentUsage(detail.activities),
+      lastCompaction: compacted[compacted.length - 1] ?? null,
+      subagents: subagentRows(detail),
       changedFiles: {
-        count: files.size,
-        additions: [...files.values()].reduce((sum, f) => sum + f.additions, 0),
-        deletions: [...files.values()].reduce((sum, f) => sum + f.deletions, 0),
+        count: files.length,
+        additions: files.reduce((sum, f) => sum + f.additions, 0),
+        deletions: files.reduce((sum, f) => sum + f.deletions, 0),
       },
       contextReporting,
     };
@@ -407,8 +432,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       projectId: stack.repos.getRoom(participant.roomId)?.projectId ?? null,
       bindingGeneration: participant.bindingGeneration,
       title: null,
-      session: null,
-      latestTurn: null,
+      status: null,
+      activeRunId: null,
+      latestRun: null,
+      lastError: null,
       modelSelection: participant.modelSelection,
       runtimeMode: participant.runtimeMode,
       interactionMode: participant.interactionMode,
@@ -431,95 +458,34 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       toolSummary: { started: 0, completed: 0, errors: 0, lastTool: null as string | null },
       streamingText: "",
       liveFeed: [] as LiveFeedItem[],
-      runningTurn: null,
+      runningRun: null,
       backgroundTasks: [] as BackgroundTask[],
-      subagents: [] as SubagentUsage[],
+      subagents: [] as SubagentRow[],
       activities: [] as unknown[],
       partial: false,
     };
     if (!binding) return empty;
-    const detail = await stack.adapter.getThreadDetail(binding.threadId, { turnLimit: 4 });
+    // The recent window of the thread: its runs and requests in full, its latest items and messages.
+    const detail = await stack.adapter.getThreadDetail(binding.threadId, { bounded: true });
     if (!detail) return empty;
     const shell = detail.shell;
-    const activeTurn = shell.session?.activeTurnId ?? shell.latestTurn?.turnId ?? null;
-    const streamingText = detail.messages.filter((m) => m.turnId === activeTurn && m.role === "assistant").map((m) => m.text).join("\n\n");
-    const activities = detail.activities.slice(-80);
-    const liveFeed = buildLiveFeed(detail.messages, detail.activities, activeTurn);
-    const backgroundTasks = openBackgroundTasks(detail.activities);
-    const subagents = subagentUsage(detail.activities);
-    // The running turn, if any: whether the room started it, and (for turns typed in T3) the prompt that started it.
-    const runningTurnId = shell.session?.status === "running" || shell.session?.status === "starting" ? shell.session.activeTurnId : null;
-    const promptMessage = runningTurnId ? (promptMessageForTurn(detail.messages, runningTurnId) ?? runningPromptMessageBeforeOutput(detail.messages, runningTurnId)) : null;
-    // The room's own turn: matched to a run, or the participant is busy with one, or (from the first read on, before
-    // either is known) the message that started it is one a room run sent, since the run is written before it is sent.
-    // Otherwise the briefing would show as a message typed in T3 for the seconds a dispatch takes (longer with images).
-    const startedByRoom = runningTurnId
-      ? stack.repos.isRunTurn(binding.threadId, runningTurnId) ||
-        stack.scheduler.participantStatus(participant.id).activeRunId !== null ||
-        (promptMessage !== null && stack.repos.isRunMessage(binding.threadId, promptMessage.id))
+    const running = runningRun(detail);
+    const latest = detail.runs.find((run) => run.id === shell.latestRunId) ?? null;
+    const shownRunId = running?.id ?? latest?.id ?? null;
+    // The run in progress, if any: whether the room sent it, and (for runs typed in T3) the prompt that started it.
+    // A room run is written before its message is sent, so the message that started the run tells from the first read.
+    const promptMessage = running ? runPrompt(detail, running) : null;
+    const startedByRoom = running
+      ? stack.repos.isRunT3Run(binding.threadId, running.id) || stack.repos.isRunMessage(binding.threadId, running.userMessageId) || stack.scheduler.participantStatus(participant.id).activeRunId !== null
       : false;
-    const runningTurn = runningTurnId
+    const runningRunView = running
       ? {
-          turnId: runningTurnId,
+          runId: running.id,
           startedByRoom,
           prompt: startedByRoom ? null : (promptMessage?.text ?? null),
-          promptImages: startedByRoom ? [] : (promptMessage?.attachments ?? []).map((a) => a.id),
+          promptImages: startedByRoom ? [] : (promptMessage?.attachments ?? []).filter((a) => a.type === "image").map((a) => a.id),
         }
       : null;
-
-    let contextWindow: { usedTokens: number; maxTokens: number; percent: number; inputTokens?: number; outputTokens?: number; totalProcessedTokens?: number; at: string } | null = null;
-    const compactions: Array<{ beforeTokens: number; afterTokens: number; at: string }> = [];
-    const toolSummary = { started: 0, completed: 0, errors: 0, lastTool: null as string | null };
-    for (const activity of detail.activities) {
-      const payload = (activity.payload ?? {}) as Record<string, unknown>;
-      if (activity.kind === "context-window.updated" && typeof payload.usedTokens === "number" && typeof payload.maxTokens === "number" && payload.maxTokens > 0) {
-        contextWindow = {
-          usedTokens: payload.usedTokens,
-          maxTokens: payload.maxTokens,
-          percent: Math.round((payload.usedTokens / payload.maxTokens) * 1000) / 10,
-          ...(typeof payload.inputTokens === "number" ? { inputTokens: payload.inputTokens } : {}),
-          ...(typeof payload.outputTokens === "number" ? { outputTokens: payload.outputTokens } : {}),
-          ...(typeof payload.totalProcessedTokens === "number" ? { totalProcessedTokens: payload.totalProcessedTokens } : {}),
-          at: activity.createdAt,
-        };
-      }
-      if (activity.kind === "context-compaction" && typeof payload.beforeTokens === "number" && typeof payload.afterTokens === "number") {
-        compactions.push({ beforeTokens: payload.beforeTokens, afterTokens: payload.afterTokens, at: activity.createdAt });
-      }
-      if (activity.kind === "tool.started") toolSummary.started += 1;
-      if (activity.kind === "tool.completed") {
-        toolSummary.completed += 1;
-        const data = payload.data as { toolName?: string } | undefined;
-        toolSummary.lastTool = data?.toolName ?? (typeof payload.title === "string" ? payload.title : activity.summary);
-      }
-      if (activity.tone === "error") toolSummary.errors += 1;
-    }
-    const checkpoints = detail.checkpoints.slice(-6).map((checkpoint) => ({
-      turnId: checkpoint.turnId,
-      status: checkpoint.status,
-      completedAt: checkpoint.completedAt,
-      files: checkpoint.files,
-      additions: checkpoint.files.reduce((sum, file) => sum + file.additions, 0),
-      deletions: checkpoint.files.reduce((sum, file) => sum + file.deletions, 0),
-    }));
-    // Every file the thread's turns changed, with when a turn last did (the Git tab uses it to say who changed an
-    // uncommitted file: a participant whose turn touched it after the last commit).
-    const changedFiles = new Map<string, { path: string; kind: string; additions: number; deletions: number; turns: number; lastAt: string | null }>();
-    for (const checkpoint of detail.checkpoints) {
-      for (const file of checkpoint.files) {
-        const existing = changedFiles.get(file.path);
-        if (existing) {
-          existing.additions += file.additions;
-          existing.deletions += file.deletions;
-          existing.turns += 1;
-          existing.kind = file.kind;
-          if (checkpoint.completedAt && (!existing.lastAt || checkpoint.completedAt > existing.lastAt)) existing.lastAt = checkpoint.completedAt;
-        } else {
-          changedFiles.set(file.path, { ...file, turns: 1, lastAt: checkpoint.completedAt ?? null });
-        }
-      }
-    }
-    const latestPlan = detail.proposedPlans[detail.proposedPlans.length - 1] ?? null;
     // Provider-level context facts: whether readings exist at all, and any explicit auto-compaction window set in T3.
     let contextReporting: boolean | null = null;
     let autoCompactWindow: number | null = null;
@@ -532,18 +498,20 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     } catch {
       // Provider info is a decoration; the desk still renders without it.
     }
-    const lastCompaction = compactions[compactions.length - 1] ?? null;
+    const compacted = compactions(detail);
     return {
       contextReporting,
       autoCompactWindow,
-      lastCompaction,
+      lastCompaction: compacted[compacted.length - 1] ?? null,
       participantId: participant.id,
       threadId: binding.threadId,
       projectId: stack.repos.getRoom(participant.roomId)?.projectId ?? null,
       bindingGeneration: participant.bindingGeneration,
       title: shell.title,
-      session: shell.session,
-      latestTurn: shell.latestTurn,
+      status: shell.status,
+      activeRunId: shell.activeRunId,
+      latestRun: latest ? { runId: latest.id, status: latest.status, completedAt: latest.completedAt } : null,
+      lastError: shell.lastError,
       modelSelection: shell.modelSelection,
       runtimeMode: shell.runtimeMode,
       interactionMode: shell.interactionMode,
@@ -551,25 +519,24 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       worktreePath: shell.worktreePath,
       pullRequests: shell.pullRequests,
       linkedPullRequest: shell.linkedPullRequest,
-      planProgress: shell.planProgress,
-      // The per-thread read omits liveness; the thread list (polled by the scheduler) carries it.
-      backgroundLiveness: shell.backgroundLiveness ?? stack.scheduler.participantStatus(participant.id).background,
+      planProgress: planProgress(detail),
+      backgroundLiveness: backgroundOf(shell) ?? stack.scheduler.participantStatus(participant.id).background,
       latestUserMessageAt: shell.latestUserMessageAt,
       settledAt: shell.settledAt,
-      contextWindow,
-      compactions,
-      checkpoints,
-      changedFiles: [...changedFiles.values()],
-      proposedPlan: latestPlan ? { id: latestPlan.id, turnId: latestPlan.turnId, implementedAt: latestPlan.implementedAt, createdAt: latestPlan.createdAt, markdown: latestPlan.planMarkdown } : null,
-      toolSummary,
-      streamingText,
-      liveFeed,
-      runningTurn,
-      backgroundTasks,
-      subagents,
-      activities,
-      // A window of recent history (last four turns, last 80 activities); T3 holds the complete record.
-      partial: detail.activities.length > activities.length || detail.checkpoints.length > checkpoints.length || shell.latestTurn !== null,
+      contextWindow: contextReading(detail),
+      compactions: compacted,
+      checkpoints: recentCheckpoints(detail),
+      changedFiles: changedFiles(detail),
+      proposedPlan: proposedPlan(detail),
+      toolSummary: toolSummary(detail),
+      streamingText: streamingText(detail, shownRunId),
+      liveFeed: liveFeed(detail, shownRunId),
+      runningRun: runningRunView,
+      backgroundTasks: backgroundTasks(detail),
+      subagents: subagentRows(detail),
+      activities: recentActivity(detail),
+      // A window of recent history; T3 holds the complete record.
+      partial: detail.partial,
     };
   };
 
@@ -739,8 +706,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       const status = stack.scheduler.participantStatus(p.id);
       return { id: p.id, alias: p.alias, busy: busyByParticipant.has(p.id) || status.externalActivity || status.activeRunId !== null || status.threadMissing };
     });
-    const roles = stack.repos.listRoles().map((r) => ({ id: r.id, name: r.name }));
-    return c.json(parseExplicit(body.text ?? "", participants, tasks, roles));
+    return c.json(parseExplicit(body.text ?? "", participants, tasks, { consigliereId: room.consigliereId }));
   });
 
   // Images for the composer: raw bytes in, attachment record out. Referenced by id from message.create.
@@ -827,6 +793,19 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/local-file", localFile);
   app.get("/api/local-image", localFile);
 
+  /**
+   * A file a reply names, to preview it: its text (up to a size), or where to fetch it for an image or a recording.
+   * Read only inside T3's project folders, its threads' worktrees and the temp folder; see filePreview.ts. `base` is
+   * the folder the reply was written in, where a relative path is looked for first.
+   */
+  app.get("/api/file-preview", async (c) => {
+    const [projects, threads] = await Promise.all([stack.adapter.listProjects(), stack.adapter.listThreads()]);
+    const roots = [...projects.map((project) => project.workspaceRoot), ...threads.flatMap((thread) => (thread.worktreePath ? [thread.worktreePath] : [])), tmpdir(), "/tmp"];
+    const preview = previewFile(c.req.query("path") ?? "", { base: c.req.query("base") || null, roots });
+    if (!preview.ok) throw new RoomError(preview.status === 404 ? "not_found" : preview.status === 400 ? "invalid_path" : "forbidden", preview.reason, preview.status);
+    return c.json(preview);
+  });
+
   // ---- browsers (a list named by purpose; processes on this machine) ----
   app.get("/api/browser/environment", (c) => c.json(stack.browsers ? stack.browsers.environment() : null));
   const browserItem = (browser: ReturnType<typeof stack.repos.listBrowsers>[number]): BrowserListItem | null =>
@@ -884,6 +863,138 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       if (error instanceof BrowserToolError) return c.json({ error: "browser_tool", message: error.message }, error.status as 400);
       throw error;
     }
+  });
+
+  // rooms-board: the same CLI contract and token as rooms-browser. It reads a room's posts and seats saved crew.
+  const board = new Board({
+    repos: stack.repos,
+    execute: (command) => stack.service.execute(parseCommand(command)),
+    statusOf: (participantId) => stack.scheduler.participantStatus(participantId),
+    // Two ticks: one may already be in flight and past its dispatch; the second sends the seat briefing for certain.
+    afterSeat: async () => {
+      await stack.scheduler.tick();
+      await stack.scheduler.tick();
+    },
+  });
+  app.post("/api/board-tools", async (c) => {
+    if (!browserTools || c.req.header("authorization") !== `Bearer ${browserTools.token}`) {
+      return c.json({ error: "unauthorized", message: "rooms-board could not authenticate: the service was restarted or this is not its data folder" }, 401);
+    }
+    const body = (await c.req.json()) as { argv?: unknown; as?: unknown };
+    const argv = Array.isArray(body.argv) ? body.argv.filter((a): a is string => typeof a === "string") : [];
+    try {
+      return c.json({ text: await board.run(argv, typeof body.as === "string" && body.as.trim() ? body.as.trim() : null) });
+    } catch (error) {
+      if (error instanceof BoardError) return c.json({ error: "board", message: error.message }, error.status as 400);
+      throw error;
+    }
+  });
+
+  /**
+   * The whole of Backroom on one page (Look → Overview): every room with its members, what each is doing now in one
+   * line, and what needs you. Member state comes from the scheduler's last poll; the live line of a member mid-turn is
+   * read from T3 (bounded), the last reply of an idle one from the room's record.
+   */
+  app.get("/api/overview", async (c) => {
+    const rooms = stack.repos.listRooms();
+    const out = await Promise.all(
+      rooms.map(async (room) => {
+        const participants = stack.repos.listActiveParticipants(room.id);
+        const tasks = stack.repos.listTasks(room.id);
+        const events = stack.repos.listRecentEvents(room.id, 200);
+        const seated = new Set(participants.map((p) => p.id));
+        const needs = tasksNeedingYou(tasks.filter((task) => seated.has(task.participantId)), room.consigliereId).length + stack.repos.listOpenNativeRequests(participants.map((p) => p.id)).length;
+        const members = await Promise.all(
+          participants.map(async (participant) => {
+            const status = stack.scheduler.participantStatus(participant.id);
+            const binding = stack.repos.currentBinding(participant.id);
+            const busy = status.activeRunId !== null || status.externalActivity || (status.status !== "unknown" && isRunActive(status.status));
+            let live: string | null = null;
+            if (busy && binding) {
+              try {
+                const detail = await stack.adapter.getThreadDetail(binding.threadId, { bounded: true });
+                const running = detail ? runningRun(detail) : null;
+                const last = detail && running ? liveFeed(detail, running.id).at(-1) : undefined;
+                if (last?.kind === "message") live = last.text;
+                else if (last?.kind === "tools") live = last.running.length > 0 ? `running ${last.running.join(", ")}` : `ran ${last.count} tool${last.count === 1 ? "" : "s"}`;
+                else if (last?.kind === "notice") live = last.text;
+              } catch {
+                live = null;
+              }
+            }
+            // What the member last said, for a member between turns.
+            const reply = [...events].reverse().find((e) => (e.kind === "assistant.reply" || e.kind === "t3.turn") && e.speaker.type === "participant" && e.speaker.participantId === participant.id && e.text.trim().length > 0);
+            const task = [...tasks].reverse().find((t) => t.participantId === participant.id && (t.state === "running" || t.state === "dispatching" || t.state === "needs_input"));
+            return {
+              id: participant.id,
+              alias: participant.alias,
+              modelSelection: participant.modelSelection,
+              consigliere: room.consigliereId === participant.id,
+              status,
+              live,
+              doing: task ? task.instruction : null,
+              lastReply: reply ? { at: reply.createdAt, text: reply.text.slice(0, 400) } : null,
+            };
+          }),
+        );
+        return { id: room.id, projectId: room.projectId, title: room.title, consigliereId: room.consigliereId, needs, members, updatedAt: room.updatedAt };
+      }),
+    );
+    // Threads outside rooms, shown as rooms of one: the agent's live line while it works, else what it last said.
+    const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
+    const loose = (await stack.adapter.listThreads()).filter((t) => !bound.has(t.id) && !t.archivedAt && !t.settledAt && !t.deletedAt && t.lineage.relationshipToParent !== "subagent").slice(0, 40);
+    const threads = await Promise.all(
+      loose.map(async (thread) => {
+        let line: string | null = null;
+        try {
+          const detail = await stack.adapter.getThreadDetail(thread.id, { bounded: true });
+          const running = detail ? runningRun(detail) : null;
+          if (detail && running) {
+            const last = liveFeed(detail, running.id).at(-1);
+            if (last?.kind === "message") line = last.text;
+            else if (last?.kind === "tools") line = last.running.length > 0 ? `running ${last.running.join(", ")}` : `ran ${last.count} tool${last.count === 1 ? "" : "s"}`;
+            else if (last?.kind === "notice") line = last.text;
+          } else if (detail) {
+            const said = [...detail.messages].reverse().find((m) => m.role === "assistant" && !m.streaming && m.text.trim().length > 0);
+            line = said ? said.text.slice(0, 400) : null;
+          }
+        } catch {
+          line = null;
+        }
+        // News as the sidebar has it: the last run finished (or failed) after the thread was last looked at.
+        const finishedAt = thread.latestRunCompletedAt;
+        const news =
+          finishedAt && (thread.status === "completed" || thread.status === "failed") && isAfter(finishedAt, seenMarks(stack.repos).of(`thread:${thread.id}`))
+            ? { at: finishedAt, state: thread.status === "failed" ? ("error" as const) : ("completed" as const) }
+            : null;
+        return { id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: backgroundOf(thread), latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line, news };
+      }),
+    );
+    return c.json({ rooms: out, threads, readAt: new Date().toISOString() });
+  });
+
+  // ---- the Consigliere ----
+  /** App-wide settings the page reads: which saved crew member is the Consigliere of new conversations. */
+  app.get("/api/settings", (c) => {
+    const presetId = stack.repos.getKv(CONSIGLIERE_PRESET_KEY);
+    const saved = stack.repos.getKv(CONSIGLIERE_RULES_KEY);
+    return c.json({
+      consiglierePresetId: presetId && stack.repos.getPreset(presetId) ? presetId : null,
+      // The rules every Consigliere is given: the user's wording when they saved one, and Backroom's to go back to.
+      consigliereRules: { text: consigliereRules(saved), custom: Boolean(saved && saved.trim()), defaultText: DEFAULT_CONSIGLIERE_RULES },
+    });
+  });
+  /** What to tell the user before a member is made Consigliere: reasons it may not work. It is allowed all the same. */
+  app.get("/api/rooms/:roomId/participants/:participantId/consigliere-warnings", async (c) => {
+    const participant = stack.repos.getParticipant(c.req.param("participantId"));
+    if (!participant || participant.roomId !== c.req.param("roomId")) throw new RoomError("not_found", "member not found", 404);
+    let driver: string | null = null;
+    try {
+      driver = (await stack.adapter.listCatalog()).find((entry) => entry.instanceId === participant.modelSelection.instanceId)?.driver ?? null;
+    } catch {
+      // Without T3's catalog the instance name stands in for the harness.
+    }
+    return c.json({ warnings: designationWarnings(participant, driver) });
   });
 
   // ---- Backroom's voice ----
@@ -1027,127 +1138,4 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     );
   }
   return app;
-}
-
-type LiveFeedItem =
-  | { kind: "message"; id: string; text: string; streaming: boolean; at: string }
-  | { kind: "tools"; count: number; errors: number; labels: string[]; at: string };
-
-/**
- * The turn as T3 shows it: each assistant message separately, with the tool calls between them collapsed into one
- * item per burst ("ran 4 tools: Read, Bash, ..."). Messages and tool activity are ordered by time.
- */
-function buildLiveFeed(messages: T3Message[], activities: T3Activity[], turnId: string | null): LiveFeedItem[] {
-  if (!turnId) return [];
-  const entries: Array<{ at: string; message?: T3Message; activity?: T3Activity }> = [
-    ...messages.filter((m) => m.turnId === turnId && m.role === "assistant" && m.text.trim().length > 0).map((message) => ({ at: message.createdAt, message })),
-    ...activities.filter((a) => a.turnId === turnId && (a.kind === "tool.completed" || (a.tone === "error" && a.kind.startsWith("tool")))).map((activity) => ({ at: activity.createdAt, activity })),
-  ].sort((a, b) => a.at.localeCompare(b.at));
-  const feed: LiveFeedItem[] = [];
-  for (const entry of entries) {
-    if (entry.message) {
-      feed.push({ kind: "message", id: entry.message.id, text: entry.message.text, streaming: entry.message.streaming, at: entry.at });
-      continue;
-    }
-    const activity = entry.activity as T3Activity;
-    const payload = (activity.payload ?? {}) as { title?: unknown; data?: { toolName?: unknown } };
-    const label = typeof payload.data?.toolName === "string" ? payload.data.toolName : typeof payload.title === "string" ? payload.title : activity.summary;
-    const last = feed[feed.length - 1];
-    const burst = last?.kind === "tools" ? last : null;
-    if (burst) {
-      burst.count += 1;
-      if (activity.tone === "error") burst.errors += 1;
-      if (!burst.labels.includes(label) && burst.labels.length < 6) burst.labels.push(label);
-      burst.at = entry.at;
-    } else {
-      feed.push({ kind: "tools", count: 1, errors: activity.tone === "error" ? 1 : 0, labels: [label], at: entry.at });
-    }
-  }
-  return feed.slice(-40);
-}
-
-/** A running turn with no output yet: its prompt is a user message after the previous turn's last output, if any. */
-function runningPromptMessageBeforeOutput(messages: T3Message[], turnId: string): T3Message | null {
-  if (messages.some((m) => m.turnId === turnId && m.role !== "user")) return null;
-  const last = messages[messages.length - 1];
-  return last?.role === "user" ? last : null;
-}
-
-interface BackgroundTask {
-  taskId: string;
-  title: string;
-  /** "agent" (a subagent) or "background" (a shell job), as T3 reports it. */
-  kind: string;
-  /** T3's taskType, e.g. local_agent or local_bash. */
-  type: string | null;
-  detail: string | null;
-  lastTool: string | null;
-  startedAt: string;
-  updatedAt: string;
-}
-
-/**
- * Background work still running on a thread, from T3's task.* activities: started and not yet completed. Only the
- * activity window read for the desk is visible, so a job started many turns ago may be missing from the list; the
- * thread's backgroundLiveness stays the authoritative "is anything running" signal.
- */
-function openBackgroundTasks(activities: T3Activity[]): BackgroundTask[] {
-  const open = new Map<string, BackgroundTask>();
-  for (const activity of activities) {
-    if (!activity.kind.startsWith("task.")) continue;
-    const payload = (activity.payload ?? {}) as { taskId?: string; title?: string; detail?: string; agentKind?: string; taskType?: string; lastToolName?: string; status?: string };
-    if (!payload.taskId) continue;
-    if (activity.kind === "task.completed" || (activity.kind === "task.updated" && payload.status && payload.status !== "running" && payload.status !== "in_progress")) {
-      open.delete(payload.taskId);
-      continue;
-    }
-    const existing = open.get(payload.taskId);
-    if (activity.kind === "task.started") {
-      open.set(payload.taskId, {
-        taskId: payload.taskId,
-        title: payload.title ?? payload.detail ?? "background task",
-        kind: payload.agentKind ?? "background",
-        type: payload.taskType ?? null,
-        detail: null,
-        lastTool: null,
-        startedAt: activity.createdAt,
-        updatedAt: activity.createdAt,
-      });
-    } else if (existing) {
-      if (activity.kind === "task.progress" && payload.detail) existing.detail = payload.detail;
-      if (payload.lastToolName) existing.lastTool = payload.lastToolName;
-      existing.updatedAt = activity.createdAt;
-    }
-  }
-  return [...open.values()];
-}
-
-interface SubagentUsage {
-  taskId: string;
-  title: string;
-  model: string | null;
-  tokens: number;
-  toolUses: number;
-  durationMs: number;
-  status: "running" | "completed" | "failed";
-}
-
-/** Subagents and background jobs seen in the desk's activity window, with the usage T3 reports for each. */
-function subagentUsage(activities: T3Activity[]): SubagentUsage[] {
-  const byId = new Map<string, SubagentUsage>();
-  for (const activity of activities) {
-    if (!activity.kind.startsWith("task.")) continue;
-    const payload = (activity.payload ?? {}) as { taskId?: string; title?: string; model?: string; status?: string; usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number } };
-    if (!payload.taskId) continue;
-    const entry = byId.get(payload.taskId) ?? { taskId: payload.taskId, title: payload.title ?? "task", model: payload.model ?? null, tokens: 0, toolUses: 0, durationMs: 0, status: "running" as const };
-    if (payload.title) entry.title = payload.title;
-    if (payload.usage) {
-      entry.tokens = Math.max(entry.tokens, payload.usage.total_tokens ?? 0);
-      entry.toolUses = Math.max(entry.toolUses, payload.usage.tool_uses ?? 0);
-      entry.durationMs = Math.max(entry.durationMs, payload.usage.duration_ms ?? 0);
-    }
-    if (activity.kind === "task.completed") entry.status = payload.status === "failed" ? "failed" : "completed";
-    byId.set(payload.taskId, entry);
-  }
-  return [...byId.values()].filter((entry) => entry.tokens > 0 || entry.status === "running");
 }

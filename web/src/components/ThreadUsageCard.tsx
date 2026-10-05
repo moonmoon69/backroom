@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, useProviders } from "../api.ts";
 import type { Compaction, ContextWindowReading, Desk, ModelSelection, Participant, SubagentUsage, ThreadCost, UsageToday } from "../types.ts";
-import { contextReadout, costReason, fmtTokens, money, timeOf } from "./deskFormat.ts";
+import { ageOf, contextReadout, costReason, fmtTokens, money, timeOf, usageReset } from "./deskFormat.ts";
 
 /** One shared, minute-old copy of today's usage: T3 scans transcripts to answer, so every card reuses it. */
 let usageCache: { at: number; value: Promise<UsageToday> } | null = null;
@@ -20,7 +20,7 @@ const duration = (ms: number): string => {
 const resetsIn = (iso: string | null): string => {
   if (!iso) return "";
   const ms = new Date(iso).getTime() - Date.now();
-  return ms > 0 ? `resets in ${duration(ms)}` : "resetting";
+  return ms > 0 ? `resets in ${duration(ms)}` : "reset · checking again";
 };
 
 /**
@@ -137,7 +137,8 @@ export interface UsageFacts {
 
 /** The card itself, for a member (from its desk) or a thread on its own (from its view). `label` names whose it is. */
 export function UsageCard({ label, modelSelection, facts, cost, pricesFetchedAt }: { label: string; modelSelection: ModelSelection; facts: UsageFacts; cost: ThreadCost | null; pricesFetchedAt: string | null }) {
-  const { providers } = useProviders(true, 60_000);
+  // Every 30s while open: T3 re-checks plan usage every minute while Backroom is in view (see T3Presence).
+  const { providers } = useProviders(true, 30_000);
   const [usage, setUsage] = useState<UsageToday | null>(null);
   useEffect(() => {
     let live = true;
@@ -251,21 +252,28 @@ export function UsageCard({ label, modelSelection, facts, cost, pricesFetchedAt 
 
       {provider && provider.usageWindows.length > 0 ? (
         <section>
-          <h4 className="mono">{provider.displayName} plan limits</h4>
-          {provider.usageWindows.map((window) => (
-            <div key={window.id}>
-              <div className="usage-line">
-                <span>{window.label}</span>
-                <span className="mono">
-                  {window.usedPercent === null ? "?" : `${Math.round(window.usedPercent)}%`}
-                  <span className="muted"> {resetsIn(window.resetsAt)}</span>
-                </span>
+          <h4 className="mono">
+            {provider.displayName} plan limits
+            {provider.usageCheckedAt ? <span className="muted" title={new Date(provider.usageCheckedAt).toLocaleString()}> · checked {ageOf(provider.usageCheckedAt)}</span> : null}
+          </h4>
+          {provider.usageWindows.map((window) => {
+            // A reading from before the window reset says nothing about it now.
+            const used = usageReset(window.resetsAt, provider.usageCheckedAt) ? null : window.usedPercent;
+            return (
+              <div key={window.id}>
+                <div className="usage-line">
+                  <span>{window.label}</span>
+                  <span className="mono">
+                    {used === null ? "—" : `${Math.round(used)}%`}
+                    <span className="muted"> {resetsIn(window.resetsAt)}</span>
+                  </span>
+                </div>
+                <div className={`usage-bar${(used ?? 0) >= 85 ? " hot" : ""}`} aria-hidden="true">
+                  <span style={{ width: `${Math.min(100, used ?? 0)}%` }} />
+                </div>
               </div>
-              <div className={`usage-bar${(window.usedPercent ?? 0) >= 85 ? " hot" : ""}`} aria-hidden="true">
-                <span style={{ width: `${Math.min(100, window.usedPercent ?? 0)}%` }} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </section>
       ) : provider ? (
         <section>
