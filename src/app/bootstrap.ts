@@ -93,8 +93,8 @@ export function createStack(input: {
     },
     notify,
   );
-  // ROOMS_ENGINE=1: the engine host over its own journal, data/board.sqlite next to rooms.sqlite. Off by default, so
-  // a process without the flag never opens the journal and behaves as before.
+  // ROOMS_ENGINE=1 selects the engine runtime: the host over its own journal, data/board.sqlite next to rooms.sqlite.
+  // Off by default, so a process without the flag never opens the journal and behaves as before.
   const engineStore = (input.engine ?? process.env.ROOMS_ENGINE === "1")
     ? new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"))
     : null;
@@ -109,7 +109,13 @@ export function createStack(input: {
       ...(input.log ? { log: input.log } : {}),
     })
     : null;
-  engine?.start();
+  if (engine) {
+    // The old scheduler stays built (the UI still reads its statuses until L4c) but never ticks: whoever starts or ticks
+    // it (the server, the API's manual ticks) drives the engine host instead, so one runtime alone dispatches to and
+    // imports from the members' threads.
+    scheduler.start = (intervalMs: number) => engine.start(intervalMs);
+    scheduler.tick = () => engine.tick();
+  }
   return {
     db,
     repos,

@@ -10,11 +10,15 @@ import type { Activity, Projection, Request, RoomEvent, Run } from "../engine/in
 /** Inputs that bear on a request: the request itself, a correction, a retry or transfer, or the answer to a child. */
 const TARGETING = new Set(["request", "correction", "retry", "transfer", "result"]);
 
-/** From a request ID, the first request up the parent chain that is open and owned by the seat. */
-export function firstOpenOwned(p: Projection, requestId: string, seatId: string): Request | null {
+/**
+ * From a request ID, the first request up the parent chain that the seat owns, if it is still open. A result on
+ * someone else's request (a review the seat asked) reaches the seat's request above it; a request of the seat's own
+ * that is closed (answered explicitly, cancelled) contributes nothing, and the walk does not go past it.
+ */
+export function ownedTarget(p: Projection, requestId: string, seatId: string): Request | null {
   let q = p.requests.get(requestId);
-  while (q && !(q.state === "open" && q.owner === seatId)) q = q.parentId ? p.requests.get(q.parentId) : undefined;
-  return q ?? null;
+  while (q && q.owner !== seatId) q = q.parentId ? p.requests.get(q.parentId) : undefined;
+  return q && q.state === "open" ? q : null;
 }
 
 /** The request IDs the engine lets this run's output name: its open requests at the watermark and its delivered inputs'. */
@@ -44,15 +48,15 @@ export function workingMarks(p: Projection, seatId: string, afterSeq: number): S
 
 /**
  * §1: the requests this run's final answers. Each delivered request, correction, retry, transfer or result walks up to
- * the seat's first open owned request. Requests the member marked `working` during the run are left out; requests it
- * answered explicitly are no longer open, so the walk passes them.
+ * the first request the seat owns and counts if that one is open. Requests the member answered explicitly, or that
+ * were cancelled, are closed and so contribute nothing; those it marked `working` during the run are left out.
  */
 export function finalTargets(p: Projection, run: Run): string[] {
   const targets = new Set<string>();
   for (const input of inputTree(deliveredInputs(p, run.id))) {
     if (!TARGETING.has(input.intent)) continue;
     for (const id of input.requestIds) {
-      const q = firstOpenOwned(p, id, run.seatId);
+      const q = ownedTarget(p, id, run.seatId);
       if (q) targets.add(q.id);
     }
   }
@@ -90,11 +94,14 @@ export function openOwned(p: Projection, ids: readonly string[], seatId: string)
   });
 }
 
-/** The body of the last non-empty output imported for a run: its final, re-used when background work ends quietly. */
-export function lastFinal(p: Projection, runId: string): string {
+/**
+ * The seat's newest answer attempt on any of these requests, whatever its outcome: a later run's final after a
+ * superseded one wins over the final of the run that started the background work. Re-used when that work ends quietly.
+ */
+export function latestAnswer(p: Projection, seatId: string, requestIds: readonly string[]): string {
   for (let i = p.events.length - 1; i >= 0; i--) {
     const d = p.events[i]!.data;
-    if (d.kind === "output" && d.association.kind === "run" && d.association.id === runId && d.body.length > 0) return d.body;
+    if (d.kind === "output" && d.author === seatId && d.body.length > 0 && d.claims.some((c) => requestIds.includes(c.requestId))) return d.body;
   }
   return "";
 }

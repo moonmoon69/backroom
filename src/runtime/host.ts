@@ -22,7 +22,7 @@ import { attachImages, brief, seatStanding, type BriefingSource } from "./render
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import {
   DEFERRED_CANCEL, activityStartedSeq, allowedIds, committed, deferredCancels, finalTargets, frozenDispatch,
-  lastAnswered, lastFinal, memberHeld, openOwned, pendingActivities, reservedSeq, runRecords, type Dispatch,
+  isPending, lastAnswered, latestAnswer, memberHeld, openOwned, pendingActivities, reservedSeq, runRecords, type Dispatch,
 } from "./work.ts";
 
 const SYSTEM = "$system";
@@ -425,7 +425,10 @@ export class EngineHost {
   /** Interrupts the core prepared for a cancel go out once T3 has the run; the control is then marked obsolete. */
   private async sendInterrupts(roomId: string, runId: string, threadId: string, t3Run: T3Run): Promise<void> {
     const controls = [...this.project(roomId).controls.values()].filter((c) => c.runId === runId && c.kind === "interrupt" && c.phase === "prepared");
+    // A cancel and a tick can both get here for one control: each marks it only while it is still prepared.
+    const stillPrepared = (id: string) => this.project(roomId).controls.get(id)?.phase === "prepared";
     for (const c of controls) {
+      if (!stillPrepared(c.id)) continue;
       if (isTerminal(t3Run)) {
         this.exec(roomId, { type: "control_phase", actor: SYSTEM, id: `obsolete:${c.id}:ended`, controlId: c.id, phase: "obsolete", evidence: "lean: the run had already ended; no interrupt sent" });
         continue;
@@ -438,6 +441,7 @@ export class EngineHost {
           continue;
         }
       }
+      if (!stillPrepared(c.id)) continue;
       this.exec(roomId, { type: "control_phase", actor: SYSTEM, id: `obsolete:${c.id}:sent`, controlId: c.id, phase: "obsolete", evidence: "lean: interrupt sent directly" });
     }
   }
@@ -507,6 +511,8 @@ export class EngineHost {
       return true;
     }
     const ordinals = new Map(detail.runs.map((r) => [r.id, r.ordinal]));
+    // Imports are deduplicated by their journal event ID, whoever authored them: the author can change with seat states.
+    const imported = new Set(p.events.map((e) => e.id));
     let done = true;
     for (const m of detail.messages) {
       if (m.role !== "user" || hostMessages.has(m.id) || m.runId === null || (ordinals.get(m.runId) ?? -1) < baseline) continue;
@@ -514,15 +520,17 @@ export class EngineHost {
       if (m.createdBy !== "user" && m.senderThreadId === null) continue;
       if (!m.text.trim() && m.attachments.length === 0) continue;
       const id = `t3msg:${seat.threadId}:${m.id}`;
+      if (imported.has(id)) continue;
       const pictures = m.attachments.length ? `\n[${m.attachments.length} attachment(s) in T3]` : "";
       let author = "$user";
       let body = `${m.text.trim()}${pictures}`;
       if (m.senderThreadId !== null) {
-        const sender = [...p.seats.values()].find((s) => s.threadId === m.senderThreadId && s.status === "active");
-        author = sender?.id ?? seatId;
-        body = sender ? `To @${seatId} (sent in T3): ${body}` : `From a thread outside the room (${m.senderThreadId}), sent in T3: ${body}`;
+        // By the sender's seat when it can post; a retired or stopping sender's message is posted by the recipient.
+        const sender = [...p.seats.values()].find((s) => s.threadId === m.senderThreadId);
+        author = sender?.status === "active" ? sender.id : seatId;
+        body = !sender ? `From a thread outside the room (${m.senderThreadId}), sent in T3: ${body}`
+          : author === sender.id ? `To @${seatId} (sent in T3): ${body}` : `From @${sender.id} (sent in T3): ${body}`;
       }
-      if (committed(p, author, id)) continue;
       try {
         this.exec(roomId, { type: "post", actor: author, id, intent: "note", body });
       } catch (error) {
@@ -537,7 +545,7 @@ export class EngineHost {
     for (const t3Run of runs) {
       p = this.project(roomId);
       const id = `t3run:${seat.threadId}:${t3Run.id}`;
-      if (committed(p, seatId, id) || committed(p, SYSTEM, id)) continue;
+      if (imported.has(id)) continue;
       const final = finalMessage(detail, t3Run.id);
       if (final.streaming) {
         done = false;
@@ -587,9 +595,11 @@ export class EngineHost {
     }
     const settle = pending.filter((a) => a.id.startsWith("bg:") && !memberHeld(p, a)).sort((a, b) => a.id.localeCompare(b.id));
     if (replied && backgroundTasks(detail).length === 0 && settle.length > 0) {
+      // The run's own key goes on the last output, so the import counts as done only once every activity is settled;
+      // after a crash between them, the ones still pending are settled on the next look.
       settle.forEach((a, index) => {
-        const key = index === 0 ? id : `${id}:${a.id}`;
-        const open = openOwned(p, a.requestIds, seatId);
+        const key = index === settle.length - 1 ? id : `${id}:${a.id}`;
+        const open = openOwned(this.project(roomId), a.requestIds, seatId);
         this.exec(roomId, { type: "output", actor: SYSTEM, id: key, author: seatId, sourceKey: key, association: { kind: "activity", id: a.id }, activityCompletion: "done", body: text, disposition: open.length ? { kind: "answer", requestIds: open } : { kind: "yield" } });
         this.step("settled", roomId, seatId, a.runId);
       });
@@ -602,13 +612,16 @@ export class EngineHost {
 
   /** §2 (iii): a `bg:` activity nobody holds settles once the thread has been idle with nothing in the background. */
   private async settleIdle(roomId: string, seatId: string, shell: T3ThreadShell, load: Loader, imported: boolean): Promise<void> {
-    const p = this.project(roomId);
-    const candidates = pendingActivities(p, seatId).filter((a) => a.id.startsWith("bg:") && !memberHeld(p, a));
+    const before = this.project(roomId);
+    const candidates = pendingActivities(before, seatId).filter((a) => a.id.startsWith("bg:") && !memberHeld(before, a));
     if (candidates.length === 0) return;
-    const detail = imported && !p.seats.get(seatId)!.activeRunId && threadFree(shell) ? await load() : null;
+    const detail = imported && !before.seats.get(seatId)!.activeRunId && threadFree(shell) ? await load() : null;
     const quiet = detail !== null && backgroundTasks(detail).length === 0;
-    for (const a of candidates) {
-      if (!quiet) {
+    for (const candidate of candidates) {
+      // Read the journal again after the await: a cancel, an answer or a `working` mark may have landed meanwhile.
+      const p = this.project(roomId);
+      const a = p.activities.get(candidate.id)!;
+      if (!quiet || !isPending(a) || memberHeld(p, a) || p.seats.get(seatId)!.activeRunId) {
         this.idleSince.delete(a.id);
         continue;
       }
@@ -616,7 +629,9 @@ export class EngineHost {
       this.idleSince.set(a.id, since);
       if (this.now() - since < this.idleSettleMs) continue;
       const open = openOwned(p, a.requestIds, seatId);
-      const body = `(background work ended without a further turn)\n\n${lastFinal(p, a.runId)}`;
+      // The seat's newest answer attempt on these requests, not only the final of the run that started the work: a
+      // later run may have answered after a review (K1) while the work was still listed.
+      const body = `(background work ended without a further turn)\n\n${latestAnswer(p, seatId, a.requestIds)}`;
       this.exec(roomId, { type: "output", actor: SYSTEM, id: `idle:${a.id}`, author: seatId, sourceKey: `idle:${a.id}`, association: { kind: "activity", id: a.id }, activityCompletion: "done", body, disposition: open.length ? { kind: "answer", requestIds: open } : { kind: "yield" } });
       this.idleSince.delete(a.id);
       this.step("settled", roomId, seatId, a.runId);
@@ -785,9 +800,14 @@ export class EngineHost {
     const applied = receipt.events.some((e) => e.data.kind === "cancel" && e.data.applied);
     this.sweepActivities(roomId);
     if (run && owner) {
-      const detail = await this.adapter.getThreadDetail(owner.threadId).catch(() => null);
-      const t3Run = detail ? runForMessage(detail, run.dispatchMessageId) : null;
-      if (t3Run) await this.sendInterrupts(roomId, run.id, owner.threadId, t3Run);
+      // The cancel is recorded; sending the interrupt is best effort here, and the tick sends it otherwise.
+      try {
+        const detail = await this.adapter.getThreadDetail(owner.threadId);
+        const t3Run = detail ? runForMessage(detail, run.dispatchMessageId) : null;
+        if (t3Run) await this.sendInterrupts(roomId, run.id, owner.threadId, t3Run);
+      } catch (error) {
+        this.log("interrupt after a cancel waits for the tick", message(error));
+      }
     }
     this.hint();
     return { applied, deferred: false };
