@@ -522,3 +522,255 @@ for (const action of ["result", "finish"] as const)
       assert.equal(projection(r).requests.get("A")!.state, "open"); v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
     } finally { f?.source.close(); v.cleanup(); }
   });
+
+// #443: a retained foreign terminal outcome of the bound original is evidence too.
+// A later restoration or an earlier settlement cannot erase it from new claims.
+type Outcome = { status: string; exitCode: number; output: string };
+const success: Outcome = { status: "completed", exitCode: 0, output: "Original success" };
+const failure: Outcome = { status: "failed", exitCode: 1, output: "Actual native failure" };
+function setOutcome(source: SimulatedOperationSource, id: string, outcome: Outcome) {
+  const item = source.detailItems.get(id)!, node = source.snapshot.projection.nodes.find((n) => n.id === item.nodeId)!;
+  Object.assign(item, { ...outcome, completedAt: "2026-10-07T04:00:00.000Z" }); node.status = outcome.status; source.project(item);
+}
+const outcomes = (r: Rig, room: string, id: string) => r.store.load(room).flatMap((e) => e.data.kind === "provider.observed"
+  ? e.data.observation.sources ?? [] : []).filter((s) => s.itemId === id).map((s) => `${s.status}:${s.exitCode}`);
+async function foreignFailure(v: OperationRoom, id: string, history: "restored" | "failed-first") {
+  const f = await foreignHistory(v);
+  if (history === "failed-first") { setOutcome(f.source, id, failure); await f.observe(); }
+  else { await f.observe(); setOutcome(f.source, id, failure); await f.observe(); setOutcome(f.source, id, success); await f.observe(); }
+  v.source.snapshot.snapshotSequence = f.source.snapshot.snapshotSequence + 100;
+  return f;
+}
+
+for (const restart of [false, true]) for (const settled of [false, true])
+  test(`S1 retained foreign failure of the bound original, then restored, blocks fresh ${settled ? "finish after the earlier result" : "result and finish"}${restart ? " after reopen/rebuild" : ""}`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v), intent = result();
+      const saved = settled ? await post(r, intent) : null; if (saved) assert.equal(saved.status, 200, saved.text);
+      const immutable = canonicalJSON(projection(r).activities.get("X")!.declaration);
+      f = await foreignFailure(v, native.id, "restored");
+      assert.deepEqual(outcomes(r, f.room, native.id), ["completed:0", "failed:1", "completed:0"]);
+      if (restart) { v.d.reopen(); r.store = v.d.store; r.store.rebuild(r.room); r.store.rebuild(f.room); }
+      if (!settled) assert.equal((await post(r, intent)).status, 409);
+      const finished = await finishResponse(r); assert.equal(finished.status, 409, finished.text);
+      assert.equal(canonicalJSON(projection(r).activities.get("X")!.declaration), immutable);
+      assert.equal(projection(r).activities.get("X")!.status, settled ? "done" : "pending");
+      assert.equal(projection(r).requests.get("A")!.state, "open");
+      assert.equal(projection(r).activityReceipts.size, settled ? 3 : 2);
+      if (saved) {
+        const receipt = projection(r).activityReceipts.get(saved.body.receiptKey!)!;
+        const reads = [v.source.detailReads, v.source.snapshotReads, v.source.contractReads]; v.source.disabled = true;
+        const replay = await protocol(r).handle(r.room, new Request("http://s1-simulation.invalid/activities", { method: "POST",
+          headers: { authorization: r.context.authorization, "content-type": "application/json" },
+          body: JSON.stringify({ intent, itemId: receipt.packet.source.itemId }) }));
+        assert.equal(replay.status, 200); assert.equal(await replay.text(), saved.text);
+        assert.deepEqual([v.source.detailReads, v.source.snapshotReads, v.source.contractReads], reads);
+        assert.equal(r.store.execute(r.room, packetCommand(receipt.packet)).replayed, true);
+      }
+      v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+for (const settled of [false, true])
+  test(`S1 foreign room that first observes the bound original as failed blocks fresh ${settled ? "finish after the earlier result" : "result and finish"}`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v), intent = result();
+      if (settled) assert.equal((await post(r, intent)).status, 200);
+      f = await foreignFailure(v, native.id, "failed-first"); assert.deepEqual(outcomes(r, f.room, native.id), ["failed:1"]);
+      if (!settled) assert.equal((await post(r, intent)).status, 409);
+      assert.equal((await finishResponse(r)).status, 409);
+      assert.equal(projection(r).activities.get("X")!.status, settled ? "done" : "pending");
+      assert.equal(projection(r).requests.get("A")!.state, "open"); v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+test("S1 foreign failure blocks an unreferenced success claim while the original room still sees the native running", async () => {
+  const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+  try {
+    const { r, native } = await originalBinding(v, true), binding = projection(r).activities.get("X")!.declaration!.binding!;
+    f = await foreignFailure(v, native.id, "failed-first");
+    const claim = (completion: "done" | "failed") => raw(r, "record_activity_result", { bindingReceiptKey: binding.bindingReceiptKey, completion,
+      body: `Declared ${completion} without a native result`, resultRef: null, unavailableReason: "The original room has not observed the native result" });
+    assert.equal((await post(r, claim("done"))).status, 409); assert.equal(projection(r).activities.get("X")!.status, "pending");
+    const failed = await post(r, claim("failed")); assert.equal(failed.status, 200, failed.text);
+    assert.equal(projection(r).activities.get("X")!.declaration!.result!.completion, "failed");
+    v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+  } finally { f?.source.close(); v.cleanup(); }
+});
+
+for (const action of ["result", "finish"] as const)
+  test(`S1 ${action} packet captured before the foreign failure does not commit after that failure is journaled`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v);
+      if (action === "finish") assert.equal((await post(r, result())).status, 200);
+      const captured = action === "result" ? await post(r, result(), true) : await finishResponse(r, true);
+      assert.equal(captured.status, 409); assert.ok(captured.packet);
+      const immutable = canonicalJSON(projection(r).activities.get("X")!.declaration);
+      f = await foreignFailure(v, native.id, "restored"); const head = r.store.load(r.room).length;
+      assert.throws(() => action === "result" ? r.store.commitActivity(r.room, captured.packet as ActivityPacket)
+        : r.store.commitOperation(r.room, captured.packet as LocalOperationPacket), /native invocation outcome|retained native outcome/);
+      assert.equal(r.store.load(r.room).length, head); assert.equal(projection(r).requests.get("A")!.state, "open");
+      assert.equal(canonicalJSON(projection(r).activities.get("X")!.declaration), immutable);
+      v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+for (const action of ["result", "finish"] as const)
+  test(`S1 waiting ${action} writer checks the foreign failure after the observation writer commits`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v);
+      if (action === "finish") assert.equal((await post(r, result())).status, 200);
+      const captured = action === "result" ? await post(r, result(), true) : await finishResponse(r, true);
+      assert.ok(captured.packet); const immutable = canonicalJSON(projection(r).activities.get("X")!.declaration);
+      f = await foreignHistory(v); await f.observe(); setOutcome(f.source, native.id, failure);
+      const snapshot = await f.source.adapter.inspect("thread:W"), prior = r.store.project(f.room).providerObservations.get("W")!;
+      assert.ok(snapshot.toolSources?.some((s) => s.itemId === native.id && s.status === "failed" && s.exitCode === 1));
+      const observation: Command = { type: "observe_provider", actor: "$system", id: "serialized-foreign-native-failure",
+        observation: { ...prior, sequence: snapshot.sequence, activities: snapshot.activities, sources: snapshot.toolSources ?? [] },
+        pending: snapshot.pending, settled: snapshot.settled ?? [] };
+      const packet = captured.packet, key = canonicalJSON([packet.capabilityId, packet.intent.clientId]);
+      const command: Command = action === "result" ? packetCommand(packet as ActivityPacket)
+        : { type: "local_operation", actor: "$system", id: `operation:${hash(canonicalJSON(key))}`, packet: packet as LocalOperationPacket };
+      const held = join(v.d.dir, "s1-failure-held"), release = join(v.d.dir, "s1-failure-release"), ready = join(v.d.dir, "s1-failure-ready"), go = join(v.d.dir, "s1-failure-go");
+      const waiter = worker({ path: v.d.path, room: r.room, command, ready, go }); await waitForFiles([ready]);
+      const writer = worker({ path: v.d.path, room: f.room, command: observation, holdReady: held, holdGo: release });
+      await waitForFiles([held]); writeFileSync(go, "go"); writeFileSync(release, "commit retained failure");
+      const [first, second] = await Promise.all([writer, waiter]); assert.equal(first.code, 0, first.stdout + first.stderr);
+      assert.equal(second.code, 1, second.stdout + second.stderr); assert.match(second.stdout, /native invocation outcome|retained native outcome/);
+      assert.deepEqual(outcomes(r, f.room, native.id), ["completed:0", "failed:1"]);
+      assert.equal(canonicalJSON(projection(r).activities.get("X")!.declaration), immutable);
+      assert.equal(projection(r).requests.get("A")!.state, "open"); v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+for (const restart of [false, true])
+  test(`S1 unchanged foreign success control records the result and answers${restart ? " after reopen/rebuild" : ""}`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v); f = await foreignHistory(v);
+      for (let i = 0; i < 3; i++) { setOutcome(f.source, native.id, success); await f.observe(); }
+      assert.deepEqual(outcomes(r, f.room, native.id), ["completed:0", "completed:0", "completed:0"]);
+      if (restart) { v.d.reopen(); r.store = v.d.store; r.store.rebuild(r.room); r.store.rebuild(f.room); }
+      v.source.snapshot.snapshotSequence = f.source.snapshot.snapshotSequence + 100;
+      const recorded = await post(r, result()); assert.equal(recorded.status, 200, recorded.text);
+      const finished = await finishResponse(r); assert.equal(finished.status, 200, finished.text);
+      assert.equal(finished.body.result.claims[0].outcome, "answered"); assert.equal(projection(r).requests.get("A")!.state, "answered");
+      v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+test("S1 a native failure every room agrees on is recorded as failed and the request is answered", async () => {
+  const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+  try {
+    const { r, native } = await originalBinding(v, true), binding = projection(r).activities.get("X")!.declaration!.binding!;
+    f = await foreignHistory(v); await f.observe(); setOutcome(f.source, native.id, failure); await f.observe();
+    setOutcome(v.source, native.id, failure); await tick(r); v.source.snapshot.snapshotSequence = f.source.snapshot.snapshotSequence + 100;
+    assert.deepEqual(outcomes(r, f.room, native.id), ["running:0", "failed:1"]);
+    const recorded = await post(r, raw(r, "record_activity_result", { bindingReceiptKey: binding.bindingReceiptKey, completion: "failed",
+      body: "Original native failure declared", resultRef: { itemId: native.id }, unavailableReason: null }));
+    assert.equal(recorded.status, 200, recorded.text);
+    const finished = await finishResponse(r); assert.equal(finished.status, 200, finished.text);
+    assert.equal(finished.body.result.claims[0].outcome, "answered");
+    assert.equal(projection(r).activities.get("X")!.declaration!.result!.originalSource!.exitCode, 1);
+    v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+  } finally { f?.source.close(); v.cleanup(); }
+});
+
+for (const settled of [false, true])
+  test(`S1 foreign failure seen only on the native node blocks fresh ${settled ? "finish after the earlier result" : "result and finish"}`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native, result } = await originalBinding(v);
+      if (settled) assert.equal((await post(r, result())).status, 200);
+      f = await foreignHistory(v); await f.observe();
+      f.source.snapshot.projection.turnItems = f.source.snapshot.projection.turnItems.filter((s) => s.id !== native.id);
+      f.source.snapshot.projection.nodes.find((n) => n.id === native.nodeId)!.status = "failed"; f.source.snapshot.snapshotSequence++; await f.observe();
+      assert.ok(r.store.load(f.room).some((e) => e.data.kind === "provider.observed"
+        && e.data.observation.sources?.some((s) => s.itemId === null && s.nodeId === native.nodeId && s.status === "failed")));
+      v.source.snapshot.snapshotSequence = f.source.snapshot.snapshotSequence + 100;
+      if (!settled) assert.equal((await post(r, result())).status, 409);
+      assert.equal((await finishResponse(r)).status, 409);
+      assert.equal(projection(r).activities.get("X")!.status, settled ? "done" : "pending");
+      assert.equal(projection(r).requests.get("A")!.state, "open"); v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });
+
+test("S1 the original room's own failure then restored success refuses the result and leaves the request open", async () => {
+  const v = await operationRoom();
+  try {
+    const { r, native, result } = await originalBinding(v);
+    setOutcome(v.source, native.id, failure); await tick(r); setOutcome(v.source, native.id, success); await tick(r);
+    assert.deepEqual(outcomes(r, r.room, native.id).slice(-3), ["completed:0", "failed:1", "completed:0"]);
+    assert.equal((await post(r, result())).status, 409);
+    const finished = await finishResponse(r); assert.equal(finished.status, 200, finished.text);
+    assert.equal(finished.body.result.claims[0].outcome, "pending_activity");
+    assert.equal(projection(r).activities.get("X")!.status, "pending"); assert.equal(projection(r).requests.get("A")!.state, "open");
+    v.d.parity();
+  } finally { v.cleanup(); }
+});
+
+// Review F1: terminal outcomes are one value per scope, whichever room retained them.
+async function twoForeignRooms(v: OperationRoom, id: string, first: Outcome) {
+  const rooms = [await foreignHistory(v), await foreignHistory(v)];
+  setOutcome(rooms[0]!.source, id, first); await rooms[0]!.observe(); setOutcome(rooms[1]!.source, id, failure); await rooms[1]!.observe();
+  v.source.snapshot.snapshotSequence = Math.max(...rooms.map((f) => f.source.snapshot.snapshotSequence)) + 100;
+  return rooms;
+}
+const nullRefFailed = (r: Rig) => raw(r, "record_activity_result", { bindingReceiptKey: projection(r).activities.get("X")!.declaration!.binding!.bindingReceiptKey,
+  completion: "failed", body: "Declared failed without a native result", resultRef: null, unavailableReason: "The original room has not observed the native result" });
+function reopenAll(v: OperationRoom, r: Rig, rooms: readonly { room: string }[]) {
+  v.d.reopen(); r.store = v.d.store; r.store.rebuild(r.room); for (const f of rooms) r.store.rebuild(f.room);
+}
+
+for (const restart of [false, true]) for (const settled of [false, true])
+  test(`F1 two foreign rooms retaining different outcomes block a fresh ${settled ? "finish after the earlier result" : "result and finish"}${restart ? " after reopen/rebuild" : ""}`, async () => {
+    const v = await operationRoom(); let rooms: Awaited<ReturnType<typeof foreignHistory>>[] = [];
+    try {
+      const { r, native } = await originalBinding(v, true), intent = nullRefFailed(r);
+      if (settled) assert.equal((await post(r, intent)).status, 200);
+      const immutable = canonicalJSON(projection(r).activities.get("X")!.declaration);
+      rooms = await twoForeignRooms(v, native.id, success);
+      assert.deepEqual(rooms.map((f) => outcomes(r, f.room, native.id)), [["completed:0"], ["failed:1"]]);
+      if (restart) reopenAll(v, r, rooms);
+      if (!settled) assert.equal((await post(r, intent)).status, 409);
+      setOutcome(v.source, native.id, failure); await tick(r);
+      const finished = await finishResponse(r); assert.equal(finished.status, 409, finished.text);
+      assert.equal(canonicalJSON(projection(r).activities.get("X")!.declaration), immutable);
+      assert.equal(projection(r).activities.get("X")!.status, settled ? "failed" : "pending");
+      assert.equal(projection(r).requests.get("A")!.state, "open"); v.d.parity();
+      for (const f of rooms) assert.equal(r.store.audit(f.room).ok, true);
+    } finally { for (const f of rooms) f.source.close(); v.cleanup(); }
+  });
+
+for (const restart of [false, true])
+  test(`F1 two foreign rooms agreeing on the failure record failed and answer${restart ? " after reopen/rebuild" : ""}`, async () => {
+    const v = await operationRoom(); let rooms: Awaited<ReturnType<typeof foreignHistory>>[] = [];
+    try {
+      const { r, native } = await originalBinding(v, true); rooms = await twoForeignRooms(v, native.id, failure);
+      if (restart) reopenAll(v, r, rooms);
+      const recorded = await post(r, nullRefFailed(r)); assert.equal(recorded.status, 200, recorded.text);
+      setOutcome(v.source, native.id, failure); await tick(r);
+      const finished = await finishResponse(r); assert.equal(finished.status, 200, finished.text);
+      assert.equal(finished.body.result.claims[0].outcome, "answered"); assert.equal(projection(r).activities.get("X")!.status, "failed");
+      v.d.parity();
+    } finally { for (const f of rooms) f.source.close(); v.cleanup(); }
+  });
+
+for (const own of ["success", "failure"] as const)
+  test(`F1 the original room's own later ${own} joins the scope: finish ${own === "success" ? "is blocked" : "answers"} against a foreign failure`, async () => {
+    const v = await operationRoom(); let f: Awaited<ReturnType<typeof foreignHistory>> | undefined;
+    try {
+      const { r, native } = await originalBinding(v, true); f = await foreignFailure(v, native.id, "failed-first");
+      assert.equal((await post(r, nullRefFailed(r))).status, 200);
+      setOutcome(v.source, native.id, own === "success" ? success : failure); await tick(r);
+      assert.equal(outcomes(r, r.room, native.id).at(-1), own === "success" ? "completed:0" : "failed:1");
+      const finished = await finishResponse(r);
+      if (own === "success") { assert.equal(finished.status, 409, finished.text); assert.equal(projection(r).requests.get("A")!.state, "open"); }
+      else { assert.equal(finished.status, 200, finished.text); assert.equal(finished.body.result.claims[0].outcome, "answered"); }
+      assert.equal(projection(r).activities.get("X")!.status, "failed"); v.d.parity(); assert.equal(r.store.audit(f.room).ok, true);
+    } finally { f?.source.close(); v.cleanup(); }
+  });

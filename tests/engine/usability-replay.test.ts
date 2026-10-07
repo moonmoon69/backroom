@@ -2,23 +2,33 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalJSON } from "../../src/engine/result.ts";
 import { operationRoom } from "./operation-fixture.ts";
 import type { Projection, RoomEvent } from "../../src/engine/types.ts";
 import type { ActivityV2Intent } from "../../src/engine/operation-types.ts";
 
-const accepted = "/tmp/backroom-p-sol-280/revision-v5/candidate";
+/** Exact bytes of accepted P's reducer, as listed in its source manifest (SHA-256
+ * f3ab6d5ff1395216d5b23b0b1386a57f20804532915dc4cd6b1c47167cc8310f, 211 files). The
+ * candidate under /tmp is gone; the same bytes are in T3 checkpoint commit 7f42719.
+ * They are kept as data so the typecheck never resolves them against U's types. */
 const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
-const manifestPath = "/tmp/backroom-p-sol-280/final-p-handoff/source-manifest.json";
-assert.equal(digest(readFileSync(manifestPath)), "f3ab6d5ff1395216d5b23b0b1386a57f20804532915dc4cd6b1c47167cc8310f");
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, string>;
-for (const [path, sha] of Object.entries(manifest)) assert.equal(digest(readFileSync(`${accepted}/${path}`)), sha);
-const historical = await import(pathToFileURL(`${accepted}/src/engine/fold.ts`).href) as {
+const acceptedP = { "fold.ts": "5860b14ec2cdc5627cb050c86b7738dec80e205cc76dcfc1ac93b55566007a19",
+  "incremental.ts": "896f4f649250de2cc4a57d59018bd19613dbb7fcc80440d0c7d110590cd1c329" };
+const accepted = mkdtempSync(join(tmpdir(), "backroom-accepted-p-"));
+writeFileSync(join(accepted, "package.json"), JSON.stringify({ type: "module" }));
+for (const [file, sha] of Object.entries(acceptedP)) {
+  const bytes = readFileSync(new URL(`./accepted-p/${file}.frozen`, import.meta.url)); assert.equal(digest(bytes), sha);
+  writeFileSync(join(accepted, file), bytes);
+}
+const historical = await import(pathToFileURL(join(accepted, "fold.ts")).href) as {
   emptyProjection: (log: RoomEvent[]) => Projection; applyEvent: (p: Projection, e: RoomEvent) => void };
-const historicalHistory = await import(pathToFileURL(`${accepted}/src/engine/incremental.ts`).href) as {
+const historicalHistory = await import(pathToFileURL(join(accepted, "incremental.ts")).href) as {
   rememberEvent: (p: Projection, e: RoomEvent) => void };
+rmSync(accepted, { recursive: true });
 
 /** Independent frozen P fold handles every retained event. Only the three approved new
  * event types are replayed here in a simple full-log reference, without importing U's

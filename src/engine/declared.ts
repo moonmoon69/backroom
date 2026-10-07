@@ -1,5 +1,5 @@
 import type { Activity, Projection } from "./types.ts";
-import type { ActivityV2Intent, DeclaredBinding, DeclaredRegistration, NativeHandle, RunCapability } from "./operation-types.ts";
+import type { ActivityV2Intent, DeclaredBinding, DeclaredRegistration, DeclaredResult, NativeHandle, RunCapability } from "./operation-types.ts";
 import type { NativeToolSource } from "./provider.ts";
 import { canonicalJSON, sourceContradiction, sourceIdentity, toolClosure } from "./result.ts";
 import { originalNativeSourceMatches, validateOriginalNativeSource } from "./operations.ts";
@@ -26,15 +26,16 @@ export function observedHandleSources(p: Projection, value: string): NativeToolS
  * prefix at registration rather than compare event numbers across rooms or infer
  * launch time from a native sequence. No observation supplies a logical binding. */
 export function validateScopedHandleHistory(p: Projection, reg: DeclaredRegistration, handle: NativeHandle,
-  original: NativeToolSource | null, room: string, originalRoom: string): void {
+  original: NativeToolSource | null, room: string, originalRoom: string,
+  results: readonly DeclaredClaim[], outcomes: OutcomeScope): void {
   // Validate revisions against their chronological first origin/item/complete,
   // not the restored latest source or a future complete record applied backwards.
   const evidence: Parameters<typeof originalNativeSourceMatches>[0] = { origin: undefined, item: undefined, complete: undefined };
+  // Terminal outcomes are immutable too: a later restored success cannot erase a
+  // retained failure, and an earlier settlement does not excuse a new claim.
+  const terminal: TerminalOutcome = { item: null, node: null };
   const environments = new Map<string, { environmentId: string; threadId: string }>();
-  const related = (source: NativeToolSource) => (source.providerThreadId === reg.providerThreadId
-    || source.nodeEvidence?.providerThreadId === reg.providerThreadId) && (source.nativeRef?.nativeId === handle.value
-    || handle.namespace === "provider_item" && original && source.threadId === original.threadId
-      && (source.itemId !== null && source.itemId === original.itemId || source.nodeId !== null && source.nodeId === original.nodeId));
+  const related = relatedSource(reg, handle, original);
   for (const event of p.events) {
     if (event.data.kind === "provider.conflict") {
       const conflict = event.data, scope = environments.get(conflict.seatId);
@@ -66,9 +67,53 @@ export function validateScopedHandleHistory(p: Projection, reg: DeclaredRegistra
       }
       requireThat(originalNativeSourceMatches(evidence, source) && originalNativeSourceMatches(evidence, original),
         "native invocation differs from its first authoritative origin or established item");
+      const outcome = terminalOutcome(source);
+      for (const part of source.itemId === null ? ["node"] as const : ["item", "node"] as const) {
+        requireThat(terminal[part] === null || outcome[part] === terminal[part],
+          "native invocation outcome changed or reopened after its first terminal observation");
+        terminal[part] = outcome[part];
+        if (outcome[part] === null) continue;
+        outcomes[part].add(outcome[part]);
+        requireThat(outcomes[part].size === 1, "retained native outcome contradicts another terminal outcome in its scope");
+      }
+      requireThat(!failed(outcome) || results.every((r) => r.completion === "failed"), "retained native outcome failed; it cannot be declared done");
     }
   }
 }
+type DeclaredClaim = Pick<DeclaredResult, "completion" | "originalSource">;
+function relatedSource(reg: DeclaredRegistration, handle: NativeHandle, original: NativeToolSource | null) {
+  return (source: NativeToolSource) => (source.providerThreadId === reg.providerThreadId
+    || source.nodeEvidence?.providerThreadId === reg.providerThreadId) && (source.nativeRef?.nativeId === handle.value
+    || handle.namespace === "provider_item" && !!original && source.threadId === original.threadId
+      && (source.itemId !== null && source.itemId === original.itemId || source.nodeId !== null && source.nodeId === original.nodeId));
+}
+/** Terminal values one native invocation has across its environment/provider-thread
+ * scope, whichever room retained them. Rooms read the same item at different times,
+ * so values are compared without order: a scope keeps at most one per part. */
+export interface OutcomeScope { item: Set<string>; node: Set<string> }
+/** Seeds the scope with the declared originals and the original room's own retained
+ * observations. They are checked only when a foreign room adds a terminal value, so
+ * conflicts confined to the original room keep their local pending_activity receipts. */
+export function outcomeScope(own: Projection, reg: DeclaredRegistration, handle: NativeHandle,
+  original: NativeToolSource | null, results: readonly DeclaredClaim[]): OutcomeScope {
+  const scope: OutcomeScope = { item: new Set(), node: new Set() }, related = relatedSource(reg, handle, original);
+  const observed = own.events.flatMap((e) => e.data.kind === "provider.observed" && e.data.observation.environmentId === reg.environmentId
+    ? (e.data.observation.sources ?? []).filter((s) => related(s) && s.providerRunId === reg.providerRunId && s.generation === reg.generation) : []);
+  for (const source of [original, ...results.map((r) => r.originalSource), ...observed]) if (source) {
+    const outcome = terminalOutcome(source);
+    for (const part of ["item", "node"] as const) if (outcome[part] !== null) scope[part].add(outcome[part]);
+  }
+  return scope;
+}
+interface TerminalOutcome { item: string | null; node: string | null }
+const ended = (status: string | undefined) => status !== undefined && ["completed", "failed", "cancelled", "interrupted"].includes(status) ? status : null;
+/** Item status and exit code, and node status, once each is terminal. */
+function terminalOutcome(s: NativeToolSource): TerminalOutcome {
+  return { item: s.itemId !== null && ended(s.status) ? canonicalJSON([s.status, s.exitCode ?? null]) : null,
+    node: ended(s.itemId === null ? s.status : s.nodeStatus) };
+}
+const failed = (o: TerminalOutcome) => o.item !== null && o.item !== canonicalJSON(["completed", 0]) && o.item !== canonicalJSON(["completed", null])
+  || o.node !== null && o.node !== "completed";
 /** Checks the original source independently of the member's physical-launch promise. */
 export function validateDeclaredSource(p: Projection, reg: DeclaredRegistration, source: NativeToolSource): void {
   validateOriginalNativeSource(p, source);

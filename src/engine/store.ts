@@ -4,7 +4,7 @@ import { EntryOverlay, journalHistory, projectionMaps, ProjectionOverlay } from 
 import { applyEvent, fold } from "./fold.ts";
 import { decideProjection } from "./transitions.ts";
 import { operationKey, parseActivity, parseOperation, validateCapability } from "./operations.ts";
-import { handleOwnershipKey, validateScopedHandleHistory } from "./declared.ts";
+import { handleOwnershipKey, outcomeScope, validateScopedHandleHistory } from "./declared.ts";
 import { canonicalJSON } from "./result.ts";
 import type { ActivityPacket, ActivityReceipt, LocalOperationPacket, OperationReceipt } from "./operation-types.ts";
 import type { Command, Decision, Projection, RoomEvent } from "./types.ts";
@@ -523,10 +523,12 @@ export class EngineStore {
       const declared = [...p.activities.values()].filter((a) => a.declaration?.binding && a.requestIds.some((id) => requestIds.includes(id)));
       // Local conflicts already produce the established pending_activity receipt.
       // Foreign known history must fence a fresh claim before committing effects.
-      if (declared.length) for (const { room: knownRoom } of this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[]) {
-        const other = this.working(knownRoom).overlay.p;
-        for (const a of declared) validateScopedHandleHistory(other, a.declaration!.registration, a.declaration!.binding!.nativeHandle,
-          a.declaration!.binding!.originalSource, knownRoom, room);
+      const rooms = declared.length ? this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[] : [];
+      for (const a of declared) {
+        const { registration, binding, result } = a.declaration!, results = result ? [result] : [];
+        const outcomes = outcomeScope(p, registration, binding!.nativeHandle, binding!.originalSource, results);
+        for (const { room: knownRoom } of rooms) validateScopedHandleHistory(this.working(knownRoom).overlay.p, registration,
+          binding!.nativeHandle, binding!.originalSource, knownRoom, room, results, outcomes);
       }
       return;
     }
@@ -534,6 +536,7 @@ export class EngineStore {
     let handle: import("./operation-types.ts").NativeHandle | undefined;
     let registration: import("./operation-types.ts").DeclaredRegistration | undefined;
     let original: import("./provider.ts").NativeToolSource | null = null;
+    let results: Pick<import("./operation-types.ts").DeclaredResult, "completion" | "originalSource">[] = [];
     let newOwner = true;
     if (command.type === "activity_operation") {
       const packet = command.packet, intent = packet.intent;
@@ -544,6 +547,7 @@ export class EngineStore {
         const declaration = p.activities.get(intent.activityId)?.declaration;
         registration = declaration?.registration; scope = registration;
         handle = declaration?.binding?.nativeHandle; original = declaration?.binding?.originalSource ?? null; newOwner = false;
+        results = [{ completion: intent.completion, originalSource: packet.resultSource ?? null }];
       } else if (intent.schema === "backroom.activity.v1" && intent.operation === "register_activity" && intent.nativeId !== null) {
         const cap = p.capabilities.get(packet.capabilityId);
         if (cap && packet.source.providerThreadId) scope = { environmentId: cap.environmentId, providerThreadId: packet.source.providerThreadId };
@@ -558,11 +562,12 @@ export class EngineStore {
       handle = { namespace: "provider_item", value: command.nativeId };
     }
     if (!scope || !handle) return;
+    const outcomes = registration && outcomeScope(p, registration, handle, original, results);
     const ownershipKey = handleOwnershipKey(scope, handle);
     const rooms = [{ room }, ...this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[]];
     for (const { room: ownerRoom } of rooms) {
       const other = this.working(ownerRoom).overlay.p;
-      if (registration && (newOwner || ownerRoom !== room)) validateScopedHandleHistory(other, registration, handle, original, ownerRoom, room);
+      if (registration && outcomes && (newOwner || ownerRoom !== room)) validateScopedHandleHistory(other, registration, handle, original, ownerRoom, room, results, outcomes);
       if (!newOwner) continue;
       for (const existing of other.activities.values()) {
         if (existing.declaration?.binding?.ownershipKey === ownershipKey) throw new Error("native handle already owned across rooms/generations");
