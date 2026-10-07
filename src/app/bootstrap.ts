@@ -5,7 +5,7 @@ import { Database } from "../db/database.ts";
 import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { EngineStore } from "../engine/index.ts";
-import { EngineHost, bindingSource } from "../runtime/index.ts";
+import { EngineHost, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
@@ -105,6 +105,7 @@ export function createStack(input: {
       rooms: () => repos.listRooms().map((room) => room.id),
       briefing: bindingSource(repos, input.boardCommand ? { boardCommand: input.boardCommand } : {}),
       budgetChars: input.briefingBudgetChars,
+      watch: nativeRequestMirror(repos, notify),
       notify,
       ...(input.log ? { log: input.log } : {}),
     })

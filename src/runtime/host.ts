@@ -54,6 +54,11 @@ export interface EngineHostOptions {
   refusals?: number;
   now?: () => number;
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
+  /**
+   * Called each tick for every seat with its thread, after the host's own work on it: the app mirrors what stays off the
+   * journal (approvals and questions on the native-requests path, plan §6). `detail` reads the thread at most once.
+   */
+  watch?: (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>) => void | Promise<void>;
 }
 
 /** A member command the host refuses, with the explanation the member sees. */
@@ -226,6 +231,8 @@ export class EngineHost {
       }
       if (live) await this.advance(roomId, seatId, live, state.load);
       state.imported = await this.importThread(roomId, seatId, state.shell, state.load);
+      const seat = this.project(roomId).seats.get(seatId)!;
+      await this.options.watch?.({ roomId, seatId, threadId: seat.threadId }, state.current() ?? state.shell, () => state.load());
     });
     await each(async (seatId, state) => {
       const shell = state.current();
@@ -702,7 +709,7 @@ export class EngineHost {
     const pending = pendingActivities(p, seatId);
     const covered = new Set(pending.flatMap((a) => openOwned(p, a.requestIds, seatId)));
     const turn = run ? this.turnRequests(p, run) : [];
-    const ids = input.requestIds ? unique(input.requestIds) : run ? turn : [...covered];
+    const ids = input.requestIds ? unique(input.requestIds) : run ? turn : this.onlyCandidate(p, [...covered], "working");
     if (!committed(p, seatId, input.id)) {
       if (ids.length === 0) throw new HostRefusal("No open request of yours is in this turn or held by your background work. To send a later result, use rooms-board post @<requester>.");
       for (const id of ids) {
@@ -740,7 +747,7 @@ export class EngineHost {
     }
     const run = this.liveRun(p, seatId);
     const pending = pendingActivities(p, seatId);
-    const ids = input.requestIds ? unique(input.requestIds) : run ? this.turnRequests(p, run) : unique(pending.flatMap((a) => openOwned(p, a.requestIds, seatId)));
+    const ids = input.requestIds ? unique(input.requestIds) : run ? this.turnRequests(p, run) : this.onlyCandidate(p, unique(pending.flatMap((a) => openOwned(p, a.requestIds, seatId))), "answer");
     if (ids.length === 0) throw new HostRefusal('Nothing to answer here: name the request, rooms-board answer #n "…".');
     for (const id of ids) {
       const q = p.requests.get(id);
@@ -814,6 +821,20 @@ export class EngineHost {
   }
 
   // ---------------- helpers ----------------
+
+  /**
+   * Outside a host run the member's turn can be about any of its jobs, and the host cannot tell which: with no #n, a
+   * command acts only when one request is a candidate, and otherwise names them so the member says which (as post --for).
+   */
+  private onlyCandidate(p: Projection, candidates: string[], command: "answer" | "working"): string[] {
+    if (candidates.length <= 1) return candidates;
+    const named = candidates.map((id) => {
+      const q = p.requests.get(id)!;
+      const head = q.body.replace(/\s+/g, " ").trim();
+      return `#${id} (from ${q.returnTo === "$user" ? "the user" : `@${q.returnTo}`}: "${head.length > 60 ? `${head.slice(0, 60)}…` : head}")`;
+    });
+    throw new HostRefusal(`Several of your requests are still open with work going on: ${named.join(", ")}. Say which this is about: rooms-board ${command} #n "…".`);
+  }
 
   /** The requests a live run works on now: §1's targets plus those it marked working (posts during the turn go under them). */
   private turnRequests(p: Projection, run: Run): string[] {

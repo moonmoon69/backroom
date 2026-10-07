@@ -3,7 +3,13 @@
  * (findings F1 to F4) and passes with the fixes. Further tests for the same findings follow them.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { FakeT3Adapter } from "../../src/adapter/fake.ts";
+import { createStack } from "../../src/app/bootstrap.ts";
+import { parseCommand } from "../../src/domain/commands.ts";
 import { Room } from "./helpers.ts";
 
 let room: Room;
@@ -215,4 +221,142 @@ test("N3: a crash between the settles of several bg: activities leaves none for 
   assert.equal(room.state(b), "answered");
   const bodies = room.outputs().filter((o) => o.claims.some((c) => c.outcome === "answered" && (c.requestId === a || c.requestId === b))).map((o) => o.body);
   assert.deepEqual(bodies, ["slow-check and lint both passed.", "slow-check and lint both passed."], "both settled by the continuation, not the idle settle");
+});
+
+// ---------------- review round 2 ----------------
+
+/** A flag-on stack with one member seated through the engine and its first request dispatched. */
+async function flagStack(engine: boolean) {
+  const dir = mkdtempSync(join(tmpdir(), "backroom-r2-"));
+  const s = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null, engine });
+  const fake = s.adapter as FakeT3Adapter;
+  const { roomId } = (await s.service.execute(parseCommand({ type: "room.create", projectId: "project_demo", title: "engine" }))) as { roomId: string };
+  const { participantId } = (await s.service.execute(parseCommand({ type: "participant.create", roomId, alias: "worker", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } }))) as { participantId: string };
+  const binding = s.repos.currentBinding(participantId)!;
+  return { s, fake, roomId, participantId, binding, close: () => { s.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("P5: with the flag on, a question a member's run raises reaches Backroom's native-requests path", async () => {
+  const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
+  try {
+    s.engine!.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "Do the thing; ask me if unsure." });
+    await s.scheduler.tick();
+    assert.equal(fake.threads.get(binding.threadId)!.runs.length, 1, "dispatched by the host");
+    fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
+    await s.scheduler.tick();
+    await s.scheduler.tick();
+    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => r.requestId), ["q-1"], "the member's question is on Backroom's native-requests path, where the user can answer it");
+  } finally {
+    close();
+  }
+});
+
+test("F5: with the flag on, the user answers through Backroom; a request T3 resolves itself is resolved; the seat gets work again", async () => {
+  const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
+  try {
+    s.engine!.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "First job." });
+    await s.scheduler.tick();
+    fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
+    await s.scheduler.tick();
+    await s.service.execute(parseCommand({ type: "native.userInput.respond", participantId, requestId: "q-1", answers: { "Proceed?": "yes" } }));
+    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]), [], "answered through the service");
+    fake.raiseApproval(binding.threadId, "a-1");
+    await s.scheduler.tick();
+    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => [r.requestId, r.kind]), [["a-1", "approval"]]);
+    await fake.respondApproval({ commandId: "in-t3", threadId: binding.threadId, requestId: "a-1", decision: "accept" });
+    await s.scheduler.tick();
+    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]), [], "resolved in T3, resolved here");
+    fake.completeRun(binding.threadId, { text: "First job done." });
+    s.engine!.request(roomId, { actor: "$user", id: "req-2", to: binding.id, body: "Second job." });
+    await s.scheduler.tick();
+    await s.scheduler.tick();
+    assert.equal(fake.threads.get(binding.threadId)!.runs.length, 2, "the seat gets work again");
+  } finally {
+    close();
+  }
+});
+
+test("F5 control: without the flag, the old scheduler mirrors the same question", async () => {
+  const { s, fake, roomId, participantId, binding, close } = await flagStack(false);
+  try {
+    await s.service.execute(parseCommand({ type: "message.create", roomId, assignments: [{ recipients: [participantId], instruction: "Do the thing." }] }));
+    await s.scheduler.tick();
+    fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
+    await s.scheduler.tick();
+    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => r.requestId), ["q-1"]);
+  } finally {
+    close();
+  }
+});
+
+test("P6: an answer with no #n in a continuation must not close another job's request the member is still working on", async () => {
+  room = await Room.create();
+  const b = ask(room, "C", "W", "B: watch the deploy and tell me when it is live.");
+  await room.tick();
+  room.working("W", "Watching the deploy; I will answer B when it is live.");
+  room.complete("W", "Watching.");
+  await room.tick();
+  const x = ask(room, "V", "W", "X: run slow-check in the background.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), ["slow-check"]);
+  room.complete("W", "slow-check started.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), []);
+  room.fake.startSelfRun(room.threadOf("W"));
+  await room.tick();
+  let refused = false;
+  try { room.answer("W", "slow-check passed."); } catch { refused = true; }
+  assert.equal(room.state(b), "open", "B (the deploy W is still watching) is not closed by an answer about slow-check");
+  if (!refused) assert.equal(room.state(x), "answered");
+});
+
+test("P7: with no #n in a continuation, working is refused and names the candidates; named, it holds only that job, and the other settles when its work ends", async () => {
+  room = await Room.create();
+  const x = ask(room, "V", "W", "X: run slow-check in the background.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), ["slow-check"]);
+  room.complete("W", "slow-check started.");
+  await room.tick();
+  const y = ask(room, "C", "W", "Y: run lint in the background.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), ["slow-check", "lint"]);
+  room.complete("W", "lint started.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), ["lint"]);
+  room.fake.startSelfRun(room.threadOf("W"));
+  await room.tick();
+  // The reviewer's P7 asserts X stays open whether working is refused or acts on X; with a refusal nothing holds X, so
+  // the idle settle closes it as §2 (iii) says. The member is told to name it, and does.
+  assert.throws(() => room.working("W", "slow-check failed; fixing it."), /Several of your requests are still open with work going on: #ask-V:\d+ \(from @V: "X: run slow-check in the background\."\), #ask-C:\d+ \(from @C: "Y: run lint in the background\."\)\. Say which this is about: rooms-board working #n/);
+  room.working("W", "slow-check failed; fixing it.", [x]);
+  room.complete("W", "Fixing slow-check.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), []);
+  await room.tick();
+  room.clock += 31_000;
+  await room.tick(3);
+  assert.equal(room.state(y), "answered", "lint's request settles once lint ends");
+  assert.equal(room.state(x), "open", "X is held by the member's mark");
+});
+
+test("F6: with one candidate, answer and working with no #n act on it; in a live run the turn's requests stay the default", async () => {
+  room = await Room.create();
+  const x = ask(room, "C", "W", "X: run slow-check in the background.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), ["slow-check"]);
+  room.complete("W", "slow-check started.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), []);
+  room.fake.startSelfRun(room.threadOf("W"));
+  await room.tick();
+  assert.deepEqual(room.working("W", "slow-check failed; fixing.").requestIds, [x]);
+  assert.deepEqual(room.answer("W", "slow-check passed after the fix.").map((c) => [c.requestId, c.outcome]), [[x, "answered"]]);
+  room.complete("W", "Done.");
+  await room.tick();
+  const a = ask(room, "C", "W", "A.");
+  const b = ask(room, "C", "W", "B.");
+  await room.tick();
+  assert.deepEqual(room.working("W", "Both take a while.").requestIds.sort(), [a, b].sort(), "in a live run, the turn's requests");
 });
