@@ -87,7 +87,13 @@ export interface Briefing {
   condensedEventIds: string[];
 }
 
-const CONDENSED_PREVIEW = 160;
+/** How much of a condensed post a briefing keeps: its first characters, on one line. */
+export const CONDENSED_PREVIEW = 160;
+
+/** A condensed post's text: whitespace folded to single spaces, cut to CONDENSED_PREVIEW characters, "…" when cut. */
+export function condensedPreview(text: string): string {
+  return text.replace(/\s+/g, " ").slice(0, CONDENSED_PREVIEW) + (text.length > CONDENSED_PREVIEW ? "…" : "");
+}
 
 export function speakerLabel(event: RoomEvent, participantsById: ReadonlyMap<string, Participant>): string {
   switch (event.speaker.type) {
@@ -149,9 +155,7 @@ function formatEvent(event: RoomEvent, participantsById: ReadonlyMap<string, Par
   const onBranch = replyBranch && replyBranch !== ownBranch ? ` · on branch ${replyBranch}` : "";
   const tag = event.kind === "note" ? "note" : event.kind === "assistant.reply" ? `${speaker} reply${onBranch}` : speaker;
   if (full) return `[${postLabel(event)} ${tag}]\n${event.text}`;
-  const preview = event.text.replace(/\s+/g, " ").slice(0, CONDENSED_PREVIEW);
-  const ellipsis = event.text.length > CONDENSED_PREVIEW ? "…" : "";
-  return `[${postLabel(event)} ${tag}] ${preview}${ellipsis} (condensed; full text available in the room)`;
+  return `[${postLabel(event)} ${tag}] ${condensedPreview(event.text)} (condensed; full text available in the room)`;
 }
 
 /**
@@ -357,21 +361,31 @@ export function standingText(input: StandingInput): string {
   return standingLines(standingSections(input), "all", { seat: true }).join("\n");
 }
 
-export function assembleBriefing(input: BriefingInput): Briefing {
-  const { room, participant, participantsById, task } = input;
+/**
+ * A briefing's first lines: whom it is for, then all the standing sections ("all") or the line that says how to print
+ * them again and the ones that changed. The seat facts go with "all" only where `seat` says so.
+ */
+export function briefingHeader(input: StandingInput, standing: "all" | StandingKey[], options: { seat: boolean }): string[] {
+  const { room, participant } = input;
   const header: string[] = [];
   const sections = standingSections(input);
-  if (input.standing === "all") {
+  if (standing === "all") {
     header.push(`[Backroom briefing for @${participant.alias} in room "${room.title}"]`);
-    header.push(...standingLines(sections, "all", { seat: task.kind !== "seat" }));
+    header.push(...standingLines(sections, "all", { seat: options.seat }));
   } else {
     // The thread has the standing sections already. The one line says how to print them again, for when they went in a
     // compaction Backroom did not see.
     const reprint = input.board ? `. Your standing rules, where everyone works and the room's state: \`${input.board.command} rules --as ${input.board.as}\`` : "";
     header.push(`[Backroom briefing for @${participant.alias} in room "${room.title}"${reprint}]`);
-    const changed = standingLines(sections, input.standing, { seat: false });
+    const changed = standingLines(sections, standing, { seat: false });
     if (changed.length > 0) header.push("Changed since your last briefing:", ...changed);
   }
+  return header;
+}
+
+export function assembleBriefing(input: BriefingInput): Briefing {
+  const { participant, participantsById, task } = input;
+  const header = briefingHeader(input, input.standing, { seat: task.kind !== "seat" });
   const ownBranch = input.workspaces?.find((w) => w.participantId === participant.id)?.branch ?? null;
 
   const prerequisiteSection: string[] = [];
