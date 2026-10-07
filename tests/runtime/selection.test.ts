@@ -10,6 +10,12 @@ import { Room } from "./helpers.ts";
 let room: Room;
 afterEach(() => room?.close());
 
+/** The seat's latest engine run, with its frozen envelope. */
+function latestRun(r: Room, seat: string) {
+  const runs = [...r.p.runs.values()].filter((x) => x.seatId === seat);
+  return runs[runs.length - 1]!;
+}
+
 /** The output the host imported for a seat's latest run: its disposition and claims. */
 function lastFinal(r: Room, seat: string) {
   const outputs = r.outputs().filter((o) => o.author === seat && o.association.kind === "run");
@@ -42,7 +48,7 @@ test("case 1: woken for B only, the final answers B and A stays open", async () 
   const b = room.user("W", "Request B: a quick question.");
   await room.tick();
   assert.match(room.prompt("W"), /Request B/);
-  assert.doesNotMatch(room.prompt("W"), /\] Request A/, "A is not an input of this run");
+  assert.deepEqual(latestRun(room, "W").envelope.inputs.map((i) => i.eventId), [b], "B is this run's only input; A is not");
   room.complete("W", "B: the answer is 42.");
   await room.tick();
   assert.equal(room.state(b), "answered");
@@ -115,8 +121,8 @@ test("case 4: a correction is the only input, and one that lands after the water
   assert.equal(room.state(a), "open");
   await room.tick();
   assert.equal(room.running("W"), true, "the correction is delivered next");
-  assert.match(room.prompt("W"), /correction #user:1\] Rename it to dates/);
-  assert.doesNotMatch(room.prompt("W"), /\] Rename the module/, "the request itself was delivered before");
+  assert.match(room.prompt("W"), /\[#\d+ correction from the user to #\d+\]\nRename it to dates/);
+  assert.deepEqual(latestRun(room, "W").envelope.inputs.map((i) => i.intent), ["correction"], "the correction is the only input");
   room.complete("W", "Renamed to dates.");
   await room.tick();
   assert.deepEqual(lastFinal(room, "W").disposition, { kind: "answer", requestIds: [a] });

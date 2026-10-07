@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { T3TurnItem, TurnImage } from "../../src/adapter/types.ts";
 import type { Input } from "../../src/engine/index.ts";
-import { Room, plainRenderer } from "./helpers.ts";
+import { Room } from "./helpers.ts";
 
 let room: Room;
 afterEach(() => room?.close());
@@ -80,6 +80,7 @@ test("H1, the five-wake incident (D#149/#153): every Consigliere wake delivers s
   assert.equal(room.wakes("C"), 3, "C woke for U, B's answer and A's answer");
   for (const seat of ["C", "W", "X", "V"]) assert.equal(redundantWakes(room, seat), 0, `${seat} had a redundant wake`);
   assert.equal(room.answeredClaims(a).length, 1);
+  assert.deepEqual(room.p.events.filter((e) => e.data.kind === "note"), [], "no host run came back as a T3-originated note");
   room.assertQuiet(["C", "W", "X", "V"]);
 });
 
@@ -249,7 +250,7 @@ const flows: Array<{ name: string; during?: (r: Room) => void; final?: string; a
 
 for (const flow of flows) {
   test(`coding flow with ${flow.name}: finishes, A answered once, the Consigliere woken once for it`, async () => {
-    room = await Room.create({ host: { renderer: plainRenderer((_room, input) => (input.body.includes("screenshot attached") ? [PNG] : [])) } });
+    room = await Room.create({ images: (body) => (body.includes("screenshot attached") ? [PNG] : []) });
     const u = room.user("C", "Fix the date bug, with review, and report.");
     await room.tick();
     const a = room.post("C", "W", "A: fix dates.ts (screenshot attached).");

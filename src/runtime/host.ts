@@ -18,11 +18,11 @@ import { backgroundTasks } from "../app/threadView.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { unread } from "../engine/index.ts";
 import type { ClaimOutcome, Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
-import { plainRenderer, type BriefingRenderer } from "./render.ts";
+import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import {
   DEFERRED_CANCEL, activityStartedSeq, allowedIds, committed, deferredCancels, finalTargets, frozenDispatch,
-  lastAnswered, lastFinal, memberHeld, openOwned, pendingActivities, providerRunOf, reservedSeq,
+  lastAnswered, lastFinal, memberHeld, openOwned, pendingActivities, reservedSeq, runRecords, type Dispatch,
 } from "./work.ts";
 
 const SYSTEM = "$system";
@@ -36,7 +36,10 @@ export interface EngineHostOptions {
   adapter: T3Adapter;
   /** The rooms whose journals the host serves. */
   rooms: () => readonly string[];
-  renderer?: BriefingRenderer;
+  /** The app's side of a briefing: room, member, images (see render.ts). */
+  briefing: BriefingSource;
+  /** The briefing's character budget (ROOMS_BRIEFING_BUDGET): 60,000 by default. */
+  budgetChars?: number;
   /** The model a seat's run names, as T3 Code's composer does; none leaves the thread's own. */
   modelFor?: (roomId: string, seatId: string) => ModelSelection | null;
   notify?: (roomId: string) => void;
@@ -81,7 +84,8 @@ export class EngineHost {
   private readonly store: EngineStore;
   private readonly adapter: T3Adapter;
   private readonly rooms: () => readonly string[];
-  private readonly renderer: BriefingRenderer;
+  private readonly source: BriefingSource;
+  private readonly budgetChars: number;
   private readonly options: EngineHostOptions;
   private readonly maxBytes: number;
   private readonly idleSettleMs: number;
@@ -106,7 +110,8 @@ export class EngineHost {
     this.store = options.store;
     this.adapter = options.adapter;
     this.rooms = options.rooms;
-    this.renderer = options.renderer ?? plainRenderer();
+    this.source = options.briefing;
+    this.budgetChars = options.budgetChars ?? 60_000;
     this.maxBytes = options.maxBytes ?? 4 * MiB;
     this.idleSettleMs = options.idleSettleMs ?? 30_000;
     this.unrecordedMs = options.unrecordedMs ?? 5 * 60_000;
@@ -250,10 +255,12 @@ export class EngineHost {
     let run = this.project(roomId).runs.get(runId)!;
     const threadId = this.project(roomId).seats.get(seatId)!.threadId;
     if (run.phase === "prepared") {
-      // Sending is recorded before the message leaves, with the exact text and the background work already listed (§2).
-      const detail = await load();
-      const rendered = await this.renderer.render({ roomId, seatId, runId, envelope: run.envelope, projection: this.project(roomId) });
-      const frozen = { dispatch: run.dispatchCommandId, bgBefore: detail ? backgroundTasks(detail).map((t) => t.taskId) : [], text: rendered.text };
+      // Sending is recorded before the message leaves, with the exact briefing, the standing record the thread will hold
+      // and the background work already listed (§2). The whole thread is read: compactions and rollbacks lose standing.
+      const detail = await load(true);
+      const p = this.project(roomId);
+      const briefed = await brief(this.source, this.budgetChars, { roomId, seatId, runId, envelope: run.envelope, projection: p, had: seatStanding(p, seatId, detail) });
+      const frozen: Dispatch = { dispatch: run.dispatchCommandId, bgBefore: detail ? backgroundTasks(detail).map((t) => t.taskId) : [], text: briefed.text, images: briefed.images, held: briefed.held };
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:sending`, runId, phase: "sending", evidence: JSON.stringify(frozen) });
       this.step("sending", roomId, seatId, runId);
       run = this.project(roomId).runs.get(runId)!;
@@ -271,8 +278,6 @@ export class EngineHost {
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:accepted`, runId, phase: "accepted", evidence: `t3run:${t3Run.id} ordinal:${t3Run.ordinal}` });
       this.step("accepted", roomId, seatId, runId);
       run = this.project(roomId).runs.get(runId)!;
-      const p = this.project(roomId);
-      this.renderer.delivered?.({ roomId, seatId, runId, envelope: run.envelope, projection: p }, frozenDispatch(p, runId)?.text ?? "");
     }
     if (run.phase !== "accepted" && run.phase !== "running" && run.phase !== "uncertain") return;
     const detail = await load();
@@ -318,18 +323,17 @@ export class EngineHost {
       this.fail(roomId, run.id, `T3 took the message for @${seatId} but never recorded it`);
       return false;
     }
-    // The text frozen at `sending`, never a fresh rendering; the images are looked up again from the same envelope.
-    const p = this.project(roomId);
-    const text = frozenDispatch(p, run.id)?.text ?? "";
-    const rendered = await this.renderer.render({ roomId, seatId, runId: run.id, envelope: run.envelope, projection: p });
+    // What was frozen at `sending`, never a fresh rendering: the same text and exactly the same images.
+    const frozen = frozenDispatch(this.project(roomId), run.id)!;
+    const images = attachImages(this.source, roomId, frozen.images);
     const model = this.options.modelFor?.(roomId, seatId) ?? null;
     try {
       await this.adapter.sendMessage({
         commandId: run.dispatchCommandId,
         threadId,
         messageId: run.dispatchMessageId,
-        text,
-        ...(rendered.images.length ? { images: rendered.images } : {}),
+        text: frozen.text,
+        ...(images.length ? { images } : {}),
         ...(model ? { modelSelection: model } : {}),
         mode: { type: "start" },
       });
@@ -497,7 +501,7 @@ export class EngineHost {
     if (!detail) return false;
     const hostRuns = [...p.runs.values()].filter((r) => r.seatId === seatId);
     const hostMessages = new Set(hostRuns.map((r) => r.dispatchMessageId));
-    const baseline = this.baseline(p, hostRuns);
+    const baseline = this.baseline(p, seatId);
     if (baseline === null) {
       this.seen.set(seatId, key);
       return true;
@@ -527,7 +531,8 @@ export class EngineHost {
       }
     }
     // A host message T3 recorded only after its run had failed ("never recorded") runs unmatched: its reply is a note.
-    const matched = new Set(hostRuns.filter((r) => r.phase !== "terminal" || providerRunOf(p, r.id) !== null).map((r) => r.dispatchMessageId));
+    const records = runRecords(p);
+    const matched = new Set(hostRuns.filter((r) => r.phase !== "terminal" || records.get(r.id)?.t3).map((r) => r.dispatchMessageId));
     const runs = detail.runs.filter((r) => r.ordinal > baseline && !matched.has(r.userMessageId) && isTerminal(r)).sort((a, b) => a.ordinal - b.ordinal);
     for (const t3Run of runs) {
       p = this.project(roomId);
@@ -544,7 +549,10 @@ export class EngineHost {
       try {
         const origin = runOrigin(detail, t3Run, hostMessages);
         if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail);
-        else if (origin === "host") this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}` });
+        else if (origin === "host") {
+          const failed = hostRuns.find((r) => r.dispatchMessageId === t3Run.userMessageId)!;
+          this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, requestIds: finalTargets(p, failed) });
+        }
         else if (shown) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: shown });
       } catch (error) {
         this.log("turn import waits", { id, error: message(error) });
@@ -558,8 +566,8 @@ export class EngineHost {
   }
 
   /** The T3 ordinal of the seat's first host run, from its `accepted` evidence; null before it has one. */
-  private baseline(p: Projection, hostRuns: Run[]): number | null {
-    const ordinals = hostRuns.flatMap((run) => providerRunOf(p, run.id)?.ordinal ?? []);
+  private baseline(p: Projection, seatId: string): number | null {
+    const ordinals = [...runRecords(p).values()].flatMap((r) => (r.seatId === seatId && r.t3 ? [r.t3.ordinal] : []));
     return ordinals.length ? Math.min(...ordinals) : null;
   }
 
@@ -649,8 +657,9 @@ export class EngineHost {
     return this.request(roomId, { actor: input.actor, id: input.id, to: input.to, body: input.body, ...(parentId ? { parentId } : {}) });
   }
 
-  note(roomId: string, input: { actor: string; id: string; body: string }): CommitReceipt {
-    return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body });
+  /** `rooms-board note`. A note about a request names it (`requestIds`), or it reaches nobody's briefing (L2). */
+  note(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[] }): CommitReceipt {
+    return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body, ...(input.requestIds ? { requestIds: input.requestIds } : {}) });
   }
 
   /** `rooms-board follow #n [--off]` (§4): the follower is woken by each `working` post on the request. */

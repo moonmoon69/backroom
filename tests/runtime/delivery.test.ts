@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { SendMessageInput, TurnImage } from "../../src/adapter/types.ts";
-import { Room, plainRenderer } from "./helpers.ts";
+import { Room } from "./helpers.ts";
 
 let room: Room;
 afterEach(() => room?.close());
@@ -173,7 +173,7 @@ test("§4: a follower is woken by working posts, together in one run; a non-foll
 
 test("an image attachment reaches T3 with the message", async () => {
   const png: TurnImage = { name: "screen.png", mimeType: "image/png", sizeBytes: 772, dataUrl: `data:image/png;base64,${Buffer.alloc(772, 7).toString("base64")}` };
-  room = await Room.create({ host: { renderer: plainRenderer((_room, input) => (input.body.includes("[image]") ? [png] : [])) } });
+  room = await Room.create({ images: (body) => (body.includes("[image]") ? [png] : []) });
   ask(room, "C", "W", "What is wrong on this screen? [image]");
   await room.tick();
   assert.equal(room.running("W"), true);

@@ -5,7 +5,7 @@ import { Database } from "../db/database.ts";
 import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { EngineStore } from "../engine/index.ts";
-import { EngineHost } from "../runtime/index.ts";
+import { EngineHost, bindingSource } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
@@ -99,7 +99,15 @@ export function createStack(input: {
     ? new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"))
     : null;
   const engine = engineStore
-    ? new EngineHost({ store: engineStore, adapter: input.adapter, rooms: () => repos.listRooms().map((room) => room.id), notify, ...(input.log ? { log: input.log } : {}) })
+    ? new EngineHost({
+      store: engineStore,
+      adapter: input.adapter,
+      rooms: () => repos.listRooms().map((room) => room.id),
+      briefing: bindingSource(repos, input.boardCommand ? { boardCommand: input.boardCommand } : {}),
+      budgetChars: input.briefingBudgetChars,
+      notify,
+      ...(input.log ? { log: input.log } : {}),
+    })
     : null;
   engine?.start();
   return {

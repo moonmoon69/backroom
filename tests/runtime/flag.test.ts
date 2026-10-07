@@ -37,12 +37,18 @@ test("with ROOMS_ENGINE=1 the host runs over board.sqlite next to rooms.sqlite a
     assert.equal(existsSync(join(dir, "board.sqlite")), true);
     const fake = s.adapter as FakeT3Adapter;
     const { roomId } = (await s.service.execute(parseCommand({ type: "room.create", projectId: "project_demo", title: "engine" }))) as { roomId: string };
-    await fake.launchThread({ commandId: "launch-w", threadId: "thread-w", projectId: "project_demo", title: "engine · W", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" } });
-    s.engine.seat(roomId, { actor: "$user", id: "seat-w", seatId: "W", threadId: "thread-w" });
-    s.engine.request(roomId, { actor: "$user", id: "req-1", to: "W", body: "Hello from the journal." });
+    const { participantId } = (await s.service.execute(parseCommand({ type: "participant.create", roomId, alias: "worker", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } }))) as { participantId: string };
+    // A seat is a participant's binding: seat ID = binding ID, on the binding's thread.
+    const binding = s.repos.currentBinding(participantId)!;
+    s.engine.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    s.engine.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "Hello from the journal." });
     s.engine.stop();
     await s.engine.tick();
-    assert.equal(fake.threads.get("thread-w")!.runs.length, 1, "the host dispatched the request");
+    const runs = fake.threads.get(binding.threadId)!.runs;
+    assert.equal(runs.length, 1, "the host dispatched the request");
+    const prompt = fake.threads.get(binding.threadId)!.messages.find((m) => m.id === runs[0]!.userMessageId)!.text;
+    assert.match(prompt, /^\[Backroom briefing for @worker in room "engine"\]/, "L2's briefing, standing part included");
+    assert.match(prompt, /\[#\d+ request from the user\]\nHello from the journal\./);
     s.close();
   } finally {
     if (previous === undefined) delete process.env.ROOMS_ENGINE;

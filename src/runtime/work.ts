@@ -3,6 +3,7 @@
  * over a projection: no I/O, no clock. The host uses them to choose which requests a final answers; the engine still
  * decides every outcome (answered, pending_activity, superseded, late).
  */
+import type { SeatStanding } from "../briefing/envelope.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { Activity, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 
@@ -98,21 +99,12 @@ export function lastFinal(p: Projection, runId: string): string {
   return "";
 }
 
-/** The T3 run a host run was matched to and its ordinal, from its `accepted` evidence (`t3run:<id> ordinal:<n>`). */
-export function providerRunOf(p: Projection, runId: string): { id: string; ordinal: number } | null {
-  for (const e of p.events) {
-    if (e.data.kind !== "run.phase" || e.data.runId !== runId || e.data.phase !== "accepted") continue;
-    const match = /^t3run:(\S+) ordinal:(\d+)$/.exec(e.data.evidence);
-    if (match) return { id: match[1]!, ordinal: Number(match[2]) };
-  }
-  return null;
-}
-
 /**
  * What a run's `sending` phase froze before the message left: the dispatch command, the background tasks T3 already
- * listed (so only work this run started holds its requests, §2), and the exact text T3 is sent, on every resend too.
+ * listed (so only work this run started holds its requests, §2), the exact text and images T3 is sent (on every resend
+ * too), and the standing record the seat's thread holds once T3 has it (L2's ledger, read back from the journal).
  */
-export interface Dispatch { dispatch: string; bgBefore: string[]; text: string }
+export interface Dispatch { dispatch: string; bgBefore: string[]; text: string; images: Array<{ eventId: string; names: string[] }>; held: SeatStanding | null }
 
 export function frozenDispatch(p: Projection, runId: string): Dispatch | null {
   for (const e of p.events) {
@@ -120,6 +112,22 @@ export function frozenDispatch(p: Projection, runId: string): Dispatch | null {
     return JSON.parse(e.data.evidence) as Dispatch;
   }
   return null;
+}
+
+/** Per host run, in one pass over the journal: the T3 run it was matched to (accepted) and what its sending froze. */
+export function runRecords(p: Projection): Map<string, { reservedSeq: number; seatId: string; t3: { id: string; ordinal: number } | null; frozen: Dispatch | null }> {
+  const records = new Map<string, { reservedSeq: number; seatId: string; t3: { id: string; ordinal: number } | null; frozen: Dispatch | null }>();
+  for (const e of p.events) {
+    const d = e.data;
+    if (d.kind === "run.prepared") records.set(d.run.id, { reservedSeq: e.seq, seatId: d.run.seatId, t3: null, frozen: null });
+    if (d.kind !== "run.phase") continue;
+    const record = records.get(d.runId);
+    if (!record) continue;
+    if (d.phase === "sending") record.frozen = JSON.parse(d.evidence) as Dispatch;
+    const match = d.phase === "accepted" ? /^t3run:(\S+) ordinal:(\d+)$/.exec(d.evidence) : null;
+    if (match) record.t3 = { id: match[1]!, ordinal: Number(match[2]) };
+  }
+  return records;
 }
 
 /** The requests the seat's latest answer closed: a later self-started turn's note goes under them ("after answer", §5). */

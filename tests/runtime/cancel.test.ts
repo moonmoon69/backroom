@@ -75,7 +75,7 @@ test("hunt 1: cancelling one of several requests in a run defers to the turn's e
   assert.equal(room.wakes("C"), 0);
   assert.equal(room.running("V"), true, "the review went out");
   // The cancel, applied as the turn ended, reaches W once in its next run (§4: a cancel wakes its owner).
-  assert.match(room.prompt("W"), /\[\d+ cancel #A\] Request cancelled/);
+  assert.match(room.prompt("W"), /\[#\d+ cancel from @C: #\d+ is withdrawn\]\nRequest cancelled/);
   room.complete("W", "Noted: A is dropped.");
   await room.tick();
   assert.equal(room.state(b), "open", "the cancel notice answers nothing");

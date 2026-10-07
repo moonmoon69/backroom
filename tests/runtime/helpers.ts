@@ -8,11 +8,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeT3Adapter, type FakeRunCompletion } from "../../src/adapter/fake.ts";
-import type { SendMessageInput, T3BackgroundTask, T3Run, T3Subagent } from "../../src/adapter/types.ts";
+import type { SendMessageInput, T3BackgroundTask, T3Run, T3Subagent, TurnImage } from "../../src/adapter/types.ts";
+import type { Participant, Room as DomainRoom } from "../../src/domain/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../../src/adapter/types.ts";
 import { EngineStore, unread } from "../../src/engine/index.ts";
 import type { ClaimOutcome, Input, Projection, RoomEvent } from "../../src/engine/index.ts";
-import { EngineHost, plainRenderer, type EngineHostOptions, type HostStep } from "../../src/runtime/index.ts";
+import { EngineHost, type BriefingSource, type EngineHostOptions, type HostStep } from "../../src/runtime/index.ts";
 
 /** The fake T3 plus what these tests need: work left in the background at turn end, subagents, and send faults. */
 export class RuntimeFake extends FakeT3Adapter {
@@ -95,6 +96,23 @@ export interface RoomOptions {
   seats?: string[];
   orchestrator?: string | null;
   host?: Partial<EngineHostOptions>;
+  /** The images a post came with, by its body (what L4a will record with a request). */
+  images?: (body: string) => TurnImage[];
+}
+
+/** rooms.sqlite's side of a briefing for the test room: one member per seat, the orchestrator its Consigliere. */
+function testSource(r: { room: string; seats: () => string[]; orchestrator: string | null; bodyOf: (eventId: string) => string | null }, images?: (body: string) => TurnImage[]): BriefingSource {
+  const at = new Date(0).toISOString();
+  const participant = (seat: string): Participant => ({ id: seat, roomId: r.room, alias: seat, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
+  const room: DomainRoom = { id: r.room, projectId: "project_demo", environmentId: null, title: "runtime", nextSequence: 1, nextTaskNumber: 1, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, consigliereId: r.orchestrator, createdAt: at, updatedAt: at };
+  return {
+    standing: (_roomId, seatId) => ({ room, participant: participant(seatId), participantsById: new Map(r.seats().map((s) => [s, participant(s)])), board: { command: "/repo/bin/rooms-board", as: `${seatId}.key` } }),
+    alias: (_roomId, seatId) => seatId,
+    images: (_roomId, eventId) => {
+      const body = images ? r.bodyOf(eventId) : null;
+      return body !== null && images ? images(body) : [];
+    },
+  };
 }
 
 export class Room {
@@ -130,10 +148,17 @@ export class Room {
   }
 
   makeHost(): EngineHost {
+    const seats = this.options.seats ?? ["C", "W", "V"];
+    const orchestrator = this.options.orchestrator === undefined ? "C" : this.options.orchestrator;
+    const bodyOf = (eventId: string) => {
+      const d = this.store.project(this.room).events.find((e) => e.id === eventId)?.data;
+      return d?.kind === "request" ? d.request.body : null;
+    };
     return new EngineHost({
       store: this.store,
       adapter: this.fake,
       rooms: () => [this.room],
+      briefing: testSource({ room: this.room, seats: () => seats, orchestrator, bodyOf }, this.options.images),
       now: () => this.clock,
       log: (message, detail) => this.logs.push({ message, detail }),
       onStep: (step, at) => {
@@ -296,4 +321,3 @@ export class Room {
   }
 }
 
-export { plainRenderer };
