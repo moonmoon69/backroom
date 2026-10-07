@@ -147,11 +147,22 @@ function finals(record: ThreadRecord): Array<{ runId: string; at: string; text: 
 /** A premature report: the Consigliere's JOB-DONE report landed while the task's checker failed on the copy taken then. */
 export const isPremature = (snapshots: Snapshot[]): boolean => snapshots.some((s) => s.kind === "report" && !s.check.pass);
 
-/** Member answers made while that member's own part of the checker failed on the copy taken then (reviewers: none). */
-export const earlyAnswersOf = (snapshots: Snapshot[]): JobMeasure["earlyAnswers"] =>
-  snapshots
-    .filter((s): s is Snapshot & { ownParts: string[] } => s.kind === "answer" && (s.ownParts?.length ?? 0) > 0 && s.ownPass === false)
-    .map((s) => ({ alias: s.alias, at: s.at, failing: s.ownParts.filter((p) => s.check.parts[p]?.pass !== true) }));
+/**
+ * Member answers made while that member's own part of the checker failed on the copy taken then (reviewers: none).
+ * T1's part is judged on the answer's text, so once a member has given the facts, its later answers are not early.
+ */
+export const earlyAnswersOf = (snapshots: Snapshot[], task: TaskId | null = null): JobMeasure["earlyAnswers"] => {
+  const gaveFacts = new Set<string>();
+  const out: JobMeasure["earlyAnswers"] = [];
+  for (const s of [...snapshots].sort((a, b) => a.at.localeCompare(b.at))) {
+    if (s.kind !== "answer" || !s.ownParts || s.ownParts.length === 0) continue;
+    if (s.ownPass === true && task === "T1") gaveFacts.add(s.alias);
+    if (s.ownPass !== false || gaveFacts.has(s.alias)) continue;
+    const parts = s.ownParts;
+    out.push({ alias: s.alias, at: s.at, failing: parts.filter((p) => s.check.parts[p]?.pass !== true) });
+  }
+  return out;
+};
 
 /**
  * Measure one closed job from its evidence folder. `liveStateDb` is T3's own database, read only for the other
@@ -222,7 +233,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
   };
   const correct = reportAt !== null && (final?.check.pass ?? false) && (job.task !== "T2" || reviewBeforeReport);
   const premature = isPremature(job.snapshots);
-  const earlyAnswers = earlyAnswersOf(job.snapshots);
+  const earlyAnswers = earlyAnswersOf(job.snapshots, job.task);
   const firstPass = job.snapshots.filter((s) => s.kind !== "final" && s.check.pass).sort((a, b) => a.at.localeCompare(b.at))[0];
 
   const metrics: Record<Metric, number | null> = {

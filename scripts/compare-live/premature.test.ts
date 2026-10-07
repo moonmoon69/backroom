@@ -77,6 +77,11 @@ describe("T1 and T4: text checks", () => {
     assert.equal(isPremature([report]), true);
     const answer = await snapshot("T1", "answer", "W1", "", { text: "Imports: node:fs, args, text, format, dates, legacy, types.", at: "2026-10-08T10:04:00.000Z" }, null);
     assert.equal(answer.ownPass, false);
+    assert.equal(earlyAnswersOf([answer], "T1").length, 1);
+    // A member that has given the facts and later writes again ("nothing left to do") is not answering early.
+    const facts = await snapshot("T1", "answer", "W1", "", { text: "Imports: node:fs, args, text, format, dates, legacy, types. legacy is unused: src/cli.ts:6", at: "2026-10-08T10:05:00.000Z" }, null);
+    const later = await snapshot("T1", "answer", "W1", "", { text: "Nothing left to do on this job.", at: "2026-10-08T10:07:00.000Z" }, null);
+    assert.deepEqual(earlyAnswersOf([facts, later], "T1"), []);
   });
 
   test("a T4 member's answer is judged on the folder only; the report must also cover both features", async () => {

@@ -94,7 +94,9 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
 - **Premature report** (gated by G1): the checker failed on the copy taken at the JOB-DONE report (T1: the report text;
   T3: including the log with the report's time as cutoff, so a report before the last slow-check finished is premature).
 - **Early member answers** (reported, not gated): a member's answer while its own parts failed on the copy taken then.
-  Reviewers' answers are not checked. On the old side every member turn end is an answer.
+  Reviewers' answers are not checked. On the old side every member turn end is an answer. T1's part is judged on the
+  answer's text, so once a member has given the facts its later answers are not early (added after the first R0 job,
+  where W1's after-report "nothing left to do" was flagged; information only).
 - T2 also reports, for information, whether W1 made a correction after V's first review and before the report. The plan
   read "V's review, then W1's correction"; a W1 who fixes both defects at once leaves V nothing to correct, so the gate
   needs only V's review before the report and the tree right.
