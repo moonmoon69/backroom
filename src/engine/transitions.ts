@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { journalHistory, ProjectionOverlay } from "./incremental.ts";
 import { applyEvent, fold } from "./fold.ts";
-import { deliveredInputs, inputTree, selectPrefix, unread } from "./delivery.ts";
+import { deliveredInputs, deliveryDisposition, inputFor, inputTree, selectPrefix, unread } from "./delivery.ts";
 import { T3_CONTRACT_ID, T3_SERVER_VERSION, T3_SOURCE_COMMIT, hash } from "./provider.ts";
 import { canonicalJSON, exactAlias, resultDigest, sourceKey, sourceIdentity, toolClosure } from "./result.ts";
 import { validateCapability, validateSourceCheckpoint, validateOriginalNativeSource, validateOperationSource, validateOperationPacket, operationKey, parseActivity, localReceipts } from "./operations.ts";
@@ -45,6 +45,20 @@ function pendingWork(p: Projection, requestId: string, originatingRunId: string)
 function resumableIds(p: Projection, run: Run): string[] {
   const contexts = [...run.envelope.openRequests, ...run.receipts.filter((r) => r.confirmed).flatMap((r) => r.envelope.openRequests)];
   return unique([...contexts.map((r) => r.id), ...inputTree(deliveredInputs(p, run.id)).flatMap((i) => i.requestIds)]);
+}
+/** Open requests of the seat that an unread result or correction after `through` bears on: each walks up to its first open owned ancestor. */
+function unseenResultTargets(p: Projection, seatId: string, through: number): Set<string> {
+  const targets = new Set<string>();
+  for (let i = through; i < p.events.length; i++) {
+    const e = p.events[i]!, input = inputFor(e, seatId);
+    if (!input || input.intent !== "result" && input.intent !== "correction" || deliveryDisposition(p, e, seatId) !== "pending") continue;
+    for (const id of input.requestIds) {
+      let q = p.requests.get(id);
+      while (q && !(q.owner === seatId && q.state === "open")) q = q.parentId ? p.requests.get(q.parentId) : undefined;
+      if (q) targets.add(q.id);
+    }
+  }
+  return targets;
 }
 function progressRecipients(p: Projection, author: Principal, ids: readonly string[], milestone: string | undefined): Principal[] {
   if (!milestone) return [];
@@ -778,11 +792,12 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       if (disposition.kind === "answer") requireThat(selected.length > 0, "explicit nonempty answer selection required");
       for (const id of selected) requireThat(allowedIds.includes(id), "request not exposed or causally associated with this output");
       const claims: ClaimOutcome[] = [];
+      const unseen = disposition.kind === "answer" ? unseenResultTargets(p, r.seatId, through) : new Set<string>();
       if (disposition.kind === "answer") for (const id of selected) {
         const q = request(id, p);
         requireThat(!q.live, "live question needs runtime_reply control");
         const outcome = q.owner !== r.seatId || seat(r.seatId, p).status === "retired" || q.state === "cancelled" ? "late"
-          : q.state === "answered" ? "already_answered" : q.version > through ? "superseded"
+          : q.state === "answered" ? "already_answered" : q.version > through || unseen.has(id) ? "superseded"
           : pendingWork(p, id, r.id) ? "pending_activity" : "answered";
         claims.push({ requestId: id, outcome, returnTo: q.returnTo });
       }

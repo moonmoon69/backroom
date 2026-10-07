@@ -54,6 +54,58 @@ test("normal worker/reviewer exchange resumes original roots and ends without ac
   r.idle("O", "W", "V"); assertions(r);
 });
 
+test("K1 case 7: a review answer that lands before the worker's turn ends supersedes its final until delivered", () => {
+  const r = new Room();
+  r.request("U", "O", "$user");
+  const o = r.reserve("O")!;
+  r.request("A", "W", "O", "U");
+  r.output(o, { kind: "yield" });
+  const w = r.reserve("W")!;
+  r.request("R", "V", "W", "A");
+  r.finish(r.reserve("V")!, "R");
+  assert.deepEqual(outcomes(r.finish(w, "A")), ["superseded"]);
+  assert.equal(r.p.requests.get("A")!.state, "open");
+  assert.equal(r.reserve("O"), null);
+  const w2 = r.reserve("W")!;
+  assert.deepEqual(w2.envelope.inputs.map((i) => [i.intent, i.requestIds]), [["result", ["R"]]]);
+  assert.deepEqual(outcomes(r.finish(w2, "A")), ["answered"]);
+  assert.equal(r.log.filter((e) => e.data.kind === "output" && e.data.recipients.includes("O")
+    && e.data.claims.some((c) => c.requestId === "A" && c.outcome === "answered")).length, 1);
+  const o2 = r.reserve("O")!;
+  assert.deepEqual(o2.envelope.inputs.map((i) => i.requestIds), [["A"]]);
+  r.finish(o2, "U");
+  assert.equal([...r.p.runs.values()].filter((run) => run.seatId === "O").length, 2);
+  r.idle("O", "W", "V"); assertions(r);
+});
+
+test("K1 an unread result supersedes only the open request it walks up to", () => {
+  const r = new Room(); r.request("A"); r.request("B"); const w = r.reserve("W")!;
+  r.request("R", "V", "W", "B"); r.request("root", "V", "W");
+  const v = r.reserve("V")!; r.finish(v, "R", "root");
+  assert.deepEqual(outcomes(r.finish(w, "A", "B")), ["answered", "superseded"]);
+  const w2 = r.reserve("W")!;
+  assert.deepEqual(w2.envelope.inputs.map((i) => i.requestIds), [["R", "root"]]);
+  assert.deepEqual(outcomes(r.finish(w2, "B")), ["answered"]);
+  assert.deepEqual(unread(r.p, "O").map((i) => i.requestIds), [["A"], ["B"]]);
+  r.idle("W", "V"); assertions(r);
+});
+
+test("K1 a result already seen through a confirmed sync or a later run does not supersede", () => {
+  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
+  r.request("R", "V", "W", "A"); r.finish(r.reserve("V")!, "R");
+  const receipt = r.sync(w);
+  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] }, true, { receipts: [receipt] })), ["answered"]);
+  r.request("B"); const w2 = r.reserve("W")!;
+  r.add({ type: "activity_start", actor: "W", activityId: "bg", runId: w2.id, requestIds: ["B"], status: "pending" });
+  r.request("R2", "V", "W", "B"); r.output(w2, { kind: "yield" });
+  r.finish(r.reserve("V")!, "R2");
+  r.output(r.reserve("W")!, { kind: "yield" });
+  assert.deepEqual(outcomes(r.add({ type: "output", actor: "$system", author: "W", sourceKey: "bg-final", association: { kind: "activity", id: "bg" },
+    activityCompletion: "done", disposition: { kind: "answer", requestIds: ["B"] }, body: "Background work finished" })), ["answered"]);
+  assert.deepEqual(unread(r.p, "O").map((i) => i.requestIds), [["A"], ["B"]]);
+  r.idle("W", "V"); assertions(r);
+});
+
 test("T1 busy arrivals batch once and a reservation race preserves later input", () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!;
   r.request("B"); r.request("C"); r.output(w, { kind: "yield" });
