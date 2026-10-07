@@ -21,12 +21,27 @@ export class RuntimeFake extends FakeT3Adapter {
   /** The next sends fail as an outage (T3 unreachable). */
   unavailableSends = 0;
   readonly sent: SendMessageInput[] = [];
+  /** Runs once, the next time the host reads this thread: lets a test land a command in the middle of an import. */
+  onDetail: { threadId: string; run: () => void | Promise<void> } | null = null;
 
   constructor() {
     super({ autoCompleteMs: null });
   }
 
+  override async getThreadDetail(threadId: string) {
+    const hook = this.onDetail;
+    if (hook && hook.threadId === threadId) {
+      this.onDetail = null;
+      await hook.run();
+    }
+    return super.getThreadDetail(threadId);
+  }
+
+  /** Every send the host tried, refused or not: its command and message IDs. */
+  readonly attempts: Array<{ threadId: string; commandId: string; messageId: string }> = [];
+
   override async sendMessage(input: SendMessageInput): Promise<void> {
+    this.attempts.push({ threadId: input.threadId, commandId: input.commandId, messageId: input.messageId });
     if (this.unavailableSends > 0) {
       this.unavailableSends -= 1;
       throw new T3Unavailable("T3 is not reachable (simulated)");
@@ -131,7 +146,7 @@ export class Room {
 
   /** Throw the host away and build a new one over the same SQLite file and the same fake T3. */
   restart(): void {
-    this.host.stop();
+    this.host.close();
     this.store.close();
     this.crash = null;
     this.store = new EngineStore(this.path);
@@ -139,7 +154,7 @@ export class Room {
   }
 
   close(): void {
-    this.host.stop();
+    this.host.close();
     try {
       this.store.close();
     } catch {
@@ -160,8 +175,36 @@ export class Room {
     return this.store.project(this.room);
   }
 
+  /** Crashes recorded by `crashOnce`, in order: the step and the seat. */
+  readonly crashes: string[] = [];
+  private restartDue = false;
+
+  /** Crash the host the first time `step` commits for `seatId`; the next tick builds a new host (the crash method). */
+  crashOnce(step: HostStep, seatId: string): void {
+    let done = false;
+    this.crash = (s, at) => {
+      if (done || s !== step || at.seatId !== seatId) return;
+      done = true;
+      this.crashes.push(`${s}:${at.seatId}`);
+      this.restartDue = true;
+      throw new Error(`simulated crash after ${s}`);
+    };
+  }
+
   async tick(times = 1): Promise<void> {
-    for (let i = 0; i < times; i += 1) await this.host.tick();
+    for (let i = 0; i < times; i += 1) {
+      await this.host.tick();
+      if (this.restartDue) {
+        this.restartDue = false;
+        this.restart();
+      }
+    }
+  }
+
+  /** Tick until the condition holds (at most `limit` ticks). */
+  async until(condition: () => boolean, limit = 10): Promise<void> {
+    for (let i = 0; i < limit && !condition(); i += 1) await this.tick();
+    assert.ok(condition(), "condition not reached");
   }
 
   /** The user posts a request to a seat; returns its request ID. */

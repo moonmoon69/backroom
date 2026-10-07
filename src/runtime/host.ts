@@ -126,12 +126,21 @@ export class EngineHost {
     this.timer = null;
   }
 
+  /** Stop for good, before the store is closed: no tick runs after this. */
+  close(): void {
+    this.halted = true;
+    this.stop();
+  }
+
   /** An append hint: something was written; a started host looks again at once instead of at the next tick. */
   hint(): void {
-    if (this.timer && !this.halted) setImmediate(() => void this.tick());
+    if (this.timer && !this.halted) setImmediate(() => {
+      if (this.timer && !this.halted) void this.tick();
+    });
   }
 
   tick(): Promise<void> {
+    if (this.halted) return Promise.resolve();
     if (this.ticking) return this.ticking;
     this.ticking = this.runTick().finally(() => {
       this.ticking = null;
@@ -142,6 +151,14 @@ export class EngineHost {
   // ---------------- the loop ----------------
 
   private async runTick(): Promise<void> {
+    try {
+      await this.tickRooms();
+    } catch (error) {
+      if (!this.halted) this.log("tick failed", message(error));
+    }
+  }
+
+  private async tickRooms(): Promise<void> {
     if (this.halted) return;
     let shells: Map<string, T3ThreadShell>;
     try {
@@ -151,6 +168,7 @@ export class EngineHost {
       return;
     }
     for (const roomId of this.rooms()) {
+      if (this.halted) return;
       const before = this.appends;
       try {
         await this.stepRoom(roomId, shells);
@@ -508,7 +526,9 @@ export class EngineHost {
         done = false;
       }
     }
-    const runs = detail.runs.filter((r) => r.ordinal > baseline && !hostMessages.has(r.userMessageId) && isTerminal(r)).sort((a, b) => a.ordinal - b.ordinal);
+    // A host message T3 recorded only after its run had failed ("never recorded") runs unmatched: its reply is a note.
+    const matched = new Set(hostRuns.filter((r) => r.phase !== "terminal" || providerRunOf(p, r.id) !== null).map((r) => r.dispatchMessageId));
+    const runs = detail.runs.filter((r) => r.ordinal > baseline && !matched.has(r.userMessageId) && isTerminal(r)).sort((a, b) => a.ordinal - b.ordinal);
     for (const t3Run of runs) {
       p = this.project(roomId);
       const id = `t3run:${seat.threadId}:${t3Run.id}`;
@@ -522,7 +542,9 @@ export class EngineHost {
       const text = final.message?.text.trim() ?? "";
       const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
       try {
-        if (runOrigin(detail, t3Run, hostMessages) === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail);
+        const origin = runOrigin(detail, t3Run, hostMessages);
+        if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail);
+        else if (origin === "host") this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}` });
         else if (shown) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: shown });
       } catch (error) {
         this.log("turn import waits", { id, error: message(error) });

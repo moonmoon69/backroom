@@ -114,7 +114,7 @@ export function createStack(input: {
     presence,
     engine,
     close() {
-      engine?.stop();
+      engine?.close();
       engineStore?.close();
       scheduler.stop();
       presence.stop();
