@@ -13,6 +13,7 @@ import { api, ApiError, useProviders } from "../api.ts";
 import type { CatalogEntry, ModelSelection, ProviderInfo } from "../types.ts";
 import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { cachedCatalog, entryKey, loadCatalog, selectionFor } from "./catalog.ts";
+import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { Popover } from "./Popover.tsx";
 import { ProviderIcon } from "./ProviderIcon.tsx";
 import { ProviderLine } from "./Providers.tsx";
@@ -83,18 +84,33 @@ type Row = { kind: "model"; entry: CatalogEntry } | { kind: "legacy"; count: num
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const jumpLabel = (position: number): string => (isMac ? `⌥${position}` : `Alt+${position}`);
 
-export function ModelPicker({
-  value,
-  onChange,
-  id,
-  providerFilter,
-}: {
+interface ModelPickerProps {
   value: ModelSelection | null;
   onChange: (selection: ModelSelection) => void;
   id?: string;
   /** When set, only this provider instance is offered (T3 cannot switch a thread's provider). */
   providerFilter?: string;
-}) {
+}
+
+/** The picker can also live outside a dialog. Keep render failures local, including its portalled menu. */
+export function ModelPicker(props: ModelPickerProps) {
+  return (
+    <ErrorBoundary
+      header={null}
+      onReset={async () => { await loadCatalog(true); }}
+      recovery={{ message: "The model picker could not be displayed.", action: "Try again" }}
+    >
+      <ModelPickerContent {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function ModelPickerContent({
+  value,
+  onChange,
+  id,
+  providerFilter,
+}: ModelPickerProps) {
   const { toast } = useToast();
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(cachedCatalog);
   const { providers } = useProviders(true);
@@ -338,7 +354,7 @@ export function ModelPicker({
           <span className="muted">Choose a model…</span>
         )}
         <span className="spacer" />
-        <ChevronIcon dir={open ? "up" : "down"} />
+        <ChevronIcon dir={open ? "up" : "down"} small />
       </button>
       {open ? (
         // At the document level, like the other menus: inside a dialog it would be cut off by the dialog's edges.
@@ -425,7 +441,7 @@ export function ModelPicker({
                         <span className="model-row-title">Legacy models</span>
                         <span className="model-row-sub">{row.count} models</span>
                       </span>
-                      <ChevronIcon dir={legacyOpen ? "down" : "right"} />
+                      <ChevronIcon dir={legacyOpen ? "down" : "right"} small />
                     </div>
                   );
                 }

@@ -6,13 +6,13 @@ import type { Participant, Room, RoomEvent, Task } from "../src/domain/types.ts"
 const room: Room = { id: "r", projectId: "p", environmentId: null, title: "payments", nextSequence: 10, nextTaskNumber: 3, browserEnabled: false,
   defaultBrowserId: null,
   allowedBrowserIds: null, consigliereId: null, createdAt: "", updatedAt: "" };
-const sol1: Participant = { id: "p1", roomId: "r", alias: "sol1", modelSelection: { instanceId: "x", model: "y" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, createdAt: "", updatedAt: "" };
+const sol1: Participant = { id: "p1", roomId: "r", alias: "sol1", modelSelection: { instanceId: "x", model: "y" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: "", updatedAt: "" };
 const sol2: Participant = { ...sol1, id: "p2", alias: "sol2" };
 const participantsById = new Map([[sol1.id, sol1], [sol2.id, sol2]]);
 const task: Task = { id: "t2", roomId: "r", number: 2, revision: 1, sourceEventId: "e", participantId: "p2", instruction: "Review the implementation", sourceText: null, attachmentIds: [], delivery: "queue", slashCommand: false, kind: "assignment", scheduleMode: "after_all", prerequisites: [{ taskId: "t1", revision: 1 }], state: "queued", stateReason: null, currentRunId: null, userOutcome: null, dismissedAt: null, createdAt: "", updatedAt: "" };
 
 function event(sequence: number, text: string, kind: RoomEvent["kind"] = "user.message"): RoomEvent {
-  return { id: `e${sequence}`, roomId: "r", sequence, kind, speaker: { type: "user" }, text, taskId: null, runId: null, artifacts: [], attachmentIds: [], progress: [], prompt: null, to: null, outcome: null, sourceRef: null, createdAt: "" };
+  return { id: `e${sequence}`, roomId: "r", sequence, postNumber: sequence, kind, speaker: { type: "user" }, text, taskId: null, runId: null, artifacts: [], attachmentIds: [], progress: [], prompt: null, to: null, outcome: null, sourceRef: null, createdAt: "" };
 }
 
 test("briefing keeps unseen messages, prerequisite results, and the assignment separately", () => {
@@ -22,7 +22,7 @@ test("briefing keeps unseen messages, prerequisite results, and the assignment s
     room, participant: sol2, participantsById, task,
     unseenEvents: [event(3, "Preserve the public API.", "note"), result],
     prerequisiteResults: [{ task: prerequisiteTask, assigneeAlias: "sol1", resultEvent: result }],
-    bootstrap: true, budgetChars: 60000,
+    standing: "all", budgetChars: 60000,
   });
   assert.match(briefing.text, /\[#3 note\]\nPreserve the public API\./);
   assert.match(briefing.text, /== Completed prerequisites ==\ntask1 by @sol1: Implement the parser/);
@@ -35,7 +35,7 @@ test("briefing keeps unseen messages, prerequisite results, and the assignment s
 
 test("older messages are condensed when the budget is exceeded and the condensation is visible", () => {
   const events = Array.from({ length: 6 }, (_, index) => event(index + 1, `message ${index + 1} ` + "x".repeat(400)));
-  const briefing = assembleBriefing({ room, participant: sol2, participantsById, task, unseenEvents: events, prerequisiteResults: [], bootstrap: false, budgetChars: 2200 });
+  const briefing = assembleBriefing({ room, participant: sol2, participantsById, task, unseenEvents: events, prerequisiteResults: [], standing: [], budgetChars: 2200 });
   assert.equal(briefing.condensed, true);
   assert.ok(briefing.condensedEventIds.includes("e1"), "oldest event condensed first");
   assert.ok(!briefing.condensedEventIds.includes("e6"), "newest event kept in full");

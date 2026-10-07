@@ -1,12 +1,18 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
-import type { CommandResult, RoomCommand } from "../types.ts";
-import { NewProjectDialog, NewRoomDialog, rememberProject } from "./Sidebar.tsx";
+import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
+import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
+import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
-import { PlusIcon } from "./icons.tsx";
+import { PlusIcon, StarMark } from "./icons.tsx";
+import { useSkin } from "../skin.ts";
+import { carriesPreset, droppedPresetId, usePresets } from "./presets.tsx";
 import { describeStatus } from "../memberActivity.ts";
+import { useConsigliereSetting } from "../consigliere.ts";
+import { useDraftScopes } from "../drafts.ts";
+import { roomKey, threadKey } from "../news.ts";
 import type { OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
-import { ModelIcon } from "./ProviderIcon.tsx";
+import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
 
@@ -27,40 +33,79 @@ const oneLine = (text: string, max = 140): string => {
 };
 
 /**
- * Look → Overview: the whole of Backroom on one page. One card per project; inside it every room, and under each
- * room its members with a status dot and one line of what each is doing now (a turn's latest note or the tools
- * running) or last said. Loose threads of the project follow as a short list. Click a room or thread to open it.
- * "+ New room" on a project is the one way to add: a new room opens with the Consigliere seated.
+ * Backroom's page (the Street look aside): the whole of it on one page. A section per project; inside it every room,
+ * and under each room its members with a status dot and one line of what each is doing now (a turn's latest note or
+ * the tools running) or last said. The project's loose threads are tiles too, as rooms of one, and its settled and
+ * archived threads fold open under them. Then the crew and the shared browsers. Click any of them to open it in the
+ * drawer. The + on a project opens a new room there, with the Consigliere seated; the + in the header adds a project.
+ * Arrange sets the order of projects and rooms. Rooms are the one thing made here; threads started in T3 show up as
+ * their own tiles.
  *
  * Inside a project the tiles are ranked by what they ask of you: needs you first (an approval, a question, a failure
  * nobody followed up), then new for you (a reply you have not seen), then busy, then the rest. Inside a tier they keep
- * the sidebar's order, so a tile moves only when its tier changes: forward when it wants you, back once you looked.
+ * the arranged order (Arrange), so a tile moves only when its tier changes: forward when it wants you, back once you looked.
  */
 export function Overview({
   rooms,
   projects,
   threads,
+  t3Error,
+  browsers,
   onOpenRoom,
   onOpenThread,
+  onOpenBrowser,
+  onSeatPreset,
   onCommand,
   onT3Changed,
+  onBrowsersChanged,
   controls,
 }: {
   rooms: RoomListItem[];
   projects: T3Project[] | null;
+  /** Every T3 thread, archived ones too. */
   threads: T3ThreadShell[];
+  /** Why projects and threads could not be read from T3, if they could not. */
+  t3Error: string | null;
+  /** The shared browsers on this machine; null when the service cannot run browsers. */
+  browsers: BrowserListItem[] | null;
   onOpenRoom: (roomId: string) => void;
   onOpenThread: (threadId: string) => void;
+  onOpenBrowser: (browserId: string) => void;
+  onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
   /** Re-read projects from T3 (after one was added). */
   onT3Changed: () => void;
+  onBrowsersChanged: () => void;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
 }) {
-  const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
+  const { presets } = usePresets();
+  const consigliereSetting = useConsigliereSetting();
+  const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
+  // The room tile a dragged crew member would be seated in.
+  const [presetOver, setPresetOver] = useState<string | null>(null);
+  const presetTarget = (key: string, onDrop: (presetId: string) => void) => ({
+    onDragOver: (event: DragEvent) => {
+      if (!carriesPreset(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setPresetOver(key);
+    },
+    onDragLeave: () => setPresetOver((current) => (current === key ? null : current)),
+    onDrop: (event: DragEvent) => {
+      const presetId = droppedPresetId(event);
+      setPresetOver(null);
+      if (!presetId) return;
+      event.preventDefault();
+      onDrop(presetId);
+    },
+  });
   const [detail, setDetail] = useState<Map<string, OverviewRoom>>(new Map());
   const [looseThreads, setLooseThreads] = useState<OverviewThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Conversations with unsent text (drafts.ts) carry a mark.
+  const drafts = useDraftScopes();
   useEffect(() => {
     let stopped = false;
     const read = () =>
@@ -81,11 +126,15 @@ export function Overview({
     };
   }, []);
 
-  // Threads outside rooms are shown as rooms of one. Until the service has described them, the sidebar's list stands in.
-  const standIn: OverviewThread[] = threads
-    .filter((thread) => !thread.boundToRoom && !thread.archivedAt && !thread.settledAt && !thread.deletedAt && thread.lineage?.relationshipToParent !== "subagent")
+  // Threads outside rooms are shown as rooms of one. Until the service has described them, T3's thread list stands in;
+  // it also stands in for any the service left out (it describes forty at most).
+  const loose = threads.filter((thread) => !thread.boundToRoom && !thread.deletedAt && !isSubagentThread(thread));
+  const standIn: OverviewThread[] = loose
+    .filter((thread) => !thread.archivedAt && !thread.settledAt)
     .map((thread) => ({ id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: thread.backgroundLiveness ?? null, latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line: null, news: thread.news ?? null }));
-  const described = looseThreads ?? standIn;
+  const described = looseThreads ? [...looseThreads, ...standIn.filter((thread) => !looseThreads.some((d) => d.id === thread.id))] : standIn;
+  const settledIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.settledAt && !t.archivedAt).sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
+  const archivedIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.archivedAt).sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
   const tiles = (projectRooms: RoomListItem[], projectThreads: OverviewThread[]): Tile[] =>
     [
       ...projectRooms.map((room): Tile => ({ kind: "room", room, tier: tierOf(roomState(room, detail.get(room.id))) })),
@@ -105,44 +154,75 @@ export function Overview({
     <div className="overview">
       <header className="overview-head">
         <span className="brand serif">
-          <img src="/logo.png" alt="" className="brand-mark" width={22} height={22} />
+          <BrandMark />
           Backroom
         </span>
         <span className="overview-title muted">Run the family</span>
-        <button type="button" className="small ghost overview-new" title="Add a project: a folder on the T3 machine" disabled={!projects} onClick={() => setDialog({ kind: "project" })}>
+        <button type="button" className="small ghost icon-only overview-new" aria-label="New project" title="New project: add a folder on the T3 machine" disabled={!projects} onClick={() => setDialog({ kind: "project" })}>
           <PlusIcon />
-          New project
+        </button>
+        <button type="button" className="small ghost overview-new" title="The order of projects, and of rooms within each" disabled={!projects?.length} onClick={() => setDialog({ kind: "arrange" })}>
+          Arrange
         </button>
         <span className="spacer" />
         {error ? <span className="status-error mono">{error}</span> : null}
         {controls}
       </header>
       <div className="overview-grid">
-        {groups.map(({ project, tiles: projectTiles }) => (
-          <section key={project.id} className="ov-project" aria-label={project.title}>
-            <h2 className="ov-project-title">
-              {project.title}
-              <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
-              <span className="spacer" />
-              {project.id !== "unknown" ? (
-                <button type="button" className="small ghost ov-project-new" title={`A new room in ${project.title}, with the Consigliere seated`} onClick={() => setDialog({ kind: "room", projectId: project.id })}>
-                  <PlusIcon />
-                  New room
-                </button>
-              ) : null}
-            </h2>
-            {projectTiles.length === 0 ? <p className="muted ov-empty">Nothing here yet.</p> : null}
-            <div className="ov-tiles">
-              {projectTiles.map((tile) =>
-                tile.kind === "room" ? (
-                  <RoomCard key={tile.room.id} room={tile.room} detail={detail.get(tile.room.id)} onOpen={() => onOpenRoom(tile.room.id)} onCommand={onCommand} />
-                ) : (
-                  <ThreadCard key={tile.thread.id} thread={tile.thread} onOpen={() => onOpenThread(tile.thread.id)} />
-                ),
-              )}
-            </div>
-          </section>
-        ))}
+        {t3Error ? (
+          <p className="muted ov-empty" title={t3Error}>
+            T3 is not answering; its projects and threads are not listed.
+          </p>
+        ) : projects === null ? (
+          <p className="muted ov-empty">Loading projects…</p>
+        ) : groups.length === 0 ? (
+          <p className="muted ov-empty">No projects yet: + in the header adds a folder.</p>
+        ) : null}
+        {groups.map(({ project, tiles: projectTiles }) => {
+          const known = project.id !== "unknown";
+          return (
+            <section key={project.id} className="ov-project" aria-label={project.title}>
+              <h2 className="ov-project-title">
+                <span className="ov-project-name">{project.title}</span>
+                <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
+                <span className="spacer" />
+                {known ? (
+                  <button
+                    type="button"
+                    className="small ghost icon-only ov-project-new"
+                    aria-label={`New room in ${project.title}`}
+                    title={`New room in ${project.title}${consigliere ? `, with ${consigliere.name} seated as its Consigliere` : ""}`}
+                    onClick={() => setDialog({ kind: "room", projectId: project.id })}
+                  >
+                    <PlusIcon />
+                  </button>
+                ) : null}
+              </h2>
+              {projectTiles.length === 0 ? <p className="muted ov-empty">Nothing here yet.</p> : null}
+              <ProjectTiles>
+                {projectTiles.map((tile) =>
+                  tile.kind === "room" ? (
+                    <RoomCard
+                      key={tile.room.id}
+                      room={tile.room}
+                      detail={detail.get(tile.room.id)}
+                      drafted={drafts.has(roomKey(tile.room.id))}
+                      presetOver={presetOver === tile.room.id}
+                      dropTarget={presetTarget(tile.room.id, (presetId) => void onSeatPreset(tile.room.id, presetId))}
+                      onOpen={() => onOpenRoom(tile.room.id)}
+                      onCommand={onCommand}
+                    />
+                  ) : (
+                    <ThreadCard key={tile.thread.id} thread={tile.thread} drafted={drafts.has(threadKey(tile.thread.id))} onOpen={() => onOpenThread(tile.thread.id)} />
+                  ),
+                )}
+              </ProjectTiles>
+              {known ? <ThreadShelf settled={settledIn(project.id)} archived={archivedIn(project.id)} drafted={(threadId) => drafts.has(threadKey(threadId))} onOpen={onOpenThread} /> : null}
+            </section>
+          );
+        })}
+        {projects !== null ? <CrewSection rooms={rooms} projects={projects} onSeat={(roomId, presetId) => void onSeatPreset(roomId, presetId)} runCommand={onCommand} /> : null}
+        {browsers ? <BrowsersSection browsers={browsers} onOpen={onOpenBrowser} onChanged={onBrowsersChanged} runCommand={onCommand} /> : null}
       </div>
       {dialog?.kind === "room" ? (
         <NewRoomDialog
@@ -152,7 +232,6 @@ export function Overview({
             const result = await onCommand({ type: "room.create", projectId, title });
             if (result && "roomId" in result && result.roomId) {
               setDialog(null);
-              rememberProject(projectId);
               onOpenRoom(result.roomId as string);
             }
           }}
@@ -167,14 +246,62 @@ export function Overview({
             if (result && result.type === "project.created" && "projectId" in result) {
               setDialog(null);
               onT3Changed();
-              rememberProject(result.projectId as string);
               setDialog({ kind: "room", projectId: result.projectId as string });
             }
           }}
         />
       ) : null}
+      {dialog?.kind === "arrange" && projects ? <ArrangeDialog rooms={rooms} projects={projects} runCommand={onCommand} onClose={() => setDialog(null)} /> : null}
     </div>
   );
+}
+
+/** Stack each column independently, keeping the arranged/ranked order in both the DOM and across columns. */
+function ProjectTiles({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const grid = ref.current;
+    if (!grid) return;
+    const cards = Array.from(grid.children) as HTMLElement[];
+    const layout = () => {
+      // Keep scrollbars (and thus card widths) stable while the old row placements are cleared.
+      const minHeight = grid.style.minHeight;
+      grid.style.minHeight = getComputedStyle(grid).height;
+      // Clear placements first: old column numbers would create implicit columns after a narrower resize.
+      for (const card of cards) {
+        card.style.gridColumn = "";
+        card.style.gridRow = "";
+      }
+      const style = getComputedStyle(grid);
+      const columns = style.gridTemplateColumns.split(" ").length;
+      const gap = parseFloat(style.columnGap);
+      const heights = cards.map((card) => Math.ceil(card.getBoundingClientRect().height));
+      const nextRow = Array<number>(columns).fill(1);
+      grid.dataset.stacked = "";
+      cards.forEach((card, index) => {
+        const column = index % columns;
+        const height = Math.max(1, heights[index]!);
+        card.style.gridColumn = String(column + 1);
+        card.style.gridRow = `${nextRow[column]} / span ${height}`;
+        nextRow[column]! += height + gap;
+      });
+      grid.style.minHeight = minHeight;
+    };
+    layout();
+    // Polls, wrapping text, font loads and viewport changes can all change a card's height.
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(layout);
+    });
+    observer.observe(grid);
+    cards.forEach((card) => observer.observe(card));
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [children]);
+  return <div className="ov-tiles" ref={ref}>{children}</div>;
 }
 
 type Tile = { kind: "room"; room: RoomListItem; tier: number } | { kind: "thread"; thread: OverviewThread; tier: number };
@@ -202,16 +329,41 @@ function threadState(thread: OverviewThread): TileState {
   return { needs: activity.tone === "input" ? 1 : 0, busy: activity.tone === "working" || activity.tone === "background" ? 1 : 0, unseen: thread.news ? 1 : 0 };
 }
 
-function RoomCard({ room, detail, onOpen, onCommand }: { room: RoomListItem; detail: OverviewRoom | undefined; onOpen: () => void; onCommand: (command: RoomCommand) => Promise<CommandResult | null> }) {
+/** Unsent text kept for the conversation: it is there when you open it. */
+const DraftMark = () => (
+  <span className="pill pill-draft" title="You have an unsent message here">
+    draft
+  </span>
+);
+
+function RoomCard({
+  room,
+  detail,
+  drafted,
+  presetOver,
+  dropTarget,
+  onOpen,
+  onCommand,
+}: {
+  room: RoomListItem;
+  detail: OverviewRoom | undefined;
+  drafted: boolean;
+  /** A crew member is being dragged over it: dropped, they are seated here. */
+  presetOver: boolean;
+  dropTarget: { onDragOver: (event: DragEvent) => void; onDragLeave: () => void; onDrop: (event: DragEvent) => void };
+  onOpen: () => void;
+  onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
+}) {
   const { needs, busy } = roomState(room, detail);
   const news = room.news && room.news.unseen > 0 ? room.news : null;
   return (
-    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}`}>
+    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget}>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
         {busy > 0 ? <span className="pill pill-working">{busy} busy</span> : null}
         {news ? <span className="pill pill-new">{news.unseen} new</span> : null}
+        {drafted ? <DraftMark /> : null}
         <span className="spacer" />
         <span className="mono muted">{room.participantCount} member{room.participantCount === 1 ? "" : "s"}</span>
       </button>
@@ -221,26 +373,27 @@ function RoomCard({ room, detail, onOpen, onCommand }: { room: RoomListItem; det
       </span>
       {detail ? (
         <ul className="ov-members">
-          {detail.members.map((member) => {
+          {/* The Consigliere first: what he says is the room's news. */}
+          {[...detail.members].sort((a, b) => Number(b.consigliere) - Number(a.consigliere)).map((member) => {
             const described = describeStatus(member.status);
             // A turn's latest line; else the task it is on; else what it last said (also between turns, while its
             // background work runs).
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
             const when = member.live || member.doing ? "" : age(member.lastReply?.at);
             return (
-              <li key={member.id} className={`ov-member status-${described.tone}`} title={line ? oneLine(line, 400) : described.label}>
+              <li key={member.id} className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`} title={line ? oneLine(line, 400) : described.label}>
                 <span className="avatar avatar-xs" aria-hidden="true">
-                  <ModelIcon selection={member.modelSelection} size={14} />
+                  <MemberMark seed={member.id} selection={member.modelSelection} presetId={member.presetId} name={member.alias} />
                 </span>
                 <span className="ov-alias mono">
                   {member.alias}
-                  {member.consigliere ? <span className="ov-mark" title="The Consigliere: the one you talk to in this room">★</span> : null}
+                  {member.consigliere ? <span className="ov-mark" title="The Consigliere: the one you talk to in this room"><StarMark /></span> : null}
                 </span>
                 <span className={`ov-state mono status-${described.tone}`}>
                   {described.motion ? <span className="dot dot-working" aria-hidden="true" /> : null}
                   {described.label}
                 </span>
-                <span className="ov-line">{line ? oneLine(line) : <span className="muted">nothing yet</span>}</span>
+                <span className="ov-line">{line ? oneLine(line, member.consigliere ? 400 : 160) : <span className="muted">nothing yet</span>}</span>
                 {when ? <span className="mono muted ov-when">{when}</span> : null}
               </li>
             );
@@ -254,7 +407,7 @@ function RoomCard({ room, detail, onOpen, onCommand }: { room: RoomListItem; det
 }
 
 /** A thread outside rooms, drawn like a room with one member: its agent, named by the saved crew member it started as, else its model. */
-function ThreadCard({ thread, onOpen }: { thread: OverviewThread; onOpen: () => void }) {
+function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; drafted: boolean; onOpen: () => void }) {
   const catalog = useCatalog();
   const activity = threadActivity(thread);
   const crew = threadCrew(thread.id);
@@ -266,13 +419,16 @@ function ThreadCard({ thread, onOpen }: { thread: OverviewThread; onOpen: () => 
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`}>
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
+        {/* Its turn finished (or failed) since you looked. */}
+        {thread.news ? <span className={`pill ${thread.news.state === "error" ? "pill-failed" : "pill-new"}`}>{thread.news.state === "error" ? "failed" : "new"}</span> : null}
+        {drafted ? <DraftMark /> : null}
         <span className="spacer" />
         <span className="mono muted">1 member</span>
       </button>
       <ul className="ov-members">
         <li className={`ov-member status-${activity.tone}`} title={thread.line ? oneLine(thread.line, 400) : activity.label}>
           <span className="avatar avatar-xs" aria-hidden="true">
-            <ModelIcon selection={thread.modelSelection} size={14} />
+            <MemberMark seed={thread.id} selection={thread.modelSelection} presetId={crew?.presetId} />
           </span>
           <span className="ov-alias mono">{name}</span>
           <span className={`ov-state mono status-${activity.tone}`}>
@@ -285,4 +441,14 @@ function ThreadCard({ thread, onOpen }: { thread: OverviewThread; onOpen: () => 
       </ul>
     </article>
   );
+}
+
+/** The boss in the pixel look: a capybara in a fedora, dark shades and a dark suit, drawn like the crew. */
+const BRAND_LOOK = { hat: "fedora", hatColour: "black", band: "black", fur: "sandy", eyes: "dots", glasses: "shades", brows: "none", whiskers: "none", neckwear: "tie", neckwearColour: "black", outfit: "suit", outfitColour: "charcoal", accessory: "none" };
+
+/** The app's mark beside its name: the logo, or in the pixel look the boss as a 16 × 16 sprite at 2×. */
+function BrandMark() {
+  const [skin] = useSkin();
+  if (skin === "pixel") return <LookSprite look={BRAND_LOOK} harness="#ece6d6" className="brand-mark pixel-avatar" size={32} />;
+  return <img src="/logo.png" alt="" className="brand-mark" width={22} height={22} />;
 }

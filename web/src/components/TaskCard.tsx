@@ -7,6 +7,7 @@ import { LiveFeed } from "./LiveFeed.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { PrerequisitePicker } from "./PrerequisitePicker.tsx";
 import { useToast } from "./Toast.tsx";
+import { Glyph } from "./icons.tsx";
 
 type TaskDialog = "edit" | "retry" | "block" | "inspect";
 
@@ -192,7 +193,7 @@ export function TaskCard({
       >
         <header className="chip-head">
           <span className="chip-arrow mono" aria-hidden="true">
-            →
+            <Glyph name="arrow" text="→" />
           </span>
           {assignee ? <Monogram participant={assignee} size="xs" /> : null}
           <span className="task-assignee mono identity">{aliasOf(task.participantId)}</span>

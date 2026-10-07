@@ -1,5 +1,5 @@
 /**
- * Updates for T3 and its harnesses, shared by the sidebar's Updates button (its count) and the Updates popup. Read
+ * Updates for T3 and its harnesses, shared by the overview header's Updates button (its count) and the Updates popup. Read
  * every 30 minutes; while the popup is open, fresh from T3 every 30 seconds, and every 2 while an update runs.
  * Nothing here starts an update: only the popup's buttons do.
  */

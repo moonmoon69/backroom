@@ -13,10 +13,12 @@ import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.
 import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
-import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, conversationTitle, movedInstruction, seatInstruction, startAttemptKey } from "./consigliere.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, movedInstruction, retireThreadChoice, seatInstruction, startAttemptKey } from "./consigliere.ts";
+import { RESEAT_KEY_PREFIX, checkpointInstruction, readReseats, takeoverInstruction, writeReseats, type Reseat } from "./reseat.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
+  POST_KINDS,
   type Browser,
   type Participant,
   type PrerequisiteRef,
@@ -52,6 +54,8 @@ export type CommandResult =
       thread?: { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed"; detail?: string };
     }
   | { type: "tasks.created"; taskIds: string[]; eventId: string }
+  /** After participant.reseat: the checkpoint task the member was sent, and the post that asked for it. */
+  | { type: "participant.reseating"; participantId: string; taskId: string; eventId: string }
   | { type: "note.created"; eventId: string }
   | { type: "task.updated"; taskId: string; revision: number }
   | { type: "task.interrupt.requested"; taskId: string; runId: string }
@@ -129,6 +133,8 @@ export class RoomService {
         id: randomUUID(),
         roomId: input.roomId,
         sequence,
+        // Only posts take a number; inside this transaction nothing else can take the same one.
+        postNumber: POST_KINDS.has(input.kind) ? this.repos.nextPostNumber(input.roomId) : null,
         kind: input.kind,
         speaker: input.speaker,
         text: input.text,
@@ -278,12 +284,18 @@ export class RoomService {
         if (command.rules === null) this.repos.deleteKv(CONSIGLIERE_RULES_KEY);
         else this.repos.setKv(CONSIGLIERE_RULES_KEY, command.rules);
         return { type: "settings.updated" };
+      case "consigliere.retireThread.set":
+        if (command.thread === "keep") this.repos.deleteKv(RETIRE_THREAD_KEY);
+        else this.repos.setKv(RETIRE_THREAD_KEY, command.thread);
+        return { type: "settings.updated" };
       case "consigliere.start":
         return this.startConversation(command);
       case "participant.rebind":
         return this.rebindParticipant(command);
       case "participant.retire":
         return this.retireParticipant(command);
+      case "participant.reseat":
+        return this.reseatParticipant(command);
       case "participant.model.set":
         return this.setParticipantModel(command);
       case "participant.runtimeMode.set":
@@ -648,10 +660,19 @@ export class RoomService {
     return true;
   }
 
+  /**
+   * The crew member a seat is, when it was not seated from one: the preset whose name is its alias, or its alias with a
+   * number after it (sol, sol2), on the same harness. The same rule matched the members seated before seats recorded it.
+   */
+  private matchPreset(alias: string, modelSelection: Participant["modelSelection"]): string | null {
+    const preset = this.repos.findPresetByName(alias.replace(/\d+$/, ""));
+    return preset && preset.modelSelection.instanceId === modelSelection.instanceId ? preset.id : null;
+  }
+
   private async seatParticipant(
     roomId: string,
-    spec: Pick<Participant, "alias" | "modelSelection" | "runtimeMode" | "interactionMode">,
-    thread: { mode: "create" } | { mode: "attach"; threadId: string },
+    spec: Pick<Participant, "alias" | "modelSelection" | "runtimeMode" | "interactionMode"> & { presetId?: string; seatBriefing?: boolean },
+    thread: { mode: "create"; workspace?: WorkspaceChoice | undefined } | { mode: "attach"; threadId: string },
     ids?: { participantId: string; threadId: string; commandId: string },
   ): Promise<CommandResult> {
     const room = this.requireRoom(roomId);
@@ -666,6 +687,7 @@ export class RoomService {
       interactionMode: bound.interactionMode,
       bindingGeneration: 1,
       retiredAt: null,
+      presetId: spec.presetId ?? this.matchPreset(spec.alias, bound.modelSelection),
       createdAt: now(),
       updatedAt: now(),
     };
@@ -692,7 +714,7 @@ export class RoomService {
     });
     // In a room that has a Consigliere his messages arrive bare, so a new member is told the standing facts first.
     const consigliere = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
-    if (consigliere && !consigliere.retiredAt) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
+    if (consigliere && !consigliere.retiredAt && spec.seatBriefing !== false) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
     this.notify(room.id);
     return { type: "participant.created", participantId: participant.id, threadId: bound.threadId, alias: participant.alias };
   }
@@ -724,10 +746,11 @@ export class RoomService {
       modelSelection: command.modelSelection,
       runtimeMode: command.runtimeMode,
       workspaceMode: command.workspaceMode,
+      look: {},
       createdAt: now(),
       updatedAt: now(),
     };
-    this.db.transaction(() => this.repos.upsertPreset(preset));
+    this.db.transaction(() => this.repos.upsertPreset(preset, command.look));
     return { type: "preset.saved", presetId: preset.id };
   }
 
@@ -743,7 +766,7 @@ export class RoomService {
       workspaceMode: command.workspaceMode ?? preset.workspaceMode,
       updatedAt: now(),
     };
-    this.db.transaction(() => this.repos.upsertPreset(updated));
+    this.db.transaction(() => this.repos.upsertPreset(updated, command.look));
     return { type: "preset.saved", presetId: preset.id };
   }
 
@@ -789,6 +812,7 @@ export class RoomService {
         modelSelection: preset.modelSelection,
         runtimeMode: preset.runtimeMode,
         interactionMode: "default",
+        presetId: preset.id,
       },
       { mode: "create", ...(workspace ? { workspace } : {}) },
       ids,
@@ -837,7 +861,7 @@ export class RoomService {
    * Designate a member as the room's Consigliere, move the mark, or clear it. A room's first Consigliere means every
    * other member gets the seat briefing; a move tells every member, in one line, who he is now.
    */
-  private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>): Promise<CommandResult> {
+  private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>, except: string | null = null): Promise<CommandResult> {
     const room = this.requireRoom(command.roomId);
     const previous = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
     if (command.participantId === null) {
@@ -858,7 +882,8 @@ export class RoomService {
       this.repos.setRoomConsigliere(room.id, participant.id, now());
       this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${participant.alias} is now the Consigliere of this room` });
       for (const other of this.repos.listActiveParticipants(room.id)) {
-        if (other.id === participant.id) continue;
+        // except: a reseated Consigliere, who leaves the room as the mark moves.
+        if (other.id === participant.id || other.id === except) continue;
         if (moved) this.sendSeatBriefing(room, other, movedInstruction(participant, threadId), "New Consigliere");
         else this.sendSeatBriefing(room, other, seatInstruction(participant, threadId), "Seat briefing");
       }
@@ -1062,6 +1087,262 @@ export class RoomService {
     });
     this.notify(participant.roomId);
     return { type: "participant.updated", participantId: participant.id, ...(thread ? { thread } : {}) };
+  }
+
+  // ---------- reseating (see reseat.ts) ----------
+
+  /**
+   * Ask a member for its checkpoint post, the first step of a reseat. The task is queued like any other, so it runs
+   * when the work in hand is done; advanceReseats does the rest when the post has landed. Nobody is woken for it.
+   */
+  private async reseatParticipant(command: Extract<RoomCommand, { type: "participant.reseat" }>): Promise<CommandResult> {
+    const participant = this.requireParticipant(command.participantId);
+    const by = this.requireParticipant(command.by);
+    if (by.roomId !== participant.roomId) throw new RoomError("unknown_participant", `member ${command.by} is not in this room`);
+    const room = this.requireRoom(participant.roomId);
+    const pending = readReseats(this.repos, room.id);
+    const already = pending.find((reseat) => reseat.participantId === participant.id || reseat.seat.participantId === participant.id);
+    if (already) {
+      const checkpoint = this.repos.getTask(already.checkpointTaskId);
+      throw new RoomError("reseat_pending", `@${participant.alias} is being reseated already${checkpoint ? ` (checkpoint ${taskLabel(checkpoint)}: ${checkpoint.state})` : ""}`, 409);
+    }
+    if (!this.repos.currentBinding(participant.id)) throw new RoomError("no_binding", `@${participant.alias} has no thread to write a checkpoint on`);
+    const byBinding = this.repos.currentBinding(by.id);
+    const plan = command.plan?.trim() || null;
+    const result = this.db.transaction(() => {
+      const event = this.appendEvent({
+        roomId: room.id,
+        kind: "member.message",
+        speaker: byBinding ? { type: "participant", participantId: by.id, bindingId: byBinding.id } : { type: "system" },
+        text: `@${participant.alias} reseat: write your checkpoint post; a fresh seat takes over from it.${plan ? ` It carries on with: ${plan}` : ""}`,
+        to: participant.id,
+      });
+      const task: Task = {
+        id: randomUUID(),
+        roomId: room.id,
+        number: this.repos.nextTaskNumber(room.id),
+        revision: 1,
+        sourceEventId: event.id,
+        participantId: participant.id,
+        instruction: checkpointInstruction({ consigliere: room.consigliereId === participant.id, plan }),
+        sourceText: event.text,
+        attachmentIds: [],
+        delivery: "queue",
+        slashCommand: false,
+        kind: "assignment",
+        scheduleMode: "now",
+        prerequisites: [],
+        state: "queued",
+        stateReason: "ready",
+        currentRunId: null,
+        userOutcome: null,
+        dismissedAt: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      this.repos.insertTask(task);
+      this.statusEvent(task, `${taskLabel(task)} → @${participant.alias}: checkpoint for a reseat`);
+      const reseat: Reseat = {
+        participantId: participant.id,
+        by: by.id,
+        plan,
+        requestEventId: event.id,
+        checkpointTaskId: task.id,
+        seat: { participantId: randomUUID(), threadId: randomUUID(), commandId: randomUUID() },
+        stage: "checkpoint",
+        requestedAt: now(),
+      };
+      writeReseats(this.repos, room.id, [...pending, reseat]);
+      return { type: "participant.reseating" as const, participantId: participant.id, taskId: task.id, eventId: event.id };
+    });
+    this.notify(room.id);
+    return result;
+  }
+
+  /**
+   * Carry every reseat in progress a step on. Scheduler.runTick calls it after reading the threads and before sending
+   * work, so a fresh seat's first task goes out in the same tick its member's checkpoint landed. Rooms it changed are
+   * added to touched.
+   */
+  async advanceReseats(touched: Set<string>): Promise<void> {
+    for (const key of this.repos.listKv(RESEAT_KEY_PREFIX).keys()) {
+      const roomId = key.slice(RESEAT_KEY_PREFIX.length);
+      for (const reseat of readReseats(this.repos, roomId)) {
+        if (await this.advanceReseat(roomId, reseat)) touched.add(roomId);
+      }
+    }
+  }
+
+  /**
+   * One reseat, as far as it can go now: once the checkpoint has succeeded and its member is idle, seat the fresh
+   * member where the old one worked; hand it the checkpoint and the member's pending tasks; move the Consigliere's mark;
+   * retire the old seat. Each step is recorded, so a crash or T3 outage resumes where it stopped. True when it changed
+   * anything.
+   */
+  private async advanceReseat(roomId: string, start: Reseat): Promise<boolean> {
+    let reseat = start;
+    const save = (next: Reseat | null) =>
+      writeReseats(this.repos, roomId, [...readReseats(this.repos, roomId).filter((r) => r.participantId !== reseat.participantId), ...(next ? [next] : [])]);
+    const room = this.repos.getRoom(roomId);
+    const old = this.repos.getParticipant(reseat.participantId);
+    const checkpoint = this.repos.getTask(reseat.checkpointTaskId);
+    if (!room || !old || !checkpoint) {
+      save(null);
+      return true;
+    }
+    if (reseat.stage === "checkpoint") {
+      if (old.retiredAt) return this.callOffReseat(room, reseat, old, `@${old.alias} was removed from the room`);
+      // Blocked: its thread is gone from T3, or it was removed; nothing would ever run it.
+      if (checkpoint.state === "failed" || checkpoint.state === "interrupted" || checkpoint.state === "cancelled" || checkpoint.state === "blocked") {
+        return this.callOffReseat(room, reseat, old, `its checkpoint ${taskLabel(checkpoint)} ${checkpoint.state}${checkpoint.stateReason && checkpoint.stateReason !== checkpoint.state ? ` (${checkpoint.stateReason})` : ""}`);
+      }
+      if (checkpoint.state !== "succeeded") return false;
+      // Whatever the member is still running (a steer that came after the checkpoint) ends first.
+      const busy = this.repos.listTasks(roomId).some((t) => t.participantId === old.id && (t.state === "dispatching" || t.state === "running" || t.state === "needs_input"));
+      if (busy) return false;
+      try {
+        if (!this.repos.getParticipant(reseat.seat.participantId)) await this.seatFresh(room, old, reseat);
+      } catch (error) {
+        // T3 away: the next tick tries again with the same ids. Anything else calls the reseat off.
+        if (error instanceof RoomError && error.status === 503) return false;
+        return this.callOffReseat(room, reseat, old, `the fresh seat could not be made: ${(error as Error).message}`);
+      }
+      reseat = { ...reseat, stage: "seated" };
+      save(reseat);
+    }
+    const fresh = this.repos.getParticipant(reseat.seat.participantId);
+    if (!fresh) return this.callOffReseat(room, reseat, old, "the fresh seat is gone");
+    const consigliere = room.consigliereId === old.id || room.consigliereId === fresh.id;
+    if (reseat.stage === "seated") {
+      this.db.transaction(() => {
+        this.handOver(room, reseat, old, fresh, checkpoint, consigliere);
+        reseat = { ...reseat, stage: "handed" };
+        save(reseat);
+      });
+    }
+    if (room.consigliereId === old.id) await this.setConsigliere({ type: "room.consigliere.set", roomId, participantId: fresh.id }, old.id);
+    // The old seat's thread goes as the user's retire setting says (kept unless they chose otherwise).
+    if (!this.repos.getParticipant(old.id)?.retiredAt) await this.retireParticipant({ type: "participant.retire", participantId: old.id, pendingTasks: "cancel", thread: retireThreadChoice(this.repos) });
+    save(null);
+    this.notify(roomId);
+    return true;
+  }
+
+  /**
+   * The fresh seat: the same saved crew member (or, for a seat made without one, the same settings), in the old seat's
+   * folder: its worktree, or the project folder. The checkpoint and the moved tasks assume that folder, so when T3 cannot
+   * say where the old seat worked the reseat is called off rather than seated elsewhere; T3 being away is retried.
+   */
+  private async seatFresh(room: Room, old: Participant, reseat: Reseat): Promise<void> {
+    const preset = old.presetId ? this.repos.getPreset(old.presetId) : null;
+    const binding = this.repos.currentBinding(old.id);
+    const shell = await (binding ? this.adapter.getThreadShell(binding.threadId) : Promise.resolve(null)).catch((error: unknown) => {
+      if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
+      throw new RoomError("workspace_unknown", `where @${old.alias} worked could not be read (${(error as Error).message})`, 409);
+    });
+    if (!shell) throw new RoomError("workspace_unknown", `T3 no longer has @${old.alias}'s thread, so where it worked is unknown`, 409);
+    const workspace: WorkspaceChoice = shell.worktreePath ? { mode: "existing", worktreePath: shell.worktreePath } : { mode: "local" };
+    await this.seatParticipant(
+      room.id,
+      {
+        alias: this.freeAlias(room.id, preset?.name ?? old.alias.replace(/\d+$/, "")),
+        modelSelection: preset?.modelSelection ?? old.modelSelection,
+        runtimeMode: preset?.runtimeMode ?? old.runtimeMode,
+        interactionMode: "default",
+        ...(preset ? { presetId: preset.id } : {}),
+        // A fresh Consigliere learns the rules from his first task, not from a member's seat briefing.
+        seatBriefing: room.consigliereId !== old.id,
+      },
+      { mode: "create", workspace },
+      reseat.seat,
+    );
+  }
+
+  /**
+   * The fresh seat's first task (it waits on the checkpoint, so the briefing carries the post in full), a wake for the
+   * Consigliere when it ends, and the old seat's pending tasks moved over, after the takeover, at the same revision (so
+   * whatever waits on them still does). Runs inside a transaction.
+   */
+  private handOver(room: Room, reseat: Reseat, old: Participant, fresh: Participant, checkpoint: Task, consigliere: boolean): void {
+    const resultId = checkpoint.currentRunId ? this.repos.getRun(checkpoint.currentRunId)?.resultEventId : null;
+    const result = resultId ? this.repos.getEvent(resultId) : null;
+    const post = result ? `#${result.postNumber ?? result.sequence}` : `(${taskLabel(checkpoint)}'s answer)`;
+    const by = this.repos.getParticipant(reseat.by);
+    const byBinding = by && !by.retiredAt ? this.repos.currentBinding(by.id) : null;
+    // A member's answer goes to the Consigliere who asked; a fresh Consigliere's goes to the user, like his were.
+    const reportTo = !consigliere && by && byBinding && by.id !== old.id ? by : null;
+    const binding = this.repos.currentBinding(fresh.id);
+    // Without a seat briefing (a fresh Consigliere) the first delivery would carry the room's whole history.
+    if (binding && binding.bootstrapDeliveredAt === null && binding.deliveredCursor === 0) {
+      this.repos.updateBinding({ ...binding, deliveredCursor: (this.repos.getRoom(room.id)?.nextSequence ?? 1) - 1 });
+    }
+    const source = this.appendEvent(
+      reportTo && byBinding
+        ? {
+            roomId: room.id,
+            kind: "member.message",
+            speaker: { type: "participant", participantId: reportTo.id, bindingId: byBinding.id },
+            text: `@${fresh.alias} you take over from @${old.alias}: its checkpoint is ${post}.${reseat.plan ? ` Carry on with: ${reseat.plan}` : ""}`,
+            to: fresh.id,
+          }
+        : { roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${fresh.alias} takes over from @${old.alias} as the Consigliere, from its checkpoint ${post}` },
+    );
+    const task: Task = {
+      id: randomUUID(),
+      roomId: room.id,
+      number: this.repos.nextTaskNumber(room.id),
+      revision: 1,
+      sourceEventId: source.id,
+      participantId: fresh.id,
+      instruction: takeoverInstruction({ from: old.alias, consigliere, checkpointPost: post, plan: reseat.plan, reportTo: reportTo?.alias ?? null }),
+      sourceText: source.text,
+      attachmentIds: [],
+      delivery: "queue",
+      slashCommand: false,
+      kind: "assignment",
+      scheduleMode: "after_all",
+      prerequisites: [{ taskId: checkpoint.id, revision: checkpoint.revision }],
+      state: "queued",
+      stateReason: `after ${taskLabel(checkpoint)}`,
+      currentRunId: null,
+      userOutcome: null,
+      dismissedAt: null,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    this.repos.insertTask(task);
+    this.statusEvent(task, `${taskLabel(task)} → @${fresh.alias}: takes over from @${old.alias}`);
+    if (reportTo) {
+      this.createWake(room.id, reportTo, source.id, `${taskLabel(task)} (@${fresh.alias}: takes over from @${old.alias}) has ended. Its answer is above, among the results; carry on with what you asked it for. If it failed or was stopped, decide what to do about that.`, task);
+    }
+    // Older tasks would be sent first (the queue goes by age): each moved task also waits for the takeover.
+    for (const pending of this.repos.listTasks(room.id)) {
+      if (pending.participantId !== old.id || !PENDING_TASK_STATES.has(pending.state)) continue;
+      const prerequisites = [...pending.prerequisites, { taskId: task.id, revision: task.revision }];
+      this.repos.updateTask({ ...pending, participantId: fresh.id, prerequisites, scheduleMode: pending.scheduleMode === "now" ? "after_all" : pending.scheduleMode, updatedAt: now() });
+      this.statusEvent(pending, `${taskLabel(pending)} moved from @${old.alias} to @${fresh.alias} (reseat); it runs after ${taskLabel(task)}`);
+    }
+    this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${old.alias} reseated: @${fresh.alias} takes over from its checkpoint ${post}` });
+  }
+
+  /** A reseat that cannot go on: the member stays seated, and whoever asked is woken to decide. */
+  private callOffReseat(room: Room, reseat: Reseat, old: Participant, why: string): true {
+    this.db.transaction(() => {
+      writeReseats(this.repos, room.id, readReseats(this.repos, room.id).filter((r) => r.participantId !== reseat.participantId));
+      // A checkpoint still waiting (blocked, say) would otherwise run for a reseat that is no longer coming.
+      const checkpoint = this.repos.getTask(reseat.checkpointTaskId);
+      if (checkpoint && PENDING_TASK_STATES.has(checkpoint.state)) {
+        const cancelled = this.setTaskState(checkpoint, "cancelled", "cancelled: the reseat was called off");
+        this.statusEvent(cancelled, `${taskLabel(cancelled)} cancelled (reseat called off)`);
+      }
+      const event = this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `Reseat of @${old.alias} called off: ${why}` });
+      const by = this.repos.getParticipant(reseat.by);
+      if (by && !by.retiredAt) {
+        this.createWake(room.id, by, event.id, `The reseat of @${old.alias} was called off: ${why}. ${old.retiredAt ? "" : `@${old.alias} stays seated as it was. `}Decide what to do about that.`, null);
+      }
+    });
+    this.notify(room.id);
+    return true;
   }
 
   // ---------- tasks ----------

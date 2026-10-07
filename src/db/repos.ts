@@ -1,4 +1,5 @@
 /** Repositories: typed row mapping over the SQLite tables. All writes assume the caller manages transactions. */
+import { resolveLook, type Look } from "../domain/look.ts";
 import type { Database } from "./database.ts";
 import type {
   Browser,
@@ -51,6 +52,18 @@ function rowToBrowser(row: Row): Browser {
   return { id: s(row.id), name: s(row.name), description: s(row.description), createdAt: s(row.created_at), updatedAt: s(row.updated_at) };
 }
 
+/** A stored look's parts; anything unreadable is no parts (the defaults). */
+function parseLook(value: unknown): Look | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return null;
+  }
+}
+
 function rowToParticipant(row: Row): Participant {
   return {
     id: s(row.id),
@@ -61,6 +74,7 @@ function rowToParticipant(row: Row): Participant {
     interactionMode: s(row.interaction_mode) as Participant["interactionMode"],
     bindingGeneration: n(row.binding_generation),
     retiredAt: ns(row.retired_at),
+    presetId: ns(row.preset_id),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
   };
@@ -85,6 +99,7 @@ function rowToEvent(row: Row): RoomEvent {
     id: s(row.id),
     roomId: s(row.room_id),
     sequence: n(row.sequence),
+    postNumber: row.post_number === null || row.post_number === undefined ? null : n(row.post_number),
     kind: s(row.kind) as RoomEvent["kind"],
     speaker: JSON.parse(s(row.speaker_json)),
     text: s(row.text),
@@ -295,6 +310,15 @@ export class Repos {
     return sequence;
   }
 
+  /**
+   * The number the room's next post takes: one more than its highest. Caller must be inside the transaction that
+   * inserts the post (the write lock makes it the only writer; a unique index on room and number guards it besides).
+   */
+  nextPostNumber(roomId: string): number {
+    const row = this.raw.prepare("SELECT COALESCE(MAX(post_number), 0) AS highest FROM events WHERE room_id = ?").get(roomId) as Row;
+    return n(row.highest) + 1;
+  }
+
   nextTaskNumber(roomId: string): number {
     const row = this.raw.prepare("SELECT next_task_number FROM rooms WHERE id = ?").get(roomId) as Row;
     const number = n(row.next_task_number);
@@ -307,12 +331,12 @@ export class Repos {
     this.raw
       .prepare(
         `INSERT INTO participants (id, room_id, alias, alias_key, model_selection_json,
-           runtime_mode, interaction_mode, binding_generation, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           runtime_mode, interaction_mode, binding_generation, preset_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.id, p.roomId, p.alias, p.alias.toLowerCase(),
-        JSON.stringify(p.modelSelection), p.runtimeMode, p.interactionMode, p.bindingGeneration, p.createdAt, p.updatedAt,
+        JSON.stringify(p.modelSelection), p.runtimeMode, p.interactionMode, p.bindingGeneration, p.presetId, p.createdAt, p.updatedAt,
       );
     if (p.retiredAt) this.updateParticipant(p);
   }
@@ -396,12 +420,12 @@ export class Repos {
   insertEvent(e: RoomEvent): void {
     this.raw
       .prepare(
-        `INSERT INTO events (id, room_id, sequence, kind, speaker_json, text, task_id, run_id, artifacts_json, attachment_ids_json, progress_json, prompt,
+        `INSERT INTO events (id, room_id, sequence, post_number, kind, speaker_json, text, task_id, run_id, artifacts_json, attachment_ids_json, progress_json, prompt,
            to_participant_id, outcome, source_thread_id, source_message_id, source_t3_run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.roomId, e.sequence, e.kind, JSON.stringify(e.speaker), e.text, e.taskId, e.runId, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt, e.to, e.outcome,
+        e.id, e.roomId, e.sequence, e.postNumber, e.kind, JSON.stringify(e.speaker), e.text, e.taskId, e.runId, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt, e.to, e.outcome,
         e.sourceRef?.threadId ?? null, e.sourceRef?.messageId ?? null, e.sourceRef?.t3RunId ?? null, e.createdAt,
       );
   }
@@ -628,21 +652,26 @@ export class Repos {
       modelSelection: JSON.parse(s(row.model_selection_json)) as Preset["modelSelection"],
       runtimeMode: s(row.runtime_mode) as Preset["runtimeMode"],
       workspaceMode: s(row.workspace_mode) === "worktree" ? "worktree" : "local",
+      look: resolveLook(s(row.id), parseLook(row.look_json)),
       createdAt: s(row.created_at),
       updatedAt: s(row.updated_at),
     };
   }
 
-  /** New presets go to the end of the list; an update keeps its place. */
-  upsertPreset(p: Preset): void {
+  /**
+   * New presets go to the end of the list; an update keeps its place. `look` is the parts chosen, stored as given:
+   * omitted, a new preset keeps the defaults and an update keeps the look it had.
+   */
+  upsertPreset(p: Preset, look?: Look): void {
     this.raw
       .prepare(
-        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
+        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, look_json, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, model_selection_json = excluded.model_selection_json,
-           runtime_mode = excluded.runtime_mode, workspace_mode = excluded.workspace_mode, updated_at = excluded.updated_at`,
+           runtime_mode = excluded.runtime_mode, workspace_mode = excluded.workspace_mode, look_json = COALESCE(excluded.look_json, presets.look_json),
+           updated_at = excluded.updated_at`,
       )
-      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.workspaceMode, p.createdAt, p.updatedAt);
+      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.workspaceMode, look ? JSON.stringify(look) : null, p.createdAt, p.updatedAt);
   }
 
   getPreset(id: string): Preset | null {

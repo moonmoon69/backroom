@@ -14,10 +14,14 @@
  * Antigravity keeps a database per conversation that T3 prices only in part: neither has an estimate here.
  *
  * T3's database and the transcripts are not public interfaces. Every read fails to "no estimate", never to a guess.
+ *
+ * The same transcripts give a Claude thread's context meter (context()): what its last call sent the model, its largest
+ * call, and the compactions Claude Code recorded. Other harnesses have no meter here.
  */
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { NEAR_COMPACTION_SHARE, type ContextMeter } from "../domain/contextMeter.ts";
 
 export interface TokenTotals {
   /** Input sent uncached. */
@@ -67,6 +71,8 @@ export interface ThreadCostSources {
   ratesPath: string;
   claudeProjectsDir: string;
   codexSessionsDir: string;
+  /** T3's model manifest (model-manifest.json): each model's context window, for the meter. */
+  modelManifestPath?: string;
   /** Sessions a thread has had, kept by the room: T3 remembers only the current one. */
   remember?: (threadId: string, provider: string, sessionId: string) => void;
   remembered?: (threadId: string) => Array<{ provider: string; sessionId: string }>;
@@ -82,6 +88,14 @@ interface Call {
   subagent: boolean;
 }
 
+/** A compaction Claude Code recorded: a compact boundary line, with the context before and after it when it says. */
+interface Compacted {
+  id: string;
+  at: number;
+  before: number;
+  after: number;
+}
+
 interface FileState {
   /** Bytes read so far: transcripts only grow, so the next read starts here. */
   offset: number;
@@ -90,6 +104,34 @@ interface FileState {
   calls: Call[];
   /** Codex names the model per turn, not per call. */
   model: string | null;
+  compactions: Compacted[];
+}
+
+/** The model a meter is for, as the room seats it: T3's model id and options (contextWindow "200k" or "1m"). */
+export interface MeterModel {
+  instanceId: string;
+  model: string;
+  options?: Array<{ id: string; value: unknown }> | undefined;
+}
+
+/** The parts of T3's model manifest the meter reads: each model's profile, and each profile's context window. */
+interface Manifest {
+  manifest?: {
+    providers?: Record<
+      string,
+      | {
+          models?: Array<{ slug: string; aliases?: string[]; profile?: string }>;
+          profiles?: Record<
+            string,
+            {
+              capabilities?: { optionDescriptors?: Array<{ id: string; options?: Array<{ id: string; isDefault?: boolean }> }> };
+              adapter?: { claudeCode?: { fixedContextWindowTokens?: number; contextWindowTokens?: Record<string, number> } };
+            }
+          >;
+        }
+      | undefined
+    >;
+  };
 }
 
 interface Rate {
@@ -141,6 +183,7 @@ export class ThreadCosts {
   private readonly claudeDirs = new Map<string, string>();
   private codexIndex: { at: number; paths: Map<string, string> } = { at: 0, paths: new Map() };
   private rates: { mtimeMs: number; document: Record<string, Rate> } | null = null;
+  private manifest: { mtimeMs: number; document: Manifest } | null = null;
   private sessionsMemo: { at: number; rows: Map<string, Array<{ provider: string; sessionId: string | null }>> } | null = null;
 
   private readonly sources: ThreadCostSources;
@@ -164,6 +207,102 @@ export class ThreadCosts {
       read.calls.filter((call) => call.at >= fromMs && call.at <= toMs),
       read.provider,
     );
+  }
+
+  /**
+   * A thread's context meter, from its Claude transcript: the last call's input, cache read and cache write tokens (what
+   * the model was sent), the largest call, and the compact boundaries. A compaction after the last call sets the
+   * context to what it left. Pass the thread a member is bound to now: an earlier thread's context is gone.
+   */
+  context(threadIds: string[], model: MeterModel | null): ContextMeter {
+    const none = (reason: NonNullable<ContextMeter["reason"]>): ContextMeter => ({
+      available: false,
+      reason,
+      tokens: null,
+      peak: null,
+      compactions: 0,
+      lastCompactionAt: null,
+      window: null,
+      windowSource: null,
+      nearCompaction: false,
+      at: null,
+    });
+    const calls: Call[] = [];
+    const compactions = new Map<string, Compacted>();
+    let reason: NonNullable<ContextMeter["reason"]> = "no_session";
+    let found = false;
+    for (const threadId of threadIds) {
+      const sessions = this.sessionsOf(threadId);
+      // Only Claude threads have a meter; a thread T3 has no session for yet goes by the provider it is seated on.
+      const provider = sessions.provider ?? model?.instanceId ?? null;
+      if (provider !== null && HARNESS[provider] !== "claude" && !/claude/i.test(provider)) return none("not_claude");
+      if (sessions.reason === "unreadable") reason = "unreadable";
+      for (const session of sessions.list) {
+        if (session.harness !== "claude") continue;
+        const read = this.readClaude(session.id);
+        const dir = this.claudeDirOf(session.id);
+        if (read === null || !dir) {
+          if (reason === "no_session") reason = "no_transcript";
+          continue;
+        }
+        found = true;
+        calls.push(...read);
+        for (const compacted of this.files.get(join(dir, `${session.id}.jsonl`))?.compactions ?? []) compactions.set(compacted.id, compacted);
+      }
+    }
+    if (!found) return none(reason);
+    const size = (call: Call) => call.input + call.cacheRead + call.cacheWrite;
+    const own = calls.filter((call) => !call.subagent && size(call) > 0).sort((a, b) => a.at - b.at);
+    const marks = [...compactions.values()].sort((a, b) => a.at - b.at);
+    const last = own.at(-1) ?? null;
+    const lastMark = marks.at(-1) ?? null;
+    let tokens = last ? size(last) : null;
+    let at = last ? last.at : null;
+    if (lastMark && lastMark.after > 0 && (!last || lastMark.at > last.at)) {
+      tokens = lastMark.after;
+      at = lastMark.at;
+    }
+    const sizes = [...own.map(size), ...marks.map((mark) => mark.before)];
+    const peak = sizes.length > 0 ? Math.max(...sizes) : null;
+    const window = this.contextWindow(model ?? (last ? { instanceId: "claudeAgent", model: last.model } : null));
+    return {
+      available: true,
+      reason: null,
+      tokens,
+      peak,
+      compactions: marks.length,
+      lastCompactionAt: lastMark ? new Date(lastMark.at).toISOString() : null,
+      window: window?.tokens ?? null,
+      windowSource: window?.source ?? null,
+      nearCompaction: tokens !== null && window !== null && tokens >= window.tokens * NEAR_COMPACTION_SHARE,
+      at: at !== null && at > 0 ? new Date(at).toISOString() : null,
+    };
+  }
+
+  /**
+   * A model's context window: T3's manifest says it per model profile (a fixed window, or one per contextWindow option
+   * with a default); a model it does not list falls back to the table.
+   */
+  contextWindow(model: MeterModel | null): { tokens: number; source: "manifest" | "table" } | null {
+    if (!model) return null;
+    const chosen = model.options?.find((option) => option.id === "contextWindow")?.value;
+    const providers = this.modelManifest()?.manifest?.providers ?? {};
+    const ordered = [providers[model.instanceId], ...Object.entries(providers).filter(([key]) => key !== model.instanceId).map(([, value]) => value)];
+    for (const provider of ordered) {
+      const entry = provider?.models?.find((m) => m.slug === model.model || (m.aliases ?? []).includes(model.model));
+      const profile = entry?.profile ? provider?.profiles?.[entry.profile] : undefined;
+      if (!profile) continue;
+      const adapter = profile.adapter?.claudeCode;
+      if (typeof adapter?.fixedContextWindowTokens === "number") return { tokens: adapter.fixedContextWindowTokens, source: "manifest" };
+      const byOption = adapter?.contextWindowTokens;
+      if (byOption) {
+        const fallback = profile.capabilities?.optionDescriptors?.find((d) => d.id === "contextWindow")?.options?.find((o) => o.isDefault)?.id;
+        const tokens = byOption[typeof chosen === "string" ? chosen : (fallback ?? "")];
+        if (typeof tokens === "number") return { tokens, source: "manifest" };
+      }
+    }
+    const tokens = tableWindow(model.model, chosen);
+    return tokens === null ? null : { tokens, source: "table" };
   }
 
   /** When T3 last fetched the prices, for the note under an estimate. */
@@ -313,8 +452,18 @@ export class ThreadCosts {
     this.seen.set(sessionId, seen);
     const calls: Call[] = [];
     const parse = (subagent: boolean) => (line: string, state: FileState) => {
+      let row: Record<string, unknown> | null = null;
+      // Claude Code marks each compaction, automatic or /compact, with a compact boundary in the session's transcript.
+      if (line.includes('"compact_boundary"')) {
+        row = parseJson(line);
+        if (row?.type === "system" && row.subtype === "compact_boundary") {
+          const meta = row.compactMetadata as { preTokens?: unknown; postTokens?: unknown } | undefined;
+          state.compactions.push({ id: String(row.uuid ?? row.timestamp), at: Date.parse(String(row.timestamp)) || 0, before: count(meta?.preTokens), after: count(meta?.postTokens) });
+          return;
+        }
+      }
       if (!line.includes('"usage"')) return;
-      const row = parseJson(line);
+      row ??= parseJson(line);
       const message = row?.message as { id?: unknown; model?: unknown; usage?: Record<string, unknown> } | undefined;
       if (!row || !message?.usage || typeof message.model !== "string") return;
       const key = `${String(message.id)}:${String(row.requestId)}`;
@@ -327,7 +476,8 @@ export class ThreadCosts {
         cacheRead: count(message.usage.cache_read_input_tokens),
         cacheWrite: count(message.usage.cache_creation_input_tokens),
         output: count(message.usage.output_tokens),
-        subagent,
+        // Older transcripts kept a subagent's calls in the session's own file, marked as a side chain.
+        subagent: subagent || row.isSidechain === true,
       });
     };
     // The session's own transcript first, so a message in both is the thread's own.
@@ -410,7 +560,7 @@ export class ThreadCosts {
     let state = this.files.get(path);
     // Smaller than what was read: not the file it was. Start over (its messages are counted again by their ids).
     if (!state || size < state.offset) {
-      state = { offset: 0, carry: "", calls: [], model: null };
+      state = { offset: 0, carry: "", calls: [], model: null, compactions: [] };
       this.files.set(path, state);
     }
     if (size === state.offset) return state.calls;
@@ -436,6 +586,19 @@ export class ThreadCosts {
 
   // ---- calls -> money ----
 
+  private modelManifest(): Manifest | null {
+    const path = this.sources.modelManifestPath;
+    if (!path) return null;
+    try {
+      const mtimeMs = statSync(path).mtimeMs;
+      if (this.manifest?.mtimeMs === mtimeMs) return this.manifest.document;
+      this.manifest = { mtimeMs, document: JSON.parse(readFileSync(path, "utf8")) as Manifest };
+      return this.manifest.document;
+    } catch {
+      return this.manifest?.document ?? null;
+    }
+  }
+
   private priceTable(): Record<string, Rate> {
     try {
       const mtimeMs = statSync(this.sources.ratesPath).mtimeMs;
@@ -447,6 +610,17 @@ export class ThreadCosts {
       return this.rates?.document ?? {};
     }
   }
+}
+
+/**
+ * Context windows of the Claude models T3's manifest does not list: the 5 family's Opus and Fable, and Opus 4.6 to 4.8,
+ * have 1M; Sonnet and older models 200k unless seated with the 1M option.
+ */
+function tableWindow(model: string, chosen: unknown): number | null {
+  if (!/^claude-/i.test(model)) return null;
+  if (chosen === "1m" || /\[1m\]$/i.test(model)) return 1_000_000;
+  if (chosen === "200k") return 200_000;
+  return /^claude-(opus|fable)-5|^claude-opus-4-[678]/i.test(model) ? 1_000_000 : 200_000;
 }
 
 function rateOf(rates: Record<string, Rate>, model: string): Rate | null {

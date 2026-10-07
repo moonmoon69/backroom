@@ -7,6 +7,7 @@ import { test, type TestContext } from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { ThreadCosts } from "../src/usage/threadCosts.ts";
+import { contextPhrase } from "../src/domain/contextMeter.ts";
 import { createTestStack } from "./helpers.ts";
 
 const close = (actual: number, expected: number, message?: string) => assert.ok(Math.abs(actual - expected) < 1e-9, `${message ?? "cost"}: ${actual} is not ${expected}`);
@@ -228,6 +229,8 @@ test("the room's costs: per participant, per reply and for the room", async (t) 
   assert.equal(body.replies[reply.id].subagents.outputTokens, 5);
   assert.equal(body.openTurns[stack.participants.sol1 as string].total.outputTokens, 30, "used since the last reply: the turn in progress");
   assert.equal(body.openTurns[stack.participants.grok as string], undefined);
+  assert.equal(body.contexts[stack.participants.sol1 as string].available, true, "a Claude thread has a meter");
+  assert.equal(body.contexts[stack.participants.grok as string].reason, "not_claude", "the others have none");
   assert.deepEqual(stack.repos.listThreadSessions(sol), [{ provider: "claudeAgent", sessionId: "sess-sol" }], "the session is remembered by the room");
 
   const direct = (await (await app.request(`/api/t3/threads/${sol}/cost`)).json()) as any;
@@ -305,4 +308,86 @@ test("a thread on its own gets a room member's figures: the total, one per reply
   assert.equal(body.openTurn.total.outputTokens, 30, "since the last reply: the turn in progress");
   assert.equal(body.pricesFetchedAt, "2026-09-26T00:00:00.000Z");
   assert.equal((await app.request("/api/t3/threads/nope/costs")).status, 404);
+});
+
+const boundary = (id: string, at: string, trigger: "auto" | "manual", pre: number, post: number) =>
+  JSON.stringify({ type: "system", subtype: "compact_boundary", content: "Conversation compacted", timestamp: at, uuid: `b-${id}`, compactMetadata: { trigger, preTokens: pre, postTokens: post } });
+
+/** T3's manifest as it is shaped: a model names its profile; the profile has a window per contextWindow option, or a fixed one. */
+const MANIFEST = {
+  manifest: {
+    providers: {
+      claudeAgent: {
+        models: [
+          { slug: "claude-opus-5-5", aliases: ["opus-5.5"], profile: "opus-5-5" },
+          { slug: "claude-opus-4-8", profile: "opus-4-8" },
+        ],
+        profiles: {
+          "opus-5-5": {
+            capabilities: { optionDescriptors: [{ id: "contextWindow", options: [{ id: "200k" }, { id: "1m", isDefault: true }] }] },
+            adapter: { claudeCode: { contextWindowTokens: { "200k": 200000, "1m": 1000000 } } },
+          },
+          "opus-4-8": { adapter: { claudeCode: { fixedContextWindowTokens: 1000000 } } },
+        },
+      },
+    },
+  },
+};
+
+test("the context meter: the last call's context, the peak, the compactions, and near compaction from three quarters of the window", (t) => {
+  const m = machine(t);
+  writeFileSync(join(m.userdata, "model-manifest.json"), JSON.stringify(MANIFEST));
+  m.bind("thread-c", "claudeAgent", "sess-c");
+  m.bind("thread-x", "codex", "codex-x");
+  const call = (id: string, at: string, read: number, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ ...JSON.parse(claudeLine(id, "claude-opus-5-5", at, { input: 10, read, write: 90, output: 5 })), ...extra });
+  const path = join(m.claudeProject, "sess-c.jsonl");
+  writeFileSync(
+    path,
+    [
+      call("a", "2026-09-26T10:00:00Z", 899_900),
+      boundary("1", "2026-09-26T10:01:00Z", "auto", 950_000, 20_000),
+      call("b", "2026-09-26T10:02:00Z", 120_000),
+      // A side chain is a subagent's call, and a message that only mentions a boundary is not one.
+      call("c", "2026-09-26T10:03:00Z", 990_000, { isSidechain: true }),
+      JSON.stringify({ type: "user", timestamp: "2026-09-26T10:03:30Z", message: { role: "user", content: 'look for "compact_boundary" in the log' } }),
+      boundary("2", "2026-09-26T10:04:00Z", "manual", 130_000, 8_000),
+      call("d", "2026-09-26T10:05:00Z", 400_000),
+    ].join("\n") + "\n",
+  );
+  const costs = new ThreadCosts({
+    t3StateDb: join(m.userdata, "statev2.sqlite"),
+    ratesPath: join(m.userdata, "usage-model-rates.json"),
+    claudeProjectsDir: join(m.root, "claude", "projects"),
+    codexSessionsDir: join(m.root, "codex", "sessions"),
+    modelManifestPath: join(m.userdata, "model-manifest.json"),
+  });
+  const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5", options: [{ id: "contextWindow", value: "1m" }] };
+  const meter = costs.context(["thread-c"], opus);
+  assert.equal(meter.available, true);
+  assert.equal(meter.tokens, 400_100, "the last own call: input, cache read and cache write");
+  assert.equal(meter.peak, 950_000, "the largest context, here the one the first compaction started from");
+  assert.equal(meter.compactions, 2);
+  assert.equal(meter.lastCompactionAt, "2026-09-26T10:04:00.000Z");
+  assert.deepEqual([meter.window, meter.windowSource], [1_000_000, "manifest"]);
+  assert.equal(meter.nearCompaction, false);
+  assert.equal(contextPhrase(meter), "context ≈ 400k, 2 compactions");
+
+  // Seated with the 200k window, the same thread is past three quarters of it.
+  const small = costs.context(["thread-c"], { ...opus, options: [{ id: "contextWindow", value: "200k" }] });
+  assert.deepEqual([small.window, small.nearCompaction], [200_000, true]);
+  assert.equal(contextPhrase(small), "context ≈ 400k (near compaction), 2 compactions");
+  assert.equal(costs.contextWindow({ instanceId: "claudeAgent", model: "claude-opus-4-8" })?.tokens, 1_000_000, "a fixed window");
+  assert.deepEqual(costs.contextWindow({ instanceId: "claudeAgent", model: "claude-sonnet-5-5" }), { tokens: 200_000, source: "table" }, "a model the manifest does not list");
+  assert.deepEqual(costs.contextWindow({ instanceId: "claudeAgent", model: "claude-fable-5-1" }), { tokens: 1_000_000, source: "table" });
+
+  // A compaction after the last call: the context is what it left.
+  appendFileSync(path, boundary("3", "2026-09-26T10:06:00Z", "auto", 800_000, 15_000) + "\n");
+  const after = costs.context(["thread-c"], opus);
+  assert.deepEqual([after.tokens, after.compactions, after.at], [15_000, 3, "2026-09-26T10:06:00.000Z"]);
+
+  // Only Claude threads have a meter; one T3 has no session for yet goes by the provider it is seated on.
+  assert.equal(contextPhrase(costs.context(["thread-x"], null)), "no meter");
+  assert.equal(costs.context(["thread-new"], { instanceId: "codex", model: "gpt-6-sol" }).reason, "not_claude");
+  assert.equal(contextPhrase(costs.context(["thread-new"], opus)), "context unknown", "a Claude seat whose transcript is not there yet is not guessed");
 });

@@ -10,11 +10,20 @@ export interface FilePreviewRequest {
   base: string | null;
 }
 
+export interface ImagePreviewRequest {
+  /** Already resolved for display; never sent to the filesystem preview API. */
+  src: string;
+  alt: string;
+  title?: string | undefined;
+}
+
 /** The folder a reply was written in (its member's worktree or project folder). */
 export const FileBaseContext = createContext<string | null>(null);
 
 /** Opens a preview; null outside the app, where a file chip copies its path instead. */
 export const FilePreviewContext = createContext<((request: FilePreviewRequest) => void) | null>(null);
+export const ImagePreviewContext = createContext<((request: ImagePreviewRequest) => void) | null>(null);
 
 export const useFileBase = (): string | null => useContext(FileBaseContext);
 export const useOpenFilePreview = (): ((request: FilePreviewRequest) => void) | null => useContext(FilePreviewContext);
+export const useOpenImagePreview = (): ((request: ImagePreviewRequest) => void) | null => useContext(ImagePreviewContext);

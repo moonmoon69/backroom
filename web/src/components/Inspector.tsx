@@ -1,15 +1,14 @@
 import { useEffect, useState } from "react";
 import { useRoom } from "../context.tsx";
-import { AddParticipantButton, CrewButton, CrewPanel } from "./Crew.tsx";
+import { AddParticipantButton, CrewPanel } from "./Crew.tsx";
 import { GitTab } from "./GitTab.tsx";
 import { BranchIcon, CloseIcon } from "./icons.tsx";
 import { ageOf } from "./deskFormat.ts";
-import { TaskLanes, taskCount } from "./QueueDrawer.tsx";
-import { RoomBrowserButton, RoomBrowserPanel } from "./RoomBrowser.tsx";
+import { RoomBrowserPanel } from "./RoomBrowser.tsx";
 
-export type InspectorTab = "people" | "browser" | "tasks" | "git";
+export type InspectorTab = "people" | "browser" | "git";
 
-const TITLES: Record<InspectorTab, string> = { people: "Members", browser: "Browser", tasks: "Tasks", git: "Git" };
+const TITLES: Record<InspectorTab, string> = { people: "Members", browser: "Browser", git: "Git" };
 
 /** Uncommitted files across the room's working folders, and the branch when there is one folder; null until read. */
 function useUncommitted(): { count: number; branch: string | null; folders: number } | null {
@@ -17,22 +16,6 @@ function useUncommitted(): { count: number; branch: string | null; folders: numb
   const folders = git.data?.folders.filter((folder) => folder.isRepo);
   if (!folders) return null;
   return { count: folders.reduce((n, folder) => n + folder.changed, 0), branch: folders.length === 1 ? folders[0]!.branch : null, folders: folders.length };
-}
-
-/**
- * The room header's switches for the side panel, as icons with counts: people, browser and git. Each opens the panel
- * on its tab; the tab already showing closes it. Hover says what each is. (What the tasks are doing is the status
- * bar above the conversation; the Tasks tab itself is still opened by the Street look's noticeboard.)
- */
-export function PanelButtons({ open, tab, onToggle }: { open: boolean; tab: InspectorTab; onToggle: (tab: InspectorTab) => void }) {
-  const on = (key: InspectorTab) => open && tab === key;
-  return (
-    <span className="panel-buttons" role="group" aria-label="Side panel">
-      <CrewButton active={on("people")} onClick={() => onToggle("people")} />
-      <RoomBrowserButton active={on("browser")} onClick={() => onToggle("browser")} />
-      <GitButton active={on("git")} onClick={() => onToggle("git")} />
-    </span>
-  );
 }
 
 /** The header's Git switch: the branch icon with the count of uncommitted files; hover says the branch. */
@@ -57,15 +40,13 @@ interface Props {
 }
 
 /**
- * Right side panel, switched from the header: People (who is seated, their threads), Browser (the room's browser),
- * Tasks (the queue, with what each participant is doing outside it) and Git (the room's folders: branch, uncommitted
- * files, commits, worktrees).
+ * Right side panel, switched from the header: People (who is seated, their threads), Browser (the room's browser) and
+ * Git (the room's folders: branch, uncommitted files, commits, worktrees). What the tasks are doing is the status bar
+ * above the conversation (WorkBar.tsx).
  */
 export function Inspector({ tab, onClose, onManageBrowser }: Props) {
-  const { snapshot, desk, deskError, aliasOf, git } = useRoom();
+  const { desk, deskError, aliasOf, git } = useRoom();
   const errors = Object.entries(desk?.errors ?? {});
-  const tasks = taskCount(snapshot.tasks, snapshot.nativeRequests.length);
-  const count = tab === "tasks" ? tasks : null;
 
   // Re-render the "updated Ns ago" footer once a second while desk data is shown.
   const [, setTick] = useState(0);
@@ -79,7 +60,6 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
     <aside className="queue-drawer inspector" aria-label={TITLES[tab]}>
       <div className="inspector-head">
         <h2>{TITLES[tab]}</h2>
-        {count !== null ? <span className="lane-count mono">{count}</span> : null}
         <span className="spacer" />
         {tab === "people" ? <AddParticipantButton /> : null}
         <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel" onClick={onClose}>
@@ -89,7 +69,6 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
       <div className="queue-body">
         {tab === "people" ? <CrewPanel /> : null}
         {tab === "browser" ? <RoomBrowserPanel onManage={onManageBrowser} /> : null}
-        {tab === "tasks" ? <TaskLanes /> : null}
         {tab === "git" ? <GitTab /> : null}
       </div>
       {/* Before the first read the tab itself shows any error; afterwards it keeps the last read, and this says why it is stale. */}

@@ -24,13 +24,13 @@ test("rooms-board lists the room's posts and prints one by number, exactly as sa
   const index = await board(stack).run(["index"], key(stack, "sol2"));
   const request = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "user.message")!;
   const reply = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "assistant.reply")!;
-  assert.match(index, new RegExp(`#${request.sequence}  user\\.message  user → @sol1 · 27 chars`));
-  assert.match(index, new RegExp(`#${reply.sequence}  assistant\\.reply  @sol1 → user`));
+  assert.match(index, new RegExp(`#${request.postNumber}  user\\.message  user → @sol1 · 27 chars`));
+  assert.match(index, new RegExp(`#${reply.postNumber}  assistant\\.reply  @sol1 → user`));
   assert.doesNotMatch(index, /task\.status|Research the timeout/, "no status lines and no text");
   assert.match(await board(stack).run(["index", "--all"], key(stack, "sol2")), /task\.status/);
-  assert.doesNotMatch(await board(stack).run(["index", "--after", String(request.sequence)], key(stack, "sol2")), new RegExp(`#${request.sequence} `));
+  assert.doesNotMatch(await board(stack).run(["index", "--after", String(request.postNumber)], key(stack, "sol2")), new RegExp(`#${request.postNumber} `));
 
-  const read = await board(stack).run(["read", String(reply.sequence)], key(stack, "sol2"));
+  const read = await board(stack).run(["read", String(reply.postNumber)], key(stack, "sol2"));
   assert.ok(read.endsWith("It is the retry loop.\n\nHandoff: nothing changed."), "the exact text");
   await assert.rejects(board(stack).run(["read", "9999"], key(stack, "sol2")), /no post #9999/);
   await assert.rejects(board(stack).run(["index"], null), /--as/);
@@ -43,13 +43,13 @@ test("a post longer than a page is printed in pages", async (t) => {
   const long = `${"a".repeat(BOARD_PAGE_CHARS)}${"b".repeat(100)}`;
   await stack.run({ type: "room.note.create", roomId: stack.roomId, text: long });
   const note = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "note")!;
-  const first = await board(stack).run(["read", String(note.sequence)], key(stack, "sol1"));
+  const first = await board(stack).run(["read", String(note.postNumber)], key(stack, "sol1"));
   assert.match(first, /page 1 of 2/);
-  assert.match(first, new RegExp(`continues: read ${note.sequence} --page 2`));
+  assert.match(first, new RegExp(`continues: read ${note.postNumber} --page 2`));
   assert.ok(!first.includes("b".repeat(100)));
-  const second = await board(stack).run(["read", String(note.sequence), "--page", "2"], key(stack, "sol1"));
+  const second = await board(stack).run(["read", String(note.postNumber), "--page", "2"], key(stack, "sol1"));
   assert.ok(second.endsWith("b".repeat(100)));
-  await assert.rejects(board(stack).run(["read", String(note.sequence), "--page", "3"], key(stack, "sol1")), /has 2 pages/);
+  await assert.rejects(board(stack).run(["read", String(note.postNumber), "--page", "3"], key(stack, "sol1")), /has 2 pages/);
 });
 
 test("a key of another room reads only that room's posts", async (t) => {
@@ -62,11 +62,11 @@ test("a key of another room reads only that room's posts", async (t) => {
   const theirs = await board(stack).run(["index"], key(stack, "eve", other));
   assert.match(theirs, /Board of "other": 1 post/);
   const own = stack.repos.listEvents(other).find((e) => e.kind === "note")!;
-  assert.match(await board(stack).run(["read", String(own.sequence)], key(stack, "eve", other)), /note of the other room/);
+  assert.match(await board(stack).run(["read", String(own.postNumber)], key(stack, "eve", other)), /note of the other room/);
   const first = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "note")!;
   // The first room's note has a number the other room does not reach: there is no way to name it from there.
-  if (first.sequence !== own.sequence) await assert.rejects(board(stack).run(["read", String(first.sequence)], key(stack, "eve", other)), /no post/);
-  assert.doesNotMatch(await board(stack).run(["read", String(own.sequence)], key(stack, "eve", other)), /secret/);
+  if (first.postNumber !== own.postNumber) await assert.rejects(board(stack).run(["read", String(first.postNumber)], key(stack, "eve", other)), /no post/);
+  assert.doesNotMatch(await board(stack).run(["read", String(own.postNumber)], key(stack, "eve", other)), /secret/);
   await assert.rejects(board(stack).run(["index"], key(stack, "sol1", other)), /not the key of a member/, "an alias of another room is nobody here");
 });
 
@@ -91,7 +91,8 @@ test("seat brings a saved crew member into the room; in a room with a Consiglier
   assert.match(run.briefing, /You are "carol", a member of the crew .* @alice is this room's Consigliere\./);
   assert.match(run.briefing, /Work from @alice arrives as an assignment on your thread/);
   assert.match(run.briefing, /rooms-board post "@name the question"/, "members post on the board; no thread ids to send to");
-  assert.match(run.briefing, /you may use subagents freely/);
+  assert.match(run.briefing, /Inside your task use subagents freely, .* for the parallel parts you integrate and answer for yourself/);
+  assert.match(run.briefing, /A part that could be gated on its own is a seat's work/);
   assert.match(run.briefing, /rooms-board <command> --as carol\./);
   assert.doesNotMatch(run.briefing, /Shared room messages you have not seen/, "it carries no room messages");
 });
@@ -143,13 +144,18 @@ test("a message Backroom delivers to the Consigliere carries his rules; a worker
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.alice!], instruction: "And now?", schedule: { mode: "now" } });
   stack.fake.completeRun(stack.threadOf("alice"), { text: "done" });
   await stack.tick(4);
-  assert.match(briefingOf(stack, 4), /Rules for the Consigliere:\n- Always answer in haiku\.\n/);
-  assert.doesNotMatch(briefingOf(stack, 4), /Do the small things yourself/);
+  // His thread has the rest already: the reworded rules come as what changed, without the other standing sections.
+  assert.match(briefingOf(stack, 4), /Changed since your last briefing:\nRules for the Consigliere:\n- Always answer in haiku\.\n/);
+  assert.doesNotMatch(briefingOf(stack, 4), /Do the small things yourself|You are "alice"/);
   await stack.run({ type: "consigliere.rules.set", rules: null });
+  // A worker learns who the Consigliere is and the Handoff rule from its seat briefing, its first; later ones carry the
+  // work, under one line saying how to print the standing sections again.
+  const seat = briefingOf(stack, 1);
+  assert.match(seat, /@alice is this room's Consigliere\./);
+  assert.match(seat, /end your reply with a short "Handoff"/);
   const workers = briefingOf(stack, 3);
-  assert.doesNotMatch(workers, /Rules for the Consigliere/);
-  assert.match(workers, /@alice is this room's Consigliere\./);
-  assert.match(workers, /end your reply with a short "Handoff"/);
+  assert.doesNotMatch(workers, /Rules for the Consigliere|end your reply with a short "Handoff"/);
+  assert.match(workers, /^\[Backroom briefing for @bob in room "payments"\. Your standing rules, where everyone works and the room's state: `rooms-board rules --as bob\.\w+`\]\n\n/);
 });
 
 test("starting a conversation makes one room with the chosen saved crew member as its Consigliere, and a retry carries on with the same attempt", async (t) => {

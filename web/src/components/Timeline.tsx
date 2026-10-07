@@ -12,9 +12,10 @@ import {
 import { attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, isWorkspaceArtifact, taskLabel, type Desk, type Participant, type RoomEvent, type RoomSnapshot, type Task, type ThreadCost } from "../types.ts";
-import { BranchIcon } from "./icons.tsx";
+import { replyPieces, replySources, replyTitle } from "../replyTo.ts";
+import { BranchIcon, Glyph } from "./icons.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
-import { FileBaseContext } from "./filePreviewContext.ts";
+import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -445,7 +446,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
               scrollToBottom(true);
             }}
           >
-            {unseen > 0 ? `${unseen} new repl${unseen === 1 ? "y" : "ies"}` : "Jump to latest"} <span aria-hidden="true">↓</span>
+            {unseen > 0 ? `${unseen} new repl${unseen === 1 ? "y" : "ies"}` : "Jump to latest"} <Glyph name="down" text="↓" />
           </button>
         ) : null}
       </div>
@@ -457,7 +458,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
 function StatusLine({ event, task, extra }: { event: RoomEvent; task: Task | undefined; extra?: ReactNode }) {
   const label = task ? taskLabel(task) : null;
   return (
-    <div className="chat-status mono" title={`room event #${event.sequence} · ${fullTime(event.createdAt)}`} data-sequence={event.sequence}>
+    <div className="chat-status mono" title={fullTime(event.createdAt)} data-sequence={event.sequence}>
       <span className="time">{time(event.createdAt)}</span>
       {label && !event.text.includes(label) ? <span className="tag mono">{label}</span> : null}
       <span className="status-text">{event.text}</span>
@@ -494,7 +495,7 @@ function StatusRun({ events, taskFor }: { events: RoomEvent[]; taskFor: (id: str
       {segments.length === 1 ? (
         <StatusLine event={latest} task={taskFor(latest.taskId)} extra={toggle} />
       ) : (
-        <div className="chat-status mono multi" title={`room events #${events[0]?.sequence}–#${latest.sequence}`} data-sequence={latest.sequence}>
+        <div className="chat-status mono multi" title={`${events.length} status updates · ${fullTime(latest.createdAt)}`} data-sequence={latest.sequence}>
           <span className="time">{time(latest.createdAt)}</span>
           <span className="status-text status-segments">
             {segments.map((event, index) => (
@@ -513,21 +514,22 @@ function StatusRun({ events, taskFor }: { events: RoomEvent[]; taskFor: (id: str
 
 function SystemLine({ event }: { event: RoomEvent }) {
   return (
-    <div className="chat-status chat-system" title={`room event #${event.sequence} · ${fullTime(event.createdAt)}`} data-sequence={event.sequence}>
+    <div className="chat-status chat-system" title={fullTime(event.createdAt)} data-sequence={event.sequence}>
       <span className="time mono">{time(event.createdAt)}</span>
       <span className="status-text">{event.text}</span>
     </div>
   );
 }
 
-/** Images attached to a user message; each opens full size in a new tab. */
+/** Images attached to a user message open in the shared preview surface. */
 function AttachedImages({ ids }: { ids: string[] }) {
+  const openImage = useOpenImagePreview();
   return (
     <div className="event-images">
       {ids.map((id) => (
-        <a key={id} href={attachmentUrl(id)} target="_blank" rel="noreferrer" title="Open full size">
+        <button type="button" className="image-preview-trigger" key={id} aria-label="Open attached image" aria-haspopup="dialog" title="Open full size" onClick={() => openImage?.({ src: attachmentUrl(id), alt: "Attached image" })}>
           <img src={attachmentUrl(id)} alt="Attached image" loading="lazy" />
-        </a>
+        </button>
       ))}
     </div>
   );
@@ -596,11 +598,12 @@ function MessageRow({
   const { aliasOf, colorOf, participantById, snapshot } = useRoom();
   const events = snapshot.events;
   const continued = previous !== null;
-  const seqTitle = `room event #${event.sequence} · ${fullTime(event.createdAt)}`;
+  const number = postNumberOf(event);
+  const seqTitle = number !== null ? `post #${number} · ${fullTime(event.createdAt)}` : fullTime(event.createdAt);
   // In a room with a Consigliere posts are cited by number, so each message shows its own.
   const stamp = (
     <span className="time mono" title={seqTitle}>
-      {snapshot.room.consigliereId && event.sequence > 0 ? <span className="post-number">#{event.sequence} · </span> : null}
+      {snapshot.room.consigliereId && number !== null ? <span className="post-number">#{number} · </span> : null}
       {time(event.createdAt)}
     </span>
   );
@@ -678,46 +681,34 @@ function MessageRow({
   const branchTag =
     showBranches && where?.branch ? (
       <span className="tag mono branch-tag" title={`Made on branch ${where.branch}${where.commit ? ` at ${where.commit.slice(0, 7)}` : ""}, in ${where.path}`}>
-        <BranchIcon />
+        <BranchIcon small />
         {where.branch}
       </span>
     ) : null;
-  // A continued bubble repeats the tag only when it answers something else than the bubble above.
-  const tagChanged = continued && (previous.kind !== event.kind || previous.taskId !== event.taskId);
   // A turn the agent started itself (no prompt: background work finished and woke it). Its last message is a real
   // final answer, so it keeps its own bubble; the marker says nobody asked for it.
   const selfStarted = direct && !event.prompt;
   const stopped = direct && event.outcome && event.outcome !== "completed" ? <TurnState state={event.outcome} /> : null;
   const selfMark = selfStarted ? (
     <span className="self-started mono" title="The agent continued on its own (background work finished and woke it); no new prompt">
-      ↻ continued on its own
+      <Glyph name="again" text="↻" /> continued on its own
     </span>
   ) : null;
 
+  // Every reply is its own bubble with its whole head, the speaker's mark included, so the heads line up whoever spoke
+  // before it.
   return (
-    <div
-      className={`chat-row from-agent${continued ? " continued" : ""}`}
-      style={identityStyle(color)}
-      data-sequence={event.sequence}
-    >
+    <div className="chat-row from-agent" style={identityStyle(color)} data-sequence={event.sequence}>
       <div className="chat-stack">
-        {!continued ? (
-          <div className="chat-head">
-            {participant ? <Monogram participant={participant} size="xs" /> : null}
-            <span className="speaker mono identity">{alias}</span>
-            {tag}
-            {branchTag}
-            {selfMark}
-            {stopped}
-            {stamp}
-          </div>
-        ) : selfMark || (tagChanged && tag) || newMinute ? (
-          <div className="chat-head sub">
-            {selfMark ?? (tagChanged ? tag : null)}
-            {tagChanged ? branchTag : null}
-            {stamp}
-          </div>
-        ) : null}
+        <div className="chat-head">
+          {participant ? <Monogram participant={participant} size="xs" title={alias} /> : null}
+          <span className="speaker mono identity">{alias}</span>
+          {tag}
+          {branchTag}
+          {selfMark}
+          {stopped}
+          {stamp}
+        </div>
         <div className="bubble bubble-agent">
           {/* Files the reply names are looked for in the folder it was written in first. */}
           <FileBaseContext.Provider value={where?.path ?? null}>
@@ -762,8 +753,8 @@ function SentText({ event, lead }: { event: RoomEvent; lead: ReactNode }) {
   const head = (
     <>
       {lead}
-      <span className="post-number mono" title={`room event #${event.sequence} · ${fullTime(event.createdAt)}`}>
-        #{event.sequence}
+      <span className="post-number mono" title={`post #${postNumberOf(event)} · ${fullTime(event.createdAt)}`}>
+        #{postNumberOf(event)}
       </span>
     </>
   );
@@ -819,7 +810,7 @@ function TurnRow({ messages, answer }: { messages: RoomEvent[]; answer: RoomEven
           </span>
         ) : null}
         <span className="turn-arrow" aria-label="to">
-          →
+          <Glyph name="arrow" text="→" />
         </span>
         {receiver ? <Monogram participant={receiver} size="xs" /> : null}
         <span className="speaker mono identity">{first.to ? aliasOf(first.to) : "?"}</span>
@@ -838,8 +829,8 @@ function TurnRow({ messages, answer }: { messages: RoomEvent[]; answer: RoomEven
         <div className="turn-answer" data-sequence={answer.sequence}>
           <div className="turn-answer-head mono">
             <span className="speaker identity">{first.to ? aliasOf(first.to) : "answer"}</span> answered
-            <span className="post-number" title={`room event #${answer.sequence} · ${fullTime(answer.createdAt)}`}>
-              #{answer.sequence}
+            <span className="post-number" title={`post #${postNumberOf(answer)} · ${fullTime(answer.createdAt)}`}>
+              #{postNumberOf(answer)}
             </span>
             <span className="time">{time(answer.createdAt)}</span>
           </div>
@@ -878,7 +869,7 @@ function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Partic
     <div className="chat-row from-agent live-turn" style={identityStyle(colorOf(participant.id))} aria-live="off">
       <div className="chat-stack">
         <div className="chat-head">
-          <Monogram participant={participant} size="xs" />
+          <Monogram participant={participant} size="xs" title={participant.alias} />
           <span className="speaker mono identity">{participant.alias}</span>
           {task ? (
             <ReplyTo tasks={tasks} />
@@ -933,6 +924,15 @@ function LiveTurnBubble({ participant, desk, tasks = [] }: { participant: Partic
 
 
 /** Scroll a message into view and flash it (used by "↩ your … message" on replies). */
+/**
+ * A post's number as the board cites it; null for what is not a post (and for the timeline's own placeholders). From a
+ * service older than post numbers, the sequence, which was the post's number there.
+ */
+function postNumberOf(event: { sequence: number; postNumber?: number | null | undefined }): number | null {
+  if (event.postNumber !== undefined) return event.postNumber;
+  return event.sequence > 0 ? event.sequence : null;
+}
+
 function revealEvent(sequence: number): void {
   const element = document.querySelector<HTMLElement>(`.timeline [data-sequence="${sequence}"]`);
   if (!element) return;
@@ -951,12 +951,17 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
   const spend = costs?.replies[event.id];
   if (!spend || !spend.available || spend.total.calls === 0) return null;
   const participantId = event.speaker.type === "participant" ? event.speaker.participantId : null;
-  // Back from this reply to the user's last message: this member's replies in between, this one included.
+  // Back from this reply to the user's last message (one the user wrote: a member's post or Backroom's wake-up is not
+  // it): this member's replies in between, this one included.
   let since = 0;
   let turns = 0;
+  let found = false;
   for (let index = snapshot.events.findIndex((e) => e.id === event.id); index >= 0; index -= 1) {
     const earlier = snapshot.events[index] as RoomEvent;
-    if (earlier.kind === "user.message") break;
+    if (earlier.kind === "user.message") {
+      found = true;
+      break;
+    }
     if (earlier.speaker.type === "participant" && earlier.speaker.participantId === participantId) {
       const part = costs?.replies[earlier.id];
       if (part?.available) {
@@ -965,14 +970,18 @@ function ReplySpend({ event }: { event: { id: string; speaker: RoomEvent["speake
       }
     }
   }
-  return <SpendFoot spend={spend} since={since} turns={turns} />;
+  // The page holds the room's latest events only: when your last message is older than those, the total runs from the
+  // oldest one held, and says so.
+  const first = snapshot.events[0];
+  const from = found || !first || first.sequence <= 1 ? null : first;
+  return <SpendFoot spend={spend} since={since} turns={turns} from={from ? `${time(from.createdAt)} (the earliest loaded)` : null} />;
 }
 
 /**
  * The foot of a reply: what the turn behind it used, and (over more than one turn since the user's last message) the
  * running total. Rooms and threads on their own alike; `since` and `turns` are counted by whoever knows the history.
  */
-export function SpendFoot({ spend, since, turns }: { spend: ThreadCost; since: number; turns: number }) {
+export function SpendFoot({ spend, since, turns, from = null }: { spend: ThreadCost; since: number; turns: number; from?: string | null }) {
   const input = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) => t.inputTokens + t.cachedInputTokens + t.cacheWriteTokens;
   const inputTitle = (t: { inputTokens: number; cachedInputTokens: number; cacheWriteTokens: number }) =>
     `${t.inputTokens.toLocaleString()} uncached · ${t.cachedInputTokens.toLocaleString()} from cache · ${t.cacheWriteTokens.toLocaleString()} written to cache`;
@@ -990,7 +999,12 @@ export function SpendFoot({ spend, since, turns }: { spend: ThreadCost; since: n
         <span title={inputTitle(spend.total)}> · {fmtTokens(input(spend.total))} in</span>
         <span> · {fmtTokens(spend.total.outputTokens)} out</span>
         <span> · {spend.total.calls} call{spend.total.calls === 1 ? "" : "s"}</span>
-        {turns > 1 ? <span className="reply-spend-since"> · since your last message {money(since)} over {turns} turns</span> : null}
+        {turns > 1 ? (
+          <span className="reply-spend-since">
+            {" "}
+            · since {from ?? "your last message"} {money(since)} over {turns} turns
+          </span>
+        ) : null}
       </div>
       {rows.length > 0 ? (
         <table className="reply-spend-table">
@@ -1017,33 +1031,41 @@ export function SpendFoot({ spend, since, turns }: { spend: ThreadCost; since: n
  * "↩ your 3:49 PM message", or "↩ your 3:49 and 3:50 PM messages" when one turn answered several messages
  * (the later ones were sent into the running turn). Each time scrolls to its message.
  */
+/**
+ * What a reply answers, over it: "↩ your 07:43 PM message", "↩ Fable's 07:43 PM message", "↩ Opus's result · 07:43 PM"
+ * for a wake-up after a member's task, and so on (replyTo.ts). Only a message the user wrote is "your". A time shows
+ * the post it points at, where the view shows it.
+ */
 function ReplyTo({ tasks }: { tasks: Task[] }) {
-  const { snapshot } = useRoom();
-  const sources = [...new Map(tasks.map((t) => [t.sourceEventId, snapshot.events.find((e) => e.id === t.sourceEventId)])).values()]
-    .filter((e): e is RoomEvent => Boolean(e))
-    .sort((a, b) => a.sequence - b.sequence);
+  const { snapshot, aliasOf } = useRoom();
+  const sources = replySources(tasks, { tasks: snapshot.tasks, runs: snapshot.runs, events: snapshot.events, aliasOf });
   if (sources.length === 0) return null;
   // A seat briefing is Backroom's message, not the user's: its acknowledgement says so.
-  if (tasks.every((t) => t.kind === "seat")) {
+  if (sources.every((s) => s.kind === "notice")) {
     return (
-      <span className="reply-to mono" title="Acknowledges the standing facts Backroom sent this member when it joined a room that has a Consigliere">
-        ↩ seat briefing
+      <span className="reply-to mono" title="Acknowledges what Backroom sent this member: the standing facts of a room that has a Consigliere, or who its new Consigliere is">
+        <Glyph name="reply" text="↩" /> {sources.map((s) => (s.kind === "notice" ? s.label : "")).join(" and ")}
       </span>
     );
   }
-  const labels = tasks.map((t) => taskLabel(t)).join(", ");
   return (
-    <span className="reply-to mono" title={`Reply to ${sources.length === 1 ? "your message" : "your messages"} (${labels}); click a time to show it`}>
-      ↩ your{" "}
-      {sources.map((source, index) => (
-        <span key={source.id}>
-          {index > 0 ? (index === sources.length - 1 ? " and " : ", ") : null}
-          <button type="button" className="reply-to-time" onClick={() => revealEvent(source.sequence)}>
-            {time(source.createdAt)}
+    <span className="reply-to mono" title={replyTitle(sources, tasks, time)}>
+      {replyPieces(sources).map((piece, index) =>
+        "text" in piece ? (
+          piece.text.startsWith("↩ ") ? (
+            <span key={index}>
+              <Glyph name="reply" text="↩" />
+              {piece.text.slice(1)}
+            </span>
+          ) : (
+            <span key={index}>{piece.text}</span>
+          )
+        ) : (
+          <button key={index} type="button" className="reply-to-time" onClick={() => revealEvent(piece.time.sequence)}>
+            {time(piece.time.createdAt)}
           </button>
-        </span>
-      ))}{" "}
-      {sources.length === 1 ? "message" : "messages"}
+        ),
+      )}
     </span>
   );
 }

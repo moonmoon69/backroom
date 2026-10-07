@@ -17,7 +17,7 @@ import {
 } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
-import { ContextReadout } from "./ContextMeter.tsx";
+import { ContextMeterLine, ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
@@ -210,6 +210,7 @@ function ParticipantChip({
   const { colorOf, snapshot, costs } = useRoom();
   const spend = costs?.participants[participant.id];
   const inProgress = costs?.openTurns[participant.id];
+  const meter = costs?.contexts?.[participant.id];
   const isConsigliere = snapshot.room.consigliereId === participant.id;
   const described = describeStatus(status, desk);
   const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
@@ -253,6 +254,7 @@ function ParticipantChip({
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
           {described.detail ? <span className={`crew-activity mono status-${described.tone}`}>{described.detail}</span> : null}
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
+          {meter ? <ContextMeterLine meter={meter} besideReading={Boolean(desk?.contextWindow)} /> : null}
           {spend?.available ? (
             <span
               className="crew-spend mono"

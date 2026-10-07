@@ -7,6 +7,9 @@ import { api, ApiError, attachmentUrl, useThreadCosts } from "../api.ts";
 import type { ThreadCost, ThreadCosts } from "../types.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
+import { deleteImageData, loadImageData, saveImageData } from "../draftImageData.ts";
+import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
+import { threadKey } from "../news.ts";
 import {
   isRunActive,
   ATTACHMENT_MAX_BYTES,
@@ -15,7 +18,6 @@ import {
   type CommandResult,
   type InlineImage,
   type ModelSelection,
-  type Preset,
   type RoomCommand,
   type BrowserListItem,
   type RoomListItem,
@@ -24,20 +26,21 @@ import {
   type T3ThreadShell,
   type ThreadItem,
   type ThreadView as ThreadViewData,
-  type WorkspaceChoice,
 } from "../types.ts";
+import { useCatalog } from "./catalog.ts";
+import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { money } from "./deskFormat.ts";
-import { PresetChips, PresetIcon, usePresets } from "./presets.tsx";
+import { PresetIcon, usePresets } from "./presets.tsx";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { identityStyle, MEMBER_ACCENT } from "./Monogram.tsx";
-import { ModelIcon } from "./ProviderIcon.tsx";
-import { FileBaseContext } from "./filePreviewContext.ts";
+import { MemberMark } from "./MemberMark.tsx";
+import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
-import { CopyButton, ThreadSettingsRow, WorkspacePicker, workspaceReady } from "./pickers.tsx";
+import { CopyButton, ThreadSettingsRow } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { SpendFoot } from "./Timeline.tsx";
 import { speakableSummary, useAutoRead, useSpeechAvailable } from "../speech.ts";
@@ -46,7 +49,7 @@ import { UsageCard } from "./ThreadUsageCard.tsx";
 import { Popover } from "./Popover.tsx";
 import { BrowserChoices, GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
-import { CloseIcon, ImageIcon, MoreIcon } from "./icons.tsx";
+import { CloseIcon, Glyph, ImageIcon, MoreIcon } from "./icons.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
@@ -142,7 +145,7 @@ interface ThreadViewProps {
   runCommand: RunCommand;
   /** The thread is gone from T3 (deleted), or was deleted here. */
   onGone: () => void;
-  /** Something the sidebar shows changed (title, status, lifecycle). */
+  /** Something the overview shows changed (title, status, lifecycle). */
   onChanged: () => void;
   /** Archived here: T3 stops serving the conversation, so the archived panel takes over. */
   onArchived: () => void;
@@ -181,6 +184,10 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   );
   const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }) : null;
   const running = view?.running ?? null;
+  // The composer is a strip until wanted, then an overlay (composerOverlay.tsx). It names the agent as the thread's
+  // card does: the crew member it started as, else its model's name.
+  const catalog = useCatalog();
+  const modelName = thread ? catalog?.find((e) => e.instanceId === thread.modelSelection.instanceId && e.model === thread.modelSelection.model)?.label : undefined;
 
   const lifecycle = async (action: "settle" | "unsettle" | "archive" | "delete") => {
     const result = await runCommand({ type: "thread.lifecycle", threadId, action });
@@ -289,6 +296,8 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
             ) : null}
             <ThreadComposer
               key={threadId}
+              draftScope={threadKey(threadId)}
+              overlay={{ to: crew?.name ?? modelName ?? voiceName }}
               placeholder={running ? "Message the running turn: T3 steers it in or queues it, as its own client does" : "Message this thread"}
               disabled={!thread || thread.boundToRoom}
               running={running !== null}
@@ -425,198 +434,9 @@ export function ArchivedThreadView({
   );
 }
 
-// ---- new thread (fast start) ----
-
-interface NewThreadViewProps {
-  projectId: string;
-  /** The preset the thread's settings start from (picked in the sidebar), if any. */
-  presetId: string | null;
-  projects: T3Project[];
-  browsers: BrowserListItem[] | null;
-  runCommand: RunCommand;
-  onProject: (projectId: string) => void;
-  onStarted: (threadId: string) => void;
-  /** Leave without starting a thread (back to where you were). */
-  onCancel: () => void;
-  headerStart: ReactNode;
-}
-
-export function NewThreadView({ projectId, presetId, projects, browsers, runCommand, onProject, onStarted, onCancel, headerStart }: NewThreadViewProps) {
-  const [browserId, setBrowserId] = useState<string>("");
-  const { toast } = useToast();
-  const [model, setModel] = useState<ModelSelection | null>(null);
-  // T3's default model for the project is looked up first; the picker only falls back to the catalog default without one.
-  const [modelReady, setModelReady] = useState(false);
-  const [defaultModel, setDefaultModel] = useState<ModelSelection | null>(null);
-  const lastMode = (): RuntimeMode => (localStorage.getItem(MODE_KEY) as RuntimeMode | null) ?? "full-access";
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(lastMode);
-  // Where it works starts over with each project (its branches and T3's default differ).
-  const [workspace, setWorkspace] = useState<WorkspaceChoice>({ mode: "local" });
-  useEffect(() => setWorkspace({ mode: "local" }), [projectId]);
-  const { presets } = usePresets();
-  // A picked preset sets where it works once the project's branches are known, and keeps T3's default model out.
-  const [workspacePrefer, setWorkspacePrefer] = useState<{ mode: "local" | "worktree"; nonce: number } | null>(null);
-  const presetPicked = useRef(false);
-  // The crew member picked, by name: their settings fill the form, and the thread is marked as started with them.
-  const [picked, setPicked] = useState<Preset | null>(null);
-  const applyPreset = useCallback((preset: Preset) => {
-    presetPicked.current = true;
-    setPicked(preset);
-    setModel(preset.modelSelection);
-    setRuntimeMode(preset.runtimeMode);
-    setWorkspacePrefer({ mode: preset.workspaceMode, nonce: Date.now() });
-  }, []);
-  // Clicking the picked member again: back to T3's default model, the last permission mode, the project folder.
-  const clearPreset = useCallback(() => {
-    presetPicked.current = false;
-    setPicked(null);
-    setModel(defaultModel);
-    setRuntimeMode(lastMode());
-    setWorkspacePrefer({ mode: "local", nonce: Date.now() });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultModel]);
-  // The preset the page was opened with, once the presets are read; in another project it applies again.
-  const opened = presetId ? (presets.find((p) => p.id === presetId) ?? null) : null;
-  useEffect(() => {
-    if (opened) applyPreset(opened);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened?.id, opened?.updatedAt, projectId, applyPreset]);
-  const project = projects.find((p) => p.id === projectId) ?? null;
-  const page = useRef<HTMLDivElement>(null);
-
-  // Esc cancels, but only while nothing is typed (a half-written prompt is not thrown away by a stray key) and no
-  // menu or dialog is open (Esc closes those first).
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (document.querySelector(".dialog-backdrop, .menu, [role='listbox']")) return;
-      if (page.current?.querySelector("textarea")?.value.trim()) return;
-      onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setModelReady(false);
-    api
-      .defaultModel(projectId)
-      .then(({ modelSelection }) => {
-        if (cancelled) return;
-        setDefaultModel(modelSelection);
-        if (!presetPicked.current) setModel((current) => modelSelection ?? current);
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setModelReady(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
-
-  return (
-    <>
-      <div className="room-header thread-header">
-        {headerStart}
-        <PageTitle context={project?.title ?? null} contextTitle={project?.workspaceRoot} name="New thread" />
-        <span className="spacer" />
-        <button type="button" className="small ghost icon-only" aria-label="Cancel new thread" title="Cancel new thread (Esc)" onClick={onCancel}>
-          <CloseIcon />
-        </button>
-      </div>
-      <div className="room-under" ref={page}>
-        <div className="room-body">
-          <div className="room-centre">
-            <div className="timeline-wrap">
-              <div className="timeline">
-                <div className="timeline-content">
-                  <div className="thread-start form">
-                    <p className="muted">A thread on its own, outside any room: what you type goes to T3 as typed, like typing in T3 Code. Pick someone from your crew to fill in their settings, or set them below; your first message starts the thread.</p>
-                    <label>
-                      Project
-                      <select value={projectId} onChange={(e) => onProject(e.target.value)}>
-                        {projects.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.title} — {p.workspaceRoot}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <PresetChips model={model} runtimeMode={runtimeMode} onPick={applyPreset} pickedId={picked?.id ?? null} onClear={clearPreset} pickedNote="Your first message starts the thread with them." />
-                    <div className="form-field">
-                      <span>Model</span>
-                      <ThreadSettingsRow
-                        model={model}
-                        onModel={setModel}
-                        runtimeMode={runtimeMode}
-                        onRuntimeMode={(mode) => {
-                          setRuntimeMode(mode);
-                          localStorage.setItem(MODE_KEY, mode);
-                        }}
-                        pending={!modelReady && !presetPicked.current}
-                      />
-                      <span className="hint">T3&rsquo;s own settings for the thread; you can change them later.</span>
-                    </div>
-                    <WorkspacePicker projectId={projectId} value={workspace} onChange={setWorkspace} newBranchHint="named by T3 from your first message" prefer={workspacePrefer} />
-                    {browsers ? (
-                      <label>
-                        Browser
-                        <select value={browserId} onChange={(e) => setBrowserId(e.target.value)}>
-                          <option value="">none</option>
-                          {browsers.map((b) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="hint">
-                          {browserId
-                            ? `${browsers.find((b) => b.id === browserId)?.description || "No description."} The agent may use this browser only, as a room limits its agents; its instructions go with the first message. The globe in the thread's header changes it later.`
-                            : "Give the agent a shared browser: its instructions go with the first message. You can add one later."}
-                        </span>
-                      </label>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <ThreadComposer
-              key={projectId}
-              autoFocus
-              placeholder={picked ? `Message ${picked.name} to start the thread` : "What should this thread do?"}
-              disabled={!project || !model}
-              running={false}
-              onSend={async (text, images) => {
-                if (!model) return false;
-                if (!workspaceReady(workspace)) return false;
-                // The thread's id is chosen here, so its browsers are set and the key in the first message is its own.
-                const threadId = crypto.randomUUID();
-                if (browserId && !(await runCommand({ type: "thread.browser", threadId, enabled: true, browserId, allowed: [browserId] }))) return false;
-                const first = browserId ? await withBrowserInstructions(threadId, text, toast) : text;
-                if (first === null) return false;
-                const result = await runCommand({ type: "thread.start", projectId, threadId, text: first, images, modelSelection: model, runtimeMode, ...(workspace.mode === "local" ? {} : { workspace }) });
-                if (result && picked) rememberThreadCrew(threadId, picked);
-                if (result && result.type === "thread.started" && "threadId" in result) {
-                  onStarted(result.threadId as string);
-                  return true;
-                }
-                return false;
-              }}
-            />
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-const MODE_KEY = "backroom.directMode";
-
 // ---- the crew member a thread was started with ----
-// Kept here, like the thread's browser: T3 knows nothing of the crew, and the thread's settings are its own from the
-// start. The name is stored too, so it outlives the crew member.
+// Threads started from a crew member (before threads were started only in T3) were marked in this browser, with the
+// crew member's name so it outlives them: their tile and bar still name them and wear their look.
 const THREAD_CREW_KEY = "backroom.threadCrew.";
 export const threadCrew = (threadId: string): { presetId: string; name: string } | null => {
   try {
@@ -626,7 +446,6 @@ export const threadCrew = (threadId: string): { presetId: string; name: string }
     return null;
   }
 };
-const rememberThreadCrew = (threadId: string, preset: Preset): void => localStorage.setItem(THREAD_CREW_KEY + threadId, JSON.stringify({ presetId: preset.id, name: preset.name }));
 
 // ---- browsers for threads outside rooms ----
 
@@ -791,7 +610,7 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
   const thread = view.thread;
   const speaker = (
     <>
-      <ModelIcon selection={thread.modelSelection} size={14} />
+      <MemberMark seed={thread.id} selection={thread.modelSelection} presetId={threadCrew(thread.id)?.presetId} />
       <span className="speaker mono identity" style={identityStyle(AGENT_COLOR)}>
         {thread.modelSelection.model}
       </span>
@@ -874,6 +693,7 @@ function splitBrowserInstructions(text: string): { instructions: string | null; 
 }
 
 function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user" }>; continued: boolean }) {
+  const openImage = useOpenImagePreview();
   const { instructions, rest } = splitBrowserInstructions(item.text);
   const shownText = rest ? withoutT3ContextRefs(rest, item.attachmentIds.length > 0) : "";
   return (
@@ -899,9 +719,9 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
             {item.attachmentIds.length > 0 ? (
               <div className="event-images">
                 {item.attachmentIds.map((id) => (
-                  <a key={id} href={attachmentUrl(id)} target="_blank" rel="noreferrer" title="Open full size">
+                  <button type="button" className="image-preview-trigger" key={id} aria-label="Open attached image" aria-haspopup="dialog" title="Open full size" onClick={() => openImage?.({ src: attachmentUrl(id), alt: "Attached image" })}>
                     <img src={attachmentUrl(id)} alt="Attached image" loading="lazy" />
-                  </a>
+                  </button>
                 ))}
               </div>
             ) : null}
@@ -970,6 +790,9 @@ interface PendingImage {
 
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
+/** The images kept with a thread's draft; their pictures come from this browser's IndexedDB (draftImageData.ts). */
+const keptImages = (scope: string | null): PendingImage[] => readDraftImages(scope).map((kept) => ({ key: kept.id, name: kept.name, sizeBytes: kept.sizeBytes, dataUrl: null, error: null }));
+
 const readDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -978,36 +801,76 @@ const readDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-/** Plain composer for a direct thread: Enter sends (Shift+Enter for a new line), images by button, paste or drop. */
+/**
+ * Plain composer for a direct thread: Enter sends (Shift+Enter for a new line), images by button, paste or drop. With a
+ * draft scope its unsent text and images are kept as that thread's draft; with `overlay` it is a strip until wanted
+ * (Look → Overview).
+ */
 export function ThreadComposer({
   placeholder,
   disabled,
   running,
-  autoFocus,
   notice,
+  draftScope,
+  overlay: asOverlay,
   onSend,
   onStop,
 }: {
   placeholder: string;
   disabled: boolean;
   running: boolean;
-  autoFocus?: boolean;
   /** Shown above the text box (what will go with the next message). */
   notice?: ReactNode;
+  /** news.ts's key of the thread whose draft this text is; none for a thread not started yet. */
+  draftScope?: string;
+  /** Closed to a strip saying who the message goes to, until wanted. */
+  overlay?: { to: string } | undefined;
   onSend: (text: string, images: InlineImage[]) => Promise<boolean>;
   onStop?: () => Promise<void>;
 }) {
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<PendingImage[]>([]);
+  const scope = draftScope ?? null;
+  const [text, setText] = useDraft(scope);
+  // Its images are the draft's too: each is kept once read, until sent or removed.
+  const [images, setImages] = useState<PendingImage[]>(() => keptImages(scope));
+  /** Images removed before they were kept: they must not land in the draft after all. */
+  const removedKeys = useRef(new Set<string>());
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const touchKeyboard = useMediaQuery(COARSE_POINTER_QUERY);
+  const overlay = useComposerOverlay(asOverlay !== undefined, textarea, text);
 
+  // The draft's images, with their pictures from this browser; one whose picture is gone is dropped from the draft.
   useEffect(() => {
-    if (autoFocus && !touchKeyboard) textarea.current?.focus();
-  }, [autoFocus, touchKeyboard]);
+    const kept = keptImages(scope);
+    setImages(kept);
+    let live = true;
+    const forget = (key: string) => {
+      if (live) setImages((list) => list.filter((i) => i.key !== key));
+      changeDraftImages(scope, (list) => list.filter((k) => k.id !== key));
+    };
+    for (const image of kept) {
+      loadImageData(image.key).then(
+        (dataUrl) => {
+          if (!dataUrl) forget(image.key);
+          else if (live) setImages((list) => list.map((i) => (i.key === image.key ? { ...i, dataUrl } : i)));
+        },
+        () => forget(image.key),
+      );
+    }
+    return () => {
+      live = false;
+    };
+  }, [scope]);
+
+  const removeImage = (key: string) => {
+    removedKeys.current.add(key);
+    setImages((list) => list.filter((i) => i.key !== key));
+    changeDraftImages(scope, (list) => list.filter((k) => k.id !== key));
+    void deleteImageData([key]).catch(() => undefined);
+  };
+
 
   const attach = (files: File[]) => {
     let total = images.filter((i) => !i.error).reduce((sum, i) => sum + i.sizeBytes, 0);
@@ -1028,7 +891,18 @@ export function ThreadComposer({
       total += file.size;
       setImages((list) => [...list, { ...base, error: null }]);
       readDataUrl(file).then(
-        (dataUrl) => setImages((list) => list.map((i) => (i.key === key ? { ...i, dataUrl } : i))),
+        (dataUrl) => {
+          setImages((list) => list.map((i) => (i.key === key ? { ...i, dataUrl } : i)));
+          // Kept with the draft once its picture is stored; without IndexedDB it lives as long as the page.
+          if (!scope) return;
+          saveImageData(key, dataUrl).then(
+            () => {
+              if (removedKeys.current.has(key)) void deleteImageData([key]).catch(() => undefined);
+              else changeDraftImages(scope, (list) => [...list.filter((k) => k.id !== key), { id: key, name: base.name, sizeBytes: base.sizeBytes }]);
+            },
+            () => undefined,
+          );
+        },
         (error: unknown) => setImages((list) => list.map((i) => (i.key === key ? { ...i, error: error instanceof Error ? error.message : String(error) } : i))),
       );
     }
@@ -1044,8 +918,13 @@ export function ThreadComposer({
     try {
       const sent = await onSend(text, ready.map((i) => ({ name: i.name, dataUrl: i.dataUrl })));
       if (sent) {
+        const keys = images.map((i) => i.key);
+        for (const key of keys) removedKeys.current.add(key);
         setText("");
         setImages([]);
+        changeDraftImages(scope, () => []);
+        void deleteImageData(keys).catch(() => undefined);
+        overlay.hide();
       }
     } finally {
       setBusy(false);
@@ -1053,6 +932,7 @@ export function ThreadComposer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (overlay.fieldKey(event)) return;
     // Same keys as the room composer: Enter sends, Shift+Enter is a new line; the on-screen keyboard's Enter is a new line.
     if (event.key === "Enter" && !event.shiftKey && !event.altKey && !touchKeyboard && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
@@ -1072,27 +952,43 @@ export function ThreadComposer({
     setDragging(false);
     attach([...event.dataTransfer.files]);
   };
+  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if ([...event.dataTransfer.types].includes("Files")) {
+      event.preventDefault();
+      setDragging(true);
+    }
+  };
 
-  return (
+  const stopButton =
+    running && onStop ? (
+      <button type="button" className="danger" onClick={() => void onStop()} title="Interrupt the running turn in T3">
+        Stop
+      </button>
+    ) : null;
+
+  const composer = (
     <div
-      className={`composer thread-composer${dragging ? " dragging" : ""}`}
+      ref={overlay.panel}
+      className={`composer thread-composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`}
       aria-label="Composer"
-      onDragOver={(e) => {
-        if ([...e.dataTransfer.types].includes("Files")) {
-          e.preventDefault();
-          setDragging(true);
-        }
-      }}
+      onDragOver={onDragOver}
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
+      onWheel={overlay.enabled ? overlay.onWheel : undefined}
     >
+      {/* Who it goes to, on the overlay's frame (drawn in the pixel look only). */}
+      {asOverlay ? (
+        <span className="composer-nameplate">
+          to <span className="mono strip-recipient">{asOverlay.to}</span>
+        </span>
+      ) : null}
       {notice ? <div className="composer-notice">{notice}</div> : null}
       <div className="composer-text">
         <div className="composer-field plain">
           <textarea
             ref={textarea}
             value={text}
-            rows={3}
+            rows={overlay.enabled ? 1 : 3}
             placeholder={placeholder}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
@@ -1112,8 +1008,8 @@ export function ThreadComposer({
                 </span>
                 {image.error ? <span className="attach-error">{image.error}</span> : null}
               </figcaption>
-              <button type="button" className="attach-remove" aria-label={`Remove ${image.name}`} title="Remove" onClick={() => setImages((list) => list.filter((i) => i.key !== image.key))}>
-                <CloseIcon />
+              <button type="button" className="attach-remove" aria-label={`Remove ${image.name}`} title="Remove" onClick={() => removeImage(image.key)}>
+                <CloseIcon small />
               </button>
             </figure>
           ))}
@@ -1122,12 +1018,13 @@ export function ThreadComposer({
       <div className="composer-row composer-toolbar">
         <button
           type="button"
-          className="small ghost icon-only"
+          className="composer-tool"
           onClick={() => fileInput.current?.click()}
           aria-label="Attach images"
           title="Attach images: PNG, JPEG, GIF or WebP (or paste or drop them here)"
         >
           <ImageIcon />
+          <span className="composer-tool-label">Image</span>
         </button>
         <input
           ref={fileInput}
@@ -1141,17 +1038,33 @@ export function ThreadComposer({
           }}
         />
         <span className="spacer" />
-        <span className="muted hint mono composer-hint">Enter to send · Shift+Enter new line</span>
-        {running && onStop ? (
-          <button type="button" className="danger" onClick={() => void onStop()} title="Interrupt the running turn in T3">
-            Stop
-          </button>
-        ) : null}
+        <span className="muted hint mono composer-hint composer-keys">Enter to send · Shift+Enter new line{overlay.enabled ? " · Esc to close" : ""}</span>
+        {stopButton}
         <button type="button" className="primary" disabled={!canSend} onClick={() => void submit()}>
           {busy ? "…" : "Send"}
         </button>
       </div>
     </div>
+  );
+  if (!asOverlay) return composer;
+  return (
+    <>
+      <ComposerStrip
+        overlay={overlay}
+        to={<>to <span className="mono strip-recipient">{asOverlay.to}</span></>}
+        facts={[...(running ? ["turn running"] : []), ...(images.length > 0 ? [`${images.length} image${images.length === 1 ? "" : "s"}`] : [])]}
+        draft={text}
+        images={images.filter((i) => !i.error).length}
+        actions={stopButton}
+        onDragOver={onDragOver}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          onDrop(event);
+          overlay.reveal();
+        }}
+      />
+      {overlay.open ? composer : null}
+    </>
   );
 }
 
@@ -1207,8 +1120,8 @@ function ThreadMenu({
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="menu" onClose={() => setOpen(false)}>
           {canSpeak ? (
-            <button type="button" role="menuitemcheckbox" aria-checked={autoRead} onClick={pick(onToggleAutoRead)} title="Read each new reply and request aloud in this browser, with the voice set at the foot of the sidebar">
-              <span className="setting-check">{autoRead ? "✓" : ""}</span>
+            <button type="button" role="menuitemcheckbox" aria-checked={autoRead} onClick={pick(onToggleAutoRead)} title="Read each new reply and request aloud in this browser, with the voice set in Settings → Voice…">
+              <span className="setting-check">{autoRead ? <Glyph name="check" text="✓" /> : null}</span>
               Read new replies aloud
             </button>
           ) : null}
@@ -1321,7 +1234,7 @@ function AddToRoomDialog({
     <Dialog title="Add to a room" onClose={onClose}>
       {candidates.length === 0 ? (
         <>
-          <p>There is no room in this thread&rsquo;s project yet. Create one from the project&rsquo;s + menu in the sidebar, then add the thread.</p>
+          <p>There is no room in this thread&rsquo;s project yet. Create one with the + beside the project&rsquo;s name on the overview, then add the thread.</p>
           <div className="dialog-actions">
             <button type="button" onClick={onClose}>
               Close

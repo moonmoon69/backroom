@@ -25,7 +25,7 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
 
 /**
  * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
- * question), working (a room turn, a turn typed in T3, connecting), work left running after the turn (subagents,
+ * question), working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
  * then only monitors: monitoring), a plan ready to act on, then how its last run ended. `desk` adds what runs.
  */
 export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null): MemberActivity {
@@ -39,7 +39,8 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   const jobs = jobsDetail(desk);
   const working = (label: string): MemberActivity => ({ label, tone: "working", motion: "working", detail: jobs.detail });
   if (status.activeRunId) return working("working");
-  if (status.externalActivity) return working("working in T3");
+  // A turn the room did not start: it woke itself, another member sent it, or someone typed in T3 Code.
+  if (status.externalActivity) return working("working on its own");
   if (status.status === "running" || status.status === "waiting") return working("working");
   if (status.status === "preparing" || status.status === "queued" || status.status === "starting") return working("starting");
   // Between turns but not done: the agent wakes itself when its background work finishes.

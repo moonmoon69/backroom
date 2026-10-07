@@ -58,6 +58,8 @@ export interface Participant {
   bindingGeneration: number;
   /** Set when the participant was removed from the room; kept for attribution of past events. */
   retiredAt: string | null;
+  /** The crew member it was seated as: it wears that preset's look in the pixel skin. Absent from an older service. */
+  presetId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -102,7 +104,10 @@ export const isWorkspaceArtifact = (artifact: ArtifactRef): boolean => artifact.
 export interface RoomEvent {
   id: string;
   roomId: string;
+  /** Its place in the room's log of everything that happens: ordering only. */
   sequence: number;
+  /** A post's number as the board cites it ("#51"); null for status lines and system notes. Absent from an older service, whose post numbers were the sequence. */
+  postNumber?: number | null;
   kind: RoomEventKind;
   speaker: Speaker;
   text: string;
@@ -152,6 +157,8 @@ export interface OverviewRoom {
     id: string;
     alias: string;
     modelSelection: ModelSelection;
+    /** The crew member it was seated as, for its look. Absent from an older service. */
+    presetId?: string | null;
     roleName: string | null;
     consigliere: boolean;
     status: ParticipantStatus;
@@ -161,6 +168,8 @@ export interface OverviewRoom {
     doing: string | null;
     lastReply: { at: string; text: string } | null;
   }>;
+  /** The room state's first line, the tile's blurb; null without a state, absent from an older service. */
+  state?: { line: string; by: string; at: string } | null;
   updatedAt: string;
 }
 
@@ -331,6 +340,19 @@ export interface RoomSnapshot {
   participantStatus: Record<string, ParticipantStatus>;
   /** The room's effective browser and its process; null when it has none or the service cannot run browsers. */
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
+  /** The room state: null until one is written; absent from an older service. */
+  state?: RoomState | null;
+}
+
+/** The room state (rooms-board state): the Consigliere's summary of where the room stands, replaced whole at each write. */
+export interface RoomState {
+  /** Markdown, at most 8,000 characters. */
+  text: string;
+  /** The alias of the member who wrote it, as it was then. */
+  by: string;
+  at: string;
+  /** Its first line without markdown marks, at most 300 characters: the closed panel's and the Overview tile's. */
+  line: string;
 }
 
 /** A shared Chrome on Backroom's machine, named by purpose. */
@@ -490,6 +512,23 @@ export interface RoomCosts {
   replies: Record<string, ThreadCost>;
   /** Per seated participant: what its thread has used since its last reply, the turn in progress. */
   openTurns: Record<string, ThreadCost>;
+  /** Per seated participant: its context meter. Absent from an older service. */
+  contexts?: Record<string, ContextMeter>;
+}
+
+/** A member's context meter, from its Claude transcript (src/domain/contextMeter.ts). Information only. */
+export interface ContextMeter {
+  available: boolean;
+  reason: "not_claude" | "no_session" | "no_transcript" | "unreadable" | null;
+  /** What the last call sent the model; null before the first call. */
+  tokens: number | null;
+  peak: number | null;
+  compactions: number;
+  lastCompactionAt: string | null;
+  window: number | null;
+  windowSource: "manifest" | "table" | null;
+  nearCompaction: boolean;
+  at: string | null;
 }
 
 /** GET /api/t3/providers: one entry per harness provider known to T3. */
@@ -530,7 +569,7 @@ export interface UpdatesView {
     job: { targetVersion: string; state: "installing" | "restarting" | "done" | "failed"; startedAt: string; finishedAt: string | null; error: string | null } | null;
   };
   harnesses: HarnessUpdate[];
-  /** Updates that can be started from the popup: the count on the sidebar's button. */
+  /** Updates that can be started from the popup: the count on the overview header's button. */
   available: number;
 }
 
@@ -567,6 +606,8 @@ export interface Preset {
   runtimeMode: RuntimeMode;
   /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
   workspaceMode: "local" | "worktree";
+  /** Its pixel look, every part named (src/domain/look.ts). Absent from an older service: the look's defaults then. */
+  look?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -604,7 +645,7 @@ export interface T3ThreadShell {
 
 /**
  * A thread a member made for part of its own task (its harness's subagent tool or T3's delegate_task). T3's own list
- * leaves these out, and so does the sidebar: the parent member shows them as "subagents running".
+ * leaves these out, and so does the overview: the parent member shows them as "subagents running".
  */
 export const isSubagentThread = (thread: Pick<T3ThreadShell, "lineage">): boolean => thread.lineage?.relationshipToParent === "subagent";
 
@@ -1025,6 +1066,8 @@ export type RoomCommand =
   | { type: "consigliere.rules.set"; rules: string | null }
   /** The saved crew member who is the Consigliere of new conversations, or none. */
   | { type: "consigliere.preset.set"; presetId: string | null }
+  /** What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat. */
+  | { type: "consigliere.retireThread.set"; thread: ThreadLifecycleChoice }
   /** Start a conversation with the Consigliere in a project; the same requestId sent again carries on the same attempt. */
   | { type: "consigliere.start"; projectId: string; text: string; requestId: string }
   | { type: "room.update"; roomId: string; title: string }
@@ -1053,8 +1096,8 @@ export type RoomCommand =
   | { type: "participant.rebind"; participantId: string; thread: ThreadBindingInput; outstandingTasks: "carry" | "block" }
   | { type: "participant.runtimeMode.set"; participantId: string; runtimeMode: RuntimeMode }
   | { type: "participant.retire"; participantId: string; pendingTasks: "cancel" | "keep"; thread?: ThreadLifecycleChoice }
-  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree" }
-  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree" }
+  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string> }
+  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string> }
   | { type: "preset.delete"; presetId: string }
   /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
   | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }

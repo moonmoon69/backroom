@@ -1083,7 +1083,25 @@ export class HttpT3Adapter implements T3Adapter {
 
   // ---------------- commands ----------------
 
-  /** One orchestration command (orchestration.dispatchCommand). T3 keeps a receipt per command id, so a resend is safe. */
+  /** Raw full projection for the isolated engine adapter. Bounded windows are not absence evidence. */
+  async engineSnapshot(threadId: string): Promise<unknown> {
+    await this.ensureProtocol();
+    return this.request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}`);
+  }
+
+  /** Pinned public detail RPC. Its output is bounded and sanitized, not a full-result guarantee. */
+  async engineTurnItem(threadId: string, itemId: string): Promise<unknown> {
+    await this.ensureProtocol();
+    return this.rpc("orchestration.getTurnItem", { threadId, itemId }, this.requestTimeoutMs);
+  }
+
+  /** Exact journaled command. Success proves app acceptance, never harness/tool execution. */
+  async engineDispatch(wireJSON: string): Promise<unknown> {
+    await this.ensureProtocol();
+    return this.rpc("orchestration.dispatchCommand", JSON.parse(wireJSON), this.requestTimeoutMs * 2);
+  }
+
+  /** Legacy callers manage their own retries; receipt retention/absence is not established here. */
   private async dispatch(command: Record<string, unknown>): Promise<void> {
     await this.ensureProtocol();
     try {

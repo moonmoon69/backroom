@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-/** Phones and narrow tablets: the sidebar becomes a drawer and the inspector a sheet (see styles.css). */
+/** Phones and narrow tablets: the drawer takes the full width and the inspector is a sheet (see styles.css). */
 export const MOBILE_QUERY = "(max-width: 760px)";
 /** Touch-first devices: the on-screen keyboard's Enter inserts a newline; the Send button sends. */
 export const COARSE_POINTER_QUERY = "(pointer: coarse)";

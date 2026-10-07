@@ -99,7 +99,7 @@ export async function setNotify(on: boolean): Promise<string | null> {
 
 /**
  * Notify about each finish that arrives while you are not looking, once. Finishes from before this page opened are
- * the sidebar's to show, not announced. `onOpen` opens what a clicked notification is about.
+ * the overview's to show, not announced. `onOpen` opens what a clicked notification is about.
  */
 export function useFinishNotifications(rooms: RoomListItem[], threads: T3ThreadShell[], looking: boolean, onOpen: (key: string) => void): void {
   const on = useNotifyOn();

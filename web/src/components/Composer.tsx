@@ -16,6 +16,8 @@ import {
 import { api, ApiError, attachmentUrl, useProviders } from "../api.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { useRoom, type FollowUpPrefill } from "../context.tsx";
+import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
+import { roomKey } from "../news.ts";
 import { parseDraft } from "../parser.ts";
 import {
   ATTACHMENT_MAX_BYTES,
@@ -42,12 +44,15 @@ import {
   toggleNote,
   type TextEdit,
 } from "./composerText.ts";
+import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
-import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
+import { ChevronIcon, CloseIcon, Glyph, ImageIcon, NoteIcon } from "./icons.tsx";
 
 interface Props {
   followUp: FollowUpPrefill | null;
+  /** Look → Overview: closed to a strip until wanted, then over the conversation (composerOverlay.tsx). */
+  overlay?: boolean;
 }
 
 interface MentionState {
@@ -68,6 +73,10 @@ interface PendingAttachment {
   error: string | null;
 }
 
+/** The images kept with a room's draft: uploaded when they were attached, so the service has them by id. */
+const keptAttachments = (roomId: string): PendingAttachment[] =>
+  readDraftImages(roomKey(roomId)).map((kept) => ({ key: kept.id, name: kept.name, sizeBytes: kept.sizeBytes, status: "ready", id: kept.id, previewUrl: null, error: null }));
+
 /** What the current draft would do, and whether it can be sent. */
 interface Plan {
   ready: boolean;
@@ -80,18 +89,18 @@ type Edit = (make: (source: string) => TextEdit | null) => void;
 
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
-export function Composer({ followUp }: Props) {
+export function Composer({ followUp, overlay: asOverlay = false }: Props) {
   const { snapshot, runCommand, colorOf, aliasOf } = useRoom();
   const roomId = snapshot.room.id;
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
+  const consigliere = crew.find((p) => p.id === snapshot.room.consigliereId) ?? null;
   const { providers } = useProviders(true, 120_000);
   /** Examples built from this room (its participants and latest task), so every placeholder can be run as is. */
   const placeholders = useMemo(() => {
-    const consigliere = crew.find((p) => p.id === snapshot.room.consigliereId);
     // With a Consigliere the plain message is his; the other examples would teach the wrong habit.
     if (consigliere) return [`Message ${consigliere.alias}  ·  he hands the work to the others and reports back`, `@name tells ${consigliere.alias} who you want on it  ·  everything goes through him`];
     return roomPlaceholders(crew.map((p) => p.alias), snapshot.tasks[snapshot.tasks.length - 1]?.number ?? null);
-  }, [crew, snapshot.tasks, snapshot.room.consigliereId]);
+  }, [crew, snapshot.tasks, consigliere]);
   /** T3 slash commands offered to every one of these participants (a command must exist for each recipient). */
   const commandsFor = useCallback(
     (participantIds: string[]) => {
@@ -108,10 +117,17 @@ export function Composer({ followUp }: Props) {
   const backdrop = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  // The unsent text is the room's draft: it outlives the composer, the page and a reload (drafts.ts).
+  const [text, setText] = useDraft(roomKey(roomId));
+  const textRef = useRef(text);
+  textRef.current = text;
+  const overlay = useComposerOverlay(asOverlay, textarea, text);
+  // Its images are the draft's too: each is kept by its upload's id once uploaded, until sent or removed.
+  const [attachments, setAttachments] = useState<PendingAttachment[]>(() => keptAttachments(roomId));
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   attachmentsRef.current = attachments;
+  /** Attachments removed while uploading: their upload must not land in the draft after all. */
+  const removedKeys = useRef(new Set<string>());
   const [submitting, setSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
   /** "/" typed: the room's commands, plus the addressed members' T3 commands after an @name. */
@@ -149,24 +165,26 @@ export function Composer({ followUp }: Props) {
     setAttachments([]);
   }, []);
 
-  // Reset when switching rooms.
+  // Reset when switching rooms (the text and the images follow the room: they are that room's draft).
   useEffect(() => {
-    setText("");
     setMention(null);
     setFocusAssignment(null);
-    clearAttachments();
-  }, [roomId, clearAttachments]);
+    for (const item of attachmentsRef.current) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    setAttachments(keptAttachments(roomId));
+  }, [roomId]);
 
+  const { reveal } = overlay;
   const applyEdit = useCallback((edit: TextEdit) => {
     setText(edit.text);
     setMention(null);
+    reveal();
     requestAnimationFrame(() => {
       const el = textarea.current;
       if (!el) return;
       el.focus();
       el.setSelectionRange(edit.caret, edit.caret);
     });
-  }, []);
+  }, [setText, reveal]);
 
   const edit: Edit = (make) => {
     const result = make(text);
@@ -182,7 +200,7 @@ export function Composer({ followUp }: Props) {
       const task = snapshot.tasks.find((t) => t.id === p.taskId);
       return task ? taskLabel(task) : (/^task\d+/.exec(p.label)?.[0] ?? p.taskId);
     });
-    applyEdit(prependAfter(textarea.current?.value ?? "", labels));
+    applyEdit(prependAfter(textRef.current, labels));
   }, [followUp, snapshot.tasks, applyEdit]);
 
   // Keep the mirror scrolled with the textarea (typing can scroll it without a scroll event on some engines).
@@ -214,10 +232,12 @@ export function Composer({ followUp }: Props) {
         }
         total += file.size;
         added.push({ ...base, status: "uploading", previewUrl: URL.createObjectURL(file), error: null });
+        const scope = roomKey(roomId);
         api
           .uploadAttachment(roomId, file)
           .then((stored) => {
             setAttachments((current) => current.map((a) => (a.key === key ? { ...a, status: "ready", id: stored.id } : a)));
+            if (!removedKeys.current.has(key)) changeDraftImages(scope, (kept) => [...kept.filter((k) => k.id !== stored.id), { id: stored.id, name: base.name, sizeBytes: base.sizeBytes }]);
           })
           .catch((error: unknown) => {
             const message = error instanceof ApiError ? error.message : error instanceof Error ? error.message : String(error);
@@ -232,7 +252,9 @@ export function Composer({ followUp }: Props) {
   const removeAttachment = (key: string) => {
     const item = attachmentsRef.current.find((a) => a.key === key);
     if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    removedKeys.current.add(key);
     setAttachments((list) => list.filter((a) => a.key !== key));
+    if (item?.id) changeDraftImages(roomKey(roomId), (kept) => kept.filter((k) => k.id !== item.id));
   };
 
   const readyIds = attachments.filter((a) => a.status === "ready" && a.id).map((a) => a.id as string);
@@ -376,19 +398,6 @@ export function Composer({ followUp }: Props) {
   const insertMentionAtCaret = (alias: string) => {
     applyEdit(insertMention(text, textarea.current?.selectionStart ?? text.length, alias));
   };
-  // Talking to someone at the street's table puts @them here (street/BackRoomScene.tsx).
-  const mentionRef = useRef(insertMentionAtCaret);
-  mentionRef.current = insertMentionAtCaret;
-  useEffect(() => {
-    const onMention = (event: Event) => {
-      const alias = (event as CustomEvent<string>).detail;
-      if (!alias) return;
-      mentionRef.current(alias);
-      textarea.current?.focus();
-    };
-    window.addEventListener("backroom:mention", onMention);
-    return () => window.removeEventListener("backroom:mention", onMention);
-  }, []);
 
   // ---- plan + submit ----
 
@@ -437,8 +446,11 @@ export function Composer({ followUp }: Props) {
         setText("");
         setMention(null);
         setFocusAssignment(null);
+        for (const item of attachmentsRef.current) removedKeys.current.add(item.key);
         clearAttachments();
-        textarea.current?.focus();
+        changeDraftImages(roomKey(roomId), () => []);
+        if (overlay.enabled) overlay.hide();
+        else textarea.current?.focus();
       }
     } finally {
       setSubmitting(false);
@@ -471,6 +483,8 @@ export function Composer({ followUp }: Props) {
 
   const touchKeyboard = useMediaQuery(COARSE_POINTER_QUERY);
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // In the overlay Escape belongs to the composer (a menu first, then closing it), never to the room around it.
+    if (event.key === "Escape" && overlay.enabled) event.stopPropagation();
     if (slashPick && slashMatches.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -533,6 +547,7 @@ export function Composer({ followUp }: Props) {
         return;
       }
     }
+    if (overlay.fieldKey(event)) return;
     // Enter sends; Shift+Enter inserts a newline. Ignore Enter while an IME is composing (e.g. Chinese or Japanese input).
     // On touch devices the on-screen keyboard's Enter is a newline and the Send button sends.
     if (event.key === "Enter" && !event.shiftKey && !event.altKey && !touchKeyboard && !event.nativeEvent.isComposing && event.keyCode !== 229) {
@@ -548,8 +563,43 @@ export function Composer({ followUp }: Props) {
       ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && a.schedule?.mode === "now" && a.after.length === 0).flatMap((a) => a.recipients.filter(isBusy)))]
       : [];
 
-  return (
-    <div className={`composer${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+  // The strip says who a message goes to: whoever the draft addresses, else who a plain message reaches.
+  const addressed = draft?.kind === "task" ? [...new Set(draft.assignments.flatMap((a) => a.recipients))] : [];
+  const plainTo = consigliere ?? (crew.length === 1 ? (crew[0] as Participant) : null);
+  const stripTo =
+    draft?.kind === "note" || noteOn ? (
+      <span className="mono">note for the room</span>
+    ) : crewDraft ? (
+      <span className="mono">{crewSummary(crewDraft)}</span>
+    ) : addressed.length > 0 || plainTo ? (
+      <>
+        to{" "}
+        {(addressed.length > 0 ? addressed : [(plainTo as Participant).id]).map((id) => (
+          <span key={id} className="identity mono strip-recipient">
+            @{aliasOf(id)}
+            {isBusy(id) ? <span className="dot dot-working" aria-label="working" /> : null}
+          </span>
+        ))}
+      </>
+    ) : (
+      <span className="muted">start with @name to address someone</span>
+    );
+  const queued = snapshot.tasks.filter((t) => t.state === "queued" || t.state === "blocked").length;
+  const held = snapshot.tasks.filter((t) => t.state === "held").length;
+  const stripFacts = [queued > 0 ? `${queued} queued` : "nothing queued", ...(held > 0 ? [`${held} held`] : []), ...(attachedCount > 0 ? [`${attachedCount} image${attachedCount === 1 ? "" : "s"}`] : [])];
+
+  const composer = (
+    <div
+      ref={overlay.panel}
+      className={`composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`}
+      aria-label="Composer"
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onWheel={overlay.enabled ? overlay.onWheel : undefined}
+    >
+      {/* Who it goes to, on the overlay's frame (drawn in the pixel look only). */}
+      {overlay.enabled ? <span className="composer-nameplate">{stripTo}</span> : null}
       {crew.length > 0 ? (
         <MentionChips
           crew={crew}
@@ -568,7 +618,7 @@ export function Composer({ followUp }: Props) {
           <textarea
             ref={textarea}
             value={text}
-            rows={3}
+            rows={overlay.enabled ? 1 : 3}
             spellCheck={false}
             placeholder={placeholders[placeholderIndex % placeholders.length] as string}
             onFocus={() => setPlaceholderIndex((i) => i + 1)}
@@ -669,7 +719,7 @@ export function Composer({ followUp }: Props) {
                 {a.status === "error" ? <span className="attach-error">{a.error}</span> : <span className="muted mono">{formatBytes(a.sizeBytes)}</span>}
               </figcaption>
               <button type="button" className="attach-remove" aria-label={`Remove ${a.name}`} title="Remove" onClick={() => removeAttachment(a.key)}>
-                <CloseIcon />
+                <CloseIcon small />
               </button>
             </figure>
           ))}
@@ -701,12 +751,13 @@ export function Composer({ followUp }: Props) {
       <div className="composer-row composer-toolbar">
         <button
           type="button"
-          className="small ghost icon-only"
+          className="composer-tool"
           onClick={() => fileInput.current?.click()}
           aria-label="Attach images"
           title="Attach images: PNG, JPEG, GIF or WebP (or paste or drop them here)"
         >
           <ImageIcon />
+          <span className="composer-tool-label">Image</span>
         </button>
         <input
           ref={fileInput}
@@ -721,24 +772,24 @@ export function Composer({ followUp }: Props) {
         />
         <button
           type="button"
-          className={`small ghost icon-only note-button${noteOn ? " active" : ""}`}
+          className={`composer-tool note-button${noteOn ? " active" : ""}`}
           aria-pressed={noteOn}
           aria-label="Room note"
           title="Room note: shared context for everyone, no member is invoked"
           onClick={() => applyEdit(toggleNote(text))}
         >
           <NoteIcon />
+          <span className="composer-tool-label">Note</span>
         </button>
         <span className="spacer" />
-        <span className="muted hint mono composer-hint">
-          {busyAddressed.length > 0 ? (
-            <>
-              Waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · add /steer to send into the running turn
-            </>
-          ) : (
-            "Enter to send · Shift+Enter new line"
-          )}
-        </span>
+        {/* Keys mean nothing on a touch screen; there the keys hint is hidden (styles.css), the waiting note is not. */}
+        {busyAddressed.length > 0 ? (
+          <span className="muted hint mono composer-hint">
+            Waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · add /steer to send into the running turn
+          </span>
+        ) : (
+          <span className="muted hint mono composer-hint composer-keys">{overlay.enabled ? "Enter to send · Shift+Enter new line · Esc to close" : "Enter to send · Shift+Enter new line"}</span>
+        )}
         <button type="button" className="primary" disabled={!canSubmit} title={plan.reason ?? undefined} onClick={() => void submit()}>
           {submitting ? "…" : plan.label}
         </button>
@@ -758,6 +809,25 @@ export function Composer({ followUp }: Props) {
         })()
       ) : null}
     </div>
+  );
+  if (!overlay.enabled) return composer;
+  return (
+    <>
+      <ComposerStrip
+        overlay={overlay}
+        to={stripTo}
+        facts={stripFacts}
+        draft={text}
+        images={attachedCount}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={(event) => {
+          onDrop(event);
+          overlay.reveal();
+        }}
+      />
+      {overlay.open ? composer : null}
+    </>
   );
 }
 
@@ -1053,7 +1123,7 @@ function TimingPill({ assignment, assignments, aliasOf, edit }: { assignment: Dr
   return (
     <span className="plan-timing" ref={wrapper}>
       <button type="button" className={`plan-pill mono tone-${tone}`} title={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {label} <ChevronIcon dir="down" />
+        {label} <ChevronIcon dir="down" small />
       </button>
       {open ? (
         <div className="menu menu-up menu-right" role="menu">
@@ -1064,7 +1134,7 @@ function TimingPill({ assignment, assignments, aliasOf, edit }: { assignment: Dr
           ) : assignment.timing === "now" ? (
             <>
               <button type="button" role="menuitemradio" aria-checked="true" disabled>
-                Now ✓
+                Now <Glyph name="check" text="✓" />
               </button>
               <button type="button" role="menuitem" onClick={() => choose(null)}>
                 Default timing <span className="muted mono">remove /now</span>
@@ -1079,11 +1149,11 @@ function TimingPill({ assignment, assignments, aliasOf, edit }: { assignment: Dr
               onClick={() => choose(assignment.timing === "hold" || assignment.timing === "after" ? null : "now")}
               title={assignment.timing ? `Remove /${assignment.timing}` : "Start now"}
             >
-              Now{isNow ? " ✓" : ""}
+              Now{isNow ? <> <Glyph name="check" text="✓" /></> : null}
             </button>
           )}
           <button type="button" role="menuitemradio" aria-checked={held} disabled={held} onClick={() => choose("hold")} title="Adds /hold: saved until you release it">
-            Hold{held ? " ✓" : ""} <span className="muted mono">/hold</span>
+            Hold{held ? <> <Glyph name="check" text="✓" /></> : null} <span className="muted mono">/hold</span>
           </button>
           {queuedBehind || (steering && !held) ? (
             steering ? (

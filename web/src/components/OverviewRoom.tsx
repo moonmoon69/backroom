@@ -8,6 +8,7 @@ import { CrewButton } from "./Crew.tsx";
 import { Monogram } from "./Monogram.tsx";
 import { RoomBrowserButton } from "./RoomBrowser.tsx";
 import { RoomHeaderMenu } from "./RoomActions.tsx";
+import { RoomStatePanel } from "./RoomState.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
@@ -18,18 +19,24 @@ const BOARD_WINDOW = 60;
 
 /**
  * A room as the Overview look opens it: a sheet over the page of cards. One header (close, the room's name, the two
- * views as tabs, the crew, the side panels), the status bar, then one view at a time: the conversation with the
- * Consigliere, read like a chat, or the board, read like a ledger of every post. The composer is under both; what is
- * typed goes the same way whichever is showing. A room without a Consigliere has only the board.
+ * views as tabs, the crew, the side panels), the room state, the status bar, then one view at a time: the conversation
+ * with the Consigliere, read like a chat, or the board, read like a ledger of every post. The composer is under both,
+ * closed to a strip until wanted and then over the conversation; what is typed goes the same way whichever is showing.
+ * A room without a Consigliere has only the board.
  */
 export function OverviewRoom({
   project,
   followUp,
+  panel,
+  onPanel,
   onClose,
   onManageBrowser,
 }: {
   project: T3Project | null;
   followUp: FollowUpPrefill | null;
+  /** The side panel's tab, or none: kept by the app, which reads the Git tab in full only while it shows. */
+  panel: InspectorTab | null;
+  onPanel: (tab: InspectorTab | null) => void;
   onClose: () => void;
   onManageBrowser: (browserId: string | null) => void;
 }) {
@@ -37,12 +44,11 @@ export function OverviewRoom({
   const designated = snapshot.room.consigliereId ? participantById(snapshot.room.consigliereId) : undefined;
   const consigliere = designated && !designated.retiredAt ? designated : null;
   const [view, setView] = useState<"chat" | "board">("chat");
-  const [panel, setPanel] = useState<InspectorTab | null>(null);
   useEffect(() => {
     setView("chat");
-    setPanel(null);
-  }, [snapshot.room.id]);
-  const togglePanel = (tab: InspectorTab) => setPanel((current) => (current === tab ? null : tab));
+    onPanel(null);
+  }, [snapshot.room.id, onPanel]);
+  const togglePanel = (tab: InspectorTab) => onPanel(panel === tab ? null : tab);
   const members = snapshot.participants.filter(isActiveParticipant);
   const posts = snapshot.events.filter((event) => event.kind !== "task.status" && event.kind !== "system").length;
   const chat = consigliere !== null && view === "chat";
@@ -79,14 +85,15 @@ export function OverviewRoom({
           <RoomHeaderMenu projectTitle={project?.title ?? null} />
         </span>
       </header>
+      <RoomStatePanel key={snapshot.room.id} />
       <WorkBar />
       <div className="sheet-body">
         <section className="sheet-main" aria-label={chat ? `Conversation with ${consigliere?.alias}` : "Board"}>
           <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} />
           <BackgroundBar />
-          <Composer followUp={followUp} />
+          <Composer followUp={followUp} overlay />
         </section>
-        {panel ? <Inspector tab={panel} onClose={() => setPanel(null)} onManageBrowser={onManageBrowser} /> : null}
+        {panel ? <Inspector tab={panel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
       </div>
     </div>
   );

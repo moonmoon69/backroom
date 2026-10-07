@@ -1,6 +1,6 @@
 /**
  * The Consigliere on the page: the app-wide setting (which saved crew member is the Consigliere of new conversations),
- * read once and shared by the settings picker, the sidebar's "Talk to the Consigliere" and the saved crew dialog.
+ * read once and shared by the settings picker, the overview's "Talk to …" and the saved crew dialog.
  */
 import { useSyncExternalStore } from "react";
 import { api } from "./api.ts";

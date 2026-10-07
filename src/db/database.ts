@@ -3,6 +3,24 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+/**
+ * Members seated before seats recorded their preset are matched to one where that is safe: their alias is the preset's
+ * name, or the name with a number after it (sol, sol2), and they run on its harness. Exported for its test.
+ */
+export const LINK_SEATS_TO_PRESETS = `
+  UPDATE participants SET preset_id = (
+    SELECT p.id FROM presets p
+    WHERE p.name_key = rtrim(lower(participants.alias), '0123456789')
+      AND json_extract(p.model_selection_json, '$.instanceId') = json_extract(participants.model_selection_json, '$.instanceId')
+  ) WHERE preset_id IS NULL;
+`;
+
+/** Posts made before posts had numbers of their own keep the one they had: their sequence. Exported for its test. */
+export const NUMBER_EXISTING_POSTS = `
+  UPDATE events SET post_number = sequence
+  WHERE post_number IS NULL AND kind IN ('user.message', 'note', 'assistant.reply', 't3.turn', 't3.message', 'member.message');
+`;
+
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE rooms (
@@ -279,6 +297,22 @@ const MIGRATIONS: string[] = [
   DROP TABLE roles;
   ALTER TABLE participants DROP COLUMN role_id;
   ALTER TABLE presets DROP COLUMN role_id;
+  `,
+  // A crew member's pixel look (named parts, JSON; NULL for the defaults), and the preset a member was seated as, so
+  // every seat of a crew member wears its look. Members seated before are matched to a preset where that is safe:
+  // their alias is the preset's name, or the name with a number after it (sol, sol2), and they run on its harness.
+  `
+  ALTER TABLE presets ADD COLUMN look_json TEXT;
+  ALTER TABLE participants ADD COLUMN preset_id TEXT;
+  ${LINK_SEATS_TO_PRESETS}
+  `,
+  // Posts get a number of their own, which only posts take, so the board counts without the gaps that task status lines
+  // and system notes left. Posts made before keep the number they had (their sequence), since replies cite them; the
+  // next post in a room takes its highest post number plus one. Unique per room, as the guard against two at once.
+  `
+  ALTER TABLE events ADD COLUMN post_number INTEGER;
+  ${NUMBER_EXISTING_POSTS}
+  CREATE UNIQUE INDEX events_post_number ON events(room_id, post_number) WHERE post_number IS NOT NULL;
   `,
 ];
 

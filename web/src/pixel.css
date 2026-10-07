@@ -1,0 +1,1132 @@
+/*
+ * Settings → Look → Pixel: the same Backroom drawn like a SNES game. One pixel unit, one frame recipe, two faces.
+ *
+ *   u = 2 CSS px. Frames, shadows, rules, corners and the icons' pixels are whole numbers of u; nothing is rounded,
+ *   blurred or a hairline.
+ *   Everything drawn is one of three things. A WINDOW is raised: outline, frame ring, bevel, a hard drop shadow (tiles,
+ *   the header bar, the drawer, dialogs, menus, the composer). A WELL is sunken: outline and a shade inside (fields,
+ *   the composer's text, your messages, the status bar, the Settled drawer). A PLATE is a small raised window without
+ *   the ring (buttons, badges, chips, tabs, project names, the composer's recipient).
+ *   Monospace is the machine's voice (titles, names, numbers, states, buttons); the reading face is people's voice
+ *   (replies, what members are doing, what you type, which stays large).
+ *
+ * Only how things are drawn changes here; nothing may hide or move a control. The colours are a palette: a block of
+ * values below, night then day. Settings offers the palettes listed in skin.ts; a new palette is a new block here and
+ * one entry there.
+ */
+
+/* =====================================================================================================
+   Palettes. Each sets the same roles:
+     ground (the page) · well (sunken) · window (every window's fill) · raised (title strips, plates, hover)
+     outline · frame (the window's ring) · bevel-hi / bevel-lo · shadow (hard drop) · rule (dotted dividers)
+     text · muted · action (the one thing to press, focus, selection) · on-action · scrim (behind an open room)
+     st-* (state words: new, busy, needs you, failed, draft) · b-* (badge fills) · badge-ink · text-shadow
+   ===================================================================================================== */
+
+/* ---- Slate (Astra's Blue Ledger), the default: quiet slate by night ---- */
+:root[data-skin="pixel"][data-palette="slate"] {
+  color-scheme: dark;
+  --px-ground: #111d30;
+  --px-well: #15243b;
+  --px-window: #1e304b;
+  --px-raised: #2b4262;
+  --px-outline: #09121f;
+  --px-frame: #7592b8;
+  --px-bevel-hi: #405b7d;
+  --px-bevel-lo: #15243b;
+  --px-shadow: #09121f;
+  --px-rule: #435d7e;
+  --px-text: #f1f3ed;
+  --px-muted: #b1c2d8;
+  --px-action: #f0cf80;
+  --px-on-action: #192437;
+  --px-scrim: rgb(6 12 22 / 66%);
+  --px-st-new: #9ed8bc;
+  --px-st-busy: #8ec9e6;
+  --px-st-needs: #c7b8ee;
+  --px-st-failed: #ffb3a3;
+  --px-st-draft: #e8d39a;
+  --px-b-new: #9ed8bc;
+  --px-b-busy: #8ec9e6;
+  --px-b-needs: #c7b8ee;
+  --px-b-failed: #ffb3a3;
+  --px-b-draft: #e8d39a;
+  --px-badge-ink: #192437;
+  --px-text-shadow: none;
+}
+
+/* ...and ivory by day */
+:root[data-skin="pixel"][data-palette="slate"][data-theme="light"] {
+  color-scheme: light;
+  --px-ground: #dfdfd2;
+  --px-well: #fffdf6;
+  --px-window: #faf7eb;
+  --px-raised: #ece9db;
+  --px-outline: #63768b;
+  --px-frame: #63768b;
+  --px-bevel-hi: #fffdf6;
+  --px-bevel-lo: #dcd8c6;
+  --px-shadow: #a4adab;
+  --px-rule: #b4bcba;
+  --px-text: #20324b;
+  --px-muted: #536479;
+  --px-action: #294f78;
+  --px-on-action: #fffdf6;
+  --px-scrim: rgb(20 32 45 / 40%);
+  --px-st-new: #286648;
+  --px-st-busy: #1f5f80;
+  --px-st-needs: #694f8d;
+  --px-st-failed: #a13c32;
+  --px-st-draft: #75510d;
+  --px-badge-ink: #20324b;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-skin="pixel"][data-palette="slate"]:not([data-theme="dark"]) {
+    color-scheme: light;
+    --px-ground: #dfdfd2;
+    --px-well: #fffdf6;
+    --px-window: #faf7eb;
+    --px-raised: #ece9db;
+    --px-outline: #63768b;
+    --px-frame: #63768b;
+    --px-bevel-hi: #fffdf6;
+    --px-bevel-lo: #dcd8c6;
+    --px-shadow: #a4adab;
+    --px-rule: #b4bcba;
+    --px-text: #20324b;
+    --px-muted: #536479;
+    --px-action: #294f78;
+    --px-on-action: #fffdf6;
+    --px-scrim: rgb(20 32 45 / 40%);
+    --px-st-new: #286648;
+    --px-st-busy: #1f5f80;
+    --px-st-needs: #694f8d;
+    --px-st-failed: #a13c32;
+    --px-st-draft: #75510d;
+    --px-badge-ink: #20324b;
+  }
+}
+
+.palette-swatch.palette-slate {
+  background: linear-gradient(90deg, #1e304b 0 34%, #faf7eb 34% 67%, #f0cf80 67%);
+}
+
+/* ---- Blue: Final Fantasy blue by night ---- */
+:root[data-skin="pixel"][data-palette="blue"] {
+  color-scheme: dark;
+  --px-ground: #0a0d24;
+  --px-well: #111a4c;
+  --px-window: #1c2a74;
+  --px-raised: #2a3d9c;
+  --px-outline: #04061a;
+  --px-frame: #eef1fc;
+  --px-bevel-hi: #4a60bc;
+  --px-bevel-lo: #141f5a;
+  --px-shadow: #04061a;
+  --px-rule: #4b5aa0;
+  --px-text: #eef1fc;
+  --px-muted: #a3aee0;
+  --px-action: #f4c84a;
+  --px-on-action: #04061a;
+  --px-scrim: rgb(4 6 20 / 62%);
+  --px-st-new: #5cd685;
+  --px-st-busy: #58c6e8;
+  --px-st-needs: #c3a2ff;
+  --px-st-failed: #ff7a6a;
+  --px-st-draft: #efd88a;
+  --px-b-new: #6fdc8f;
+  --px-b-busy: #6cd0ee;
+  --px-b-needs: #c8adff;
+  --px-b-failed: #ff8c7c;
+  --px-b-draft: #f1dc93;
+  --px-badge-ink: #04061a;
+  --px-text-shadow: 1px 1px 0 rgb(4 6 26 / 80%);
+}
+
+/* ...and paper on the day sky */
+:root[data-skin="pixel"][data-palette="blue"][data-theme="light"] {
+  color-scheme: light;
+  --px-ground: #8cc6ea;
+  --px-well: #fffaf0;
+  --px-window: #f6ecd3;
+  --px-raised: #eadcb2;
+  --px-outline: #2b1d12;
+  --px-frame: #2b1d12;
+  --px-bevel-hi: #fffaf0;
+  --px-bevel-lo: #d2be8c;
+  --px-shadow: #2b1d12;
+  --px-rule: #b9a578;
+  --px-text: #2b1d12;
+  --px-muted: #6e5a3f;
+  --px-action: #1f6b3a;
+  --px-on-action: #fffaf0;
+  --px-scrim: rgb(43 29 18 / 35%);
+  --px-st-new: #1f7a3e;
+  --px-st-busy: #0f6c82;
+  --px-st-needs: #5a34b8;
+  --px-st-failed: #b3261e;
+  --px-st-draft: #8a6410;
+  --px-badge-ink: #2b1d12;
+  --px-text-shadow: none;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-skin="pixel"][data-palette="blue"]:not([data-theme="dark"]) {
+    color-scheme: light;
+    --px-ground: #8cc6ea;
+    --px-well: #fffaf0;
+    --px-window: #f6ecd3;
+    --px-raised: #eadcb2;
+    --px-outline: #2b1d12;
+    --px-frame: #2b1d12;
+    --px-bevel-hi: #fffaf0;
+    --px-bevel-lo: #d2be8c;
+    --px-shadow: #2b1d12;
+    --px-rule: #b9a578;
+    --px-text: #2b1d12;
+    --px-muted: #6e5a3f;
+    --px-action: #1f6b3a;
+    --px-on-action: #fffaf0;
+    --px-scrim: rgb(43 29 18 / 35%);
+    --px-st-new: #1f7a3e;
+    --px-st-busy: #0f6c82;
+    --px-st-needs: #5a34b8;
+    --px-st-failed: #b3261e;
+    --px-st-draft: #8a6410;
+    --px-badge-ink: #2b1d12;
+    --px-text-shadow: none;
+  }
+}
+
+.palette-swatch.palette-blue {
+  background: linear-gradient(90deg, #1c2a74 0 34%, #f6ecd3 34% 67%, #f4c84a 67%);
+}
+
+/* =====================================================================================================
+   The app's colours, from the palette's roles, and the skin's constants.
+   ===================================================================================================== */
+:root[data-skin="pixel"] {
+  --u: 2px;
+  --px-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  --px-ring: var(--px-frame);
+  --px-glyph-new: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M2 0h1v1h-1zM1 1h3v1h-3zM0 2h5v1h-5zM1 3h3v1h-3zM2 4h1v1h-1z'/></svg>");
+  --px-glyph-busy: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M0 0h5v1h-5zM1 1h1v1h-1zM3 1h1v1h-1zM2 2h1v1h-1zM1 3h1v1h-1zM3 3h1v1h-1zM0 4h5v1h-5z'/></svg>");
+  --px-glyph-draft: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M3 0h2v1h-2zM2 1h3v1h-3zM1 2h3v1h-3zM0 3h3v1h-3zM0 4h1v1h-1z'/></svg>");
+  --px-glyph-failed: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M0 0h1v1h-1zM4 0h1v1h-1zM1 1h1v1h-1zM3 1h1v1h-1zM2 2h1v1h-1zM1 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM4 4h1v1h-1z'/></svg>");
+  --px-glyph-disclose: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M1 0h1v1h-1zM1 1h2v1h-2zM1 2h3v1h-3zM1 3h2v1h-2zM1 4h1v1h-1z'/></svg>");
+  --px-glyph-check: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M4 0h1v1h-1zM3 1h1v1h-1zM0 2h1v1h-1zM2 2h1v1h-1zM1 3h1v1h-1z'/></svg>");
+  --px-glyph-needs: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' shape-rendering='crispEdges'><path d='M1 0h3v1h-3zM0 1h1v1h-1zM4 1h1v1h-1zM2 2h2v1h-2zM2 4h1v1h-1z'/></svg>");
+
+  --bg: var(--px-window);
+  --bg-1: var(--px-window);
+  --bg-2: var(--px-raised);
+  --bg-3: var(--px-raised);
+  --sidebar-bg: var(--px-ground);
+  --line: var(--px-rule);
+  --line-strong: var(--px-frame);
+  --fg: var(--px-text);
+  --fg-muted: var(--px-muted);
+  --fg-dim: var(--px-muted);
+  --accent: var(--px-action);
+  --accent-hover: color-mix(in srgb, var(--px-action) 85%, var(--px-text));
+  --accent-fg: var(--px-on-action);
+  --message: var(--px-well);
+  --ok: var(--px-st-new);
+  --warn: var(--px-st-draft);
+  --err: var(--px-st-failed);
+  --input: var(--px-st-needs);
+  --busy: var(--px-st-busy);
+  --info: var(--px-st-busy);
+  --pc: var(--px-muted);
+  --shadow-xs: none;
+  --shadow-lg: calc(var(--u) * 2) calc(var(--u) * 2) 0 var(--px-shadow);
+  --radius: 0px;
+  --radius-sm: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+}
+
+/* ---- the ground, the corners, the words ---- */
+[data-skin="pixel"] body {
+  background: var(--px-ground);
+}
+
+/* Nothing is rounded: corners are square on the pixel grid. */
+[data-skin="pixel"] *,
+[data-skin="pixel"] *::before,
+[data-skin="pixel"] *::after {
+  border-radius: 0 !important;
+}
+
+[data-skin="pixel"] * {
+  scrollbar-color: var(--px-rule) transparent;
+}
+
+/* The machine's voice: monospace for titles, names, numbers, states, buttons and labels. Replies, what members are
+   doing and what you type keep the reading face. */
+[data-skin="pixel"] :is(button, label, .mono, .pill, .tag, .menu, .menu-heading, .hint, .brand, .overview-title, .ov-project-title, .ov-room-title, .ov-alias, .ov-state, .ov-when, .page-title, .sheet-title, .sheet-tabs, .sheet-head, .room-header, .thread-bar, .inspector-head, .dialog-header, .work-bar, .chat-head, .speaker, .composer-strip, .composer-hint, .composer-nameplate, .mention-chips, .plan-to, .plan-num, .plan-pill, .thread-section-toggle, .arrange-row) {
+  font-family: var(--px-mono);
+}
+
+[data-skin="pixel"] :is(.brand, .ov-room-title, .ov-project-name, .sheet-title h1, .page-title, .dialog-header h2, .inspector-head h2) {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* Tabular figures for every number. */
+[data-skin="pixel"] :is(.mono, .ov-when, .pill, .sheet-count, .panel-count) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* =====================================================================================================
+   The three recipes.
+   ===================================================================================================== */
+
+/* WINDOW: outline, the frame ring (the action colour while hovered), the bevel, a hard drop shadow. */
+[data-skin="pixel"] :is(.ov-room, .ov-shelf-item, .dialog, .menu, .mention-menu, .composer.composer-overlay, .composer-strip, .toast, .update-banner) {
+  background: var(--px-window);
+  border: var(--u) solid var(--px-outline);
+  box-shadow:
+    inset 0 0 0 var(--u) var(--px-ring),
+    inset calc(var(--u) * 2) calc(var(--u) * 2) 0 0 var(--px-bevel-hi),
+    inset calc(var(--u) * -2) calc(var(--u) * -2) 0 0 var(--px-bevel-lo),
+    calc(var(--u) * 2) calc(var(--u) * 2) 0 0 var(--px-shadow);
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] :is(.ov-room, .ov-shelf-item, .menu, .mention-menu, .composer-strip, .toast) {
+  text-shadow: var(--px-text-shadow);
+}
+
+[data-skin="pixel"] :is(.ov-room, .ov-shelf-item, .composer-strip):is(:hover, :focus-within) {
+  --px-ring: var(--px-action);
+  background: var(--px-window);
+}
+
+/* WELL: outline and a shade inside, no shadow. */
+[data-skin="pixel"] :is(input[type="text"], input:not([type]), input[type="search"], input[type="url"], input[type="number"], select, textarea:not(.composer-field textarea), .composer-field, .ov-thread-shelf-toggles, .work-bar, .bubble-user, .bubble-user-t3) {
+  background: var(--px-well);
+  border: var(--u) solid var(--px-outline);
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] :is(input[type="text"], input:not([type]), input[type="search"], input[type="url"], input[type="number"], select, textarea:not(.composer-field textarea)):focus {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--u) var(--px-action);
+}
+
+/* PLATE: a button, badge, chip or tab. Ghost buttons draw nothing until the pointer or the focus is on them. */
+[data-skin="pixel"] button:where(:not(.ghost, .icon-button, .link-button, .status-toggle, .thread-section-toggle, .ov-room-head, .ov-shelf-tile, .ov-thread, .composer-strip, .room-menu-button, .model-rail-button, .folder-row, [role^="menuitem"], [role="option"])),
+[data-skin="pixel"] :where(.ov-project-name, .composer-nameplate, .work-chip, .mention-chip, .plan-pill) {
+  background: var(--px-raised);
+  border: var(--u) solid var(--px-outline);
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-hi), inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--px-bevel-lo);
+  color: var(--px-text);
+  transition: none;
+}
+
+[data-skin="pixel"] button.ghost {
+  border: var(--u) solid transparent;
+  transition: none;
+}
+
+[data-skin="pixel"] button.ghost:hover:not(:disabled),
+[data-skin="pixel"] button.ghost[aria-expanded="true"] {
+  background: var(--px-raised);
+  border-color: var(--px-outline);
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] button.primary {
+  background: var(--px-action);
+  color: var(--px-on-action);
+  border-color: var(--px-outline);
+  box-shadow: inset var(--u) var(--u) 0 0 rgb(255 255 255 / 30%), inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 rgb(0 0 0 / 25%), var(--u) var(--u) 0 0 var(--px-shadow);
+  text-shadow: none;
+}
+
+[data-skin="pixel"] button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+[data-skin="pixel"] button:where(:not(.ghost)):active:not(:disabled) {
+  translate: var(--u) var(--u);
+  box-shadow: inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--px-bevel-hi), inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
+}
+
+/* Dotted 1u rules, never hairlines, between the parts of a window. */
+[data-skin="pixel"] {
+  --px-dots: repeating-linear-gradient(90deg, var(--px-rule) 0 var(--u), transparent var(--u) calc(var(--u) * 2));
+}
+
+/* =====================================================================================================
+   Badges, state words, focus, the glove.
+   ===================================================================================================== */
+
+/* A badge: a bright plate, ink words in caps, its glyph first so colour is never the only sign. */
+[data-skin="pixel"] .pill {
+  border: var(--u) solid var(--px-outline);
+  background: var(--px-raised);
+  color: var(--px-text);
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: var(--u) calc(var(--u) * 2);
+  text-shadow: none;
+}
+
+[data-skin="pixel"] :is(.pill-new, .pill-working, .pill-input, .pill-failed, .pill-draft) {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 2);
+  color: var(--px-badge-ink);
+  box-shadow: inset var(--u) var(--u) 0 0 rgb(255 255 255 / 40%), inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 rgb(0 0 0 / 18%);
+}
+
+[data-skin="pixel"] :is(.pill-new, .pill-working, .pill-input, .pill-failed, .pill-draft)::before {
+  content: "";
+  flex: none;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  -webkit-mask: var(--px-glyph) center / 10px 10px no-repeat;
+  mask: var(--px-glyph) center / 10px 10px no-repeat;
+}
+
+[data-skin="pixel"] .pill-new { background: var(--px-b-new); --px-glyph: var(--px-glyph-new); }
+[data-skin="pixel"] .pill-working { background: var(--px-b-busy); --px-glyph: var(--px-glyph-busy); }
+[data-skin="pixel"] .pill-input { background: var(--px-b-needs); --px-glyph: var(--px-glyph-needs); }
+[data-skin="pixel"] .pill-failed { background: var(--px-b-failed); --px-glyph: var(--px-glyph-failed); }
+[data-skin="pixel"] .pill-draft { background: var(--px-b-draft); --px-glyph: var(--px-glyph-draft); }
+
+/* A state word: its colour, after a 3×3 square, filled while live and hollow when ready. The row itself keeps the
+   text colour: only the word says the state. */
+[data-skin="pixel"] .ov-member { color: var(--px-text) !important; }
+[data-skin="pixel"] .ov-state { color: var(--px-muted) !important; }
+[data-skin="pixel"] .ov-state.status-working { color: var(--px-st-busy) !important; }
+[data-skin="pixel"] .ov-state:is(.status-input, .status-approval) { color: var(--px-st-needs) !important; }
+[data-skin="pixel"] .ov-state:is(.status-error, .status-missing) { color: var(--px-st-failed) !important; }
+
+[data-skin="pixel"] .ov-state .dot {
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  animation: px-blink 1s steps(1) infinite;
+}
+
+[data-skin="pixel"] .ov-state:not(:has(.dot))::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  box-shadow: inset 0 0 0 var(--u) currentColor;
+}
+
+[data-skin="pixel"] .ov-state:is(.status-input, .status-approval, .status-error, .status-missing):not(:has(.dot))::before {
+  background: currentColor;
+}
+
+[data-skin="pixel"] .dot {
+  border-radius: 0;
+}
+
+/* The Consigliere's star: the badges' 5 × 5 glyph at 10px, in the action colour, centred on the name's line. */
+[data-skin="pixel"] .ov-alias {
+  display: inline-flex;
+  align-items: center;
+}
+
+[data-skin="pixel"] .ov-mark {
+  color: var(--px-action);
+  margin-left: 6px;
+}
+
+[data-skin="pixel"] .ov-mark > * {
+  width: 10px;
+  height: 10px;
+}
+
+/* Focus, where the keyboard or the remote is: blinking corner brackets around a tile, a crew member, the strip and
+   the composer's text; a dashed outline on everything smaller. Hover is the frame ring or the glove. */
+[data-skin="pixel"] {
+  --px-brackets:
+    linear-gradient(var(--px-action) 0 0) left top / 6px var(--u) no-repeat,
+    linear-gradient(var(--px-action) 0 0) left top / var(--u) 6px no-repeat,
+    linear-gradient(var(--px-action) 0 0) right top / 6px var(--u) no-repeat,
+    linear-gradient(var(--px-action) 0 0) right top / var(--u) 6px no-repeat,
+    linear-gradient(var(--px-action) 0 0) left bottom / 6px var(--u) no-repeat,
+    linear-gradient(var(--px-action) 0 0) left bottom / var(--u) 6px no-repeat,
+    linear-gradient(var(--px-action) 0 0) right bottom / 6px var(--u) no-repeat,
+    linear-gradient(var(--px-action) 0 0) right bottom / var(--u) 6px no-repeat;
+}
+
+[data-skin="pixel"] :focus-visible {
+  outline: var(--u) dashed var(--px-action);
+  outline-offset: var(--u);
+}
+
+[data-skin="pixel"] :is(.ov-room-head, .ov-shelf-tile, .composer-strip):focus-visible {
+  outline: none;
+}
+
+[data-skin="pixel"] .ov-room-head:focus-visible::after,
+[data-skin="pixel"] .ov-shelf-tile:focus-visible::after,
+[data-skin="pixel"] .composer-strip:focus-visible::after,
+[data-skin="pixel"] .composer-field:focus-within::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * -3);
+  background: var(--px-brackets);
+  pointer-events: none;
+  animation: px-blink 1.2s steps(1) infinite;
+}
+
+/* The tile's head is stretched over the tile (overflow hidden): its brackets sit just inside the frame. */
+[data-skin="pixel"] .ov-room-head:focus-visible::after {
+  inset: calc(var(--u) * 3);
+}
+
+[data-skin="pixel"] .composer-strip {
+  position: relative;
+}
+
+[data-skin="pixel"] .composer-field textarea:focus-visible {
+  outline: none;
+}
+
+@keyframes px-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The glove points at the hovered or focused choice in a menu or a list. */
+[data-skin="pixel"] :is(.menu [role^="menuitem"], .ov-thread, .arrange-row) {
+  position: relative;
+  padding-left: 38px;
+}
+
+[data-skin="pixel"] :is(.menu [role^="menuitem"], .ov-thread, .arrange-row)::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: calc(50% - 9px);
+  width: 28px;
+  height: 18px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 9' shape-rendering='crispEdges'%3E%3Crect x='2' y='0' width='4' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='1' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='1' width='4' height='1' fill='%23fff'/%3E%3Crect x='6' y='1' width='6' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='2' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='2' width='11' height='1' fill='%23fff'/%3E%3Crect x='12' y='2' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='3' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='3' width='5' height='1' fill='%23fff'/%3E%3Crect x='6' y='3' width='6' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='4' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='4' width='7' height='1' fill='%23fff'/%3E%3Crect x='8' y='4' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='5' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='5' width='5' height='1' fill='%23fff'/%3E%3Crect x='6' y='5' width='3' height='1' fill='%231a1a2a'/%3E%3Crect x='0' y='6' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='6' width='7' height='1' fill='%23fff'/%3E%3Crect x='8' y='6' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='1' y='7' width='1' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='7' width='4' height='1' fill='%23fff'/%3E%3Crect x='6' y='7' width='2' height='1' fill='%231a1a2a'/%3E%3Crect x='2' y='8' width='4' height='1' fill='%231a1a2a'/%3E%3C/svg%3E") no-repeat center / 28px 18px;
+  image-rendering: pixelated;
+  opacity: 0;
+  pointer-events: none;
+}
+
+[data-skin="pixel"] :is(.menu [role^="menuitem"], .ov-thread, .arrange-row):is(:hover, :focus-visible):not(:disabled) {
+  background: var(--px-raised);
+  outline: none;
+}
+
+[data-skin="pixel"] :is(.menu [role^="menuitem"], .ov-thread, .arrange-row):is(:hover, :focus-visible):not(:disabled)::before {
+  opacity: 1;
+  animation: px-point 0.6s steps(2) infinite;
+}
+
+@keyframes px-point {
+  50% {
+    translate: calc(var(--u) * -1) 0;
+  }
+}
+
+/* =====================================================================================================
+   Avatars and icons.
+   ===================================================================================================== */
+
+/* The capybara: 16 × 16, shown at 16px, or at 32px where a row has room for it. */
+[data-skin="pixel"] .pixel-avatar {
+  display: block;
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+}
+
+[data-skin="pixel"] .avatar {
+  background: transparent;
+  overflow: visible;
+}
+
+[data-skin="pixel"] :is(.ov-member > .avatar, .ov-shelf-tile > .pixel-avatar, .chat-head .avatar, .chat-head > .pixel-avatar, .thread-speaker .pixel-avatar) {
+  width: 32px;
+  height: 32px;
+}
+
+[data-skin="pixel"] :is(.ov-member > .avatar, .chat-head .avatar) .pixel-avatar,
+[data-skin="pixel"] .ov-shelf-tile > .pixel-avatar {
+  width: 32px;
+  height: 32px;
+}
+
+/* A member row: the 32px mark beside both the name line and what they are doing. */
+[data-skin="pixel"] .ov-member {
+  grid-template-columns: 32px minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "mark alias state when"
+    "mark line line line";
+  column-gap: 8px;
+}
+
+[data-skin="pixel"] .ov-member > .avatar {
+  align-self: start;
+}
+
+[data-skin="pixel"] .ov-member + .ov-member {
+  padding-top: 8px;
+  background: var(--px-dots) top / 100% var(--u) no-repeat;
+}
+
+[data-skin="pixel"] .icon-pixel {
+  shape-rendering: crispEdges;
+}
+
+/* Every mark at a whole multiple of its grid, whatever size the plain look gives its slot: an 8 × 8 icon at 16px, a
+   5 × 5 glyph at 10px, so all strokes are 2px. */
+[data-skin="pixel"] svg.icon-pixel:not(.icon-glyph) {
+  width: 16px;
+  height: 16px;
+}
+
+[data-skin="pixel"] svg.icon-glyph {
+  width: 10px;
+  height: 10px;
+}
+
+/* A glyph in a line of text in place of a typed character (↩ → ↻ ✓ ↓): on the line, centred on it. */
+[data-skin="pixel"] svg.glyph-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* A fold's triangle (progress updates, a member's message, changed files): the 5 × 5 chevron at 10px, a quarter turn
+   when open, in place of the browser's marker or a typed ▸. A fold that shows no marker keeps none. */
+[data-skin="pixel"] summary {
+  list-style: none;
+}
+
+[data-skin="pixel"] summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-skin="pixel"] details:not(.asked-in-t3) > summary::before,
+[data-skin="pixel"] .changed-files summary::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: currentColor;
+  -webkit-mask: var(--px-glyph-disclose) center / 10px 10px no-repeat;
+  mask: var(--px-glyph-disclose) center / 10px 10px no-repeat;
+}
+
+[data-skin="pixel"] details[open]:not(.asked-in-t3) > summary::before,
+[data-skin="pixel"] .changed-files[open] summary::before {
+  transform: rotate(90deg);
+}
+
+/* The streaming reply's cursor: a whole-pixel block, not the font's ▍. */
+[data-skin="pixel"] .live-message.streaming .md > :last-child:not(ul, ol)::after,
+[data-skin="pixel"] .live-message.streaming .md > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: currentColor;
+}
+
+/* Rows whose controls are centred on a whole pixel: a project's title line, a small button's line. */
+[data-skin="pixel"] .ov-project-title {
+  line-height: 20px;
+}
+
+[data-skin="pixel"] button.small {
+  line-height: 16px;
+}
+
+/* Form controls in whole pixels, not the system's: a select's arrow, a checkbox, a radio, the speech slider. A check
+   is the 5 × 5 glyph; a chosen radio is a filled 3 × 3 square; all in the text colour. */
+html[data-skin="pixel"] select:not([multiple]) {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 28px;
+  background:
+    linear-gradient(currentColor 0 0) right 10px top calc(50% - 3px) / 10px 2px no-repeat,
+    linear-gradient(currentColor 0 0) right 12px top calc(50% - 1px) / 6px 2px no-repeat,
+    linear-gradient(currentColor 0 0) right 14px top calc(50% + 1px) / 2px 2px no-repeat,
+    var(--px-well);
+}
+
+[data-skin="pixel"] :is(input[type="checkbox"], input[type="radio"]) {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  vertical-align: middle;
+  background: var(--px-well);
+  border: var(--u) solid var(--px-outline);
+  box-shadow: none;
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] :is(input[type="checkbox"], input[type="radio"]):checked::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+}
+
+[data-skin="pixel"] input[type="checkbox"]:checked::before {
+  -webkit-mask: var(--px-glyph-check) center / 10px 10px no-repeat;
+  mask: var(--px-glyph-check) center / 10px 10px no-repeat;
+}
+
+[data-skin="pixel"] input[type="radio"]:checked::before {
+  width: 6px;
+  height: 6px;
+}
+
+[data-skin="pixel"] :is(input[type="checkbox"], input[type="radio"]):disabled {
+  opacity: 0.5;
+}
+
+[data-skin="pixel"] input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  background: transparent;
+}
+
+[data-skin="pixel"] input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--px-rule);
+}
+
+[data-skin="pixel"] input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--px-rule);
+}
+
+[data-skin="pixel"] input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 14px;
+  margin-top: -5px;
+  background: var(--px-raised);
+  border: var(--u) solid var(--px-outline);
+}
+
+[data-skin="pixel"] input[type="range"]::-moz-range-thumb {
+  width: 6px;
+  height: 10px;
+  background: var(--px-raised);
+  border: var(--u) solid var(--px-outline);
+}
+
+/* The app's mark: the boss's sprite at 2×. */
+[data-skin="pixel"] .brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 0;
+  image-rendering: pixelated;
+}
+
+/* =====================================================================================================
+   The overview page.
+   ===================================================================================================== */
+
+/* The header: a window bar across the top, framed below. */
+[data-skin="pixel"] .overview-head {
+  background: var(--px-window);
+  border-bottom: calc(var(--u) * 2) solid var(--px-ring);
+  box-shadow: inset 0 var(--u) 0 var(--px-bevel-hi), 0 var(--u) 0 var(--px-outline), 0 calc(var(--u) * 3) 0 var(--px-shadow);
+  text-shadow: var(--px-text-shadow);
+}
+
+[data-skin="pixel"] .overview-title {
+  color: var(--px-muted);
+}
+
+/* A project: its name on a plate, its folder, then a dotted rule out to its +. */
+[data-skin="pixel"] .ov-project-title {
+  align-items: center;
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+[data-skin="pixel"] .ov-project-name {
+  padding: calc(var(--u) * 2) calc(var(--u) * 5);
+  font-size: var(--text-md);
+}
+
+[data-skin="pixel"] .ov-project-title > .spacer {
+  align-self: center;
+  height: var(--u);
+  margin: 0 calc(var(--u) * 2);
+  background: var(--px-dots);
+}
+
+/* A tile: its title strip, ruled off below; the members under it. */
+[data-skin="pixel"] .ov-room-head {
+  background: var(--px-raised);
+  background-clip: padding-box;
+  margin: calc(var(--u) * 2) calc(var(--u) * 2) 0;
+  width: calc(100% - var(--u) * 4);
+  padding: 8px 46px 8px 12px;
+  box-shadow: 0 var(--u) 0 var(--px-rule);
+}
+
+[data-skin="pixel"] .ov-room-menu {
+  top: 10px;
+  right: 12px;
+}
+
+[data-skin="pixel"] .ov-members {
+  padding: 12px 14px 14px;
+}
+
+/* A tile that wants you: its state's colour down the left side of its frame. */
+[data-skin="pixel"] :is(.ov-room.needs, .ov-room.busy)::before {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--u) * 2);
+  background: var(--px-st-busy);
+  z-index: 1;
+}
+
+[data-skin="pixel"] .ov-room.needs::before {
+  background: var(--px-st-needs);
+}
+
+[data-skin="pixel"] :is(.ov-room, .ov-project-title).preset-over {
+  --px-ring: var(--px-action);
+}
+
+/* Settled and archived: a drawer sunk into the ground; its threads open under it. */
+[data-skin="pixel"] .ov-thread-shelf-toggles {
+  padding: calc(var(--u) * 2) calc(var(--u) * 4);
+  gap: 16px;
+}
+
+[data-skin="pixel"] .thread-section-toggle {
+  color: var(--px-muted);
+}
+
+/* Crew and browsers: one-row windows. */
+[data-skin="pixel"] .ov-shelf-tile {
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-areas:
+    "mark name"
+    "mark what";
+  column-gap: 10px;
+  padding: 10px 12px;
+}
+
+/* =====================================================================================================
+   What opens over the page: the drawer, its room or thread, its panels.
+   ===================================================================================================== */
+[data-skin="pixel"] .ov-drawer {
+  background: var(--px-window);
+}
+
+[data-skin="pixel"] .ov-drawer :is(.sheet-head, .room-header) {
+  background: var(--px-raised);
+  border-bottom: 0;
+  box-shadow: 0 var(--u) 0 var(--px-rule);
+  text-shadow: var(--px-text-shadow);
+}
+
+[data-skin="pixel"] .ov-drawer .thread-bar {
+  background: transparent;
+  border-bottom: 0;
+  box-shadow: none;
+  background-image: var(--px-dots);
+  background-size: 100% var(--u);
+  background-position: bottom;
+  background-repeat: no-repeat;
+}
+
+/* The two views: plates, the one showing in the window's colour with the action colour under it. */
+[data-skin="pixel"] .sheet-tabs button.on {
+  background: var(--px-window);
+  box-shadow: inset 0 calc(var(--u) * -2) 0 var(--px-action), inset var(--u) var(--u) 0 0 var(--px-bevel-hi);
+}
+
+/* The status bar: a well along the top of the conversation; its things are plates. */
+[data-skin="pixel"] .sheet .work-bar {
+  margin: 8px 12px 0;
+}
+
+/* The room state: on the window under the header, a dotted rule beneath; its head is no plate. */
+[data-skin="pixel"] .sheet .room-state {
+  background: transparent;
+  border-bottom: 0;
+  background-image: var(--px-dots);
+  background-size: 100% var(--u);
+  background-position: bottom;
+  background-repeat: no-repeat;
+}
+
+[data-skin="pixel"] button.room-state-head {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] button.room-state-head:hover:not(:disabled) {
+  background: var(--px-raised);
+}
+
+[data-skin="pixel"] .room-state-label {
+  color: var(--px-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+[data-skin="pixel"] .work-title {
+  color: var(--px-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* The conversation is the window; your messages are sunk into it (the well); replies stand out of it on a plate (the
+   raised fill, its outline and 1u bevel, no shadow). Code in a reply is sunk into the plate, without a frame of its
+   own; tables keep their rules. A room's chat and board, and a thread on its own, alike. */
+[data-skin="pixel"] :is(.sheet, .ov-drawer > .main) .bubble-agent {
+  background: var(--px-raised);
+  border: var(--u) solid var(--px-outline);
+  border-radius: 0;
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-hi), inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--px-bevel-lo);
+}
+
+[data-skin="pixel"] :is(.sheet, .ov-drawer > .main) .bubble-agent .md pre {
+  background: var(--px-well);
+  border-color: transparent;
+}
+
+/* The side panel (Members, Browser, Git): a window column at the drawer's right. */
+[data-skin="pixel"] .inspector {
+  background: var(--px-window);
+  border-left: var(--u) solid var(--px-outline);
+  box-shadow: inset var(--u) 0 0 var(--px-ring);
+}
+
+[data-skin="pixel"] .inspector-head {
+  background: var(--px-raised);
+  border-bottom: 0;
+  box-shadow: 0 var(--u) 0 var(--px-rule);
+}
+
+/* ---- the composer: a strip until wanted, then the room's dialogue box, with its recipient on a plate ---- */
+[data-skin="pixel"] .composer.composer-overlay {
+  padding-top: 24px;
+}
+
+[data-skin="pixel"] .composer-nameplate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: -14px;
+  left: 18px;
+  width: auto !important;
+  max-width: calc(100% - 36px) !important;
+  margin: 0 !important;
+  padding: 3px 10px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-shadow: var(--px-text-shadow);
+}
+
+[data-skin="pixel"] .composer-field {
+  border-radius: 0;
+}
+
+[data-skin="pixel"] :is(.composer-field textarea, .composer-backdrop) {
+  border-color: transparent;
+}
+
+[data-skin="pixel"] .composer-overlay .composer-hint {
+  color: var(--px-muted);
+}
+
+/* The composer's tools are plates (PLATE above); the pointer on one rings it in the action colour, and the note,
+   when on, is pressed in. */
+[data-skin="pixel"] .composer-tool:hover:not(:disabled) {
+  background: var(--px-raised);
+  border-color: var(--px-action);
+}
+
+[data-skin="pixel"] .composer-tool[aria-pressed="true"] {
+  background: var(--px-well);
+  border-color: var(--px-action);
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] .composer-strip .pill-draft {
+  flex: none;
+}
+
+/* ---- dialogs and menus ---- */
+[data-skin="pixel"] .dialog-backdrop,
+[data-skin="pixel"] .popover-backdrop {
+  background: var(--px-scrim);
+  backdrop-filter: none;
+}
+
+[data-skin="pixel"] .dialog-header {
+  background: var(--px-raised);
+  margin: calc(var(--u) * 2) calc(var(--u) * 2) 0;
+  padding: 10px 14px;
+  box-shadow: 0 var(--u) 0 var(--px-rule);
+  text-shadow: var(--px-text-shadow);
+}
+
+[data-skin="pixel"] .dialog-body {
+  padding-top: 16px;
+}
+
+[data-skin="pixel"] .menu-heading {
+  color: var(--px-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+[data-skin="pixel"] .menu button.on {
+  color: var(--px-action);
+}
+
+/* The pixel look's palettes, under it in Settings: a swatch of each palette's night, day and action colours. */
+[data-skin="pixel"] .menu-sub {
+  padding-left: 40px !important;
+}
+
+[data-skin="pixel"] .palette-swatch {
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  height: 14px;
+  border: var(--u) solid var(--px-outline);
+}
+
+[data-skin="pixel"] .menu-sub .menu-icon {
+  width: 22px;
+}
+
+/* ---- toasts and the update banner ---- */
+[data-skin="pixel"] .toast {
+  font-family: var(--px-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-skin="pixel"] *,
+  [data-skin="pixel"] *::before,
+  [data-skin="pixel"] *::after {
+    animation: none !important;
+  }
+}
+
+/* ---- the look picker: the capybara on a well ---- */
+[data-skin="pixel"] .look-big {
+  background: var(--px-well);
+  border: var(--u) solid var(--px-outline);
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
+}
+
+[data-skin="pixel"] .look-swatch {
+  border: var(--u) solid var(--px-outline);
+}
+
+/* =====================================================================================================
+   Pixel art on whole device pixels. Every cell of a sprite, an icon or a glyph must cover the same whole number of
+   device pixels, or a face comes out with one eye a device pixel wider than the other: at a ratio of 1.8 (a Mac at 90%
+   zoom) a 32px sprite has 3.6 device pixels per cell, at 2.2 (110%) 4.4. devicePixels.ts sets --dpr; each size below
+   is the nearest whole multiple of its grid in device pixels, turned back into CSS pixels. At ratios 1, 1.5 (for 32px
+   sprites) and 2 that is the size as designed; elsewhere a mark is a little larger or smaller, never uneven. A browser
+   without round() keeps the designed sizes.
+   ===================================================================================================== */
+@supports (width: round(nearest, 1px, 1px)) {
+  :root[data-skin="pixel"] {
+    --px-sprite-16: calc(max(16px, round(nearest, calc(16px * var(--dpr, 1)), 16px)) / var(--dpr, 1));
+    --px-sprite-32: calc(max(16px, round(nearest, calc(32px * var(--dpr, 1)), 16px)) / var(--dpr, 1));
+    --px-sprite-96: calc(max(16px, round(nearest, calc(96px * var(--dpr, 1)), 16px)) / var(--dpr, 1));
+    --px-icon: calc(max(8px, round(nearest, calc(16px * var(--dpr, 1)), 8px)) / var(--dpr, 1));
+    --px-glyph: calc(max(5px, round(nearest, calc(10px * var(--dpr, 1)), 5px)) / var(--dpr, 1));
+  }
+
+  [data-skin="pixel"] .pixel-avatar {
+    width: var(--px-sprite-16);
+    height: var(--px-sprite-16);
+    flex: none;
+  }
+
+  /* A size like 64/2.2px is kept to 1/64 of a pixel, so a box can end a hair short of its last row of squares: the
+     squares are not cut at the box's edge, or that row loses a device pixel. */
+  [data-skin="pixel"] svg:is(.pixel-avatar, .look-big, .look-small, .look-tiny, .icon-pixel) {
+    overflow: visible;
+  }
+
+  [data-skin="pixel"] :is(.ov-member > .avatar, .ov-shelf-tile > .pixel-avatar, .chat-head .avatar, .chat-head > .pixel-avatar, .thread-speaker .pixel-avatar, .brand-mark, .look-small),
+  [data-skin="pixel"] :is(.ov-member > .avatar, .chat-head .avatar) .pixel-avatar {
+    width: var(--px-sprite-32);
+    height: var(--px-sprite-32);
+    flex: none;
+  }
+
+  [data-skin="pixel"] .ov-member {
+    grid-template-columns: var(--px-sprite-32) minmax(0, 1fr) auto auto;
+  }
+
+  /* The editor's large preview: the sprite inside its frame, the frame outside the sprite's pixels. */
+  [data-skin="pixel"] .look-big {
+    box-sizing: content-box;
+    width: var(--px-sprite-96);
+    height: var(--px-sprite-96);
+  }
+
+  [data-skin="pixel"] .look-tiny {
+    width: var(--px-sprite-16);
+    height: var(--px-sprite-16);
+  }
+
+  [data-skin="pixel"] svg.icon-pixel:not(.icon-glyph) {
+    width: var(--px-icon);
+    height: var(--px-icon);
+  }
+
+  [data-skin="pixel"] svg.icon-glyph {
+    width: var(--px-glyph);
+    height: var(--px-glyph);
+  }
+
+  [data-skin="pixel"] :is(.pill-new, .pill-working, .pill-input, .pill-failed, .pill-draft)::before,
+  [data-skin="pixel"] details:not(.asked-in-t3) > summary::before,
+  [data-skin="pixel"] .changed-files summary::before {
+    width: var(--px-glyph);
+    height: var(--px-glyph);
+    -webkit-mask-size: var(--px-glyph) var(--px-glyph);
+    mask-size: var(--px-glyph) var(--px-glyph);
+  }
+}

@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3RuntimeRequest, T3ThreadDetail, T3ThreadShell, TurnImage } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable, backgroundOf, isRunActive, openRequests, runForMessage, runPrompt, runReplies } from "../adapter/types.ts";
-import { assembleBriefing, type PrerequisiteResult } from "../briefing/assemble.ts";
+import { assembleBriefing, changedStanding, heldStanding, standingFingerprint, standingText, type PrerequisiteResult, type StandingInput, type StandingKey } from "../briefing/assemble.ts";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
 import type { BrowsersBriefing } from "../briefing/assemble.ts";
 import { agentKey, browsersForRoom } from "../browser/catalog.ts";
@@ -23,6 +23,7 @@ import { taskLabel } from "../domain/types.ts";
 import { roomWorkspaces, workspaceArtifact, type Workspace } from "../git/workspaces.ts";
 import { now, threadTitleFor, type RoomService } from "../app/service.ts";
 import { CONSIGLIERE_RULES_KEY } from "../app/consigliere.ts";
+import { readRoomState } from "../app/roomState.ts";
 import { requestPayload } from "../app/threadView.ts";
 
 const ACTIVE_RUN_STATUSES = new Set<Run["status"]>(["pending", "dispatched", "accepted", "running", "needs_input"]);
@@ -33,6 +34,26 @@ const ACCEPT_WITHOUT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
 const BOARD_SINCE_KEY = "board.memberMessagesSince";
 
 const BRIEFING_EVENT_KINDS = new Set<RoomEvent["kind"]>(["user.message", "note", "assistant.reply"]);
+
+/**
+ * What a thread has of the standing sections: the run that last carried them all and when it was prepared (a compaction
+ * after that may have dropped them), and each section as the thread last had it. In kv under the room and the binding;
+ * no record means the next delivery carries them all.
+ */
+interface StandingRecord {
+  runId: string;
+  at: string;
+  sections: Partial<Record<StandingKey, string | null>>;
+}
+
+/** kv key of a binding's standing record. */
+export const standingRecordKey = (roomId: string, bindingId: string): string => `briefing.standing:${roomId}:${bindingId}`;
+
+/** A slash task that compacts the thread: the next delivery carries the standing sections again. */
+const COMPACT_COMMAND = /^\/compact\b/i;
+
+/** A follow-up that holds a wake no longer: it ended, or it is blocked and the poster has to decide about it. */
+const FOLLOW_UP_ENDED = new Set<Task["state"]>(["succeeded", "failed", "interrupted", "cancelled", "blocked"]);
 
 export interface SchedulerOptions {
   briefingBudgetChars: number;
@@ -141,6 +162,8 @@ export class Scheduler {
     const touched = new Set<string>();
     try {
       await this.observe(touched);
+      // A checkpoint that just landed seats its fresh member before dispatch, so its first task goes out now.
+      await this.service.advanceReseats(touched);
       await this.dispatch(touched);
       this.noteAdapterError(null);
     } catch (error) {
@@ -268,7 +291,75 @@ export class Scheduler {
         if (loaded && this.importDirectRuns(participant, binding, loaded)) touched.add(participant.roomId);
         this.seenLatestRun.set(binding.id, seenKey);
       }
+      // This is the bounded detail (T3's recent window). A compaction early in a long run the room did not start (a turn
+      // typed in T3, a member carrying on by itself) can fall outside it and go unnoticed: only a room run's end reads
+      // the whole thread. The thread can still recover: every lean briefing's header names `rooms-board rules`.
+      const seen = detail as T3ThreadDetail | null;
+      if (seen) this.noteCompactions(participant.roomId, binding, seen);
     }
+  }
+
+  // ---------------- standing sections ----------------
+
+  private readStanding(roomId: string, bindingId: string): StandingRecord | null {
+    const raw = this.repos.getKv(standingRecordKey(roomId, bindingId));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as StandingRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The thread may not have the standing sections any more: its next delivery carries them all. */
+  private forgetStanding(roomId: string, bindingId: string): void {
+    this.repos.deleteKv(standingRecordKey(roomId, bindingId));
+  }
+
+  /** A run that carried all the standing sections never reached the agent: the next delivery carries them again. */
+  private forgetStandingOf(run: Run, roomId: string): void {
+    if (this.readStanding(roomId, run.bindingId)?.runId === run.id) this.forgetStanding(roomId, run.bindingId);
+  }
+
+  /** The thread was rolled back past the run that carried the standing sections (T3 no longer has it): it lost them. */
+  private forgetStandingIfRolledBack(roomId: string, bindingId: string, detail: T3ThreadDetail): void {
+    const record = this.readStanding(roomId, bindingId);
+    if (!record) return;
+    const carrier = this.repos.getRun(record.runId);
+    if (!carrier?.t3RunId || !detail.runs.some((t3Run) => t3Run.id === carrier.t3RunId)) this.forgetStanding(roomId, bindingId);
+  }
+
+  /**
+   * The harness compacted the thread after it was last given the standing sections (T3 records each compaction, Claude
+   * Code's automatic ones and /compact alike, as a turn item): the summary may have dropped them, so they go out again.
+   */
+  private noteCompactions(roomId: string, binding: SessionBinding, detail: T3ThreadDetail): void {
+    const record = this.readStanding(roomId, binding.id);
+    if (!record) return;
+    const compacted = detail.turnItems.some((item) => item.type === "compaction" && item.status === "completed" && (item.completedAt ?? item.updatedAt) > record.at);
+    if (compacted) this.forgetStanding(roomId, binding.id);
+  }
+
+  /** What the standing sections are made of for this participant now. Reads T3 and starts the room's default browser. */
+  private async standingInput(room: Room, participant: Participant): Promise<StandingInput> {
+    return {
+      room,
+      participant,
+      participantsById: new Map(this.repos.listParticipants(room.id).map((p) => [p.id, p])),
+      browsers: room.browserEnabled ? await this.browsersBriefing(room, participant) : null,
+      workspaces: await this.workspaces(room.id),
+      board: { command: this.options.boardCommand ?? "rooms-board", as: agentKey(participant.alias, room.id) },
+      consigliereRules: this.repos.getKv(CONSIGLIERE_RULES_KEY),
+      roomState: readRoomState(this.repos, room.id),
+    };
+  }
+
+  /** The standing sections in full, as a thread's first briefing gives them: what `rooms-board rules` prints. */
+  async standingText(participantId: string): Promise<string> {
+    const participant = this.repos.getParticipant(participantId);
+    const room = participant ? this.repos.getRoom(participant.roomId) : null;
+    if (!participant || !room) return "";
+    return standingText(await this.standingInput(room, participant));
   }
 
   /** Thread titles already asked for this tick cycle, so T3 is not asked again while it catches up. */
@@ -397,7 +488,7 @@ export class Scheduler {
     const poster = this.repos.getParticipant(post.speaker.participantId);
     if (!poster || poster.retiredAt) return;
     const head = turn.text.replace(/\s+/g, " ").trim().slice(0, 600);
-    const instruction = `@${participant.alias} continued on its own after ${taskLabel(job)} and that run has ${outcome === "completed" ? "ended" : outcome}: post #${turn.sequence}${head ? `. It says: ${head}${turn.text.length > 600 ? "…" : ""}` : ""}. Read the post for the whole of it and carry on.`;
+    const instruction = `@${participant.alias} continued on its own after ${taskLabel(job)} and that run has ${outcome === "completed" ? "ended" : outcome}: post #${turn.postNumber ?? turn.sequence}${head ? `. It says: ${head}${turn.text.length > 600 ? "…" : ""}` : ""}. Read the post for the whole of it and carry on.`;
     this.service.createWake(participant.roomId, poster, post.id, instruction, null);
   }
 
@@ -487,6 +578,7 @@ export class Scheduler {
         // Accepted by T3 but the message never materialised: fail visibly after a bounded wait instead of hanging.
         if (Date.now() - Date.parse(run.acceptedAt ?? run.createdAt) > ACCEPT_WITHOUT_RUN_TIMEOUT_MS) {
           this.failRun(run, task, "T3 accepted the command but never recorded the message; check the provider in T3 and retry", `prerequisite ${taskLabel(task)} failed to start`);
+          this.forgetStandingOf(run, task.roomId);
           return true;
         }
         return false;
@@ -499,6 +591,7 @@ export class Scheduler {
     if (!t3Run) {
       // T3 has no such run: the thread was rolled back past it, or its history came from T3's V1 import (messages only).
       this.failRun(run, task, "T3 no longer has this run (the thread was rolled back, or T3 was migrated while it ran)", `prerequisite ${taskLabel(task)} failed: its run is gone in T3`);
+      this.forgetStandingIfRolledBack(task.roomId, binding.id, detail);
       this.statuses.set(participant.id, { ...this.participantStatus(participant.id), activeRunId: null });
       return true;
     }
@@ -541,6 +634,8 @@ export class Scheduler {
 
     // The run ended. The recent window carries its last messages; a long run's earlier ones need the whole thread.
     if (detail.partial) detail = (await this.adapter.getThreadDetail(binding.threadId)) ?? detail;
+    // A compaction early in a long run can be outside the recent window the tick looked at.
+    this.noteCompactions(task.roomId, binding, detail);
     this.importMidRunMessages(run, task, binding, detail);
     // T3 keeps each assistant message of a run separately: progress notes between tool calls, then the final answer.
     // The final one is the reply (and what dependents receive); the earlier ones are kept as progress.
@@ -665,7 +760,7 @@ export class Scheduler {
         continue;
       }
       if (busyParticipants.has(participant.id) || sessionBusy) {
-        const reason = `waiting for @${participant.alias} (${busyParticipants.has(participant.id) ? "busy with room work" : "busy in T3"})`;
+        const reason = `waiting for @${participant.alias} (${busyParticipants.has(participant.id) ? "busy with room work" : "working on its own"})`;
         if (task.stateReason !== reason) {
           this.service.setTaskState(task, "queued", reason);
           touched.add(room.id);
@@ -744,11 +839,19 @@ export class Scheduler {
         }
         case "failed":
         case "interrupted":
-        case "cancelled": {
-          // A wake task runs however the work ended: the poster is told what happened and decides.
+        case "cancelled":
+        case "blocked": {
+          // A wake task runs however the work ended, or when it is stuck (blocked until someone acts on it): the poster
+          // is told what happened and decides. A wake waiting on a blocked task would wait for good, and with it every
+          // wake held for the exchange that task belongs to.
           if (task.kind === "wake") {
             const assignee = this.repos.getParticipant(prerequisite.participantId);
             results.push({ task: prerequisite, assigneeAlias: assignee?.alias ?? prerequisite.participantId, resultEvent: null });
+            break;
+          }
+          // Other work waits for a blocked task, which may be unblocked yet; it is blocked by one that ended badly.
+          if (prerequisite.state === "blocked") {
+            waiting.push(taskLabel(prerequisite));
             break;
           }
           return { kind: "blocked", reason: `prerequisite ${taskLabel(prerequisite)} ${prerequisite.state}` };
@@ -758,7 +861,57 @@ export class Scheduler {
       }
     }
     if (waiting.length > 0) return { kind: "waiting", reason: `waiting for ${waiting.join(", ")}` };
+    // A wake waits as well for what the member went on with through the board, and then carries how that ended.
+    if (task.kind === "wake") {
+      for (const result of results) {
+        const chain = this.followUps(result.task, tasks);
+        if (chain.length === 0) continue;
+        const open = chain.filter((t) => !FOLLOW_UP_ENDED.has(t.state));
+        if (open.length > 0) return { kind: "waiting", reason: `waiting for ${open.map(taskLabel).join(", ")}: what @${result.assigneeAlias} posted after ${taskLabel(result.task)}` };
+        const lastTurn = chain.filter((t) => t.kind === "wake" && t.participantId === result.task.participantId).at(-1) ?? null;
+        const lastRun = lastTurn?.currentRunId ? this.repos.getRun(lastTurn.currentRunId) : null;
+        result.followUps = {
+          tasks: chain.filter((t) => t.kind !== "wake").map((t) => ({ label: taskLabel(t), alias: this.repos.getParticipant(t.participantId)?.alias ?? t.participantId, state: t.state, reason: t.state === "succeeded" ? null : t.stateReason })),
+          lastTurn,
+          lastResult: lastRun?.resultEventId ? this.repos.getEvent(lastRun.resultEventId) : null,
+        };
+      }
+    }
     return { kind: "ready", results };
+  }
+
+  /**
+   * What a member went on with from a task through the board: the tasks its posts made while that task's run was going,
+   * the wakes that brought it their answers, and in turn what it posted from those wakes. The wake of whoever posted
+   * the task waits until none of it is still going (all ended, or blocked), so the poster (the Consigliere, mostly) is
+   * woken once, with how the exchange ended, and not at every hand-over between a worker and its reviewer. Posts a
+   * member makes in a turn of its own are not part of it.
+   */
+  private followUps(root: Task, tasks: Map<string, Task>): Task[] {
+    const member = root.participantId;
+    const posted = new Map<string, boolean>();
+    const postedByMember = (eventId: string): boolean => {
+      if (!posted.has(eventId)) {
+        const event = this.repos.getEvent(eventId);
+        posted.set(eventId, event?.kind === "member.message" && event.sourceRef === null && event.speaker.type === "participant" && event.speaker.participantId === member);
+      }
+      return posted.get(eventId) as boolean;
+    };
+    const chain: Task[] = [];
+    const seen = new Set<string>([root.id]);
+    const turns: Task[] = [root];
+    for (let turn = turns.shift(); turn; turn = turns.shift()) {
+      // While the turn's runs went on: from when each was prepared to when it ended (or now, while it runs).
+      const windows = this.repos.listRunsForTask(turn.id).map((run) => [run.createdAt, run.completedAt] as const);
+      for (const candidate of tasks.values()) {
+        if (seen.has(candidate.id) || !windows.some(([from, to]) => candidate.createdAt >= from && (to === null || candidate.createdAt <= to))) continue;
+        if (!postedByMember(candidate.sourceEventId)) continue;
+        seen.add(candidate.id);
+        chain.push(candidate);
+        if (candidate.kind === "wake" && candidate.participantId === member) turns.push(candidate);
+      }
+    }
+    return chain.sort((a, b) => a.number - b.number);
   }
 
   /** True when a user message is just this task's addressing plus its instruction, addressed to nobody else. */
@@ -801,21 +954,30 @@ export class Scheduler {
         // The user's message that is nothing but this assignment would be delivered twice (as a room message and as
         // the assignment); the assignment section alone carries it. Split messages stay: they show the others' parts.
         .filter((event) => event.id !== task.sourceEventId || !this.sourceIsOnlyThisAssignment(event, task));
-      const briefing = assembleBriefing({
+      const standingInput: StandingInput = {
         room: current,
         participant,
         participantsById,
+        browsers: options.browsers ?? null,
+        workspaces: options.workspaces ?? null,
+        board: { command: this.options.boardCommand ?? "rooms-board", as: agentKey(participant.alias, room.id) },
+        consigliereRules: this.repos.getKv(CONSIGLIERE_RULES_KEY),
+        roomState: readRoomState(this.repos, room.id),
+      };
+      // All the standing sections on the thread's first delivery and after a compaction (no record), else the ones that
+      // changed since it last had them.
+      const had = this.readStanding(room.id, binding.id);
+      const fingerprint = standingFingerprint(standingInput);
+      const standing = had ? changedStanding(had.sections, fingerprint) : "all";
+      const briefing = assembleBriefing({
+        ...standingInput,
         task,
         unseenEvents: unseen,
         // A wake carries each answer with a word on whether that member's thread is still busy after it.
         prerequisiteResults: task.kind === "wake" ? prerequisiteResults.map((result) => ({ ...result, continuing: this.continuingNote(result.task.participantId) })) : prerequisiteResults,
         attachmentNames: task.attachmentIds.map((id) => this.repos.getAttachment(id)?.name ?? "image"),
-        bootstrap: binding.bootstrapDeliveredAt === null,
+        standing,
         budgetChars: this.options.briefingBudgetChars,
-        browsers: options.browsers ?? null,
-        workspaces: options.workspaces ?? null,
-        board: { command: this.options.boardCommand ?? "rooms-board", as: agentKey(participant.alias, room.id) },
-        consigliereRules: this.repos.getKv(CONSIGLIERE_RULES_KEY),
       });
       const attempt = this.repos.listRunsForTask(task.id).length + 1;
       const run: Run = {
@@ -843,6 +1005,11 @@ export class Scheduler {
         updatedAt: now(),
       };
       this.repos.insertRun(run);
+      if (standing === "all") {
+        this.repos.setKv(standingRecordKey(room.id, binding.id), JSON.stringify({ runId: run.id, at: now(), sections: heldStanding({}, fingerprint) } satisfies StandingRecord));
+      } else if (had && standing.length > 0) {
+        this.repos.setKv(standingRecordKey(room.id, binding.id), JSON.stringify({ ...had, sections: heldStanding(had.sections, fingerprint) } satisfies StandingRecord));
+      }
       this.service.setTaskState(task, "dispatching", `sending to @${participant.alias}${briefing.condensed ? " (older context condensed)" : ""}`, { currentRunId: run.id });
       void tasks;
       return run;
@@ -938,6 +1105,7 @@ export class Scheduler {
           this.service.setTaskState(task, "failed", `T3 rejected the dispatch: ${error.message}`, { currentRunId: run.id });
           this.service.statusEvent(task, `${taskLabel(task)} failed: T3 rejected the dispatch`, run.id);
           this.service.blockPendingDependents(task, `prerequisite ${taskLabel(task)} failed to dispatch`);
+          this.forgetStandingOf(run, task.roomId);
         });
         return;
       }
@@ -948,6 +1116,8 @@ export class Scheduler {
     this.db.transaction(() => {
       this.repos.updateRun({ ...run, status: "accepted", acceptedAt: now(), updatedAt: now() });
       if (binding.bootstrapDeliveredAt === null) this.repos.updateBinding({ ...binding, bootstrapDeliveredAt: now() });
+      // The summary a compaction leaves may not keep the standing sections; the turn item T3 records says so too, later.
+      if (task.slashCommand && COMPACT_COMMAND.test(task.instruction.trim())) this.forgetStanding(task.roomId, run.bindingId);
       this.service.setTaskState(task, "dispatching", `accepted by T3; waiting for @${participant.alias} to start`, { currentRunId: run.id });
       this.service.statusEvent(task, `${taskLabel(task)} delivered to @${participant.alias} (attempt ${run.attempt})`, run.id);
     });

@@ -2,9 +2,9 @@ import { memo, useEffect, useRef, useState, type ComponentProps, type JSX, type 
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { copyText } from "./CopyText.tsx";
-import { useFileBase, useOpenFilePreview } from "./filePreviewContext.ts";
+import { useFileBase, useOpenFilePreview, useOpenImagePreview } from "./filePreviewContext.ts";
 import { useToast } from "./Toast.tsx";
-import { fileBadge, headingAnchor, imageSource, isLocalPath, linkTarget, mediaKind, parseFileReference } from "./markdownFiles.ts";
+import { fileBadge, headingAnchor, imageSource, isDataImage, isImageLink, isLocalPath, linkTarget, mediaKind, parseFileReference } from "./markdownFiles.ts";
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = ComponentProps<T> & { node?: unknown };
 
@@ -96,12 +96,14 @@ function Code({ node: _node, children, className, ...props }: MdProps<"code">) {
 
 /**
  * Embedded files: markdown writes them all as images, but a local path may be a recording or a sound as well. Local
- * paths are served by the service; a video or audio file gets a player, an image a frame that links to the full size.
+ * paths are served by the service; a video or audio file gets a player, an image opens the preview surface.
  */
 function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
   const [broken, setBroken] = useState(false);
   const base = useFileBase();
+  const openImage = useOpenImagePreview();
   const resolved = typeof src === "string" ? imageSource(src, base) : "";
+  useEffect(() => setBroken(false), [resolved]);
   if (!resolved) return null;
   const kind = typeof src === "string" ? mediaKind(src) : "image";
   if (broken) {
@@ -128,9 +130,15 @@ function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
       </span>
     );
   }
+  const image = <img {...props} src={resolved} alt={alt ?? ""} loading="lazy" onError={() => setBroken(true)} />;
+  if (openImage) return (
+    <button type="button" className="md-img image-preview-trigger" aria-label={`Open image: ${alt || title || "picture"}`} aria-haspopup="dialog" title={title ?? (typeof src === "string" ? src : undefined)} onClick={() => openImage({ src: resolved, alt: alt ?? "", title })}>
+      {image}
+    </button>
+  );
   return (
     <a className="md-img" href={resolved} target="_blank" rel="noopener noreferrer" title={title ?? (typeof src === "string" ? src : undefined)}>
-      <img {...props} src={resolved} alt={alt ?? ""} loading="lazy" onError={() => setBroken(true)} />
+      {image}
     </a>
   );
 }
@@ -154,10 +162,24 @@ function heading(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
  * Links go where they point without leaving the app: `#…` scrolls to that heading of the same text, a file on the
  * machine (relative to the text's folder, absolute, or file://) opens its preview, and only the web opens a new tab.
  */
-function Link({ node: _node, href, children, ...props }: MdProps<"a">) {
+function Link({ node, href, children, ...props }: MdProps<"a">) {
   const openPreview = useOpenFilePreview();
+  const openImage = useOpenImagePreview();
   const base = useFileBase();
   const target = typeof href === "string" && href ? linkTarget(href) : { kind: "web" as const };
+  // A linked picture already supplies its own button. Remove the outer navigation and nested interactive control.
+  const containsPicture = (value: unknown): boolean => {
+    const element = value as { tagName?: string; children?: unknown[] } | undefined;
+    return element?.tagName === "img" || (element?.children ?? []).some(containsPicture);
+  };
+  if (openImage && containsPicture(node)) return <span title={props.title}>{children}</span>;
+  if (openImage && href && isImageLink(href)) {
+    const imageHref = target.kind === "file" ? target.path : href;
+    return <a {...props} href={href} aria-haspopup="dialog" onClick={(event) => {
+      event.preventDefault();
+      openImage({ src: imageSource(imageHref, base), alt: textOfNode(node), title: props.title });
+    }}>{children}</a>;
+  }
   if (target.kind === "anchor") {
     return (
       <a
@@ -197,7 +219,7 @@ function Link({ node: _node, href, children, ...props }: MdProps<"a">) {
   // Outside the app a file link can only be fetched: a media file through the service, like an embedded one.
   const media = typeof href === "string" && isLocalPath(href) && /\.(png|jpe?g|gif|webp|svg|bmp|avif|mp4|m4v|webm|mov|ogv|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(href);
   return (
-    <a {...props} href={media ? imageSource(href) : href} target="_blank" rel="noopener noreferrer">
+    <a {...props} href={media ? imageSource(href, base) : href} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   );
@@ -227,7 +249,7 @@ const components: Components = {
   img: Image,
 };
 
-const urlTransform = (url: string): string => (url.startsWith("file://") ? url : defaultUrlTransform(url));
+const urlTransform = (url: string): string => (url.startsWith("file://") || isDataImage(url) ? url : defaultUrlTransform(url));
 
 const plugins = [remarkGfm];
 

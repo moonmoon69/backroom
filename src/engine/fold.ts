@@ -1,0 +1,182 @@
+import type { Projection, RoomEvent } from "./types.ts";
+import { editEntry, initializeHistory, rememberEvent } from "./incremental.ts";
+
+/** Rebuild only from committed events. No provider, database, queue, time or randomness. */
+export function emptyProjection(events: readonly RoomEvent[] = []): Projection {
+  const p: Projection = {
+    events, seats: new Map(), requests: new Map(), runs: new Map(), activities: new Map(),
+    controls: new Map(), subscriptions: [], sourceKeys: new Map(), commandKeys: new Set(),
+    blocked: new Map(), orchestrator: null, providerHolds: new Map(), providerObservations: new Map(),
+    capabilities: new Map(), activityReceipts: new Map(), operationReceipts: new Map(), operationBindings: new Map(), toolResults: new Map(), toolClosures: new Map(),
+  };
+  initializeHistory(p);
+  return p;
+}
+
+/** Apply exactly one verified event to a fresh fold or a transaction-owned entry overlay. */
+export function applyEvent(p: Projection, original: RoomEvent): void {
+    rememberEvent(p, original);
+    p.commandKeys.add(original.commandKey);
+    const d = structuredClone(original.data);
+    switch (d.kind) {
+      case "board.capability": p.capabilities.set(d.capability.id, d.capability); break;
+      case "activity.operation_receipt":
+        if (p.activityReceipts.has(d.receipt.key)) throw new Error("duplicate activity receipt");
+        p.activityReceipts.set(d.receipt.key, d.receipt); break;
+      case "activity.native_bound": {
+        const a = editEntry(p, "activities", d.activityId);
+        if (!a.nativeSource || a.nativeSource.nativeId !== null || a.generation !== d.generation)
+          throw new Error("activity native binding changed");
+        a.nativeSource.nativeId = d.nativeId; break;
+      }
+      case "board.operation_receipt":
+        if (p.operationReceipts.has(d.receipt.key)) throw new Error("duplicate operation receipt");
+        p.operationReceipts.set(d.receipt.key, d.receipt); break;
+      case "board.operation_binding": p.operationBindings.set(d.binding.key, d.binding); break;
+      case "tool.closed":
+        if (p.toolClosures.has(d.closure.key)) throw new Error("duplicate tool closure");
+        p.toolClosures.set(d.closure.key, d.closure); break;
+      case "activity.declared_bound": {
+        const a = editEntry(p, "activities", d.activityId);
+        if (!a.declaration || a.declaration.binding) throw new Error("declaration binding changed");
+        a.declaration.binding = d.binding; break;
+      }
+      case "activity.declared_result": {
+        const a = editEntry(p, "activities", d.activityId);
+        if (!a.declaration?.binding || a.declaration.result || a.declaration.binding.bindingReceiptKey !== d.result.bindingReceiptKey)
+          throw new Error("declaration result changed");
+        a.declaration.result = d.result; break;
+      }
+      case "tool.result":
+        if (p.toolResults.has(d.result.key)) throw new Error("duplicate tool result");
+        p.toolResults.set(d.result.key, d.result); break;
+      case "provider.conflict": break;
+      case "transport.frozen": {
+        const target = d.target.kind === "run" ? editEntry(p, "runs", d.target.id) : editEntry(p, "controls", d.target.id);
+        if (target.transport) throw new Error("transport already frozen");
+        target.transport = d.transport;
+        break;
+      }
+      case "transport.attempt": {
+        const target = d.target.kind === "run" ? editEntry(p, "runs", d.target.id) : editEntry(p, "controls", d.target.id);
+        if (!target.transport || d.attempt !== target.transport.attempts + 1) throw new Error("invalid transport attempt");
+        target.transport.attempts = d.attempt;
+        break;
+      }
+      case "provider.bound": {
+        const run = editEntry(p, "runs", d.runId);
+        if (run.providerRunId && run.providerRunId !== d.providerRunId) throw new Error("provider binding changed");
+        run.providerRunId = d.providerRunId;
+        break;
+      }
+      case "provider.status": {
+        const r = editEntry(p, "runs", d.runId);
+        if (r.providerRunId !== d.providerRunId) throw new Error("native status identity changed");
+        r.nativeStatus = d.status; r.queueHeld = d.queueHeld; break;
+      }
+      case "provider.hold": p.providerHolds.set(d.hold.key, d.hold); break;
+      case "provider.observed": {
+        const o = d.observation, prior = p.providerObservations.get(o.seatId);
+        if (!Number.isSafeInteger(o.sequence) || o.sequence < 0 || p.seats.get(o.seatId)?.threadId !== o.threadId
+          || prior && (prior.threadId !== o.threadId || prior.environmentId !== o.environmentId
+            || prior.serverVersion !== o.serverVersion || prior.contract !== o.contract || o.sequence < prior.sequence))
+          throw new Error("invalid provider observation origin/order");
+        p.providerObservations.set(o.seatId, o);
+        break;
+      }
+      case "seat.created":
+        if (p.seats.has(d.seatId)) throw new Error("seat identity reused");
+        p.seats.set(d.seatId, { id: d.seatId, threadId: d.threadId, cursor: 0, status: "active", activeRunId: null });
+        if (d.orchestrator) p.orchestrator = d.seatId;
+        break;
+      case "request":
+        p.requests.set(d.request.id, { ...d.request, state: "open", answerId: null, live: d.live });
+        break;
+      case "correction": {
+        const request = editEntry(p, "requests", d.requestId);
+        request.version = original.seq;
+        request.corrections.push({ eventId: original.id, seq: original.seq, body: d.body });
+        break;
+      }
+      case "cancel": if (d.applied) editEntry(p, "requests", d.requestId).state = "cancelled"; break;
+      case "run.prepared": {
+        const seat = editEntry(p, "seats", d.run.seatId);
+        if (seat.activeRunId !== null) throw new Error("multiple unresolved runs");
+        p.runs.set(d.run.id, d.run);
+        seat.activeRunId = d.run.id;
+        p.blocked.delete(seat.id);
+        break;
+      }
+      case "run.phase": editEntry(p, "runs", d.runId).phase = d.phase; break;
+      case "sync.offered": editEntry(p, "runs", d.runId).receipts.push(d.receipt); break;
+      case "sync.confirmed": {
+        const run = editEntry(p, "runs", d.runId);
+        const receipt = run.receipts.find((r) => r.id === d.receiptId)!;
+        receipt.confirmed = true;
+        run.through = Math.max(run.through, receipt.envelope.through);
+        break;
+      }
+      case "run.ended": {
+        const run = editEntry(p, "runs", d.runId);
+        run.phase = "terminal";
+        run.through = d.through;
+        run.failure = d.failure;
+        const seat = editEntry(p, "seats", run.seatId);
+        if (d.consumed) seat.cursor = d.through;
+        if (seat.activeRunId === run.id) seat.activeRunId = null;
+        if (seat.status === "stopping") seat.status = "active";
+        break;
+      }
+      case "output":
+        if (p.sourceKeys.has(d.sourceKey)) throw new Error("duplicate source emission");
+        p.sourceKeys.set(d.sourceKey, original.id);
+        for (const claim of d.claims) if (claim.outcome === "answered") {
+          const request = editEntry(p, "requests", claim.requestId);
+          if (request.state !== "open" || request.answerId !== null) throw new Error("duplicate terminal claim");
+          request.state = "answered";
+          request.answerId = original.id;
+        }
+        break;
+      case "activity.started": p.activities.set(d.activity.id, d.activity); break;
+      case "activity.status": editEntry(p, "activities", d.activityId).status = d.status; break;
+      case "subscription":
+        p.subscriptions = p.subscriptions.filter((s) => s.seatId !== d.subscription.seatId || s.requestId !== d.subscription.requestId);
+        if (d.enabled) p.subscriptions.push(d.subscription);
+        break;
+      case "control.prepared":
+        if (p.controls.has(d.control.id)) throw new Error("control identity reused");
+        p.controls.set(d.control.id, d.control);
+        if (d.control.kind === "runtime_reply") {
+          const request = editEntry(p, "requests", d.control.requestId);
+          if (request.answerId !== null) throw new Error("duplicate live answer");
+          request.state = "answered";
+          request.answerId = original.id;
+        } else editEntry(p, "seats", editEntry(p, "runs", d.control.runId).seatId).status = "stopping";
+        break;
+      case "control.phase": editEntry(p, "controls", d.controlId).phase = d.phase; break;
+      case "transfer": {
+        editEntry(p, "seats", d.oldSeatId).status = "retired";
+        if (p.seats.has(d.newSeatId)) throw new Error("seat identity reused");
+        p.seats.set(d.newSeatId, { id: d.newSeatId, threadId: d.threadId, cursor: d.cutoff, status: "active", activeRunId: null });
+        for (const id of d.owned) editEntry(p, "requests", id).owner = d.newSeatId;
+        for (const id of d.awaited) editEntry(p, "requests", id).returnTo = d.newSeatId;
+        p.subscriptions = structuredClone(p.subscriptions);
+        for (const s of p.subscriptions) if (s.seatId === d.oldSeatId) s.seatId = d.newSeatId;
+        if (p.orchestrator === d.oldSeatId) p.orchestrator = d.newSeatId;
+        break;
+      }
+      case "delivery.blocked": p.blocked.set(d.seatId, d.eventId); break;
+      case "note": case "progress": case "notice": case "retry": break;
+      default: throw new Error("invalid authoritative journal event kind");
+    }
+}
+
+/** Full replay remains available for historical prefixes, cold recovery and audits. */
+export function fold(events: readonly RoomEvent[]): Projection {
+  const p = emptyProjection(events);
+  for (const [index, event] of events.entries()) {
+    if (event.seq !== index + 1) throw new Error("invalid event order or identity");
+    applyEvent(p, event);
+  }
+  return p;
+}

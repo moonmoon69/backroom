@@ -12,7 +12,7 @@ interface Item {
   key: string;
   group: Group;
   participant: Participant | undefined;
-  /** What it is, in a few words: "approval", "failed", "task4", "turn in T3". */
+  /** What it is, in a few words: "approval", "failed", "task4", "on its own". */
   what: string;
   /** The instruction or the reason, cut short on the chip and whole in its hover. */
   text: string;
@@ -71,7 +71,7 @@ export function WorkBar() {
     if ((running && !running.startedByRoom) || (!running && snapshot.participantStatus[participant.id]?.externalActivity)) {
       const asked = running ? snapshot.events.find((e) => e.kind === "member.message" && e.to === participant.id && e.sourceRef?.t3RunId === running.runId) : undefined;
       const from = asked?.speaker.type === "participant" ? participantById(asked.speaker.participantId)?.alias : undefined;
-      items.push({ key: `turn:${participant.id}`, group: "working", participant, what: from ? `for ${from}` : "turn in T3", text: asked?.text ?? running?.prompt ?? "" });
+      items.push({ key: `turn:${participant.id}`, group: "working", participant, what: from ? `for ${from}` : "on its own", text: asked?.text ?? running?.prompt ?? "" });
     }
   }
   for (const task of snapshot.tasks) {

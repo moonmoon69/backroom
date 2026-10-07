@@ -19,16 +19,13 @@ const hostOf = (baseUrl: string | null): string => {
   }
 };
 
-/**
- * The T3 connection at the foot of the sidebar: dot and state; host, version and policy on hover. `compact` is the
- * dot alone, for the collapsed sidebar's rail.
- */
-export function ConnectionChip({ status, onOpen, compact }: { status: StatusResponse | null; onOpen: () => void; compact?: boolean }) {
+/** The T3 connection in the overview's header: dot and state; host, version and policy on hover. */
+export function ConnectionChip({ status, onOpen }: { status: StatusResponse | null; onOpen: () => void }) {
   if (!status) {
     return (
-      <button type="button" className={`small ghost connection-chip${compact ? " icon-only" : ""}`} onClick={onOpen} title="Connecting to Backroom…" aria-label="T3 connection: connecting">
+      <button type="button" className="small ghost connection-chip" onClick={onOpen} title="Connecting to Backroom…" aria-label="T3 connection: connecting">
         <span className="dot dot-unknown" aria-hidden="true" />
-        {compact ? null : "T3"}
+        T3
       </button>
     );
   }
@@ -45,15 +42,11 @@ export function ConnectionChip({ status, onOpen, compact }: { status: StatusResp
     .join("\n");
   const problem = t3.error ? "error" : t3.paired ? null : "not paired";
   return (
-    <button type="button" className={`small ghost connection-chip${compact ? " icon-only" : ""}`} onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
+    <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />
-      {compact ? null : (
-        <>
-          {/* The green dot says connected; words only for the demo or a problem. */}
-          T3{adapter === "fake" ? " demo" : ""}
-          {problem ? <span className={tone === "err" ? "status-error" : "muted"}> · {problem}</span> : null}
-        </>
-      )}
+      {/* The green dot says connected; words only for the demo or a problem. */}
+      T3{adapter === "fake" ? " demo" : ""}
+      {problem ? <span className={tone === "err" ? "status-error" : "muted"}> · {problem}</span> : null}
     </button>
   );
 }

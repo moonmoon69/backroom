@@ -43,7 +43,7 @@ import { browsersForRoom, effectiveBrowser, roomsUsingBrowser, threadKey } from 
 import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { Board, BoardError } from "../app/board.ts";
-import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings } from "../app/consigliere.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import { previewFile } from "./filePreview.ts";
@@ -51,7 +51,9 @@ import { canonicalPath, readCheckoutSummary, readFileDiff, readGitView, readRoom
 import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 import { ThreadCosts } from "../usage/threadCosts.ts";
+import type { ContextMeter } from "../domain/contextMeter.ts";
 import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
+import { roomStateView } from "../app/roomState.ts";
 import { orderProjects } from "../app/service.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
 
@@ -75,6 +77,7 @@ export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 
       const browser = stack.browsers ? effectiveBrowser(stack.repos, room) : null;
       return browser && stack.browsers ? { browser, status: stack.browsers.status(browser.id) } : null;
     })(),
+    state: roomStateView(stack.repos, roomId),
   };
 }
 
@@ -94,6 +97,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     ratesPath: join(config.t3UserDataDir, "usage-model-rates.json"),
     claudeProjectsDir: config.usage.claudeProjectsDir,
     codexSessionsDir: config.usage.codexSessionsDir,
+    modelManifestPath: join(config.t3UserDataDir, "model-manifest.json"),
     remember: (threadId, provider, sessionId) => {
       // Only a session not yet known is written: this runs on every read.
       if (!stack.repos.listThreadSessions(threadId).some((known) => known.sessionId === sessionId)) stack.repos.rememberThreadSession(threadId, provider, sessionId);
@@ -376,6 +380,14 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json(snapshot);
   });
 
+  // The room state alone (the snapshot carries it too): the Consigliere's summary, who wrote it and when; null until one is written.
+  app.get("/api/rooms/:roomId/state", (c) => {
+    const roomId = c.req.param("roomId");
+    if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
+    const state = roomStateView(stack.repos, roomId);
+    return c.json(state ? { roomId, state } : { roomId, state: null, message: "This room has no state yet: its Consigliere writes it with rooms-board state." });
+  });
+
   app.get("/api/rooms/:roomId/runs/:runId", (c) => {
     const run = stack.repos.getRun(c.req.param("runId"));
     if (!run) throw new RoomError("not_found", "run not found", 404);
@@ -590,6 +602,14 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       if (part.available && part.total.calls > 0) openTurns[participant.id] = part;
     }
 
+    // Each seated member's context meter, on the thread it is bound to now (an earlier thread's context is gone).
+    const contexts: Record<string, ContextMeter> = {};
+    for (const participant of participants) {
+      if (participant.retiredAt) continue;
+      const threadId = stack.repos.currentBinding(participant.id)?.threadId;
+      if (threadId) contexts[participant.id] = costs.context([threadId], participant.modelSelection);
+    }
+
     const room = costs.cost([...new Set(bindings.map((b) => b.threadId))]);
     return c.json({
       readAt: new Date().toISOString(),
@@ -601,6 +621,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       replies: byReply,
       /** What each participant's thread has used since its last reply: the turn in progress. */
       openTurns,
+      /** Per seated participant: its context meter (Claude threads only; the others say why there is none). */
+      contexts,
     });
   });
 
@@ -870,6 +892,13 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     repos: stack.repos,
     execute: (command) => stack.service.execute(parseCommand(command)),
     statusOf: (participantId) => stack.scheduler.participantStatus(participantId),
+    standing: (participantId) => stack.scheduler.standingText(participantId),
+    // A new room state reaches open pages through the room's stream, like any change.
+    notify: (roomId) => stack.hub.notify(roomId),
+    contextOf: (participant) => {
+      const threadId = stack.repos.currentBinding(participant.id)?.threadId;
+      return threadId ? costs.context([threadId], participant.modelSelection) : null;
+    },
     // Two ticks: one may already be in flight and past its dispatch; the second sends the seat briefing for certain.
     afterSeat: async () => {
       await stack.scheduler.tick();
@@ -929,6 +958,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
               id: participant.id,
               alias: participant.alias,
               modelSelection: participant.modelSelection,
+              presetId: participant.presetId,
               consigliere: room.consigliereId === participant.id,
               status,
               live,
@@ -937,7 +967,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
             };
           }),
         );
-        return { id: room.id, projectId: room.projectId, title: room.title, consigliereId: room.consigliereId, needs, members, updatedAt: room.updatedAt };
+        // The room state's first line is the tile's blurb.
+        const state = roomStateView(stack.repos, room.id);
+        return { id: room.id, projectId: room.projectId, title: room.title, consigliereId: room.consigliereId, needs, members, state: state ? { line: state.line, by: state.by, at: state.at } : null, updatedAt: room.updatedAt };
       }),
     );
     // Threads outside rooms, shown as rooms of one: the agent's live line while it works, else what it last said.
@@ -982,6 +1014,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       consiglierePresetId: presetId && stack.repos.getPreset(presetId) ? presetId : null,
       // The rules every Consigliere is given: the user's wording when they saved one, and Backroom's to go back to.
       consigliereRules: { text: consigliereRules(saved), custom: Boolean(saved && saved.trim()), defaultText: DEFAULT_CONSIGLIERE_RULES },
+      // What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat.
+      retireThread: retireThreadChoice(stack.repos),
     });
   });
   /** What to tell the user before a member is made Consigliere: reasons it may not work. It is allowed all the same. */

@@ -8,15 +8,14 @@ import { UpdateIcon } from "./icons.tsx";
 import { useToast } from "./Toast.tsx";
 
 /**
- * The Updates button at the foot of the sidebar: a count when T3 or a harness can be updated, a spinner while an
- * update runs. It opens the Updates popup. `compact` (the collapsed rail) shows it only when there is something.
+ * The Updates button in the overview's header: a count when T3 or a harness can be updated, a spinner while an
+ * update runs. It opens the Updates popup.
  */
-export function UpdatesButton({ compact = false }: { compact?: boolean }) {
+export function UpdatesButton() {
   const { view } = useUpdates();
   const [open, setOpen] = useState(false);
   const count = view?.available ?? 0;
   const running = view ? updateRunning(view) : false;
-  if (compact && count === 0 && !running) return null;
   const label = running ? "Updates: one is running" : count > 0 ? `Updates: ${count} available` : "Updates: T3 and its harnesses";
   return (
     <>

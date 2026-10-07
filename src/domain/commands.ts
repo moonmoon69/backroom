@@ -188,6 +188,9 @@ export const ParticipantRebindCommand = z
 /**
  * A participant's settings under a name. The name follows the alias rules: it is the alias the preset takes in a room.
  */
+/** A pixel look as named parts (domain/look.ts). Names are not checked here: a part or option this version does not know falls back to its default when drawn. */
+export const LookSchema = z.record(z.string().min(1).max(32), z.string().min(1).max(32)).refine((look) => Object.keys(look).length <= 32, "a look has at most 32 parts");
+
 export const PresetCreateCommand = z
   .object({
     type: z.literal("preset.create"),
@@ -195,6 +198,7 @@ export const PresetCreateCommand = z
     modelSelection: ModelSelectionSchema,
     runtimeMode: RuntimeModeSchema.default("full-access"),
     workspaceMode: z.enum(["local", "worktree"]).default("local"),
+    look: LookSchema.optional(),
   })
   .strict();
 
@@ -206,6 +210,7 @@ export const PresetUpdateCommand = z
     modelSelection: ModelSelectionSchema.optional(),
     runtimeMode: RuntimeModeSchema.optional(),
     workspaceMode: z.enum(["local", "worktree"]).optional(),
+    look: LookSchema.optional(),
   })
   .strict();
 
@@ -235,6 +240,14 @@ export const ConsiglierePresetSetCommand = z.object({ type: z.literal("consiglie
 export const ConsigliereRulesSetCommand = z.object({ type: z.literal("consigliere.rules.set"), rules: z.string().trim().min(1).max(20000).nullable() }).strict();
 
 /**
+ * What happens to a member's T3 thread when the Consigliere retires it (rooms-board retire) or a reseat retires the old
+ * seat: the choices of the page's removal dialog. App-wide; keep until the user picks another.
+ */
+export const ConsigliereRetireThreadSetCommand = z
+  .object({ type: z.literal("consigliere.retireThread.set"), thread: z.enum(["keep", "settle", "archive", "delete"]) })
+  .strict();
+
+/**
  * Start a conversation with the Consigliere in a project: a room titled with the start of the message, that saved crew
  * member seated and designated, and the message delivered to him. requestId names the attempt: sending the command
  * again with the same id carries on where it stopped and never makes a second room.
@@ -251,6 +264,20 @@ export const ParticipantRetireCommand = z
     pendingTasks: z.enum(["cancel", "keep"]),
     /** What happens to its T3 thread: left alone (default), settled, archived, or deleted in T3 Code. */
     thread: z.enum(["keep", "settle", "archive", "delete"]).default("keep"),
+  })
+  .strict();
+
+/**
+ * Reseat a member from a clean context (rooms-board reseat): it is asked for a checkpoint post, and when that lands a
+ * fresh seat of the same saved crew member takes over with it, and with the Consigliere's mark when it was his; the old
+ * seat leaves the room. by is the member who asked; plan is what the fresh seat carries on with.
+ */
+export const ParticipantReseatCommand = z
+  .object({
+    type: z.literal("participant.reseat"),
+    participantId: nonEmpty,
+    by: nonEmpty,
+    plan: z.string().trim().max(4000).nullable().default(null),
   })
   .strict();
 
@@ -515,6 +542,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ParticipantUpdateCommand,
   ParticipantRebindCommand,
   ParticipantRetireCommand,
+  ParticipantReseatCommand,
   ParticipantRuntimeModeCommand,
   ParticipantModelSetCommand,
   PresetCreateCommand,
@@ -524,6 +552,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoomConsigliereSetCommand,
   ConsiglierePresetSetCommand,
   ConsigliereRulesSetCommand,
+  ConsigliereRetireThreadSetCommand,
   ConsigliereStartCommand,
   TaskCreateCommand,
   MessageCreateCommand,

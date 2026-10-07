@@ -3,12 +3,14 @@
  * the same few combinations are not chosen again each time. A preset is seated in a room on a new thread (dragged
  * onto the room, or picked in the Add member dialog, several at once if you like) or used to start a thread on its own.
  */
-import { createContext, useContext, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import { resolveLook, type Look } from "../../../src/domain/look.ts";
+import { LookPicker } from "./LookPicker.tsx";
 import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RuntimeMode } from "../types.ts";
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
-import { ModelIcon } from "./ProviderIcon.tsx";
+import { MemberMark } from "./MemberMark.tsx";
 import { RUNTIME_MODE_INFO, ThreadSettingsRow } from "./pickers.tsx";
 import { reloadConsigliereSetting, useConsigliereSetting } from "../consigliere.ts";
 
@@ -32,56 +34,6 @@ export function startPresetDrag(event: DragEvent, preset: Preset): void {
 /** True while what is dragged over is a preset (its id is only readable on drop). */
 export const carriesPreset = (event: DragEvent): boolean => event.dataTransfer.types.includes(PRESET_MIME);
 export const droppedPresetId = (event: DragEvent): string | null => event.dataTransfer.getData(PRESET_MIME) || null;
-
-/** Accept a dragged preset: spread on the element that takes the drop. `over` is true while one hovers it. */
-export function usePresetDrop(onDropPreset: (presetId: string) => void): { over: boolean; handlers: { onDragEnter: (e: DragEvent) => void; onDragOver: (e: DragEvent) => void; onDragLeave: (e: DragEvent) => void; onDrop: (e: DragEvent) => void } } {
-  const [over, setOver] = useState(false);
-  // Entering a child fires enter before the parent's leave: count them.
-  const depth = useRef(0);
-  return {
-    over,
-    handlers: {
-      onDragEnter: (event) => {
-        if (!carriesPreset(event)) return;
-        depth.current += 1;
-        setOver(true);
-      },
-      onDragOver: (event) => {
-        if (!carriesPreset(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-      },
-      onDragLeave: (event) => {
-        if (!carriesPreset(event)) return;
-        depth.current = Math.max(0, depth.current - 1);
-        if (depth.current === 0) setOver(false);
-      },
-      onDrop: (event) => {
-        if (!carriesPreset(event)) return;
-        event.preventDefault();
-        depth.current = 0;
-        setOver(false);
-        const id = droppedPresetId(event);
-        if (id) onDropPreset(id);
-      },
-    },
-  };
-}
-
-/** An area that takes a dropped preset, with a notice over it while one is dragged across. */
-export function PresetDropZone({ className, label, onDropPreset, children }: { className?: string; label: string; onDropPreset: (presetId: string) => void; children: ReactNode }) {
-  const { over, handlers } = usePresetDrop(onDropPreset);
-  return (
-    <div className={`${className ?? ""}${over ? " preset-drop-over" : ""}`} {...handlers}>
-      {children}
-      {over ? (
-        <div className="preset-drop-notice" aria-hidden="true">
-          <span>{label}</span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 // ---- describing a preset ----
 const entryOf = (catalog: CatalogEntry[] | null, selection: ModelSelection): CatalogEntry | undefined =>
@@ -116,7 +68,7 @@ export function usePresetText(): (preset: Preset) => { model: string; what: stri
 }
 
 export function PresetIcon({ preset, size = 14 }: { preset: Preset; size?: number }) {
-  return <ModelIcon selection={preset.modelSelection} size={size} />;
+  return <MemberMark seed={preset.id} selection={preset.modelSelection} size={size} presetId={preset.id} />;
 }
 
 const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -216,6 +168,10 @@ export function PresetDialog({
   const [model, setModel] = useState<ModelSelection | null>(preset?.modelSelection ?? null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(preset?.runtimeMode ?? "full-access");
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "worktree">(preset?.workspaceMode ?? "local");
+  // Its pixel look: the one it has, or for a new crew member the default of a fresh id, sent with it so what is shown
+  // is what it wears. A service older than looks sends presets without one and takes none.
+  const looksSupported = presets.length === 0 || presets.some((p) => p.look !== undefined);
+  const [look, setLook] = useState<Look>(() => resolveLook(preset?.id ?? crypto.randomUUID(), preset?.look ?? null));
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -228,7 +184,7 @@ export function PresetDialog({
     event.preventDefault();
     if (!ready || !model) return;
     setBusy(true);
-    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode };
+    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode, ...(looksSupported ? { look } : {}) };
     const result = preset ? await runCommand({ type: "preset.update", presetId: preset.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     setBusy(false);
     if (result) {
@@ -281,6 +237,13 @@ export function PresetDialog({
               : "The project's own folder, shared with anyone else working there."}
           </span>
         </label>
+        {looksSupported ? (
+          <div className="form-field">
+            <span>Look</span>
+            <LookPicker look={look} onLook={setLook} selection={model} />
+            <span className="hint">How they are drawn in the pixel look, in every room. The pocket square is always their harness&rsquo;s colour.</span>
+          </div>
+        ) : null}
         <div className="dialog-actions">
           {preset ? (
             confirmDelete ? (

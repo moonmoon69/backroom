@@ -20,7 +20,7 @@ const desk = (over: Partial<Desk> = {}): Desk => ({ backgroundTasks: [], interac
 test("a turn at work moves the card, and says what runs beside it", () => {
   const running = describeStatus(status({ status: "running", activeRunId: "run1" }), desk({ backgroundTasks: [job("agent", "subagent"), job("agent", "subagent"), job("background", "command")] }));
   assert.deepEqual(running, { label: "working", tone: "working", motion: "working", detail: "2 subagents · 1 command" });
-  assert.equal(describeStatus(status({ status: "running", externalActivity: true })).label, "working in T3");
+  assert.equal(describeStatus(status({ status: "running", externalActivity: true })).label, "working on its own");
   assert.equal(describeStatus(status({ status: "starting" })).label, "starting");
   assert.equal(describeStatus(status({ status: "queued" })).label, "starting", "queued in T3 behind another run");
   assert.equal(describeStatus(status({ status: "waiting" })).label, "working");

@@ -1,5 +1,6 @@
-import type { Compaction, ContextWindowReading, Desk } from "../types.ts";
+import type { Compaction, ContextMeter, ContextWindowReading, Desk } from "../types.ts";
 import { contextReadout, fmtTokens, meterTone, timeOf } from "./deskFormat.ts";
+import { NEAR_COMPACTION_SHARE, compactionsPhrase, contextPhrase, meterTokens } from "../../../src/domain/contextMeter.ts";
 
 type ContextFacts = Pick<Desk, "contextWindow" | "compactions"> & Partial<Pick<Desk, "contextReporting" | "autoCompactWindow" | "lastCompaction">>;
 
@@ -90,6 +91,34 @@ export function ContextMeter({ reading, compact = false }: { reading: ContextWin
         <span className="meter-fill" style={{ width: `${percent}%` }} />
       </span>
       {!compact ? <span className="meter-label mono">{label}</span> : <span className="meter-pct mono">{Math.round(percent)}%</span>}
+    </span>
+  );
+}
+
+/**
+ * The member card's line from Backroom's context meter (the Claude transcript): the same words as `rooms-board members`
+ * ("context ≈ 575k, 6 compactions"). Under T3's own reading it adds only what that lacks: "6 compactions", and
+ * "near compaction" past three quarters of the window. Information only: nothing acts on it.
+ */
+export function ContextMeterLine({ meter, besideReading }: { meter: ContextMeter; besideReading: boolean }) {
+  if (!meter.available) {
+    return (
+      <span className="crew-context crew-meter mono no-reading" title={meter.reason === "not_claude" ? "Backroom meters Claude threads only: it reads their transcripts" : "Backroom could not find or read this thread's Claude transcript"}>
+        {contextPhrase(meter)}
+      </span>
+    );
+  }
+  const text = besideReading ? `${compactionsPhrase(meter.compactions)}${meter.nearCompaction ? " · near compaction" : ""}` : contextPhrase(meter);
+  const lines = [
+    "From the thread's Claude transcript.",
+    meter.tokens !== null ? `Last call sent ${meterTokens(meter.tokens)} tokens${meter.at ? ` at ${timeOf(meter.at)}` : ""}.` : "No call yet.",
+    meter.peak !== null ? `Peak ${meterTokens(meter.peak)}.` : null,
+    meter.window !== null ? `Window ${meterTokens(meter.window)} (${meter.windowSource === "manifest" ? "T3's model manifest" : "Backroom's table"}); "near compaction" from ${Math.round(NEAR_COMPACTION_SHARE * 100)}%.` : "Window unknown.",
+    `${compactionsPhrase(meter.compactions)}${meter.lastCompactionAt ? `, the last at ${timeOf(meter.lastCompactionAt)}` : ""}.`,
+  ];
+  return (
+    <span className={`crew-context crew-meter mono${meter.nearCompaction ? " meter-warn" : ""}`} title={lines.filter(Boolean).join("\n")}>
+      <span className="crew-readout">{text}</span>
     </span>
   );
 }

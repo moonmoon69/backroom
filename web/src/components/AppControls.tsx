@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { preferredVoice, readBoxVoice, readRate, readSource, readVoiceURI, speak, speechSupported, stopSpeaking, useBoxStatus, useSpeaking, useVoices, writeBoxVoice, writeRate, writeSource, writeVoiceURI, type SpeechSource } from "../speech.ts";
-import { useSkin, type SkinChoice } from "../skin.ts";
+import { PALETTES, usePalette, useSkin, type SkinChoice } from "../skin.ts";
 import type { ThemeChoice } from "../theme.ts";
-import type { StatusResponse } from "../types.ts";
+import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { GridIcon, PeopleIcon, BellIcon, DeskIcon, MonitorIcon, MoonIcon, SettingsIcon, SpeakerIcon, StopIcon, StreetIcon, SunIcon } from "./icons.tsx";
+import { GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
 import { api } from "../api.ts";
 import { rememberConsigliereSetting, useConsigliereSetting } from "../consigliere.ts";
 import { usePresets, usePresetText } from "./presets.tsx";
+import { THREAD_CHOICES } from "./RoomActions.tsx";
 
 const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "system", label: "System", icon: <MonitorIcon /> },
@@ -20,14 +21,13 @@ const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
 ];
 
 const LOOKS: Array<{ key: SkinChoice; label: string; hint: string; icon: ReactNode }> = [
-  { key: "desk", label: "Desk", hint: "The ordinary chat", icon: <DeskIcon /> },
-  { key: "overview", label: "Overview", hint: "Every room and member on one page, with what each is doing now; open a room from there", icon: <GridIcon /> },
-  { key: "street", label: "Street", hint: "The whole of Backroom as a street: a business per project, a back room per room", icon: <StreetIcon /> },
+  { key: "plain", label: "Plain", hint: "T3 Code's look", icon: <GridIcon /> },
+  { key: "pixel", label: "Pixel", hint: "Drawn like a SNES game: Final Fantasy windows by night, paper by day, the crew as capybaras", icon: <PixelIcon /> },
 ];
 
 /**
- * App-wide controls at the foot of the sidebar: the T3 connection and the updates on the left, the settings on the
- * right. The Consigliere, notifications, the voice, the theme and the look are set once in a while, so they share one settings menu.
+ * App-wide controls in the overview's header: the T3 connection and the updates, then the settings. The Consigliere,
+ * notifications, the voice, the theme and the look are set once in a while, so they share one settings menu.
  */
 export function AppControls({
   status,
@@ -58,6 +58,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const consigliereSetting = useConsigliereSetting();
   const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
   const [skin, setSkin] = useSkin();
+  const [palette, setPalette] = usePalette();
   const wrapper = useRef<HTMLSpanElement>(null);
   const notifyOn = useNotifyOn();
   const boxSpeech = Boolean(useBoxStatus()?.available);
@@ -162,6 +163,25 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
               {option.label}
             </button>
           ))}
+          {/* The pixel look's palettes, under it while it is the look. */}
+          {skin === "pixel"
+            ? PALETTES.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={palette === option.key}
+                  className={`menu-sub${palette === option.key ? " on" : ""}`}
+                  title={option.hint}
+                  onClick={pick(() => setPalette(option.key))}
+                >
+                  <span className="menu-icon" aria-hidden="true">
+                    <span className={`palette-swatch palette-${option.key}`} />
+                  </span>
+                  {option.label}
+                </button>
+              ))
+            : null}
         </div>
       ) : null}
       {voiceOpen ? <VoiceDialog onClose={() => setVoiceOpen(false)} /> : null}
@@ -182,12 +202,26 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
   // His rules: the text every Consigliere is given with each briefing, to change to your liking.
   const [rules, setRules] = useState<{ text: string; saved: string; custom: boolean; defaultText: string } | null>(null);
   const [savingRules, setSavingRules] = useState(false);
+  // What his retiring a member (or a reseat) does to its T3 thread; null until read, and from a service without it.
+  const [retireThread, setRetireThread] = useState<ThreadLifecycleChoice | null>(null);
   useEffect(() => {
     void api
       .settings()
-      .then((settings) => setRules({ text: settings.consigliereRules.text, saved: settings.consigliereRules.text, custom: settings.consigliereRules.custom, defaultText: settings.consigliereRules.defaultText }))
+      .then((settings) => {
+        setRules({ text: settings.consigliereRules.text, saved: settings.consigliereRules.text, custom: settings.consigliereRules.custom, defaultText: settings.consigliereRules.defaultText });
+        setRetireThread(settings.retireThread ?? null);
+      })
       .catch(() => undefined);
   }, []);
+  const chooseRetire = async (thread: ThreadLifecycleChoice) => {
+    if (thread === "delete" && !window.confirm("Delete a member's T3 thread and its history permanently each time the Consigliere retires it or a reseat replaces it?")) return;
+    try {
+      await api.command({ type: "consigliere.retireThread.set", thread });
+      setRetireThread(thread);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
+  };
   const saveRules = async (next: string | null) => {
     if (!rules) return;
     setSavingRules(true);
@@ -215,7 +249,7 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
         The one you talk to in a new conversation. He brings in the others from your saved crew, hands out the work, and reports back. Start one with “Talk to …” in a project&rsquo;s new menu. In an
         existing room, make any member its Consigliere from his menu under Members.
       </p>
-      {presets.length === 0 ? <p className="serif">You have no saved crew yet. Save a member under Crew in the sidebar first.</p> : null}
+      {presets.length === 0 ? <p className="serif">You have no saved crew yet. Save a member under Crew on the overview first.</p> : null}
       <fieldset aria-label="Consigliere of new conversations">
         <label className="radio">
           <input type="radio" name="consigliere" checked={current === null} onChange={() => void choose(null)} />
@@ -234,6 +268,22 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
           </label>
         ))}
       </fieldset>
+      {retireThread ? (
+        <label className="consigliere-retire">
+          When he retires a member
+          <select value={retireThread} onChange={(e) => void chooseRetire(e.target.value as ThreadLifecycleChoice)}>
+            {THREAD_CHOICES.map((choice) => (
+              <option key={choice.key} value={choice.key}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+          <span className="hint">
+            What happens to the member&rsquo;s T3 thread when he retires it with <code>rooms-board retire</code>, or when a reseat replaces it with a fresh seat.{" "}
+            {THREAD_CHOICES.find((c) => c.key === retireThread)?.help}. A thread also seated in another room is always kept. When you remove a member yourself, you choose each time.
+          </span>
+        </label>
+      ) : null}
       {rules ? (
         <label className="consigliere-rules">
           His rules

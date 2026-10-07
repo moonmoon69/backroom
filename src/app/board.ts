@@ -11,15 +11,18 @@
  */
 import type { Repos } from "../db/repos.ts";
 import type { RoomCommand } from "../domain/commands.ts";
-import type { Participant, ParticipantStatus, Room, RoomEvent, Task } from "../domain/types.ts";
+import { type Participant, type ParticipantStatus, type Room, type RoomEvent, type Task } from "../domain/types.ts";
 import { roomForKey } from "../browser/catalog.ts";
 import { parseExplicit } from "../parser/explicit.ts";
+import { contextPhrase, type ContextMeter } from "../domain/contextMeter.ts";
+import { readReseats } from "./reseat.ts";
+import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
+import { retireThreadChoice } from "./consigliere.ts";
+import { roomStateSection } from "../briefing/assemble.ts";
 
 /** A post longer than this is printed in pages. */
 export const BOARD_PAGE_CHARS = 20_000;
 
-/** Posts as `index` lists them by default: what was said. Status lines and system notes come with --all. */
-const SAID = new Set<RoomEvent["kind"]>(["user.message", "note", "assistant.reply", "t3.turn", "t3.message", "member.message"]);
 
 export class BoardError extends Error {
   readonly status: number;
@@ -33,20 +36,35 @@ export class BoardError extends Error {
 const HELP = `rooms-board: this room's board: read it, post on it, seat the user's saved crew. Always pass --as <your key>.
 
   index [--after <number>] [--all]   the room's posts, oldest first: number, kind, sender, receiver, outcome, size. No text.
-                                     --after lists only later posts; --all adds task status lines and system notes.
+                                     --after lists only later posts; --all adds task status lines and system notes,
+                                     which have no number.
   read <number>...  [--page <n>]     the exact saved text of those posts. A post over ${BOARD_PAGE_CHARS.toLocaleString("en-US")} characters is printed
                                      in pages; the output says how many there are.
   post "<text>"                      a post to members: "@name the job", several names for several jobs. Each becomes a
                                      task on that member's thread, and you are woken with the answer when it ends:
                                      post, then end your turn. "@name /steer ..." goes into a turn already running;
                                      "@name /compact" runs that command on its thread. Quote the text as one argument.
-  members                            the room's seated members: alias, model, what each is doing now, thread id, and who is the Consigliere.
+  members                            the room's seated members: alias, model, what each is doing now, its context
+                                     ("context ≈ 575k, 6 compactions"; "no meter" off Claude), thread id, and who is the Consigliere.
   crew                               the user's saved crew, by name, with model.
   seat <saved crew name>             seats that saved crew member in this room; prints the new member's alias and thread id.
                                      Seating the same one again gives a numbered alias (opus, opus2): one thread each.
+  reseat <alias> ["<plan>"]          the Consigliere's: asks that member for a checkpoint post (decisions, dead ends, state of
+                                     the code, next step); when it lands, a fresh seat of the same saved crew member takes
+                                     over with it, in the same folder, with its pending tasks (and the Consigliere's mark, if
+                                     it was his), and the old seat leaves as with retire. <plan> is what the fresh seat
+                                     carries on with.
+  retire <alias>                     the Consigliere's: that member leaves the room, once its deliverable has passed its gate.
+                                     Refused while it has work open. Its T3 thread is kept unless the user's setting settles,
+                                     archives or deletes it; the reply says which.
+  rules                              your standing sections, as your first briefing gave them: who you are, the rules,
+                                     where everyone works, the browsers, the room state. Later briefings leave them out.
+  state ["<text>"]                   prints the room state, the Consigliere's summary of where the room stands; with a text,
+                                     the Consigliere replaces it (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters). Every new seat is given it first.
   help                               this list.
 
-Posts are numbered as the user sees them: #51 here is #51 on the page.`;
+Posts are numbered as the user sees them: #51 here is #51 on the page. Only posts take numbers, so they count
+1, 2, 3; an older room may skip numbers among its earliest posts.`;
 
 export interface BoardDeps {
   repos: Repos;
@@ -56,6 +74,30 @@ export interface BoardDeps {
   afterSeat?(): Promise<void>;
   /** What a member's thread is doing now, from the scheduler's last look. */
   statusOf?(participantId: string): ParticipantStatus;
+  /** A member's context meter, from its thread's transcript; null when it has no thread. */
+  contextOf?(participant: Participant): ContextMeter | null;
+  /** A member's standing sections in full, as its first briefing gave them (the scheduler builds them). */
+  standing?(participantId: string): Promise<string>;
+  /** Tells the room's open pages it changed (the room state is written here, not through a room command). */
+  notify?(roomId: string): void;
+}
+
+/** What participant.retire did with the member's T3 thread. */
+interface RetiredThread {
+  action: string;
+  result: "done" | "kept" | "failed";
+  detail?: string;
+}
+
+const PAST: Record<string, string> = { settle: "settled", archive: "archived", delete: "deleted" };
+
+/** What became of a retired member's T3 thread, in a sentence for the retire reply. */
+function threadOutcome(thread: RetiredThread | undefined): string {
+  if (!thread) return "It had no T3 thread.";
+  if (thread.result === "done") return `Its T3 thread was ${PAST[thread.action] ?? thread.action}, as the user's retire setting says.`;
+  if (thread.result === "failed") return `Its T3 thread stays as it was: T3 could not ${thread.action} it (${thread.detail ?? "failed"}).`;
+  if (thread.action === "keep") return "Its thread stays in T3.";
+  return `Its thread stays in T3 (${thread.detail ?? "kept"}), although the retire setting says ${thread.action}.`;
 }
 
 /** A member's state in a word or two, as the page says it. */
@@ -65,7 +107,7 @@ function stateWord(status: ParticipantStatus | undefined, openTasks: Task[]): st
   if (status.pendingApprovals) return "needs the user's approval";
   if (status.pendingUserInput) return "waiting for the user's answer";
   if (status.activeRunId || status.status === "running" || status.status === "waiting") return `working${openTasks.length > 0 ? ` on ${openTasks.map((t) => `task${t.number}`).join(", ")}` : ""}`;
-  if (status.externalActivity) return "working in T3";
+  if (status.externalActivity) return "working on its own";
   if (status.status === "preparing" || status.status === "queued" || status.status === "starting") return "starting";
   if (status.background === "working") return "background work running (continues on its own)";
   if (status.background === "monitoring") return "monitoring";
@@ -96,6 +138,14 @@ export class Board {
         return this.crew();
       case "seat":
         return this.seat(room, member, args);
+      case "reseat":
+        return this.reseat(room, member, args);
+      case "retire":
+        return this.retire(room, member, args);
+      case "rules":
+        return this.rules(room, member);
+      case "state":
+        return this.state(room, member, args);
       case "post":
       case "say":
         return this.post(room, member, args);
@@ -127,26 +177,56 @@ export class Board {
     return value;
   }
 
-  /** Who said a post and who it was for, as the page words it. */
-  private parties(room: Room, event: RoomEvent, events: RoomEvent[]): { from: string; to: string } {
+  /**
+   * Who said a post and who it was for, as the page words it; `note` says what a report nobody asked for follows (a
+   * wake-up after a member's task, or after a member's own turn), in the page's words: "after @Opus's result #11".
+   */
+  private parties(room: Room, event: RoomEvent, events: RoomEvent[]): { from: string; to: string; note: string } {
     const aliasOf = (participantId: string) => `@${this.deps.repos.getParticipant(participantId)?.alias ?? participantId}`;
     const from =
       event.speaker.type === "participant" ? aliasOf(event.speaker.participantId) : event.speaker.type === "outside" ? `outside the room (${event.speaker.title})` : event.speaker.type;
     let to = "";
+    let note = "";
     if (event.kind === "member.message" && event.to) to = aliasOf(event.to);
     else if (event.kind === "user.message") {
       to = [...new Set(this.deps.repos.listTasks(room.id).filter((task) => task.sourceEventId === event.id).map((task) => aliasOf(task.participantId)))].join(" ");
     } else if (event.kind === "assistant.reply") {
-      // A seat briefing's acknowledgement answers Backroom, not the user.
+      // An answer goes to whoever asked: the user, or the member whose post made the task. A seat briefing's
+      // acknowledgement answers Backroom; a wake-up's report answers nobody, and says what it follows.
       const task = event.taskId ? this.deps.repos.getTask(event.taskId) : null;
-      to = task?.kind === "seat" ? "" : "user";
+      const source = task ? this.deps.repos.getEvent(task.sourceEventId) : null;
+      if (task?.kind === "wake") note = this.follows(task, events, aliasOf);
+      else if (task?.kind === "seat") to = "";
+      else if (source?.kind === "member.message") to = source.speaker.type === "participant" ? aliasOf(source.speaker.participantId) : "a member";
+      else to = "user";
     }
     else if (event.kind === "t3.turn") {
       // The answer goes to whoever asked: the member whose message started the run, or the person who typed in T3.
       const asked = event.sourceRef?.t3RunId ? events.find((e) => e.kind === "member.message" && e.sourceRef?.t3RunId === event.sourceRef?.t3RunId && e.sourceRef?.threadId === event.sourceRef?.threadId) : undefined;
       to = asked ? this.parties(room, asked, events).from : event.prompt !== null ? "user" : "";
     }
-    return { from, to };
+    return { from, to, note };
+  }
+
+  /**
+   * What a wake-up's report follows: the result of the task it waited on ("after @Opus's result #11", or "after @Opus's
+   * task7 ended" without one), or the turn a member took on its own ("after @Opus's own turn #14").
+   */
+  private follows(task: Task, events: RoomEvent[], aliasOf: (participantId: string) => string): string {
+    if (task.prerequisites.length === 0) {
+      const member = this.deps.repos.getEvent(task.sourceEventId)?.to;
+      if (!member) return "after Backroom woke it";
+      const turn = events.filter((e) => e.kind === "t3.turn" && e.speaker.type === "participant" && e.speaker.participantId === member && e.createdAt <= task.createdAt).at(-1);
+      return `after ${aliasOf(member)}'s own turn${turn ? ` #${turn.postNumber ?? turn.sequence}` : ""}`;
+    }
+    const causes = task.prerequisites.map((ref) => {
+      const ended = this.deps.repos.getTask(ref.taskId);
+      if (!ended) return "a task that ended";
+      const resultId = this.deps.repos.listRunsForTask(ended.id).filter((run) => run.resultEventId).at(-1)?.resultEventId;
+      const result = resultId ? this.deps.repos.getEvent(resultId) : null;
+      return result ? `${aliasOf(ended.participantId)}'s result #${result.postNumber ?? result.sequence}` : `${aliasOf(ended.participantId)}'s task${ended.number} ended`;
+    });
+    return `after ${causes.join(" and ")}`;
   }
 
   private index(room: Room, args: string[]): string {
@@ -154,14 +234,18 @@ export class Board {
     const afterText = this.flag(args, "--after");
     const after = afterText === undefined ? 0 : this.number(afterText, "--after");
     const events = this.deps.repos.listEvents(room.id, 1, Number.MAX_SAFE_INTEGER, 100_000);
-    const listed = events.filter((event) => event.sequence > after && (all || SAID.has(event.kind)));
+    // "After #n" is after the last post numbered n or less; the status lines --all adds fall in place by when they happened.
+    const from = after > 0 ? (events.filter((e) => e.postNumber !== null && e.postNumber <= after).at(-1)?.sequence ?? 0) : 0;
+    const listed = events.filter((event) => event.sequence > from && (all || event.postNumber !== null));
+    const posts = listed.filter((event) => event.postNumber !== null).length;
     if (listed.length === 0) return after > 0 ? `No posts after #${after}.` : "The board is empty.";
     const lines = listed.map((event) => {
-      const { from, to } = this.parties(room, event, events);
+      const { from: sender, to, note } = this.parties(room, event, events);
       const outcome = event.outcome ? ` · ${event.outcome}` : "";
-      return `#${event.sequence}  ${event.kind}  ${from}${to ? ` → ${to}` : ""}${outcome} · ${event.text.length.toLocaleString("en-US")} chars`;
+      const number = event.postNumber !== null ? `#${event.postNumber}` : "  ·";
+      return `${number}  ${event.kind}  ${sender}${to ? ` → ${to}` : ""}${note ? ` · ${note}` : ""}${outcome} · ${event.text.length.toLocaleString("en-US")} chars`;
     });
-    return [`Board of "${room.title}": ${listed.length} post${listed.length === 1 ? "" : "s"}${after > 0 ? ` after #${after}` : ""}. Read one with: read <number>`, ...lines].join("\n");
+    return [`Board of "${room.title}": ${posts} post${posts === 1 ? "" : "s"}${after > 0 ? ` after #${after}` : ""}. Read one with: read <number>`, ...lines].join("\n");
   }
 
   private read(room: Room, args: string[]): string {
@@ -172,18 +256,18 @@ export class Board {
     const events = this.deps.repos.listEvents(room.id, 1, Number.MAX_SAFE_INTEGER, 100_000);
     const out: string[] = [];
     for (const arg of args) {
-      const sequence = this.number(arg, "a post");
+      const number = this.number(arg, "a post");
       // Only this room's posts exist here: a number names a post of the caller's room or nothing.
-      const event = events.find((e) => e.sequence === sequence);
-      if (!event) throw new BoardError(`rooms-board: this room has no post #${sequence}.`, 404);
-      const { from, to } = this.parties(room, event, events);
+      const event = events.find((e) => e.postNumber === number);
+      if (!event) throw new BoardError(`rooms-board: this room has no post #${number}.`, 404);
+      const { from, to, note } = this.parties(room, event, events);
       const pages = Math.max(1, Math.ceil(event.text.length / BOARD_PAGE_CHARS));
-      if (page > pages) throw new BoardError(`rooms-board: post #${sequence} has ${pages} page${pages === 1 ? "" : "s"}.`);
-      const head = `[#${event.sequence} ${event.kind} · ${from}${to ? ` → ${to}` : ""}${event.outcome ? ` · ${event.outcome}` : ""} · ${event.createdAt}${pages > 1 ? ` · page ${page} of ${pages}` : ""}]`;
+      if (page > pages) throw new BoardError(`rooms-board: post #${number} has ${pages} page${pages === 1 ? "" : "s"}.`);
+      const head = `[#${number} ${event.kind} · ${from}${to ? ` → ${to}` : ""}${note ? ` · ${note}` : ""}${event.outcome ? ` · ${event.outcome}` : ""} · ${event.createdAt}${pages > 1 ? ` · page ${page} of ${pages}` : ""}]`;
       const body = event.text.slice((page - 1) * BOARD_PAGE_CHARS, page * BOARD_PAGE_CHARS);
       out.push(head, body.length > 0 ? body : "(no text)");
-      if (event.kind === "t3.turn" && event.prompt !== null && page === 1) out.push(`[#${event.sequence} was asked, in T3]`, event.prompt);
-      if (pages > 1 && page < pages) out.push(`[#${event.sequence} continues: read ${sequence} --page ${page + 1}]`);
+      if (event.kind === "t3.turn" && event.prompt !== null && page === 1) out.push(`[#${number} was asked, in T3]`, event.prompt);
+      if (pages > 1 && page < pages) out.push(`[#${number} continues: read ${number} --page ${page + 1}]`);
       out.push("");
     }
     return out.join("\n").trimEnd();
@@ -226,7 +310,7 @@ export class Board {
     const made = result.taskIds.map((id) => this.deps.repos.getTask(id)).filter((t): t is Task => t !== null);
     const lines = made.map((task) => `${this.taskLine(task)}`);
     return [
-      `Posted as #${event?.sequence ?? "?"}.`,
+      `Posted as #${event?.postNumber ?? "?"}.`,
       ...lines,
       "You will be woken with each answer when it lands: end your turn now, with your note to the user.",
     ].join("\n");
@@ -241,11 +325,15 @@ export class Board {
     const members = this.deps.repos.listActiveParticipants(room.id);
     if (members.length === 0) return "Nobody is seated in this room.";
     const tasks = this.deps.repos.listTasks(room.id);
+    const reseats = readReseats(this.deps.repos, room.id);
     const lines = members.map((member) => {
       const thread = this.deps.repos.currentBinding(member.id)?.threadId ?? "no thread";
       const open = tasks.filter((t) => t.participantId === member.id && (t.state === "running" || t.state === "dispatching" || t.state === "needs_input") && t.kind !== "wake");
       const queued = tasks.filter((t) => t.participantId === member.id && t.state === "queued" && t.kind !== "wake").length;
-      return `@${member.alias}${room.consigliereId === member.id ? " (the Consigliere)" : ""} · ${member.modelSelection.model} · ${stateWord(this.deps.statusOf?.(member.id), open)}${queued > 0 ? ` · ${queued} queued` : ""} · thread ${thread}`;
+      const context = this.deps.contextOf ? ` · ${contextPhrase(this.deps.contextOf(member))}` : "";
+      const reseat = reseats.find((r) => r.participantId === member.id);
+      const reseating = reseat ? ` · being reseated (checkpoint task${this.deps.repos.getTask(reseat.checkpointTaskId)?.number ?? "?"})` : "";
+      return `@${member.alias}${room.consigliereId === member.id ? " (the Consigliere)" : ""} · ${member.modelSelection.model} · ${stateWord(this.deps.statusOf?.(member.id), open)}${queued > 0 ? ` · ${queued} queued` : ""}${context}${reseating} · thread ${thread}`;
     });
     return [`Members of "${room.title}":`, ...lines, ...(room.consigliereId ? [] : ["This room has no Consigliere."])].join("\n");
   }
@@ -256,6 +344,33 @@ export class Board {
     return [
       "The user's saved crew (seat one with: seat <name>):",
       ...presets.map((preset) => `${preset.name} · ${preset.modelSelection.model}${preset.workspaceMode === "worktree" ? " · works in its own worktree" : ""}`),
+    ].join("\n");
+  }
+
+  /**
+   * A reseat, for the Consigliere: the member is sent a task to write its checkpoint post; when that lands a fresh seat
+   * of the same saved crew member takes over with it (RoomService.advanceReseats). Nobody is woken for the reseat
+   * itself; the Consigliere is woken when the fresh seat's first task ends, or when the reseat is called off.
+   */
+  private async reseat(room: Room, member: Participant, args: string[]): Promise<string> {
+    const name = args.shift();
+    if (!name) throw new BoardError('rooms-board: reseat needs the member\'s alias, and may take what the fresh seat carries on with: reseat opus "item 4 of docs/plans/x.md".');
+    if (room.consigliereId !== member.id) {
+      const consigliere = room.consigliereId ? this.deps.repos.getParticipant(room.consigliereId) : null;
+      throw new BoardError(`rooms-board: only this room's Consigliere${consigliere ? ` (@${consigliere.alias})` : ""} reseats members.`, 403);
+    }
+    const alias = name.replace(/^@/, "").toLowerCase();
+    const target = this.deps.repos.listActiveParticipants(room.id).find((p) => p.alias.toLowerCase() === alias);
+    if (!target) throw new BoardError(`rooms-board: nobody called @${name.replace(/^@/, "")} is seated in this room; \`members\` lists them.`, 404);
+    const plan = args.join(" ").trim() || null;
+    const result = (await this.deps.execute({ type: "participant.reseat", participantId: target.id, by: member.id, plan })) as { taskId: string; eventId: string };
+    const task = this.deps.repos.getTask(result.taskId);
+    const event = this.deps.repos.getEvent(result.eventId);
+    const self = target.id === member.id;
+    return [
+      `Asked @${target.alias} for its checkpoint: task${task?.number ?? "?"} (post #${event?.postNumber ?? "?"}). It runs when ${self ? "this turn ends" : `@${target.alias} has finished the work in hand`}.`,
+      `When the checkpoint lands, a fresh seat of the same crew member takes over ${self ? "as this room's Consigliere" : `@${target.alias}'s work and pending tasks`} with it${plan ? " and your plan" : ""}, and ${self ? "you leave" : `@${target.alias} leaves`} the room. If it fails, you are woken and nothing changes.`,
+      self ? "End your turn now: the checkpoint is your next task." : "You are woken when the fresh seat's first task ends, not before: end your turn now.",
     ].join("\n");
   }
 
@@ -272,5 +387,59 @@ export class Board {
     const seated = (await this.deps.execute({ type: "participant.fromPreset", roomId: room.id, presetId: preset.id })) as { alias: string; threadId: string };
     await this.deps.afterSeat?.();
     return `Seated @${seated.alias} (${preset.modelSelection.model}) · thread ${seated.threadId}\nIts seat briefing is on its way; what you send it next waits behind that.`;
+  }
+
+  /**
+   * Retiring, for the Consigliere: one seat per deliverable, so a member whose deliverable has passed its gate leaves the
+   * room. Refused while it has work open; the wakes it was still due are cancelled with it. Its T3 thread goes as the
+   * user's retire setting says (Settings → Consigliere: kept unless settle, archive or delete was chosen).
+   */
+  private async retire(room: Room, member: Participant, args: string[]): Promise<string> {
+    const name = args[0];
+    if (!name) throw new BoardError("rooms-board: retire needs the member's alias; `members` lists them.");
+    if (room.consigliereId !== member.id) {
+      const consigliere = room.consigliereId ? this.deps.repos.getParticipant(room.consigliereId) : null;
+      throw new BoardError(`rooms-board: only this room's Consigliere${consigliere ? ` (@${consigliere.alias})` : ""} retires members.`, 403);
+    }
+    const alias = name.replace(/^@/, "").toLowerCase();
+    const target = this.deps.repos.listActiveParticipants(room.id).find((p) => p.alias.toLowerCase() === alias);
+    if (!target) throw new BoardError(`rooms-board: nobody called @${name.replace(/^@/, "")} is seated in this room; \`members\` lists them.`, 404);
+    if (target.id === member.id) throw new BoardError("rooms-board: you cannot retire yourself; `reseat` hands your seat to a fresh one.", 409);
+    const open = this.deps.repos
+      .listTasks(room.id)
+      .filter((t) => t.participantId === target.id && t.kind !== "wake" && (t.state === "queued" || t.state === "dispatching" || t.state === "running" || t.state === "needs_input"));
+    if (open.length > 0) throw new BoardError(`rooms-board: @${target.alias} still has ${open.map((t) => `task${t.number}`).join(", ")} open; retire it once that has ended.`, 409);
+    const result = (await this.deps.execute({ type: "participant.retire", participantId: target.id, pendingTasks: "cancel", thread: retireThreadChoice(this.deps.repos) })) as { thread?: RetiredThread } | null;
+    return `@${target.alias} has left the room. ${threadOutcome(result?.thread)}`;
+  }
+
+  /** The standing sections again: briefings after the first leave them out, and a compaction may have taken them. */
+  private async rules(room: Room, member: Participant): Promise<string> {
+    const text = (await this.deps.standing?.(member.id)) ?? "";
+    if (!text) throw new BoardError("rooms-board: the standing sections cannot be built here.", 503);
+    return `Standing sections for @${member.alias} in room "${room.title}", as they are now:\n${text}`;
+  }
+
+  /**
+   * The room state: anyone prints it; the Consigliere replaces it (any member, in a room without one). Each write
+   * replaces the last one whole, so it stays a summary.
+   */
+  private state(room: Room, member: Participant, args: string[]): string {
+    const text = args.join(" ").trim();
+    if (!text) {
+      const state = readRoomState(this.deps.repos, room.id);
+      if (state) return roomStateSection(state);
+      return `This room has no state yet.${room.consigliereId === member.id || !room.consigliereId ? ' Write it with: state "<text>".' : ""}`;
+    }
+    if (room.consigliereId && room.consigliereId !== member.id) {
+      const consigliere = this.deps.repos.getParticipant(room.consigliereId);
+      throw new BoardError(`rooms-board: only this room's Consigliere${consigliere ? ` (@${consigliere.alias})` : ""} writes the room state.`, 403);
+    }
+    if (text.length > ROOM_STATE_MAX_CHARS) {
+      throw new BoardError(`rooms-board: the room state is ${text.length.toLocaleString("en-US")} characters; keep it under ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} by pointing at post numbers instead of repeating them.`);
+    }
+    writeRoomState(this.deps.repos, room.id, { text, by: member.alias, at: new Date().toISOString() });
+    this.deps.notify?.(room.id);
+    return `Room state saved (${text.length.toLocaleString("en-US")} characters). It replaces the last one, and every new seat is given it with its first briefing.`;
   }
 }

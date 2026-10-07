@@ -85,7 +85,7 @@ test("run correlation: an unrelated direct T3 turn cannot release a dependency",
   await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "follow-up", schedule: { mode: "now" } });
   await stack.tick(2);
   assert.equal(stack.task(3).state, "queued");
-  assert.match(stack.task(3).stateReason ?? "", /busy in T3/);
+  assert.match(stack.task(3).stateReason ?? "", /working on its own/);
   // And the external turn finishing does not satisfy anything for task3.
   stack.fake.completeRun(stack.threadOf("sol1"), { text: "external reply" });
   await stack.tick(2);

@@ -6,7 +6,7 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { Popover } from "./Popover.tsx";
 import { optionLabel } from "./deskFormat.ts";
 import { useToast } from "./Toast.tsx";
-import { BranchIcon, ChevronIcon } from "./icons.tsx";
+import { BranchIcon, ChevronIcon, Glyph } from "./icons.tsx";
 
 export { ModelPicker, selectionFor };
 
@@ -55,7 +55,7 @@ function DropdownButton({ label, title, className, children }: { label: ReactNod
         onClick={() => setOpen((v) => !v)}
       >
         {label}
-        <ChevronIcon dir={open ? "up" : "down"} />
+        <ChevronIcon dir={open ? "up" : "down"} small />
       </button>
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="menu" className="setting-menu" onClose={() => setOpen(false)}>
@@ -97,7 +97,7 @@ export function ModelOptionsMenu({ value, onChange }: { value: ModelSelection | 
             <span className="setting-section-head">{descriptor.label}</span>
             {descriptor.type === "boolean" ? (
               <button type="button" role="menuitemcheckbox" aria-checked={currentOf(descriptor) === true} onClick={() => setOption(descriptor, currentOf(descriptor) !== true)}>
-                <span className="setting-check">{currentOf(descriptor) === true ? "✓" : ""}</span>
+                <span className="setting-check">{currentOf(descriptor) === true ? <Glyph name="check" text="✓" /> : null}</span>
                 {currentOf(descriptor) === true ? "On" : "Off"}
               </button>
             ) : (
@@ -110,7 +110,7 @@ export function ModelOptionsMenu({ value, onChange }: { value: ModelSelection | 
                   title={choice.description ?? undefined}
                   onClick={() => setOption(descriptor, choice.id)}
                 >
-                  <span className="setting-check">{currentOf(descriptor) === choice.id ? "✓" : ""}</span>
+                  <span className="setting-check">{currentOf(descriptor) === choice.id ? <Glyph name="check" text="✓" /> : null}</span>
                   {choice.label}
                   {choice.isDefault ? <span className="muted"> default</span> : null}
                 </button>
@@ -140,7 +140,7 @@ export function PermissionMenu({ value, onChange }: { value: RuntimeMode; onChan
               close();
             }}
           >
-            <span className="setting-check">{value === mode ? "✓" : ""}</span>
+            <span className="setting-check">{value === mode ? <Glyph name="check" text="✓" /> : null}</span>
             <span>
               {RUNTIME_MODE_INFO[mode].label}
               <span className="hint">{RUNTIME_MODE_INFO[mode].description}</span>
@@ -278,7 +278,7 @@ export function WorkspacePicker({
                 <div className="setting-section" role="group" aria-label="Where it works">
                   <span className="setting-section-head">Where it works</span>
                   <button type="button" role="menuitemradio" aria-checked={value.mode === "local"} className="setting-choice" onClick={() => choose({ mode: "local" }, close)}>
-                    <span className="setting-check">{value.mode === "local" ? "✓" : ""}</span>
+                    <span className="setting-check">{value.mode === "local" ? <Glyph name="check" text="✓" /> : null}</span>
                     <span>
                       Project folder
                       <span className="hint">
@@ -293,7 +293,7 @@ export function WorkspacePicker({
                     className="setting-choice"
                     onClick={() => choose(value.mode === "worktree" ? value : { mode: "worktree", baseBranch: defaultBase }, close)}
                   >
-                    <span className="setting-check">{value.mode === "worktree" ? "✓" : ""}</span>
+                    <span className="setting-check">{value.mode === "worktree" ? <Glyph name="check" text="✓" /> : null}</span>
                     <span>
                       New worktree
                       <span className="hint">A folder and branch of its own, made now from a base branch.</span>
@@ -312,7 +312,7 @@ export function WorkspacePicker({
                         className="setting-choice"
                         onClick={() => choose({ mode: "existing", worktreePath: ref.worktreePath as string }, close)}
                       >
-                        <span className="setting-check">{value.mode === "existing" && value.worktreePath === ref.worktreePath ? "✓" : ""}</span>
+                        <span className="setting-check">{value.mode === "existing" && value.worktreePath === ref.worktreePath ? <Glyph name="check" text="✓" /> : null}</span>
                         <span>
                           <BranchIcon /> {ref.name}
                           <span className="hint mono">{ref.worktreePath}</span>

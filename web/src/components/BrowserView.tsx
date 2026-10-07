@@ -21,7 +21,7 @@ interface BrowserViewProps {
   runCommand: RunCommand;
   /** The browser was deleted (here or elsewhere). */
   onGone: () => void;
-  /** The list in the sidebar should refresh (renamed, started, stopped). */
+  /** The browsers listed on the overview should refresh (renamed, started, stopped). */
   onChanged: () => void;
   onOpenRoom: (roomId: string) => void;
   headerStart: ReactNode;

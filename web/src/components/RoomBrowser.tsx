@@ -253,7 +253,7 @@ export function BrowserChoices({
  * The Browser tab of the room's side panel, in the order it matters to agents: first whether they are told about
  * browsers at all, then which browsers they may use, each with the name and description they read (editable here),
  * one of them the default that starts for each task; then that default's process, with Start or Stop at the bottom.
- * The browsers themselves are managed in the sidebar's Browsers section.
+ * The browsers themselves are managed under Browsers on the overview.
  */
 export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
@@ -316,7 +316,7 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
           </div>
         </>
       ) : (
-        <p className="hint">No browser yet: create one under Browsers in the sidebar.</p>
+        <p className="hint">No browser yet: create one under Browsers on the overview.</p>
       )}
 
       {editing ? (

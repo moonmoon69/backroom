@@ -10,7 +10,7 @@ import { useAutoRead, useSpeechAvailable } from "../speech.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
 
-/** The ⋯ menu on a room in the sidebar: rename or delete. */
+/** The ⋯ menu on a room's card: rename or delete. */
 export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: RunCommand }) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
@@ -62,7 +62,7 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
 
 type RoomRef = Pick<Room, "id" | "title">;
 
-/** The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the sidebar's menu. */
+/** The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the card's menu. */
 export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }) {
   const { snapshot, runCommand } = useRoom();
   const [autoRead, setAutoRead] = useAutoRead(`room:${snapshot.room.id}`);
@@ -116,7 +116,7 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
               type="button"
               role="menuitemcheckbox"
               aria-checked={autoRead}
-              title="Read each new reply and request aloud in this browser, with the voice set at the foot of the sidebar"
+              title="Read each new reply and request aloud in this browser, with the voice set in Settings → Voice…"
               onClick={() => {
                 setAutoRead(!autoRead);
                 setOpen(false);

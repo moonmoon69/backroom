@@ -85,7 +85,8 @@ export const isLocalPath = (src: string): boolean => src.startsWith("file://") |
  * by the service from the machine it runs on. Web URLs, data URLs, and the app's own routes pass through untouched.
  */
 export function imageSource(src: string, base: string | null = null): string {
-  if (src.startsWith("file://")) return LOCAL_FILE_ENDPOINT + encodeURIComponent(decodeURIComponent(src.slice("file://".length)));
+  if (src.startsWith("/api/") || src.startsWith("/assets/")) return src;
+  if (src.startsWith("file://")) return LOCAL_FILE_ENDPOINT + encodeURIComponent(safeDecode(src.slice("file://".length)));
   if (isLocalPath(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(src);
   // Relative to the folder the text was written in (a previewed document's, a reply's): `assets/banner.jpg`.
   if (base && !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(`${base.replace(/\/+$/, "")}/${src.replace(/^\.\//, "")}`);
@@ -95,9 +96,32 @@ export function imageSource(src: string, base: string | null = null): string {
 export type MediaKind = "image" | "video" | "audio";
 const VIDEO = /\.(mp4|m4v|webm|mov|ogv)(\?|#|$)/i;
 const AUDIO = /\.(wav|mp3|m4a|aac|ogg|oga|flac)(\?|#|$)/i;
+const IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)(\?|#|$)/i;
+
+/** Local-file display URLs carry the real media name in their path query. */
+const mediaPath = (src: string): string => {
+  try {
+    const url = new URL(src, "http://backroom.local");
+    return url.pathname === "/api/local-file" ? url.searchParams.get("path") ?? src : src;
+  } catch {
+    return src;
+  }
+};
+
+export const isDataImage = (src: string): boolean => /^data:image\/(?:png|jpeg|gif|webp|svg\+xml|bmp|avif|x-icon)(?:;[^,]*)?,/i.test(src);
+
+/** Picture links (including extensionless attachments) use the image surface, never filePreview. */
+export function isImageLink(src: string): boolean {
+  if (isDataImage(src) || IMAGE.test(mediaPath(src))) return true;
+  try {
+    return /^\/api\/attachments\/[^/]+$/.test(new URL(src, "http://backroom.local").pathname);
+  } catch {
+    return false;
+  }
+}
 
 /** What a source plays as, by its extension: markdown writes every embedded file as an image. */
-export const mediaKind = (src: string): MediaKind => (VIDEO.test(src) ? "video" : AUDIO.test(src) ? "audio" : "image");
+export const mediaKind = (src: string): MediaKind => (VIDEO.test(mediaPath(src)) ? "video" : AUDIO.test(mediaPath(src)) ? "audio" : "image");
 
 /**
  * GitHub's anchor for a heading, so a document's own links work (`[How it works](#how-it-works)`): lower case,
@@ -112,6 +136,7 @@ export type LinkTarget = { kind: "anchor"; anchor: string } | { kind: "file"; pa
 
 export function linkTarget(href: string): LinkTarget {
   if (href.startsWith("#")) return { kind: "anchor", anchor: safeDecode(href.slice(1)) };
+  if (href.startsWith("/api/") || href.startsWith("/assets/")) return { kind: "web" };
   // A scheme (https:, mailto:) or a protocol-relative URL is the web; file: URLs and paths are files.
   if (href.startsWith("//") || (/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("file:"))) return { kind: "web" };
   const [location = "", hash = ""] = href.replace(/^file:\/\//, "").split("#");

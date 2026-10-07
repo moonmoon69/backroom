@@ -145,7 +145,7 @@ function RoomOverview({
               >
                 <span className="git-worktree-text">
                   <span className="mono git-name">
-                    <BranchIcon /> {folder.branch ?? (folder.detached ? "detached" : "—")}
+                    <BranchIcon small /> {folder.branch ?? (folder.detached ? "detached" : "—")}
                   </span>
                   <span className="git-commit-meta mono">
                     {state ? <span>{state}</span> : null}
@@ -197,7 +197,7 @@ function Overlaps({ overlaps, folders, onSelect }: { overlaps: GitOverlap[]; fol
                   const people = (folder?.participantIds ?? []).map(participantById).filter(Boolean) as Participant[];
                   return (
                     <button key={path} type="button" className="tag mono branch-tag" title={`${path}\nShow this folder`} onClick={() => onSelect(path)}>
-                      {people.length > 0 ? people.map((p) => <Monogram key={p.id} participant={p} size="xs" />) : <BranchIcon />}
+                      {people.length > 0 ? people.map((p) => <Monogram key={p.id} participant={p} size="xs" />) : <BranchIcon small />}
                       {folder?.branch ?? "detached"}
                     </button>
                   );

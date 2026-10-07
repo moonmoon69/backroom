@@ -57,6 +57,30 @@ test("binaries are named, not shown; media goes to the media route; long text is
   assert.equal(big.ok && big.kind === "text" && big.truncated && big.content.length, MAX_PREVIEW_BYTES);
 });
 
+test("HTML keeps the text contract, original source and resolved extension; incomplete HTML is flagged", () => {
+  const root = project();
+  const source = '<!doctype html><html><button id="choice">Choose</button><script>choice.onclick=()=>choice.textContent="Chosen";</script></html>\n';
+  for (const name of ["overview.html", "overview.HTM"]) {
+    writeFileSync(join(root, name), source);
+    const preview = previewFile(name, { roots: [root] });
+    assert.ok(preview.ok && preview.kind === "text");
+    assert.equal(preview.path, join(root, name));
+    assert.equal(preview.content, source);
+    assert.equal(preview.truncated, false);
+  }
+  symlinkSync(join(root, "overview.html"), join(root, "alias.txt"));
+  const alias = previewFile("alias.txt", { roots: [root] });
+  assert.ok(alias.ok && alias.kind === "text");
+  assert.equal(alias.path, join(root, "overview.html"), "the frontend classifies the resolved HTML, not the alias");
+  const incomplete = source + " ".repeat(MAX_PREVIEW_BYTES);
+  writeFileSync(join(root, "large.html"), incomplete);
+  const large = previewFile("large.html", { roots: [root] });
+  assert.ok(large.ok && large.kind === "text");
+  assert.equal(large.truncated, true);
+  assert.equal(large.content, incomplete.slice(0, MAX_PREVIEW_BYTES));
+  assert.equal(large.size, Buffer.byteLength(incomplete));
+});
+
 test("the route reads from T3's project folders and says why it refuses", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());

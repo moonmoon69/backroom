@@ -3,6 +3,9 @@
  * T3 identities (project, thread, message, turn, command) are stored as opaque strings.
  */
 
+import type { Look } from "./look.ts";
+import type { RoomStateView } from "../app/roomState.ts";
+
 export type RoomId = string;
 export type ParticipantId = string;
 export type BindingId = string;
@@ -93,6 +96,8 @@ export interface Participant {
   bindingGeneration: number;
   /** Set when the participant was removed from the room; kept for attribution of past events. */
   retiredAt: string | null;
+  /** The crew member (preset) it was seated as, when there is one: it wears that preset's look in the pixel skin. */
+  presetId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,6 +113,8 @@ export interface Preset {
   runtimeMode: RuntimeMode;
   /** Where its threads work: the project folder, or a new worktree from the project's default branch. */
   workspaceMode: "local" | "worktree";
+  /** Its pixel look, every part named: the parts chosen, the rest their stable defaults (domain/look.ts). */
+  look: Look;
   createdAt: string;
   updatedAt: string;
 }
@@ -140,6 +147,12 @@ export type RoomEventKind =
   | "task.status"
   | "system";
 
+/**
+ * The kinds that are posts: what was said, by the user, a member or in T3, as the board and the page list it. Only
+ * posts take a post number; task status lines and system notes are the room's bookkeeping and take none.
+ */
+export const POST_KINDS: ReadonlySet<RoomEventKind> = new Set<RoomEventKind>(["user.message", "note", "assistant.reply", "t3.turn", "t3.message", "member.message"]);
+
 export type Speaker =
   | { type: "user" }
   | { type: "participant"; participantId: ParticipantId; bindingId: BindingId }
@@ -165,7 +178,14 @@ export const isFileArtifact = (artifact: ArtifactRef): boolean => Boolean(artifa
 export interface RoomEvent {
   id: EventId;
   roomId: RoomId;
+  /** Its place in the room's log of everything that happens (posts, task status lines, system notes): ordering only. */
   sequence: number;
+  /**
+   * A post's number, as the page, the board and replies cite it ("#51"); null for events that are not posts. Posts
+   * made before posts were numbered on their own keep their sequence as their number; later ones count on from the
+   * room's highest post number, so they run without gaps.
+   */
+  postNumber: number | null;
   kind: RoomEventKind;
   speaker: Speaker;
   text: string;
@@ -330,6 +350,8 @@ export interface RoomSnapshot {
   participantStatus: Record<ParticipantId, ParticipantStatus>;
   /** The room's effective browser and its process state; null when it has none or this service cannot run browsers. */
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
+  /** The room state (rooms-board state): the Consigliere's summary of where the room stands, with its first line; null until one is written. */
+  state: RoomStateView | null;
 }
 
 export type { RoomBrowserStatus } from "../browser/roomBrowsers.ts";
