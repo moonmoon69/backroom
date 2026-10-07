@@ -1,8 +1,11 @@
 /** Wires the persistence, service, scheduler, and change-notification hub. Used by the server and by tests. */
+import { dirname, join } from "node:path";
 import type { T3Adapter } from "../adapter/types.ts";
 import { Database } from "../db/database.ts";
 import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
+import { EngineStore } from "../engine/index.ts";
+import { EngineHost } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
@@ -47,6 +50,8 @@ export interface AppStack {
   updates: T3Updates;
   /** Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while a page is open. */
   presence: T3Presence;
+  /** The engine runtime over data/board.sqlite, with ROOMS_ENGINE=1 only (stage 4/5; off until cutover). */
+  engine: EngineHost | null;
   close(): void;
 }
 
@@ -63,6 +68,8 @@ export function createStack(input: {
   browsers?: (deps: { repos: Repos; notify: (roomId: string) => void }) => RoomBrowsers;
   /** Where T3's newest release is looked up (npm by default; tests pass their own). */
   latestRelease?: ReleaseLookup;
+  /** Run the engine runtime (src/runtime) beside the old one; defaults to ROOMS_ENGINE=1. */
+  engine?: boolean;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
@@ -86,6 +93,15 @@ export function createStack(input: {
     },
     notify,
   );
+  // ROOMS_ENGINE=1: the engine host over its own journal, data/board.sqlite next to rooms.sqlite. Off by default, so
+  // a process without the flag never opens the journal and behaves as before.
+  const engineStore = (input.engine ?? process.env.ROOMS_ENGINE === "1")
+    ? new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"))
+    : null;
+  const engine = engineStore
+    ? new EngineHost({ store: engineStore, adapter: input.adapter, rooms: () => repos.listRooms().map((room) => room.id), notify, ...(input.log ? { log: input.log } : {}) })
+    : null;
+  engine?.start();
   return {
     db,
     repos,
@@ -96,7 +112,10 @@ export function createStack(input: {
     browsers,
     updates: new T3Updates(input.adapter, input.latestRelease),
     presence,
+    engine,
     close() {
+      engine?.stop();
+      engineStore?.close();
       scheduler.stop();
       presence.stop();
       browsers?.detach();
