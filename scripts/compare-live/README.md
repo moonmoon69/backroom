@@ -19,7 +19,8 @@ and holds the pass rules, written before any paid run.
 | `run.ts` | The runner: one job after another, or `--dry` on two fake instances |
 | `t3.ts` | Reads of T3 itself (HTTP, its state database) and the copies taken at each job's close |
 | `measure.ts` | Measures the jobs, writes `report.md` and `report.json`; `--verify`, `--register-gate`, `--verdict` |
-| `rawsum.mjs` | The accuracy check's own token reader, sharing no code with `ThreadCosts` or `measure.ts` |
+| `tokens.ts` | What a thread's calls used, from T3's state rows and the raw Claude transcripts, with list price |
+| `rawsum.mjs` | The accuracy check's own token reader, sharing no code with `tokens.ts` or `measure.ts` |
 | `gate.ts`, `gate.json` | The Z1 gate: G1–G3, the relabelling, N and K from R0's spread; registered values |
 | `*.test.ts` | `node --no-warnings --test scripts/compare-live/*.test.ts` |
 
@@ -49,7 +50,7 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
 ## A job
 
 1. **Cap.** The campaign's measured spend so far (every job's threads, seating included, whatever the job's outcome;
-   list price from T3's price table) is added up; at or above the cap, no job starts. R0: $100. Z1: 1.5 × Z1's job count
+   list price from T3's price table, read live with `tokens.ts`) is added up; at or above the cap, no job starts. R0: $100. Z1: 1.5 × Z1's job count
    × R0's median job cost, never above $250 without the user's OK (`gate.json` → `fromR0.z1CapUsd`).
 2. **Folder.** A fresh clone of the fixture at `fixture-v1` in `~/Projects/backroom-compare/jobs/<random id>/tally`, on a
    branch `main`, with no remote, registered as its own throwaway T3 project `tally-<id>`. The path does not say which
@@ -108,10 +109,10 @@ Window: `postedAt` to the close. Seating: everything before `postedAt`, reported
 
 - **turns**: T3 runs requested in the window on the seats' threads, until and after the report;
 - **wakes**: the Consigliere's runs in the window minus the one the post started; after-report wakes listed apart;
-- **tokens**: fresh input, cache read, cache write, output, calls and list-price cost, by `ThreadCosts`
-  (`src/usage/threadCosts.ts`) over the copied transcripts and state rows, each message counted once;
-  `tokens` in the gate is all four kinds summed over every job thread;
-- **peak context**: the thread's largest single call (seating included);
+- **tokens**: fresh input, cache read, cache write, output, calls and list-price cost (T3's price table), by `tokens.ts`
+  over the copied transcripts and state rows, each message counted once with its final usage (see "Recomputing one
+  job"); `tokens` in the gate is all four kinds summed over every job thread;
+- **peak context**: the thread's largest single call of its own in the window;
 - **briefing bytes per delivered turn**: the user messages T3 recorded for each run in the window, cross-checked against
   the instance's own record of what it sent (old side: `runs.briefing`);
 - **wall-clock** to the report and to the checker's first pass; **correct**, **premature**, **early member answers**;
@@ -121,7 +122,7 @@ Window: `postedAt` to the close. Seating: everything before `postedAt`, reported
 **Accuracy check** (`--verify`, non-zero exit on any difference): for every job thread, `rawsum.mjs` sums the same
 transcripts by message id (sessions found with the `sqlite3` CLI) for the job window and for seating, and must equal
 `measure.ts`'s four totals; the `sqlite3` CLI counts the runs in the window from the state rows and must equal the turns
-read from T3's thread detail; a message id repeated with different usage is reported.
+read from T3's thread detail; a message id whose copies differ in input or cache figures is reported.
 
 ## Recomputing one job by hand
 
@@ -135,16 +136,22 @@ P=$(jq -r .times.postedAt $J/job.json); C=$(jq -r .times.closeAt $J/job.json)
 sqlite3 -readonly $DB "select count(*) from orchestration_v2_projection_runs where thread_id='$T' and requested_at >= '$P' and requested_at <= '$C'"
 # its Claude session
 S=$(sqlite3 -readonly $DB "select json_extract(payload_json,'$.nativeThreadRef.nativeId') from orchestration_v2_projection_provider_threads where thread_id='$T'")
-# four token totals in the window: the session file and its subagents, each message id once (first seen), then by time
+# four token totals in the window: the session file and its subagents; each message id once, with the largest output
+# of its copies, at the time of its first copy
 find $J/transcripts -path "*$S*" -name '*.jsonl' | sort | xargs cat | jq -s --arg p "$P" --arg c "$C" '
-  map(select(.message.usage? and (.message.id|type)=="string")) | unique_by(.message.id)
-  | map(select(.timestamp >= $p and .timestamp <= $c)) | map(.message.usage)
+  map(select(.message.usage? and (.message.id|type)=="string" and (.message.model|type)=="string")) | group_by(.message.id)
+  | map({at: (map(.timestamp)|min), u: (max_by(.message.usage.output_tokens // 0).message.usage)})
+  | map(select(.at >= $p and .at <= $c) | .u)
   | {input: (map(.input_tokens // 0)|add), cacheRead: (map(.cache_read_input_tokens // 0)|add),
      cacheWrite: (map(.cache_creation_input_tokens // 0)|add), output: (map(.output_tokens // 0)|add)}'
 ```
 
-`unique_by` keeps one line per id; that is the first seen only when no id carries different usage, which `--verify`
-checks. Compare with `measure.json` → `seats[]` (`turns`, `tokens`).
+Why the largest output: Claude Code writes a message once per content block, all under its id. In a session's own
+transcript every copy carries the same usage; in a subagent's transcript the copies are written while the message
+streams and only the last carries the final output count (found on the first R0 job: 19 output tokens first-seen
+against 2,076 final). Input and cache figures never differ between copies; `--verify` reports any id whose copies
+differ in them. ThreadCosts (`src/usage/threadCosts.ts`, the page's spend figures) keeps the first copy and so
+undercounts subagents' output; the comparison reads tokens with `tokens.ts` instead. checks. Compare with `measure.json` → `seats[]` (`turns`, `tokens`).
 
 ## The dry run
 

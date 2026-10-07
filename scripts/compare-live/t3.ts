@@ -30,7 +30,7 @@ export function claudeProjectDirName(cwd: string): string {
 
 /**
  * Copy the transcripts of every session started in `cwd` (the session files and their folders, subagents included)
- * to `<into>/<project dir name>/`, the layout ~/.claude/projects has, so ThreadCosts and rawsum.mjs read the copy
+ * to `<into>/<project dir name>/`, the layout ~/.claude/projects has, so tokens.ts and rawsum.mjs read the copy
  * as they read the original. Claude Code prunes old transcripts; the copy keeps the job measurable.
  */
 export function copyTranscripts(cwd: string, into: string, projectsDir = CLAUDE_PROJECTS): string[] {

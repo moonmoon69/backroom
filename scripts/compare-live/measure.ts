@@ -1,7 +1,7 @@
 /**
  * Measures the comparison's jobs, both sides the same way, from T3's records of each job (copied into the job's
  * evidence folder at its close by run.ts): T3's thread details for runs and messages, T3's state-database rows for the
- * thread → session map, and the raw Claude transcripts for tokens (through ThreadCosts, src/usage/threadCosts.ts).
+ * thread → session map, and the raw Claude transcripts for tokens (tokens.ts: each message once, with its final usage).
  * Never from either Backroom's tables.
  *
  * The job window runs from the user's post to the close (3 minutes of quiet after the report). Seating, before the
@@ -22,12 +22,14 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { ThreadCosts, type ThreadCost } from "../../src/usage/threadCosts.ts";
 import { campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
 import { RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE } from "./checkers.ts";
 import { TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
+import { TranscriptTokens, type Tokens } from "./tokens.ts";
+
+export type { Tokens };
 
 /** A thread as T3 recorded it, reduced to what is measured. */
 export interface ThreadRecord {
@@ -41,16 +43,6 @@ export interface ThreadRecord {
   partial: boolean;
 }
 
-export interface Tokens {
-  input: number;
-  cacheRead: number;
-  cacheWrite: number;
-  output: number;
-  /** All four kinds. */
-  total: number;
-  calls: number;
-  costUsd: number;
-}
 
 export interface SeatMeasure {
   alias: string | null;
@@ -65,7 +57,7 @@ export interface SeatMeasure {
   tokensUntilReport: Tokens | null;
   tokensAfterReport: Tokens | null;
   seating: Tokens | null;
-  /** The largest single call of the thread (its own calls, seating included). */
+  /** The thread's largest single call of its own in the window. */
   peakContext: number | null;
   /** The bytes of the messages T3 received for each run in the window, in order. */
   briefingBytes: number[];
@@ -101,16 +93,6 @@ export interface JobMeasure {
 const ms = (time: string) => Date.parse(time);
 const inWindow = (time: string, from: number, to: number) => ms(time) >= from && ms(time) <= to;
 
-const tokensOf = (cost: ThreadCost): Tokens => ({
-  input: cost.total.inputTokens,
-  cacheRead: cost.total.cachedInputTokens,
-  cacheWrite: cost.total.cacheWriteTokens,
-  output: cost.total.outputTokens,
-  total: cost.total.inputTokens + cost.total.cachedInputTokens + cost.total.cacheWriteTokens + cost.total.outputTokens,
-  calls: cost.total.calls,
-  costUsd: cost.total.costUsd,
-});
-
 const sum = (list: Array<Tokens | null>): Tokens | null => {
   if (list.some((t) => t === null)) return null;
   return (list as Tokens[]).reduce(
@@ -128,9 +110,9 @@ export function jobSources(dir: string) {
   };
 }
 
-const costsFor = (dir: string) => {
+const tokensFor = (dir: string) => {
   const sources = jobSources(dir);
-  return new ThreadCosts({ t3StateDb: sources.stateDb, ratesPath: RATES, claudeProjectsDir: sources.transcripts, codexSessionsDir: join(dir, "no-codex") });
+  return new TranscriptTokens({ stateDb: sources.stateDb, projectsDir: sources.transcripts, ratesPath: RATES });
 };
 
 /** The final message of each run: the last assistant message T3 recorded for it. */
@@ -183,13 +165,13 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
   const reportAt = job.dry ? job.times.reportAt : (t3Report?.at ?? null);
   const report = reportAt ? ms(reportAt) : null;
 
-  const costs = job.dry ? null : costsFor(dir);
+  const costs = job.dry ? null : tokensFor(dir);
   const seats: SeatMeasure[] = records.map((record) => {
     const runs = record.runs.filter((r) => inWindow(r.requestedAt, posted, close));
     const briefingBytes = runs.map((run) =>
       record.messages.filter((m) => m.role === "user" && m.runId === run.id).reduce((total, m) => total + Buffer.byteLength(m.text, "utf8"), 0),
     );
-    const between = (from: number, to: number) => (costs ? tokensOf(costs.costBetween([record.threadId], from, to)) : null);
+    const between = (from: number, to: number) => (costs ? costs.between([record.threadId], from, to) : null);
     return {
       alias: record.alias,
       role: record.role,
@@ -202,7 +184,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
       tokensUntilReport: between(posted, report ?? close),
       tokensAfterReport: report === null ? between(close + 1, close) : between(report + 1, close),
       seating: between(0, posted - 1),
-      peakContext: costs ? costs.context([record.threadId], null).peak : null,
+      peakContext: costs ? costs.peak(record.threadId, posted, close) : null,
       briefingBytes,
       subagentsStarted: record.subagents.filter((s) => s.startedAt !== null && inWindow(s.startedAt, posted, close)).length,
     };
@@ -244,7 +226,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
   };
   const seatingUsd = seats.reduce((total, s) => total + (s.seating?.costUsd ?? 0), 0);
   const jobUsd = tokens?.costUsd ?? 0;
-  const lifetime = costs ? tokensOf(costs.cost(jobThreads(job))).costUsd : 0;
+  const lifetime = costs ? costs.between(jobThreads(job), Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY).costUsd : 0;
 
   return {
     campaign: job.campaign,
@@ -342,8 +324,8 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
     }
     return out;
   }
-  // A message id counted once must not hide a second, different usage under the same id.
-  for (const conflict of duplicateUsageConflicts(sources.transcripts)) out.push({ job: name, what: `message ${conflict.id} repeated with different usage in ${conflict.file}`, measured: conflict.first, recounted: conflict.other });
+  // A message id counted once (with its largest output) must not hide copies whose input or cache figures differ.
+  for (const conflict of duplicateUsageConflicts(sources.transcripts)) out.push({ job: name, what: `message ${conflict.id} repeated with different input or cache usage in ${conflict.file}`, measured: conflict.first, recounted: conflict.other });
   const rawsum = join(import.meta.dirname, "rawsum.mjs");
   for (const seat of measured.seats) {
     const turns = Number(
@@ -364,7 +346,10 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   return out;
 }
 
-/** Message ids that appear more than once in the job's transcripts with different usage figures. */
+/**
+ * Message ids that appear more than once in the job's transcripts with different input, cache-read or cache-write
+ * figures. (A subagent's copies differ in output while the message streams; the largest is the message's.)
+ */
 export function duplicateUsageConflicts(transcripts: string): Array<{ id: string; file: string; first: unknown; other: unknown }> {
   const seen = new Map<string, string>();
   const out: Array<{ id: string; file: string; first: unknown; other: unknown }> = [];
@@ -380,10 +365,11 @@ export function duplicateUsageConflicts(transcripts: string): Array<{ id: string
         continue;
       }
       if (typeof row.message?.id !== "string" || !row.message.usage) continue;
-      const usage = JSON.stringify(row.message.usage);
+      const u = row.message.usage as Record<string, unknown>;
+      const usage = JSON.stringify([u.input_tokens ?? 0, u.cache_read_input_tokens ?? 0, u.cache_creation_input_tokens ?? 0]);
       const first = seen.get(row.message.id);
       if (first === undefined) seen.set(row.message.id, usage);
-      else if (first !== usage) out.push({ id: row.message.id, file, first: JSON.parse(first), other: row.message.usage });
+      else if (first !== usage) out.push({ id: row.message.id, file, first: JSON.parse(first), other: JSON.parse(usage) });
     }
   }
   return out;

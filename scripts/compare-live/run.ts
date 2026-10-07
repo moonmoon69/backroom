@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { isRunActive, type T3ThreadDetail, type T3ThreadShell } from "../../src/adapter/types.ts";
 import type { HttpT3Adapter } from "../../src/adapter/http.ts";
-import { ThreadCosts } from "../../src/usage/threadCosts.ts";
+import { TranscriptTokens } from "./tokens.ts";
 import {
   AFTER_REPORT_CAP_MS,
   COMPARE_ROOT,
@@ -50,11 +50,9 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // ---------------- the spend cap ----------------
 
 /** What a job has spent so far at list price: every call on its threads, seating included (T3's records, live). */
-export function jobSpend(job: JobRecord, costs: ThreadCosts): number {
+export function jobSpend(job: JobRecord, costs: TranscriptTokens): number {
   const threads = jobThreads(job);
-  if (threads.length === 0) return 0;
-  const cost = costs.cost(threads);
-  return cost.available ? cost.total.costUsd : 0;
+  return threads.length === 0 ? 0 : costs.between(threads, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY).costUsd;
 }
 
 /** The cap, as main() applies it before each job: every job of the campaign so far, whatever its outcome. */
@@ -62,7 +60,7 @@ export function capGate(campaign: string, cap: number, spendOf: (job: JobRecord)
   return capCheck(listJobs(campaign).map(({ job }) => spendOf(job)), cap);
 }
 
-const liveCosts = () => new ThreadCosts({ t3StateDb: STATE_DB, ratesPath: RATES, claudeProjectsDir: CLAUDE_PROJECTS, codexSessionsDir: join(COMPARE_ROOT, "no-codex") });
+const liveCosts = () => new TranscriptTokens({ stateDb: STATE_DB, projectsDir: CLAUDE_PROJECTS, ratesPath: RATES });
 
 // ---------------- one job ----------------
 

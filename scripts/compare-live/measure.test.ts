@@ -27,10 +27,11 @@ after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const rawsum = (thread: string, from: string, to: string) =>
   JSON.parse(execFileSync(process.execPath, [join(import.meta.dirname, "rawsum.mjs"), join(JOB, "t3", "state-subset.sqlite"), join(JOB, "transcripts"), thread, from, to], { encoding: "utf8" })) as Record<string, number>;
 
-// By hand: the Consigliere's job window has msg_c1 once (it repeats in its own file and in the subagent's), msg_c2 and
-// the subagent's msg_s1; his seating window msg_c0. W1: msg_w1 in the window, msg_w0 in seating.
+// By hand: the Consigliere's job window has msg_c1 once (it repeats in its own file and in the subagent's), msg_c2,
+// the subagent's msg_s1, and its msg_s2 once with the output of its last copy (700, not the first copy's 5); his
+// seating window msg_c0. W1: msg_w1 in the window, msg_w0 in seating.
 const EXPECTED = {
-  consigliere: { input: 2 + 1 + 5, cacheRead: 20000 + 21500, cacheWrite: 1500 + 800 + 3000, output: 300 + 250 + 400 },
+  consigliere: { input: 2 + 1 + 5 + 1, cacheRead: 20000 + 21500 + 3000, cacheWrite: 1500 + 800 + 3000 + 200, output: 300 + 250 + 400 + 700 },
   consigliereSeating: { input: 3, cacheRead: 0, cacheWrite: 20000, output: 100 },
   w1: { input: 4, cacheRead: 18000, cacheWrite: 2500, output: 900 },
   w1Seating: { input: 3, cacheRead: 0, cacheWrite: 18000, output: 80 },
@@ -41,7 +42,7 @@ const CLOSE = "2026-10-08T10:30:00.000Z";
 const four = (t: { input: number; cacheRead: number; cacheWrite: number; output: number } | null) => (t ? { input: t.input, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite, output: t.output } : null);
 
 describe("tokens", () => {
-  test("rawsum.mjs gives the hand totals, the repeated message id counted once", () => {
+  test("rawsum.mjs gives the hand totals, a repeated message id counted once with its final output", () => {
     const { messages: _c, ...consigliere } = rawsum(C, POSTED, CLOSE);
     assert.deepEqual(consigliere, EXPECTED.consigliere);
     const { messages: _s, ...seating } = rawsum(C, "1970-01-01T00:00:00.000Z", BEFORE_POST);
