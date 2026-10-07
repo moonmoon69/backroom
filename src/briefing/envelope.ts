@@ -27,8 +27,10 @@ export interface EnvelopeDirectory {
   author(eventId: string): string | null;
   /** A principal by the same names (whom an answer goes to). */
   name(principal: Principal): string;
-  /** Names of the images that came with an event. T3 delivers the images; the host sends them with the message. */
+  /** Names of the images that came with an event. T3 delivers the images; the host sends those in `images`. */
   attachments(eventId: string): readonly string[];
+  /** A handover's split, as the transfer event says: the requests it made the new seat's, and those whose answers now come to it. */
+  handover?(eventId: string): { owned: readonly string[]; awaited: readonly string[] } | null;
 }
 
 /** A principal as briefings name it, given a seat's alias. */
@@ -57,6 +59,10 @@ export function journalDirectory(
     },
     name,
     attachments: (eventId) => names.attachments?.(eventId) ?? [],
+    handover: (eventId) => {
+      const data = byId.get(eventId)?.data;
+      return data?.kind === "transfer" ? { owned: data.owned, awaited: data.awaited } : null;
+    },
   };
 }
 
@@ -132,6 +138,12 @@ export interface EnvelopeBriefing {
   /** Envelope inputs, inherited ones included, not rendered in full. */
   condensedEventIds: string[];
   condensed: boolean;
+  /**
+   * The images this message carries, by the post they came with, in the order the text names them: the host attaches
+   * exactly these. Every input's images (inherited ones included), and an earlier open request's or correction's when it
+   * goes in full to a fresh or compacted thread. Other posts' images are named "not attached here".
+   */
+  images: Array<{ eventId: string; names: string[] }>;
 }
 
 /** `/compact …` sent verbatim to a seat: its thread may lose the standing sections, so forget its record. */
@@ -169,7 +181,12 @@ interface Unit {
   preferred: RenderForm;
   text: Record<RenderForm, string>;
   chosen: RenderForm;
+  images: readonly string[];
+  /** Whether its images go with this message: always (an input), only when it goes in full, or never (already sent, or not to this seat). */
+  attach: Attach;
 }
+
+type Attach = "always" | "if-full" | "never";
 
 type Slot = string | Unit;
 
@@ -192,20 +209,20 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   const on = (ids: readonly string[]) => (ids.length > 0 ? ` on ${refs(ids)}` : "");
   const open = new Map(envelope.openRequests.map((request) => [request.id, request]));
 
-  const unit = (id: string, seq: number, tag: string, body: string, tier: number, isInput: boolean, preferred: RenderForm = "full"): Unit => {
+  const unit = (id: string, seq: number, tag: string, body: string, tier: number, isInput: boolean, preferred: RenderForm = "full", attach: Attach = "always"): Unit => {
     const n = number(id, seq);
     const images = directory.attachments(id);
-    const after = images.length > 0 ? `\nImages with #${n}: ${images.join(", ")}.` : "";
+    const named = (attached: boolean) => (images.length === 0 ? "" : `\nImages with #${n}${attached ? "" : ", not attached here"}: ${images.join(", ")}.`);
     const head = `[#${n} ${tag}]`;
     const read = `\`rooms-board read ${n}\``;
     const text = {
-      full: `${head}\n${body}${after}`,
-      condensed: `${head} ${condensedPreview(body)} (condensed; full text: ${read})${after}`,
-      pointer: `${head} (${body.length.toLocaleString("en-US")} characters; read it with ${read})${after}`,
+      full: `${head}\n${body}${named(attach !== "never")}`,
+      condensed: `${head} ${condensedPreview(body)} (condensed; full text: ${read})${named(attach === "always")}`,
+      pointer: `${head} (${body.length.toLocaleString("en-US")} characters; read it with ${read})${named(attach === "always")}`,
     };
     // A post no longer than its preview goes in full: condensing it would only add the pointer.
     const form = preferred === "condensed" && text.full.length <= text.condensed.length ? "full" : preferred;
-    return { id, n, tier, input: isInput, preferred: form, chosen: form, text };
+    return { id, n, tier, input: isInput, preferred: form, chosen: form, text, images, attach };
   };
 
   const tagOf = (item: Input): string => {
@@ -220,9 +237,11 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       case "retry":
         return `retry from ${by} of your failed run${on(item.requestIds)}`;
       case "transfer": {
-        const owned = item.requestIds.filter((id) => open.has(id));
-        const awaited = item.requestIds.filter((id) => !open.has(id));
-        const parts = [owned.length > 0 ? `${refs(owned)} now yours to answer` : null, awaited.length > 0 ? `answers to ${refs(awaited)} now come to you` : null].filter(Boolean);
+        // The split is the transfer event's; without it the handover names its requests unsplit.
+        const split = directory.handover?.(item.eventId);
+        if (!split) return `handover from ${by}${on(item.requestIds)}`;
+        const owned = split.owned.map((id) => ref(id) + (open.has(id) ? "" : " (no longer open)")).join(", ");
+        const parts = [split.owned.length > 0 ? `${owned} now yours to answer` : null, split.awaited.length > 0 ? `answers to ${refs(split.awaited)} now come to you` : null].filter(Boolean);
         return `handover from ${by}${parts.length > 0 ? `: ${parts.join("; ")}` : ""}`;
       }
       case "result":
@@ -260,8 +279,10 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   for (const item of inputs.filter((i) => ASSIGNMENT_INTENTS.has(i.intent))) place(assignmentSlots, item, TIER.assignment, null);
 
   // Open requests, and corrections to them, that no input above carries: the seat had them earlier (or took them over
-  // in a handover). In full when the standing part goes in full (its thread may have lost them), else condensed.
+  // in a handover). In full when the standing part goes in full (its thread may have lost them), else condensed; their
+  // images go again only with the full text on such a thread.
   const earlier: RenderForm = input.had ? "condensed" : "full";
+  const earlierImages: Attach = input.had ? "never" : "if-full";
   // A corrected request's version is its last correction's seq; the post that made it orders it.
   const placeOf = (request: RequestContext) => directory.requestNumber(request.id) ?? request.corrections[0]?.seq ?? request.version;
   const openList = [...envelope.openRequests].sort((a, b) => placeOf(a) - placeOf(b));
@@ -269,14 +290,14 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   for (const request of openList) {
     if (!rendered.has(request.id)) {
       rendered.add(request.id);
-      const made = unit(request.id, placeOf(request), `request from ${directory.name(request.returnTo)}, still open`, request.body, TIER.open, false, earlier);
+      const made = unit(request.id, placeOf(request), `request from ${directory.name(request.returnTo)}, still open`, request.body, TIER.open, false, earlier, earlierImages);
       units.push(made);
       openSlots.push(made);
     }
     for (const correction of request.corrections) {
       if (rendered.has(correction.eventId)) continue;
       rendered.add(correction.eventId);
-      const made = unit(correction.eventId, correction.seq, `correction from ${author(correction.eventId)} to ${ref(request.id)}, earlier`, correction.body, TIER.open, false, earlier);
+      const made = unit(correction.eventId, correction.seq, `correction from ${author(correction.eventId)} to ${ref(request.id)}, earlier`, correction.body, TIER.open, false, earlier, earlierImages);
       units.push(made);
       openSlots.push(made);
     }
@@ -286,7 +307,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   for (const post of [...(input.context ?? [])].sort((a, b) => a.seq - b.seq)) {
     if (rendered.has(post.eventId)) continue;
     rendered.add(post.eventId);
-    const made = unit(post.eventId, post.seq, `${post.kind} from ${author(post.eventId)}${on(post.requestIds)}`, post.body, TIER.context, false, "condensed");
+    const made = unit(post.eventId, post.seq, `${post.kind} from ${author(post.eventId)}${on(post.requestIds)}`, post.body, TIER.context, false, "condensed", "never");
     units.push(made);
     contextSlots.push(made);
   }
@@ -313,7 +334,10 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   const text = slots.map((slot) => (typeof slot === "string" ? slot : slot.text[slot.chosen])).join("\n");
   for (const made of units) forms[made.id] = made.chosen;
   const condensedEventIds = units.filter((made) => made.input && made.chosen !== "full").map((made) => made.id);
-  return { text, standing, held, forms, condensedEventIds, condensed: condensedEventIds.length > 0 };
+  const images = slots
+    .filter((slot): slot is Unit => typeof slot !== "string" && slot.images.length > 0 && (slot.attach === "always" || (slot.attach === "if-full" && slot.chosen === "full")))
+    .map((made) => ({ eventId: made.id, names: [...made.images] }));
+  return { text, standing, held, forms, condensedEventIds, condensed: condensedEventIds.length > 0, images };
 }
 
 /**

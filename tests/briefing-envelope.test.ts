@@ -158,6 +158,28 @@ test("a handover gives the new seat its owned requests in full, the awaited answ
   assertEveryInput(b, run.envelope, (i) => numberOf(r, i.eventId));
 });
 
+test("a handover's split comes from the transfer event, also when an owned request was cancelled before delivery", () => {
+  const r = new Room();
+  r.request("A"); r.request("B");
+  r.output(r.reserve("W")!, { kind: "yield" });
+  r.add({ type: "transfer", id: "reseat", actor: "O", oldSeatId: "W", newSeatId: "W2", threadId: "thread:W2", owned: ["A", "B"], awaited: [], body: "Carry on", evidence: "idle" });
+  r.add({ type: "cancel", id: "stopB", actor: "O", requestId: "B" });
+  const run = r.reserve("W2")!;
+  const b = render(r, run);
+  const nA = numberOf(r, "A"), nB = numberOf(r, "B"), nT = numberOf(r, "reseat");
+  assert.ok(b.text.includes(`[#${nT} handover from @Fable: #${nA}, #${nB} (no longer open) now yours to answer]\nCarry on`));
+  assert.ok(!b.text.includes("now come to you"), "B is not called awaited");
+  assert.ok(b.text.includes(`[#${numberOf(r, "stopB")} cancel from @Fable: #${nB} is withdrawn]`));
+  // A directory that does not know the split names the requests without one.
+  const { handover, ...plain } = journalDirectory(r.log, { alias: (seat) => ALIASES[seat] ?? null });
+  assert.ok(handover);
+  const unsplit = renderEnvelopeBriefing({
+    room: backroomRoom, participant: participant("W2"), participantsById: participants, board: BOARD, envelope: run.envelope,
+    directory: plain, had: null, runId: run.id, at: "", budgetChars: 60_000,
+  });
+  assert.ok(unsplit.text.includes(`[#${nT} handover from @Fable on #${nA}, #${nB}]\nCarry on`));
+});
+
 test("images are named under the post that carried them, in every form", () => {
   const r = new Room();
   r.add({ type: "request", id: "A", actor: "O", to: "W", body: "Match this mock-up. " + "x".repeat(5_000) });
@@ -165,9 +187,54 @@ test("images are named under the post that carried them, in every form", () => {
   const n = numberOf(r, "A");
   const full = render(r, run, { attachments: { A: ["mock.png", "detail.png"] } });
   assert.ok(full.text.includes(`x\nImages with #${n}: mock.png, detail.png.`));
+  assert.deepEqual(full.images, [{ eventId: "A", names: ["mock.png", "detail.png"] }]);
+  // An input's images go with the message in every form.
   const tight = render(r, run, { attachments: { A: ["mock.png", "detail.png"] }, budgetChars: 1_500, had: full.held });
   assert.equal(tight.forms.A, "condensed");
   assert.ok(tight.text.includes(`(condensed; full text: ${pointer(n)})\nImages with #${n}: mock.png, detail.png.`));
+  assert.deepEqual(tight.images, [{ eventId: "A", names: ["mock.png", "detail.png"] }]);
+});
+
+test("an earlier open request's images go again only with its full text on a fresh or compacted thread", () => {
+  const r = new Room();
+  r.add({ type: "request", id: "A", actor: "O", to: "W", body: "Match this mock-up. " + "Detail. ".repeat(40) });
+  const first = r.reserve("W")!;
+  const attachments = { A: ["mock.png"], after: ["ci.png"] };
+  const had = render(r, first, { attachments }).held;
+  r.output(first, { kind: "yield" });
+  r.request("B");
+  const run = r.reserve("W")!;
+  const n = numberOf(r, "A");
+  // A later briefing: A is condensed and its image is not sent again.
+  const later = render(r, run, { attachments, had });
+  assert.equal(later.forms.A, "condensed");
+  assert.ok(later.text.includes(`Images with #${n}, not attached here: mock.png.`));
+  assert.deepEqual(later.images, []);
+  // A fresh or compacted thread: A goes in full, with its image.
+  const fresh = render(r, run, { attachments, had: null });
+  assert.equal(fresh.forms.A, "full");
+  assert.ok(fresh.text.includes(`Detail. \nImages with #${n}: mock.png.`));
+  assert.deepEqual(fresh.images, [{ eventId: "A", names: ["mock.png"] }]);
+  // ... unless the budget condenses it: then its image stays behind too.
+  const squeezed = render(r, run, { attachments, had: null, budgetChars: fresh.text.length - 200 });
+  assert.notEqual(squeezed.forms.A, "full");
+  assert.ok(squeezed.text.includes(`Images with #${n}, not attached here: mock.png.`));
+  assert.deepEqual(squeezed.images, []);
+});
+
+test("a context post's images are never attached: they were not sent to this seat", () => {
+  const r = new Room();
+  r.request("U", "O", "$user");
+  const o = r.reserve("O")!;
+  r.request("A", "W", "O", "U");
+  r.output(o, { kind: "yield" });
+  const w = r.reserve("W")!;
+  r.finish(w, "A");
+  r.add({ type: "post", id: "after", actor: "W", intent: "note", requestIds: ["A"], body: "CI went red after my answer; screenshot attached." });
+  const next = r.reserve("O")!;
+  const b = render(r, next, { attachments: { after: ["ci.png"] } });
+  assert.ok(b.text.includes(`Images with #${numberOf(r, "after")}, not attached here: ci.png.`));
+  assert.deepEqual(b.images, []);
 });
 
 // ---------- the budget: condensed, never dropped ----------
@@ -241,9 +308,10 @@ test("adversarial envelopes: every input, inherited ones included, appears verba
     const envelope: Envelope = { base: 0, through: seq, inputs, openRequests, contextThrough: seq };
     const numbers = new Map<string, number>();
     for (const input of inputTree(inputs)) if (!numbers.has(input.eventId)) numbers.set(input.eventId, input.seq);
+    const withImages = new Set([...numbers.keys()].filter(() => random() < 0.15));
     const directory: EnvelopeDirectory = {
       number: (id) => numbers.get(id) ?? null, requestNumber: () => null, author: () => "@Fable",
-      name: (p) => `@${p}`, attachments: () => (random() < 0.1 ? ["shot.png"] : []),
+      name: (p) => `@${p}`, attachments: (id) => (withImages.has(id) ? ["shot.png"] : []),
     };
     const budget = pick([0, 500, 5_000, 60_000, 200_000]);
     const b = renderEnvelopeBriefing({
@@ -255,6 +323,8 @@ test("adversarial envelopes: every input, inherited ones included, appears verba
     if (budget >= 60_000) assert.ok(b.text.length <= budget, `round ${round}: ${b.text.length} > ${budget}`);
     // Inputs in full are verbatim; repeated event IDs are rendered once.
     for (const id of new Set(inputTree(inputs).map((i) => i.eventId))) assert.ok(b.forms[id], `round ${round}: ${id}`);
+    // Every input's images go with the message, once each; nothing else's.
+    assert.deepEqual(b.images.map((i) => i.eventId).sort(), [...withImages].sort(), `round ${round}: images`);
   }
 });
 
@@ -376,6 +446,22 @@ test("a member's note after its answer, and unfollowed progress, reach the reque
   assert.ok(!b.condensedEventIds.includes("after"));
   // The member's own notes are not context for itself.
   assert.deepEqual(relatedContext(r.log, next.envelope, "W"), []);
+});
+
+test("a note without request IDs is not context: it reaches nobody's briefing (the host must give §3 notes their request)", () => {
+  const r = new Room();
+  r.request("U", "O", "$user");
+  const o = r.reserve("O")!;
+  r.request("A", "W", "O", "U");
+  r.output(o, { kind: "yield" });
+  r.finish(r.reserve("W")!, "A");
+  r.add({ type: "post", id: "bare", actor: "W", intent: "note", body: "A self-started turn after the answer, imported without its request." });
+  r.add({ type: "post", id: "tied", actor: "W", intent: "note", requestIds: ["A"], body: "The same turn, imported with the answered request's ID." });
+  const next = r.reserve("O")!;
+  assert.deepEqual(relatedContext(r.log, next.envelope, "O").map((c) => c.eventId), ["tied"]);
+  const b = render(r, next);
+  assert.ok(!b.text.includes("imported without its request"));
+  assert.ok(b.text.includes("imported with the answered request's ID"));
 });
 
 test("a seat with nothing open is told so, without the closing assignment line", () => {
