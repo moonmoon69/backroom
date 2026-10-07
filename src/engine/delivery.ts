@@ -39,6 +39,8 @@ export function deliveryDisposition(p: Projection, event: RoomEvent, seatId: str
     if (inputTree(transfer.data.inherited).some((i) => i.eventId === event.id)) return "transferred";
     if (event.seq > transfer.data.cutoff) return "undeliverable";
   }
+  // A retired seat is never woken again: nothing it was not delivered is pending (a transferred seat's is handled above).
+  if (p.seats.get(seatId)?.status === "retired") return "undeliverable";
   return "pending";
 }
 export function openRequests(p: Projection, seatId: string): RequestContext[] {

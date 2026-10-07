@@ -164,6 +164,8 @@ export type EventData =
   | { kind: "provider.hold"; hold: ProviderHold }
   | { kind: "provider.observed"; observation: ProviderObservation }
   | { kind: "seat.created"; seatId: SeatId; threadId: string; orchestrator: boolean }
+  | { kind: "seat.retired"; seatId: SeatId; author: Principal; evidence: string }
+  | { kind: "orchestrator.set"; seatId: SeatId | null; author: Principal }
   | { kind: "request"; request: RequestContext; live: Request["live"]; author: Principal; recipients: Principal[] }
   | { kind: "correction"; requestId: RequestId; body: string; author: Principal; recipients: Principal[] }
   | { kind: "cancel"; requestId: RequestId; applied: boolean; author: Principal; recipients: Principal[] }
@@ -230,6 +232,8 @@ export type Command = CommandBase & (
   | { type: "provider_hold"; hold: ProviderHold }
   | { type: "observe_provider"; observation: Omit<ProviderObservation, "pending">; pending: string[]; settled: string[] }
   | { type: "seat"; seatId: SeatId; threadId: string; orchestrator?: boolean }
+  | { type: "retire"; seatId: SeatId; evidence: string }
+  | { type: "designate"; seatId: SeatId | null }
   | { type: "request"; to: SeatId; body: string; parentId?: RequestId; live?: { runId: string; providerRequestId: string } }
   | { type: "correct"; requestId: RequestId; body: string }
   | { type: "cancel"; requestId: RequestId }
