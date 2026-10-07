@@ -7,7 +7,8 @@
  *   rooms-board help
  *
  * The connection file is found through --api <file>, ROOMS_BROWSER_API, or ../data/browser-api.json next to this
- * script. --as <key> (or ROOMS_BROWSER_AS) names the member: the key its briefing gives it.
+ * script. --as <key> (or ROOMS_BROWSER_AS) names the member: the key its briefing gives it. --file <path> (or - for
+ * stdin) passes that file's text as the command's last argument: one shell argument holds at most 128 KiB.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,6 +24,15 @@ const take = (flag) => {
 
 const apiFile = take("--api") ?? process.env.ROOMS_BROWSER_API ?? join(dirname(fileURLToPath(import.meta.url)), "..", "data", "browser-api.json");
 const as = take("--as") ?? process.env.ROOMS_BROWSER_AS ?? null;
+const file = take("--file");
+if (file !== undefined) {
+  try {
+    argv.push(readFileSync(file === "-" ? 0 : file, "utf8"));
+  } catch (error) {
+    console.error(`rooms-board: cannot read ${file === "-" ? "stdin" : file} (${error.message}).`);
+    process.exit(2);
+  }
+}
 
 let api;
 try {
