@@ -36,18 +36,6 @@ for (const confirmAt of ["before-B", "after-B", "never"] as const) test(`interle
   assert.deepEqual(unread(r.p, "W").map((i) => i.requestIds), confirmAt === "never" ? [["one"], ["two"]] : [["two"]]); assertions(r);
 });
 
-for (const replyFirst of [true, false]) test(`interleaving live answer ${replyFirst ? "before" : "after"} terminal`, () => {
-  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
-  r.add({ type: "request", id: "Q", actor: "W", to: "$user", parentId: "A", body: "Question", live: { runId: w.id, providerRequestId: "runtime:Q" } });
-  const reply = () => r.add({ type: "runtime_reply", id: "reply", actor: "$user", requestId: "Q", commandId: "response", body: "Retained answer" });
-  if (replyFirst) reply();
-  r.output(w, { kind: "yield" });
-  if (!replyFirst) reply();
-  r.restart(); assert.equal(r.p.controls.get("reply")!.phase, replyFirst ? "prepared" : "uncertain");
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "obsolete", evidence: "proven closed/unapplied" });
-  r.idle("W"); assertions(r);
-});
-
 for (const resultFirst of [true, false]) test(`interleaving transfer ${resultFirst ? "after" : "before"} result`, () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!; r.request("R", "V", "W", "A"); r.output(w, { kind: "yield" });
   const v = r.reserve("V")!;
@@ -73,20 +61,6 @@ for (const doneFirst of [true, false]) test(`interleaving activity resolution ${
     done(); r.output(w, { kind: "answer", requestIds: ["A"] }, false);
   }
   assert.equal(r.p.requests.get("A")!.state, "answered"); assert.equal(unread(r.p, "O").length, 1); assertions(r);
-});
-
-test("additional: uncertain control blocks reseat despite a terminal provider run", () => {
-  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
-  r.add({ type: "request", id: "Q", actor: "W", to: "$user", parentId: "A", body: "Q", live: { runId: w.id, providerRequestId: "runtime:Q" } });
-  r.add({ type: "runtime_reply", id: "reply", actor: "$user", requestId: "Q", commandId: "reply-command", body: "Answer" });
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "uncertain", evidence: "lost receipt" }); r.output(w, { kind: "yield" });
-  const transfer: Command = { type: "transfer", id: "transfer", actor: "O", oldSeatId: "W", newSeatId: "W2", threadId: "thread:W2", owned: ["A"], awaited: [], body: "Checkpoint", evidence: "latest run ended" };
-  assert.throws(() => r.add(transfer), /unresolved runtime control/);
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "accepted", evidence: "durable late receipt" });
-  assert.throws(() => r.add(transfer), /provider uncertainty/);
-  const effect = [...r.p.providerHolds.values()].find((h) => h.code === "control_effect:reply")!;
-  r.add({ type: "provider_hold", actor: "$system", hold: { ...effect, held: false, detail: "FAKE original runtime effect completion proof" } });
-  r.add(transfer); assertions(r);
 });
 
 test("additional: mixed fresh/notice batch reports only fresh scope and never untouched context", () => {
@@ -132,8 +106,8 @@ test("additional: retired identity receives a bounded undeliverable fact and can
 test("additional: one emission imported before terminal cannot strand the reservation or acquire a second claim", () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!;
   r.output(w, { kind: "answer", requestIds: ["A"] }, false, { sourceKey: "same-emission" });
-  r.request("B"); const receipt = r.sync(w);
-  r.output(w, { kind: "answer", requestIds: ["A"] }, true, { sourceKey: "same-emission", receipts: [receipt] });
+  r.request("B"); r.confirm(w, r.sync(w));
+  r.output(w, { kind: "answer", requestIds: ["A"] }, true, { sourceKey: "same-emission" });
   assert.equal(r.p.seats.get("W")!.activeRunId, null);
   assert.equal(r.log.filter((e) => e.data.kind === "output" && e.data.sourceKey === "same-emission").length, 1);
   assert.equal(unread(r.p, "O").length, 1); r.idle("W"); assertions(r);

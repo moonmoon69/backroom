@@ -40,8 +40,8 @@ export type EnginePrincipal = string;
  *
  * `at` is that exact time, or null. `after` is a lower bound every event has once anything before it has a time: the
  * latest exact time of any earlier event (an event is appended after everything before it, and every anchor is a
- * time before its event was appended). A T3 run's ID is read from its host run's acceptance (`t3run:<id>` in the
- * evidence until L6 makes it Run.providerRunId). T3 times not yet read (T3 unreachable) are null, never guessed.
+ * time before its event was appended). A T3 run's ID is its host run's `providerRunId`, recorded when T3 took it.
+ * T3 times not yet read (T3 unreachable) are null, never guessed.
  */
 export interface EngineTime {
   at: string | null;
@@ -265,7 +265,7 @@ export interface EngineSeatView {
   participantId: string | null;
   alias: string | null;
   threadId: string;
-  status: "active" | "stopping" | "retired";
+  status: "active" | "retired";
   orchestrator: boolean;
   /** The journal sequence its deliveries reached. */
   cursor: number;

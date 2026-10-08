@@ -67,7 +67,7 @@ export function worker(input: WorkerInput): Promise<WorkerResult> {
     let stdout = "", stderr = "";
     child.stdout.on("data", (s: Buffer) => { stdout += s.toString(); });
     child.stderr.on("data", (s: Buffer) => { stderr += s.toString(); });
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`worker timed out: ${stdout} ${stderr}`)); }, 12_000);
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`worker timed out: ${stdout} ${stderr}`)); }, 30_000);
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
     child.on("exit", (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
   });

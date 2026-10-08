@@ -31,7 +31,7 @@ import type { Participant, Room } from "../domain/types.ts";
 import { deliveredInputs, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
 import { finalTargets, memberHeld } from "../runtime/index.ts";
-import { frozenDispatch, runRecords } from "../runtime/work.ts";
+import { frozenDispatch } from "../runtime/work.ts";
 import type { ThreadCosts } from "../usage/threadCosts.ts";
 
 // ---------------- times from T3 ----------------
@@ -136,10 +136,9 @@ function commandOf(event: RoomEvent): { actor: string; id: string } {
   return { actor, id };
 }
 
-/** The T3 run a host run was matched to: Run.providerRunId once L6 types it, until then `t3run:<id>` in its acceptance. */
+/** The T3 run each host run was matched to: its `providerRunId`, recorded when T3 took it. */
 export function t3RunIds(p: Projection): Map<string, string> {
   const out = new Map<string, string>();
-  for (const [runId, record] of runRecords(p)) if (record.t3) out.set(runId, record.t3.id);
   for (const run of p.runs.values()) if (run.providerRunId) out.set(run.id, run.providerRunId);
   return out;
 }

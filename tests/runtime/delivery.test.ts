@@ -223,3 +223,19 @@ test("a message T3 records only after its run failed as never recorded: its late
   assert.deepEqual(late, ["(T3 ran a message after Backroom had recorded it as failed) Second done, late."]);
   assert.equal(room.state(b), "open", "a note answers nothing; the failure notice already offered a retry");
 });
+
+test("the T3 run a host run is matched to is its typed providerRunId, from the acceptance on, and survives a restart", async () => {
+  room = await Room.create();
+  ask(room, "C", "W", "Fix dates.ts.");
+  await room.tick();
+  const run = [...room.p.runs.values()].find((r) => r.seatId === "W")!;
+  const t3 = room.fake.runsOf(room.threadOf("W"))[0]!;
+  assert.equal(run.providerRunId, t3.id);
+  const accepted = room.p.events.find((e) => e.data.kind === "run.phase" && e.data.runId === run.id && e.data.phase === "accepted")!;
+  assert.ok(accepted.data.kind === "run.phase" && accepted.data.providerRunId === t3.id);
+  room.complete("W", "Fixed.");
+  await room.tick();
+  room.restart();
+  assert.equal(room.p.runs.get(run.id)!.providerRunId, t3.id);
+  assert.equal(room.p.runs.get(run.id)!.phase, "terminal");
+});

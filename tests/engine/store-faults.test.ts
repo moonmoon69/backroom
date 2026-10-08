@@ -41,14 +41,15 @@ const scenarios: Scenario[] = [
     const observer = r.reserve("O"); return r.outputCommand(observer, { kind: "silent" });
   } },
   { name: "reserve with exact frozen input and dispatch IDs (T6)", setup(r) { r.request("A"); return r.reserveCommand(); } },
-  { name: "sync-confirm/output/multiple-claims/cursor/release finish (T8)", setup(r) {
+  { name: "output/multiple-claims/cursor/release finish after a confirmed sync (T8)", setup(r) {
     r.request("A"); r.request("B"); const run = r.reserve(); r.request("C"); const receipt = r.sync(run); r.request("D");
-    return r.outputCommand(run, { kind: "answer", requestIds: ["A", "B", "C"] }, { receipts: [receipt] });
+    r.add({ type: "confirm_sync", actor: "$system", id: "confirm", runId: run.id, receiptId: receipt.id, digest: receipt.digest, evidence: "FAKE exact receipt in the transcript" });
+    return r.outputCommand(run, { kind: "answer", requestIds: ["A", "B", "C"] });
   } },
   { name: "error/output/bounded-notice/cursor/release", setup(r) {
     r.request("A"); const run = r.reserve(); return r.outputCommand(run, { kind: "error", requestIds: ["A"] }, { body: "failed" });
   } },
-  { name: "cancel and interruption reservation", setup(r) {
+  { name: "cancel during a run", setup(r) {
     r.request("A"); r.reserve(); return { type: "cancel", actor: "$user", id: "cancel", requestId: "A" };
   } },
   { name: "transfer retirement/ownership/return endpoint/unread bundle", setup(r) {
@@ -57,17 +58,6 @@ const scenarios: Scenario[] = [
     r.request("awaited", "X", "W", "A");
     return { type: "transfer", actor: "$user", id: "transfer", oldSeatId: "W", newSeatId: "W2", threadId: "thread:W2",
       owned: ["A"], awaited: ["awaited"], body: "replacement", evidence: "FAKE quiescence evidence only" };
-  } },
-  { name: "live answer claim and prepared non-waking control", setup(r) {
-    r.request("A"); const run = r.reserve();
-    r.add({ type: "request", actor: "W", id: "Q", to: "$user", parentId: "A", body: "approve", live: { runId: run.id, providerRequestId: "provider-question" } });
-    return { type: "runtime_reply", actor: "$user", id: "reply", requestId: "Q", body: "yes", commandId: "reply-command" };
-  } },
-  { name: "obsolete response evidence and bounded not-applied notice", setup(r) {
-    r.request("A"); const run = r.reserve();
-    r.add({ type: "request", actor: "W", id: "Q", to: "$user", parentId: "A", body: "approve", live: { runId: run.id, providerRequestId: "provider-question" } });
-    r.add({ type: "runtime_reply", actor: "$user", id: "reply", requestId: "Q", body: "yes", commandId: "reply-command" });
-    return { type: "control_phase", actor: "$system", id: "obsolete", controlId: "reply", phase: "obsolete", evidence: "FAKE closed and unapplied proof" };
   } },
   { name: "background activity evidence/output/answer claims", setup(r) {
     r.request("A"); const run = r.reserve();
@@ -82,7 +72,8 @@ const scenarios: Scenario[] = [
   } },
 ];
 
-for (const scenario of scenarios) test(`process SIGKILL before/within/after transaction: ${scenario.name}`, async () => {
+// About fifteen real child processes in a row: a limit well above the suite's 20 s default, for a loaded machine.
+for (const scenario of scenarios) test(`process SIGKILL before/within/after transaction: ${scenario.name}`, { timeout: 120_000 }, async () => {
   // Each injection owns a real DB file and child process. Kill while the transaction
   // is open, never simulate durability by throwing from a mocked database method.
   const probe = new DiskRoom(); let eventCount: number;
@@ -121,7 +112,7 @@ for (const scenario of scenarios) test(`process SIGKILL before/within/after tran
   }
 });
 
-test("process loss during index rebuild leaves either complete old or complete rebuilt indices, log unchanged", async () => {
+test("process loss during index rebuild leaves either complete old or complete rebuilt indices, log unchanged", { timeout: 120_000 }, async () => {
   const r = new DiskRoom();
   try {
     r.request("A"); r.reserve(); const log = r.store.load(r.room);

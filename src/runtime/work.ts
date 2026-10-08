@@ -169,7 +169,7 @@ export function frozenDispatch(p: Projection, runId: string): Dispatch | null {
   return null;
 }
 
-/** Per host run, in one pass over the journal: the T3 run it was matched to (accepted) and what its sending froze. */
+/** Per host run, in one pass over the journal: the T3 run it was matched to (accepted, with T3's ordinal) and what its sending froze. */
 export function runRecords(p: Projection): Map<string, { reservedSeq: number; seatId: string; t3: { id: string; ordinal: number } | null; frozen: Dispatch | null }> {
   const records = new Map<string, { reservedSeq: number; seatId: string; t3: { id: string; ordinal: number } | null; frozen: Dispatch | null }>();
   for (const e of p.events) {
@@ -179,8 +179,8 @@ export function runRecords(p: Projection): Map<string, { reservedSeq: number; se
     const record = records.get(d.runId);
     if (!record) continue;
     if (d.phase === "sending") record.frozen = JSON.parse(d.evidence) as Dispatch;
-    const match = d.phase === "accepted" ? /^t3run:(\S+) ordinal:(\d+)$/.exec(d.evidence) : null;
-    if (match) record.t3 = { id: match[1]!, ordinal: Number(match[2]) };
+    const ordinal = d.phase === "accepted" && d.providerRunId ? /ordinal:(\d+)/.exec(d.evidence) : null;
+    if (ordinal) record.t3 = { id: d.providerRunId!, ordinal: Number(ordinal[1]) };
   }
   return records;
 }
@@ -213,4 +213,20 @@ export function deferredCancels(p: Projection): DeferredCancel[] {
 
 export function committed(p: Projection, actor: string, id: string): boolean {
   return p.commandKeys.has(JSON.stringify([actor, id]));
+}
+
+/**
+ * §6: the cancel that stops a run, if any: applied to a request of the run's seat while the run was live (after its
+ * reservation, before its end), and not one held to the turn's end (those apply as it ends and stop nothing). The host
+ * sends its interrupt to T3 with the command ID `interrupt:<cancel ID>`.
+ */
+export function stoppingCancel(p: Projection, run: Run): string | null {
+  const deferred = new Set(deferredCancels(p).map((d) => d.cancelId));
+  const from = reservedSeq(p, run.id);
+  for (const e of p.events) {
+    if (e.seq <= from) continue;
+    if (e.data.kind === "run.ended" && e.data.runId === run.id) return null;
+    if (e.data.kind === "cancel" && e.data.applied && !deferred.has(e.id) && p.requests.get(e.data.requestId)?.owner === run.seatId) return e.id;
+  }
+  return null;
 }

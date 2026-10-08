@@ -278,13 +278,12 @@ test("1. each command appends exactly the expected events, and reads append noth
   assert.deepEqual(kinds(events), ["activity.status", "output"]);
   assert.deepEqual([data(events, "activity.status").status, data(events, "output").claims], ["done", [{ requestId: a.request.id, outcome: "answered", returnTo: c }]]);
 
-  // cancel of the only request of a live turn: the cancel, the core's interrupt control, and the host marks it obsolete
-  // once the interrupt is sent (§6).
+  // cancel of the only request of a live turn: the cancel; the host sends T3 the interrupt (§6).
   const [e] = f.posted(await f.cli("c", "post", "@v profile the build"));
   await f.tick();
   assert.ok(f.running("v"));
   events = await f.appended(() => f.cli("c", "cancel", `#${f.num(e!)}`));
-  assert.deepEqual(kinds(events), ["cancel", "control.prepared", "control.phase"]);
+  assert.deepEqual(kinds(events), ["cancel"], "the host interrupts the turn through T3; the journal holds the cancel only");
   await f.tick();
 
   // cancel of one of two requests of a live turn: a visible note; it applies when the turn ends.

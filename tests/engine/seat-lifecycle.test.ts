@@ -9,16 +9,12 @@ import { DiskRoom } from "./store-fixture.ts";
 const retire = (seatId: string, actor = "O", evidence = "thread idle, no background work"): Extract<Command, { type: "retire" }> =>
   ({ type: "retire", id: `retire:${seatId}:${actor}`, actor, seatId, evidence });
 
-test("retire refuses exactly what transfer refuses: a run, no evidence, a provider hold, background work, a control", () => {
+test("retire refuses exactly what transfer refuses: a run, no evidence, background work", () => {
   const r = new Room(); r.request("A");
   const w = r.reserve("W")!;
   assert.throws(() => r.add(retire("W")), /old run must be reconciled and stopped/);
   r.finish(w, "A");
   assert.throws(() => r.add({ ...retire("W"), evidence: "" }), /quiescence proof reference required/);
-
-  r.add({ type: "provider_hold", actor: "$system", hold: { key: "h", seatId: "W", runId: null, code: "native_pending", detail: "FAKE pending native work", held: true, scope: "reseat" } });
-  assert.throws(() => r.add(retire("W")), /provider uncertainty/);
-  r.add({ type: "provider_hold", actor: "$system", hold: { key: "h", seatId: "W", runId: null, code: "native_pending", detail: "FAKE native work ended", held: false, scope: "reseat" } });
 
   r.request("B"); const w2 = r.reserve("W")!;
   r.add({ type: "activity_start", actor: "W", activityId: "bg", runId: w2.id, requestIds: ["B"], status: "pending" });
@@ -27,13 +23,13 @@ test("retire refuses exactly what transfer refuses: a run, no evidence, a provid
   r.add({ type: "activity_status", actor: "$system", activityId: "bg", status: "done", evidence: "FAKE background ended" });
   r.add({ type: "cancel", actor: "O", requestId: "B" });
 
-  // A cancel during a run whose only request it is prepares an interrupt control: unresolved until obsolete.
+  // A cancel during a run whose only request it is leaves no control (the host interrupts through T3): the seat can
+  // retire as soon as the run has ended.
   r.request("C"); const w3 = r.reserve("W")!;
-  r.add({ type: "cancel", id: "cancel-C", actor: "O", requestId: "C" });
+  assert.deepEqual(r.add({ type: "cancel", id: "cancel-C", actor: "O", requestId: "C" }).events.map((e) => e.data.kind), ["cancel"]);
+  assert.throws(() => r.add(retire("W")), /old run must be reconciled and stopped/);
   r.output(w3, { kind: "yield" });
   assert.equal(r.p.seats.get("W")!.activeRunId, null);
-  assert.throws(() => r.add(retire("W")), /unresolved runtime control/);
-  r.add({ type: "control_phase", actor: "$system", controlId: "cancel-C/interrupt", phase: "obsolete", evidence: "lean: interrupt sent directly" });
 
   const before = r.log.length;
   const d = r.add(retire("W"));

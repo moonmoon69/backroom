@@ -15,7 +15,8 @@ for (const confirmed of [true, false]) test(`five-wake incident: ${confirmed ? "
   r.output(v, { kind: "yield" });
   r.add({ type: "correct", id: "p99", actor: "O", requestId: "p43", body: "Cleanup steer, same original request" });
   const cleanup = r.sync(x);
-  r.output(x, { kind: "answer", requestIds: ["p43"] }, false, { id: "p100", sourceKey: "early-C", receipts: [cleanup] });
+  r.confirm(x, cleanup);
+  r.output(x, { kind: "answer", requestIds: ["p43"] }, false, { id: "p100", sourceKey: "early-C" });
   r.output(x, { kind: "answer", requestIds: ["p43"] }, true, { id: "p103", sourceKey: "shared-native-C" });
   assert.equal(r.output(x, { kind: "answer", requestIds: ["p43"] }, true, { sourceKey: "shared-native-C" }).outcome, "duplicate");
   // Earlier frozen orchestrator input contains context p67/p94 and the unique completion C.
@@ -26,12 +27,14 @@ for (const confirmed of [true, false]) test(`five-wake incident: ${confirmed ? "
   const reviewCorrection = r.reserve("V")!;
   r.output(reviewCorrection, { kind: "answer", requestIds: ["p66"] }, true, { id: "p117", sourceKey: "PASS-A" });
   const pass = r.sync(w);
-  r.output(w, { kind: "answer", requestIds: ["p36"] }, true, { id: "p121", sourceKey: "final-A", receipts: [pass] });
+  r.confirm(w, pass);
+  r.output(w, { kind: "answer", requestIds: ["p36"] }, true, { id: "p121", sourceKey: "final-A" });
   const finalA = r.p.sourceKeys.get("final-A")!;
   const receipt = r.sync(report);
-  // Citations in p130 are deliberately insufficient evidence of a complete prefix.
+  // Citations in p130 are deliberately insufficient evidence of a complete prefix: only a confirmed receipt counts.
+  if (confirmed) r.confirm(report, receipt);
   r.output(report, { kind: "answer", requestIds: ["report-request"] }, true,
-    { id: "p130", sourceKey: "user-report", body: "Accepted p117/p121 and all gates", receipts: confirmed ? [receipt] : [] });
+    { id: "p130", sourceKey: "user-report", body: "Accepted p117/p121 and all gates" });
   const formerJobs = ["wake39", "wake51", "wake87", "wake101", "assignment109"];
   assert.equal(r.log.some((e) => formerJobs.includes(e.id)), false);
   assert.equal(r.log.filter((e) => e.data.kind === "output" && e.data.sourceKey === "shared-native-C").length, 1);

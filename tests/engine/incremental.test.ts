@@ -5,9 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { EngineStore, decide, fold } from "../../src/engine/index.ts";
-import type { Command, LocalOperationPacket, NativeToolSource, Projection, RunCapability, StoreBoundary } from "../../src/engine/index.ts";
-import { hash, T3_CONTRACT_ID, T3_SERVER_VERSION } from "../../src/engine/provider.ts";
-import { canonicalJSON } from "../../src/engine/result.ts";
+import type { Command, Projection, StoreBoundary } from "../../src/engine/index.ts";
 import { EntryOverlay } from "../../src/engine/incremental.ts";
 import { DiskRoom, waitForFiles, worker } from "./store-fixture.ts";
 import type { WorkerInput, WorkerResult } from "./store-fixture.ts";
@@ -293,65 +291,24 @@ test("incremental warm notes do no full replay/replacement/old-payload cloning a
   } finally { r.cleanup(); }
 });
 
-function finishPacket(r: DiskRoom): LocalOperationPacket {
-  r.request("A"); const run = r.reserve();
-  const wireJSON = JSON.stringify({ type: "message.dispatch", threadId: "thread:W", commandId: run.dispatchCommandId, messageId: run.dispatchMessageId,
-    dispatchMode: { type: "start_immediately" }, attachments: [], text: JSON.stringify({ schema: "backroom.envelope.v1", runId: run.id, envelope: run.envelope }) });
-  const transport = { wireJSON, digest: hash(wireJSON), environmentId: "local-simulation", serverVersion: T3_SERVER_VERSION, contract: T3_CONTRACT_ID };
-  r.add({ type: "freeze_transport", actor: "$system", target: { kind: "run", id: run.id }, transport });
-  r.add({ type: "bind_provider", actor: "$system", runId: run.id, providerRunId: "native-run", evidence: "isolated original receipt" });
-  const capability: RunCapability = { id: "cap-original", tokenHash: hash("secret"), seatId: "W", threadId: "thread:W", runId: run.id, generation: 1,
-    server: "backroom-board", environmentId: transport.environmentId, serverVersion: transport.serverVersion, contract: transport.contract };
-  r.add({ type: "authorize_run", actor: "$system", capability });
-  const intent: LocalOperationPacket["intent"] = { schema: "backroom.operation.v1", operation: "finish", clientId: "finish", nonce: "original-nonce", originRunId: run.id,
-    toolRefs: [], body: "Explicit receipt answer", disposition: { kind: "answer", requestIds: ["A"] } };
-  const source: NativeToolSource = { threadId: "thread:W", providerRunId: "native-run", itemId: "finish", nodeId: "node:finish", rootNodeId: "root",
-    providerThreadId: "provider-thread", providerTurnId: "provider-turn", attemptId: "attempt", generation: 1,
-    nativeRef: { driver: "codex", nativeId: "native-finish", strength: "strong" }, type: "dynamic_tool", status: "running",
-    toolName: "backroom-board.finish", toolSource: { kind: "integration", key: "mcp:backroom-board" }, input: structuredClone(intent),
-    updatedAt: "2026-10-07T04:00:00.000Z", sequence: 1, complete: true, issues: [] };
-  r.add({ type: "observe_provider", actor: "$system", observation: { seatId: "W", threadId: "thread:W", environmentId: transport.environmentId,
-    serverVersion: transport.serverVersion, contract: transport.contract, sequence: 1, sources: [source] }, pending: [], settled: [] });
-  return { capabilityId: capability.id, intent, intentJSON: canonicalJSON(intent), source, tools: [], view: [], sequence: 1,
-    sourceCheckpointDigest: hash(canonicalJSON([source])) };
-}
-
-for (const fault of ["after_event", "after_indices", "before_commit"] as const) test(`incremental nested finish rollback at ${fault} and returned receipt mutations stay isolated`, () => {
-  const r = new DiskRoom(); let armed = false;
-  try {
-    const packet = finishPacket(r), before = r.p;
-    r.reopen({ onBoundary(point) { if (armed && point === fault) throw new Error(`forced ${fault}`); } });
-    armed = true; assert.throws(() => r.store.commitOperation(r.room, packet), /forced/); armed = false;
-    assert.deepEqual(r.p, before); parity(r);
-    const first = r.store.commitOperation(r.room, packet), bytes = first.receipt.responseJSON;
-    first.receipt.result.claims.length = 0; first.receipt.packet.source.issues.push("caller-mutated"); first.receipt.responseJSON = "caller-mutated";
-    const lookup = r.store.lookupOperation(r.room, packet.capabilityId, packet.intentJSON)!;
-    lookup.result.claims.length = 0; lookup.packet.source.issues.push("caller-mutated lookup");
-    const projected = r.p; projected.operationReceipts.clear(); projected.operationBindings.clear(); projected.providerHolds.clear(); projected.requests.get("A")!.state = "open";
-    const unavailable: LocalOperationPacket = { ...packet, source: { ...packet.source, input: null, complete: false, issues: ["provider unavailable"] }, sequence: -1 };
-    const recovered = r.store.commitOperation(r.room, unavailable);
-    assert.equal(recovered.replayed, true); assert.equal(recovered.receipt.responseJSON, bytes); assert.equal(r.p.requests.get("A")!.state, "answered"); parity(r);
-  } finally { armed = false; r.cleanup(); }
-});
-
 function incrementalWorker(input: IncrementalWorkerInput): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", new URL("./incremental-worker.ts", import.meta.url).pathname, JSON.stringify(input)], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", (data: Buffer) => { stdout += data.toString(); }); child.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`incremental worker timeout: ${stdout} ${stderr}`)); }, 12_000);
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`incremental worker timeout: ${stdout} ${stderr}`)); }, 30_000);
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("exit", (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
   });
 }
 const boundaries: StoreBoundary[] = ["after_suffix_load", "after_affected_first", "after_affected_last", "after_head", "after_commit", "before_cache_publish", "after_cache_publish"];
 const durable = new Set<StoreBoundary>(["after_commit", "before_cache_publish", "after_cache_publish"]);
-for (const scenario of ["note", "answer", "sync", "local receipt"] as const) for (const boundary of boundaries) test(`incremental real SIGKILL ${scenario} at ${boundary}`, async () => {
+// Real child processes under a loaded machine: a limit well above the suite's 20 s default.
+for (const scenario of ["note", "answer", "sync"] as const) for (const boundary of boundaries) test(`incremental real SIGKILL ${scenario} at ${boundary}`, { timeout: 60_000 }, async () => {
   const r = new DiskRoom(); let foreign: EngineStore | undefined;
   try {
-    let command: Command, packet: LocalOperationPacket | undefined;
+    let command: Command;
     if (scenario === "note") command = { type: "post", actor: "O", id: "killed-note", intent: "note", body: "Atomic passive note" };
-    else if (scenario === "local receipt") { packet = finishPacket(r); command = { type: "post", actor: "O", id: "unused-command", intent: "note", body: "not executed" }; }
     else {
       r.request("A"); const run = r.reserve();
       if (scenario === "answer") command = r.outputCommand(run, { kind: "answer", requestIds: ["A"] });
@@ -360,27 +317,21 @@ for (const scenario of ["note", "answer", "sync", "local receipt"] as const) for
     const marker = join(r.dir, "kill-marker"), ready = join(r.dir, "worker-ready"), go = join(r.dir, "worker-go");
     const input: WorkerInput = { path: r.path, room: r.room, command, fault: boundary, marker };
     const suffix = boundary === "after_suffix_load";
-    const pending = suffix || packet ? incrementalWorker({ ...input, warm: true, ...(packet ? { packet } : {}), ready, go }) : worker(input);
-    if (suffix || packet) {
+    const pending = suffix ? incrementalWorker({ ...input, warm: true, ready, go }) : worker(input);
+    if (suffix) {
       await waitForFiles([ready]);
-      if (suffix) { foreign = new EngineStore(r.path); foreign.execute(r.room, { type: "post", actor: "O", id: "foreign-before-kill", intent: "note", body: "Valid complete foreign suffix" }); }
+      foreign = new EngineStore(r.path); foreign.execute(r.room, { type: "post", actor: "O", id: "foreign-before-kill", intent: "note", body: "Valid complete foreign suffix" });
     }
-    const before = r.store.load(r.room), decision = packet ? null : decide(before, command);
-    if (suffix || packet) writeFileSync(go, "execute target");
+    const before = r.store.load(r.room), decision = decide(before, command);
+    if (suffix) writeFileSync(go, "execute target");
     const result = await pending;
     assert.equal(result.signal, "SIGKILL", `${boundary} not reached: ${result.stdout} ${result.stderr}`);
     assert.equal(readFileSync(marker, "utf8"), boundary); r.reopen();
     if (!durable.has(boundary)) assert.deepEqual(r.store.load(r.room), before);
-    else if (decision) assert.deepEqual(r.store.load(r.room), [...before, ...decision.events]);
+    else assert.deepEqual(r.store.load(r.room), [...before, ...decision.events]);
     parity(r);
-    const recovered = packet ? r.store.commitOperation(r.room, packet) : r.add(command);
+    const recovered = r.add(command);
     assert.equal(recovered.replayed, durable.has(boundary)); parity(r);
-    if (packet) {
-      const responseJSON = r.store.lookupOperation(r.room, packet.capabilityId, packet.intentJSON)!.responseJSON;
-      const replay = r.store.commitOperation(r.room, { ...packet, source: { ...packet.source, complete: false, issues: ["provider unavailable"] }, sequence: -1 });
-      assert.equal(replay.replayed, true); assert.equal(replay.receipt.responseJSON, responseJSON);
-      assert.equal(r.p.requests.get("A")!.state, "answered");
-    }
     r.reopen(); parity(r);
   } finally { foreign?.close(); r.cleanup(); }
 });

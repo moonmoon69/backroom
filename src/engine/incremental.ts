@@ -1,4 +1,3 @@
-import type { NativeToolSource } from "./provider.ts";
 import type { Projection, RoomEvent } from "./types.ts";
 
 const deleted = Symbol("deleted");
@@ -56,59 +55,32 @@ class SetOverlay<T> extends Set<T> {
   override forEach(callback: (value: T, value2: T, set: Set<T>) => void, thisArg?: unknown): void { for (const v of this) callback.call(thisArg, v, v, this); }
   publish(): void { for (const v of this.added) this.base.add(v); }
 }
-export const projectionMaps = ["seats", "requests", "runs", "activities", "controls", "sourceKeys", "blocked",
-  "providerHolds", "providerObservations", "capabilities", "activityReceipts", "operationReceipts", "operationBindings", "toolResults", "toolClosures"] as const;
+export const projectionMaps = ["seats", "requests", "runs", "activities", "sourceKeys", "blocked"] as const;
 export type ProjectionMap = typeof projectionMaps[number];
 export function editEntry<N extends ProjectionMap>(p: Projection, name: N, key: string): NonNullable<ReturnType<Projection[N]["get"]>> {
   const map = p[name] as Map<string, unknown>;
   return (map instanceof EntryOverlay ? map.edit(key) : map.get(key)) as NonNullable<ReturnType<Projection[N]["get"]>>;
 }
 
-interface Evidence { order: number; source: NativeToolSource }
-interface EvidenceHistory { origin: Evidence; item?: Evidence; complete?: Evidence }
 interface History {
   events: Map<string, RoomEvent>;
   prefixes: Map<string, true>;
   errorNotices: Map<string, true>;
-  nativeIds: Map<string, true>;
-  evidence: Map<string, EvidenceHistory>;
 }
 const histories = new WeakMap<Projection, History>();
-function emptyHistory(): History { return { events: new Map(), prefixes: new Map(), errorNotices: new Map(), nativeIds: new Map(), evidence: new Map() }; }
+function emptyHistory(): History { return { events: new Map(), prefixes: new Map(), errorNotices: new Map() }; }
 export function initializeHistory(p: Projection): void { histories.set(p, emptyHistory()); }
 export function journalHistory(p: Projection): History {
   let h = histories.get(p);
   if (!h) { h = emptyHistory(); histories.set(p, h); for (const e of p.events) rememberEvent(p, e); }
   return h;
 }
-function evidenceKey(thread: string, kind: string, id: string): string { return JSON.stringify([thread, kind, id]); }
 export function rememberEvent(p: Projection, event: RoomEvent): void {
   const h = journalHistory(p);
   if (h.events.has(event.id)) throw new Error("invalid event order or identity");
   h.events.set(event.id, event);
   for (let i = event.id.indexOf("/"); i >= 0; i = event.id.indexOf("/", i + 1)) h.prefixes.set(event.id.slice(0, i), true);
   if (event.data.kind === "notice" && event.data.intent === "error") h.errorNotices.set(event.data.causeId, true);
-  if (event.data.kind === "provider.observed") {
-    const o = event.data.observation;
-    for (const [index, s] of (o.sources ?? []).entries()) {
-      if (s.nativeRef?.nativeId) h.nativeIds.set(s.nativeRef.nativeId, true);
-      // V5 orders sources by journal event then their position in that observation.
-      const evidence = { order: event.seq, source: s };
-      for (const [kind, id] of [["item", s.itemId], ["node", s.nodeId]] as const) if (id !== null) {
-        const key = evidenceKey(o.threadId, kind, id), prior = h.evidence.get(key);
-        const ranked = { ...evidence, order: event.seq + index / ((o.sources?.length ?? 0) + 1) };
-        h.evidence.set(key, { origin: prior?.origin ?? ranked,
-          ...(prior?.item ? { item: prior.item } : s.itemId !== null ? { item: ranked } : {}),
-          ...(prior?.complete ? { complete: prior.complete } : s.itemId !== null && s.complete ? { complete: ranked } : {}) });
-      }
-    }
-  }
-}
-export function nativeEvidence(p: Projection, source: NativeToolSource): { origin: NativeToolSource | undefined; item: NativeToolSource | undefined; complete: NativeToolSource | undefined } {
-  const h = journalHistory(p), records = [source.itemId === null ? undefined : h.evidence.get(evidenceKey(source.threadId, "item", source.itemId)),
-    source.nodeId === null ? undefined : h.evidence.get(evidenceKey(source.threadId, "node", source.nodeId))];
-  const earliest = (kind: keyof EvidenceHistory) => records.map((r) => r?.[kind]).filter((r): r is Evidence => r !== undefined).sort((a, b) => a.order - b.order)[0]?.source;
-  return { origin: earliest("origin"), item: earliest("item"), complete: earliest("complete") };
 }
 
 /** A readonly array facade avoids copying the journal on every append. Rare prefix reads still replay. */
