@@ -67,6 +67,11 @@ export interface Snapshot {
   /** Answers: the parts of the checker that are this member's, and whether they all passed. */
   ownParts?: string[];
   ownPass?: boolean;
+  /** Where `at` came from: the old instance's record of the post, or on the new side T3's exact time or the runner's first sight of it. */
+  clock?: "instance" | "t3" | "seen";
+  /** New side: how the post came (output source, or "t3-turn") and what its claims came to (information for Z1's behaviour checks). */
+  via?: string;
+  claims?: string[];
 }
 
 export interface JobRecord {
@@ -84,6 +89,8 @@ export interface JobRecord {
   folder: string;
   fixture: { tag: string; commit: string };
   prompt: string;
+  /** New side: the user message's client ID (message.create's clientMessageId) and the requests the journal made of it. */
+  message?: { clientMessageId: string; requestIds: string[] };
   projectId: string | null;
   roomId: string | null;
   crew: typeof CREW;
@@ -103,7 +110,8 @@ export interface JobRecord {
     quietSince: string | null;
     closeAt: string | null;
   };
-  report: { postId: string; text: string } | null;
+  /** `via` (new side): how the report came, "final" for a run's final; "answer" (`rooms-board answer`) has no T3 message. */
+  report: { postId: string; text: string; via?: string } | null;
   snapshots: Snapshot[];
   /** T3 threads outside the job seen running while the window was open (sampled from T3's shell). */
   overlap: { samples: number; threads: string[] };
