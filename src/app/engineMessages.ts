@@ -41,10 +41,22 @@ export function messageRequestId(delivery: Assignment["delivery"], messageId: st
 
 /** The user message a request came from, for showing its requests as one message; null for any other event. */
 export function messageIdOf(eventId: string): string | null {
-  return /^(?:msg|steer):([^:]+):\d+:/.exec(eventId)?.[1] ?? null;
+  return messageOf(eventId)?.messageId ?? null;
+}
+
+/** The user message a request came from, the assignment's index in it, and whether it was steered; null for any other event. */
+export function messageOf(eventId: string): { messageId: string; index: number; steer: boolean } | null {
+  const match = /^(msg|steer):([^:]+):(\d+):/.exec(eventId);
+  return match ? { messageId: match[2]!, index: Number(match[3]), steer: match[1] === "steer" } : null;
 }
 
 const imagesKey = (roomId: string, messageId: string) => `engine.images:${roomId}:${messageId}`;
+
+/** The attachment IDs of the images that came with a user message, in order (the read API shows them with its requests). */
+export function messageAttachmentIds(repos: Repos, roomId: string, messageId: string): string[] {
+  const stored = repos.getKv(imagesKey(roomId, messageId));
+  return stored ? (JSON.parse(stored) as string[]) : [];
+}
 
 /** A UUID-shaped ID derived from a name: a message sent again under its client ID gives T3 the same IDs again. */
 function derivedId(name: string): string {
@@ -65,8 +77,7 @@ function loadImages(repos: Repos, ids: readonly string[]): TurnImage[] {
 export function messageImages(repos: Repos): (roomId: string, eventId: string) => TurnImage[] {
   return (roomId, eventId) => {
     const messageId = messageIdOf(eventId);
-    const stored = messageId ? repos.getKv(imagesKey(roomId, messageId)) : null;
-    return stored ? loadImages(repos, JSON.parse(stored) as string[]) : [];
+    return messageId ? loadImages(repos, messageAttachmentIds(repos, roomId, messageId)) : [];
   };
 }
 
