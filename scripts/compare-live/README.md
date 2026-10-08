@@ -36,22 +36,29 @@ and holds the pass rules, written before any paid run.
    mkdir -p ~/Projects/backroom-compare/old/data && install -m 600 data/t3-auth.json ~/Projects/backroom-compare/old/data/
    ln -s ~/Projects/backroom-compare/old/data ../backroom-wt/compare-old/data
    cd ../backroom-wt/compare-old && ROOMS_PORT=4481 ROOMS_BROWSER_MODE=off ROOMS_SPEECH=off npm start
-   # new (Z1): the engine head, ROOMS_ENGINE=1 ROOMS_PORT=4482, the same way with new/data
+   # new (Z1): the engine head, ROOMS_ENGINE=1 ROOMS_PORT=4482, the same way with new/data; then delete the harness
+   # from that checkout, so the checkers and reference solutions do not sit beside the board command its members run:
+   git worktree add --detach ../backroom-wt/compare-new engine && rm -rf ../backroom-wt/compare-new/scripts/compare-live
    ```
+
+   The runner refuses a paid job when the instance's worktree contains `scripts/compare-live`.
 
    Because `data/` is the worktree's default data folder, the board command in each instance's briefings is that
    worktree's `bin/rooms-board`, which reads `../data/browser-api.json` beside itself: members reach their own instance.
 2. Fixture: `node scripts/compare-live/setup-fixture.ts` (run again, it checks the tag against the template).
-3. Jobs: `node scripts/compare-live/run.ts --campaign r0 --side old --jobs T1:1,T2:1,T3:1,T4:1 --cap 100`.
-4. Measure: `node scripts/compare-live/measure.ts --campaign r0 --verify`.
+3. Jobs: `node scripts/compare-live/run.ts --campaign r0 --side old --jobs T1:1,T2:1,T3:1,T4:1`.
+4. Measure: `node scripts/compare-live/measure.ts --campaign r0` (the accuracy check always runs; exit 1 on a difference).
 
 Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/`; nothing lives in /tmp.
 
 ## A job
 
 1. **Cap.** The campaign's measured spend so far (every job's threads, seating included, whatever the job's outcome;
-   list price from T3's price table, read live with `tokens.ts`) is added up; at or above the cap, no job starts. R0: $100. Z1: 1.5 × Z1's job count
-   × R0's median job cost, never above $250 without the user's OK (`gate.json` → `fromR0.z1CapUsd`).
+   list price from T3's price table, read live with `tokens.ts` in its strict mode: a missing price table, or a call
+   with tokens on a model the table has no rate for, stops the runner instead of costing $0) is added up; at or above
+   the cap, no job starts. R0: $100. Z1: 1.5 × Z1's job count × R0's median job cost, never above $250 without the
+   user's OK (`gate.json` → `fromR0.z1CapUsd`). The runner takes the cap from there; a `--cap` above it, or above $250,
+   is refused unless `--user-ok "<where the user agreed>"`.
 2. **Folder.** A fresh clone of the fixture at `fixture-v1` in `~/Projects/backroom-compare/jobs/<random id>/tally`, on a
    branch `main`, with no remote, registered as its own throwaway T3 project `tally-<id>`. The path does not say which
    side the job is on.
@@ -62,7 +69,10 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
 4. **Prompt.** The task's prompt is posted once, as the user, the way the page's composer posts it. The time just before
    the post is `postedAt`, the start of the job window.
 5. **Watching.** Every 2 s the runner reads the board. At each member answer and at the Consigliere's report it copies
-   the job folder (without `node_modules` and `.git`) and runs the task's checker on the copy. Every 10 s it samples T3's
+   the job folder (without `node_modules` and `.git`, keeping the files' modification times) and runs the task's checker
+   on the copy. At the report it reads T3 for the report message's own time, which the board's lags (by 2 to 58 s in
+   R0): T3's slow-check log is judged up to T3's time, and the accuracy check fails a job whose report copy holds a file
+   changed after it (for R0's copies, which kept no times: the copy must equal the last answer's copy before it). Every 10 s it samples T3's
    thread list for other threads with an active run (the overlap).
 6. **The report** is the first message from the Consigliere to the user with a line that says `JOB-DONE`: the line, with
    list, quote or heading marks, emphasis and closing punctuation taken off, is exactly `JOB-DONE`. On the old side that
@@ -90,11 +100,16 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
 |---|---|---|---|---|
 | T1 | one member finds `src/cli.ts`'s imports and the unused one with a subagent | `facts`: the report names node:fs, args, text, format, dates, legacy and types; contains `cli.ts:6`; has a line naming legacy as unused | the JOB-DONE report passes `facts` | W1 or W2 (whichever answers): `facts` on its answer |
 | T2 | W1 fixes the failing test in `src/dates.ts`, V reviews | `monthEnd` (the visible defect), `leapYear` (the second defect in the same function, covered by no visible test) | the final tree passes both, and V reviewed before the report: an answer of V's on the board, before the report, whose folder copy already had the visible defect fixed (so there was a fix to review) | W1: `monthEnd`, `leapYear` |
-| T3 | W1 runs `npm run slow-check` (~3 min) in the background, fixes it, reports when it passes | `catalog`: the catalog rules hold on the tree, no entry deleted; `slowCheckLog`: in `.slow-check.log` up to the cutoff, the last run finished and passed, none in progress | the final tree passes `catalog`, and `slowCheckLog` passes with the report's time as cutoff (the report came after the last slow-check finished) | W1: `catalog`, `slowCheckLog` (cutoff: the answer's time) |
+| T3 | W1 runs `npm run slow-check` (~3 min) in the background, fixes it, reports when it passes | `catalog`: the catalog rules hold on the tree, no entry deleted; `slowCheckLog`: in `.slow-check.log` up to the cutoff, the last run finished and passed, none in progress | the final tree passes `catalog`, and `slowCheckLog` passes read up to T3's time of the report (the report came after the last slow-check finished) | W1: `catalog`, `slowCheckLog` (cutoff: the answer's time) |
 | T4 | W1 adds `slugify`, W2 adds `--json`, in parallel; V reviews both | `slugify`, `json`, and on the report `reportCoversBoth` | the final tree passes `slugify` and `json`, and the report covers both | W1: `slugify`; W2: `json` |
 
 - **Premature report** (gated by G1): the checker failed on the copy taken at the JOB-DONE report (T1: the report text;
-  T3: including the log with the report's time as cutoff, so a report before the last slow-check finished is premature).
+  T3: including the log read up to T3's time of the report, so a report before the last slow-check finished is
+  premature). The log is judged run by run: the last-started run must have finished and passed, and no run may still
+  be in progress (runs can overlap).
+- **T1's facts** need each module named as a module (`args.ts`, `./args.ts`, `src/args.ts`; `node:fs`), the line
+  `cli.ts:6`, a line calling legacy unused, no claim that nothing is unused, and no clause that calls another module or
+  import line unused.
 - **Early member answers** (reported, not gated): a member's answer while its own parts failed on the copy taken then.
   Reviewers' answers are not checked. On the old side every member turn end is an answer. T1's part is judged on the
   answer's text, so once a member has given the facts its later answers are not early (added after the first R0 job,
@@ -108,7 +123,8 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
 
 Window: `postedAt` to the close. Seating: everything before `postedAt`, reported apart. Per seat and per job:
 
-- **turns**: T3 runs requested in the window on the seats' threads, until and after the report;
+- **turns**: T3 runs requested in the window on every job thread (the seats' and any T3 thread they started, the
+  threads tokens are counted on), until and after the report;
 - **wakes**: the Consigliere's runs in the window minus the one the post started; after-report wakes listed apart;
 - **tokens**: fresh input, cache read, cache write, output, calls and list-price cost (T3's price table; writes to the
   1-hour cache at its own rate), by `tokens.ts`
@@ -121,13 +137,19 @@ Window: `postedAt` to the close. Seating: everything before `postedAt`, reported
 - **other activity**: threads outside the job running at any point in the window, sampled live and recounted from T3's
   state database; a job with any is marked in the report.
 
-**Accuracy check** (`--verify`, non-zero exit on any difference): for every job thread, `rawsum.mjs` sums the same
+**Accuracy check** (always run by `measure.ts`; non-zero exit on any difference, and `--register-gate` and `--verdict`
+refuse while there is one): for every job thread, `rawsum.mjs` sums the same
 transcripts by message id (sessions found with the `sqlite3` CLI) for the job window and for seating, and must equal
 `measure.ts`'s four totals; the `sqlite3` CLI counts the runs in the window from the state rows and must equal the turns
 read from T3's thread detail; a message id whose copies differ in input or cache figures is reported. It also fails
 when the report the runner saw on the board and the one measure finds in T3 differ (one missing, or more than a minute
 apart), when a briefing sent and received differ, when T3's detail of a job thread is partial, when a job thread's run
-was still active at the close, or when a seat has turns but no calls (its session not found). `--register-gate` needs
+was still active at the close, or when a seat has turns but no calls (its session not found). It also fails when a job
+thread has no T3 record in the evidence, when a call on a model with no price was counted at $0, when a usage copy has
+no readable timestamp, when one message id is counted on two threads, when a transcript in the job folder's project
+belongs to no job thread, when the report's copy is newer than T3's report (see step 5), and when any job transcript
+mentions `scripts/compare-live`, `backroom-handoff`, the fixture repo or another job's folder (a leak). A Consigliere
+final that mentions JOB-DONE without a line that says it is not a report; the report warns about it. `--register-gate` needs
 exactly 2 closed old jobs per task; `--verdict` needs N closed jobs per task and side.
 
 ## Recomputing one job by hand
@@ -157,7 +179,8 @@ transcript every copy carries the same usage; in a subagent's transcript the cop
 streams and only the last carries the final output count (found on the first R0 job: 19 output tokens first-seen
 against 2,076 final). Input and cache figures never differ between copies; `--verify` reports any id whose copies
 differ in them. ThreadCosts (`src/usage/threadCosts.ts`, the page's spend figures) keeps the first copy and so
-undercounts subagents' output; the comparison reads tokens with `tokens.ts` instead. checks. Compare with `measure.json` → `seats[]` (`turns`, `tokens`).
+undercounts subagents' output; the comparison reads tokens with `tokens.ts` instead. Compare with `measure.json` →
+`seats[]` (`turns`, `tokens`).
 
 ## The dry run
 
@@ -176,3 +199,9 @@ check compares T3's runs (the fake's) with the instance's own run records. The q
   not say which side a job is on; the board command in the briefings does (`compare-old`/`compare-new`).
 - The crew is Claude only (Codex is out of quota until 2026-10-14; Cursor is not signed in).
 - Other rooms share the account's rate limits; overlap is recorded per job.
+- T1's facts check is still text matching: a report could pass it with an odd phrasing that is wrong in substance.
+  Both R0 T1 reports were read in full and are right.
+- JOB-DONE near misses ("JOB-DONE:", "Status: JOB-DONE", "JOB-DONE ✅") are not reports: such a job runs to the
+  60-minute "no report" close, and the report warns about it. None happened in R0.
+- T2 measures the review exchange more than defect-catching: the leap-year defect is easy to spot, and in R0 the
+  Consigliere and a T1 report named it unprompted.

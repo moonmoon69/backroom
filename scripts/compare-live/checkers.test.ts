@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { checkTask, FIXTURE_TEMPLATE, MEMBER_PARTS, REFERENCE_DIR, T1_FACTS, type CheckResult, type TaskId } from "./checkers.ts";
+import { checkTask, FIXTURE_TEMPLATE, judgeSlowCheckLogIn, MEMBER_PARTS, REFERENCE_DIR, T1_FACTS, type CheckResult, type TaskId } from "./checkers.ts";
 
 const SCRATCH = join(import.meta.dirname, `.scratch-${process.pid}`);
 before(() => mkdirSync(SCRATCH, { recursive: true }));
@@ -106,7 +106,7 @@ describe("T1: the imports of src/cli.ts", () => {
   test("T1_FACTS names every imported module and the line of the unused one", () => {
     assert.deepEqual(
       T1_FACTS.map((fact) => fact.name),
-      ["node:fs", "args", "text", "format", "dates", "legacy", "types", "cli.ts:6"],
+      ["node:fs", "args.ts", "text.ts", "format.ts", "dates.ts", "legacy.ts", "types.ts", "cli.ts:6"],
     );
     assert.ok(!T1_FACTS.find((fact) => fact.name === "cli.ts:6")?.pattern.test("src/cli.ts:60"));
   });
@@ -322,5 +322,38 @@ describe("the fixture template", () => {
       const path = join(entry.parentPath, entry.name);
       assert.doesNotMatch(readFileSync(path, "utf8"), /fixture|planted|hidden|checker|comparison|\bagents?\b/i, relative(FIXTURE_TEMPLATE, path));
     }
+  });
+});
+
+describe("review round 1 (R7, S1)", () => {
+  test("R7: overlapping slow-check runs are judged by the last-started run's own finish", async () => {
+    const dir = join(SCRATCH, "r7");
+    mkdirSync(dir, { recursive: true });
+    const write = (lines: string[]) => writeFileSync(join(dir, ".slow-check.log"), `${lines.join("\n")}\n`);
+    // start 1, start 2, finish fail 2, finish pass 1: the last-started run (2) failed.
+    write(["2026-10-08T10:00:00.000Z start 1", "2026-10-08T10:01:00.000Z start 2", "2026-10-08T10:03:30.000Z finish fail 2 2 problems", "2026-10-08T10:04:00.000Z finish pass 1"]);
+    const log = (cutoff?: string) => judgeSlowCheckLogIn(dir, cutoff);
+    assert.equal(log().pass, false);
+    assert.match(log().detail, /pid 2\) failed/);
+    assert.equal(log("2026-10-08T10:03:45.000Z").pass, false);
+    // start 1, start 2, finish pass 2 while 1 still runs: not finished.
+    write(["2026-10-08T10:00:00.000Z start 1", "2026-10-08T10:01:00.000Z start 2", "2026-10-08T10:04:00.000Z finish pass 2"]);
+    assert.equal(log().pass, false);
+    assert.match(log().detail, /pid 1\) had not finished/);
+    // Both finished, the last-started one passed.
+    write(["2026-10-08T10:00:00.000Z start 1", "2026-10-08T10:01:00.000Z start 2", "2026-10-08T10:03:00.000Z finish fail 1 2 problems", "2026-10-08T10:04:00.000Z finish pass 2"]);
+    assert.equal(log().pass, true);
+    assert.equal(log("2026-10-08T10:03:30.000Z").pass, false);
+  });
+
+  test("S1: the T1 facts check refuses the reviewer's wrong reports and keeps the right one", async () => {
+    const facts = async (text: string) => (await checkTask("T1", { folder: null, text })).parts.facts ?? { pass: false, detail: "no facts part" };
+    const right = readFileSync(join(REFERENCE_DIR, "T1", "report.md"), "utf8");
+    assert.equal((await facts(right)).pass, true);
+    const base = "Imports: node:fs, ./args.ts, ./text.ts, ./format.ts, ./dates.ts, ./legacy.ts, ./types.ts (src/cli.ts:1-7).";
+    assert.equal((await facts(`${base}\nunused: legacy (src/cli.ts:6) and types (src/cli.ts:7)`)).pass, false);
+    assert.equal((await facts(`${base.replace(", ./types.ts", "")}\nThe types are fine. legacy at src/cli.ts:6 is unused.`)).pass, false);
+    assert.equal((await facts(`${base}\nlegacy at src/cli.ts:6 is used once; none is unused.`)).pass, false);
+    assert.equal((await facts(`${base}\nlegacy (src/cli.ts:6) is unused; the other six are used.`)).pass, true);
   });
 });

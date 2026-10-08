@@ -52,21 +52,27 @@ export const MEMBER_PARTS: Record<TaskId, Record<string, string[]>> = {
  * match somewhere in the text. The "facts" part also needs one line that says legacy is unused (LEGACY_UNUSED).
  */
 export const T1_FACTS: Array<{ name: string; pattern: RegExp }> = [
-  { name: "node:fs", pattern: /node:fs|\bfs\b/i },
-  { name: "args", pattern: /\bargs(\.ts)?\b/i },
-  { name: "text", pattern: /\btext(\.ts)?\b/i },
-  { name: "format", pattern: /\bformat(\.ts)?\b/i },
-  { name: "dates", pattern: /\bdates(\.ts)?\b/i },
-  { name: "legacy", pattern: /\blegacy(\.ts)?\b/i },
-  { name: "types", pattern: /\btypes(\.ts)?\b/i },
+  { name: "node:fs", pattern: /node:fs\b|["'`]fs["'`]/i },
+  ...["args", "text", "format", "dates", "legacy", "types"].map((name) => ({ name: `${name}.ts`, pattern: specifier(name) })),
   { name: "cli.ts:6", pattern: /cli\.ts:6(?!\d)/ },
 ];
+
+/** A module named as a module: `args.ts`, `./args.ts`, `src/args.ts` or `./args` (a bare word is ordinary English). */
+function specifier(name: string): RegExp {
+  return new RegExp(`(?:\\./|src/|\\b)${name}\\.ts\\b|\\./${name}\\b`, "i");
+}
 
 /** One line of a T1 answer must say both of these: that legacy (./legacy.ts, legacyBanner) is unused. */
 const LEGACY_UNUSED = {
   legacy: /legacy/i,
   unused: /unused|not used|never used|isn't used|is not used|unreferenced|dead|never called|not called|isn't called|never referenced|not referenced/i,
 };
+
+/** A report that says nothing is unused. */
+const NOTHING_UNUSED = /\b(no|none of (the|them|its)|none)\b[^.\n]{0,40}\b(unused|dead)\b|\b(all|every one) of (the|its|them)?\s*(seven|7)?\s*(imports|modules)?[^.\n]{0,20}\bare used\b|\ball (seven|7) (imports|modules) are used\b/i;
+
+/** Another module (or another import line) named in the same clause as "unused": that module is called unused too. */
+const OTHER_MODULES = [/node:fs\b/i, ...["args", "text", "format", "dates", "types"].map(specifier), /cli\.ts:[1-57](?!\d)/];
 
 /** The task's checker: T1 = facts on text; T2 = monthEnd + leapYear on folder; T3 = catalog + slowCheckLog on folder; T4 = slugify + json on folder, plus reportCoversBoth when text is not null. */
 export async function checkTask(task: TaskId, input: CheckInput): Promise<CheckResult> {
@@ -104,6 +110,11 @@ function judgeFacts(text: string | null): PartResult {
   const saysUnused = text.split(/\r?\n/).some((line) => LEGACY_UNUSED.legacy.test(line) && LEGACY_UNUSED.unused.test(line));
   if (!saysUnused) missing.push("a line saying legacy is unused");
   if (missing.length > 0) return { pass: false, detail: `missing: ${missing.join(", ")}` };
+  if (NOTHING_UNUSED.test(text)) return { pass: false, detail: "says no import is unused" };
+  // Clauses (split at ". ", ";", "|" and line ends) that call something unused must name no other module.
+  const clauses = text.split(/\r?\n|\|/).flatMap((line) => line.split(/\.\s+|;/));
+  const wrong = clauses.find((clause) => LEGACY_UNUSED.unused.test(clause) && OTHER_MODULES.some((module) => module.test(clause)));
+  if (wrong !== undefined) return { pass: false, detail: `calls another import unused: "${wrong.trim().slice(0, 120)}"` };
   return { pass: true, detail: `all ${T1_FACTS.length} facts and the legacy-unused line are present` };
 }
 
@@ -154,18 +165,20 @@ function judgeSlowCheckLog(text: string, cutoff: string | undefined): PartResult
     events = events.filter((event) => event.time <= limit);
   }
   const upTo = cutoff === undefined ? "" : ` up to ${cutoff}`;
-  const lastFinish = events.findLast((event) => event.kind === "finish");
-  if (!lastFinish) return { pass: false, detail: `no finished run in .slow-check.log${upTo}` };
-  const lastStartIndex = events.findLastIndex((event) => event.kind === "start");
-  const lastStart = events[lastStartIndex];
-  if (!lastStart) return { pass: false, detail: `no start line in .slow-check.log${upTo}` };
-  const finished = events.slice(lastStartIndex + 1).some((event) => event.kind === "finish" && event.pid === lastStart.pid);
-  if (!finished) return { pass: false, detail: `the last run (pid ${lastStart.pid}) had not finished${upTo}` };
-  if (lastFinish.outcome !== "pass") return { pass: false, detail: `the last finished run (pid ${lastFinish.pid}) failed` };
+  // Runs can overlap: each start is judged by its own finish (same pid, at or after it), not by the last finish line.
+  const ownFinish = (start: LogEvent) => events.find((event) => event.kind === "finish" && event.pid === start.pid && event.time >= start.time);
+  const starts = events.filter((event) => event.kind === "start").sort((a, b) => a.time - b.time);
+  const lastStart = starts.at(-1);
+  if (!lastStart) return { pass: false, detail: `no run started in .slow-check.log${upTo}` };
+  const running = starts.find((start) => !ownFinish(start));
+  if (running) return { pass: false, detail: `a run (pid ${running.pid}) had not finished${upTo}` };
+  const finish = ownFinish(lastStart) as LogEvent;
+  if (finish.outcome !== "pass") return { pass: false, detail: `the last run (pid ${lastStart.pid}) failed` };
   return { pass: true, detail: `the last run (pid ${lastStart.pid}) passed` };
 }
 
-function judgeSlowCheckLogIn(folder: string | null, cutoff: string | undefined): PartResult {
+/** T3's log part on a folder copy, read up to the cutoff. */
+export function judgeSlowCheckLogIn(folder: string | null, cutoff: string | undefined): PartResult {
   const missing = folderProblem(folder);
   if (missing !== null || folder === null) return { pass: false, detail: missing ?? "no folder" };
   const path = join(folder, ".slow-check.log");

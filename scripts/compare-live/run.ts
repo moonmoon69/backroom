@@ -12,7 +12,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { isRunActive, type T3ThreadDetail, type T3ThreadShell } from "../../src/adapter/types.ts";
@@ -60,7 +60,27 @@ export function capGate(campaign: string, cap: number, spendOf: (job: JobRecord)
   return capCheck(listJobs(campaign).map(({ job }) => spendOf(job)), cap);
 }
 
-const liveCosts = () => new TranscriptTokens({ stateDb: STATE_DB, projectsDir: CLAUDE_PROJECTS, ratesPath: RATES });
+/** The cap reads spend strictly: a missing price table or an unpriced model stops the campaign instead of costing $0. */
+export const liveCosts = (sources: { stateDb?: string; projectsDir?: string; ratesPath?: string } = {}) =>
+  new TranscriptTokens({ stateDb: sources.stateDb ?? STATE_DB, projectsDir: sources.projectsDir ?? CLAUDE_PROJECTS, ratesPath: sources.ratesPath ?? RATES, strict: true });
+
+/**
+ * The campaign's cap: R0 $100 (the plan's); any other campaign takes gate.json's fromR0.z1CapUsd, registered from R0's
+ * measured cost. A --cap above it, or anything above $250, needs --user-ok naming where the user agreed.
+ */
+export function campaignCap(campaign: string, asked: number | null, userOk: string | null, gatePath = join(import.meta.dirname, "gate.json")): number {
+  let allowed: number;
+  if (campaign === "r0") allowed = 100;
+  else {
+    const gate = existsSync(gatePath) ? (JSON.parse(readFileSync(gatePath, "utf8")) as { fromR0?: { z1CapUsd?: unknown } }) : null;
+    if (typeof gate?.fromR0?.z1CapUsd !== "number") throw new Error(`no registered cap for campaign ${campaign}: gate.json has no fromR0.z1CapUsd`);
+    allowed = gate.fromR0.z1CapUsd;
+  }
+  const cap = asked ?? allowed;
+  if (!Number.isFinite(cap) || cap <= 0) throw new Error(`bad cap ${cap}`);
+  if ((cap > allowed || cap > 250) && !userOk) throw new Error(`a cap of $${cap} is above the registered $${allowed.toFixed(2)} or $250: it needs --user-ok "<where the user agreed>"`);
+  return cap;
+}
 
 // ---------------- one job ----------------
 
@@ -122,6 +142,7 @@ class Job {
       overlap: { samples: 0, threads: [] },
       spend: { campaignBefore: spentBefore, cap: options.cap },
       notes: [],
+      copiesKeepTimes: true,
     };
     mkdirSync(this.dir, { recursive: true });
     this.save();
@@ -321,14 +342,15 @@ class Job {
   private snapshot(kind: Snapshot["kind"], alias: string, post: BoardPost | null): void {
     const observedAt = iso();
     const dir = join(this.dir, "snapshots", `${String(this.record.snapshots.length + 1).padStart(2, "0")}-${kind}${alias ? `-${alias}` : ""}`);
-    cpSync(this.record.folder, dir, { recursive: true, filter: (source) => !/\/node_modules(\/|$)/.test(source) && (kind === "final" || !/\/\.git(\/|$)/.test(source)) });
+    cpSync(this.record.folder, dir, { recursive: true, preserveTimestamps: true, filter: (source) => !/\/node_modules(\/|$)/.test(source) && (kind === "final" || !/\/\.git(\/|$)/.test(source)) });
     const task = this.options.task;
     const entry: Snapshot = { kind, alias, postId: post?.id ?? null, at: post?.at ?? observedAt, observedAt, dir, check: { pass: false, parts: {} } };
     if (kind === "answer") entry.ownParts = ownPartsFor(task, this.record.seats.find((s) => s.alias === alias)?.role ?? null);
     this.record.snapshots.push(entry);
-    const input = checkInputFor(task, kind, dir, post, this.record.report?.text ?? null, this.record.times.reportAt);
+    // The report's moment is T3's (its final message), not the board's, which lags it by a runtime-dependent delay.
+    const moment = kind === "report" ? this.t3ReportTime().then((at) => at ?? post?.at ?? null) : Promise.resolve(kind === "final" ? (this.record.times.t3ReportAt ?? this.record.times.reportAt) : (post?.at ?? null));
     this.checks.push(
-      checkTask(task, input).then(
+      moment.then((at) => checkTask(task, checkInputFor(task, kind, dir, post === null ? null : { text: post.text, at: at ?? post.at }, this.record.report?.text ?? null, at))).then(
         (result) => {
           entry.check = result;
           if (entry.ownParts && entry.ownParts.length > 0) entry.ownPass = entry.ownParts.every((part) => result.parts[part]?.pass === true);
@@ -340,6 +362,31 @@ class Job {
         },
       ),
     );
+  }
+
+  /** T3's time of the report: the first final message of a Consigliere run since the post with a JOB-DONE line. */
+  private async t3ReportTime(): Promise<string | null> {
+    if (!this.options.t3) return null;
+    const consigliere = this.record.seats.find((s) => s.role === "C");
+    if (!consigliere) return null;
+    try {
+      const detail = await this.options.t3.getThreadDetail(consigliere.threadId);
+      if (!detail) return null;
+      const finals = new Map<string, { at: string; text: string }>();
+      for (const m of detail.messages) {
+        if (m.role !== "assistant" || !m.runId || m.text.trim() === "") continue;
+        const seen = finals.get(m.runId);
+        if (!seen || m.createdAt >= seen.at) finals.set(m.runId, { at: m.createdAt, text: m.text });
+      }
+      const posted = this.record.times.postedAt ?? "";
+      const at = [...finals.values()].filter((f) => f.at >= posted && hasJobDoneLine(f.text)).map((f) => f.at).sort()[0] ?? null;
+      this.record.times.t3ReportAt = at;
+      this.save();
+      return at;
+    } catch (error) {
+      this.note(`T3's report time not read: ${(error as Error).message}`);
+      return null;
+    }
   }
 
   /** Evidence: the final copy and its check, T3's threads and rows, the transcripts, the board, the instance's runs. */
@@ -358,7 +405,10 @@ class Job {
       this.record.childThreads = all.filter((t) => !seatIds.has(t.id) && (seatIds.has(t.lineage.rootThreadId) || t.projectId === this.record.projectId)).map((t) => t.id);
       for (const threadId of [...seatIds, ...this.record.childThreads]) {
         const detail = await t3.getThreadDetail(threadId);
-        if (!detail) continue;
+        if (!detail) {
+          this.note(`T3 has no detail for job thread ${threadId}: it is missing from the evidence (--verify fails the job)`);
+          continue;
+        }
         writeFileSync(join(evidence, `${threadId}.json`), `${JSON.stringify(detail)}\n`);
         records.push(threadRecord(detail, this.record.seats.find((s) => s.threadId === threadId) ?? null));
       }
@@ -535,6 +585,7 @@ async function main(): Promise<void> {
       cap: { type: "string" },
       dry: { type: "boolean", default: false },
       "quiet-ms": { type: "string" },
+      "user-ok": { type: "string" },
     },
   });
   if (values.dry) {
@@ -561,10 +612,11 @@ async function main(): Promise<void> {
   const campaign = values.campaign;
   const side = values.side as Side | undefined;
   if (!campaign || (side !== "old" && side !== "new") || !values.jobs) throw new Error("usage: run.ts --campaign <name> --side old|new --jobs T1:1,T2:1,… [--cap <usd>]  |  run.ts --dry");
-  const cap = Number(values.cap ?? (campaign === "r0" ? 100 : NaN));
-  if (!Number.isFinite(cap) || cap <= 0) throw new Error("--cap <usd> is required for this campaign");
+  const cap = campaignCap(campaign, values.cap === undefined ? null : Number(values.cap), values["user-ok"] ?? null);
   const quietMs = Number(values["quiet-ms"] ?? QUIET_MS);
   const instanceInfo = INSTANCES[side];
+  // The hidden checkers and reference solutions must not sit beside the board command the members run.
+  if (existsSync(join(instanceInfo.worktree, "scripts", "compare-live"))) throw new Error(`${instanceInfo.worktree} contains scripts/compare-live (the checkers and reference solutions): delete it in that checkout first`);
   const instance = new LegacyInstance(instanceInfo.url, boardToken(join(instanceInfo.worktree, "data")));
   const t3 = liveT3(join(instanceInfo.worktree, "data"));
   for (const spec of values.jobs.split(",")) {

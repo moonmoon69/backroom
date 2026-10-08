@@ -18,14 +18,14 @@
  * same transcripts and state rows), turns with the sqlite3 CLI on the same state rows.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
-import { FIXTURE_TEMPLATE } from "./checkers.ts";
+import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
 import { TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
 import { TranscriptTokens, type Tokens } from "./tokens.ts";
 
@@ -81,6 +81,8 @@ export interface JobMeasure {
   correctDetail: Record<string, boolean | string | null>;
   premature: boolean;
   earlyAnswers: Array<{ alias: string; at: string; failing: string[] }>;
+  /** Times of Consigliere finals that mention JOB-DONE without a line that says it. */
+  jobDoneNearMisses: string[];
   subagentRan: boolean;
   overlap: { sampled: string[]; stateDb: string[] | null };
   spend: { jobUsd: number; seatingUsd: number; totalUsd: number };
@@ -176,6 +178,8 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
   // A dry run's fake cannot write one; its report is the one the runner named on the board.
   const t3Report = job.dry ? null : (finals(consigliereRecord as ThreadRecord).find((f) => inWindow(f.at, posted, close) && hasJobDoneLine(f.text)) ?? null);
   const reportAt = job.dry ? job.times.reportAt : (t3Report?.at ?? null);
+  // Consigliere finals that mention JOB-DONE without a line that says it ("JOB-DONE:", "Status: JOB-DONE"): not reports.
+  const jobDoneNearMisses = job.dry ? [] : finals(consigliereRecord as ThreadRecord).filter((f) => inWindow(f.at, posted, close) && f.text.includes("JOB-DONE") && !hasJobDoneLine(f.text)).map((f) => f.at);
   const report = reportAt ? ms(reportAt) : null;
 
   const costs = job.dry ? null : tokensFor(dir);
@@ -203,7 +207,6 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
     };
   });
 
-  const seatOnly = seats.filter((s) => s.role !== "child");
   const consigliereSeat = seats.find((s) => s.role === "C");
   const wakes = Math.max(0, (consigliereSeat?.turns ?? 0) - 1);
   const consigliereRuns = consigliereRecord?.runs.filter((r) => inWindow(r.requestedAt, posted, close)) ?? [];
@@ -220,15 +223,22 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
     ...(job.task === "T3" && final ? { slowCheckScriptChanged: changedFromTemplate(final.dir, "scripts/slow-check.mjs") } : {}),
     boardReportAt: job.times.reportAt,
   };
-  const correct = reportAt !== null && (final?.check.pass ?? false) && (job.task !== "T2" || reviewBeforeReport);
-  const premature = isPremature(job.snapshots);
+  // T3's log is read up to T3's own report time (the board's lags it); the other parts are as the runner checked them.
+  const reportCopy = job.snapshots.find((s) => s.kind === "report") ?? null;
+  const t3Log = (snapshot: Snapshot | undefined | null) => (snapshot && reportAt ? judgeSlowCheckLogIn(snapshot.dir, reportAt).pass : false);
+  const passesAt = (snapshot: Snapshot | undefined | null) =>
+    !snapshot ? false : job.task !== "T3" || job.dry ? snapshot.check.pass : snapshot.check.parts.catalog?.pass === true && t3Log(snapshot);
+  if (job.task === "T3" && !job.dry) correctDetail.slowCheckLogAtT3Report = t3Log(final);
+  const correct = reportAt !== null && passesAt(final) && (job.task !== "T2" || reviewBeforeReport);
+  const premature = reportCopy !== null && !passesAt(reportCopy);
   const earlyAnswers = earlyAnswersOf(job.snapshots, job.task);
   const firstPass = job.snapshots.filter((s) => s.kind !== "final" && s.check.pass).sort((a, b) => a.at.localeCompare(b.at))[0];
 
   const metrics: Record<Metric, number | null> = {
     wakes,
     tokens: tokens?.total ?? null,
-    turns: seatOnly.reduce((total, s) => total + s.turns, 0),
+    // Every job thread's runs, the seats' and the ones they started, as tokens are counted.
+    turns: seats.reduce((total, s) => total + s.turns, 0),
     wallToReportMs: report === null ? null : report - posted,
   };
   const seatingUsd = seats.reduce((total, s) => total + (s.seating?.costUsd ?? 0), 0);
@@ -252,6 +262,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
     correctDetail,
     premature,
     earlyAnswers,
+    jobDoneNearMisses,
     subagentRan: seats.some((s) => s.subagentsStarted > 0) || job.childThreads.length > 0,
     overlap: { sampled: job.overlap.threads, stateDb: job.dry ? null : overlapFromStateDb(job, options.liveStateDb === undefined ? STATE_DB : options.liveStateDb) },
     // Lifetime equals seating + window when nothing ran after the close; the larger is what was spent.
@@ -363,9 +374,44 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
       if (ms(run.requestedAt) <= Date.parse(close) && (run.completedAt === null || ms(run.completedAt) > Date.parse(close))) out.push({ job: name, what: `run ${run.id} of ${record.alias ?? record.threadId} still active at the close`, measured: run.completedAt, recounted: close });
     }
   }
+  // Every job thread (the seats' and the ones they started) must have a record, else it would vanish from both counts.
+  const byThread = new Map(measured.seats.map((seat) => [seat.threadId, seat]));
+  for (const threadId of jobThreads(job)) {
+    if (!byThread.has(threadId)) out.push({ job: name, what: `job thread ${threadId} has no T3 record in the evidence`, measured: null, recounted: threadId });
+  }
   for (const seat of measured.seats) {
     if (seat.turns > 0 && (seat.tokens?.calls ?? 0) === 0) out.push({ job: name, what: `@${seat.alias ?? seat.threadId} has turns but no calls (no session found?)`, measured: seat.turns, recounted: 0 });
   }
+  const tokens = new TranscriptTokens({ stateDb: sources.stateDb, projectsDir: sources.transcripts, ratesPath: RATES });
+  const sessions = new Set<string>();
+  const owner = new Map<string, string>();
+  for (const threadId of jobThreads(job)) {
+    for (const session of tokens.sessions(threadId)) sessions.add(session);
+    // A message counted on two threads would be counted twice.
+    for (const call of tokens.calls(threadId)) {
+      const other = owner.get(call.id);
+      if (other && other !== threadId) out.push({ job: name, what: `message ${call.id} counted on two threads`, measured: other, recounted: threadId });
+      owner.set(call.id, threadId);
+    }
+  }
+  if (tokens.unpriced.size > 0) out.push({ job: name, what: "calls on a model with no price in T3's table (counted at $0)", measured: [...tokens.unpriced], recounted: null });
+  if (tokens.untimed.size > 0) out.push({ job: name, what: "usage copies without a readable timestamp (dropped from every window)", measured: [...tokens.untimed].slice(0, 5), recounted: null });
+  // Transcripts in the job folder's project that belong to no job thread's session were not counted.
+  for (const project of existsSync(sources.transcripts) ? readdirSync(sources.transcripts) : []) {
+    for (const name2 of readdirSync(join(sources.transcripts, project))) {
+      const session = /^([0-9a-f-]{36})\.jsonl$/.exec(name2)?.[1];
+      if (session && !sessions.has(session)) out.push({ job: name, what: `transcript ${session}.jsonl belongs to no job thread`, measured: null, recounted: join(project, name2) });
+    }
+  }
+  // No member may have read the harness, the evidence, the fixture repo or another job's folder.
+  const own = job.jobId;
+  const leak = new RegExp(`scripts/compare-live|backroom-handoff|backroom-compare/fixture|backroom-compare/(?:dry/)?jobs/(?!${own}\\b)[0-9a-f]{6}`);
+  for (const file of jsonlFiles(sources.transcripts)) {
+    const hit = leak.exec(readFileSync(file, "utf8"));
+    if (hit) out.push({ job: name, what: `a transcript mentions ${hit[0]}`, measured: file, recounted: null });
+  }
+  // The report's copy must hold the tree as it was at T3's report message.
+  out.push(...reportCopyChecks(job, name, measured.times.reportAt));
   const rawsum = join(import.meta.dirname, "rawsum.mjs");
   for (const seat of measured.seats) {
     const turns = Number(
@@ -415,6 +461,54 @@ export function duplicateUsageConflicts(transcripts: string): Array<{ id: string
   return out;
 }
 
+/** T3's projects by folder, from its state database (live): every job's throwaway project, whatever the job's fate. */
+function projectsByFolder(stateDb = STATE_DB): Map<string, { id: string; title: string }> {
+  if (!existsSync(stateDb)) return new Map();
+  const db = new DatabaseSync(stateDb, { readOnly: true });
+  try {
+    const rows = db.prepare("SELECT project_id AS id, title, workspace_root AS root FROM projection_projects WHERE deleted_at IS NULL AND workspace_root LIKE '%/backroom-compare/%'").all() as Array<{ id: string; title: string; root: string }>;
+    return new Map(rows.map((r) => [r.root, { id: r.id, title: r.title }]));
+  } finally {
+    db.close();
+  }
+}
+
+/** Every .jsonl file under a folder. */
+function jsonlFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? jsonlFiles(join(dir, e.name)) : e.name.endsWith(".jsonl") ? [join(dir, e.name)] : []));
+}
+
+/** The files of a copy, relative, without .git and the slow-check log (which is read by its own times). */
+function copyFiles(dir: string, base = dir): string[] {
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    if (e.name === ".git" || e.name === ".slow-check.log") return [];
+    const path = join(dir, e.name);
+    return e.isDirectory() ? copyFiles(path, base) : [path.slice(base.length + 1)];
+  });
+}
+
+/**
+ * The report's copy is taken when the board shows the report, after T3 recorded it. With kept file times, no file of
+ * the copy may be newer than T3's report; for copies without them (R0's first jobs), the copy must equal the last
+ * member answer's copy taken before T3's report.
+ */
+export function reportCopyChecks(job: JobRecord, name: string, t3ReportAt: string | null): Difference[] {
+  const report = job.snapshots.find((s) => s.kind === "report");
+  if (!report || !t3ReportAt || job.task === "T1" || job.dry) return [];
+  const limit = Date.parse(t3ReportAt);
+  if (job.copiesKeepTimes) {
+    const late = copyFiles(report.dir).filter((file) => statSync(join(report.dir, file)).mtimeMs > limit);
+    return late.length === 0 ? [] : [{ job: name, what: "files in the report's copy changed after T3's report message", measured: late, recounted: t3ReportAt }];
+  }
+  const before = job.snapshots.filter((s) => s.kind === "answer" && Date.parse(s.at) <= limit).sort((a, b) => a.at.localeCompare(b.at)).at(-1);
+  if (!before) return [];
+  const files = [...new Set([...copyFiles(report.dir), ...copyFiles(before.dir)])];
+  const differ = files.filter((file) => sameFile(report.dir, before.dir, file) !== true);
+  return differ.length === 0 ? [] : [{ job: name, what: "the report's copy differs from the last answer's copy before T3's report", measured: differ, recounted: before.dir }];
+}
+
 // ---------------- the report ----------------
 
 const median = (values: number[]): number | null => {
@@ -433,10 +527,10 @@ const fmt = (metric: Metric | string, value: number | null): string => {
   return String(value);
 };
 
-function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecord[], differences: Difference[] | null, aborted: Array<{ job: JobRecord; spentUsd: number }> = []): string {
+function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecord[], differences: Difference[] | null, aborted: Array<{ job: JobRecord; spentUsd: number }> = [], projects: Map<string, { id: string; title: string }> = new Map()): string {
   const lines: string[] = [];
   lines.push(`# Comparison campaign ${campaign}`, "", `Measured ${new Date().toISOString()} by scripts/compare-live/measure.ts from the evidence in ${campaignDir(campaign)}/jobs.`, "");
-  if (differences) lines.push(`Accuracy check (\`--verify\`: rawsum.mjs for tokens, sqlite3 for turns): ${differences.length === 0 ? "**passed**, no difference" : `**${differences.length} differences**`}.`, "");
+  if (differences) lines.push(`Accuracy check (always run: rawsum.mjs for tokens, sqlite3 for turns, and the guards in README.md): ${differences.length === 0 ? "**passed**, no difference" : `**${differences.length} differences**`}.`, "");
   lines.push("## Every run", "");
   lines.push("| job | side | task | run | close | correct | premature | wakes (after report) | turns | tokens | wall to report | wall to first pass | spend (job + seating) | T3 | overlap (sampled / state db) | subagent |");
   lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
@@ -447,6 +541,8 @@ function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecor
       `| ${m.jobId} | ${m.side} | ${m.task} | ${m.run} | ${m.close} | ${m.correct ? "yes" : "**no**"} | ${m.premature ? "**yes**" : "no"} | ${m.metrics.wakes} (${m.wakesAfterReport}) | ${m.metrics.turns} | ${fmt("tokens", m.metrics.tokens)} | ${fmt("wallToReportMs", m.metrics.wallToReportMs)} | ${fmt("wallToFirstPassMs", m.wallToFirstPassMs)} | $${m.spend.jobUsd.toFixed(2)} + $${m.spend.seatingUsd.toFixed(2)} | ${t3 === t3End ? t3 : `${t3} → ${t3End}`} | ${m.overlap.sampled.length} / ${m.overlap.stateDb?.length ?? "–"} | ${m.subagentRan ? "yes" : "no"} |`,
     );
   }
+  const nearMisses = measures.filter((m) => m.jobDoneNearMisses.length > 0);
+  if (nearMisses.length > 0) lines.push("", `**Warning:** a Consigliere final mentioned JOB-DONE without a line that says it (not counted as a report) in ${nearMisses.map((m) => `${m.jobId} (${m.jobDoneNearMisses.join(", ")})`).join("; ")}.`);
   lines.push("", "## Medians and ranges per task and side", "");
   lines.push("| task | side | runs | correct | premature | wakes | turns | tokens | wall to report | spend per job |", "|---|---|---|---|---|---|---|---|---|---|");
   for (const task of TASK_IDS) {
@@ -455,7 +551,9 @@ function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecor
       if (group.length === 0) continue;
       const cell = (metric: Metric) => {
         const values = group.map((m) => m.metrics[metric]).filter((v): v is number => v !== null);
-        return values.length === 0 ? "–" : `${fmt(metric, median(values))} (${fmt(metric, Math.min(...values))}–${fmt(metric, Math.max(...values))})`;
+        const none = group.length - values.length;
+        const missing = none === 0 ? "" : `; ${none} of ${group.length} without a ${metric === "wallToReportMs" ? "report" : "value"}`;
+        return values.length === 0 ? `–${missing}` : `${fmt(metric, median(values))} (${fmt(metric, Math.min(...values))}–${fmt(metric, Math.max(...values))}${missing})`;
       };
       const spend = group.map((m) => m.spend.totalUsd);
       lines.push(
@@ -497,7 +595,8 @@ function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecor
     lines.push("", `Campaign spend, every job: $${(measures.reduce((n, m) => n + m.spend.totalUsd, 0) + aborted.reduce((n, a) => n + a.spentUsd, 0)).toFixed(2)}.`);
   }
   lines.push("", "## Throwaway T3 projects and rooms", "", "Delete after the campaign, with the user's OK.", "", "| job | side | T3 project | folder | room |", "|---|---|---|---|---|");
-  for (const job of jobs) lines.push(`| ${job.jobId} | ${job.side} | ${job.projectId ?? "–"} | ${job.folder} | ${job.roomId ?? "–"} on ${job.instance.url} |`);
+  // Looked up by folder in T3's own records: T3 can hold a project the instance never heard back about.
+  for (const job of jobs) lines.push(`| ${job.jobId} | ${job.side} | ${projects.get(job.folder)?.id ?? job.projectId ?? "–"} | ${job.folder} | ${job.roomId ?? "–"} on ${job.instance.url} |`);
   if (differences && differences.length > 0) {
     lines.push("", "## Accuracy differences", "");
     for (const d of differences) lines.push(`- ${d.job} ${d.what}: measured ${JSON.stringify(d.measured)}, recounted ${JSON.stringify(d.recounted)}`);
@@ -512,7 +611,8 @@ async function main(): Promise<void> {
   const jobs = listJobs(campaign).filter(({ job }) => job.status === "closed");
   const measures = jobs.map(({ dir }) => measureJob(dir));
   for (const [index, { dir }] of jobs.entries()) writeFileSync(join(dir, "measure.json"), `${JSON.stringify(measures[index], null, 2)}\n`);
-  const differences = values.verify ? jobs.flatMap(({ dir }, index) => verifyJob(dir, measures[index] as JobMeasure)) : null;
+  // The accuracy check always runs (--verify is kept as a no-op for old command lines).
+  const differences = jobs.flatMap(({ dir }, index) => verifyJob(dir, measures[index] as JobMeasure));
   const out = campaignDir(campaign);
   writeFileSync(join(out, "report.json"), `${JSON.stringify({ measuredAt: new Date().toISOString(), measures, differences }, null, 2)}\n`);
   // Jobs that did not close (aborted: an error stopped them) are not measured; they are listed with what they spent.
@@ -520,9 +620,10 @@ async function main(): Promise<void> {
   const aborted = listJobs(campaign)
     .filter(({ job }) => job.status !== "closed")
     .map(({ job }) => ({ job, spentUsd: live.between(jobThreads(job), Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY).costUsd }));
-  writeFileSync(join(out, "report.md"), reportMarkdown(campaign, measures, listJobs(campaign).map((j) => j.job), differences, aborted));
+  writeFileSync(join(out, "report.md"), reportMarkdown(campaign, measures, listJobs(campaign).map((j) => j.job), differences, aborted, projectsByFolder()));
   console.log(`${measures.length} jobs measured; ${join(out, "report.md")}`);
 
+  if ((values["register-gate"] || values.verdict) && differences.length > 0) throw new Error(`the accuracy check found ${differences.length} differences: no gate is registered and no verdict given`);
   if (values["register-gate"]) {
     const path = join(import.meta.dirname, "gate.json");
     if (existsSync(path)) throw new Error(`${path} is registered already`);
@@ -543,7 +644,7 @@ async function main(): Promise<void> {
         better: "every new run strictly below every old run on the metric (smaller is better); worse the other way round; ties, 0 against 0 included, are neither",
         wakes: "the Consigliere's T3 runs requested in the job window, minus the one the user's post started; after-report wakes included",
         tokens: "input + cache read + cache write + output over the job window, every job thread, subagents included",
-        turns: "T3 runs requested in the job window on the seats' threads",
+        turns: "T3 runs requested in the job window on every job thread (the seats' and any T3 thread they started), the threads tokens are counted on",
         wallToReportMs: "from the user's post to the first final message of a Consigliere run with a JOB-DONE line; a job without one has the worst value",
         G1: "on every task, new correct runs >= old correct runs and new premature reports <= old premature reports",
         G2: "on at least one primary metric, better on K or more of the 4 tasks",

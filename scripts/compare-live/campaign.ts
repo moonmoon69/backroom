@@ -96,6 +96,8 @@ export interface JobRecord {
     seatingEnd: string | null;
     postedAt: string | null;
     reportAt: string | null;
+    /** T3's time of the report message (read when the board shows it); the board's reportAt lags it. */
+    t3ReportAt?: string | null;
     reportObservedAt: string | null;
     quietSince: string | null;
     closeAt: string | null;
@@ -105,6 +107,8 @@ export interface JobRecord {
   /** T3 threads outside the job seen running while the window was open (sampled from T3's shell). */
   overlap: { samples: number; threads: string[] };
   spend: { campaignBefore: number; cap: number };
+  /** Copies keep the files' modification times (from round 2 of R0's review on), so --verify can see later edits. */
+  copiesKeepTimes?: boolean;
   notes: string[];
 }
 

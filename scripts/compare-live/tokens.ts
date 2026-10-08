@@ -60,18 +60,29 @@ export class TranscriptTokens {
   private readonly stateDb: string;
   private readonly projectsDir: string;
   private readonly rates: Record<string, Rate>;
+  private readonly strict: boolean;
   private readonly byThread = new Map<string, Call[]>();
+  /** Models seen without a rate in the price table: their calls cost 0 here (strict: they throw). */
+  readonly unpriced = new Set<string>();
+  /** Usage copies without a readable timestamp (both readers would drop them from every window). */
+  readonly untimed = new Set<string>();
 
-  constructor(sources: { stateDb: string; projectsDir: string; ratesPath: string }) {
+  /**
+   * strict (the spend cap): a price table that cannot be read, or a call on a model it has no rate for, throws instead
+   * of costing nothing, so the cap fails closed.
+   */
+  constructor(sources: { stateDb: string; projectsDir: string; ratesPath: string; strict?: boolean }) {
     this.stateDb = sources.stateDb;
     this.projectsDir = sources.projectsDir;
-    let rates: Record<string, Rate> = {};
+    this.strict = sources.strict === true;
+    let rates: Record<string, Rate> | null = null;
     try {
-      rates = (JSON.parse(readFileSync(sources.ratesPath, "utf8")) as { document?: Record<string, Rate> }).document ?? {};
+      rates = (JSON.parse(readFileSync(sources.ratesPath, "utf8")) as { document?: Record<string, Rate> }).document ?? null;
     } catch {
-      // No price table: tokens are counted, cost is 0.
+      rates = null;
     }
-    this.rates = rates;
+    if (!rates && this.strict) throw new Error(`no price table at ${sources.ratesPath}: spend cannot be counted`);
+    this.rates = rates ?? {};
   }
 
   /** The thread's Claude sessions, as T3 names them on its provider threads. */
@@ -110,6 +121,7 @@ export class TranscriptTokens {
             const message = row.message;
             if (!message?.usage || typeof message.id !== "string" || typeof message.model !== "string") continue;
             const at = Date.parse(String(row.timestamp));
+            if (Number.isNaN(at)) this.untimed.add(`${file}: ${message.id}`);
             const usage = message.usage;
             const seen = messages.get(message.id);
             if (seen) {
@@ -139,7 +151,13 @@ export class TranscriptTokens {
 
   private cost(call: Call): number {
     const rate = this.rates[call.model] ?? this.rates[`anthropic/${call.model}`];
-    if (!rate || typeof rate.input_cost_per_token !== "number") return 0;
+    if (!rate || typeof rate.input_cost_per_token !== "number") {
+      // Claude Code's "<synthetic>" messages (an API error, a usage limit) carry no tokens and cost nothing.
+      if (call.input + call.cacheRead + call.cacheWrite + call.output === 0) return 0;
+      if (this.strict) throw new Error(`no price for model ${call.model}: spend cannot be counted`);
+      this.unpriced.add(call.model);
+      return 0;
+    }
     const write5m = rate.cache_creation_input_token_cost ?? 0;
     const write1h = rate.cache_creation_input_token_cost_above_1hr ?? write5m;
     const oneHour = Math.min(call.cacheWrite1h, call.cacheWrite);

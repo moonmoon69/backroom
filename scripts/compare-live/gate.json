@@ -30,12 +30,13 @@
     "better": "every new run strictly below every old run on the metric (smaller is better); worse the other way round; ties, 0 against 0 included, are neither",
     "wakes": "the Consigliere's T3 runs requested in the job window, minus the one the user's post started; after-report wakes included",
     "tokens": "input + cache read + cache write + output over the job window, every job thread, subagents included",
-    "turns": "T3 runs requested in the job window on the seats' threads",
+    "turns": "T3 runs requested in the job window on every job thread (the seats' and any T3 thread they started), the threads tokens are counted on",
     "wallToReportMs": "from the user's post to the first final message of a Consigliere run with a JOB-DONE line; a job without one has the worst value",
     "G1": "on every task, new correct runs >= old correct runs and new premature reports <= old premature reports",
     "G2": "on at least one primary metric, better on K or more of the 4 tasks",
     "G3": "on no metric, primary or secondary, worse on K or more tasks; and no task with a material regression",
-    "chance": "exhaustive relabelling within each task; PASS needs chance-pass <= chancePassTarget"
+    "chance": "exhaustive relabelling within each task; PASS needs chance-pass <= chancePassTarget",
+    "amended": "2026-10-08, R0 review round 1 (S4), before any new-side job: turns counted on every job thread, as tokens; R0's numbers are unchanged (the seats started no thread with runs)"
   },
   "fromR0": {
     "campaign": "r0",
