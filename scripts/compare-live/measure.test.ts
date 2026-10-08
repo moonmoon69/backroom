@@ -5,10 +5,12 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { measureJob, verifyJob } from "./measure.ts";
+import { measureJob, t2Review, verifyJob } from "./measure.ts";
+import type { Snapshot } from "./campaign.ts";
+import { TranscriptTokens } from "./tokens.ts";
 
 const SAMPLE = join(import.meta.dirname, "testdata", "job");
 const SCRATCH = join(import.meta.dirname, `.scratch-${process.pid}`);
@@ -88,5 +90,41 @@ describe("tokens", () => {
     const differences = verifyJob(JOB, measured);
     assert.equal(differences.length, 1);
     assert.match(differences[0]?.what ?? "", /tokens @W1 \(job window\)/);
+  });
+});
+
+describe("price", () => {
+  test("writes to the 1-hour cache are priced at their own rate", () => {
+    const dir = join(SCRATCH, "price");
+    mkdirSync(join(dir, "projects", "-p"), { recursive: true });
+    const rates = join(dir, "rates.json");
+    writeFileSync(rates, JSON.stringify({ document: { "claude-opus-5-5": { input_cost_per_token: 4e-6, output_cost_per_token: 2e-5, cache_read_input_token_cost: 2e-7, cache_creation_input_token_cost: 5e-6, cache_creation_input_token_cost_above_1hr: 8e-6 } } }));
+    const usage = { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 3000, cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 2000 }, output_tokens: 100 };
+    writeFileSync(join(dir, "projects", "-p", "cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl"), `${JSON.stringify({ timestamp: "2026-10-08T10:00:00.000Z", message: { id: "m1", model: "claude-opus-5-5", usage } })}\n`);
+    execFileSync("sqlite3", [join(dir, "state.sqlite"), "CREATE TABLE orchestration_v2_projection_provider_threads (thread_id TEXT, driver TEXT, payload_json TEXT); INSERT INTO orchestration_v2_projection_provider_threads VALUES ('t', 'claudeAgent', '{\"nativeThreadRef\":{\"nativeId\":\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"}}');"]);
+    const tokens = new TranscriptTokens({ stateDb: join(dir, "state.sqlite"), projectsDir: join(dir, "projects"), ratesPath: rates }).between(["t"], 0, Date.parse("2026-10-09T00:00:00Z"));
+    assert.equal(tokens.cacheWrite, 3000);
+    // 10×4e-6 + 1000×2e-7 + 1000×5e-6 + 2000×8e-6 + 100×2e-5
+    assert.ok(Math.abs(tokens.costUsd - (0.00004 + 0.0002 + 0.005 + 0.016 + 0.002)) < 1e-12, String(tokens.costUsd));
+  });
+});
+
+describe("T2's review", () => {
+  const snap = (kind: Snapshot["kind"], alias: string, at: string, dir: string, monthEnd: boolean): Snapshot => ({ kind, alias, postId: null, at, observedAt: at, dir, check: { pass: false, parts: { monthEnd: { pass: monthEnd, detail: "" } } } });
+  test("an answer of V's before there is a fix is not a review; one after it is; a later change to dates.ts is a correction", () => {
+    const copy = (name: string, text: string) => {
+      const dir = join(SCRATCH, "t2", name);
+      mkdirSync(join(dir, "src"), { recursive: true });
+      writeFileSync(join(dir, "src", "dates.ts"), text);
+      return dir;
+    };
+    const early = snap("answer", "V", "2026-10-08T10:01:00.000Z", copy("early", "broken"), false);
+    const report = (dir: string) => snap("report", "C", "2026-10-08T10:09:00.000Z", dir, true);
+    assert.deepEqual(t2Review([early, report(copy("r0", "fixed"))], "V"), { reviewBeforeReport: false, correctionAfterReview: false });
+    const review = snap("answer", "V", "2026-10-08T10:05:00.000Z", copy("reviewed", "fixed once"), true);
+    assert.deepEqual(t2Review([early, review, report(copy("r1", "fixed once"))], "V"), { reviewBeforeReport: true, correctionAfterReview: false });
+    assert.deepEqual(t2Review([early, review, report(copy("r2", "fixed twice"))], "V"), { reviewBeforeReport: true, correctionAfterReview: true });
+    const late = snap("answer", "V", "2026-10-08T10:10:00.000Z", copy("late", "fixed"), true);
+    assert.deepEqual(t2Review([early, late, report(copy("r3", "fixed"))], "V"), { reviewBeforeReport: false, correctionAfterReview: false });
   });
 });

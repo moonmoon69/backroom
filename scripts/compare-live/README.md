@@ -68,9 +68,10 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
    list, quote or heading marks, emphasis and closing punctuation taken off, is exactly `JOB-DONE`. On the old side that
    is a Consigliere reply (`assistant.reply`) on the board; measure.ts finds the same message in T3 as the final message of
    a Consigliere run. His earlier replies ("work handed out") are not reports.
-7. **Close.** After the report, the room is quiet when, at the same moment: no job thread has an active run in T3, no job
-   thread has a pending approval or question in T3, no job thread has background work in T3 (its pending background tasks:
-   subagents, commands, monitors), and the instance has no pending work (old side: no task queued, dispatching, running
+7. **Close.** After the report, the room is quiet when, at the same moment: no job thread (the seats' and any T3 thread
+   they started: same project, or a seat as its root) has an active run in T3, none has a pending approval or question
+   in T3, none has background work in T3 (its pending background tasks: subagents, commands, monitors), and the
+   instance has no pending work (old side: no task queued, dispatching, running
    or waiting on input). The window closes after 3 minutes of continuous quiet; every sample is in `quiet.jsonl`. It
    closes as "did not quiesce" 30 minutes after the report, and as "no report" 60 minutes after the post without one.
    (The background-work condition and the 60-minute cap are additions to the plan's wording; both apply to both sides.)
@@ -88,7 +89,7 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
 | Task | Prompt | Checker parts | Correct (the job) | Member's own parts (early answers) |
 |---|---|---|---|---|
 | T1 | one member finds `src/cli.ts`'s imports and the unused one with a subagent | `facts`: the report names node:fs, args, text, format, dates, legacy and types; contains `cli.ts:6`; has a line naming legacy as unused | the JOB-DONE report passes `facts` | W1 or W2 (whichever answers): `facts` on its answer |
-| T2 | W1 fixes the failing test in `src/dates.ts`, V reviews | `monthEnd` (the visible defect), `leapYear` (the second defect in the same function, covered by no visible test) | the final tree passes both, and V answered (a final message on V's thread in T3) before the report | W1: `monthEnd`, `leapYear` |
+| T2 | W1 fixes the failing test in `src/dates.ts`, V reviews | `monthEnd` (the visible defect), `leapYear` (the second defect in the same function, covered by no visible test) | the final tree passes both, and V reviewed before the report: an answer of V's on the board, before the report, whose folder copy already had the visible defect fixed (so there was a fix to review) | W1: `monthEnd`, `leapYear` |
 | T3 | W1 runs `npm run slow-check` (~3 min) in the background, fixes it, reports when it passes | `catalog`: the catalog rules hold on the tree, no entry deleted; `slowCheckLog`: in `.slow-check.log` up to the cutoff, the last run finished and passed, none in progress | the final tree passes `catalog`, and `slowCheckLog` passes with the report's time as cutoff (the report came after the last slow-check finished) | W1: `catalog`, `slowCheckLog` (cutoff: the answer's time) |
 | T4 | W1 adds `slugify`, W2 adds `--json`, in parallel; V reviews both | `slugify`, `json`, and on the report `reportCoversBoth` | the final tree passes `slugify` and `json`, and the report covers both | W1: `slugify`; W2: `json` |
 
@@ -98,9 +99,9 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
   Reviewers' answers are not checked. On the old side every member turn end is an answer. T1's part is judged on the
   answer's text, so once a member has given the facts its later answers are not early (added after the first R0 job,
   where W1's after-report "nothing left to do" was flagged; information only).
-- T2 also reports, for information, whether W1 made a correction after V's first review and before the report. The plan
-  read "V's review, then W1's correction"; a W1 who fixes both defects at once leaves V nothing to correct, so the gate
-  needs only V's review before the report and the tree right.
+- T2 also reports, for information, whether there was a correction after V's review: `src/dates.ts` in the report's
+  copy differs from the copy V reviewed. The plan read "V's review, then W1's correction"; a W1 who fixes both defects
+  at once leaves V nothing to correct, so the gate needs only V's review before the report and the tree right.
 - **Wall-clock to the first pass**: from the post to the first copy (answers and report) that passed the checker.
 
 ## What is measured (measure.ts, from T3's records only)
@@ -109,12 +110,13 @@ Window: `postedAt` to the close. Seating: everything before `postedAt`, reported
 
 - **turns**: T3 runs requested in the window on the seats' threads, until and after the report;
 - **wakes**: the Consigliere's runs in the window minus the one the post started; after-report wakes listed apart;
-- **tokens**: fresh input, cache read, cache write, output, calls and list-price cost (T3's price table), by `tokens.ts`
+- **tokens**: fresh input, cache read, cache write, output, calls and list-price cost (T3's price table; writes to the
+  1-hour cache at its own rate), by `tokens.ts`
   over the copied transcripts and state rows, each message counted once with its final usage (see "Recomputing one
   job"); `tokens` in the gate is all four kinds summed over every job thread;
 - **peak context**: the thread's largest single call of its own in the window;
-- **briefing bytes per delivered turn**: the user messages T3 recorded for each run in the window, cross-checked against
-  the instance's own record of what it sent (old side: `runs.briefing`);
+- **briefing bytes per delivered turn**: the user messages T3 recorded for each run in the window, cross-checked text for
+  text against the instance's own record of what it sent in the window (old side: `runs.briefing`);
 - **wall-clock** to the report and to the checker's first pass; **correct**, **premature**, **early member answers**;
 - **other activity**: threads outside the job running at any point in the window, sampled live and recounted from T3's
   state database; a job with any is marked in the report.
@@ -122,7 +124,11 @@ Window: `postedAt` to the close. Seating: everything before `postedAt`, reported
 **Accuracy check** (`--verify`, non-zero exit on any difference): for every job thread, `rawsum.mjs` sums the same
 transcripts by message id (sessions found with the `sqlite3` CLI) for the job window and for seating, and must equal
 `measure.ts`'s four totals; the `sqlite3` CLI counts the runs in the window from the state rows and must equal the turns
-read from T3's thread detail; a message id whose copies differ in input or cache figures is reported.
+read from T3's thread detail; a message id whose copies differ in input or cache figures is reported. It also fails
+when the report the runner saw on the board and the one measure finds in T3 differ (one missing, or more than a minute
+apart), when a briefing sent and received differ, when T3's detail of a job thread is partial, when a job thread's run
+was still active at the close, or when a seat has turns but no calls (its session not found). `--register-gate` needs
+exactly 2 closed old jobs per task; `--verdict` needs N closed jobs per task and side.
 
 ## Recomputing one job by hand
 

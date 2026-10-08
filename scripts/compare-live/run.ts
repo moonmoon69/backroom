@@ -203,9 +203,21 @@ class Job {
     throw new Error("seating did not finish in 15 minutes");
   }
 
-  /** Each job thread as T3 shows it now; on a dry run, as the instance's fake T3 does. */
+  /**
+   * Each job thread as T3 shows it now: the seats', and any thread they started (same project, or a seat as its root:
+   * a T3 subagent or delegated thread); on a dry run, the seats' as the instance's fake T3 shows them.
+   */
   private async threadStates(shells?: T3ThreadShell[]): Promise<Record<string, { status: string; active: boolean; request: boolean; background: number }>> {
     const out: Record<string, { status: string; active: boolean; request: boolean; background: number }> = {};
+    if (this.options.t3) {
+      const all = shells ?? (await this.options.t3.listThreads());
+      const seatIds = new Set(this.record.seats.map((s) => s.threadId));
+      for (const shell of all) {
+        if (seatIds.has(shell.id) || !(seatIds.has(shell.lineage.rootThreadId) || shell.projectId === this.record.projectId)) continue;
+        out[`thread:${shell.id}`] = { status: shell.status, active: shell.activeRunId !== null || isRunActive(shell.status), request: shell.pendingRequest !== null, background: shell.pendingBackgroundTasks.length };
+      }
+      shells = all;
+    }
     for (const seat of this.record.seats) {
       if (this.options.t3) {
         const shell = (shells ?? (await this.options.t3.listThreads())).find((t) => t.id === seat.threadId);

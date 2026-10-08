@@ -86,7 +86,7 @@ export interface JobMeasure {
   spend: { jobUsd: number; seatingUsd: number; totalUsd: number };
   tokensUntilReport: Tokens | null;
   tokensAfterReport: Tokens | null;
-  briefing: { turns: number; bytes: number; crossCheck: { compared: number; equal: number } | null };
+  briefing: { turns: number; bytes: number; crossCheck: { compared: number; equal: number; missing: number } | null };
   seats: SeatMeasure[];
 }
 
@@ -147,6 +147,19 @@ export const earlyAnswersOf = (snapshots: Snapshot[], task: TaskId | null = null
 };
 
 /**
+ * T2's review, from the copies the runner took: V's review is an answer of V's before the report, made when there was a
+ * fix to review (the visible defect was fixed in the copy taken at that answer). A correction (information only):
+ * src/dates.ts in the report's copy differs from the copy V reviewed.
+ */
+export function t2Review(snapshots: Snapshot[], vAlias: string | null): { reviewBeforeReport: boolean; correctionAfterReview: boolean } {
+  const report = snapshots.find((s) => s.kind === "report") ?? null;
+  if (!report || !vAlias) return { reviewBeforeReport: false, correctionAfterReview: false };
+  const review = snapshots.filter((s) => s.kind === "answer" && s.alias === vAlias && s.at < report.at && s.check.parts.monthEnd?.pass === true).sort((a, b) => a.at.localeCompare(b.at))[0];
+  if (!review) return { reviewBeforeReport: false, correctionAfterReview: false };
+  return { reviewBeforeReport: true, correctionAfterReview: sameFile(review.dir, report.dir, "src/dates.ts") === false };
+}
+
+/**
  * Measure one closed job from its evidence folder. `liveStateDb` is T3's own database, read only for the other
  * threads that ran during the window (null skips it).
  */
@@ -161,7 +174,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
 
   // The report as T3 recorded it: the first final message of a Consigliere run in the window with a JOB-DONE line.
   // A dry run's fake cannot write one; its report is the one the runner named on the board.
-  const t3Report = job.dry ? null : (finals(consigliereRecord as ThreadRecord).find((f) => ms(f.at) >= posted && hasJobDoneLine(f.text)) ?? null);
+  const t3Report = job.dry ? null : (finals(consigliereRecord as ThreadRecord).find((f) => inWindow(f.at, posted, close) && hasJobDoneLine(f.text)) ?? null);
   const reportAt = job.dry ? job.times.reportAt : (t3Report?.at ?? null);
   const report = reportAt ? ms(reportAt) : null;
 
@@ -198,13 +211,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
 
   // Correctness: the final copy's check (T2 also needs V's review before the report), and the report's own check.
   const final = job.snapshots.find((s) => s.kind === "final");
-  const v = job.seats.find((s) => s.role === "V");
-  const vRecord = records.find((r) => r.threadId === v?.threadId);
-  const vAnswers = vRecord ? finals(vRecord).filter((f) => ms(f.at) >= posted) : [];
-  const reviewBeforeReport = report !== null && vAnswers.some((f) => ms(f.at) < report);
-  const w1 = records.find((r) => r.threadId === job.seats.find((s) => s.role === "W1")?.threadId);
-  const firstReview = vAnswers[0] ? ms(vAnswers[0].at) : null;
-  const correctionAfterReview = firstReview !== null && report !== null && (w1?.runs ?? []).some((r) => ms(r.requestedAt) > firstReview && r.completedAt !== null && ms(r.completedAt) < report);
+  const { reviewBeforeReport, correctionAfterReview } = t2Review(job.snapshots, job.seats.find((s) => s.role === "V")?.alias ?? null);
   const correctDetail: JobMeasure["correctDetail"] = {
     report: reportAt !== null,
     finalCheck: final?.check.pass ?? false,
@@ -251,7 +258,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
     spend: { jobUsd, seatingUsd, totalUsd: Math.max(lifetime, jobUsd + seatingUsd) },
     tokensUntilReport: sum(seats.map((s) => s.tokensUntilReport)),
     tokensAfterReport: sum(seats.map((s) => s.tokensAfterReport)),
-    briefing: { turns: seats.reduce((n, s) => n + s.briefingBytes.length, 0), bytes: seats.reduce((n, s) => n + s.briefingBytes.reduce((a, b) => a + b, 0), 0), crossCheck: briefingCrossCheck(dir, records) },
+    briefing: { turns: seats.reduce((n, s) => n + s.briefingBytes.length, 0), bytes: seats.reduce((n, s) => n + s.briefingBytes.reduce((a, b) => a + b, 0), 0), crossCheck: briefingCrossCheck(dir, records, posted, close) },
     seats,
   };
 }
@@ -281,21 +288,35 @@ function overlapFromStateDb(job: JobRecord, stateDb: string | null): string[] | 
   }
 }
 
-/** The instance's record of what it sent (old side: runs.briefing) against the message T3 received, byte for byte. */
-function briefingCrossCheck(dir: string, records: ThreadRecord[]): { compared: number; equal: number } | null {
+/**
+ * The instance's record of what it sent in the window (old side: runs.briefing) against the message T3 received, text
+ * for text. `missing`: runs whose message T3's detail does not have.
+ */
+function briefingCrossCheck(dir: string, records: ThreadRecord[], posted: number, close: number): { compared: number; equal: number; missing: number } | null {
   const path = join(dir, "instance-room.json");
   if (!existsSync(path)) return null;
-  const room = JSON.parse(readFileSync(path, "utf8")) as { runs?: Array<{ messageId?: string; briefing?: string }> };
+  const room = JSON.parse(readFileSync(path, "utf8")) as { runs?: Array<{ messageId?: string; briefing?: string; createdAt?: string }> };
   const messages = new Map(records.flatMap((r) => r.messages.filter((m) => m.role === "user").map((m) => [m.id, m.text] as const)));
   let compared = 0;
   let equal = 0;
+  let missing = 0;
   for (const run of room.runs ?? []) {
+    if (typeof run.briefing !== "string" || run.briefing === "" || !run.createdAt || !inWindow(run.createdAt, posted, close)) continue;
     const received = run.messageId ? messages.get(run.messageId) : undefined;
-    if (received === undefined || typeof run.briefing !== "string" || run.briefing === "") continue;
+    if (received === undefined) {
+      missing += 1;
+      continue;
+    }
     compared += 1;
-    if (Buffer.byteLength(received) === Buffer.byteLength(run.briefing)) equal += 1;
+    if (received === run.briefing) equal += 1;
   }
-  return { compared, equal };
+  return { compared, equal, missing };
+}
+
+/** Whether a file is the same in two copies (null when either copy lacks it). */
+function sameFile(a: string, b: string, file: string): boolean | null {
+  if (!a || !b || !existsSync(join(a, file)) || !existsSync(join(b, file))) return null;
+  return readFileSync(join(a, file), "utf8") === readFileSync(join(b, file), "utf8");
 }
 
 // ---------------- the accuracy check ----------------
@@ -326,6 +347,25 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   }
   // A message id counted once (with its largest output) must not hide copies whose input or cache figures differ.
   for (const conflict of duplicateUsageConflicts(sources.transcripts)) out.push({ job: name, what: `message ${conflict.id} repeated with different input or cache usage in ${conflict.file}`, measured: conflict.first, recounted: conflict.other });
+  // The report as the runner saw it on the board and as T3 recorded it must be the same message.
+  const boardReportAt = job.times.reportAt;
+  const t3ReportAt = measured.times.reportAt;
+  if ((boardReportAt === null) !== (t3ReportAt === null) || (boardReportAt && t3ReportAt && Math.abs(Date.parse(boardReportAt) - Date.parse(t3ReportAt)) > 60_000)) {
+    out.push({ job: name, what: "the JOB-DONE report on the board and in T3 differ", measured: t3ReportAt, recounted: boardReportAt });
+  }
+  const cross = measured.briefing.crossCheck;
+  if (cross && (cross.equal !== cross.compared || cross.missing > 0)) out.push({ job: name, what: "briefings sent and received differ", measured: cross, recounted: null });
+  const records = JSON.parse(readFileSync(sources.threads, "utf8")) as ThreadRecord[];
+  for (const record of records) {
+    if (record.partial) out.push({ job: name, what: `T3's detail of ${record.threadId} is partial`, measured: true, recounted: false });
+    // Work still running on a job thread at the close would fall outside the window.
+    for (const run of record.runs) {
+      if (ms(run.requestedAt) <= Date.parse(close) && (run.completedAt === null || ms(run.completedAt) > Date.parse(close))) out.push({ job: name, what: `run ${run.id} of ${record.alias ?? record.threadId} still active at the close`, measured: run.completedAt, recounted: close });
+    }
+  }
+  for (const seat of measured.seats) {
+    if (seat.turns > 0 && (seat.tokens?.calls ?? 0) === 0) out.push({ job: name, what: `@${seat.alias ?? seat.threadId} has turns but no calls (no session found?)`, measured: seat.turns, recounted: 0 });
+  }
   const rawsum = join(import.meta.dirname, "rawsum.mjs");
   for (const seat of measured.seats) {
     const turns = Number(
@@ -478,6 +518,8 @@ async function main(): Promise<void> {
     if (existsSync(path)) throw new Error(`${path} is registered already`);
     if (measures.some((m) => m.side === "new")) throw new Error("the gate is registered before any new-side job");
     const old = measures.filter((m) => m.side === "old" && !m.dry);
+    const short = TASK_IDS.filter((task) => old.filter((m) => m.task === task).length !== 2);
+    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status !== "closed")) throw new Error(`R0 needs exactly 2 closed old jobs per task and no unclosed job (short: ${short.join(", ") || "none"})`);
     const bySpread = spread(old.map(gateRun));
     const { N, K, wideTasks } = chooseNK(bySpread);
     const spend = old.map((m) => m.spend.totalUsd);
@@ -506,7 +548,10 @@ async function main(): Promise<void> {
 
   if (values.verdict) {
     const gate = JSON.parse(readFileSync(join(import.meta.dirname, "gate.json"), "utf8")) as Gate;
-    const result = verdict(gate, measures.filter((m) => !m.dry).map(gateRun));
+    const runs = measures.filter((m) => !m.dry);
+    const short = TASK_IDS.flatMap((task) => (["old", "new"] as const).filter((side) => runs.filter((m) => m.task === task && m.side === side).length !== gate.N).map((side) => `${task} ${side}`));
+    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status !== "closed")) throw new Error(`the verdict needs N = ${gate.N} closed jobs per task and side and no unclosed job (short: ${short.join(", ") || "none"})`);
+    const result = verdict(gate, runs.map(gateRun));
     const lines = [`# Z1 verdict: ${result.verdict}`, "", `chance-pass ${(result.chance.chancePass * 100).toFixed(2)}% (target ${gate.chancePassTarget * 100}%), chance-G3-fail ${(result.chance.chanceG3Fail * 100).toFixed(2)}%, over ${result.chance.labellings} labellings; N = ${gate.N}, K = ${gate.K}.`, "", `G1 ${result.evaluation.g1}, G2 ${result.evaluation.g2}, G3 ${result.evaluation.g3}.`, "", "| task | correct old/new | premature old/new | " + METRICS.join(" | ") + " | material |", "|---|---|---|" + METRICS.map(() => "---|").join("") + "---|"];
     for (const [task, row] of Object.entries(result.evaluation.perTask)) lines.push(`| ${task} | ${row.correct.old}/${row.correct.new} | ${row.premature.old}/${row.premature.new} | ${METRICS.map((m) => row.cells[m]).join(" | ")} | ${row.material.join(", ") || "none"} |`);
     writeFileSync(join(out, "verdict.md"), `${lines.join("\n")}\n\nEvery run's numbers are in report.md beside this file.\n`);

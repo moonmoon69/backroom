@@ -8,7 +8,8 @@
  * at the time of its first copy. (ThreadCosts, src/usage/threadCosts.ts, keeps the first copy, which undercounts
  * subagents' output; the comparison does not use it for tokens.)
  *
- * List price from T3's price table (usage-model-rates.json), as ThreadCosts prices it.
+ * List price from T3's price table (usage-model-rates.json); cache writes to the 1-hour cache at its own rate
+ * (cache_creation_input_token_cost_above_1hr), which ThreadCosts does not distinguish.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +22,8 @@ export interface Call {
   input: number;
   cacheRead: number;
   cacheWrite: number;
+  /** The part of cacheWrite written to the 1-hour cache, priced higher. */
+  cacheWrite1h: number;
   output: number;
   subagent: boolean;
 }
@@ -41,6 +44,7 @@ interface Rate {
   output_cost_per_token?: number;
   cache_read_input_token_cost?: number;
   cache_creation_input_token_cost?: number;
+  cache_creation_input_token_cost_above_1hr?: number;
 }
 
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
@@ -120,6 +124,7 @@ export class TranscriptTokens {
               input: count(usage.input_tokens),
               cacheRead: count(usage.cache_read_input_tokens),
               cacheWrite: count(usage.cache_creation_input_tokens),
+              cacheWrite1h: count((usage.cache_creation as { ephemeral_1h_input_tokens?: unknown } | undefined)?.ephemeral_1h_input_tokens),
               output: count(usage.output_tokens),
               subagent,
             });
@@ -135,7 +140,10 @@ export class TranscriptTokens {
   private cost(call: Call): number {
     const rate = this.rates[call.model] ?? this.rates[`anthropic/${call.model}`];
     if (!rate || typeof rate.input_cost_per_token !== "number") return 0;
-    return call.input * rate.input_cost_per_token + call.cacheRead * (rate.cache_read_input_token_cost ?? 0) + call.cacheWrite * (rate.cache_creation_input_token_cost ?? 0) + call.output * (rate.output_cost_per_token ?? 0);
+    const write5m = rate.cache_creation_input_token_cost ?? 0;
+    const write1h = rate.cache_creation_input_token_cost_above_1hr ?? write5m;
+    const oneHour = Math.min(call.cacheWrite1h, call.cacheWrite);
+    return call.input * rate.input_cost_per_token + call.cacheRead * (rate.cache_read_input_token_cost ?? 0) + (call.cacheWrite - oneHour) * write5m + oneHour * write1h + call.output * (rate.output_cost_per_token ?? 0);
   }
 
   /** The threads' calls made in [fromMs, toMs]. */
