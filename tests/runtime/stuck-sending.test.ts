@@ -149,7 +149,7 @@ test("a run whose step keeps failing before T3 has it fails visibly after the bo
   const notices = room.notices();
   assert.equal(notices.length, 1);
   assert.deepEqual([...notices[0]!.recipients].sort(), ["$user", "C"]);
-  assert.match(notices[0]!.body, /Backroom could not get @W's turn to T3: the same step failed 7 times in 61 s \(simulated: the journal refuses the phase\)/);
+  assert.match(notices[0]!.body, /^Backroom stopped trying to start @W's turn after the same step failed 7 times in 61 s: simulated: the journal refuses the phase$/);
   assert.equal(room.state(a), "open");
   await room.tick(5);
   assert.equal(room.notices().length, 1, "and nothing more after it");
@@ -163,7 +163,7 @@ test("a send T3 cannot take while it lists its threads counts toward the bound; 
   room.user("W", "Fix dates.ts.");
   await room.tick(2);
   assert.deepEqual(room.unresolvedRuns(), ["W:sending"]);
-  assert.match(String((room.logs.at(-1)?.detail as { error?: string })?.error), /the message for @W did not reach T3 \(T3 is not reachable \(simulated\)\); it is sent again with the same IDs/);
+  assert.match(String((room.logs.at(-1)?.detail as { error?: string })?.error), /the message for @W could not be sent to T3 \(T3 is not reachable \(simulated\)\); it is sent again with the same IDs/);
   // Then T3 is down for 10 minutes: it lists nothing, so no seat is stepped.
   const list = room.fake.listThreads.bind(room.fake);
   let outage = true;

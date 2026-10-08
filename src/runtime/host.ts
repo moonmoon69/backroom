@@ -13,7 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { T3CommandRejected, T3Unavailable, runForMessage } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
 import { backgroundTasks } from "../app/threadView.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { inputTree, unread } from "../engine/index.ts";
@@ -66,6 +66,19 @@ export interface EngineHostOptions {
    * journal (approvals and questions on the native-requests path, plan §6). `detail` reads the thread at most once.
    */
   watch?: (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>) => void | Promise<void>;
+}
+
+/**
+ * A send T3 did not take (H4). Its message is the log line while the run goes on ("sent again with the same IDs");
+ * `reason` is what a notice may say if the run's bound ends it: only what is known about the message.
+ */
+class SendNotTaken extends Error {
+  readonly reason: string;
+  constructor(logLine: string, reason: string, cause: unknown) {
+    super(logLine, { cause });
+    this.name = "SendNotTaken";
+    this.reason = reason;
+  }
 }
 
 /** A member command the host refuses, with the explanation the member sees. */
@@ -303,7 +316,8 @@ export class EngineHost {
       this.stuck.set(runId, streak);
       if (streak.attempts < STUCK_ATTEMPTS || this.now() - streak.since < this.stuckMs) throw error;
       this.log("run failed: its step kept failing before T3 had it", { roomId, seatId, runId, attempts: streak.attempts, error: message(error) });
-      this.fail(roomId, runId, `Backroom could not get ${this.named(roomId, seatId)}'s turn to T3: the same step failed ${streak.attempts} times in ${Math.round((this.now() - streak.since) / 1000)} s (${message(error)})`);
+      const reason = error instanceof SendNotTaken ? error.reason : message(error);
+      this.fail(roomId, runId, `Backroom stopped trying to start ${this.named(roomId, seatId)}'s turn after the same step failed ${streak.attempts} times in ${Math.round((this.now() - streak.since) / 1000)} s: ${reason}`);
     }
   }
 
@@ -405,7 +419,12 @@ export class EngineHost {
     } catch (error) {
       if (error instanceof T3Unavailable) {
         // T3 listed its threads in this tick, so this is not an outage: the step failed, and counts toward the bound.
-        throw new T3Unavailable(`the message for ${this.named(roomId, seatId)} did not reach T3 (${message(error)}); it is sent again with the same IDs`, error);
+        // Sent but never answered (T3OutcomeUnknown), T3 may have taken it and may run the turn; otherwise it never left.
+        const who = this.named(roomId, seatId);
+        if (error instanceof T3OutcomeUnknown) {
+          throw new SendNotTaken(`T3 never confirmed it took the message for ${who} (${message(error)}); it is sent again with the same IDs`, `T3 never confirmed it took the message (${message(error)}), and may still run the turn`, error);
+        }
+        throw new SendNotTaken(`the message for ${who} could not be sent to T3 (${message(error)}); it is sent again with the same IDs`, `the message could not be sent to T3 (${message(error)})`, error);
       }
       if (error instanceof T3CommandRejected) {
         const count = (this.refused.get(run.id) ?? 0) + 1;
