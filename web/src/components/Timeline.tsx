@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -442,6 +443,21 @@ function Ref({ number }: { number: number }) {
   );
 }
 
+/** Several board numbers, each showing its post, separated: "#12, #14". Unknown ones are left out. */
+function Refs({ numbers }: { numbers: ReadonlyArray<number | null> }) {
+  const shown = numbers.filter((n): n is number => n !== null);
+  return (
+    <>
+      {shown.map((n, index) => (
+        <Fragment key={`${n}-${index}`}>
+          {index > 0 ? ", " : null}
+          <Ref number={n} />
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function Pieces({ pieces }: { pieces: readonly ReplyPiece[] }) {
   return (
     <>
@@ -857,7 +873,7 @@ function Note({ post }: { post: EnginePost }) {
             ) : null}
             {post.about.length > 0 ? (
               <span className="mono muted">
-                on {post.about.map((r, i) => (r.number === null ? null : <Ref key={i} number={r.number} />))}
+                on {<Refs numbers={post.about.map((r) => r.number)} />}
               </span>
             ) : null}
             <Stamp post={post} />
@@ -899,7 +915,7 @@ function Note({ post }: { post: EnginePost }) {
           {note.afterAnswer ? <AfterAnswer /> : null}
           {post.about.length > 0 ? (
             <span className="mono muted">
-              under {post.about.map((r, i) => (r.number === null ? null : <Ref key={i} number={r.number} />))}
+              under {<Refs numbers={post.about.map((r) => r.number)} />}
             </span>
           ) : null}
           <Stamp post={post} />
@@ -926,7 +942,7 @@ function Progress({ post }: { post: EnginePost }) {
       <span className="post-number">#{post.number}</span>
       <span className="speaker identity">{nameOf(post.author)}</span>
       {post.progress?.working ? <span className="turn-state turn-working">working</span> : <span className="tag">{post.progress?.milestone ?? "progress"}</span>}
-      {post.about.length > 0 ? <span>on {post.about.map((r, i) => (r.number === null ? null : <Ref key={i} number={r.number} />))}</span> : null}
+      {post.about.length > 0 ? <span>on {<Refs numbers={post.about.map((r) => r.number)} />}</span> : null}
       <span className="status-text" title={post.body}>
         {line.length > 200 ? `${line.slice(0, 200)}…` : line}
       </span>
@@ -941,7 +957,7 @@ function Notice({ post }: { post: EnginePost }) {
     <div className={`chat-status notice-line notice-${notice.intent}${notice.needsYou ? " notice-needs" : ""}`} data-number={post.number} data-seq={post.seq} title={whenTitle(post)}>
       <span className="post-number mono">#{post.number}</span>
       <span className="notice-mark mono">{notice.intent === "error" ? "failed" : "attention"}</span>
-      {post.about.length > 0 ? <span className="mono">on {post.about.map((r, i) => (r.number === null ? null : <Ref key={i} number={r.number} />))}</span> : null}
+      {post.about.length > 0 ? <span className="mono">on {<Refs numbers={post.about.map((r) => r.number)} />}</span> : null}
       <span className="status-text">{post.body}</span>
       {notice.needsYou ? <span className="pill pill-input">needs you</span> : null}
       {notice.retried ? <span className="mono muted">retried</span> : null}
@@ -1005,7 +1021,7 @@ function Blocked({ post }: { post: EnginePost }) {
 /** Corrections, cancels, retries and handovers: one line each. */
 function StatusPost({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
-  const refs = post.about.map((r, i) => (r.number === null ? null : <Ref key={i} number={r.number} />));
+  const refs = <Refs numbers={post.about.map((r) => r.number)} />;
   let text: ReactNode;
   switch (post.kind) {
     case "correction":
@@ -1104,9 +1120,7 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
           {numbers.length > 0 ? (
             <span className="reply-to mono">
               on{" "}
-              {numbers.map((n) => (
-                <Ref key={n} number={n} />
-              ))}
+              <Refs numbers={numbers} />
             </span>
           ) : null}
           <span className={`live-working mono${uncertain ? " live-uncertain-mark" : ""}`} title={uncertain ? "Backroom cannot tell whether T3 received this turn: it keeps looking and never sends it twice" : PHASE_WORDS[run.phase]}>
