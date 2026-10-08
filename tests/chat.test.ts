@@ -46,13 +46,17 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const checkpoint = request("reseat:cp1", "$user", "A", { message: null });
   const calledOffAboutWorker = post({ kind: "note", author: "$user", about: [{ requestId: "r1", number: 1 }], note: { source: "post", room: false, t3: null, afterAnswer: false } });
   const roomNote = post({ kind: "note", author: "$user", note: { source: "post", room: true, t3: null, afterAnswer: false } });
-  const posts = [before, hisOldReply, briefing, toWorker, workerReply, typedOnWorker, typedOnHisOldThread, checkpoint, calledOffAboutWorker, roomNote, handover, after, hisNewReply];
+  // H6: a keep-alive to him and his one-line reply to it are on the board, never in the chat; a note of his own is.
+  const keepAlive = post({ kind: "notice", author: "$system", to: ["B"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, needsYou: false } });
+  const keepAliveReply = post({ kind: "note", author: "B", note: { source: "keep-alive", room: false, t3: null, afterAnswer: false } });
+  const hisNote = post({ kind: "note", author: "B", note: { source: "post", room: false, t3: null, afterAnswer: false } });
+  const posts = [before, hisOldReply, briefing, toWorker, workerReply, typedOnWorker, typedOnHisOldThread, checkpoint, calledOffAboutWorker, roomNote, handover, after, hisNewReply, keepAlive, keepAliveReply, hisNote];
 
   const his = consigliereSeats(snapshot, posts);
   assert.deepEqual([...his.seats].sort(), ["A", "B"], "his seat before the reseat is his");
   assert.deepEqual([...his.threads].sort(), ["tA", "tB"]);
   const chat = consigliereChat(posts, his).map((p) => p.id);
-  assert.deepEqual(chat, [before.id, hisOldReply.id, typedOnHisOldThread.id, roomNote.id, after.id, hisNewReply.id]);
+  assert.deepEqual(chat, [before.id, hisOldReply.id, typedOnHisOldThread.id, roomNote.id, after.id, hisNewReply.id, hisNote.id]);
 
   // Without the handover post (older than the page holds), only the current seats are his.
   const shortHis = consigliereSeats(snapshot, posts.filter((p) => p !== handover));
