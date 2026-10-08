@@ -994,10 +994,15 @@ export class RoomService {
       current = { ...current, seated: true };
     }
     await this.setConsigliere({ type: "room.consigliere.set", roomId: current.roomId, participantId: current.participantId });
-    // Delivered already when the room has the message: the attempt stopped before saying so.
-    if (!this.repos.listEvents(current.roomId).some((event) => event.kind === "user.message")) await this.createMessage({
+    // The message goes the composer's way, through execute: with the engine (ROOMS_ENGINE=1) it is his request on the
+    // board, under the attempt's ID as the message's client ID, so the engine records it once however often it is sent.
+    // Without the engine it was delivered already when the room has the message: the attempt stopped before saying so.
+    if (!this.repos.listEvents(current.roomId).some((event) => event.kind === "user.message")) await this.execute({
+      type: "message.create",
       roomId: current.roomId,
       sourceText: command.text,
+      preamble: "",
+      clientMessageId: command.requestId,
       attachmentIds: [],
       assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), schedule: { mode: "now" }, after: [], delivery: "queue", slashCommand: false }],
     });

@@ -906,6 +906,48 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     },
   });
 
+  // 20. Talk to …: a conversation started with its first message (consigliere.start) makes a room with the saved crew
+  // member the setting names as its Consigliere, and the message is his request on the board, which wakes him (H2).
+  const preset = await service.command<{ presetId: string }>({ type: "preset.create", name: "astra", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
+  await service.command({ type: "consigliere.preset.set", presetId: preset.presetId });
+  const opening = "Plan the next release: the date parser fix, the v1.2 tag and the notes.";
+  const startId = randomUUID();
+  const talk = await service.command<{ roomId: string; participantId: string }>({ type: "consigliere.start", projectId: "project_demo", text: opening, requestId: startId });
+  const talkSnapshot = () => service.call<Snapshot>("GET", `/api/rooms/${talk.roomId}`);
+  const astra = (await talkSnapshot()).bindings.find((b) => b.participantId === talk.participantId)!;
+  // Held before the fake T3's 4 s auto-reply can end his first turn, so the turn holds while it is checked.
+  await service.fake("hold", { threadId: astra.threadId, hold: true });
+  browser.click(/button "Back to the overview"/);
+  browser.waitFor(opening.slice(0, 20));
+  browser.click(new RegExp(`button "${opening.slice(0, 20)}`));
+  browser.click(/tab "[^"]*astra/);
+  const chatHas = (text: string, row: string) => browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.${row}')].some((r) => r.textContent.includes(${JSON.stringify(text)}))`);
+  const talked = new Checks({ snapshot: talkSnapshot }, browser);
+  const first = await talked.state("Talk to …: the first message is the Consigliere's request and his turn runs on it", (x) => {
+    const post = x.posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === opening);
+    const run = post && x.runs.find((r) => r.seatId === astra.id && r.phase === "running" && r.inputs.includes(post.seq));
+    return post && post.request.owner === astra.id && post.request.message?.id === startId && run
+      ? `#${post.number} request by $user to his seat ${astra.id.slice(0, 8)}, message ${startId.slice(0, 8)} (the start's ID), run ${run.id.slice(0, 8)} running on it`
+      : null;
+  }, [opening], {
+    extra: () => {
+      if (!chatHas(opening, "from-user")) fail("the conversation does not show the first message as the user's");
+      log("  page: the first message is the user's in the conversation with him");
+    },
+  });
+  const firstPost = first.posts.find((p) => p.kind === "request" && p.body === opening);
+  await service.fake("complete", { threadId: astra.threadId, text: "Here is the release plan: parser fix, tag, notes." });
+  await talked.state("Talk to …: his reply answers the first message", (x) => {
+    const out = claimOf(x, firstPost.request.id, "answered");
+    return out ? `#${out.number} answers #${firstPost.number}` : null;
+  }, ["Here is the release plan: parser fix, tag, notes."], {
+    extra: () => {
+      if (!chatHas("Here is the release plan: parser fix, tag, notes.", "from-agent")) fail("the conversation does not show his reply");
+      log("  page: his reply is in the conversation");
+    },
+  });
+  check.passed.push(...talked.passed);
+
   // Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs.
   const db = new DatabaseSync(join(room.dataDir, "rooms.sqlite"), { readOnly: true });
   try {
