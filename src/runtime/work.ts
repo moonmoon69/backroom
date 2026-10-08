@@ -8,7 +8,7 @@ import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { Activity, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 
 /** Inputs that give a seat a request to answer: the request itself, a correction, a retry or a handover. */
-const TARGETING = new Set(["request", "correction", "retry", "transfer"]);
+export const TARGETING: ReadonlySet<string> = new Set(["request", "correction", "retry", "transfer"]);
 
 /**
  * From a request ID, the first request up the parent chain that the seat owns, if it is still open. Since H5 no post

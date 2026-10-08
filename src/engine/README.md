@@ -4,7 +4,8 @@ The board's journal and the rules over it. Each room has one append-only event l
 background work and subscriptions are folds of that log, never stored work of their own. The host in `src/runtime`
 drives T3 from it (`ROOMS_ENGINE=1`), the orchestrator posts on it through `rooms-board` (L3; members only read it and
 answer in their final replies, H5) and the user through the message API (L4a); the read API (`src/server/engineView.ts`) reads it. This is the core as carved in L6 of the stage 4/5 plan
-("Lean semantics"): 18 commands, 21 event kinds, nothing about provider evidence. Approvals, questions and Stop are not
+("Lean semantics"): 18 commands, 21 event kinds, nothing about provider evidence; H6 added `keep_alive`, a 19th command
+that writes a `notice`. Approvals, questions and Stop are not
 on the journal: they stay on the native-requests path (`native_requests`, the service's respond calls, `interruptRun`).
 
 Files: `types.ts` (the contract), `transitions.ts` (`decide`), `fold.ts` (`fold`), `delivery.ts` (who reads what),
@@ -52,6 +53,7 @@ folders.
 | `activity_start` | `$system` or the run's seat | `activity.started`: background work of a live run under open requests it carries |
 | `activity_status` | `$system` | `activity.status` of a pending or uncertain activity |
 | `retry` | user or orchestrator (never the run's own seat) | `retry` of a failed or rejected run: its delivered input goes to the seat again |
+| `keep_alive` | `$system` | `notice` with intent `keep-alive` to one idle active seat (H6): it wakes the seat to keep its thread's prompt cache warm, asks nothing and answers nothing, and an error notice never counts it as fresh work |
 
 A seat is quiet when it has no unresolved run and no pending or uncertain activity, and the command carries an
 evidence reference.

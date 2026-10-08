@@ -16,6 +16,10 @@
  * - A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
  *   What a stopped turn said is on the board and wakes nobody.
  * - A run T3 never takes fails visibly, with one notice, after its bounds.
+ * - A seat with work in flight (a member it asked still working, background work or a subagent of its own) that nothing
+ *   has woken for its keep-alive interval gets a keep-alive post: one line, then the status lines of that work.
+ * - Keep-alives are on for the orchestrator and off for members, unless the room's setting says otherwise.
+ * - A run that brings only keep-alives ends as a note that wakes nobody, whatever it said.
  * - The user's /steer goes into the member's running turn: it is offered when T3 runs the turn, confirmed once T3 shows it
  *   in that turn, sent again with its own IDs until `unrecordedMs`, then left to the next turn. A steer T3 ran as a turn
  *   of its own is followed as that seat's run when nothing else came in since; otherwise its reply is a follow-up and an
@@ -23,7 +27,8 @@
  *
  * The journal in the engine store is the only record and the only thing that wakes anyone. The host keeps no work
  * state of its own: everything it needs after a restart is read back from the journal and from T3, by ID. What it
- * holds in memory (send attempts, quiet clocks) only bounds retries and timers.
+ * holds in memory (send attempts, quiet clocks) only bounds retries and timers. When a seat was last woken is T3's: the
+ * end of the latest turn on its thread.
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
@@ -31,11 +36,12 @@ import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } fro
 import type { ModelSelection } from "../domain/types.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
+import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { adoptableSteers, steerMessageIds, steerOffers, steerReceiptId, wantsSteer, type SteerOffer } from "./steer.ts";
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
-import { DEFERRED_CANCEL, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
+import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
 const SYSTEM = "$system";
 const MiB = 1024 * 1024;
@@ -45,7 +51,16 @@ const STUCK_ATTEMPTS = 3;
 const STEER_NOTE = "This came into your running turn: take it into account in the work you are doing now, and cover it in your final reply for this turn.";
 
 /** Committed steps, for the crash method in tests/runtime: a hook that throws here stops the host as a crash would. */
-export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "steered" | "output" | "ended" | "imported";
+export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "steered" | "output" | "ended" | "imported" | "keep-alive";
+
+/** H6: how long a seat with work in flight may go without a wake before it gets a keep-alive: under the prompt cache's hour. */
+export const KEEP_ALIVE_MS = 55 * 60_000;
+
+/**
+ * H6: a room's keep-alive setting for one seat: the interval (0 turns keep-alives off), and whether the room turned them
+ * on or off for the seat; null leaves the default, on for the orchestrator and off for members.
+ */
+export interface KeepAliveSetting { intervalMs: number; on: boolean | null }
 
 export interface EngineHostOptions {
   store: EngineStore;
@@ -70,6 +85,8 @@ export interface EngineHostOptions {
   refusals?: number;
   /** How long a run not yet matched to a T3 run may keep failing its step (sends and reads included) before it fails visibly: 2 minutes. */
   stuckMs?: number;
+  /** H6: the room's keep-alive setting for a seat (src/app/keepAlive.ts); without it, KEEP_ALIVE_MS and the default. */
+  keepAlive?: (roomId: string, seatId: string) => KeepAliveSetting;
   now?: () => number;
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
   /**
@@ -106,6 +123,9 @@ interface Ending { outcome: "completed" | "stopped" | "failed"; text: string; er
 /** The refusal a member meets when it tries to post. */
 export const MEMBERS_DO_NOT_POST = "Only the Consigliere and the user post on the board. Put what you have to say in your final reply: it is your answer, and the Consigliere decides what happens next.";
 const QUIET = "quiet:";
+/** H6: a keep-alive's ID names the seat and the T3 turn it follows; the note its run ends with names the run. */
+const KEEP_ALIVE = "keep-alive:";
+export const KEEP_ALIVE_REPLY = "keep-alive-reply:";
 
 function unique(ids: readonly string[]): string[] {
   return [...new Set(ids)];
@@ -288,6 +308,10 @@ export class EngineHost {
     });
     await each(async (seatId, state) => {
       const shell = state.current();
+      if (shell) await this.keepAlive(roomId, seatId, shell, state.imported, (id) => states.get(id));
+    });
+    await each(async (seatId, state) => {
+      const shell = state.current();
       if (shell) await this.dispatch(roomId, seatId, shell, state.imported, state.load);
     });
   }
@@ -298,7 +322,10 @@ export class EngineHost {
   private async dispatch(roomId: string, seatId: string, shell: T3ThreadShell, imported: boolean, load: Loader): Promise<void> {
     const p = this.project(roomId);
     const seat = p.seats.get(seatId)!;
-    if (seat.activeRunId || seat.status !== "active" || !imported || unread(p, seatId).length === 0) return;
+    const pending = unread(p, seatId);
+    if (seat.activeRunId || seat.status !== "active" || !imported || pending.length === 0) return;
+    // H6: keep-alives alone go out only while the turn they follow is still the thread's latest: nothing woke the seat since.
+    if (pending.every((i) => i.intent === "keep-alive") && !pending.some((i) => i.eventId === this.keepAliveId(seatId, shell))) return;
     if (await this.adopt(roomId, seatId, load)) return;
     if (!threadFree(shell)) return;
     const id = randomUUID();
@@ -488,7 +515,14 @@ export class EngineHost {
       const head = this.statusHead(roomId, seatId, end.status);
       let disposition: Disposition;
       let body: string;
-      if (end.outcome === "failed" || end.outcome === "stopped" && targets.length > 0) {
+      const delivered = inputTree(deliveredInputs(p, run.id));
+      if (delivered.length > 0 && delivered.every((i) => i.intent === "keep-alive")) {
+        // H6: a keep-alive asks nothing, so what its turn said, a failure included, is a note that wakes nobody.
+        const said = end.text || (end.outcome === "completed" ? "" : end.error);
+        if (said) this.exec(roomId, { type: "post", actor: seatId, id: `${KEEP_ALIVE_REPLY}${runId}`, intent: "note", body: said });
+        disposition = { kind: "silent" };
+        body = "";
+      } else if (end.outcome === "failed" || end.outcome === "stopped" && targets.length > 0) {
         disposition = { kind: "error", requestIds: targets };
         body = head + (end.text ? `${end.error}\n\n${end.text}` : end.error);
       } else if (end.text && targets.length > 0 && end.outcome === "completed") {
@@ -732,6 +766,70 @@ export class EngineHost {
     this.followUp(roomId, seatId, id, `(${ended.join(", ")} ended without a further turn.)`, now, latest.requestIds);
     this.quietSince.delete(seatId);
     this.step("imported", roomId, seatId);
+  }
+
+  // ---------------- H6: keep-alives ----------------
+
+  /** A seat's keep-alive: the interval, whether keep-alives are on for it, and whether that is the room's choice or the default. */
+  keepAliveFor(roomId: string, seatId: string): { intervalMs: number; on: boolean; chosen: boolean } {
+    const setting = this.options.keepAlive?.(roomId, seatId) ?? { intervalMs: KEEP_ALIVE_MS, on: null };
+    return { intervalMs: setting.intervalMs, on: setting.intervalMs > 0 && (setting.on ?? seatId === this.project(roomId).orchestrator), chosen: setting.on !== null };
+  }
+
+  /** The ID of the keep-alive that follows the thread's latest turn: one per turn, whatever restarts in between. */
+  private keepAliveId(seatId: string, shell: T3ThreadShell): string | null {
+    return shell.latestRunId ? `${KEEP_ALIVE}${seatId}:${shell.latestRunId}` : null;
+  }
+
+  /**
+   * A seat that is idle, with nothing to read but keep-alives, whose latest turn ended its keep-alive interval ago, and
+   * whose work is in flight, gets a keep-alive: the prompt cache lasts an hour, and a cold reread of a large thread
+   * costs many times a warm one. Its ID names that turn, so it is posted once: a restart finds it, and only another
+   * interval after the next turn (the keep-alive's own included) makes another.
+   */
+  private async keepAlive(roomId: string, seatId: string, shell: T3ThreadShell, imported: boolean, stateOf: (seatId: string) => { shell: T3ThreadShell | null; load: Loader } | undefined): Promise<void> {
+    const { intervalMs, on } = this.keepAliveFor(roomId, seatId);
+    if (!on) return;
+    const p = this.project(roomId);
+    const seat = p.seats.get(seatId)!;
+    if (seat.status !== "active" || seat.activeRunId || !imported || !threadFree(shell)) return;
+    if (unread(p, seatId).some((i) => i.intent !== "keep-alive")) return;
+    const id = this.keepAliveId(seatId, shell);
+    const ended = Date.parse(shell.latestRunCompletedAt ?? "");
+    if (!id || !Number.isFinite(ended) || this.now() - ended < intervalMs || committed(p, SYSTEM, id)) return;
+    const lines = await this.inFlight(roomId, seatId, stateOf);
+    if (lines.length === 0) return;
+    this.exec(roomId, { type: "keep_alive", actor: SYSTEM, id, seatId, body: [KEEP_ALIVE_LINE, ...lines].join("\n") });
+    this.step("keep-alive", roomId, seatId);
+  }
+
+  /**
+   * The status lines of a seat's work in flight; none when nothing is. A member works for the seat while its live run
+   * or its unread input is on a request the seat asked, or, with no live run, while T3 shows it busy (a turn it started
+   * itself, background work) after its latest status post on one. Then the seat's own background tasks and subagents.
+   * Threads are read only for those.
+   */
+  private async inFlight(roomId: string, seatId: string, stateOf: (seatId: string) => { shell: T3ThreadShell | null; load: Loader } | undefined): Promise<string[]> {
+    const p = this.project(roomId);
+    const asked = (ids: readonly string[]) => ids.some((id) => p.requests.get(id)?.returnTo === seatId);
+    const busy = (shell: T3ThreadShell) => !threadFree(shell) || shell.pendingBackgroundTasks.length > 0;
+    const lines: string[] = [];
+    for (const member of p.seats.values()) {
+      if (member.id === seatId || member.status !== "active") continue;
+      const run = member.activeRunId ? p.runs.get(member.activeRunId) : undefined;
+      const working = (run !== undefined && asked(finalTargets(p, run))) || unread(p, member.id).some((i) => TARGETING.has(i.intent) && asked(i.requestIds));
+      const state = stateOf(member.id);
+      if (!working && !(run === undefined && state?.shell && busy(state.shell) && asked(latestStatusPost(p, member.id)?.requestIds ?? []))) continue;
+      const detail = await state?.load();
+      if (detail) lines.push(statusLine(this.source.alias?.(roomId, member.id) ?? member.id, memberStatus(detail, null)));
+    }
+    const own = stateOf(seatId);
+    if (own?.shell && own.shell.pendingBackgroundTasks.length > 0) {
+      const detail = await own.load();
+      const status = detail ? memberStatus(detail, null) : null;
+      if (status && status.running.length > 0) lines.push(statusLine(this.source.alias?.(roomId, seatId) ?? seatId, status));
+    }
+    return lines;
   }
 
   // ---------------- /steer (L4a; src/runtime/steer.ts) ----------------

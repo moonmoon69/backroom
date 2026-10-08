@@ -23,6 +23,7 @@ import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, type EngineHost } from "..
 import { followedRequests } from "../runtime/work.ts";
 import { BOARD_PAGE_CHARS, Board, BoardError, threadOutcome, type BoardDeps, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
+import { readKeepAlive, writeKeepAlive } from "./keepAlive.ts";
 import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
 
 /** The largest text a command may carry, in UTF-8 bytes (plan §7): the host reserves 4 MiB, so no input blocks. */
@@ -80,6 +81,7 @@ Anyone:
   members                         the room's members: model, what each is doing now, its requests, its thread.
   rules                           your standing sections, as your first briefing gave them.
   state                           prints the room state.
+  keepalive                       this room's keep-alives: the interval, and the seats they are on for.
   note [#n …] "<text>"            a note that wakes nobody, under #n (yours) or the request you answered last.
   help                            this list.
 
@@ -91,6 +93,8 @@ The Consigliere's (the user posts from the page):
   cancel #n                       withdraws your open request #n.
   retry #n                        runs a failed turn again; #n is its error notice or its request.
   state "<text>"                  replaces the room state (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters).
+  keepalive @name on|off          turns keep-alives on or off for that seat (on for you and off for members by default).
+  keepalive every <minutes>       the room's keep-alive interval, 1 to 59 minutes, or "default".
   crew                            the user's saved crew, by name, with model.
   seat <saved crew name>          seats that saved crew member in this room.
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
@@ -179,6 +183,9 @@ export class BoardEngine {
         return this.rules(c);
       case "state":
         return this.state(c, args);
+      case "keepalive":
+      case "keep-alive":
+        return this.keepAlive(c, args);
       default:
         throw new BoardError(`rooms-board: no command "${command}". Run "rooms-board help".`);
     }
@@ -682,6 +689,49 @@ export class BoardEngine {
     writeRoomState(this.deps.repos, c.room.id, { text, by: c.member.alias, at: new Date().toISOString() });
     this.deps.notify?.(c.room.id);
     return `Room state saved (${text.length.toLocaleString("en-US")} characters). It replaces the last one, and every new seat is given it with its first briefing.`;
+  }
+
+  /**
+   * H6: the room's keep-alives. Anyone prints them; the Consigliere (any member, in a room without one) turns them on or
+   * off for a seat, by member so that a reseat keeps it, and sets the room's interval.
+   */
+  private keepAlive(c: Caller, args: string[]): string {
+    const usage = 'keepalive takes nothing (it prints the setting), "@name on", "@name off" or "every <minutes>".';
+    if (args.length > 0) {
+      const o = this.orchestrator(c);
+      if (o && o !== c.seatId) throw new BoardError(`rooms-board: only this room's Consigliere (${this.name(o)}) sets keep-alives.`, 403);
+      const setting = readKeepAlive(this.deps.repos, c.room.id);
+      const [first, second, ...rest] = args;
+      if (rest.length > 0) throw new BoardError(`rooms-board: ${usage}`);
+      if (first === "every") {
+        const minutes = Number(second);
+        if (second === "default") setting.intervalMs = null;
+        else if (Number.isInteger(minutes) && minutes >= 1 && minutes <= 59) setting.intervalMs = minutes * 60_000;
+        else throw new BoardError('rooms-board: keepalive every <minutes> takes 1 to 59 minutes, under the prompt cache\'s hour, or "default".');
+      } else {
+        if (second !== "on" && second !== "off") throw new BoardError(`rooms-board: ${usage}`);
+        setting.members[this.target(c, first, usage).member.id] = second === "on";
+      }
+      writeKeepAlive(this.deps.repos, c.room.id, setting);
+      this.deps.notify?.(c.room.id);
+    }
+    const room = readKeepAlive(this.deps.repos, c.room.id);
+    const o = this.orchestrator(c);
+    const seats = this.deps.repos.listActiveParticipants(c.room.id).flatMap((member) => {
+      const seatId = this.seatOf(c.room.id, member);
+      return seatId ? [{ member, seatId, ...this.host.keepAliveFor(c.room.id, seatId) }] : [];
+    });
+    const interval = seats[0]?.intervalMs ?? room.intervalMs ?? 0;
+    const span = interval >= 60_000 ? plural(Math.round(interval / 60_000), "minute") : plural(Math.round(interval / 1000), "second");
+    if (interval <= 0) return "Keep-alives are off in this room: Backroom runs with ROOMS_KEEPALIVE_MS=0, and the room sets no interval of its own (`keepalive every <minutes>`).";
+    const why = (s: (typeof seats)[number]) => (s.chosen ? `turned ${s.on ? "on" : "off"}` : s.seatId === o ? "the Consigliere's default" : "members' default");
+    const list = (on: boolean) => seats.filter((s) => s.on === on).map((s) => `@${s.member.alias} (${why(s)})`).join(", ") || "nobody";
+    return [
+      `Keep-alives in room "${c.room.title}": a seat with work in flight (a member it asked still working, background work or a subagent of its own) that nothing has woken for ${span} gets a keep-alive post, the status lines of that work, so its prompt cache stays warm. The seat replies in one line and uses no tools; the reply is a note that wakes nobody.`,
+      `Interval: ${span} (${room.intervalMs === null ? "Backroom's default" : "this room's own"}).`,
+      `On for: ${list(true)}.`,
+      `Off for: ${list(false)}.`,
+    ].join("\n");
   }
 
   // ---------------- seats (L4b) ----------------

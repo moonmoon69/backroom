@@ -60,21 +60,24 @@ class Fixture {
   readonly members = new Map<string, Map<string, string>>();
   /** L4b's side, faked by the seat test: the room commands it runs and its reseats. */
   lifecycle: Pick<BoardEngineDeps, "execute" | "seats">;
+  /** ROOMS_KEEPALIVE_MS as the server passes it (H6); the stack's default when absent. */
+  private readonly keepAliveMs: number | undefined;
 
-  private constructor(lifecycle: Pick<BoardEngineDeps, "execute" | "seats"> = {}) {
+  private constructor(lifecycle: Pick<BoardEngineDeps, "execute" | "seats"> = {}, keepAliveMs?: number) {
     this.lifecycle = lifecycle;
+    this.keepAliveMs = keepAliveMs;
     this.stack = this.make();
     this.board = this.makeBoard();
   }
 
-  static async create(options: { aliases?: string[]; orchestrator?: string | null; lifecycle?: Pick<BoardEngineDeps, "execute" | "seats"> } = {}): Promise<Fixture> {
-    const f = new Fixture(options.lifecycle);
+  static async create(options: { aliases?: string[]; orchestrator?: string | null; lifecycle?: Pick<BoardEngineDeps, "execute" | "seats">; keepAliveMs?: number } = {}): Promise<Fixture> {
+    const f = new Fixture(options.lifecycle, options.keepAliveMs);
     f.roomId = await f.room("payments", options.aliases ?? ["c", "w", "v"], options.orchestrator === undefined ? "c" : options.orchestrator);
     return f;
   }
 
   private make(): AppStack {
-    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60_000, engine: true, latestRelease: async () => null });
+    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60_000, engine: true, latestRelease: async () => null, ...(this.keepAliveMs !== undefined ? { keepAliveMs: this.keepAliveMs } : {}) });
   }
 
   private makeBoard(): BoardEngine {
@@ -639,6 +642,47 @@ test("no text a member reads names the user as someone to post to", async (t) =>
   const index = await f.cli("v", "index");
   assert.match(index, /answer {2}@w → the user · #\d+ answered/);
   for (const text of [read, index]) assert.doesNotMatch(text, /\$user/);
+});
+
+test("H6 keepalive: anyone prints the setting; the Consigliere turns it on or off by member and sets the room's interval under the hour; the host reads it", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  const of = (alias: string) => f.stack.engine!.keepAliveFor(f.roomId, f.seat(alias));
+  assert.deepEqual([of("c"), of("w")], [{ intervalMs: 55 * 60_000, on: true, chosen: false }, { intervalMs: 55 * 60_000, on: false, chosen: false }]);
+  const shown = await f.cli("w", "keepalive");
+  assert.match(shown, /nothing has woken for 55 minutes gets a keep-alive post/);
+  assert.match(shown, /\nInterval: 55 minutes \(Backroom's default\)\.\nOn for: @c \(the Consigliere's default\)\.\nOff for: @w \(members' default\), @v \(members' default\)\.$/);
+
+  // Members only read it; the Consigliere sets it, and nothing goes on the journal.
+  await f.refused("w", ["keepalive", "@w", "on"], exactly("rooms-board: only this room's Consigliere (@c) sets keep-alives."));
+  const heads = f.heads();
+  assert.match(await f.cli("c", "keepalive", "@w", "on"), /\nOn for: @c \(the Consigliere's default\), @w \(turned on\)\.\nOff for: @v \(members' default\)\.$/);
+  assert.match(await f.cli("c", "keepalive", "every", "10"), /\nInterval: 10 minutes \(this room's own\)\./);
+  assert.match(await f.cli("c", "keepalive", "@c", "off"), /\nOn for: @w \(turned on\)\.\nOff for: @c \(turned off\), @v \(members' default\)\.$/);
+  assert.deepEqual(f.heads(), heads, "the setting is not on the board");
+  assert.deepEqual([of("c"), of("w"), of("v")], [{ intervalMs: 600_000, on: false, chosen: true }, { intervalMs: 600_000, on: true, chosen: true }, { intervalMs: 600_000, on: false, chosen: false }]);
+
+  // Refusals: an interval at or over the cache's hour, an unknown member, a word that is not on or off.
+  await f.refused("c", ["keepalive", "every", "60"], /takes 1 to 59 minutes, under the prompt cache's hour, or "default"/);
+  await f.refused("c", ["keepalive", "every", "0"], /takes 1 to 59 minutes/);
+  await f.refused("c", ["keepalive", "@nobody", "on"], /nobody called @nobody is seated in this room/);
+  await f.refused("c", ["keepalive", "@w", "maybe"], /keepalive takes nothing \(it prints the setting\), "@name on", "@name off" or "every <minutes>"/);
+
+  // It is the room's, kept across a restart; "default" goes back to ROOMS_KEEPALIVE_MS's.
+  f.restart();
+  assert.equal(of("w").on, true);
+  assert.match(await f.cli("c", "keepalive", "every", "default"), /\nInterval: 55 minutes \(Backroom's default\)\./);
+  assert.equal(of("w").intervalMs, 55 * 60_000);
+});
+
+test("H6 keepalive: ROOMS_KEEPALIVE_MS, as the server passes it, is the interval of rooms that set none; 0 is off until a room sets one", async (t) => {
+  const f = await Fixture.create({ keepAliveMs: 0 });
+  t.after(() => f.close());
+  const host = f.stack.engine!;
+  assert.deepEqual(host.keepAliveFor(f.roomId, f.seat("c")), { intervalMs: 0, on: false, chosen: false });
+  assert.match(await f.cli("c", "keepalive"), /^Keep-alives are off in this room: Backroom runs with ROOMS_KEEPALIVE_MS=0/);
+  await f.cli("c", "keepalive", "every", "30");
+  assert.deepEqual(host.keepAliveFor(f.roomId, f.seat("c")), { intervalMs: 30 * 60_000, on: true, chosen: false });
 });
 
 test("retry: the Consigliere's, once per failed turn, and never for a turn whose requests are all closed", async (t) => {

@@ -6,7 +6,7 @@
  */
 import type { T3ThreadDetail, TurnImage } from "../adapter/types.ts";
 import type { StandingInput } from "../briefing/assemble.ts";
-import { journalDirectory, relatedContext, renderEnvelopeBriefing, standingLost, type SeatStanding } from "../briefing/envelope.ts";
+import { journalDirectory, keepAliveOnly, relatedContext, renderEnvelopeBriefing, standingLost, type SeatStanding } from "../briefing/envelope.ts";
 import type { Envelope, Projection } from "../engine/index.ts";
 import { runRecords } from "./work.ts";
 
@@ -28,8 +28,8 @@ export interface Briefed {
   text: string;
   /** The images this message carries, by the post they came with: attached exactly, on every resend too. */
   images: ImageRefs;
-  /** What the seat's thread holds of the standing sections once T3 has this message. */
-  held: SeatStanding;
+  /** What the seat's thread holds of the standing sections once T3 has this message; null for a keep-alive, which carries none. */
+  held: SeatStanding | null;
 }
 
 /**
@@ -46,6 +46,9 @@ export function seatStanding(p: Projection, seatId: string, thread: T3ThreadDeta
 
 export async function brief(source: BriefingSource, budgetChars: number, input: { roomId: string; seatId: string; runId: string; envelope: Envelope; projection: Projection; had: SeatStanding | null }): Promise<Briefed> {
   const { roomId, seatId, envelope, projection } = input;
+  // H6: a run that brings only keep-alives is sent the smallest briefing there is, the keep-alive itself.
+  const keepAlive = keepAliveOnly(envelope);
+  if (keepAlive !== null) return { text: keepAlive, images: [], held: null };
   const events = projection.events;
   const directory = journalDirectory(events, {
     alias: (id) => source.alias?.(roomId, id) ?? id,

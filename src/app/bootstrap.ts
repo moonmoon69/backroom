@@ -5,10 +5,11 @@ import { Database } from "../db/database.ts";
 import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { EngineStore } from "../engine/index.ts";
-import { EngineHost, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
+import { EngineHost, KEEP_ALIVE_MS, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import type { EngineSeats } from "./engineSeats.ts";
 import { engineMessages, messageImages } from "./engineMessages.ts";
+import { keepAliveSetting } from "./keepAlive.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -76,6 +77,8 @@ export function createStack(input: {
   engine?: boolean;
   /** Per-call limit on the T3 thread actions room deletion sends (src/app/service.ts THREAD_ACTION_TIMEOUT_MS). */
   threadActionTimeoutMs?: number;
+  /** The engine's keep-alive interval where a room sets none (ROOMS_KEEPALIVE_MS; H6): 55 minutes by default, 0 for off. */
+  keepAliveMs?: number;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
@@ -126,6 +129,7 @@ export function createStack(input: {
       rooms: () => repos.listRooms().map((room) => room.id),
       briefing,
       budgetChars: input.briefingBudgetChars,
+      keepAlive: keepAliveSetting(repos, input.keepAliveMs ?? KEEP_ALIVE_MS),
       watch: async (at, shell, detail) => {
         await mirror(at, shell, detail);
         await seats?.watch(at, shell, detail);

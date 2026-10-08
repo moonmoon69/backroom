@@ -148,8 +148,8 @@ export interface EnginePost extends EngineTime {
     afterAnswer: boolean;
   };
   note?: {
-    /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn on the member's thread the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends. */
-    source: "post" | "t3-message" | "t3-turn" | "deferred-cancel";
+    /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn on the member's thread the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends; keep-alive: a seat's reply to a keep-alive (H6). */
+    source: "post" | "t3-message" | "t3-turn" | "deferred-cancel" | "keep-alive";
     /** A /note to the whole room: every member's next briefing carries it. */
     room: boolean;
     t3: EngineT3Ref | null;
@@ -166,7 +166,8 @@ export interface EnginePost extends EngineTime {
 }
 
 export interface EngineNoticeState {
-  intent: "error" | "attention";
+  /** keep-alive (H6): Backroom woke an idle seat while work it waits on is in flight; it needs nobody. */
+  intent: "error" | "attention" | "keep-alive";
   /** The failed run, when the notice is about one. */
   runId: string | null;
   /** The run the user can retry from here: failed, not retried, its seat not retired, and one of its requests still open. */

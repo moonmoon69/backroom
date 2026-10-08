@@ -504,7 +504,8 @@ export class EngineSeats {
     const seen = new Set<string>([record.requestId]);
     const lines: string[] = [];
     for (const input of runs.flatMap((r) => inputTree(deliveredInputs(p, r.id)))) {
-      if (seen.has(input.eventId)) continue;
+      // A keep-alive (H6) asks nothing, so there is nothing in it to hand over.
+      if (seen.has(input.eventId) || input.intent === "keep-alive") continue;
       seen.add(input.eventId);
       const event = p.events.find((e) => e.id === input.eventId);
       const author = event && "author" in event.data ? this.nameOf(event.data.author) : "someone";

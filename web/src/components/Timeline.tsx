@@ -107,7 +107,7 @@ function postLabel(post: EnginePost, nameOf: (principal: string) => string, owne
         : post.kind === "note"
           ? `note from ${author}`
           : post.kind === "notice"
-            ? post.notice?.intent === "error" ? "failed" : "attention"
+            ? post.notice?.intent === "error" ? "failed" : post.notice?.intent === "keep-alive" ? "keep-alive" : "attention"
             : `${post.kind} by ${author}`;
   return `#${post.number}, ${what}${words ? `: ${words}` : ""}`;
 }
@@ -493,7 +493,7 @@ function PostRow({ post, chat }: { post: EnginePost; chat: boolean }) {
     case "progress":
       return <Progress post={post} />;
     case "notice":
-      return <Notice post={post} />;
+      return post.notice?.intent === "keep-alive" ? <StatusPost post={post} /> : <Notice post={post} />;
     case "blocked":
       return <Blocked post={post} />;
     default:
@@ -964,7 +964,7 @@ function Note({ post }: { post: EnginePost }) {
   const { typedInT3 } = useBoard();
   const note = post.note!;
   const nav = useNavProps(post);
-  if (note.source === "deferred-cancel") return <StatusPost post={post} />;
+  if (note.source === "deferred-cancel" || note.source === "keep-alive") return <StatusPost post={post} />;
   if (post.author === "$user" || post.author === "$system") {
     const fromT3 = note.source !== "post";
     const shown = fromT3 ? withoutT3ContextRefs(post.body, false) : post.body;
@@ -1170,7 +1170,7 @@ function Blocked({ post }: { post: EnginePost }) {
   );
 }
 
-/** Corrections, cancels, retries and handovers: one line each. */
+/** Corrections, cancels, retries, handovers, keep-alives and the replies to them: one line each. */
 function StatusPost({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
   const nav = useNavProps(post);
@@ -1198,6 +1198,10 @@ function StatusPost({ post }: { post: EnginePost }) {
           {nameOf(post.author)} retried a failed turn{post.about.length > 0 ? <> on {refs}</> : null}
         </>
       );
+      break;
+    case "notice":
+      // A keep-alive (H6): the full text, with the status lines of the work in flight, is in the row's title.
+      text = <>Backroom kept {post.to.map(nameOf).join(", ")} warm while work is in flight</>;
       break;
     case "transfer":
       text = (

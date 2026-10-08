@@ -106,7 +106,7 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
   };
   const manager = () => requireThat(command.actor === "$user" || command.actor === view().orchestrator, "user or orchestrator required");
   const controlsRequest = (r: Request) => requireThat(command.actor === "$user" || command.actor === r.returnTo || command.actor === view().orchestrator, "requester authorization required");
-  const notice = (intent: "error" | "attention", body: string, requestIds: string[], targets: Principal[], causeId: string, author: Principal) => {
+  const notice = (intent: "error" | "attention" | "keep-alive", body: string, requestIds: string[], targets: Principal[], causeId: string, author: Principal) => {
     // A notice with no recipient is still a visible recovery fact. It never recursively reports delivery failure.
     emit({ kind: "notice", intent, body, requestIds: unique(requestIds), author, recipients: unique(targets).filter((t) => t !== author && active(view(), t)), causeId });
   };
@@ -134,7 +134,7 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       if (r.phase === "terminal") return result("duplicate");
       requireThat(["accepted", "running", "uncertain"].includes(r.phase), "terminal observation requires established association");
       if (command.failure !== null) {
-        const fresh = inputTree(deliveredInputs(initial, r.id)).filter((i) => !["error", "attention", "progress", "cancel"].includes(i.intent));
+        const fresh = inputTree(deliveredInputs(initial, r.id)).filter((i) => !["error", "attention", "progress", "cancel", "keep-alive"].includes(i.intent));
         const affected = unique(fresh.flatMap((i) => i.requestIds)).filter((id) => initial.requests.get(id)?.state === "open");
         if (!history.errorNotices.has(r.id))
           notice("error", command.failure, affected, fresh.length ? [...affected.map((id) => request(id).returnTo), ...(initial.orchestrator ? [initial.orchestrator] : [])] : [], r.id, r.seatId);
@@ -298,6 +298,15 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       emit({ kind: "retry", runId: r.id, author: command.actor, recipients: [r.seatId], inherited: inputs, requestIds: unique(inputTree(r.envelope.inputs).flatMap((i) => i.requestIds)), body: command.body });
       break;
     }
+    case "keep_alive": {
+      // H6: Backroom wakes an idle seat to keep its thread's prompt cache warm. The notice asks nothing and answers nothing.
+      system();
+      const s = seat(command.seatId);
+      requireThat(s.status === "active" && s.activeRunId === null, "keep-alive needs an idle active seat");
+      requireThat(command.body.length > 0, "keep-alive body required");
+      notice("keep-alive", command.body, [], [s.id], s.id, "$system");
+      break;
+    }
     case "transfer": {
       manager();
       actor();
@@ -397,7 +406,7 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       undeliverable(recipients, outputId, claims.map((c) => c.requestId), command.author);
       if (claims.some((c) => c.outcome === "late")) attention("Late output retained; cancelled/transferred generation cannot claim completion", outputId, claims.filter((c) => c.outcome === "late").map((c) => c.requestId), command.author);
       if (disposition.kind === "error") {
-        const fresh = inputTree(deliveredInputs(p, r.id)).filter((i) => !["error", "attention", "progress", "cancel"].includes(i.intent));
+        const fresh = inputTree(deliveredInputs(p, r.id)).filter((i) => !["error", "attention", "progress", "cancel", "keep-alive"].includes(i.intent));
         const affected = new Set<string>();
         const freshWork = a !== null || fresh.length > 0;
         const scope = a ? a.requestIds : [...fresh.flatMap((i) => i.requestIds), ...(fresh.length ? selected : [])];

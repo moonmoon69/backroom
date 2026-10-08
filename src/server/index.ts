@@ -56,6 +56,7 @@ const stack = createStack({
   adapter,
   briefingBudgetChars: config.briefingBudgetChars,
   threadActionTimeoutMs: config.threadActionTimeoutMs,
+  keepAliveMs: config.keepAliveMs,
   browserCommand,
   boardCommand,
   log,

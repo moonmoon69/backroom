@@ -19,6 +19,12 @@ export interface Config {
   briefingBudgetChars: number;
   /** How long deleting a room waits for T3 to answer each thread action, in milliseconds. */
   threadActionTimeoutMs: number;
+  /**
+   * H6, the engine runtime: how long a seat with work in flight may go without a wake before it gets a keep-alive, in
+   * milliseconds (ROOMS_KEEPALIVE_MS): 55 minutes by default, under the prompt cache's hour; 0 turns keep-alives off.
+   * A room may set its own (`rooms-board keepalive every <minutes>`).
+   */
+  keepAliveMs: number;
   /** Room browsers (see src/browser/roomBrowsers.ts). */
   browser: {
     mode: "vnc" | "window" | "headless" | "off" | null;
@@ -51,6 +57,15 @@ export function readT3RuntimeOrigin(userDataDir: string): string | null {
   }
 }
 
+function parseKeepAliveMs(value: string | undefined): number {
+  if (value === undefined || value === "") return 55 * 60_000;
+  const ms = Number(value);
+  if (!Number.isInteger(ms) || ms < 0 || ms >= 60 * 60_000) {
+    throw new Error(`ROOMS_KEEPALIVE_MS must be 0 (off) or a whole number of milliseconds under 3600000, the prompt cache's hour (got "${value}")`);
+  }
+  return ms;
+}
+
 function parseBrowserMode(value: string | undefined): Config["browser"]["mode"] {
   if (value === undefined || value === "" || value === "auto") return null;
   if (value === "vnc" || value === "window" || value === "headless" || value === "off") return value;
@@ -73,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webDistDir: resolve(env.ROOMS_WEB_DIST ?? "web/dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
     threadActionTimeoutMs: Number(env.ROOMS_THREAD_ACTION_TIMEOUT_MS ?? 5000),
+    keepAliveMs: parseKeepAliveMs(env.ROOMS_KEEPALIVE_MS),
     browser: {
       mode: parseBrowserMode(env.ROOMS_BROWSER_MODE),
       chromePath: env.ROOMS_BROWSER_CHROME ?? null,

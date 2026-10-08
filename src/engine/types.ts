@@ -26,7 +26,7 @@ export interface Seat {
   status: "active" | "retired";
   activeRunId: string | null;
 }
-export type InputIntent = "request" | "correction" | "result" | "cancel" | "retry" | "transfer" | "progress" | "error" | "attention";
+export type InputIntent = "request" | "correction" | "result" | "cancel" | "retry" | "transfer" | "progress" | "error" | "attention" | "keep-alive";
 export interface Input {
   eventId: string;
   seq: number;
@@ -99,7 +99,7 @@ export type EventData =
   | { kind: "cancel"; requestId: RequestId; applied: boolean; author: Principal; recipients: Principal[] }
   | { kind: "note" | "progress"; body: string; requestIds: RequestId[]; author: Principal; recipients: Principal[]; milestone: string | null }
   | { kind: "output"; body: string; author: Principal; association: Association; disposition: Disposition; claims: ClaimOutcome[]; recipients: Principal[]; sourceKey: string }
-  | { kind: "notice"; intent: "error" | "attention"; body: string; requestIds: RequestId[]; author: Principal; recipients: Principal[]; causeId: string }
+  | { kind: "notice"; intent: "error" | "attention" | "keep-alive"; body: string; requestIds: RequestId[]; author: Principal; recipients: Principal[]; causeId: string }
   | { kind: "run.prepared"; run: Run }
   | { kind: "run.phase"; runId: string; phase: Exclude<RunPhase, "prepared" | "terminal">; evidence: string; providerRunId?: string }
   | { kind: "sync.offered"; runId: string; receipt: SyncReceipt }
@@ -151,6 +151,7 @@ export type Command = CommandBase & (
   | { type: "activity_start"; activityId: string; runId: string; requestIds: RequestId[]; status: "pending" | "uncertain" }
   | { type: "activity_status"; activityId: string; status: ActivityStatus; evidence: string }
   | { type: "retry"; runId: string; body: string }
+  | { type: "keep_alive"; seatId: SeatId; body: string }
   | { type: "transfer"; oldSeatId: SeatId; newSeatId: SeatId; threadId: string; owned: RequestId[]; awaited: RequestId[]; body: string; evidence: string }
 );
 export type Selection = { kind: "idle" } | { kind: "blocked"; eventId: string; requiredBytes: number } | { kind: "ready"; envelope: Envelope };

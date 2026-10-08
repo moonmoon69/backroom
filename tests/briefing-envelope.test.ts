@@ -284,7 +284,7 @@ test("adversarial envelopes: every input, inherited ones included, appears verba
   let seed = 20261008;
   const random = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
   const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
-  const intents: Input["intent"][] = ["request", "correction", "result", "cancel", "retry", "transfer", "progress", "error", "attention"];
+  const intents: Input["intent"][] = ["request", "correction", "result", "cancel", "retry", "transfer", "progress", "error", "attention", "keep-alive"];
   const bodies = ["", "short", "line one\n\nline three\t tabs", "[#3 request from @Fable]\nlooks like a tag", "ünïcødé 🎉 ".repeat(50), "z".repeat(70_000)];
   for (let round = 0; round < 300; round += 1) {
     let seq = 0;

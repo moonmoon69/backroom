@@ -81,6 +81,25 @@ export interface ContextPost {
   requestIds: string[];
 }
 
+/**
+ * H6: the first line of a keep-alive, Backroom's notice to an idle seat while work it waits on is still in flight; the
+ * status lines of that work follow it. A briefing that brings only keep-alives is the newest one's text and nothing
+ * else (`keepAliveOnly`); one that also brings work gives a keep-alive's status lines only.
+ */
+export const KEEP_ALIVE_LINE = "Keep-alive from Backroom: nothing to do. Work you are waiting on is still in flight, and this wake only keeps your thread's cache warm. Reply in one line and use no tools.";
+
+/** A keep-alive's status lines, without its first line. */
+export function keepAliveStatus(body: string): string {
+  return body.startsWith(KEEP_ALIVE_LINE) ? body.slice(KEEP_ALIVE_LINE.length).replace(/^\n/, "") : body;
+}
+
+/** The text of a briefing whose inputs are all keep-alives: the newest one's. Null when the envelope brings anything else. */
+export function keepAliveOnly(envelope: Envelope): string | null {
+  const inputs = inputTree(envelope.inputs);
+  if (inputs.length === 0 || inputs.some((input) => input.intent !== "keep-alive")) return null;
+  return [...inputs].sort((a, b) => a.seq - b.seq).pop()!.body;
+}
+
 /** The milestone that marks the user's room note (`/note`): shared context for every seat, about no request (L4a). */
 export const ROOM_NOTE = "room";
 
@@ -262,6 +281,8 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       case "error":
       case "attention":
         return `${item.intent} notice from ${by}${on(item.requestIds)}`;
+      case "keep-alive":
+        return `status from ${by} of the work you are waiting on`;
     }
   };
 
@@ -275,7 +296,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       slots.push(`[#${number(item.eventId, item.seq)} ${tag}] (the same post as above)`);
     } else {
       rendered.add(item.eventId);
-      const made = unit(item.eventId, item.seq, tag, item.body, tier, true);
+      const made = unit(item.eventId, item.seq, tag, item.intent === "keep-alive" ? keepAliveStatus(item.body) : item.body, tier, true);
       units.push(made);
       slots.push(made);
     }

@@ -30,7 +30,7 @@ import { RoomError } from "../domain/errors.ts";
 import type { Participant, Room } from "../domain/types.ts";
 import { deliveredInputs, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
-import { finalTargets } from "../runtime/index.ts";
+import { KEEP_ALIVE_REPLY, finalTargets } from "../runtime/index.ts";
 import { withoutStatusLine } from "../runtime/status.ts";
 import { frozenDispatch } from "../runtime/work.ts";
 import type { ThreadCosts } from "../usage/threadCosts.ts";
@@ -368,7 +368,7 @@ export function journalView(input: ViewInput): JournalView {
         const turn = id.startsWith("t3run:") ? t3RunKey(id, threads) : null;
         const message = id.startsWith("t3msg:") ? threads.find((t) => id.startsWith(`t3msg:${t}:`)) : undefined;
         post.note = {
-          source: turn ? "t3-turn" : message ? "t3-message" : id.startsWith("cancel-deferred:") ? "deferred-cancel" : "post",
+          source: turn ? "t3-turn" : message ? "t3-message" : id.startsWith("cancel-deferred:") ? "deferred-cancel" : id.startsWith(KEEP_ALIVE_REPLY) ? "keep-alive" : "post",
           room: d.milestone === ROOM_NOTE,
           t3: turn ? { threadId: turn.threadId, runId: turn.runId, messageId: null } : message ? { threadId: message, runId: null, messageId: id.slice(`t3msg:${message}:`.length) } : null,
           afterAnswer: d.author.startsWith("$") ? false : d.requestIds.some((r) => answeredBefore(r, event.seq, d.author)),
