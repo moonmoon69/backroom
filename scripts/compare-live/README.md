@@ -23,6 +23,7 @@ and holds the pass rules, written before any paid run.
 | `rawsum.mjs` | The accuracy check's own token reader, sharing no code with `tokens.ts` or `measure.ts` |
 | `gate.ts`, `gate.json` | The Z1 gate: G1–G3, the relabelling, N and K from R0's spread; registered values |
 | `verdict-report.ts` | What `verdict.md` carries beside the gate (reporting only, read from the evidence and the measures): the behaviour checks on the new side, the rules each side delivered with their diff, the briefing bytes per delivered turn, and every run's numbers (report.md, embedded); a hand-written classification of failed checks, `<campaign>/behaviour-notes.md`, is included when present |
+| `exceptions.ts` | Decided exceptions to the accuracy check (campaign c1, board #845; reporting only): `<campaign>/decided-exceptions.json` lists a difference decided on, for one job, with the transcript lines it rests on, its classification and the decision; `--verdict` takes it and prints it under its own heading in `verdict.md`, while the accuracy check still reports it |
 | `*.test.ts` | `node --no-warnings --test scripts/compare-live/*.test.ts` |
 
 ## Setup
@@ -200,6 +201,15 @@ only with the user's OK. The earlier attempt's `job.json` gets `"status": "super
 attempts stay in the campaign folder, and the report lists the superseded one, with its spend, among the jobs not
 measured. `--register-gate` needs
 exactly 2 closed old jobs per task; `--verdict` needs N closed jobs per task and side.
+
+A difference that is not an evidence failure (C1's first: a member's process listing showed the runner's command line,
+board #842) can instead be decided on: the decision goes into `<campaign>/decided-exceptions.json` (`exceptions.ts`),
+one entry per difference, naming the job folder, the difference's text, its file relative to the job folder, the exact
+lines it rests on (line number and an excerpt each line must hold), the classification and the decision by post number.
+The accuracy check is unchanged and keeps reporting it (report.md, report.json, the exit code). `--verdict` goes ahead
+only when every difference is a listed one and every listed one holds (its job closed, its lines in its file, and a
+difference it covers), and prints them in `verdict.md` under "Decided exceptions to the accuracy check".
+`--register-gate` takes no exception.
 
 ## Recomputing one job by hand
 

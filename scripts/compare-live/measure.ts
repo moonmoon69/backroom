@@ -19,7 +19,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { NO_T3_REPORT, campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
@@ -28,6 +28,7 @@ import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
 import { TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
 import { TranscriptTokens, type Tokens } from "./tokens.ts";
+import { applyDecidedExceptions, decidedExceptionsSection, loadDecidedExceptions, verdictRefusal } from "./exceptions.ts";
 import { loadVerdictJob, verdictSections } from "./verdict-report.ts";
 
 export type { Tokens };
@@ -681,7 +682,12 @@ async function main(): Promise<void> {
   writeFileSync(join(out, "report.md"), report);
   console.log(`${measures.length} jobs measured; ${join(out, "report.md")}`);
 
-  if ((values["register-gate"] || values.verdict) && differences.length > 0) throw new Error(`the accuracy check found ${differences.length} differences: no gate is registered and no verdict given`);
+  if (values["register-gate"] && differences.length > 0) throw new Error(`the accuracy check found ${differences.length} differences: no gate is registered and no verdict given`);
+  // The verdict takes the campaign's decided exceptions (exceptions.ts; reporting only): every other difference refuses it.
+  const dirByName = new Map(jobs.map(({ dir }) => [basename(dir), dir] as const));
+  const decided = applyDecidedExceptions(differences, values.verdict ? loadDecidedExceptions(out) : [], (name) => dirByName.get(name));
+  const refusal = values.verdict ? verdictRefusal(differences, decided) : null;
+  if (refusal) throw new Error(refusal);
   if (values["register-gate"]) {
     const path = join(import.meta.dirname, "gate.json");
     if (existsSync(path)) throw new Error(`${path} is registered already`);
@@ -738,6 +744,8 @@ async function main(): Promise<void> {
       report,
       existsSync(notesPath) ? readFileSync(notesPath, "utf8") : null,
     );
+    const exceptionLines = decidedExceptionsSection(decided, differences.length);
+    if (exceptionLines.length > 0) lines.push("", ...exceptionLines);
     lines.push("", ...sections.beforeLimits);
     lines.push("", "## Limits", "", ...VERDICT_LIMITS.map((limit) => `- ${limit}`));
     lines.push("", ...sections.afterLimits);
