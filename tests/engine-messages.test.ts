@@ -13,6 +13,7 @@ import { FakeT3Adapter } from "../src/adapter/fake.ts";
 import type { SendMessageInput, T3Run } from "../src/adapter/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../src/adapter/types.ts";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
+import { startAttemptKey } from "../src/app/consigliere.ts";
 import { MAX_POST_BYTES, messageIdOf } from "../src/app/engineMessages.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
@@ -713,6 +714,38 @@ test("The Consigliere (D2): a message that chains members goes to him whole and 
   assert.deepEqual(errorsOf(r.draft("@claude build it, then @grok deploy it")), []);
   assert.deepEqual(errorsOf(r.draft("/hold @claude save this")), [HOLD_GONE]);
   assert.deepEqual(errorsOf(r.draft("/hold think about it")), [HOLD_GONE]);
+});
+
+test("The Consigliere: a conversation started with Talk to … gives him its first message as the composer would, his request on the board, and wakes him; sent again it records nothing twice", async (t) => {
+  const r = await engineRoom([]);
+  t.after(() => r.close());
+  const presetId = ((await r.run({ type: "preset.create", name: "astra", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" } })) as { presetId: string }).presetId;
+  await r.run({ type: "consigliere.preset.set", presetId });
+  const start = { type: "consigliere.start", projectId: "project_demo", text: "Plan the next release for me.", requestId: "3f0b8c52-6d1e-4c7a-9b2f-8e5d4a1c7b90" } as const;
+  const started = (await r.run(start)) as { roomId: string; participantId: string };
+  const seatId = r.stack.repos.currentBinding(started.participantId)!.id;
+  const requests = () => [...r.stack.engine!.view(started.roomId).requests.values()];
+  assert.deepEqual(
+    requests().map((q) => [q.owner, q.returnTo, q.body, messageIdOf(q.id)]),
+    [[seatId, "$user", "Plan the next release for me.", start.requestId]],
+    "one request from the user to his seat, under the start's ID as the message's client ID",
+  );
+  assert.equal(r.stack.repos.listTasks(started.roomId).length, 0, "no old task");
+  assert.equal(r.stack.repos.listEvents(started.roomId).filter((e) => e.kind === "user.message").length, 0, "no old user message");
+  assert.equal(r.stack.engine!.unread(started.roomId, seatId), 1, "his seat has the message unread");
+
+  // The attempt stopped after the message and before it said so: the start sent again replays it.
+  const key = startAttemptKey(start.requestId);
+  r.stack.repos.setKv(key, JSON.stringify({ ...JSON.parse(r.stack.repos.getKv(key)!), delivered: false }));
+  assert.deepEqual(await r.run(start), started);
+  assert.equal(requests().length, 1, "recorded once");
+
+  await r.tick();
+  const thread = r.fake.threads.get(r.stack.repos.currentBinding(started.participantId)!.threadId)!;
+  assert.equal(thread.runs.length, 1, "his turn starts");
+  const prompt = thread.messages.find((m) => m.id === thread.runs[0]!.userMessageId)!.text;
+  assert.match(prompt, /Plan the next release for me\./);
+  assert.match(prompt, /Rules for the Consigliere/);
 });
 
 // ---------------- The user's controls: cancel, correct, retry, stop ----------------
