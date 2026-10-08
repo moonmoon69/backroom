@@ -11,10 +11,12 @@
  * - the user cancels or corrects a request, retries a failed run, and stops what a member runs in T3.
  *
  * Decision D2: nothing waits on other work. Held or chained assignments are refused (the parser says so first).
+ * A message's T3 commands are sent before any of its requests is recorded, so a message T3 refuses leaves nothing that
+ * sending it again would duplicate; with the client's message ID, sending it again replays it whole.
  * Which images came with a message is kept with the room's attachments (kv `engine.images:<room>:<message>`), and the
  * briefing source reads them by the request's event ID (`messageImages`).
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { T3Adapter, TurnImage } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable, isRunActive } from "../adapter/types.ts";
 import { ROOM_NOTE } from "../briefing/envelope.ts";
@@ -22,7 +24,7 @@ import type { Repos } from "../db/repos.ts";
 import type { Assignment, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_TOTAL_BYTES, type Participant, type Room } from "../domain/types.ts";
-import { HOLD_GONE } from "../parser/explicit.ts";
+import { HOLD_GONE, parseExplicit } from "../parser/explicit.ts";
 import type { EngineHost } from "../runtime/index.ts";
 import { STEER_REQUEST } from "../runtime/steer.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
@@ -43,6 +45,12 @@ export function messageIdOf(eventId: string): string | null {
 }
 
 const imagesKey = (roomId: string, messageId: string) => `engine.images:${roomId}:${messageId}`;
+
+/** A UUID-shaped ID derived from a name: a message sent again under its client ID gives T3 the same IDs again. */
+function derivedId(name: string): string {
+  const h = createHash("sha256").update(name).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((Number.parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 function loadImages(repos: Repos, ids: readonly string[]): TurnImage[] {
   return ids.flatMap((id) => {
@@ -83,9 +91,9 @@ export class EngineMessages {
   handle(command: RoomCommand): Promise<CommandResult> | null {
     switch (command.type) {
       case "message.create":
-        return this.create({ roomId: command.roomId, preamble: command.preamble, attachmentIds: command.attachmentIds, assignments: command.assignments });
+        return this.create({ roomId: command.roomId, preamble: command.preamble ?? null, sourceText: command.sourceText, clientMessageId: command.clientMessageId ?? null, attachmentIds: command.attachmentIds, assignments: command.assignments });
       case "task.create":
-        return this.create({ roomId: command.roomId, preamble: "", attachmentIds: command.attachmentIds, assignments: [{ recipients: command.recipients, instruction: command.instruction, schedule: command.schedule, after: [], delivery: command.delivery, slashCommand: false }] });
+        return this.create({ roomId: command.roomId, preamble: "", sourceText: null, clientMessageId: null, attachmentIds: command.attachmentIds, assignments: [{ recipients: command.recipients, instruction: command.instruction, schedule: command.schedule, after: [], delivery: command.delivery, slashCommand: false }] });
       case "room.note.create":
         return this.note(command.roomId, command.text);
       case "request.cancel":
@@ -118,9 +126,9 @@ export class EngineMessages {
 
   /**
    * One user message: a request per recipient per assignment, or for a T3 slash command the command sent as typed and a
-   * note. Everything is checked before anything is recorded or sent.
+   * note. Everything is checked before anything is recorded or sent; the T3 commands go first, then the requests.
    */
-  private async create(input: { roomId: string; preamble: string; attachmentIds: string[]; assignments: Assignment[] }): Promise<CommandResult> {
+  private async create(input: { roomId: string; preamble: string | null; sourceText: string | null; clientMessageId: string | null; attachmentIds: string[]; assignments: Assignment[] }): Promise<CommandResult> {
     const room = this.room(input.roomId);
     const participants = new Map(this.repos.listParticipants(room.id).map((p) => [p.id, p]));
     const consigliere = room.consigliereId ? participants.get(room.consigliereId) ?? null : null;
@@ -135,23 +143,26 @@ export class EngineMessages {
     }
     this.requireAttachments(room.id, input.attachmentIds);
     await this.requireSlashCommands(input.assignments, participants);
+    // A client that sends no preamble (today's composer): the text before the first address, read the way the parser reads it.
+    const preamble = input.preamble ?? (input.sourceText ? this.preambleOf(room, input.sourceText) : "");
     const plan = input.assignments.map((assignment, index) => {
       const text = assignment.instruction || "(See the attached image.)";
-      const body = input.preamble && !assignment.slashCommand ? `${input.preamble}\n\n${text}` : text;
+      const body = preamble && !assignment.slashCommand ? `${preamble}\n\n${text}` : text;
       this.size(body);
       return { assignment, index, body, seats: assignment.recipients.map((id) => ({ participant: participants.get(id)!, ...this.seat(room, participants.get(id)!) })) };
     });
 
-    const messageId = randomUUID();
+    const messageId = input.clientMessageId ?? randomUUID();
     if (input.attachmentIds.length > 0) this.repos.setKv(imagesKey(room.id, messageId), JSON.stringify(input.attachmentIds));
-    const requestIds: string[] = [];
     const noteIds: string[] = [];
+    for (const { assignment, index, seats } of plan) {
+      if (!assignment.slashCommand) continue;
+      for (const seat of seats) noteIds.push(await this.slashCommand(room, seat.participant, seat, assignment.instruction, input.attachmentIds, `${messageId}:${index}:${seat.seatId}`));
+    }
+    const requestIds: string[] = [];
     for (const { assignment, index, body, seats } of plan) {
+      if (assignment.slashCommand) continue;
       for (const seat of seats) {
-        if (assignment.slashCommand) {
-          noteIds.push(await this.slashCommand(room, seat.participant, seat, assignment.instruction, input.attachmentIds));
-          continue;
-        }
         const id = messageRequestId(assignment.delivery, messageId, index, seat.seatId);
         await this.journal(async () => this.host.request(room.id, { actor: USER, id, to: seat.seatId, body }));
         requestIds.push(id);
@@ -160,18 +171,26 @@ export class EngineMessages {
     return { type: "requests.created", messageId, requestIds, noteIds };
   }
 
+  private preambleOf(room: Room, sourceText: string): string {
+    const participants = this.repos.listActiveParticipants(room.id).map((p) => ({ id: p.id, alias: p.alias }));
+    const draft = parseExplicit(sourceText, participants, [], { consigliereId: room.consigliereId, engine: true });
+    return draft.kind === "task" ? draft.preamble : "";
+  }
+
   /**
    * A T3 slash command: sent to the member's thread exactly as typed (a harness runs one only as the whole message),
    * with no briefing, then recorded as a note by the user. The note has the ID the host's import of that T3 message
-   * would take (§3), so it is recorded once; the command's reply comes back as the member's note when its turn ends.
+   * takes (§3): whichever is written first records it and the other writes nothing, so a tick that imports the message
+   * before the note is written is no failure. The command's reply comes back as the member's note when its turn ends.
+   * Its T3 IDs derive from `key` (message, assignment, seat), so the message sent again under its client ID replays.
    */
-  private async slashCommand(room: Room, participant: Participant, seat: { seatId: string; threadId: string }, instruction: string, attachmentIds: string[]): Promise<string> {
-    const messageId = randomUUID();
+  private async slashCommand(room: Room, participant: Participant, seat: { seatId: string; threadId: string }, instruction: string, attachmentIds: string[], key: string): Promise<string> {
+    const messageId = derivedId(`${key}:message`);
     const shell = await this.adapter.getThreadShell(seat.threadId);
     const busy = shell !== null && (isRunActive(shell.status) || shell.activeRunId !== null);
     const images = loadImages(this.repos, attachmentIds);
     try {
-      await this.adapter.sendMessage({ commandId: randomUUID(), threadId: seat.threadId, messageId, text: instruction, ...(images.length ? { images } : {}), mode: busy ? { type: "queue" } : { type: "start" } });
+      await this.adapter.sendMessage({ commandId: derivedId(`${key}:command`), threadId: seat.threadId, messageId, text: instruction, ...(images.length ? { images } : {}), mode: busy ? { type: "queue" } : { type: "start" } });
     } catch (error) {
       if (error instanceof T3Unavailable || error instanceof T3CommandRejected) {
         throw new RoomError("t3_refused", `T3 did not take ${instruction.split(/\s/)[0]} for @${participant.alias}: ${error.message}`, 502);
@@ -179,7 +198,11 @@ export class EngineMessages {
       throw error;
     }
     const id = `t3msg:${seat.threadId}:${messageId}`;
-    await this.journal(async () => this.host.note(room.id, { actor: USER, id, body: `To @${participant.alias} (T3 command, sent as typed): ${instruction}` }));
+    // Read and written in one synchronous step: no tick can land between the check and the write.
+    await this.journal(async () => {
+      if (this.host.view(room.id).events.some((e) => e.id === id)) return;
+      this.host.note(room.id, { actor: USER, id, body: `To @${participant.alias} (T3 command, sent as typed): ${instruction}` });
+    });
     return id;
   }
 

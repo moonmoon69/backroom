@@ -112,8 +112,12 @@ export class EngineHost {
   private readonly idleSince = new Map<string, number>();
   /** Per seat: the thread state whose turns and messages are all imported (§3), so an unchanged thread is not reread. */
   private readonly seen = new Map<string, string>();
-  /** Per steer offer: when its message was first sent, its rendering (resent as is), and the offers given up. Bounds only. */
+  /**
+   * Per steer offer: when its message was first sent (or may have been: an unknown acknowledgement), the offers this
+   * process tried to send at all, their rendering (resent as is), and the offers given up. Bounds only.
+   */
   private readonly steerSent = new Map<string, number>();
+  private readonly steerAttempted = new Set<string>();
   private readonly steerTexts = new Map<string, { text: string; images: Dispatch["images"] }>();
   private readonly steerGaveUp = new Set<string>();
 
@@ -714,6 +718,7 @@ export class EngineHost {
       this.steerTexts.set(offer.receipt.id, rendered);
     }
     const images = attachImages(this.source, roomId, rendered.images);
+    this.steerAttempted.add(offer.receipt.id);
     try {
       await this.adapter.sendMessage({ commandId: offer.commandId, threadId, messageId: offer.messageId, text: rendered.text, ...(images.length ? { images } : {}), mode: { type: "steer", runId: t3RunId } });
     } catch (error) {
@@ -752,8 +757,10 @@ export class EngineHost {
    * A steer that reached T3 after the run it was meant for had ended: T3 ran it as a turn of its own. That run is
    * adopted as the host run for what the steer carried, reserved with the steer's own command and message IDs, so the
    * host follows it like a run it sent. When more input has arrived since the offer, that turn cannot answer it: its
-   * reply becomes a note under what the steer carried, and everything goes in an ordinary run after it. True while the
-   * seat waits for that turn.
+   * reply becomes a note under what the steer carried, and everything goes in an ordinary run after it. A steer T3 has
+   * not recorded yet, though it was or may have been sent, is sent again with its own IDs (T3 keeps one receipt per
+   * command ID, and runs it as a turn of its own now that its run has ended), and the seat waits for it up to
+   * `unrecordedMs`; only then, or when T3 refused it, does an ordinary run carry what it carried. True while it waits.
    */
   private async adopt(roomId: string, seatId: string, load: Loader): Promise<boolean> {
     const candidates = adoptableSteers(this.project(roomId), seatId);
@@ -762,8 +769,17 @@ export class EngineHost {
     if (!detail) return true;
     for (const steer of candidates) {
       const m = detail.messages.find((x) => x.id === steer.messageId);
-      const t3Run = m?.runId ? detail.runs.find((r) => r.id === m.runId) : undefined;
-      if (!m || !t3Run || t3Run.id === steer.carrierT3RunId) continue;
+      if (!m) {
+        const id = steer.receipt.id;
+        // Refused, or every try in this process failed to reach T3: it never left, and an ordinary run carries it.
+        if (!steer.carrierT3RunId || this.steerGaveUp.has(id) || (this.steerAttempted.has(id) && !this.steerSent.has(id))) continue;
+        if (!this.steerSent.has(id)) this.steerSent.set(id, this.now()); // after a restart: perhaps sent; the wait starts now
+        await this.sendSteer(roomId, steer, steer.carrierT3RunId, this.project(roomId).seats.get(seatId)!.threadId, load);
+        if (this.steerGaveUp.has(id)) continue;
+        return true;
+      }
+      const t3Run = m.runId ? detail.runs.find((r) => r.id === m.runId) : undefined;
+      if (!t3Run || t3Run.id === steer.carrierT3RunId) continue;
       const p = this.project(roomId);
       const offered = new Set(inputTree(steer.receipt.envelope.inputs).map((i) => i.eventId));
       if (unread(p, seatId).some((i) => !offered.has(i.eventId))) {

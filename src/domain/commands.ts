@@ -344,8 +344,13 @@ export const MessageCreateCommand = z
     type: z.literal("message.create"),
     roomId: nonEmpty,
     sourceText: z.string().nullable().default(null),
-    /** Text before the first address (the parser's draft.preamble): context every recipient's request carries (engine). */
-    preamble: z.string().trim().default(""),
+    /**
+     * Engine runtime only. Text before the first address (the parser's draft.preamble): context every recipient's request
+     * carries; when absent it is read from sourceText. The client's ID for the message: sending it again with the same
+     * ID records nothing twice and sends no T3 command twice.
+     */
+    preamble: z.string().trim().optional(),
+    clientMessageId: z.string().uuid().optional(),
     attachmentIds: AttachmentIds,
     assignments: z.array(AssignmentSchema).min(1).max(20),
   })

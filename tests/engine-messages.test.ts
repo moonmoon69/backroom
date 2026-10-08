@@ -11,17 +11,27 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
 import type { SendMessageInput, T3Run } from "../src/adapter/types.ts";
-import { T3Unavailable } from "../src/adapter/types.ts";
+import { T3CommandRejected, T3Unavailable } from "../src/adapter/types.ts";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
-import { messageIdOf } from "../src/app/engineMessages.ts";
+import { MAX_POST_BYTES, messageIdOf } from "../src/app/engineMessages.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
 import { AFTER_GONE, HOLD_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
 
-/** The fake T3, plus a hook on a steered message just before T3 takes it, and steer sends lost to an outage. */
+/**
+ * The fake T3, plus: a hook on a steered message just before T3 takes it; steer sends lost to an outage, refused, or
+ * with their acknowledgement lost (`lateSteer` keeps the message for `deliverLate`, `dropSteers` loses every one); slash
+ * commands refused by an outage; and a hook right after T3 recorded a message that is not a steer.
+ */
 class Fake extends FakeT3Adapter {
   beforeSteer: (() => void) | null = null;
   unavailableSteers = 0;
+  refuseSteers = 0;
+  lateSteer = false;
+  dropSteers = false;
+  late: SendMessageInput | null = null;
+  slashDown = false;
+  afterRecord: (() => Promise<void>) | null = null;
   constructor() {
     super({ autoCompleteMs: null });
   }
@@ -31,11 +41,34 @@ class Fake extends FakeT3Adapter {
         this.unavailableSteers -= 1;
         throw new T3Unavailable("T3 is not reachable (simulated)");
       }
+      if (this.refuseSteers > 0) {
+        this.refuseSteers -= 1;
+        throw new T3CommandRejected("T3 refused the steer (simulated)", 500, null);
+      }
+      if (this.dropSteers) throw new Error("request timed out (simulated); T3 never got it");
+      if (this.lateSteer) {
+        this.lateSteer = false;
+        this.late = structuredClone(input);
+        throw new Error("request timed out (simulated); T3 is still working on it");
+      }
       const hook = this.beforeSteer;
       this.beforeSteer = null;
       hook?.();
+    } else if (this.slashDown && input.text.startsWith("/")) {
+      throw new T3Unavailable("T3 is not reachable (simulated)");
     }
-    return super.sendMessage(input);
+    await super.sendMessage(input);
+    const after = this.afterRecord;
+    if (after && input.mode.type !== "steer") {
+      this.afterRecord = null;
+      await after();
+    }
+  }
+  /** T3 finally records the steer whose acknowledgement was lost. */
+  async deliverLate(): Promise<void> {
+    const input = this.late!;
+    this.late = null;
+    await super.sendMessage(input);
   }
 }
 
@@ -47,7 +80,7 @@ interface Room {
   dir: string;
   run(command: RoomCommandInput): Promise<unknown>;
   /** What the composer does: parse in engine mode, then message.create with the draft's assignments. */
-  say(text: string, attachmentIds?: string[]): Promise<{ messageId: string; requestIds: string[]; noteIds: string[] }>;
+  say(text: string, attachmentIds?: string[], clientMessageId?: string): Promise<{ messageId: string; requestIds: string[]; noteIds: string[] }>;
   draft(text: string): Draft;
   tick(times?: number): Promise<void>;
   seat(alias: string): string;
@@ -85,13 +118,13 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
       const r = stack.repos.getRoom(roomId)!;
       return parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), [], { consigliereId: r.consigliereId, engine: true });
     },
-    async say(text, attachmentIds = []) {
+    async say(text, attachmentIds = [], clientMessageId) {
       const draft = room.draft(text);
       const errors = draft.unresolved.filter((u) => u.severity === "error");
       if (errors.length) throw new Error(`draft refused: ${errors.map((u) => u.message).join("; ")}`);
       if (draft.kind === "note") return (await run({ type: "room.note.create", roomId, text: draft.instruction })) as never;
       return (await run({
-        type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds,
+        type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds, ...(clientMessageId ? { clientMessageId } : {}),
         assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, schedule: a.schedule ?? { mode: "now" }, after: a.after.map((r) => r.index), slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
       })) as { messageId: string; requestIds: string[]; noteIds: string[] };
     },
@@ -146,6 +179,15 @@ test("How a message becomes tasks, 1. split: text before the first address is co
   assert.deepEqual(created.requestIds.map((id) => byId.get(id)!.body), ["The build is red.\n\nfix it.", "The build is red.\n\nfind the cause"]);
   await r.tick();
   assert.match(r.prompt("sol", 0), /The build is red\.\n\nfix it\./);
+});
+
+test("How a message becomes tasks, 1. split: a client that sends only the message text (today's composer) still gets the preamble, read from it", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  await r.run({ type: "message.create", roomId: r.roomId, sourceText: "The build is red. @sol fix it", assignments: [{ recipients: [r.ids.sol!], instruction: "fix it" }] });
+  assert.equal(requestsOf(r)[0]!.body, "The build is red.\n\nfix it");
+  await r.run({ type: "message.create", roomId: r.roomId, sourceText: "@sol and the docs", preamble: "", assignments: [{ recipients: [r.ids.sol!], instruction: "and the docs" }] });
+  assert.equal(requestsOf(r)[1]!.body, "and the docs", "an explicit empty preamble is taken as sent");
 });
 
 test("How a message becomes tasks, 2. timing (D2): /hold is refused with a hint, by the parser and by the service", async (t) => {
@@ -236,6 +278,31 @@ test("Addressing: in a room with one member, a message that addresses nobody goe
   assert.equal(requestsOf(r)[0]!.owner, r.seat("sol"));
 });
 
+test("How an @mention is read: possessive, after a linking word, after a one-word lead, with nothing after it, and in URLs and paths, it is a reference, not a recipient", async (t) => {
+  const r = await engineRoom(["claude", "grok"]);
+  t.after(() => r.close());
+  const references = [
+    "@claude review @grok's notes",
+    "@claude work with @grok on the parser",
+    "@claude review @grok changes",
+    "@claude fix it and tell @grok",
+    "@claude read https://example.com/@grok/page and src/@grok/main.ts",
+  ];
+  for (const text of references) {
+    const draft = r.draft(text);
+    assert.deepEqual(draft.assignments.map((a) => a.recipients), [[r.ids.claude]], text);
+    assert.deepEqual(errorsOf(draft), [], text);
+  }
+  const before = requestsOf(r).length;
+  await r.say(references[0]!);
+  const made = requestsOf(r).slice(before);
+  assert.deepEqual(made.map((q) => [q.owner, q.body]), [[r.seat("claude"), "review @grok's notes"]], "one request, the reference kept in its text");
+  // At the start of a line, or mid-sentence with an instruction after it, a mention addresses.
+  assert.deepEqual(r.draft("@claude fix it.\n@grok update the docs").assignments.map((a) => a.recipients), [[r.ids.claude], [r.ids.grok]]);
+  assert.deepEqual(r.draft("@claude fix the login bug @grok update the docs").assignments.map((a) => a.recipients), [[r.ids.claude], [r.ids.grok]]);
+  assert.deepEqual(r.draft("@claude and @grok review this").assignments.map((a) => a.recipients), [[r.ids.claude, r.ids.grok]], "side by side, one assignment");
+});
+
 // ---------------- Several assignments in one message ----------------
 
 test("Several assignments in one message: two assignments both start now, each recipient with its own instruction", async (t) => {
@@ -297,6 +364,18 @@ test("Images: a retry delivers the same bytes", async (t) => {
   assert.equal(r.runs("sol").length, 2);
   assert.deepEqual(second!.images, first!.images, "the same bytes");
   assert.match(r.prompt("sol", 1), /explain the graph/, "with the original content");
+});
+
+test("Images: a message's images can total up to 80 MB", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  const big = (name: string) => {
+    const id = `big-${name}`;
+    r.stack.repos.insertAttachment({ id, roomId: r.roomId, name, mimeType: "image/png", sizeBytes: 41 * 1024 * 1024, createdAt: new Date().toISOString() }, new Uint8Array([1]));
+    return id;
+  };
+  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, attachmentIds: [big("a.png"), big("b.png")], assignments: [{ recipients: [r.ids.sol!], instruction: "look" }] }), /80 MB per message/);
+  assert.equal(requestsOf(r).length, 0);
 });
 
 // ---------------- Quoting and escaping ----------------
@@ -437,6 +516,69 @@ test("Sending while someone is working: a steer T3 did not take is sent again wi
   assert.equal(requestState(r, steer.requestIds[0]!), "answered");
 });
 
+test("Sending while someone is working: a steer whose acknowledgement was lost, and that T3 records only after its run ended, reaches the agent once", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  await r.say("@sol build it");
+  await r.tick();
+  r.fake.lateSteer = true;
+  const steer = await r.say("@sol /steer also add tests");
+  await r.tick(1);
+  r.complete("sol", "Built.");
+  await r.tick(1);
+  assert.equal(r.runs("sol").length, 2, "sent again with its own IDs: T3 runs it as a turn of its own, as no run is going");
+  await r.fake.deliverLate(); // the lost send: T3 keeps one receipt per command ID
+  await r.tick();
+  assert.equal(r.runs("sol").length, 2, "no ordinary run carries it as well");
+  r.complete("sol", "Tests added.");
+  await r.tick();
+  assert.equal(requestState(r, steer.requestIds[0]!), "answered");
+  const carried = r.runs("sol").filter((_, i) => /also add tests/.test(r.prompt("sol", i)));
+  assert.equal(carried.length, 1);
+});
+
+test("Sending while someone is working: a steer T3 refused, or never reached, waits for nothing: the next ordinary run carries it", async (t) => {
+  for (const fault of ["refuseSteers", "unavailableSteers"] as const) {
+    const r = await engineRoom(["sol"]);
+    t.after(() => r.close());
+    await r.say("@sol build it");
+    await r.tick();
+    r.fake[fault] = 99;
+    const steer = await r.say("@sol /steer also add tests");
+    await r.tick(1);
+    r.fake[fault] = 0;
+    r.complete("sol", "Built.");
+    await r.tick();
+    assert.equal(r.fake.steeredMessages, 0, fault);
+    assert.equal(r.runs("sol").length, 2, fault);
+    assert.match(r.prompt("sol", 1), /also add tests/, fault);
+    r.complete("sol", "Tests added.");
+    await r.tick();
+    assert.equal(requestState(r, steer.requestIds[0]!), "answered", fault);
+  }
+});
+
+test("Sending while someone is working: a steer T3 never records is waited for up to five minutes after its run ended, then an ordinary run carries it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  await r.say("@sol build it");
+  await r.tick();
+  r.fake.dropSteers = true;
+  const steer = await r.say("@sol /steer also add tests");
+  await r.tick(1);
+  r.complete("sol", "Built.");
+  await r.tick(3);
+  assert.equal(r.runs("sol").length, 1, "the seat waits: T3 may still record it");
+  t.mock.timers.tick(5 * 60_000 + 1);
+  await r.tick();
+  assert.equal(r.runs("sol").length, 2, "then the ordinary run");
+  assert.match(r.prompt("sol", 1), /also add tests/);
+  r.complete("sol", "Tests added.");
+  await r.tick();
+  assert.equal(requestState(r, steer.requestIds[0]!), "answered");
+});
+
 // ---------------- T3 slash commands ----------------
 
 test("T3 slash commands: sent to the member's thread exactly as typed, with no briefing, and recorded once as a note", async (t) => {
@@ -458,6 +600,56 @@ test("T3 slash commands: sent to the member's thread exactly as typed, with no b
   assert.deepEqual(notes.map((e) => e.id), [created.noteIds[0], notes[1]?.id], "the command once, then its reply");
   assert.ok(notes[0]!.data.kind === "note" && notes[0]!.data.author === "$user" && notes[0]!.data.body.endsWith("/compact focus on the parser"));
   assert.ok(notes[1]!.data.kind === "note" && notes[1]!.data.author === r.seat("sol") && notes[1]!.data.body === "Context compacted.");
+});
+
+test("T3 slash commands: in a room with one member, /compact needs no @name", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  const created = await r.say("/compact");
+  assert.equal(created.requestIds.length, 0);
+  assert.deepEqual(dispatches(r).map((d) => [d.threadId, d.text]), [[r.thread("sol"), "/compact"]]);
+});
+
+test("T3 slash commands: a tick that imports the command's T3 message before its note is written does not make it a failure; it is recorded once", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  await r.say("@sol build it");
+  await r.tick();
+  r.complete("sol", "Built.");
+  await r.tick();
+  // The host's §3 import of the command's T3 message lands between T3 recording it and the note being written.
+  r.fake.afterRecord = () => r.stack.scheduler.tick();
+  const created = await r.say("@sol /compact");
+  const notes = r.events().filter((e) => e.data.kind === "note");
+  assert.deepEqual(notes.map((e) => e.id), created.noteIds, "one note, under the ID both writers use");
+  assert.equal(dispatches(r).filter((d) => d.text === "/compact").length, 1);
+});
+
+test("T3 slash commands: a message whose T3 command T3 refuses records none of its requests, so sending it again makes one of each", async (t) => {
+  const r = await engineRoom(["sol", "grok"]);
+  t.after(() => r.close());
+  r.fake.slashDown = true;
+  await assert.rejects(r.say("@grok review the diff\n@sol /compact"), /T3 did not take \/compact for @sol/);
+  assert.equal(requestsOf(r).length, 0, "nothing left behind");
+  r.fake.slashDown = false;
+  await r.say("@grok review the diff\n@sol /compact");
+  assert.equal(requestsOf(r).filter((q) => q.body === "review the diff").length, 1);
+  assert.equal(dispatches(r).filter((d) => d.text === "/compact").length, 1);
+});
+
+test("T3 slash commands: a message sent again under its client message ID records nothing twice and sends no T3 command twice", async (t) => {
+  const r = await engineRoom(["sol", "grok"]);
+  t.after(() => r.close());
+  const id = "0b5a7e64-2f1c-4a8e-9d3b-6c1f2e4a5b70";
+  const first = await r.say("@grok review the diff\n@sol /review", [], id);
+  const again = await r.say("@grok review the diff\n@sol /review", [], id);
+  assert.equal(first.messageId, id);
+  assert.deepEqual(again, first);
+  assert.equal(requestsOf(r).length, 1);
+  assert.equal(r.events().filter((e) => e.data.kind === "note").length, 1);
+  const sends = r.fake.commands.filter((c) => c.type === "message.dispatch");
+  assert.equal(new Set(sends.map((c) => c.commandId)).size, 1, "sent again with the same command ID");
+  assert.equal(r.runs("sol").length, 1, "which T3 ran once");
 });
 
 test("T3 slash commands: unknown commands are blocked, and one cannot be combined with /steer", async (t) => {
