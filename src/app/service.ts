@@ -17,6 +17,7 @@ import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conve
 import { RESEAT_KEY_PREFIX, checkpointInstruction, readReseats, takeoverInstruction, writeReseats, type Reseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
 import type { EngineHost } from "../runtime/host.ts";
+import type { BriefingSource } from "../runtime/render.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
@@ -59,6 +60,11 @@ export type CommandResult =
   /** After participant.reseat: the checkpoint task the member was sent, and the post that asked for it. */
   | { type: "participant.reseating"; participantId: string; taskId: string; eventId: string }
   | { type: "note.created"; eventId: string }
+  /** The engine's message path (ROOMS_ENGINE=1): one request per recipient per assignment, sharing the message's ID. */
+  | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
+  | { type: "request.updated"; requestId: string; applied: boolean }
+  | { type: "run.retried"; runId: string; eventId: string }
+  | { type: "run.stopped"; participantId: string }
   | { type: "task.updated"; taskId: string; revision: number }
   | { type: "task.interrupt.requested"; taskId: string; runId: string }
   | { type: "native.responded"; requestId: string }
@@ -68,6 +74,12 @@ export type CommandResult =
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
+
+/**
+ * With ROOMS_ENGINE=1 the engine handles some commands instead of the old runtime: the first handler that returns a
+ * result has taken the command (src/app/engineMessages.ts for the user's messages; seat lifecycle the same way).
+ */
+export type EngineHandler = (command: RoomCommand) => Promise<CommandResult> | null;
 
 /** The first words of an instruction, for a note that points at it. */
 const headOf = (text: string, max = 80): string => {
@@ -102,6 +114,7 @@ export class RoomService {
   private readonly notify: (roomId: string) => void;
   /** Projects and threads used outside any room. */
   private readonly direct: DirectThreads;
+  private readonly engineHandlers: EngineHandler[] = [];
 
   constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}) {
     this.db = db;
@@ -114,11 +127,12 @@ export class RoomService {
   /** Stage 4/5 (L4b): with ROOMS_ENGINE=1 the seat lifecycle runs on the engine journal (src/app/engineSeats.ts). */
   private engineSeats: EngineSeats | null = null;
 
-  useEngine(host: EngineHost, log?: (message: string, detail?: unknown) => void): EngineSeats {
+  useEngineSeats(host: EngineHost, briefing: BriefingSource, log?: (message: string, detail?: unknown) => void): EngineSeats {
     this.engineSeats = new EngineSeats({
       repos: this.repos,
       adapter: this.adapter,
       host,
+      briefing,
       notify: this.notify,
       transaction: (fn) => this.db.transaction(fn),
       seatFresh: (room, old, ids) => this.seatFresh(room, old, { seat: ids }),
@@ -235,8 +249,17 @@ export class RoomService {
 
   // ---------- command entry point ----------
 
+  /** The engine runtime takes the commands this handler accepts (bootstrap.ts, with ROOMS_ENGINE=1 only). */
+  useEngine(handler: EngineHandler): void {
+    this.engineHandlers.push(handler);
+  }
+
   async execute(command: RoomCommand): Promise<CommandResult> {
     if (isDirectCommand(command)) return this.direct.execute(command);
+    for (const handler of this.engineHandlers) {
+      const taken = handler(command);
+      if (taken) return taken;
+    }
     switch (command.type) {
       case "room.create":
         return this.createRoom(command);
@@ -336,6 +359,11 @@ export class RoomService {
         });
       case "room.note.create":
         return this.createNote(command);
+      case "request.cancel":
+      case "request.correct":
+      case "run.retry":
+      case "run.stop":
+        throw new RoomError("engine_only", `${command.type} acts on the engine's board; this service runs without it (ROOMS_ENGINE=1)`, 409);
       case "task.update":
         return this.updateTask(command);
       case "task.release":
@@ -884,6 +912,7 @@ export class RoomService {
    * other member gets the seat briefing; a move tells every member, in one line, who he is now.
    */
   private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>, except: string | null = null): Promise<CommandResult> {
+    // Also reached from inside the service (a room's first Consigliere, a conversation's start), not only by execute.
     if (this.engineSeats) return this.engineSeats.designate(command);
     const room = this.requireRoom(command.roomId);
     const previous = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
@@ -994,7 +1023,6 @@ export class RoomService {
   }
 
   private async rebindParticipant(command: Extract<RoomCommand, { type: "participant.rebind" }>): Promise<CommandResult> {
-    if (this.engineSeats) this.engineSeats.refuseRebind();
     const participant = this.requireParticipant(command.participantId);
     const room = this.requireRoom(participant.roomId);
     const runningTasks = this.repos
@@ -1048,7 +1076,6 @@ export class RoomService {
    * commits; a failure is reported in the result and leaves the thread as it was.
    */
   private async retireParticipant(command: Extract<RoomCommand, { type: "participant.retire" }>): Promise<CommandResult> {
-    if (this.engineSeats) return this.engineSeats.retire(command);
     const participant = this.requireParticipant(command.participantId);
     const tasks = this.repos.listTasks(participant.roomId).filter((task) => task.participantId === participant.id);
     const inFlight = tasks.filter((task) => task.state === "dispatching" || task.state === "running" || task.state === "needs_input");
@@ -1121,7 +1148,6 @@ export class RoomService {
    * when the work in hand is done; advanceReseats does the rest when the post has landed. Nobody is woken for it.
    */
   private async reseatParticipant(command: Extract<RoomCommand, { type: "participant.reseat" }>): Promise<CommandResult> {
-    if (this.engineSeats) return this.engineSeats.reseat(command);
     const participant = this.requireParticipant(command.participantId);
     const by = this.requireParticipant(command.by);
     if (by.roomId !== participant.roomId) throw new RoomError("unknown_participant", `member ${command.by} is not in this room`);

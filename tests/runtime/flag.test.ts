@@ -48,11 +48,10 @@ test("with ROOMS_ENGINE=1 the host runs over board.sqlite next to rooms.sqlite a
     const binding = s.repos.currentBinding(participantId)!;
     // Seating the member seated it on the board too (L4b): no seat briefing, since the room has no Consigliere.
     assert.equal(s.engine.view(roomId).seats.get(binding.id)?.threadId, binding.threadId);
-    // The flag selects the engine: a message on the old path makes an old task, but the old scheduler never dispatches it.
-    await s.service.execute(parseCommand({ type: "message.create", roomId, assignments: [{ recipients: [participantId], instruction: "Old-path task." }] }));
-    await s.scheduler.tick();
-    assert.equal(fake.threads.get(binding.threadId)!.runs.length, 0, "the old scheduler does not dispatch with the flag on");
-    s.engine.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "Hello from the journal." });
+    // The flag selects the engine: the user's message makes no old task but a request on the journal (L4a).
+    await s.service.execute(parseCommand({ type: "message.create", roomId, assignments: [{ recipients: [participantId], instruction: "Hello from the journal." }] }));
+    assert.equal(s.repos.listTasks(roomId).length, 0, "no old task with the flag on");
+    assert.equal([...s.engine.view(roomId).requests.values()].length, 1);
     await s.scheduler.tick();
     const runs = fake.threads.get(binding.threadId)!.runs;
     assert.equal(runs.length, 1, "ticking the stack's scheduler ticks the engine host, which dispatched the request");

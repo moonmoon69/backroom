@@ -20,13 +20,15 @@ import { RoomError, notFound } from "../domain/errors.ts";
 import type { Participant, Room, SessionBinding } from "../domain/types.ts";
 import type { Activity, Projection } from "../engine/index.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
+import { standingText } from "../briefing/assemble.ts";
 import { SEAT_BRIEFING } from "../runtime/bindings.ts";
+import type { BriefingSource } from "../runtime/render.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import { threadFree } from "../runtime/t3.ts";
 import { RESEAT_CHECKPOINT, pendingActivities } from "../runtime/work.ts";
 import { engineSeatInstruction, movedInstruction, retireThreadChoice } from "./consigliere.ts";
 import { engineCheckpointInstruction, engineTakeoverInstruction, readEngineReseats, writeEngineReseats, type EngineReseat } from "./reseat.ts";
-import type { CommandResult } from "./service.ts";
+import type { CommandResult, EngineHandler } from "./service.ts";
 import { backgroundTasks } from "./threadView.ts";
 
 const MOVED = "moved:";
@@ -45,6 +47,8 @@ export interface EngineSeatsDeps {
   repos: Repos;
   adapter: T3Adapter;
   host: EngineHost;
+  /** The host's briefing source: `rooms-board rules` prints the standing sections the briefings give. */
+  briefing: BriefingSource;
   notify(roomId: string): void;
   /** rooms.sqlite writes that belong together. */
   transaction<T>(fn: () => T): T;
@@ -79,6 +83,14 @@ export class EngineSeats {
     return this.repos.currentBinding(participantId)?.id ?? null;
   }
 
+  /** `rooms-board rules`: the member's standing sections in full, as its first engine briefing gives them. */
+  async standingText(participantId: string): Promise<string> {
+    const participant = this.repos.getParticipant(participantId);
+    const seatId = this.seatIdOf(participantId);
+    if (!participant || !seatId) return "";
+    return standingText(await this.deps.briefing.standing(participant.roomId, seatId));
+  }
+
   /** The room's reseats in progress, for `rooms-board members`. */
   reseats(roomId: string): Array<{ participantId: string; seatId: string; requestId: string; stage: EngineReseat["stage"] }> {
     return readEngineReseats(this.repos, roomId).map((r) => ({ participantId: r.participantId, seatId: r.seatId, requestId: r.requestId, stage: r.stage }));
@@ -95,8 +107,8 @@ export class EngineSeats {
   }
 
   /**
-   * At start: every seated member has its journal seat, the journal's orchestrator is the Consigliere's mark, and a
-   * reseat whose transfer is in the journal is finished. Only a crash between rooms.sqlite and the journal leaves them
+   * At start: every seated member has its journal seat, the Consigliere's mark and the journal's orchestrator agree, and
+   * a reseat whose transfer is in the journal is finished. Only a crash between rooms.sqlite and the journal leaves them
    * apart. Seats made here get no seat briefing: their first briefing carries the standing facts.
    */
   reconcile(): void {
@@ -115,14 +127,30 @@ export class EngineSeats {
         for (const record of readEngineReseats(this.repos, room.id)) {
           if (this.view(room.id).events.some((e) => e.id === `transfer:${record.requestId}`)) this.handOver(room.id, record);
         }
-        const current = this.repos.getRoom(room.id)!;
-        const mark = current.consigliereId ? this.seatIdOf(current.consigliereId) : null;
-        const p = this.view(room.id);
-        if (p.orchestrator !== mark && (mark === null || p.seats.get(mark)?.status === "active")) this.host.designate(room.id, { id: `designate:${randomUUID()}`, seatId: mark });
+        this.alignMark(room.id);
       } catch (error) {
         this.log("seats not reconciled", { roomId: room.id, error: message(error) });
       }
     }
+  }
+
+  /**
+   * The journal is the record: once it has named an orchestrator (a seat made one, or designate), the Consigliere's mark
+   * in rooms.sqlite follows it. A journal that never named one (members seated before the engine ran) takes the mark.
+   */
+  private alignMark(roomId: string): void {
+    const p = this.view(roomId);
+    const named = p.events.some((e) => e.data.kind === "orchestrator.set" || (e.data.kind === "seat.created" && e.data.orchestrator));
+    const room = this.repos.getRoom(roomId)!;
+    if (named) {
+      const binding = p.orchestrator ? this.repos.getBinding(p.orchestrator) : null;
+      const participant = binding && !binding.retiredAt ? this.repos.getParticipant(binding.participantId) : null;
+      const mark = participant && !participant.retiredAt ? participant.id : null;
+      if (room.consigliereId !== mark) this.repos.setRoomConsigliere(roomId, mark, now());
+      return;
+    }
+    const mark = room.consigliereId ? this.seatIdOf(room.consigliereId) : null;
+    if (mark !== null && present(p, mark)) this.host.designate(roomId, { id: `designate:${randomUUID()}`, seatId: mark });
   }
 
   /**
@@ -204,10 +232,25 @@ export class EngineSeats {
     return { type: "participant.updated", participantId: participant.id, ...(thread ? { thread } : {}) };
   }
 
-  /** With the engine a member is never rebound: a second binding would be a second seat for one member. */
-  refuseRebind(): never {
-    throw new RoomError("engine_reseat", "A member is not rebound to another thread here: reseat it (rooms-board reseat <name>) for a fresh one.", 409);
+  /** The room commands the engine takes from the page and the CLI, registered with service.useEngine (bootstrap.ts). */
+  handler(): EngineHandler {
+    return (command) => {
+      switch (command.type) {
+        case "participant.retire":
+          return this.retire(command);
+        case "participant.reseat":
+          return this.reseat(command);
+        case "room.consigliere.set":
+          return this.designate(command);
+        case "participant.rebind":
+          // A second binding would be a second seat for one member.
+          return Promise.reject(new RoomError("engine_reseat", "A member is not rebound to another thread here: reseat it (rooms-board reseat <name>) for a fresh one.", 409));
+        default:
+          return null;
+      }
+    };
   }
+
 
   // ---------------- reseat ----------------
 

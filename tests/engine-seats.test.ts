@@ -17,6 +17,9 @@ import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import { decide, inputTree } from "../src/engine/index.ts";
 import type { ClaimOutcome, Projection, Run } from "../src/engine/index.ts";
 import { HostRefusal, bindingSource } from "../src/runtime/index.ts";
+import { agentKey } from "../src/browser/catalog.ts";
+import { loadConfig } from "../src/config.ts";
+import { createHttpApp } from "../src/server/http.ts";
 import { RuntimeFake } from "./runtime/helpers.ts";
 
 class Seats {
@@ -861,6 +864,59 @@ test("M2: a turn T3 starts on the old thread while the fresh member is made ends
     const reply = h.p.events.find((e) => e.data.kind === "note" && e.data.author === seatW && e.data.body === "Done, in T3.")!;
     const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
     assert.ok(reply && transfer && reply.seq < transfer.seq, "the turn is on the board before the handover");
+  } finally {
+    h.close();
+  }
+});
+
+test("at start the Consigliere's mark follows the journal once the journal has named one, and the journal is not written", async () => {
+  const h = await Seats.create();
+  try {
+    // As a crash after the journal's designate and before rooms.sqlite would leave it.
+    h.host.designate(h.roomId, { id: "designate:w-only-in-journal", seatId: h.seat("W") });
+    assert.equal(h.s.repos.getRoom(h.roomId)!.consigliereId, h.ids.C);
+    const events = h.p.events.length;
+    h.restart();
+    assert.equal(h.s.repos.getRoom(h.roomId)!.consigliereId, h.ids.W, "rooms.sqlite follows the journal");
+    assert.equal(h.p.orchestrator, h.seat("W"));
+    assert.equal(h.p.events.length, events, "nothing appended on start");
+  } finally {
+    h.close();
+  }
+});
+
+test("rooms-board through the route: rules prints the engine's standing facts; seat, reseat and retire act on the journal", async () => {
+  const h = await Seats.create();
+  try {
+    const app = createHttpApp(h.s, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: h.dir, ROOMS_PORT: "0" }), "/nonexistent/dist", { tools: null, token: "secret", command: "rooms-browser" });
+    const cli = async (alias: string, ...argv: string[]): Promise<{ status: number; text: string }> => {
+      const response = await app.request("/api/board-tools", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ argv, as: agentKey(alias, h.roomId) }) });
+      const body = (await response.json()) as { text?: string; message?: string };
+      return { status: response.status, text: body.text ?? body.message ?? "" };
+    };
+    const rules = await cli("W", "rules");
+    assert.equal(rules.status, 200);
+    assert.ok(rules.text.includes(engineSeatFacts({ alias: "C" })), "the engine's member facts, not the old runtime's");
+    assert.match((await cli("C", "rules")).text, /How the board works \(Backroom's mechanics/);
+
+    await h.run({ type: "preset.create", name: "Sonnet", modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
+    const seated = await cli("C", "seat", "Sonnet");
+    assert.equal(seated.status, 200, seated.text);
+    const sonnet = h.s.repos.listActiveParticipants(h.roomId).find((p) => p.alias === "Sonnet")!;
+    h.ids.Sonnet = sonnet.id;
+    assert.equal(h.p.seats.get(h.seat("Sonnet"))?.status, "active");
+    await h.acknowledge();
+
+    const reseat = await cli("C", "reseat", "W", "carry on");
+    assert.equal(reseat.status, 200, reseat.text);
+    assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 1);
+
+    const seatV = h.seat("V");
+    const retired = await cli("C", "retire", "V");
+    assert.equal(retired.status, 200, retired.text);
+    assert.equal(h.p.seats.get(seatV)!.status, "retired");
+    const event = h.p.events.find((e) => e.data.kind === "seat.retired")!;
+    assert.equal(event.data.kind === "seat.retired" ? event.data.author : null, "$user", "the room command path retires as the user");
   } finally {
     h.close();
   }

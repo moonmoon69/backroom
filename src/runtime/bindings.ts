@@ -35,6 +35,8 @@ export interface BindingSourceOptions {
   browsers?: BriefingBrowsers | null;
   /** How agents run rooms-browser; named in briefings. */
   browserCommand?: string;
+  /** The images a user message came with (L4a, src/app/engineMessages.ts). */
+  images?: BriefingSource["images"];
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -95,6 +97,8 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
     },
     alias: (_roomId, seatId) => member(seatId)?.alias ?? null,
     seatBriefing: (_roomId, _seatId, envelope) => envelope.inputs.some((input) => input.intent === "request" && input.requestIds.some((id) => id.startsWith(SEAT_BRIEFING))),
+    // The images a user message came with (L4a, src/app/engineMessages.ts).
+    ...(options.images ? { images: options.images } : {}),
   };
 }
 

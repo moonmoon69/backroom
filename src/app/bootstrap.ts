@@ -8,6 +8,7 @@ import { EngineStore } from "../engine/index.ts";
 import { EngineHost, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
 import type { EngineSeats } from "./engineSeats.ts";
+import { engineMessages, messageImages } from "./engineMessages.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -104,18 +105,21 @@ export function createStack(input: {
   // Each tick, per seat: approvals and questions mirrored, then the seat lifecycle's part (thread title and settings, reseats).
   let seats: EngineSeats | null = null;
   const mirror = nativeRequestMirror(repos, notify);
+  // One briefing source: what the host renders and what `rooms-board rules` prints.
+  const briefing = bindingSource(repos, {
+    adapter: input.adapter,
+    browsers,
+    images: messageImages(repos),
+    ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}),
+    ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
+    ...(input.log ? { log: input.log } : {}),
+  });
   const engine = engineStore
     ? new EngineHost({
       store: engineStore,
       adapter: input.adapter,
       rooms: () => repos.listRooms().map((room) => room.id),
-      briefing: bindingSource(repos, {
-        adapter: input.adapter,
-        browsers,
-        ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}),
-        ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
-        ...(input.log ? { log: input.log } : {}),
-      }),
+      briefing,
       budgetChars: input.briefingBudgetChars,
       watch: async (at, shell, detail) => {
         await mirror(at, shell, detail);
@@ -126,13 +130,17 @@ export function createStack(input: {
     })
     : null;
   if (engine) {
-    seats = service.useEngine(engine, input.log);
+    seats = service.useEngineSeats(engine, briefing, input.log);
+    // Seat, reseat, retire and the Consigliere's mark go on the journal (L4b), through L4a's handler hook.
+    service.useEngine(seats.handler());
     seats.reconcile();
     // The old scheduler stays built (the UI still reads its statuses until L4c) but never ticks: whoever starts or ticks
     // it (the server, the API's manual ticks) drives the engine host instead, so one runtime alone dispatches to and
     // imports from the members' threads.
     scheduler.start = (intervalMs: number) => engine.start(intervalMs);
     scheduler.tick = () => engine.tick();
+    // The user's messages, notes and controls go on the journal (L4a).
+    service.useEngine(engineMessages({ repos, host: engine, adapter: input.adapter }));
   }
   return {
     db,
