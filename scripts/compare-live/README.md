@@ -211,5 +211,7 @@ check compares T3's runs (the fake's) with the instance's own run records. The q
   calling a second import unused or saying nothing else is used. Both R0 T1 reports were read in full and are right.
 - JOB-DONE near misses ("JOB-DONE:", "Status: JOB-DONE", "JOB-DONE ✅") are not reports: such a job runs to the
   60-minute "no report" close, and the report warns about it. None happened in R0.
-- T2 measures the review exchange more than defect-catching: the leap-year defect is easy to spot, and in R0 the
-  Consigliere and a T1 report named it unprompted.
+- T2's rule, as the user decided it (task327): V's review comes before the report; "review, then correction" in that
+  order is not required, so a run where W1 fixed both defects at once passes. T2 therefore mostly measures the review
+  exchange, not defect-catching: the leap-year defect proved easy to spot (in R0 the Consigliere and a T1 report named
+  it unprompted). This limit, with the plan's, is written into every Z1 `verdict.md` (`VERDICT_LIMITS` in measure.ts).

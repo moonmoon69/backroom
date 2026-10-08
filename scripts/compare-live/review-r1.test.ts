@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { JobRecord, Snapshot } from "./campaign.ts";
 import { GATE_RULES, chooseNK, compareCell, spread, type GateRun, type Metric } from "./gate.ts";
-import { measureJob, reportCopyChecks, verifyJob } from "./measure.ts";
+import { VERDICT_LIMITS, measureJob, reportCopyChecks, verifyJob } from "./measure.ts";
 import { campaignCap, capGate, jobSpend, liveCosts } from "./run.ts";
 
 const SAMPLE = join(import.meta.dirname, "testdata", "job");
@@ -152,5 +152,14 @@ describe("S5: runs without a report", () => {
     assert.ok(Math.abs(gate.fromR0.z1CapUsd - 1.5 * 24 * median) < 1e-9);
     assert.deepEqual([gate.N, gate.K], [3, 2]);
     assert.deepEqual(GATE_RULES.primary, ["wakes", "tokens"]);
+  });
+});
+
+describe("the verdict's limits", () => {
+  test("every verdict carries the plan's limits and T2's rule as the user decided it", () => {
+    assert.equal(VERDICT_LIMITS.length, 8);
+    assert.ok(VERDICT_LIMITS.some((l) => /V's review comes before the report/.test(l) && /mostly measures the review exchange/.test(l)));
+    assert.ok(VERDICT_LIMITS.some((l) => /Small N/.test(l)));
+    assert.ok(VERDICT_LIMITS.some((l) => /Claude only/.test(l)));
   });
 });

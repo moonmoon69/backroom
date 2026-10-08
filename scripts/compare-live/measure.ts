@@ -509,6 +509,18 @@ export function reportCopyChecks(job: JobRecord, name: string, t3ReportAt: strin
   return differ.length === 0 ? [] : [{ job: name, what: "the report's copy differs from the last answer's copy before T3's report", measured: differ, recounted: before.dir }];
 }
 
+/** The limits every verdict carries (plan stage45, Z1 "Limits"; the T2 rule as the user decided it for R0, task327). */
+export const VERDICT_LIMITS = [
+  "Small N: 2 or 3 runs per side per task shows only large, consistent differences; the relabelling turns \"could this be chance?\" into a number on these data, not a test of small effects.",
+  "Agents behave differently from run to run; interleaving and fresh seats reduce that, they do not remove it.",
+  "Rules and briefing text differ between the sides and are confounded with the wake mechanism; the rules diff and the briefing bytes per delivered turn are published so a gain from shorter text can be told apart.",
+  "The crew is Claude only (Codex out of quota until 2026-10-14, Cursor not signed in); results may not carry over to other harnesses.",
+  "Other rooms on the same account share rate limits and the machine; overlap is recorded per job.",
+  "The tasks are toy-sized and show nothing about long-room context growth; the fake 2,000-post benchmark in L6 is the proxy for that.",
+  "T2's rule is that V's review comes before the report, not \"review, then correction\": a run where W1 fixed both defects at once passes. T2 therefore mostly measures the review exchange; the hidden leap-year defect proved easy to spot (user decision, R0, task327).",
+  "T1's facts check is lenient text matching: it can pass a report that is wrong in substance; it does not fail a correct one.",
+];
+
 // ---------------- the report ----------------
 
 const median = (values: number[]): number | null => {
@@ -673,6 +685,7 @@ async function main(): Promise<void> {
     const result = verdict(gate, runs.map(gateRun));
     const lines = [`# Z1 verdict: ${result.verdict}`, "", `chance-pass ${(result.chance.chancePass * 100).toFixed(2)}% (target ${gate.chancePassTarget * 100}%), chance-G3-fail ${(result.chance.chanceG3Fail * 100).toFixed(2)}%, over ${result.chance.labellings} labellings; N = ${gate.N}, K = ${gate.K}.`, "", `G1 ${result.evaluation.g1}, G2 ${result.evaluation.g2}, G3 ${result.evaluation.g3}.`, "", "| task | correct old/new | premature old/new | " + METRICS.join(" | ") + " | material |", "|---|---|---|" + METRICS.map(() => "---|").join("") + "---|"];
     for (const [task, row] of Object.entries(result.evaluation.perTask)) lines.push(`| ${task} | ${row.correct.old}/${row.correct.new} | ${row.premature.old}/${row.premature.new} | ${METRICS.map((m) => row.cells[m]).join(" | ")} | ${row.material.join(", ") || "none"} |`);
+    lines.push("", "## Limits", "", ...VERDICT_LIMITS.map((limit) => `- ${limit}`));
     writeFileSync(join(out, "verdict.md"), `${lines.join("\n")}\n\nEvery run's numbers are in report.md beside this file.\n`);
     console.log(`verdict: ${result.verdict}`);
     if (result.verdict !== "PASS") process.exitCode = 1;
