@@ -282,6 +282,125 @@ test("shell snapshot maps projects and thread shells: the active run's status, t
   assert.ok(catalog.some((c) => c.instanceId === "codex" && c.model === "gpt-6-sol" && c.source === "observed"));
 });
 
+test("shell reads: callers while one is in flight share it, and a slow read is reused for twice its duration (the live service's 144 reads in 42 s)", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  let reads = 0;
+  let fail = false;
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path !== "/api/orchestration/shell") return new Response("not found", { status: 404 });
+    reads += 1;
+    // T3 answers when the test lets it: the read takes as long as the test moves the clock meanwhile.
+    await new Promise<void>((resolve) => held.push(resolve));
+    if (fail) throw new TypeError("fetch failed (simulated)");
+    return new Response(JSON.stringify(shell), { status: 200 });
+  }) as typeof fetch;
+  const settle = async () => {
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const answer = async (afterMs: number) => {
+    await settle();
+    assert.equal(held.length, 1, "one shell read waits on T3");
+    t.mock.timers.tick(afterMs);
+    held.shift()!();
+    await settle();
+  };
+  // The default cache (750 ms), as the live service runs it.
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
+
+  // 1. Twenty callers while T3 takes 5 s to answer: one read, and every caller gets its snapshot.
+  const callers = Array.from({ length: 20 }, (_, i) => (i % 2 ? adapter.listThreads().then((threads) => threads.map((x) => x.id)) : adapter.getThreadShell("thread-1").then((x) => [x?.id])));
+  await answer(5_000);
+  assert.deepEqual(new Set((await Promise.all(callers)).flat()), new Set(["thread-1"]));
+  assert.equal(reads, 1, "callers during a read share it");
+
+  // 2. That read took 5 s: its snapshot serves for 10 s from when it started, not 750 ms.
+  t.mock.timers.tick(4_900); // 9.9 s after the read started
+  await adapter.listThreads();
+  await adapter.listProjects();
+  assert.equal(reads, 1, "a slow read is reused for twice its duration");
+  t.mock.timers.tick(200); // 10.1 s
+  const fresh = adapter.listThreads();
+  await answer(0);
+  await fresh;
+  assert.equal(reads, 2, "past twice the read's duration it is read again");
+
+  // 3. A fast read brings the cache back to 750 ms.
+  t.mock.timers.tick(700);
+  await adapter.listThreads();
+  assert.equal(reads, 2);
+  t.mock.timers.tick(100);
+  const third = adapter.listThreads();
+  await answer(0);
+  await third;
+  assert.equal(reads, 3);
+
+  // 4. A failed read is shared too, cached nowhere: every caller gets the error, and the next call reads again.
+  fail = true;
+  t.mock.timers.tick(1_000);
+  const failing = [adapter.listThreads(), adapter.listThreads(), adapter.getThreadShell("thread-1")].map((x) => x.then(() => "ok", (error: unknown) => error instanceof T3Unavailable));
+  await answer(0);
+  assert.deepEqual(await Promise.all(failing), [true, true, true]);
+  assert.equal(reads, 4);
+  fail = false;
+  const after = adapter.listThreads();
+  await answer(0);
+  assert.deepEqual((await after).map((x) => x.id), ["thread-1"]);
+  assert.equal(reads, 5);
+});
+
+test("shell reads after a command: a read in flight when the command went out is neither shared nor cached", async () => {
+  let reads = 0;
+  let title = "v1";
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path === "/api/auth/websocket-ticket") return new Response(JSON.stringify({ ticket: "tk" }), { status: 200 });
+    if (path !== "/api/orchestration/shell") return new Response("not found", { status: 404 });
+    reads += 1;
+    // What T3 serves is fixed when the read starts; it answers when the test lets it.
+    const body = { ...shell, threads: [{ ...threadShell, title }] };
+    await new Promise<void>((resolve) => held.push(resolve));
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as typeof fetch;
+  const settle = async () => {
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const { Socket } = mockSocket({ "orchestration.dispatchCommand": () => ({ sequence: 12 }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, shellCacheMs: 60_000 });
+  const before = adapter.getThreadShell("thread-1");
+  await settle();
+  title = "v2";
+  await adapter.setThreadTitle({ commandId: "cmd-title", threadId: "thread-1", title: "v2" });
+  const after = adapter.getThreadShell("thread-1");
+  await settle();
+  assert.equal(reads, 2, "the caller after the command reads again instead of sharing the read in flight");
+  held.shift()!(); // the read from before the command lands first
+  assert.equal((await before)?.title, "v1");
+  held.shift()!();
+  assert.equal((await after)?.title, "v2");
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "v2", "the cache holds the read made after the command");
+  assert.equal(reads, 2);
+  // A read from before the next command lands after the read made after it: it does not replace the cache.
+  const slow = adapter["shell"](true);
+  await settle();
+  title = "v3";
+  await adapter.setThreadTitle({ commandId: "cmd-title-2", threadId: "thread-1", title: "v3" });
+  const fresh = adapter.getThreadShell("thread-1");
+  await settle();
+  assert.equal(reads, 4);
+  held.splice(1, 1)[0]!(); // the read made after the command
+  assert.equal((await fresh)?.title, "v3");
+  held.shift()!(); // the one from before it, landing late
+  await slow;
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "v3", "the late pre-command read did not replace the cache");
+  assert.equal(reads, 4);
+  adapter.close();
+});
+
 test("thread detail: runs by the message that started them or was steered into them, and requests with what they ask", async () => {
   const item = (ordinal: number, runId: string, fields: Record<string, unknown>) => ({ id: `item-${ordinal}`, threadId: "thread-1", runId, nodeId: `node-${ordinal}`, providerThreadId: null, providerTurnId: null, nativeItemRef: null, parentItemId: null, ordinal, status: "completed", title: null, startedAt: "2026-10-03T00:00:01.000Z", completedAt: "2026-10-03T00:00:01.000Z", updatedAt: "2026-10-03T00:00:01.000Z", ...fields });
   const message = (id: string, role: string, runId: string, text: string, createdBy = "user") => ({ id, threadId: "thread-1", runId, nodeId: null, role, text, attachments: [], streaming: false, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:00.000Z", createdBy, creationSource: "web" });

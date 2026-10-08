@@ -429,6 +429,11 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly worktreePollMs: number;
   private readonly commandLinkIdleMs: number;
   private shellCache: { at: number; value: ShellSnapshot } | null = null;
+  /** One shell read at a time: callers that arrive while it is in flight share it, and a slow read is reused for twice its duration. */
+  private shellInflight: Promise<ShellSnapshot> | null = null;
+  private shellLastMs = 0;
+  /** Bumped when a command makes the shell stale: a read that started before it is neither shared nor cached afterwards. */
+  private shellGeneration = 0;
   /** The last protocol check: a server on protocol 2 is trusted for a minute, a mismatch is checked again within seconds. */
   private protocolCheck: { at: number; error: T3ProtocolMismatch | null } | null = null;
 
@@ -446,7 +451,7 @@ export class HttpT3Adapter implements T3Adapter {
 
   setAccessToken(token: string | null): void {
     this.accessToken = token;
-    this.shellCache = null;
+    this.invalidateShell();
     this.protocolCheck = null;
     this.dropCommandLink();
   }
@@ -767,13 +772,33 @@ export class HttpT3Adapter implements T3Adapter {
     }
   }
 
+  /** A command changed what T3 serves: drop the cached shell and stop sharing the read in flight. */
+  private invalidateShell(): void {
+    this.shellCache = null;
+    this.shellInflight = null;
+    this.shellGeneration += 1;
+  }
+
   private async shell(force = false): Promise<ShellSnapshot> {
     const now = Date.now();
-    if (!force && this.shellCache && now - this.shellCache.at < this.shellCacheMs) return this.shellCache.value;
-    await this.ensureProtocol();
-    const value = (await this.request("GET", "/api/orchestration/shell")) as ShellSnapshot;
-    this.shellCache = { at: now, value };
-    return value;
+    const ttl = Math.max(this.shellCacheMs, 2 * this.shellLastMs);
+    if (!force && this.shellCache && now - this.shellCache.at < ttl) return this.shellCache.value;
+    if (!force && this.shellInflight) return this.shellInflight;
+    const generation = this.shellGeneration;
+    const read = (async () => {
+      await this.ensureProtocol();
+      const started = Date.now();
+      const value = (await this.request("GET", "/api/orchestration/shell")) as ShellSnapshot;
+      this.shellLastMs = Date.now() - started;
+      if (this.shellGeneration === generation) this.shellCache = { at: started, value };
+      return value;
+    })();
+    this.shellInflight = read;
+    try {
+      return await read;
+    } finally {
+      if (this.shellInflight === read) this.shellInflight = null;
+    }
   }
 
   async listProjects(): Promise<T3Project[]> {
@@ -1105,7 +1130,7 @@ export class HttpT3Adapter implements T3Adapter {
     try {
       await this.rpc("orchestration.dispatchCommand", command, this.requestTimeoutMs * 2);
     } finally {
-      this.shellCache = null;
+      this.invalidateShell();
     }
   }
 
@@ -1122,7 +1147,7 @@ export class HttpT3Adapter implements T3Adapter {
 
   async setThreadTitle(input: { commandId: string; threadId: string; title: string }): Promise<void> {
     await this.dispatch({ type: "thread.metadata.update", commandId: input.commandId, threadId: input.threadId, title: input.title, regenerateTitle: false });
-    this.shellCache = null;
+    this.invalidateShell();
   }
 
   async setThreadModel(input: { commandId: string; threadId: string; modelSelection: ModelSelection }): Promise<void> {
@@ -1141,7 +1166,7 @@ export class HttpT3Adapter implements T3Adapter {
         createWorkspaceRootIfMissing: input.createIfMissing,
       });
     } finally {
-      this.shellCache = null;
+      this.invalidateShell();
     }
   }
 
@@ -1185,7 +1210,7 @@ export class HttpT3Adapter implements T3Adapter {
       if (input.workspace.type === "worktree" && !input.initialMessage && !shell.worktreePath) return await this.awaitWorktree(input.threadId);
       return shell;
     } finally {
-      this.shellCache = null;
+      this.invalidateShell();
     }
   }
 
@@ -1193,7 +1218,7 @@ export class HttpT3Adapter implements T3Adapter {
     const deadline = Date.now() + 300_000;
     let missing = 0;
     for (;;) {
-      this.shellCache = null;
+      this.invalidateShell();
       const listed = await this.getThreadShell(threadId);
       if (listed?.worktreePath) return listed;
       // T3 removes a thread whose workspace it could not make.
