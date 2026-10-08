@@ -21,6 +21,9 @@
  *
  * Only the addressing/command syntax is interpreted; the remaining text of each assignment is its verbatim instruction.
  * Incomplete or invalid syntax produces a draft with unresolved fields rather than an error.
+ *
+ * On the engine runtime (`engine: true`, decision D2) nothing waits on other work: /after, /hold and the waits a message
+ * implies are refused with a hint (see retireDependencies).
  */
 import type { Schedule } from "../domain/commands.ts";
 import { PENDING_TASK_STATES, TERMINAL_TASK_STATES, type Task } from "../domain/types.ts";
@@ -147,6 +150,11 @@ export interface ParseOptions {
    * do not), and only text that addresses nobody goes to the Consigliere.
    */
   direct?: boolean;
+  /**
+   * The engine runtime (ROOMS_ENGINE=1). Decision D2: /after, /hold and the waits a message implies ("then", naming an
+   * earlier recipient, a condition) are gone; the draft refuses them with a hint. /now stays.
+   */
+  engine?: boolean;
 }
 
 export function parseExplicit(text: string, participants: ParticipantRef[], tasks: Task[], options: ParseOptions = {}): Draft {
@@ -206,8 +214,10 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
   // Quoted text is literal: @names and /commands inside code blocks, inline code, "> " quotes, or written as \@name
   // address nobody. They are masked (same length, so offsets hold) while parsing and restored in the output.
   const consigliere = options.consigliereId ? (participants.find((p) => p.id === options.consigliereId) ?? null) : null;
-  const parsed = parseAssignments(maskQuoted(text), participants, tasks, consigliere?.id ?? null);
+  const parsed = parseAssignments(maskQuoted(text), participants, options.engine ? [] : tasks, consigliere?.id ?? null);
+  const written = [...parsed.assignments];
   if (consigliere) routeToConsigliere(parsed, consigliere.id, text, options.direct === true);
+  if (options.engine) retireDependencies(parsed, written, participants);
   draft.assignments = parsed.assignments.map((a) => ({ ...a, instruction: unmask(a.instruction) }));
   draft.preamble = unmask(parsed.preamble);
   draft.mentions = parsed.mentions;
@@ -266,6 +276,46 @@ function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: 
     assignment.unresolved = others;
     if (assignment.delivery === "queue" && steerable(assignment)) assignment.delivery = "steer";
   }
+}
+
+export const AFTER_GONE = "/after is gone: Backroom no longer waits on other work. Send this once that work is done, or have the Consigliere sequence it.";
+export const HOLD_GONE = "/hold is gone: keep this as a draft and send it when it should start.";
+
+/**
+ * Decision D2 on the engine runtime: nothing waits on other work. A /after or /hold directive is refused wherever it is
+ * written. A wait the text implies is refused on each assignment that keeps it, with the way out: send it later, have
+ * the Consigliere sequence it, or /now. A message the Consigliere takes whole is his to sequence, so it has none.
+ * `written` is the assignments as parsed, before any went to the Consigliere.
+ */
+function retireDependencies(parsed: ParsedMessage, written: DraftAssignment[], participants: ParticipantRef[]): void {
+  const used = (assignment: DraftAssignment, name: string) => assignment.consumed.some((token) => token.toLowerCase() === `/${name}`);
+  const directives = (assignment: DraftAssignment): Unresolved[] => [
+    ...(used(assignment, "after") ? [{ field: "prerequisites" as const, severity: "error" as const, message: AFTER_GONE }] : []),
+    ...(used(assignment, "hold") ? [{ field: "schedule" as const, severity: "error" as const, message: HOLD_GONE }] : []),
+  ];
+  // What only made sense with waiting: prerequisites, and timing conflicts among /after, /hold and /now.
+  const timing = (u: Unresolved) => u.field === "prerequisites" || (u.field === "schedule" && /\/(?:after|hold|now)\b/.test(u.message));
+  const alias = (id: string) => `@${participants.find((p) => p.id === id)?.alias ?? id}`;
+  const kept = new Set(parsed.assignments);
+  for (const assignment of written) {
+    if (!kept.has(assignment)) {
+      if (parsed.assignments[0]) parsed.assignments[0].unresolved.push(...directives(assignment));
+      continue;
+    }
+    const refused = directives(assignment);
+    const waits = assignment.after.length > 0 || assignment.timing === "after" || assignment.schedule?.mode === "after_all" || assignment.unresolved.some((u) => u.field === "prerequisites");
+    if (refused.length === 0 && waits) {
+      const names = [...new Set(assignment.after.flatMap((ref) => (written[ref.index]?.recipients ?? []).map(alias)))];
+      const whom = names.length > 0 ? names.join(" and ") : "other work";
+      const until = names.length > 0 ? names.join(" and ") : "it";
+      refused.push({ field: "prerequisites", severity: "error", message: `Waiting for ${whom} is gone: send this once ${until} is done, have the Consigliere sequence it, or add /now to send it now.` });
+    }
+    if (refused.length === 0) continue;
+    assignment.unresolved = [...assignment.unresolved.filter((u) => !timing(u)), ...refused];
+  }
+  parsed.hints = parsed.hints
+    .map((hint) => hint.replace(/ To wait for someone's work, name them or use \/after\.$/, ""))
+    .filter((hint) => !/\/(?:after|hold)\b|so the room can wait/.test(hint));
 }
 
 /** Words that, directly before a mid-sentence @mention, make it a reference ("work with @alice") rather than a new address. */

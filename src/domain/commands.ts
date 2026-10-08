@@ -344,6 +344,8 @@ export const MessageCreateCommand = z
     type: z.literal("message.create"),
     roomId: nonEmpty,
     sourceText: z.string().nullable().default(null),
+    /** Text before the first address (the parser's draft.preamble): context every recipient's request carries (engine). */
+    preamble: z.string().trim().default(""),
     attachmentIds: AttachmentIds,
     assignments: z.array(AssignmentSchema).min(1).max(20),
   })
@@ -370,6 +372,19 @@ export const MessageCreateCommand = z
       }
     });
   });
+
+/*
+ * The user's controls on the engine's journal (ROOMS_ENGINE=1, plan item L4a). Requests and runs are named by their
+ * journal IDs: withdraw a request, amend one still open, retry a failed run with its original content, or stop what
+ * a member is running in T3.
+ */
+export const RequestCancelCommand = z.object({ type: z.literal("request.cancel"), roomId: nonEmpty, requestId: nonEmpty }).strict();
+
+export const RequestCorrectCommand = z.object({ type: z.literal("request.correct"), roomId: nonEmpty, requestId: nonEmpty, text: nonEmpty }).strict();
+
+export const RunRetryCommand = z.object({ type: z.literal("run.retry"), roomId: nonEmpty, runId: nonEmpty, text: z.string().trim().default("") }).strict();
+
+export const RunStopCommand = z.object({ type: z.literal("run.stop"), roomId: nonEmpty, participantId: nonEmpty }).strict();
 
 export const RoomNoteCreateCommand = z
   .object({
@@ -558,6 +573,10 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   MessageCreateCommand,
   MemberPostCommand,
   RoomNoteCreateCommand,
+  RequestCancelCommand,
+  RequestCorrectCommand,
+  RunRetryCommand,
+  RunStopCommand,
   TaskUpdateCommand,
   TaskReleaseCommand,
   TaskCancelCommand,

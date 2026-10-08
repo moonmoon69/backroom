@@ -728,7 +728,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       const status = stack.scheduler.participantStatus(p.id);
       return { id: p.id, alias: p.alias, busy: busyByParticipant.has(p.id) || status.externalActivity || status.activeRunId !== null || status.threadMissing };
     });
-    return c.json(parseExplicit(body.text ?? "", participants, tasks, { consigliereId: room.consigliereId }));
+    return c.json(parseExplicit(body.text ?? "", participants, tasks, { consigliereId: room.consigliereId, engine: stack.engine !== null }));
   });
 
   // Images for the composer: raw bytes in, attachment record out. Referenced by id from message.create.

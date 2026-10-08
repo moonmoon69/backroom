@@ -16,9 +16,10 @@ import type { T3Adapter, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter
 import { T3CommandRejected, T3Unavailable, runForMessage } from "../adapter/types.ts";
 import { backgroundTasks } from "../app/threadView.ts";
 import type { ModelSelection } from "../domain/types.ts";
-import { unread } from "../engine/index.ts";
+import { inputTree, unread } from "../engine/index.ts";
 import type { ClaimOutcome, Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
+import { adoptableSteers, steerMessageIds, steerOffers, steerReceiptId, wantsSteer, type SteerOffer } from "./steer.ts";
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import {
   DEFERRED_CANCEL, activityStartedSeq, allowedIds, committed, deferredCancels, finalTargets, frozenDispatch,
@@ -27,9 +28,11 @@ import {
 
 const SYSTEM = "$system";
 const MiB = 1024 * 1024;
+/** The last line of a steered message: what the member does with what came into its turn. */
+const STEER_NOTE = "This came into your running turn: take it into account in the work you are doing now, and cover it in your final reply for this turn.";
 
 /** Committed steps, for the crash method in tests/runtime: a hook that throws here stops the host as a crash would. */
-export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "activity" | "output" | "ended" | "imported" | "settled";
+export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "steered" | "activity" | "output" | "ended" | "imported" | "settled";
 
 export interface EngineHostOptions {
   store: EngineStore;
@@ -109,6 +112,10 @@ export class EngineHost {
   private readonly idleSince = new Map<string, number>();
   /** Per seat: the thread state whose turns and messages are all imported (§3), so an unchanged thread is not reread. */
   private readonly seen = new Map<string, string>();
+  /** Per steer offer: when its message was first sent, its rendering (resent as is), and the offers given up. Bounds only. */
+  private readonly steerSent = new Map<string, number>();
+  private readonly steerTexts = new Map<string, { text: string; images: Dispatch["images"] }>();
+  private readonly steerGaveUp = new Set<string>();
 
   constructor(options: EngineHostOptions) {
     this.options = options;
@@ -250,7 +257,9 @@ export class EngineHost {
   private async dispatch(roomId: string, seatId: string, shell: T3ThreadShell, imported: boolean, load: Loader): Promise<void> {
     const p = this.project(roomId);
     const seat = p.seats.get(seatId)!;
-    if (seat.activeRunId || seat.status !== "active" || !imported || !threadFree(shell) || unread(p, seatId).length === 0) return;
+    if (seat.activeRunId || seat.status !== "active" || !imported || unread(p, seatId).length === 0) return;
+    if (await this.adopt(roomId, seatId, load)) return;
+    if (!threadFree(shell)) return;
     const id = randomUUID();
     const receipt = this.exec(roomId, { type: "reserve", actor: SYSTEM, id: `reserve:${id}`, seatId, runId: id, dispatchCommandId: randomUUID(), dispatchMessageId: randomUUID(), maxBytes: this.maxBytes });
     if (receipt.outcome !== "appended") return;
@@ -301,6 +310,7 @@ export class EngineHost {
         this.step("running", roomId, seatId, runId);
       }
       await this.sendInterrupts(roomId, runId, threadId, t3Run);
+      await this.steerInto(roomId, seatId, runId, t3Run, load);
       return;
     }
     const full = await load(true);
@@ -308,6 +318,7 @@ export class EngineHost {
     const final = finalMessage(full, t3Run.id);
     if (final.streaming) return; // T3 is still writing the last message: import it whole on the next tick.
     await this.sendInterrupts(roomId, runId, threadId, t3Run);
+    this.confirmSteers(roomId, runId, t3Run.id, full);
     const end = runEnd(t3Run);
     const before = new Set(frozenDispatch(this.project(roomId), runId)?.bgBefore ?? []);
     this.finish(roomId, runId, {
@@ -511,7 +522,9 @@ export class EngineHost {
     const detail = await load();
     if (!detail) return false;
     const hostRuns = [...p.runs.values()].filter((r) => r.seatId === seatId);
-    const hostMessages = new Set(hostRuns.map((r) => r.dispatchMessageId));
+    // Steered messages are the board's too: what they carried is on it already.
+    const hostMessages = new Set([...hostRuns.map((r) => r.dispatchMessageId), ...steerMessageIds(p, seatId)]);
+    const adoptable = new Set(adoptableSteers(p, seatId).map((s) => s.messageId));
     const baseline = this.baseline(p, seatId);
     if (baseline === null) {
       this.seen.set(seatId, key);
@@ -565,8 +578,11 @@ export class EngineHost {
         const origin = runOrigin(detail, t3Run, hostMessages);
         if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail);
         else if (origin === "host") {
-          const failed = hostRuns.find((r) => r.dispatchMessageId === t3Run.userMessageId)!;
-          this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, requestIds: finalTargets(p, failed) });
+          const failed = hostRuns.find((r) => r.dispatchMessageId === t3Run.userMessageId);
+          if (failed) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, requestIds: finalTargets(p, failed) });
+          // A steer T3 ran as a turn of its own: the reserve pass adopts it, or, once that window has closed, its reply is a note.
+          else if (adoptable.has(t3Run.userMessageId)) continue;
+          else this.steerNote(roomId, seatId, id, t3Run.userMessageId, shown);
         }
         else if (shown) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: shown });
       } catch (error) {
@@ -645,6 +661,145 @@ export class EngineHost {
     }
   }
 
+  // ---------------- /steer (L4a; src/runtime/steer.ts) ----------------
+
+  /**
+   * Steered requests go into the seat's live run while T3 runs it: one offer at a time, a sync receipt over every unread
+   * input since the run's watermark, sent with `steer_active` into the T3 run and confirmed once T3 shows the message
+   * attached to it; the run's final then answers them too (§1). Never while the run waits on an approval or a question.
+   */
+  private async steerInto(roomId: string, seatId: string, runId: string, t3Run: T3Run, load: Loader): Promise<void> {
+    const detail = await load();
+    if (!detail) return;
+    this.confirmSteers(roomId, runId, t3Run.id, detail);
+    const p = this.project(roomId);
+    const threadId = p.seats.get(seatId)!.threadId;
+    const inFlight = steerOffers(p, seatId).find((s) => s.runId === runId && !s.receipt.confirmed && !this.steerGaveUp.has(s.receipt.id));
+    if (inFlight) {
+      // T3 has not recorded it yet: sent again with the same IDs. Or T3 ran it as a turn of its own: adopted once this run ends.
+      if (detail.messages.some((m) => m.id === inFlight.messageId) || t3Run.status !== "running") return;
+      if (!(await this.sendSteer(roomId, inFlight, t3Run.id, threadId, load))) return;
+      const after = await load(true);
+      if (after) this.confirmSteers(roomId, runId, t3Run.id, after);
+      return;
+    }
+    const run = p.runs.get(runId)!;
+    if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active") return;
+    const offered = new Set(run.receipts.flatMap((r) => inputTree(r.envelope.inputs).map((i) => i.eventId)));
+    if (!unread(p, seatId, run.through).some((i) => i.intent === "request" && i.requestIds.some(wantsSteer) && !offered.has(i.eventId))) return;
+    const receiptId = steerReceiptId(randomUUID(), randomUUID());
+    if (this.exec(roomId, { type: "sync", actor: SYSTEM, id: `sync:${receiptId}`, runId, receiptId, maxBytes: this.maxBytes }).outcome !== "appended") return;
+    this.step("steered", roomId, seatId, runId);
+    const offer = steerOffers(this.project(roomId), seatId).find((s) => s.receipt.id === receiptId)!;
+    if (!(await this.sendSteer(roomId, offer, t3Run.id, threadId, load))) return;
+    const after = await load(true);
+    if (after) this.confirmSteers(roomId, runId, t3Run.id, after);
+  }
+
+  /** Send a steer offer's message, or resend it identically. Returns whether T3 took it. */
+  private async sendSteer(roomId: string, offer: SteerOffer, t3RunId: string, threadId: string, load: Loader): Promise<boolean> {
+    const first = this.steerSent.get(offer.receipt.id);
+    if (first !== undefined && this.now() - first > this.unrecordedMs) {
+      this.steerGaveUp.add(offer.receipt.id);
+      this.log("T3 never recorded a steered message; what it carried waits for the next turn", { receiptId: offer.receipt.id });
+      return false;
+    }
+    let rendered = this.steerTexts.get(offer.receipt.id);
+    if (!rendered) {
+      // The work part only: the thread holds the standing part already (L2 sends what changed, or all after a compaction).
+      const detail = await load(true);
+      const p = this.project(roomId);
+      const briefed = await brief(this.source, this.budgetChars, { roomId, seatId: offer.seatId, runId: offer.runId, envelope: offer.receipt.envelope, projection: p, had: seatStanding(p, offer.seatId, detail) });
+      rendered = { text: `${briefed.text}\n\n${STEER_NOTE}`, images: briefed.images };
+      this.steerTexts.set(offer.receipt.id, rendered);
+    }
+    const images = attachImages(this.source, roomId, rendered.images);
+    try {
+      await this.adapter.sendMessage({ commandId: offer.commandId, threadId, messageId: offer.messageId, text: rendered.text, ...(images.length ? { images } : {}), mode: { type: "steer", runId: t3RunId } });
+    } catch (error) {
+      if (error instanceof T3Unavailable) return false;
+      if (error instanceof T3CommandRejected) {
+        this.steerGaveUp.add(offer.receipt.id);
+        this.log("T3 refused a steered message; what it carried waits for the next turn", { receiptId: offer.receipt.id, error: error.message });
+        return false;
+      }
+      this.steerSent.set(offer.receipt.id, first ?? this.now());
+      this.log("steer acknowledgement unknown; reconciling by message ID", message(error));
+      return false;
+    }
+    this.steerSent.set(offer.receipt.id, first ?? this.now());
+    return true;
+  }
+
+  /** T3 shows a steered message in the run it was steered into: the offer is confirmed with that evidence. */
+  private confirmSteers(roomId: string, runId: string, t3RunId: string, detail: T3ThreadDetail): void {
+    const p = this.project(roomId);
+    const run = p.runs.get(runId)!;
+    if (run.phase === "terminal") return;
+    for (const offer of steerOffers(p, run.seatId)) {
+      if (offer.runId !== runId || offer.receipt.confirmed) continue;
+      const m = detail.messages.find((x) => x.id === offer.messageId);
+      if (!m || m.runId !== t3RunId) continue;
+      const item = detail.turnItems.find((x) => x.type === "user_message" && x.messageId === m.id);
+      const intent = item?.type === "user_message" ? item.inputIntent : "attached";
+      this.exec(roomId, { type: "confirm_sync", actor: SYSTEM, id: `confirm:${offer.receipt.id}`, runId, receiptId: offer.receipt.id, digest: offer.receipt.digest, evidence: `t3msg:${m.id} t3run:${t3RunId} ${intent}` });
+      this.steerSent.delete(offer.receipt.id);
+      this.steerTexts.delete(offer.receipt.id);
+    }
+  }
+
+  /**
+   * A steer that reached T3 after the run it was meant for had ended: T3 ran it as a turn of its own. That run is
+   * adopted as the host run for what the steer carried, reserved with the steer's own command and message IDs, so the
+   * host follows it like a run it sent. When more input has arrived since the offer, that turn cannot answer it: its
+   * reply becomes a note under what the steer carried, and everything goes in an ordinary run after it. True while the
+   * seat waits for that turn.
+   */
+  private async adopt(roomId: string, seatId: string, load: Loader): Promise<boolean> {
+    const candidates = adoptableSteers(this.project(roomId), seatId);
+    if (candidates.length === 0) return false;
+    const detail = await load(true);
+    if (!detail) return true;
+    for (const steer of candidates) {
+      const m = detail.messages.find((x) => x.id === steer.messageId);
+      const t3Run = m?.runId ? detail.runs.find((r) => r.id === m.runId) : undefined;
+      if (!m || !t3Run || t3Run.id === steer.carrierT3RunId) continue;
+      const p = this.project(roomId);
+      const offered = new Set(inputTree(steer.receipt.envelope.inputs).map((i) => i.eventId));
+      if (unread(p, seatId).some((i) => !offered.has(i.eventId))) {
+        if (!isTerminal(t3Run)) return true;
+        const final = finalMessage(detail, t3Run.id);
+        if (final.streaming) return true;
+        const end = runEnd(t3Run);
+        const text = final.message?.text.trim() ?? "";
+        const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
+        this.steerNote(roomId, seatId, `t3run:${p.seats.get(seatId)!.threadId}:${t3Run.id}`, steer.messageId, shown);
+        return false;
+      }
+      const id = randomUUID();
+      const receipt = this.exec(roomId, { type: "reserve", actor: SYSTEM, id: `reserve:${id}`, seatId, runId: id, dispatchCommandId: steer.commandId, dispatchMessageId: steer.messageId, maxBytes: this.maxBytes });
+      if (receipt.outcome !== "appended") return true;
+      this.step("reserved", roomId, seatId, id);
+      // What T3 was sent is the steered message itself, already in its run: that is what this run froze. The turn is
+      // under way, so no background list from before it exists: whatever T3 lists when it ends holds its requests (§2).
+      const frozen: Dispatch = { dispatch: steer.commandId, bgBefore: [], text: m.text, images: [], held: seatStanding(this.project(roomId), seatId, detail) };
+      this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${id}:sending`, runId: id, phase: "sending", evidence: JSON.stringify(frozen) });
+      this.step("sending", roomId, seatId, id);
+      await this.advance(roomId, seatId, id, load);
+      return true;
+    }
+    return false;
+  }
+
+  /** The reply of a turn T3 ran for a steer that could not be adopted: a note under the requests the steer carried. */
+  private steerNote(roomId: string, seatId: string, id: string, messageId: string, shown: string): void {
+    const p = this.project(roomId);
+    if (committed(p, seatId, id) || p.events.some((e) => e.id === id) || !shown) return;
+    const offer = steerOffers(p, seatId).find((s) => s.messageId === messageId);
+    const carried = offer ? openOwned(p, inputTree(offer.receipt.envelope.inputs).flatMap((i) => i.requestIds), seatId) : [];
+    this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a steered message as a turn of its own) ${shown}`, ...(carried.length ? { requestIds: unique(carried) } : {}) });
+  }
+
   // ---------------- the API members and the user act through (L3, L4a, L4b call these) ----------------
 
   /** The seat's run that T3 is working on now, and the requests its final would answer. */
@@ -679,9 +834,12 @@ export class EngineHost {
     return this.request(roomId, { actor: input.actor, id: input.id, to: input.to, body: input.body, ...(parentId ? { parentId } : {}) });
   }
 
-  /** `rooms-board note`. A note about a request names it (`requestIds`), or it reaches nobody's briefing (L2). */
-  note(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[] }): CommitReceipt {
-    return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body, ...(input.requestIds ? { requestIds: input.requestIds } : {}) });
+  /**
+   * `rooms-board note`. A note about a request names it (`requestIds`), or it reaches nobody's briefing (L2); the user's
+   * room note (`/note`) is marked with the `room` milestone instead, and reaches every seat's next briefing.
+   */
+  note(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[]; milestone?: string }): CommitReceipt {
+    return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body, ...(input.requestIds ? { requestIds: input.requestIds } : {}), ...(input.milestone ? { milestone: input.milestone } : {}) });
   }
 
   /** `rooms-board follow #n [--off]` (§4): the follower is woken by each `working` post on the request. */
@@ -818,6 +976,19 @@ export class EngineHost {
     }
     this.hint();
     return { applied, deferred: false };
+  }
+
+  /**
+   * The room's Stop for a seat (L4a): T3 interrupts the run active on its thread. A host run then ends as a failure with
+   * its notice (§6), which the user can retry; a turn the host did not start becomes a note when it ends (§3).
+   */
+  async stopSeat(roomId: string, seatId: string): Promise<void> {
+    const seat = this.project(roomId).seats.get(seatId);
+    if (!seat || seat.status === "retired") throw new HostRefusal(`@${seatId} is not seated in this room.`);
+    const shell = await this.adapter.getThreadShell(seat.threadId);
+    if (!shell?.activeRunId) throw new HostRefusal(`@${seatId} is not running anything in T3 now.`);
+    await this.adapter.interruptRun({ commandId: randomUUID(), threadId: seat.threadId, runId: shell.activeRunId });
+    this.hint();
   }
 
   // ---------------- helpers ----------------

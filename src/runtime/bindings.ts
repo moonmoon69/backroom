@@ -13,7 +13,7 @@ import { agentKey } from "../browser/catalog.ts";
 import type { Repos } from "../db/repos.ts";
 import type { BriefingSource } from "./render.ts";
 
-export function bindingSource(repos: Repos, options: { boardCommand?: string } = {}): BriefingSource {
+export function bindingSource(repos: Repos, options: { boardCommand?: string; images?: BriefingSource["images"] } = {}): BriefingSource {
   const member = (seatId: string) => {
     const binding = repos.getBinding(seatId);
     return binding ? repos.getParticipant(binding.participantId) : null;
@@ -35,6 +35,8 @@ export function bindingSource(repos: Repos, options: { boardCommand?: string } =
       };
     },
     alias: (_roomId, seatId) => member(seatId)?.alias ?? null,
+    // The images a user message came with (L4a, src/app/engineMessages.ts).
+    ...(options.images ? { images: options.images } : {}),
   };
 }
 

@@ -57,6 +57,11 @@ export type CommandResult =
   /** After participant.reseat: the checkpoint task the member was sent, and the post that asked for it. */
   | { type: "participant.reseating"; participantId: string; taskId: string; eventId: string }
   | { type: "note.created"; eventId: string }
+  /** The engine's message path (ROOMS_ENGINE=1): one request per recipient per assignment, sharing the message's ID. */
+  | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
+  | { type: "request.updated"; requestId: string; applied: boolean }
+  | { type: "run.retried"; runId: string; eventId: string }
+  | { type: "run.stopped"; participantId: string }
   | { type: "task.updated"; taskId: string; revision: number }
   | { type: "task.interrupt.requested"; taskId: string; runId: string }
   | { type: "native.responded"; requestId: string }
@@ -66,6 +71,12 @@ export type CommandResult =
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
+
+/**
+ * With ROOMS_ENGINE=1 the engine handles some commands instead of the old runtime: the first handler that returns a
+ * result has taken the command (src/app/engineMessages.ts for the user's messages; seat lifecycle the same way).
+ */
+export type EngineHandler = (command: RoomCommand) => Promise<CommandResult> | null;
 
 /** The first words of an instruction, for a note that points at it. */
 const headOf = (text: string, max = 80): string => {
@@ -100,6 +111,7 @@ export class RoomService {
   private readonly notify: (roomId: string) => void;
   /** Projects and threads used outside any room. */
   private readonly direct: DirectThreads;
+  private readonly engineHandlers: EngineHandler[] = [];
 
   constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}) {
     this.db = db;
@@ -215,8 +227,17 @@ export class RoomService {
 
   // ---------- command entry point ----------
 
+  /** The engine runtime takes the commands this handler accepts (bootstrap.ts, with ROOMS_ENGINE=1 only). */
+  useEngine(handler: EngineHandler): void {
+    this.engineHandlers.push(handler);
+  }
+
   async execute(command: RoomCommand): Promise<CommandResult> {
     if (isDirectCommand(command)) return this.direct.execute(command);
+    for (const handler of this.engineHandlers) {
+      const taken = handler(command);
+      if (taken) return taken;
+    }
     switch (command.type) {
       case "room.create":
         return this.createRoom(command);
@@ -316,6 +337,11 @@ export class RoomService {
         });
       case "room.note.create":
         return this.createNote(command);
+      case "request.cancel":
+      case "request.correct":
+      case "run.retry":
+      case "run.stop":
+        throw new RoomError("engine_only", `${command.type} acts on the engine's board; this service runs without it (ROOMS_ENGINE=1)`, 409);
       case "task.update":
         return this.updateTask(command);
       case "task.release":
