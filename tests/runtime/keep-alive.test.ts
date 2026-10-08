@@ -203,6 +203,37 @@ test("never during the seat's own turn: a long host run, then a turn T3 starts i
   assert.equal(keepAlives(room).length, 1);
 });
 
+test("never into a turn the listed shell does not show yet: no keep-alive is posted, and one posted earlier is not sent", async () => {
+  room = await Room.create();
+  await handOff(room);
+  after(room, "C", KEEP_ALIVE_MS);
+  // T3's thread list answers from a snapshot taken before a turn started on C's thread (typed in T3 just now).
+  const frozen = structuredClone(room.fake.thread(room.threadOf("C")).shell);
+  const list = room.fake.listThreads.bind(room.fake);
+  room.fake.listThreads = async (projectId?: string) => (await list(projectId)).map((s) => (s.id === frozen.id ? frozen : s));
+  room.fake.startExternalRun(room.threadOf("C"), "typed in T3 just now");
+  const sent = () => room.fake.sent.filter((m) => m.threadId === room.threadOf("C")).length;
+  const before = sent();
+  await room.tick(3);
+  assert.equal(keepAlives(room).length, 0, "the seat's own thread says a turn runs: nothing is posted");
+  assert.equal(sent(), before);
+
+  // A keep-alive posted before that turn started (the host crashed before sending it) is not sent into it either.
+  room.complete("C", "Done with what was typed.");
+  room.fake.listThreads = list;
+  await room.tick(2);
+  after(room, "C", KEEP_ALIVE_MS);
+  room.crashOnce("keep-alive", "C");
+  await room.tick();
+  assert.equal(keepAlives(room).length, 1);
+  const frozenAgain = structuredClone(room.fake.thread(room.threadOf("C")).shell);
+  room.fake.listThreads = async (projectId?: string) => (await list(projectId)).map((s) => (s.id === frozenAgain.id ? frozenAgain : s));
+  room.fake.startExternalRun(room.threadOf("C"), "typed in T3 again");
+  const beforeAgain = sent();
+  await room.tick(3);
+  assert.equal(sent(), beforeAgain, "nothing goes to C while its turn runs");
+});
+
 test("the setting: members off by default and on when set; the orchestrator on by default and off when set; the interval is the setting's", async () => {
   const setting: { intervalMs: number; on: Record<string, boolean> } = { intervalMs: 10 * 60_000, on: {} };
   room = await Room.create({ host: { keepAlive: (_room, seatId): KeepAliveSetting => ({ intervalMs: setting.intervalMs, on: setting.on[seatId] ?? null }) } });
