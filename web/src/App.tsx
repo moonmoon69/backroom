@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 /** How long the overview's drawer takes to slide in (styles.css, ov-slide). */
 const SLIDE_MS = 160;
@@ -19,6 +19,8 @@ import { RoomContext, seatLookups, type RoomContextValue } from "./context.tsx";
 import { Overview } from "./components/Overview.tsx";
 import { OverviewRoom } from "./components/OverviewRoom.tsx";
 import { CloseIcon } from "./components/icons.tsx";
+import { KeyHelp } from "./components/KeyHelp.tsx";
+import { byKey, focusWhen, isTextField, itemOf, keyOf, LAYER_SELECTOR, trackFocus } from "./keys.ts";
 import { useTheme } from "./theme.ts";
 import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
@@ -64,16 +66,14 @@ export function App() {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [theme, setTheme] = useTheme();
   // On the overview page the room last opened stays open but is not the one being looked at. The page opens on its
-  // cards; a room opened from there covers it, and Esc (outside a dialog) goes back.
+  // cards; a room opened from there covers it, and Esc goes back.
   const [outside, setOutside] = useState(true);
-  useEffect(() => {
-    if (outside) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !document.querySelector("dialog[open], .dialog")) setOutside(true);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [outside]);
+  // A member's thread, looked at over its room (Enter on a member, or its menu's Open thread); Esc goes back to the room.
+  const [memberThread, setMemberThread] = useState<{ roomId: string; participantId: string } | null>(null);
+  // The overview item the focus goes back to when the drawer closes: where it was when the drawer opened.
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+  const [keyHelp, setKeyHelp] = useState(false);
+  const drawer = useRef<HTMLDivElement>(null);
   // The browser's back goes back too: opening the drawer adds a history entry, and closing it (×, Esc) takes it away.
   const open = !outside && selection !== null;
   useEffect(() => {
@@ -181,11 +181,74 @@ export function App() {
     };
   }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
 
-  /** Open something in the drawer over the overview. */
+  /** Open something in the drawer over the overview; the focus comes back to the item it was opened from. */
   const openInDrawer = useCallback((next: Selection) => {
+    setReturnTo(keyOf(document.activeElement) ?? `${next.kind}:${next.id}`);
     setSelection(next);
+    setMemberThread(null);
     setOutside(false);
   }, []);
+  const openMember = useCallback(
+    (roomId: string, participantId: string) => {
+      openInDrawer({ kind: "room", id: roomId });
+      setMemberThread({ roomId, participantId });
+    },
+    [openInDrawer],
+  );
+  /** Back from a member's thread to its room: the Members panel open, the focus on the member. */
+  const closeMember = useCallback(() => {
+    const participantId = memberThread?.participantId;
+    setMemberThread(null);
+    setRoomPanel("people");
+    if (participantId) focusWhen(() => (drawer.current ? byKey(drawer.current, `member:${participantId}`) : null));
+  }, [memberThread]);
+  // Whatever closes the drawer (Esc, ×, the browser's back) closes the member's thread on it too.
+  useEffect(() => {
+    if (!open) setMemberThread(null);
+  }, [open]);
+  // The drawer takes the focus as it opens (until what it shows is drawn and takes it in turn); a member's thread
+  // takes it from the room under it.
+  useEffect(() => {
+    if (open) drawer.current?.focus({ preventScroll: true });
+  }, [open, selection]);
+
+  // ---- the keys (keys.ts): Esc closes one thing at a time; ? shows the keys ----
+  // Whether something that takes Esc itself (a menu, a dialog, the composer, a suggestion list) was open when the key
+  // went down: by the time the drawer's listener runs, that thing may have closed itself already.
+  const escapeTaken = useRef(false);
+  useEffect(() => {
+    trackFocus();
+    const onCapture = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.key === "Escape") escapeTaken.current = Boolean(document.querySelector(LAYER_SELECTOR) || target?.closest(".dialog, .menu"));
+      if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && !isTextField(target)) {
+        const help = Boolean(document.querySelector(".key-help"));
+        if (!help && target?.closest(".dialog, .menu")) return;
+        // Taken before the composer's "start typing to write" sees it.
+        event.preventDefault();
+        setKeyHelp(!help);
+      }
+    };
+    window.addEventListener("keydown", onCapture, true);
+    return () => window.removeEventListener("keydown", onCapture, true);
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || escapeTaken.current) return;
+      event.preventDefault();
+      const target = event.target instanceof Element ? event.target : null;
+      // A text field gives up the focus first: to the post or member it is in, else the drawer.
+      if (isTextField(target)) {
+        (itemOf(target) ?? drawer.current)?.focus({ preventScroll: true });
+        return;
+      }
+      if (memberThread) closeMember();
+      else setOutside(true);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, memberThread, closeMember]);
 
   useEffect(() => {
     if (selection) localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
@@ -245,8 +308,7 @@ export function App() {
   useFinishNotifications(rooms, threads, looking, (key) => {
     const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
     if (kind !== "room" && kind !== "thread") return;
-    setSelection({ kind, id });
-    setOutside(false);
+    openInDrawer({ kind, id });
   });
 
   // Desk data: crew tiles show context on every tab, so poll every 10s while a room is open; every 2.5s while
@@ -340,6 +402,7 @@ export function App() {
       aliasOf: (id) => byId.get(id)?.alias ?? id,
       colorOf: () => MEMBER_ACCENT,
       ...seatLookups(snapshot, participantById),
+      openMember: (participantId) => setMemberThread({ roomId: snapshot.room.id, participantId }),
       desk,
       deskError,
       costs,
@@ -356,6 +419,12 @@ export function App() {
       },
     };
   }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits]);
+  // The member whose thread is looked at over the room, once the room is read.
+  const memberParticipant = memberThread && snapshot?.room.id === memberThread.roomId ? (snapshot.participants.find((p) => p.id === memberThread.participantId) ?? null) : null;
+  // Its thread: the member's current binding (the newest generation not retired).
+  const memberThreadId = memberParticipant
+    ? (snapshot!.bindings.filter((b) => b.participantId === memberParticipant.id && !b.retiredAt).sort((a, b) => b.generation - a.generation)[0]?.threadId ?? null)
+    : null;
 
   const needsPairing = status !== null && status.adapter === "http" && !status.t3.paired;
 
@@ -388,6 +457,19 @@ export function App() {
       <CloseIcon />
     </button>
   );
+
+  const backToRoomButton = (
+    <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the room" title="Back to the room (Esc)" onClick={closeMember}>
+      <CloseIcon />
+    </button>
+  );
+  // What the drawer is, as assistive technology names it when the focus goes into it.
+  const drawerLabel =
+    selection?.kind === "room"
+      ? `Room ${rooms.find((room) => room.id === selection.id)?.title ?? ""}`.trim()
+      : selection?.kind === "thread"
+        ? `Thread ${threads.find((thread) => thread.id === selection.id)?.title ?? ""}`.trim()
+        : `Browser ${browsers?.find((browser) => browser.id === selection?.id)?.name ?? ""}`.trim();
 
   // The drawer's page for what is selected besides a room: a thread or a browser.
   const mainBlock = (
@@ -494,15 +576,27 @@ export function App() {
           onOpenRoom={(roomId) => openInDrawer({ kind: "room", id: roomId })}
           onOpenThread={(threadId) => openInDrawer({ kind: "thread", id: threadId })}
           onOpenBrowser={(browserId) => openInDrawer({ kind: "browser", id: browserId })}
+          onOpenMember={openMember}
           onSeatPreset={seatPreset}
           onCommand={runCommand}
           onT3Changed={loadT3}
           onBrowsersChanged={loadBrowsers}
+          active={!open}
+          returnTo={returnTo}
         />
         {open ? (
-          // The whole window; ×, Esc and the browser's back close it.
-          <div className="ov-layer">
-            <div className="ov-drawer" role="dialog" aria-label="Room">
+          // The whole window; ×, Esc and the browser's back close it. A member's thread over it makes it inert.
+          <div className="ov-layer" inert={memberThreadId !== null}>
+            <div
+              className="ov-drawer"
+              role="dialog"
+              aria-modal="true"
+              aria-label={drawerLabel}
+              tabIndex={-1}
+              ref={drawer}
+              data-view={selection?.kind}
+              data-id={selection?.id}
+            >
               <AfterSlide
                 placeholder={
                   <div className="sheet sheet-loading">
@@ -549,6 +643,30 @@ export function App() {
             </div>
           </div>
         ) : null}
+        {open && memberParticipant && memberThreadId ? (
+          // A member's thread over its room: the room stays as it was under it, and Esc or ← goes back to it.
+          <div className="ov-layer ov-layer-member">
+            <div className="ov-drawer" role="dialog" aria-modal="true" aria-label={`@${memberParticipant.alias}'s thread`} data-view="member" data-id={memberThreadId}>
+              <div className="main">
+                <ErrorBoundary key={`member:${memberParticipant.id}`} onReset={closeMember} header={<div className="room-header app-header-only">{backToRoomButton}</div>}>
+                  <ThreadView
+                    threadId={memberThreadId}
+                    rooms={rooms}
+                    browsers={browsers}
+                    runCommand={runCommand}
+                    onGone={closeMember}
+                    onChanged={loadT3}
+                    onArchived={closeMember}
+                    onOpenRoom={closeMember}
+                    headerStart={backToRoomButton}
+                    autoFocusTranscript
+                  />
+                </ErrorBoundary>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {keyHelp ? <KeyHelp onClose={() => setKeyHelp(false)} /> : null}
         {connectionDialog}
       </FilePreviewHost>
     </PresetsContext.Provider>

@@ -57,7 +57,7 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
   }, [tab]);
 
   return (
-    <aside className="queue-drawer inspector" aria-label={TITLES[tab]}>
+    <aside className="queue-drawer inspector" aria-label={TITLES[tab]} data-nav-pane={tab} tabIndex={-1}>
       <div className="inspector-head">
         <h2>{TITLES[tab]}</h2>
         <span className="spacer" />

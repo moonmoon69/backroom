@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type CSSProperties, type HTMLAttributes, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 
@@ -22,6 +22,9 @@ interface PopoverProps {
  * drawer, a dialog) can cut it off and it never stretches the row it belongs to. On desktop it sits just below its
  * anchor, or above it when it fits better there, kept inside the viewport; on phones it is a bottom sheet behind a
  * tap-to-dismiss backdrop.
+ *
+ * From the keyboard: opened from its button, the focus goes into it (it is at the end of the page, where Tab would not
+ * reach it); Esc closes it; and the focus goes back to the button when it closes with the focus inside.
  */
 export function Popover({ anchor, menuRef, className, role, onClose, children, matchAnchorWidth, menuProps }: PopoverProps) {
   const sheet = useMediaQuery(MOBILE_QUERY);
@@ -29,6 +32,38 @@ export function Popover({ anchor, menuRef, className, role, onClose, children, m
   // Dialogs sit above menus, so one opened from a menu is in front; a menu opened from inside a dialog (the model list
   // in a member's settings) goes above that dialog instead.
   const layer = anchor.current?.closest(".dialog-backdrop") ? " in-dialog" : "";
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    const opener = anchor.current;
+    if (!menu) return;
+    let inside = false;
+    const onFocus = () => {
+      inside = true;
+    };
+    menu.addEventListener("focusin", onFocus);
+    // Not on a phone's sheet, and never into a text field (a phone's keyboard would come up; the model list focuses
+    // its own search on a desktop).
+    const frame = requestAnimationFrame(() => {
+      if (sheet || !opener || !opener.contains(document.activeElement)) return;
+      const first = [...menu.querySelectorAll<HTMLElement>("button, [href], input[type=checkbox], input[type=radio], [tabindex]")].find((element) => element.tabIndex >= 0 && !element.matches(":disabled"));
+      first?.focus({ preventScroll: true });
+    });
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || menu !== [...document.querySelectorAll(".menu.popover")].at(-1)) return;
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(frame);
+      menu.removeEventListener("focusin", onFocus);
+      document.removeEventListener("keydown", onKey);
+      const now = document.activeElement;
+      if (inside && opener?.isConnected && (!now || now === document.body || menu.contains(now))) opener.focus({ preventScroll: true });
+    };
+  }, [anchor, menuRef]);
 
   useLayoutEffect(() => {
     if (sheet) {

@@ -31,7 +31,7 @@ import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
-type MenuAction = "open" | "details" | "settings" | "remove" | "consigliere" | "unconsigliere";
+type MenuAction = "thread" | "open" | "details" | "settings" | "remove" | "consigliere" | "unconsigliere";
 
 
 /**
@@ -40,11 +40,15 @@ type MenuAction = "open" | "details" | "settings" | "remove" | "consigliere" | "
  * reseats it on a fresh one (rooms-board reseat).
  */
 export function CrewPanel() {
-  const { snapshot, desk, runCommand } = useRoom();
+  const { snapshot, desk, runCommand, openMember } = useRoom();
   const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant; warnings?: string[] } | null>(null);
   const crew = snapshot.participants.filter(isActiveParticipant);
   // Making a member the Consigliere is done at once, unless something says it may not work: then the user is told first.
   const onAction = async (action: MenuAction, participant: Participant) => {
+    if (action === "thread") {
+      openMember(participant.id);
+      return;
+    }
     if (action === "unconsigliere") {
       await runCommand({ type: "room.consigliere.set", roomId: snapshot.room.id, participantId: null });
       return;
@@ -219,7 +223,23 @@ function ParticipantChip({
     onAction(action);
   };
   return (
-    <div className={`participant-chip${described.motion ? ` activity-${described.motion}` : ""}${attention}`} ref={ref} style={identityStyle(colorOf(participant.id))}>
+    // An item of the Members pane's arrows (keys.ts): Enter on it opens the member's thread; its button opens the menu.
+    <div
+      className={`participant-chip${described.motion ? ` activity-${described.motion}` : ""}${attention}`}
+      ref={ref}
+      style={identityStyle(colorOf(participant.id))}
+      tabIndex={-1}
+      role="group"
+      data-nav="member"
+      data-nav-key={`member:${participant.id}`}
+      aria-label={`@${participant.alias}${isConsigliere ? ", the Consigliere" : ""}, ${described.label}${described.detail ? `, ${described.detail}` : ""}`}
+      aria-description="Enter opens its thread"
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" || event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        event.preventDefault();
+        onAction("thread");
+      }}
+    >
       <button
         type="button"
         className="participant-button"
@@ -271,6 +291,9 @@ function ParticipantChip({
       {open ? (
         <Popover anchor={ref} menuRef={menuRef} className="menu-with-usage" role="menu" onClose={() => setOpen(false)}>
           <ThreadUsageCard participant={participant} desk={desk} cost={costs ? (costs.participants[participant.id] ?? null) : null} pricesFetchedAt={costs?.pricesFetchedAt ?? null} />
+          <button type="button" role="menuitem" onClick={() => pick("thread")} title="Its thread here, over the room (Esc comes back)">
+            Open thread
+          </button>
           <button type="button" role="menuitem" onClick={() => pick("open")}>
             Open in T3
           </button>

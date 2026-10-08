@@ -296,6 +296,18 @@ function ModelPickerContent({
       }
       return;
     }
+    // The two buttons the pointer uses, from the keyboard: Shift+Enter stars the highlighted model, Alt+R looks for new ones.
+    if (event.key === "Enter" && event.shiftKey) {
+      event.preventDefault();
+      const row = rows[active];
+      if (row?.kind === "model") toggleFavorite(entryKey(row.entry));
+      return;
+    }
+    if (event.altKey && event.code === "KeyR") {
+      event.preventDefault();
+      if (!findingModels) void findModels();
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setActive((i) => Math.min(rows.length - 1, i + 1));
@@ -403,7 +415,7 @@ function ModelPickerContent({
                 tabIndex={-1}
                 className={`model-refresh${findingModels ? " busy" : ""}`}
                 aria-label="Look for new models"
-                title={findingModels ? "T3 is looking for new models…" : "Look for new models"}
+                title={findingModels ? "T3 is looking for new models…" : "Look for new models (Alt+R)"}
                 disabled={findingModels}
                 // The search field keeps the cursor.
                 onMouseDown={(event) => event.preventDefault()}
@@ -485,7 +497,7 @@ function ModelPickerContent({
                       className={`model-star${favorite ? " on" : ""}`}
                       aria-pressed={favorite}
                       aria-label={favorite ? `Remove ${entry.label || entry.model} from favorites` : `Add ${entry.label || entry.model} to favorites`}
-                      title={favorite ? "Remove from favorites" : "Add to favorites"}
+                      title={favorite ? "Remove from favorites (Shift+Enter)" : "Add to favorites (Shift+Enter)"}
                       onMouseDown={(event) => {
                         // Starring is not choosing, and the search field keeps the cursor.
                         event.preventDefault();

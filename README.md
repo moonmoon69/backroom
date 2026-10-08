@@ -30,12 +30,13 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 14. [What the room shows](#what-the-room-shows)
 15. [Managing rooms and members](#managing-rooms-and-members)
 16. [The overview](#the-overview)
-17. [The pixel look](#the-pixel-look)
-18. [Configuration](#configuration)
-19. [Running, updating and backing up](#running-updating-and-backing-up)
-20. [Troubleshooting](#troubleshooting)
-21. [Development](#development)
-22. [How it works](#how-it-works)
+17. [Keyboard](#keyboard)
+18. [The pixel look](#the-pixel-look)
+19. [Configuration](#configuration)
+20. [Running, updating and backing up](#running-updating-and-backing-up)
+21. [Troubleshooting](#troubleshooting)
+22. [Development](#development)
+23. [How it works](#how-it-works)
 
 ---
 
@@ -557,6 +558,7 @@ A line under the model says what runs beside the turn, as T3 lists it: "2 subage
 
 The menu has:
 
+- **Open thread:** the member's thread here, over the room, read-only (you talk to it from the room); × or Esc comes back to the room.
 - **Open in T3:** thread and project ids.
 - **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
 - **Settings…:** alias, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
@@ -686,6 +688,50 @@ Seated in a room, a crew member takes their name as the alias, numbered when the
 ## The overview
 
 Backroom opens on one page of everything: a section per project, its rooms as tiles, and in each tile the members with their state and what each is doing now (a turn's latest note, the tools running, the task it is on) or last said and how long ago: up to four lines for the Consigliere, who comes first, and one line for everyone else. A stripe down a tile's edge says the room needs you (violet) or is busy (blue). The project's loose threads are tiles too, as rooms of one, and its settled and archived threads fold open under them. Below the projects come your **Crew** and the shared **Browsers**. **+** beside a project's name opens a new room there, with the Consigliere seated; **+** in the header adds a project; **Arrange** sets the order of projects and rooms. Rooms are the one thing made here; threads on their own are started in T3 Code and show up as tiles. Click a tile and the room opens over the whole window as a sheet, its conversation in a readable column down the middle and its side panels beside it; the × in its header, Esc, or the browser's back closes it. The sheet has its own look: one header with the room's name, the two views as tabs (the Consigliere's name for your conversation with him, **Board · N** for every post), the crew's marks (click them for Members), the browser and git panels and the ⋯ menu; the status bar under it; then the view, then the composer (closed to one line until you want it, see [Writing messages](#writing-messages)), which goes the same way whichever view is showing. The chat reads like a conversation (your lines in a tinted box, his in a card across the column; in the pixel look yours are sunk into the window and his stand on a raised plate), the board like a ledger (every post numbered, members' turns as cards with a coloured edge). Both read down one centred column of up to 1,100px, with the composer as wide: your messages and the replies start at the same left edge, your boxes at most 70% of it, each reply in its bubble across the column with one line over it at the right: what it answers, the time, and the speaker's mark (in the chat with the Consigliere his mark alone, since every reply there is his; on the board the mark and then the name); tables and code use the whole column. A thread on its own reads the same way. A room without a Consigliere has only the board. A long room opens at its latest posts; **N earlier** at the top draws the next window above. A thread or a browser opens over the page the same way. The page reads the service every five seconds.
+
+## Keyboard
+
+The whole page works without a mouse. The arrows move a ring over the overview's cards and members and, in a room, over its posts and members; Enter opens what the ring is on and Esc goes back out, one thing at a time: a menu, a dialog, the composer, a member's thread, then the room, and the focus lands where you were. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu), and a menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts). **?** shows these keys on the page (outside a text field).
+
+The overview reads column by column, as its tiles are stacked: section by section (each project, its settled and archived threads, the crew, the browsers), and inside a section each column top to bottom before the next. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a member opens its room with that member's thread over it; Esc goes back to the room, with Members open and the ring on the member, and Esc again back to the overview. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
+
+The arrows keep their own meaning wherever they already have one: in text fields and selects, in the composer's suggestion lists, the model list, menus, dialogs and the Arrange dialog (Alt+↑ ↓), and with any modifier (Alt+← stays the browser's back).
+
+**Everywhere**
+
+| Keys | What they do |
+|---|---|
+| `?` | Show these keys (outside a text field) |
+| `Tab` `Shift+Tab` | Every button, link and field, in order |
+| `Enter` | Open or press what has the focus |
+| `Esc` | Close one thing: a menu, a dialog, the composer, a member's thread, then the room |
+
+**Overview**
+
+| Keys | What they do |
+|---|---|
+| `↓` `↑` | Next or previous card or member: column by column, each top to bottom |
+| `→` `←` | The column beside, at the same height |
+| `Home` `End` | First or last item on the page |
+| `Enter` | Open the room or thread; on a member, its room with the member's thread over it |
+
+**In a room**
+
+| Keys | What they do |
+|---|---|
+| `↑` `↓` | Previous or next post (or member, in Members); past the top the earlier posts load, then the view's tabs, where ← → switch the chat and the board and ↓ comes back |
+| `←` `→` | Between the panes: the board, Members, Browser, Git (opening the panel) |
+| `Home` `End` | First or last item of the pane |
+| `Enter` | On a post, its detail; on a member, its thread; elsewhere, write a message |
+
+**Model list**
+
+| Keys | What they do |
+|---|---|
+| `↑` `↓` | The models; ← → the providers (with the search empty) |
+| `Enter` | Choose the highlighted model |
+| `Shift+Enter` | Star or unstar it (favorites) |
+| `Alt+R` | Look for new models |
 
 ## The pixel look
 

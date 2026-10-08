@@ -1,5 +1,6 @@
 /**
- * The browser rehearsal on a throwaway service (stage 4/5 plan, item L5: `--step ui`; Z2 adds `--step room`).
+ * The browser rehearsal on a throwaway service (stage 4/5 plan, item L5: `--step ui`; Z2 adds `--step room`; U1's
+ * `--step keys`, keyboard only, is in rehearse-keys.ts).
  *
  *   node scripts/rehearse.ts --step ui --as <rooms-browser key> [--browser backroom-dev] [--port 4471]
  *        [--data <dir>] [--out <dir>] [--keep]
@@ -30,13 +31,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
+import { rehearseKeys } from "./rehearse-keys.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------- options ----------------
 
 interface Options {
-  step: "ui";
+  step: "ui" | "keys";
   as: string;
   browser: string;
   port: number;
@@ -53,7 +55,7 @@ function options(argv: string[]): Options {
   };
   const step = take("--step");
   const as = take("--as");
-  if (step !== "ui") fail(step === "room" ? "--step room is Z2's (the whole-room rehearsal); it is not built yet" : "usage: node scripts/rehearse.ts --step ui --as <rooms-browser key>");
+  if (step !== "ui" && step !== "keys") fail(step === "room" ? "--step room is Z2's (the whole-room rehearsal); it is not built yet" : "usage: node scripts/rehearse.ts --step ui|keys --as <rooms-browser key>");
   if (!as) fail("--as <key> is required: the rooms-browser key of the room whose browser this uses");
   const data = resolve(take("--data") ?? join(repo, "data", `rehearse-${step}`));
   return {
@@ -972,7 +974,7 @@ async function main(): Promise<void> {
     await service.start();
     const room = new Room(service, o);
     await room.create();
-    passed = await rehearseUi(service, browser, room);
+    passed = o.step === "keys" ? await rehearseKeys(service, browser, room, { log, fail, until, sleep }) : await rehearseUi(service, browser, room);
     log(`DONE: ${passed.length} states checked in the API and on the page, console clean`);
   } finally {
     browser.close();

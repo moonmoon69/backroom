@@ -17,6 +17,7 @@ import { consigliereChat, consigliereSeats } from "../chat.ts";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunDetail, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
 import { Glyph } from "./icons.tsx";
+import { Dialog } from "./Dialog.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
 import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
@@ -86,6 +87,38 @@ const useBoard = (): Board => {
   if (!value) throw new Error("useBoard outside the timeline");
   return value;
 };
+
+/**
+ * A post as drawn in its detail (Enter on a post): its folded text open, and not an item of the board's arrows.
+ */
+const InDetail = createContext(false);
+
+/** A post's one line for assistive technology: its number, who to whom, what it is, where it stands, how it starts. */
+function postLabel(post: EnginePost, nameOf: (principal: string) => string, owners?: string[]): string {
+  const author = nameOf(post.author);
+  const text = firstLine(post.body);
+  const words = text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  const state = post.request ? `, ${post.request.state}` : "";
+  const what =
+    post.kind === "request"
+      ? `${author} to ${(owners ?? [nameOf(post.request!.owner)]).join(", ")}${state}`
+      : post.kind === "output"
+        ? `${author} replied`
+        : post.kind === "note"
+          ? `note from ${author}`
+          : post.kind === "notice"
+            ? post.notice?.intent === "error" ? "failed" : "attention"
+            : `${post.kind} by ${author}`;
+  return `#${post.number}, ${what}${words ? `: ${words}` : ""}`;
+}
+
+/** What makes a post's row an item the arrows reach (keys.ts): focusable, with a role and a name; Enter opens its detail. */
+function useNavProps(post: EnginePost, owners?: string[]) {
+  const { nameOf } = useRoom();
+  const inDetail = useContext(InDetail);
+  if (inDetail) return {};
+  return { "data-nav": "post", "data-nav-key": `post:${post.seq}`, tabIndex: -1, role: "article", "aria-label": postLabel(post, nameOf, owners), "aria-description": "Enter opens its detail" };
+}
 
 /** Lets a row stop the timeline from following the bottom (expanding a long reply must not jump the view). */
 const ScrollControl = createContext<{ release: () => void }>({ release: () => {} });
@@ -316,12 +349,28 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const unseen = far ? posts.filter((post) => post.seq > seenSeq && post.turn && !post.author.startsWith("$")).length : 0;
   const scrollControl = useMemo(() => ({ release: () => (stickToBottom.current = false) }), []);
   const noCrew = !snapshot.participants.some(isActiveParticipant);
+  // The post whose detail is open (Enter on a post), by its first seq.
+  const [detail, setDetail] = useState<number | null>(null);
+  const detailItem = detail === null ? null : (allItems.find((item) => item.type !== "day" && (item.type === "message" ? item.posts[0]!.seq : item.post.seq) === detail) ?? null);
 
   return (
     <BoardContext.Provider value={board}>
       <ScrollControl.Provider value={scrollControl}>
         <div className="timeline-wrap">
-          <div className="timeline" ref={scroller} onScroll={onScroll} aria-label={chat ? "Conversation with the Consigliere" : consigliereId ? "Board" : "Timeline"} role="log">
+          <div
+            className="timeline"
+            ref={scroller}
+            onScroll={onScroll}
+            aria-label={chat ? "Conversation with the Consigliere" : consigliereId ? "Board" : "Timeline"}
+            role="log"
+            onKeyDown={(event) => {
+              const target = event.target as HTMLElement;
+              if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || target.dataset.nav !== "post") return;
+              // Taken before the composer's "Enter writes a message" sees it.
+              event.preventDefault();
+              setDetail(Number(target.dataset.navKey!.slice("post:".length)));
+            }}
+          >
             <div className="timeline-content" ref={content}>
               {earlier > 0 ? (
                 <button type="button" className="small ghost earlier-posts mono" onClick={showEarlier}>
@@ -394,8 +443,41 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
             </button>
           ) : null}
         </div>
+        {detailItem && detailItem.type !== "day" ? <PostDetail item={detailItem} onClose={() => setDetail(null)} /> : null}
       </ScrollControl.Provider>
     </BoardContext.Provider>
+  );
+}
+
+/**
+ * A post's detail (Enter on it): who wrote it to whom, when, where it stands, and the post itself with its folded text
+ * open and its controls. Esc closes it and the focus goes back to the post.
+ */
+function PostDetail({ item, onClose }: { item: Exclude<Item, { type: "day" }>; onClose: () => void }) {
+  const { nameOf } = useRoom();
+  const posts = item.type === "message" ? item.posts : [item.post];
+  const first = posts[0]!;
+  const to = first.request ? posts.map((post) => nameOf(post.request!.owner)) : first.to.map(nameOf);
+  return (
+    <Dialog title={`Post #${first.number}`} onClose={onClose} wide manageFocus>
+      <dl className="post-detail-facts">
+        <dt>What</dt>
+        <dd className="mono">{first.kind}{first.request ? ` · ${posts.map((post) => `#${post.number} ${post.request!.state}`).join(", ")}` : ""}</dd>
+        <dt>From</dt>
+        <dd className="mono">{nameOf(first.author)}</dd>
+        {to.length > 0 ? (
+          <>
+            <dt>To</dt>
+            <dd className="mono">{to.join(", ")}</dd>
+          </>
+        ) : null}
+        <dt>When</dt>
+        <dd className="mono">{whenTitle(first)}</dd>
+      </dl>
+      <InDetail.Provider value={true}>
+        <div className="post-detail-body timeline-content">{item.type === "message" ? <UserMessage posts={posts} chat={false} /> : <PostRow post={first} chat={false} />}</div>
+      </InDetail.Provider>
+    </Dialog>
   );
 }
 
@@ -523,17 +605,23 @@ function WorkingSince({ activity, who }: { activity: EngineActivityView; who?: s
  * message, with its images; where each went and each one's marker, with Correct… and Cancel while it is open.
  */
 function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
-  const { nameOf, snapshot } = useRoom();
   const first = posts[0]!;
   const notice = backroomNotice(first);
   if (notice) return <BackroomRequest post={first} notice={notice} />;
+  return <UserBubble posts={posts} chat={chat} />;
+}
+
+function UserBubble({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
+  const { nameOf, snapshot } = useRoom();
+  const first = posts[0]!;
   const message = first.request?.message ?? null;
   const images = message?.attachmentIds ?? [];
   // One text when every recipient got the same words; otherwise each assignment's own, under whom it went to.
   const sameText = posts.every((post) => post.body === first.body);
   const owners = posts.map((post) => nameOf(post.request!.owner));
+  const nav = useNavProps(first, owners);
   return (
-    <div className="chat-row from-user" data-number={first.number} data-seq={first.seq}>
+    <div className="chat-row from-user" data-number={first.number} data-seq={first.seq} {...nav}>
       <div className="chat-stack">
         <div className="chat-head">
           <span className="you-mark mono">you</span>
@@ -582,10 +670,12 @@ function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
 /** Backroom's briefing to a member, made in the user's name: one line, opening to its text, with its marker. */
 function BackroomRequest({ post, notice }: { post: EnginePost; notice: string }) {
   const { nameOf } = useRoom();
+  const nav = useNavProps(post);
+  const open = useContext(InDetail);
   return (
-    <div className="chat-status mono backroom-request" data-number={post.number} data-seq={post.seq} title={whenTitle(post)}>
+    <div className="chat-status mono backroom-request" data-number={post.number} data-seq={post.seq} title={whenTitle(post)} {...nav}>
       <span className="post-number">#{post.number}</span>
-      <details>
+      <details open={open || undefined}>
         <summary>
           {`Backroom → ${nameOf(post.request!.owner)}: ${notice}`}
         </summary>
@@ -673,8 +763,10 @@ function MemberRequest({ post }: { post: EnginePost }) {
   const receiver = seatOf(request.owner).participant;
   const line = firstLine(post.body);
   const short = post.body.trim() === line && line.length <= 160;
+  const nav = useNavProps(post);
+  const open = useContext(InDetail);
   return (
-    <div className="turn-row" style={identityStyle(sender ? colorOf(sender.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq}>
+    <div className="turn-row" style={identityStyle(sender ? colorOf(sender.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq} {...nav}>
       <div className="turn-head">
         {sender ? <Monogram participant={sender} size="xs" /> : null}
         <span className="speaker mono identity">{nameOf(post.author)}</span>
@@ -693,7 +785,7 @@ function MemberRequest({ post }: { post: EnginePost }) {
             <span className="sent-line">{line}</span>
           </div>
         ) : (
-          <details className="sent-text">
+          <details className="sent-text" open={open || undefined}>
             <summary>
               <span className="sent-line">{line.length > 160 ? `${line.slice(0, 160)}…` : line}</span>
             </summary>
@@ -725,8 +817,9 @@ function Reply({ post }: { post: EnginePost }) {
   const pieces = replyPieces(post, context);
   const source = sourceWords(post);
   const late = output.claims.some((claim) => claim.outcome === "late");
+  const nav = useNavProps(post);
   return (
-    <div className="chat-row from-agent" style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq}>
+    <div className="chat-row from-agent" style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq} {...nav}>
       <div className="chat-stack">
         <div className="chat-head">
           {participant ? <Monogram participant={participant} size="xs" title={participant.alias} /> : null}
@@ -855,12 +948,13 @@ function Note({ post }: { post: EnginePost }) {
   const { nameOf, seatOf, colorOf } = useRoom();
   const { typedInT3 } = useBoard();
   const note = post.note!;
+  const nav = useNavProps(post);
   if (note.source === "deferred-cancel") return <StatusPost post={post} />;
   if (post.author === "$user" || post.author === "$system") {
     const fromT3 = note.source !== "post";
     const shown = fromT3 ? withoutT3ContextRefs(post.body, false) : post.body;
     return (
-      <div className="chat-row from-user is-note" data-number={post.number} data-seq={post.seq}>
+      <div className="chat-row from-user is-note" data-number={post.number} data-seq={post.seq} {...nav}>
         <div className="chat-stack">
           <div className="chat-head">
             <span className="you-mark mono" title={note.room ? "A note to the whole room: every member's next briefing carries it; nobody is woken" : undefined}>
@@ -890,7 +984,7 @@ function Note({ post }: { post: EnginePost }) {
   const turn = note.source === "t3-turn";
   const selfStarted = turn && !(note.t3?.runId && typedInT3.has(note.t3.runId));
   return (
-    <div className="chat-row from-agent is-note" style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq}>
+    <div className="chat-row from-agent is-note" style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq} {...nav}>
       <div className="chat-stack">
         <div className="chat-head">
           {participant ? <Monogram participant={participant} size="xs" title={participant.alias} /> : null}
@@ -937,8 +1031,9 @@ function Note({ post }: { post: EnginePost }) {
 function Progress({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
   const line = firstLine(post.body);
+  const nav = useNavProps(post);
   return (
-    <div className="chat-status mono progress-line" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}${post.to.length > 0 ? ` · followed by ${post.to.map(nameOf).join(", ")}` : ""}`}>
+    <div {...nav} className="chat-status mono progress-line" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}${post.to.length > 0 ? ` · followed by ${post.to.map(nameOf).join(", ")}` : ""}`}>
       <span className="post-number">#{post.number}</span>
       <span className="speaker identity">{nameOf(post.author)}</span>
       {post.progress?.working ? <span className="turn-state turn-working">working</span> : <span className="tag">{post.progress?.milestone ?? "progress"}</span>}
@@ -953,8 +1048,9 @@ function Progress({ post }: { post: EnginePost }) {
 /** Something went wrong: a failed run, an undeliverable post, a late answer. Retry and Dismiss while it needs you. */
 function Notice({ post }: { post: EnginePost }) {
   const notice = post.notice!;
+  const nav = useNavProps(post);
   return (
-    <div className={`chat-status notice-line notice-${notice.intent}${notice.needsYou ? " notice-needs" : ""}`} data-number={post.number} data-seq={post.seq} title={whenTitle(post)}>
+    <div className={`chat-status notice-line notice-${notice.intent}${notice.needsYou ? " notice-needs" : ""}`} data-number={post.number} data-seq={post.seq} title={whenTitle(post)} {...nav}>
       <span className="post-number mono">#{post.number}</span>
       <span className="notice-mark mono">{notice.intent === "error" ? "failed" : "attention"}</span>
       {post.about.length > 0 ? <span className="mono">on {<Refs numbers={post.about.map((r) => r.number)} />}</span> : null}
@@ -1007,8 +1103,9 @@ export function NoticeActions({ post }: { post: EnginePost }) {
 function Blocked({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
   const blocked = post.blocked!;
+  const nav = useNavProps(post);
   return (
-    <div className="chat-status notice-line notice-blocked" data-number={post.number} data-seq={post.seq} title={whenTitle(post)}>
+    <div className="chat-status notice-line notice-blocked" data-number={post.number} data-seq={post.seq} title={whenTitle(post)} {...nav}>
       <span className="post-number mono">#{post.number}</span>
       <span className="notice-mark mono">blocked delivery</span>
       <span className="status-text">
@@ -1021,6 +1118,7 @@ function Blocked({ post }: { post: EnginePost }) {
 /** Corrections, cancels, retries and handovers: one line each. */
 function StatusPost({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
+  const nav = useNavProps(post);
   const refs = <Refs numbers={post.about.map((r) => r.number)} />;
   let text: ReactNode;
   switch (post.kind) {
@@ -1061,7 +1159,7 @@ function StatusPost({ post }: { post: EnginePost }) {
       );
   }
   return (
-    <div className="chat-status mono" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}\n${post.body}`}>
+    <div className="chat-status mono" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}\n${post.body}`} {...nav}>
       <span className="post-number">#{post.number}</span>
       <span className="status-text">{text}</span>
     </div>

@@ -7938,3 +7938,115 @@ span.reply-to {
   padding: 0 20px;
   color: var(--fg-muted);
 }
+
+/* ---- Keyboard (keys.ts): the item the arrows are on, in the plain look (pixel.css draws its own dashed ring) ---- */
+
+/* A member's thread over its room, above the room's drawer and under dialogs and menus. */
+.ov-layer-member {
+  z-index: 21;
+}
+
+/* The drawer holds the focus only while what it shows is drawn: no ring round the window. */
+.ov-drawer:focus,
+[data-skin="pixel"] .ov-drawer:focus-visible {
+  outline: none;
+}
+
+:root:not([data-skin="pixel"]) :is(.ov-member, .participant-chip, .timeline [data-nav="post"], .inspector, .room-body .timeline):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+:root:not([data-skin="pixel"]) :is(.inspector, .room-body .timeline):focus-visible {
+  outline-offset: -2px;
+}
+
+/* A post brought into view by the arrows clears the composer laid over the board's foot. */
+.timeline [data-nav="post"] {
+  scroll-margin: 12px 0 calc(var(--composer-cover, 0px) + 12px);
+}
+
+:root:not([data-skin="pixel"]) .ov-room:has(.ov-room-head:focus-visible) {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* What the pointer shows on hover, the focus shows too. */
+.ov-room:focus-within .ov-room-menu .room-menu-button,
+.ov-shelf-item:focus-within .room-menu-button,
+.chat-row:focus-within .bubble-side {
+  opacity: 1;
+}
+
+/* The keys, shown by ? (KeyHelp.tsx). */
+.key-help section + section {
+  margin-top: 14px;
+}
+
+.key-help h3 {
+  margin: 0 0 6px;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.key-help dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.key-help-row {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.key-help dt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.key-help dd {
+  margin: 0;
+}
+
+.key-help kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-2);
+}
+
+.key-help .hint {
+  margin: 14px 0 0;
+}
+
+/* A post's detail (Enter on a post): its facts, then the post as on the board. */
+.post-detail-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0 0 14px;
+  font-size: var(--text-sm);
+}
+
+.post-detail-facts dt {
+  color: var(--fg-muted);
+}
+
+.post-detail-facts dd {
+  margin: 0;
+}
+
+.post-detail-body {
+  --bubble-max: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-skin="pixel"] :is(.inspector, .room-body .timeline):focus-visible {
+  outline-offset: calc(var(--u) * -2);
+}

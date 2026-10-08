@@ -10,6 +10,7 @@ import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { deleteImageData, loadImageData, saveImageData } from "../draftImageData.ts";
 import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
 import { threadKey } from "../news.ts";
+import { focusWhen } from "../keys.ts";
 import {
   isRunActive,
   ATTACHMENT_MAX_BYTES,
@@ -151,9 +152,11 @@ interface ThreadViewProps {
   onArchived: () => void;
   onOpenRoom: (roomId: string) => void;
   headerStart: ReactNode;
+  /** The transcript takes the focus when the thread opens (a member's thread over its room: the arrows scroll it). */
+  autoFocusTranscript?: boolean;
 }
 
-export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart }: ThreadViewProps) {
+export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onChanged, onArchived, onOpenRoom, headerStart, autoFocusTranscript = false }: ThreadViewProps) {
   const { view, error, refresh, hurry } = useThreadView(threadId, onGone);
   // The browser instructions go in front of the next message (threads outside rooms get no briefing).
   const [attached, setAttached] = useState(false);
@@ -188,6 +191,12 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   // card does: the crew member it started as, else its model's name.
   const catalog = useCatalog();
   const modelName = thread ? catalog?.find((e) => e.instanceId === thread.modelSelection.instanceId && e.model === thread.modelSelection.model)?.label : undefined;
+
+  const centre = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!autoFocusTranscript) return;
+    return focusWhen(() => centre.current?.querySelector<HTMLElement>(".timeline"));
+  }, [autoFocusTranscript, threadId]);
 
   const lifecycle = async (action: "settle" | "unsettle" | "archive" | "delete") => {
     const result = await runCommand({ type: "thread.lifecycle", threadId, action });
@@ -277,7 +286,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
           </div>
         ) : null}
         <div className="room-body">
-          <div className="room-centre">
+          <div className="room-centre" ref={centre}>
             <div className="timeline-wrap">
               <Transcript
                 key={threadId}
@@ -291,9 +300,10 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 }}
               />
             </div>
+            {/* A member's thread is talked to from its room: no composer here (it would take the keys and send nothing). */}
             {thread?.boundToRoom ? (
               <p className="chat-status mono thread-partial">This thread is now a member in a room; talk to it from the room.</p>
-            ) : null}
+            ) : (
             <ThreadComposer
               key={threadId}
               draftScope={threadKey(threadId)}
@@ -327,6 +337,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 return result !== null;
               }}
             />
+            )}
           </div>
         </div>
       </div>
@@ -600,7 +611,8 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
 
   if (!view) {
     return (
-      <div className="timeline">
+      // Focusable, so the arrows and Page keys scroll it.
+      <div className="timeline" tabIndex={0} role="log" aria-label="Thread">
         <div className="timeline-content">
           <p className="muted thread-loading">{error ? `Could not read the thread from T3: ${error}` : "Loading thread…"}</p>
         </div>
@@ -622,6 +634,7 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
       ref={scroller}
       role="log"
       aria-label="Thread"
+      tabIndex={0}
       onScroll={() => {
         const el = scroller.current;
         if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;

@@ -30,7 +30,7 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
   const presetText = usePresetText();
   const [editing, setEditing] = useState<{ preset: Preset | null } | null>(null);
   return (
-    <section className="ov-project ov-shelf" aria-label="Crew">
+    <section className="ov-project ov-shelf" aria-label="Crew" data-nav-section>
       <h2 className="ov-project-title">
         <span className="ov-project-name">Crew</span>
         <span className="ov-project-path muted">who you bring into rooms · drag one onto a room to seat them</span>
@@ -51,6 +51,8 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
                 className="ov-shelf-tile"
                 title={`${preset.name}: ${model} · ${detail}\nClick to edit them. Drag them onto a room to seat them there.`}
                 onClick={() => setEditing({ preset })}
+                data-nav="ov"
+                data-nav-key={`preset:${preset.id}`}
               >
                 <PresetIcon preset={preset} size={16} />
                 <span className="ov-shelf-name mono">{preset.name}</span>
@@ -151,7 +153,7 @@ function PresetMenu({ preset, rooms, projects, onSeat, onEdit }: { preset: Prese
 export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { browsers: BrowserListItem[]; onOpen: (browserId: string) => void; onChanged: () => void; runCommand: RunCommand }) {
   const [adding, setAdding] = useState(false);
   return (
-    <section className="ov-project ov-shelf" aria-label="Browsers">
+    <section className="ov-project ov-shelf" aria-label="Browsers" data-nav-section>
       <h2 className="ov-project-title">
         <span className="ov-project-name">Browsers</span>
         <span className="ov-project-path muted">shared Chrome browsers on this machine, for agents</span>
@@ -166,7 +168,7 @@ export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { b
           const state = browser.status.state;
           return (
             <li key={browser.id} className="ov-shelf-item">
-              <button type="button" className="ov-shelf-tile" title={`${browser.name}${browser.description ? `\n${browser.description}` : ""}`} onClick={() => onOpen(browser.id)}>
+              <button type="button" className="ov-shelf-tile" title={`${browser.name}${browser.description ? `\n${browser.description}` : ""}`} onClick={() => onOpen(browser.id)} data-nav="ov" data-nav-key={`browser:${browser.id}`}>
                 <span className={`thread-dot tone-${state === "running" ? "on" : state === "starting" ? "working" : state === "error" ? "error" : "idle"}`} aria-hidden="true" />
                 <span className="ov-shelf-name mono">{browser.name}</span>
                 <span className="ov-shelf-what">
@@ -203,13 +205,13 @@ export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T
   const shown = open === "settled" ? settled : open === "archived" ? archived : [];
   const toggle = (section: "settled" | "archived", count: number, title: string) =>
     count > 0 ? (
-      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)}>
+      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)} data-nav="ov" data-nav-key={`shelf:${(settled[0] ?? archived[0])?.projectId}:${section}`}>
         <ChevronIcon dir={open === section ? "down" : "right"} />
         {section === "settled" ? "Settled" : "Archived"} · {count}
       </button>
     ) : null;
   return (
-    <div className="ov-thread-shelf">
+    <div className="ov-thread-shelf" data-nav-section>
       <div className="ov-thread-shelf-toggles">
         {toggle("settled", settled.length, "Threads in T3's settled list: done for now. Sending one a message makes it active again.")}
         {toggle("archived", archived.length, "Threads archived in T3: hidden there, reversible. Open one to unarchive or delete it.")}
@@ -218,7 +220,7 @@ export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T
         <ul className="ov-threads">
           {shown.map((thread) => (
             <li key={thread.id}>
-              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.modelSelection.model}`} onClick={() => onOpen(thread.id)}>
+              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.modelSelection.model}`} onClick={() => onOpen(thread.id)} data-nav="ov" data-nav-key={`thread:${thread.id}`}>
                 <span className="ov-thread-title">{thread.title}</span>
                 {drafted(thread.id) ? (
                   <span className="pill pill-draft" title="You have an unsent message here">

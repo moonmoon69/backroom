@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
@@ -15,6 +15,7 @@ import type { OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShe
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
+import { byKey, focusItem, itemOf, keyOf, navKey, overviewTarget } from "../keys.ts";
 
 /** How old something is, in a word: "now", "3m", "2h", "4d". */
 function age(iso: string | null | undefined): string {
@@ -54,11 +55,14 @@ export function Overview({
   onOpenRoom,
   onOpenThread,
   onOpenBrowser,
+  onOpenMember,
   onSeatPreset,
   onCommand,
   onT3Changed,
   onBrowsersChanged,
   controls,
+  active,
+  returnTo,
 }: {
   rooms: RoomListItem[];
   projects: T3Project[] | null;
@@ -71,6 +75,8 @@ export function Overview({
   onOpenRoom: (roomId: string) => void;
   onOpenThread: (threadId: string) => void;
   onOpenBrowser: (browserId: string) => void;
+  /** A member's thread, over its room (Enter on a member). */
+  onOpenMember: (roomId: string, participantId: string) => void;
   onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
   /** Re-read projects from T3 (after one was added). */
@@ -78,6 +84,10 @@ export function Overview({
   onBrowsersChanged: () => void;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
+  /** Nothing covers the page (no room, thread or browser open over it): the arrows are the page's. */
+  active: boolean;
+  /** The item the focus goes back to when what covered the page closes, if the page does not remember one. */
+  returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
   const { presets } = usePresets();
@@ -126,6 +136,57 @@ export function Overview({
     };
   }, []);
 
+  // ---- the keys (keys.ts): the arrows move the focus over the page's cards and members, in reading order ----
+  const root = useRef<HTMLDivElement>(null);
+  // The item last focused here, by key. A poll that redraws the page can move a card (to another tier, another project),
+  // and the browser drops the focus of what it moves: the same item takes it back before the frame is painted.
+  const remembered = useRef<string | null>(null);
+  const wasActive = useRef(active);
+  useLayoutEffect(() => {
+    const element = root.current;
+    const activated = active && !wasActive.current;
+    wasActive.current = active;
+    if (!active || !element) return;
+    const lost = !document.activeElement || document.activeElement === document.body;
+    // Back from what covered the page: the focus goes to where it was when that opened.
+    const key = activated ? (returnTo ?? remembered.current) : lost ? remembered.current : null;
+    const item = byKey(element, key);
+    if (activated) focusItem(item);
+    else item?.focus({ preventScroll: true });
+  });
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return;
+    const onFocus = (event: FocusEvent) => {
+      remembered.current = keyOf(event.target as Element) ?? remembered.current;
+    };
+    // A click elsewhere on the page is the user moving on: nothing is given the focus back.
+    const onPointer = (event: MouseEvent) => {
+      if (!itemOf(event.target as Element)) remembered.current = null;
+    };
+    element.addEventListener("focusin", onFocus);
+    element.addEventListener("mousedown", onPointer);
+    return () => {
+      element.removeEventListener("focusin", onFocus);
+      element.removeEventListener("mousedown", onPointer);
+    };
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      const key = navKey(event);
+      const element = root.current;
+      if (!key || !element) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const onPage = !target || target === document.body || target === document.documentElement;
+      if (!onPage && !element.contains(target)) return;
+      event.preventDefault();
+      focusItem(overviewTarget(element, "ov", itemOf(target) ?? (onPage ? byKey(element, remembered.current) : null), key));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [active]);
+
   // Threads outside rooms are shown as rooms of one. Until the service has described them, T3's thread list stands in;
   // it also stands in for any the service left out (it describes forty at most).
   const loose = threads.filter((thread) => !thread.boundToRoom && !thread.deletedAt && !isSubagentThread(thread));
@@ -151,7 +212,7 @@ export function Overview({
   if (orphans.length > 0) groups.push({ project: { id: "unknown", title: "Unknown project", workspaceRoot: "" } as T3Project, tiles: tiles(orphans, []) });
 
   return (
-    <div className="overview">
+    <div className="overview" ref={root} inert={!active}>
       <header className="overview-head">
         <span className="brand serif">
           <BrandMark />
@@ -181,7 +242,7 @@ export function Overview({
         {groups.map(({ project, tiles: projectTiles }) => {
           const known = project.id !== "unknown";
           return (
-            <section key={project.id} className="ov-project" aria-label={project.title}>
+            <section key={project.id} className="ov-project" aria-label={project.title} data-nav-section>
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
@@ -210,6 +271,7 @@ export function Overview({
                       presetOver={presetOver === tile.room.id}
                       dropTarget={presetTarget(tile.room.id, (presetId) => void onSeatPreset(tile.room.id, presetId))}
                       onOpen={() => onOpenRoom(tile.room.id)}
+                      onOpenMember={(participantId) => onOpenMember(tile.room.id, participantId)}
                       onCommand={onCommand}
                     />
                   ) : (
@@ -343,6 +405,7 @@ function RoomCard({
   presetOver,
   dropTarget,
   onOpen,
+  onOpenMember,
   onCommand,
 }: {
   room: RoomListItem;
@@ -352,13 +415,14 @@ function RoomCard({
   presetOver: boolean;
   dropTarget: { onDragOver: (event: DragEvent) => void; onDragLeave: () => void; onDrop: (event: DragEvent) => void };
   onOpen: () => void;
+  onOpenMember: (participantId: string) => void;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
 }) {
   const { needs, busy } = roomState(room, detail);
   const news = room.news.unseen > 0 ? room.news : null;
   return (
-    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget}>
-      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`}>
+    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} data-nav-card>
+      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
         {busy > 0 ? <span className="pill pill-working">{busy} busy</span> : null}
@@ -381,8 +445,24 @@ function RoomCard({
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
             // T3's time of it, or the lower bound when T3 did not time it.
             const when = member.live || member.doing ? "" : age(member.lastReply?.at ?? member.lastReply?.after);
+            // Reached with the arrows (keys.ts); Enter opens the member's thread over its room.
+            const open = (event: KeyboardEvent) => {
+              if (event.key !== "Enter" || event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+              event.preventDefault();
+              onOpenMember(member.id);
+            };
             return (
-              <li key={member.id} className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`} title={line ? oneLine(line, 400) : described.label}>
+              <li
+                key={member.id}
+                className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`}
+                title={line ? oneLine(line, 400) : described.label}
+                tabIndex={-1}
+                data-nav="ov"
+                data-nav-key={`member:${room.id}:${member.id}`}
+                aria-label={`@${member.alias}${member.consigliere ? ", the Consigliere" : ""}, ${described.label}${line ? `: ${oneLine(line, 160)}` : ""}`}
+                aria-description="Enter opens its thread"
+                onKeyDown={open}
+              >
                 <span className="avatar avatar-xs" aria-hidden="true">
                   <MemberMark seed={member.id} selection={member.modelSelection} presetId={member.presetId} name={member.alias} />
                 </span>
@@ -416,8 +496,8 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
   const working = activity.tone === "working" || activity.tone === "background";
   const when = working ? "" : age(thread.latestRunCompletedAt ?? thread.updatedAt);
   return (
-    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`}>
-      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`}>
+    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} data-nav-card>
+      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`} data-nav="ov" data-nav-key={`thread:${thread.id}`}>
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
         {/* Its turn finished (or failed) since you looked. */}

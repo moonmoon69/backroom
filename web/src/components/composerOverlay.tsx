@@ -116,6 +116,19 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     setOpen(false);
   }, []);
 
+  // Esc with the focus elsewhere (a post, a button) closes the open composer before anything else closes; in its field
+  // fieldKey takes it.
+  useEffect(() => {
+    if (!enabled || !isOpen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector(".dialog-backdrop, .menu")) return;
+      event.preventDefault();
+      hide();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [enabled, isOpen, hide]);
+
   // Enter, or a printable key, outside a text field opens the composer (and the key goes in). Enter on a button or
   // link is that control's; nothing opens over a dialog or a menu.
   useEffect(() => {

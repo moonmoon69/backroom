@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { returnFocus } from "../keys.ts";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { CloseIcon } from "./icons.tsx";
 
@@ -21,7 +22,8 @@ interface DialogProps {
  * Modal dialog: closes on Escape or backdrop click, labelled by its title. Rendered at the document body, so the
  * styles of whatever opened it (a panel head, a card) never reach into it.
  * Initial focus goes to the element marked `data-autofocus`, otherwise the first enabled field.
- * Focus is set exactly once when the dialog opens; background re-renders never move it.
+ * Focus is set exactly once when the dialog opens; background re-renders never move it. When it closes, focus goes back
+ * to the element that opened it (keys.ts, returnFocus).
  */
 export function Dialog({ title, onClose, children, footer, wide, large, manageFocus = false, active = true }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
@@ -34,6 +36,8 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
     const onKey = (event: KeyboardEvent) => {
       const root = panel.current;
       if (!activeRef.current || !root || root !== [...document.querySelectorAll(".dialog:not([inert])")].at(-1)) return;
+      // A menu open in the dialog (a dropdown, the model list) takes Esc first: one thing closes at a time.
+      if (event.key === "Escape" && (root.querySelector(".menu") || document.querySelector(".menu.in-dialog"))) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -79,6 +83,10 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
         document.removeEventListener("focusin", containFocus);
         const fallback = [...document.querySelectorAll<HTMLElement>(".dialog:not([inert])")].at(-1)?.querySelector<HTMLElement>(".dialog-close");
         (opener?.isConnected && !opener.closest("[inert]") ? opener : fallback)?.focus();
+      } else if (!document.activeElement || document.activeElement === document.body || root.contains(document.activeElement)) {
+        // Every dialog gives the focus back to where the user was: what opened it, else (a menu item, gone) the last
+        // element focused outside dialogs and menus.
+        returnFocus(opener);
       }
     };
   }, [manageFocus]);
