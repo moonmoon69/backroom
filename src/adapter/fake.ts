@@ -84,6 +84,8 @@ export class FakeT3Adapter implements T3Adapter {
   dropAcks = false;
   /** When set, T3 records the user message and its run, but the provider fails to start: the run fails with this error. */
   startFailure: string | null = null;
+  /** Threads whose runs are not finished automatically (a script holds the run open; completeRun ends it). */
+  readonly held = new Set<string>();
   /**
    * What versions() reports; tests and the demo change it. A T3 on the nightly channel with a Claude update it can
    * run and a Codex update it cannot. updateHarness and updateServer move it along the way T3 does.
@@ -529,7 +531,7 @@ export class FakeT3Adapter implements T3Adapter {
     });
     if (this.options.autoCompleteMs !== null) {
       setTimeout(() => {
-        if (this.activeRun(thread)?.id === run.id) this.completeRun(thread.shell.id, this.options.autoReply({ threadId: thread.shell.id, text: this.runPrompts.get(run.id) ?? "" }));
+        if (this.activeRun(thread)?.id === run.id && !this.held.has(thread.shell.id)) this.completeRun(thread.shell.id, this.options.autoReply({ threadId: thread.shell.id, text: this.runPrompts.get(run.id) ?? "" }));
       }, this.options.autoCompleteMs);
     }
   }

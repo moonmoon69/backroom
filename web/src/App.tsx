@@ -244,6 +244,14 @@ export function App() {
     ? Object.values(snapshot.participantStatus).some((s) => isRunActive(s.status) || s.externalActivity)
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
+  // The stream announces the journal's appends; a member's status also comes from T3 (a turn starts or ends there), so
+  // the open room is read again on a timer too: often while anything runs, seldom when all is quiet.
+  const roomBusy = snapshot ? snapshotRunning || snapshot.runs.some((run) => run.phase !== "terminal") : false;
+  useEffect(() => {
+    if (!selectedRoomId) return;
+    const timer = setInterval(loadSnapshot, roomBusy ? 4000 : 15000);
+    return () => clearInterval(timer);
+  }, [selectedRoomId, loadSnapshot, roomBusy]);
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
   // A new reply (an output, or a turn's note) is priced at once: the nonce is the seq of the newest one.
   const lastReplySeq = snapshot ? snapshot.posts.reduce((seq, post) => (post.kind === "output" || post.note?.source === "t3-turn" ? post.seq : seq), 0) : 0;

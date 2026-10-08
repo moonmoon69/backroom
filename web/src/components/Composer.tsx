@@ -1004,7 +1004,8 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
     return Boolean(status && (status.activeRunId !== null || status.externalActivity || isRunActive(status.status)));
   });
   const steering = assignment.delivery === "steer";
-  const next = busy.length > 0 && !steering && !assignment.slashCommand;
+  // A slash command never goes into a running turn: to a busy member it is next too.
+  const next = busy.length > 0 && !steering;
   const label = next ? "next" : "now";
   const who = busy.map((id) => `@${aliasOf(id)}`).join(", ");
   const title = next
@@ -1015,21 +1016,35 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
         ? "/steer: if the recipient is mid-turn when this is sent, it goes into that turn"
         : "Starts right away";
 
-  const choose = (timing: "steer" | null) => {
+  const choose = (timing: "now" | "steer" | null) => {
     setOpen(false);
     edit((source) => setTiming(source, assignment, timing));
   };
   const offerSteer = busy.length > 0 && !assignment.slashCommand;
+  // The fixes for what D2 refuses: a retired /hold or /after is removed; a wait the text implies is overridden by /now.
+  const retired = assignment.timing === "hold" || assignment.timing === "after" ? assignment.timing : null;
+  const implied = !retired && assignment.timing !== "now" && assignment.after.length > 0;
+  const menu = offerSteer || steering || retired !== null || implied;
 
   return (
     <span className="plan-timing" ref={wrapper}>
-      <button type="button" className={`plan-pill mono tone-${next ? "next" : steering ? "steer" : "now"}`} title={title} aria-haspopup={offerSteer || steering ? "menu" : undefined} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!offerSteer && !steering}>
+      <button type="button" className={`plan-pill mono tone-${retired || implied ? "warn" : next ? "next" : steering ? "steer" : "now"}`} title={title} aria-haspopup={menu ? "menu" : undefined} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!menu}>
         {label}
-        {offerSteer || steering ? <ChevronIcon dir="down" small /> : null}
+        {menu ? <ChevronIcon dir="down" small /> : null}
       </button>
-      {open && (offerSteer || steering) ? (
+      {open && menu ? (
         <div className="menu menu-up menu-right" role="menu">
-          {steering ? (
+          {retired ? (
+            <button type="button" role="menuitem" onClick={() => choose(null)} title={`/${retired} is gone: nothing waits on other work`}>
+              Remove /{retired}
+            </button>
+          ) : null}
+          {implied ? (
+            <button type="button" role="menuitem" onClick={() => choose("now")} title="Adds /now: send it now instead of after the work it names">
+              Send it now <span className="muted mono">/now</span>
+            </button>
+          ) : null}
+          {!offerSteer && !steering ? null : steering ? (
             <button type="button" role="menuitem" onClick={() => choose(null)} title="Removes /steer: wait for the current turn to end">
               Wait for the turn to end <span className="muted mono">remove /steer</span>
             </button>
