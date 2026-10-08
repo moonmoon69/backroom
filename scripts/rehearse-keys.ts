@@ -483,6 +483,23 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc: back on Correct…, the field closed", (f) => f.label === "Correct…" && f.expanded === "false" && f.drawers.some((d) => d.view === "room" && !d.inert));
   state("Correct… takes the focus; Esc goes back to it");
 
+  // The same inside the post's detail: Esc in the correction closes the field, not the dialog (and its text with it).
+  press("End");
+  await expect(`End: #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
+  press("Enter");
+  await expect(`Enter: the detail of #${openPost.number}`, (f) => f.dialog === `Post #${openPost.number}`);
+  await tabTo("Tab to Correct… in the detail", (f) => f.inDialog && f.label === "Correct…");
+  press("Enter");
+  await expect("Enter: the correction's field in the detail has the focus", (f) => f.inDialog && f.tag === "TEXTAREA");
+  press("a");
+  press("b");
+  await expect("what is typed goes into it", (f) => f.inDialog && f.value === "ab");
+  press("Escape");
+  await expect("Esc closes the field only: the detail stays, the focus on its Correct…", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && f.label === "Correct…");
+  press("Escape");
+  await expect(`Esc again closes the detail, the focus back on #${openPost.number}`, (f) => f.dialog === null && f.key === `post:${openPost.seq}`);
+  state("in a post's detail, Esc in a correction closes the field, not the detail");
+
   // ---------------- 4. the panes ----------------
 
   const members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
@@ -515,6 +532,28 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect("Esc: the menu closed, the room still open, the focus on the member", (f) => !f.menu && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}`);
   state("Esc closes a menu, not the room");
+
+  // A toast while a dialog is open is outside the inert page: read out (in the page snapshot), above the dialog.
+  press("Tab");
+  press("Enter");
+  await expect("the member's menu again, on Open thread", (f) => f.menu && f.label === "Open thread");
+  press("ArrowDown");
+  press("Enter");
+  await expect(`Open in T3…: its dialog`, (f) => f.dialog === `Open ${members[1]!.alias} in T3` && f.inDialog);
+  await tabTo("Tab to Copy project id", (f) => f.inDialog && f.label === "Copy project id");
+  press("Enter");
+  const toast = browser.poll<{ text: string; inert: boolean; underRoot: boolean } | null>(
+    "a toast to show",
+    "() => { const t = document.querySelector('.toast-stack .toast'); return t ? { text: t.textContent.trim(), inert: Boolean(t.closest('[inert]')), underRoot: Boolean(t.closest('#root')) } : null; }",
+    (value) => value !== null,
+  )!;
+  if (toast.inert || toast.underRoot) fail(`the toast is under the inert page while the dialog is open: ${JSON.stringify(toast)}`);
+  const tree = browser.on("snapshot");
+  if (!tree.includes(toast.text)) fail(`the toast "${toast.text}" is not in the page snapshot (assistive technology does not get it)`);
+  log(`  page: the toast "${toast.text}" is outside #root, not inert, and in the page snapshot while the dialog is open`);
+  press("Escape");
+  await expect(`Esc: the dialog closed, the focus back on @${members[1]!.alias}`, (f) => f.dialog === null && f.key === `member:${members[1]!.id}`);
+  state("a toast during a dialog is read out");
 
   // ---------------- 5. a member's thread, and back out ----------------
 

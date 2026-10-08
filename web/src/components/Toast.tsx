@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { CloseIcon } from "./icons.tsx";
 
 export interface Toast {
@@ -31,16 +32,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="toast-stack" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === "error" ? "alert" : "status"}>
-            <span>{t.message}</span>
-            <button type="button" className="small ghost icon-only" aria-label="Dismiss" title="Dismiss" onClick={() => dismiss(t.id)}>
-              <CloseIcon />
-            </button>
-          </div>
-        ))}
-      </div>
+      {/* At the document body, beside the dialogs: the page under an open dialog is inert, and a toast must still be
+          read out and dismissable then. */}
+      {createPortal(
+        <div className="toast-stack" aria-live="polite">
+          {toasts.map((t) => (
+            <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === "error" ? "alert" : "status"}>
+              <span>{t.message}</span>
+              <button type="button" className="small ghost icon-only" aria-label="Dismiss" title="Dismiss" onClick={() => dismiss(t.id)}>
+                <CloseIcon />
+              </button>
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
     </ToastContext.Provider>
   );
 }

@@ -44,8 +44,9 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
     const onKey = (event: KeyboardEvent) => {
       const root = panel.current;
       if (!activeRef.current || !root || root !== [...document.querySelectorAll(".dialog:not([inert])")].at(-1)) return;
-      // A menu open in the dialog (a dropdown, the model list) takes Esc first: one thing closes at a time.
-      if (event.key === "Escape" && (root.querySelector(".menu") || document.querySelector(".menu.in-dialog"))) return;
+      // A menu open in the dialog (a dropdown, the model list), or a field in it that used Esc itself (a correction
+      // closing), takes Esc first: one thing closes at a time.
+      if (event.key === "Escape" && (event.defaultPrevented || root.querySelector(".menu") || document.querySelector(".menu.in-dialog"))) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
