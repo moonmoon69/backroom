@@ -25,6 +25,7 @@ export interface KeysService {
 export interface KeysBrowser {
   on(...args: string[]): string;
   eval<T>(fn: string): T;
+  poll<T>(what: string, fn: string, ok: (value: T) => boolean, ms?: number): T;
   open(): void;
   waitFor(text: string): void;
   consoleClean(): void;
@@ -161,6 +162,23 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
     passed.push(name);
     log(`PASS ${name}`);
+  };
+  /**
+   * The composer opened by a letter and made to hold exactly that letter, by keys only (as rehearse.ts's compose()
+   * makes a draft exact, without its click and fill): the page puts the letter in itself (insertText, which React
+   * sees); a draft that was there already is selected and deleted with keys and the letter typed again.
+   */
+  const compose = (letter: string): void => {
+    const value = "() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? null";
+    press(letter);
+    const first = browser.poll<string | null>("the composer to open", value, (v) => v !== null);
+    if (first !== letter) {
+      press("Control+a");
+      press("Backspace");
+      browser.poll<string | null>("the composer to be empty", value, (v) => v === "");
+      press(letter);
+    }
+    browser.poll<string | null>(`the composer to hold ${JSON.stringify(letter)}`, value, (v) => v === letter);
   };
   const layout = (): Placed[] => browser.eval<Placed[]>(LAYOUT);
   /** The overview's order once it holds still (its polls rank the tiles: news, busy, needs you). */
@@ -360,7 +378,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc: the keys closed, the focus back on the post", (f) => !f.help && f.key === `post:${detailPost.seq}` && f.drawers.some((d) => d.view === "room"));
 
   // The composer: a key starts it; its own arrows; Esc closes it (not the room); Up comes back to the post.
-  press("w");
+  compose("w");
   await expect("a letter opens the composer, in its field", (f) => f.tag === "TEXTAREA");
   press("ArrowUp");
   await expect("Up in the composer's field stays in the field", (f) => f.tag === "TEXTAREA");

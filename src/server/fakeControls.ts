@@ -33,8 +33,7 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   };
   controls.post("/api/fake/hold", run((input) => {
     const id = thread(input);
-    if (input.hold === false) fake.held.delete(id);
-    else fake.held.add(id);
+    fake.setHeld(id, input.hold !== false);
     return { held: fake.held.has(id) };
   }));
   controls.post("/api/fake/complete", run((input) => {

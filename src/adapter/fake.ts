@@ -58,6 +58,17 @@ export interface FakeRunCompletion {
   files?: Array<{ path: string; kind: string; additions: number; deletions: number }>;
 }
 
+/** What T3 itself keeps across a restart of Backroom: its threads, projects and branches, command receipts, and held threads. */
+export interface FakeState {
+  threads: FakeThread[];
+  projects: T3Project[];
+  refs: Array<[string, T3Ref[]]>;
+  seenCommands: string[];
+  runPrompts: Array<[string, string]>;
+  held: string[];
+  steeredMessages: number;
+}
+
 export interface FakeAdapterOptions {
   /** Automatically complete runs after this many milliseconds. Null means manual completion. */
   autoCompleteMs?: number | null;
@@ -529,10 +540,52 @@ export class FakeT3Adapter implements T3Adapter {
       tokenUsage: { usedTokens: used, maxTokens: 200000, inputTokens: used - 400, cachedInputTokens: 0, outputTokens: 400, reasoningOutputTokens: 0, updatedAt: at },
       turnTokenUsage: null,
     });
-    if (this.options.autoCompleteMs !== null) {
-      setTimeout(() => {
-        if (this.activeRun(thread)?.id === run.id && !this.held.has(thread.shell.id)) this.completeRun(thread.shell.id, this.options.autoReply({ threadId: thread.shell.id, text: this.runPrompts.get(run.id) ?? "" }));
-      }, this.options.autoCompleteMs);
+    this.autoComplete(thread, run);
+  }
+
+  private autoComplete(thread: FakeThread, run: T3Run): void {
+    if (this.options.autoCompleteMs === null) return;
+    setTimeout(() => {
+      if (this.activeRun(thread)?.id === run.id && !this.held.has(thread.shell.id)) this.completeRun(thread.shell.id, this.options.autoReply({ threadId: thread.shell.id, text: this.runPrompts.get(run.id) ?? "" }));
+    }, this.options.autoCompleteMs);
+  }
+
+  /** Test control: runs on the thread are not finished automatically while it is held (completeRun ends them). */
+  setHeld(threadId: string, held: boolean): void {
+    if (held) this.held.add(threadId);
+    else this.held.delete(threadId);
+  }
+
+  /** What a restarted T3 would still have (see fakeState.ts). */
+  state(): FakeState {
+    return {
+      threads: [...this.threads.values()],
+      projects: this.projects,
+      refs: [...this.refs],
+      seenCommands: [...this.seenCommands],
+      runPrompts: [...this.runPrompts],
+      held: [...this.held],
+      steeredMessages: this.steeredMessages,
+    };
+  }
+
+  /** Picks up a saved state, as T3 does after a restart of Backroom: running runs go on, and unheld ones end as before. */
+  restore(state: FakeState): void {
+    this.threads.clear();
+    for (const thread of state.threads) this.threads.set(thread.shell.id, thread);
+    this.projects.splice(0, this.projects.length, ...state.projects);
+    this.refs.clear();
+    for (const [cwd, refs] of state.refs) this.refs.set(cwd, refs);
+    this.seenCommands.clear();
+    for (const id of state.seenCommands) this.seenCommands.add(id);
+    this.runPrompts.clear();
+    for (const [runId, text] of state.runPrompts) this.runPrompts.set(runId, text);
+    this.held.clear();
+    for (const id of state.held) this.held.add(id);
+    this.steeredMessages = state.steeredMessages;
+    for (const thread of this.threads.values()) {
+      const run = this.activeRun(thread);
+      if (run) this.autoComplete(thread, run);
     }
   }
 
