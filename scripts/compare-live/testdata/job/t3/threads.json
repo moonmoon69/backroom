@@ -1,0 +1,118 @@
+[
+ {
+  "threadId": "11111111-1111-4111-8111-111111111111",
+  "alias": "Fable",
+  "role": "C",
+  "source": "t3-http",
+  "runs": [
+   {
+    "id": "run-c1",
+    "requestedAt": "2026-10-08T10:00:01.000Z",
+    "startedAt": "2026-10-08T10:00:01.000Z",
+    "completedAt": "2026-10-08T10:01:00.000Z",
+    "status": "completed"
+   },
+   {
+    "id": "run-c2",
+    "requestedAt": "2026-10-08T10:19:00.000Z",
+    "startedAt": "2026-10-08T10:19:00.000Z",
+    "completedAt": "2026-10-08T10:20:01.000Z",
+    "status": "completed"
+   }
+  ],
+  "messages": [
+   {
+    "id": "m-c1u",
+    "role": "user",
+    "runId": "run-c1",
+    "createdAt": "2026-10-08T10:00:01.000Z",
+    "text": "brief one"
+   },
+   {
+    "id": "m-c1a",
+    "role": "assistant",
+    "runId": "run-c1",
+    "createdAt": "2026-10-08T10:01:00.000Z",
+    "text": "Handed out to @W1."
+   },
+   {
+    "id": "m-c2u",
+    "role": "user",
+    "runId": "run-c2",
+    "createdAt": "2026-10-08T10:19:00.000Z",
+    "text": "wake: W1 answered \u2713"
+   },
+   {
+    "id": "m-c2a",
+    "role": "assistant",
+    "runId": "run-c2",
+    "createdAt": "2026-10-08T10:20:00.000Z",
+    "text": "Done.\n\nJOB-DONE"
+   }
+  ],
+  "subagents": [
+   {
+    "id": "sub-1",
+    "runId": "run-c1",
+    "status": "completed",
+    "startedAt": "2026-10-08T10:04:59.000Z",
+    "childThreadId": null
+   }
+  ],
+  "partial": false
+ },
+ {
+  "threadId": "22222222-2222-4222-8222-222222222222",
+  "alias": "W1",
+  "role": "W1",
+  "source": "t3-http",
+  "runs": [
+   {
+    "id": "run-w0",
+    "requestedAt": "2026-10-08T09:58:20.000Z",
+    "startedAt": "2026-10-08T09:58:20.000Z",
+    "completedAt": "2026-10-08T09:58:40.000Z",
+    "status": "completed"
+   },
+   {
+    "id": "run-w1",
+    "requestedAt": "2026-10-08T10:01:30.000Z",
+    "startedAt": "2026-10-08T10:01:30.000Z",
+    "completedAt": "2026-10-08T10:03:00.000Z",
+    "status": "completed"
+   }
+  ],
+  "messages": [
+   {
+    "id": "m-w0u",
+    "role": "user",
+    "runId": "run-w0",
+    "createdAt": "2026-10-08T09:58:20.000Z",
+    "text": "seat briefing"
+   },
+   {
+    "id": "m-w0a",
+    "role": "assistant",
+    "runId": "run-w0",
+    "createdAt": "2026-10-08T09:58:40.000Z",
+    "text": "ack"
+   },
+   {
+    "id": "m-w1u",
+    "role": "user",
+    "runId": "run-w1",
+    "createdAt": "2026-10-08T10:01:30.000Z",
+    "text": "find the imports"
+   },
+   {
+    "id": "m-w1a",
+    "role": "assistant",
+    "runId": "run-w1",
+    "createdAt": "2026-10-08T10:03:00.000Z",
+    "text": "imports listed"
+   }
+  ],
+  "subagents": [],
+  "partial": false
+ }
+]

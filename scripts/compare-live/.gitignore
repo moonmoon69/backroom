@@ -1,0 +1,3 @@
+.scratch-*/
+# The repository ignores *.log; this one is a reference file.
+!/reference/T3/slow-check.log

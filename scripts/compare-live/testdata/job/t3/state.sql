@@ -1,0 +1,12 @@
+CREATE TABLE orchestration_v2_projection_provider_threads (
+      provider_thread_id TEXT PRIMARY KEY, thread_id TEXT, owner_node_id TEXT, provider TEXT NOT NULL, provider_session_id TEXT,
+      status TEXT NOT NULL, first_run_ordinal INTEGER, last_run_ordinal INTEGER, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL, driver TEXT, provider_instance_id TEXT);
+CREATE TABLE orchestration_v2_projection_runs (
+      run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL, provider TEXT NOT NULL, provider_thread_id TEXT,
+      status TEXT NOT NULL, requested_at TEXT NOT NULL, completed_at TEXT, payload_json TEXT NOT NULL, provider_instance_id TEXT);
+INSERT INTO orchestration_v2_projection_provider_threads VALUES ('pt-11111111-1111-4111-8111-111111111111','11111111-1111-4111-8111-111111111111',NULL,'claudeAgent',NULL,'idle',1,2,'2026-10-08T10:30:00.000Z','{"driver": "claudeAgent", "nativeThreadRef": {"driver": "claudeAgent", "nativeId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "strength": "strong"}}','claudeAgent','claudeAgent');
+INSERT INTO orchestration_v2_projection_runs VALUES ('run-c1','11111111-1111-4111-8111-111111111111',1,'claudeAgent','pt-11111111-1111-4111-8111-111111111111','completed','2026-10-08T10:00:01.000Z','2026-10-08T10:01:00.000Z','{}','claudeAgent');
+INSERT INTO orchestration_v2_projection_runs VALUES ('run-c2','11111111-1111-4111-8111-111111111111',2,'claudeAgent','pt-11111111-1111-4111-8111-111111111111','completed','2026-10-08T10:19:00.000Z','2026-10-08T10:20:01.000Z','{}','claudeAgent');
+INSERT INTO orchestration_v2_projection_provider_threads VALUES ('pt-22222222-2222-4222-8222-222222222222','22222222-2222-4222-8222-222222222222',NULL,'claudeAgent',NULL,'idle',1,2,'2026-10-08T10:30:00.000Z','{"driver": "claudeAgent", "nativeThreadRef": {"driver": "claudeAgent", "nativeId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "strength": "strong"}}','claudeAgent','claudeAgent');
+INSERT INTO orchestration_v2_projection_runs VALUES ('run-w0','22222222-2222-4222-8222-222222222222',1,'claudeAgent','pt-22222222-2222-4222-8222-222222222222','completed','2026-10-08T09:58:20.000Z','2026-10-08T09:58:40.000Z','{}','claudeAgent');
+INSERT INTO orchestration_v2_projection_runs VALUES ('run-w1','22222222-2222-4222-8222-222222222222',2,'claudeAgent','pt-22222222-2222-4222-8222-222222222222','completed','2026-10-08T10:01:30.000Z','2026-10-08T10:03:00.000Z','{}','claudeAgent');

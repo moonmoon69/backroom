@@ -1,0 +1,14 @@
+{
+  "name": "tally",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "slow-check": "node scripts/slow-check.mjs",
+    "tally": "node src/cli.ts"
+  }
+}
