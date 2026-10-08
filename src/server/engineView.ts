@@ -403,9 +403,11 @@ export function journalView(input: ViewInput): JournalView {
         post.about = d.requestIds.map(ref);
         const run = p.runs.get(d.causeId) ?? null;
         const wasRetried = run !== null && retried.has(run.id);
-        const retryable = run !== null && !wasRetried && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
-        const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
+        // Every request the failed run was on is closed (answered or cancelled since): sending it again would do work
+        // nobody asks for any more, so it is neither retried from here nor waiting on you.
         const settled = d.requestIds.length > 0 && d.requestIds.every((r) => p.requests.get(r)?.state !== "open");
+        const retryable = run !== null && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
+        const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
         const isDismissed = event.seq <= marks.through || dismissed.has(event.id);
         post.notice = {
           intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed,
@@ -678,7 +680,7 @@ export function dismissNotices(repos: Repos, roomId: string, p: Projection, inpu
 
 // ---------------- member status, from the journal and T3 ----------------
 
-function memberStatus(input: {
+export function memberStatus(input: {
   participant: Participant;
   repos: Repos;
   view: JournalView;
@@ -691,8 +693,11 @@ function memberStatus(input: {
   const shell = binding && shells ? shells.get(binding.threadId) : undefined;
   const missing = shells !== null && binding !== null && (!shell || shell.deletedAt !== null);
   const run = seat?.activeRunId ? view.runs.find((r) => r.id === seat.activeRunId) : undefined;
-  // T3 is running a run the room did not start: the seat's live run is not it (a run still being sent may be it).
-  const ours = run && (run.phase === "prepared" || run.phase === "sending" || (run.t3RunId !== null && run.t3RunId === shell?.activeRunId));
+  // T3 is running a run the room did not start. A run still being sent may be the room's; and a T3 run any host run of
+  // the seat was matched to is the room's whether it is live or has just ended (T3's thread list, read at most once a
+  // second, can still show it active right after the host imported its end).
+  const hostT3 = new Set(view.runs.filter((r) => r.seatId === seat?.seatId && r.t3RunId !== null).map((r) => r.t3RunId!));
+  const ours = (run !== undefined && (run.phase === "prepared" || run.phase === "sending")) || (shell?.activeRunId != null && hostT3.has(shell.activeRunId));
   const active = shell ? isRunActive(shell.status) || shell.activeRunId !== null : false;
   const native = input.native.filter((n) => n.participantId === participant.id);
   return {

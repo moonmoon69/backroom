@@ -1,151 +1,123 @@
-import { taskLabel, type RoomEvent, type Run, type Task } from "./types.ts";
+import type { EngineClaim, EnginePost, EngineRunView } from "./types.ts";
 
 /**
- * What a reply answers, said truthfully, for the tag over it. A reply answers one or more tasks (several when
- * messages were steered into the same turn), and a task comes from one of these:
- * - your message (an assignment from a user.message): "your 07:43 PM message";
- * - another member's post (an assignment from a member.message): "Fable's 07:43 PM message";
- * - a wake-up after a member's task ended (a "wake" task waiting on it): "after Opus's result · 07:43 PM", at the time
- *   of that result, or "after Opus's task7 ended" when it ended without one;
- * - a wake-up after a member continued on its own (a "wake" task with nothing to wait on, from the poster's own post to
- *   that member): "after Opus's own turn · 07:43 PM", at the time of that turn;
- * - Backroom's own note to a member: "seat briefing", or "new Consigliere notice".
- * Only a message the user wrote is "your", and only a reply to a message carries the reply arrow "↩".
+ * What a member's reply did to the requests it named, said truthfully, for the tag over it. The engine decides each
+ * request's outcome (EngineClaim) and the read API gives each request's board number; nothing here works either out:
+ * - answered: "answers #12 from you" (the request it closed, and who asked it);
+ * - already answered: "#12 was answered already";
+ * - late: "late for #12: it was cancelled" (or handed to a fresh seat): nobody is woken by it;
+ * - superseded: "#12 stays open: input it had not seen came in": its next turn answers it;
+ * - pending activity: "#12 stays open: a review or background work is still running".
+ * A reply that named no request ("yield": its requests are held open, or it had none) answers nothing and wakes
+ * nobody; an update under held work is "update on #12"; a failed run's notice is "failed on #12".
  */
-export type ReplySource =
-  | { kind: "user"; event: RoomEvent }
-  | { kind: "member"; who: string; event: RoomEvent }
-  | { kind: "result"; who: string; task: Task; answered: boolean; event: RoomEvent | null }
-  | { kind: "continued"; who: string; event: RoomEvent | null }
-  | { kind: "notice"; label: "seat briefing" | "new Consigliere notice" }
-  | { kind: "unknown"; event: RoomEvent | null };
-
 export interface ReplyContext {
-  tasks: readonly Task[];
-  runs: readonly Pick<Run, "taskId" | "resultEventId">[];
-  events: readonly RoomEvent[];
-  aliasOf: (participantId: string) => string;
+  /** The post that made a request, when the page holds it. */
+  requestPost: (requestId: string) => EnginePost | undefined;
+  /** A principal as the page names it: "you" for the user, "Backroom", or "@alias". */
+  nameOf: (principal: string) => string;
 }
 
-const byId = (events: readonly RoomEvent[], id: string | null | undefined): RoomEvent | null => (id ? (events.find((e) => e.id === id) ?? null) : null);
-const speakerId = (event: RoomEvent): string | null => (event.speaker.type === "participant" ? event.speaker.participantId : null);
-
-/** Where each task a reply answers came from, oldest first; one entry per source (tasks from the same post share it). */
-export function replySources(answered: readonly Task[], context: ReplyContext): ReplySource[] {
-  const sources: Array<{ key: string; order: string; source: ReplySource }> = [];
-  const add = (key: string, order: string, source: ReplySource) => {
-    if (!sources.some((s) => s.key === key)) sources.push({ key, order, source });
-  };
-  for (const task of answered) {
-    const post = byId(context.events, task.sourceEventId);
-    if (task.kind === "seat") {
-      const label = post?.text.startsWith("New Consigliere") ? "new Consigliere notice" : "seat briefing";
-      add(`notice:${label}`, post?.createdAt ?? task.createdAt, { kind: "notice", label });
-    } else if (task.kind === "wake" && task.prerequisites.length > 0) {
-      for (const ref of task.prerequisites) {
-        const ended = context.tasks.find((t) => t.id === ref.taskId);
-        if (!ended) continue;
-        const resultId = context.runs.filter((run) => run.taskId === ended.id && run.resultEventId).at(-1)?.resultEventId ?? null;
-        const event = byId(context.events, resultId);
-        add(`result:${ended.id}`, event?.createdAt ?? task.createdAt, { kind: "result", who: context.aliasOf(ended.participantId), task: ended, answered: resultId !== null, event });
-      }
-    } else if (task.kind === "wake") {
-      // Woken without a task to wait on: the member the poster's post went to continued on its own, and its turn ended.
-      const member = post?.to ?? null;
-      const turn = member
-        ? (context.events.filter((e) => e.kind === "t3.turn" && speakerId(e) === member && e.createdAt <= task.createdAt).at(-1) ?? null)
-        : null;
-      if (member) add(`continued:${member}:${task.id}`, turn?.createdAt ?? task.createdAt, { kind: "continued", who: context.aliasOf(member), event: turn });
-      else add(`unknown:${task.id}`, task.createdAt, { kind: "unknown", event: post });
-    } else if (post?.kind === "user.message") {
-      add(`post:${post.id}`, post.createdAt, { kind: "user", event: post });
-    } else if (post?.kind === "member.message") {
-      const from = speakerId(post);
-      const who = from ? context.aliasOf(from) : post.speaker.type === "outside" ? post.speaker.title : "a member";
-      add(`post:${post.id}`, post.createdAt, { kind: "member", who, event: post });
-    } else {
-      add(`unknown:${task.id}`, task.createdAt, { kind: "unknown", event: post });
-    }
-  }
-  return sources.sort((a, b) => a.order.localeCompare(b.order)).map((s) => s.source);
-}
-
-/** One piece of the tag: words, and a time that points at an event (clickable where it is shown). */
-export type ReplyPiece = { text: string } | { time: RoomEvent };
-
-/** What a reply answers (a message) as against what a report follows (something a member did). */
-const follows = (source: ReplySource): boolean => source.kind === "result" || source.kind === "continued";
+/** Backroom's own requests in the user's name (L4b), by what their IDs say they are. */
+const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
+  ["seat-briefing:", "seat briefing"],
+  ["moved:", "new Consigliere notice"],
+  ["reseat:", "reseat checkpoint"],
+  ["takeover:", "reseat handover"],
+  ["reseat-off:", "reseat called off"],
+];
 
 /**
- * The tag's pieces. A reply to a message keeps the reply arrow: "↩ your ", time, " message". A report that follows
- * something a member did says what, without the arrow: "after Opus's result · ", time; "after Opus's own turn · ",
- * time; "after Opus's task7 ended". Both, when a message was steered into such a turn, joined by " · ".
+ * A request Backroom made in the user's name, not something the user wrote: the standing facts a member of a room with
+ * a Consigliere is given when seated, the notice that the Consigliere changed, a reseat's checkpoint, handover and
+ * call-off. Every request the user writes comes from a message (`request.message`); one without it is Backroom's,
+ * whatever its ID.
  */
-export function replyPieces(sources: readonly ReplySource[]): ReplyPiece[] {
-  const join = (parts: ReplyPiece[][]): ReplyPiece[] =>
-    parts.flatMap((part, index) => [...(index > 0 ? [{ text: index === parts.length - 1 ? " and " : ", " }] : []), ...part]);
-
-  // Replies to messages. Your messages, and one member's messages, read as one phrase: "your 07:40 PM and 07:43 PM messages".
-  const replies: ReplyPiece[][] = [];
-  const grouped = new Map<string, RoomEvent[]>();
-  for (const source of sources.filter((s) => !follows(s))) {
-    if (source.kind === "user" || source.kind === "member") {
-      const key = source.kind === "user" ? "your" : `${source.who}'s`;
-      const list = grouped.get(key);
-      if (list) list.push(source.event);
-      else {
-        grouped.set(key, [source.event]);
-        replies.push([{ text: key }]);
-      }
-    } else if (source.kind === "notice") {
-      replies.push([{ text: source.label }]);
-    } else if (source.kind === "unknown") {
-      replies.push(source.event ? [{ text: "message · " }, { time: source.event }] : [{ text: "a message" }]);
-    }
-  }
-  for (const part of replies) {
-    const head = part[0];
-    const events = head && "text" in head ? grouped.get(head.text) : undefined;
-    if (events && part.length === 1) {
-      part.push({ text: " " });
-      events.forEach((event, index) => {
-        if (index > 0) part.push({ text: index === events.length - 1 ? " and " : ", " });
-        part.push({ time: event });
-      });
-      part.push({ text: events.length === 1 ? " message" : " messages" });
-    }
-  }
-
-  // What a report follows.
-  const after: ReplyPiece[][] = [];
-  for (const source of sources) {
-    if (source.kind === "result") {
-      if (!source.answered) after.push([{ text: `${source.who}'s ${taskLabel(source.task)} ended` }]);
-      else after.push(source.event ? [{ text: `${source.who}'s result · ` }, { time: source.event }] : [{ text: `${source.who}'s result` }]);
-    } else if (source.kind === "continued") {
-      after.push(source.event ? [{ text: `${source.who}'s own turn · ` }, { time: source.event }] : [{ text: `${source.who}'s own turn` }]);
-    }
-  }
-
-  const pieces: ReplyPiece[] = [];
-  if (replies.length > 0) pieces.push({ text: "↩ " }, ...join(replies));
-  if (after.length > 0) pieces.push({ text: replies.length > 0 ? " · after " : "after " }, ...join(after));
-  return pieces;
+export function backroomNotice(post: Pick<EnginePost, "author" | "request">): string | null {
+  if (post.author !== "$user" || !post.request) return null;
+  const known = BACKROOM_REQUESTS.find(([prefix]) => post.request!.id.startsWith(prefix));
+  if (known) return known[1];
+  return post.request.message === null ? "Backroom's request" : null;
 }
 
-/** The tag as plain text, times written by `timeOf` (for the tooltip and tests). */
-export function replyText(sources: readonly ReplySource[], timeOf: (iso: string) => string): string {
-  return replyPieces(sources)
-    .map((piece) => ("text" in piece ? piece.text : timeOf(piece.time.createdAt)))
-    .join("");
+/** A note Backroom wrote in the user's name (a reseat called off): the user's own notes are /notes to the room, or come from T3. */
+export function backroomNote(post: Pick<EnginePost, "author" | "kind" | "note">): boolean {
+  return post.author === "$user" && post.kind === "note" && post.note?.source === "post" && !post.note.room;
 }
 
-/** The tooltip, in the tag's own words: "Reply to your 07:43 PM message (task5)…", "After Opus's result · 07:43 PM (task7)…". */
-export function replyTitle(sources: readonly ReplySource[], answered: readonly Task[], timeOf: (iso: string) => string): string {
-  const where = sources
-    .map((source) => (follows(source) && "event" in source && source.event?.postNumber ? `#${source.event.postNumber}` : null))
-    .filter(Boolean);
-  const text = replyText(sources, timeOf);
-  const said = text.startsWith("↩ ") ? `Reply to ${text.slice(2)}` : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
-  return `${said} (${answered.map((t) => taskLabel(t)).join(", ")})${where.length > 0 ? `; on the board as ${where.join(", ")}` : ""}; click a time to show it`;
+/**
+ * Whether a run that was already running took this request into its turn (a steer T3 accepted mid-turn): a run
+ * delivered it, and that run was reserved before it was posted. A steer to an idle member starts a turn of its own, and
+ * one T3 ran after the running turn (Claude) is adopted by a run reserved after it: neither went into a running turn.
+ */
+export function intoRunningTurn(post: Pick<EnginePost, "seq">, runs: ReadonlyArray<Pick<EngineRunView, "inputs" | "reservedSeq">>): boolean {
+  return runs.some((run) => run.reservedSeq < post.seq && run.inputs.includes(post.seq));
+}
+
+/** One piece of the tag: words, or a board number to reveal. */
+export type ReplyPiece = { text: string } | { ref: number };
+
+const ref = (number: number | null): ReplyPiece => (number === null ? { text: "#?" } : { ref: number });
+
+/** Who asked a request, as the tag says it: "from you", "from @Fable", "(seat briefing)"; nothing when the page does not hold it. */
+function from(requestId: string, context: ReplyContext): ReplyPiece[] {
+  const post = context.requestPost(requestId);
+  if (!post) return [];
+  const notice = backroomNotice(post);
+  return [{ text: notice ? ` (${notice})` : ` from ${context.nameOf(post.author)}` }];
+}
+
+/** The words for one claim. */
+export function claimPieces(claim: EngineClaim, context: ReplyContext): ReplyPiece[] {
+  switch (claim.outcome) {
+    case "answered":
+      return [{ text: "answers " }, ref(claim.number), ...from(claim.requestId, context)];
+    case "already_answered":
+      return [ref(claim.number), { text: " was answered already" }];
+    case "late": {
+      // Why, when the page holds the request: cancelled, or handed to a fresh seat by a reseat. Otherwise no reason.
+      const state = context.requestPost(claim.requestId)?.request?.state;
+      return [{ text: "late for " }, ref(claim.number), ...(state === undefined ? [] : [{ text: state === "cancelled" ? ": it was cancelled" : ": it was handed to a fresh seat" }])];
+    }
+    case "superseded":
+      return [ref(claim.number), { text: " stays open: input it had not seen came in" }];
+    case "pending_activity":
+      return [ref(claim.number), { text: " stays open: a review or background work is still running" }];
+  }
+}
+
+/** The whole tag of a post with an output: its claims, or what it was when it named none. */
+export function replyPieces(post: EnginePost, context: ReplyContext): ReplyPiece[] {
+  const output = post.output;
+  if (!output) return [];
+  const join = (parts: ReplyPiece[][]): ReplyPiece[] => parts.flatMap((part, index) => [...(index > 0 ? [{ text: " · " }] : []), ...part]);
+  switch (output.disposition) {
+    case "answer":
+      return join(output.claims.map((claim) => claimPieces(claim, context)));
+    case "yield":
+      return [{ text: "answers nothing" }];
+    case "progress":
+      return post.about.length > 0 ? [{ text: "update on " }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: "update" }];
+    case "error":
+      return post.about.length > 0 ? [{ text: "failed on " }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: "failed" }];
+  }
+}
+
+/** The tag as plain text (tooltips and tests). */
+export function replyText(pieces: readonly ReplyPiece[]): string {
+  return pieces.map((piece) => ("text" in piece ? piece.text : `#${piece.ref}`)).join("");
+}
+
+/** How a member's output came about, when it was not the plain end of a turn the room asked for. */
+export function sourceWords(post: EnginePost): string | null {
+  switch (post.output?.source) {
+    case "answer":
+      return "rooms-board answer";
+    case "continuation":
+      return "continued on its own";
+    case "idle":
+      return "background work ended without a further turn";
+    default:
+      return null;
+  }
 }

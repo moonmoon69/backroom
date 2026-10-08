@@ -1,101 +1,123 @@
 /**
- * The tag over a reply says truthfully what it answers: only a message the user wrote is "your", only a reply to a
- * message has the arrow, and a report after something a member did says "after …".
+ * The tag over a member's reply (web/src/replyTo.ts) on the engine's journal: what the reply did to each request it
+ * named, in the engine's own outcomes, with the board numbers the read API gives (never worked out from sequences).
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { replySources, replyText, replyTitle, type ReplyContext } from "../web/src/replyTo.ts";
-import type { RoomEvent, Task } from "../web/src/types.ts";
-import { Board } from "../src/app/board.ts";
-import { agentKey } from "../src/browser/catalog.ts";
-import { parseCommand } from "../src/domain/commands.ts";
-import { createTestStack } from "./helpers.ts";
+import { backroomNote, backroomNotice, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
+import type { EngineClaim, EnginePost } from "../web/src/types.ts";
+import { journalView } from "../src/server/engineView.ts";
+import { Room } from "./runtime/helpers.ts";
 
-const at = (minute: number) => `2026-10-05T19:${String(minute).padStart(2, "0")}:00.000Z`;
-const hhmm = (iso: string) => iso.slice(11, 16);
-let sequence = 0;
-const event = (id: string, kind: RoomEvent["kind"], minute: number, extra: Partial<RoomEvent> = {}): RoomEvent =>
-  ({ id, kind, speaker: { type: "user" }, text: "", createdAt: at(minute), sequence: ++sequence, postNumber: sequence, to: null, ...extra }) as unknown as RoomEvent;
-const task = (id: string, kind: Task["kind"], sourceEventId: string, participantId: string, minute: number, extra: Partial<Task> = {}): Task =>
-  ({ id, kind, sourceEventId, participantId, number: Number(id.replace(/\D/g, "")) || 1, prerequisites: [], createdAt: at(minute), ...extra }) as unknown as Task;
-const member = (participantId: string) => ({ type: "participant", participantId, bindingId: `b-${participantId}` }) as RoomEvent["speaker"];
-
-// A room: the user asks Fable; Fable posts to Opus; Opus answers; Fable is woken with it; Astra continues on its own.
-const ask = event("e-ask", "user.message", 30, { text: "@Fable look at the vault" });
-const ask2 = event("e-ask2", "user.message", 31, { text: "and the gate too" });
-const post = event("e-post", "member.message", 33, { speaker: member("fable"), to: "opus", text: "@Opus fix the gate" });
-const result = event("e-result", "assistant.reply", 43, { speaker: member("opus"), text: "Fixed." });
-const astraPost = event("e-post2", "member.message", 35, { speaker: member("fable"), to: "astra", text: "@Astra review it" });
-const astraTurn = event("e-turn", "t3.turn", 50, { speaker: member("astra"), text: "Review done on my own." });
-const seat = event("e-seat", "system", 1, { speaker: { type: "system" }, text: "Seat briefing sent to @Opus" });
-const moved = event("e-moved", "system", 2, { speaker: { type: "system" }, text: "New Consigliere sent to @Opus" });
-
-const t1 = task("t1", "assignment", "e-ask", "fable", 30);
-const t1b = task("t1b", "assignment", "e-ask2", "fable", 31);
-const t2 = task("t2", "assignment", "e-post", "opus", 33);
-const t3 = task("t3", "wake", "e-post", "fable", 33, { prerequisites: [{ taskId: "t2", revision: 1 }] });
-const t4 = task("t4", "assignment", "e-post2", "astra", 35);
-const t5 = task("t5", "wake", "e-post2", "fable", 35, { prerequisites: [{ taskId: "t4", revision: 1 }] });
-const t6 = task("t6", "wake", "e-post2", "fable", 51);
-const t7 = task("t7", "seat", "e-seat", "opus", 1);
-const t8 = task("t8", "seat", "e-moved", "opus", 2);
-
-const context: ReplyContext = {
-  tasks: [t1, t1b, t2, t3, t4, t5, t6, t7, t8],
-  runs: [
-    { taskId: "t2", resultEventId: "e-result" },
-    { taskId: "t4", resultEventId: null },
-  ],
-  events: [seat, moved, ask, ask2, post, astraPost, result, astraTurn],
-  aliasOf: (id) => ({ fable: "Fable", opus: "Opus", astra: "Astra" })[id] ?? id,
-};
-const tag = (...answered: Task[]) => replyText(replySources(answered, context), hhmm);
-
-test("each kind of source a task can have gets its own words; only the user's own message is 'your'", () => {
-  assert.equal(tag(t1), "↩ your 19:30 message", "the user asked");
-  assert.equal(tag(t1, t1b), "↩ your 19:30 and 19:31 messages", "two of the user's messages steered into one turn");
-  assert.equal(tag(t2), "↩ Fable's 19:33 message", "a member's post to another member");
-  assert.equal(tag(t3), "after Opus's result · 19:43", "a wake-up after a member's task: the time is the result's");
-  assert.equal(tag(t5), "after Astra's task4 ended", "a wake-up after a task that ended without an answer");
-  assert.equal(tag(t6), "after Astra's own turn · 19:50", "a wake-up after a member's own turn");
-  assert.equal(tag(t7), "↩ seat briefing");
-  assert.equal(tag(t8), "↩ new Consigliere notice");
-  assert.equal(tag(t1, t3), "↩ your 19:30 message · after Opus's result · 19:43", "a message steered into a wake-up turn");
-  for (const answered of [t2, t3, t5, t6, t7, t8]) assert.doesNotMatch(tag(answered), /your/, `${answered.id} is not the user's`);
-  // Only a reply to a message has the arrow; a report that follows what a member did does not.
-  for (const answered of [t3, t5, t6]) assert.match(tag(answered), /^after /, `${answered.id} follows, it does not reply`);
-  for (const answered of [t1, t2, t7]) assert.match(tag(answered), /^↩ /, `${answered.id} replies to a message`);
-  // The tooltip says the same words.
-  assert.match(replyTitle(replySources([t3], context), [t3], hhmm), /^After Opus's result · 19:43 \(task3\); on the board as #\d+; click a time/);
-  assert.match(replyTitle(replySources([t1], context), [t1], hhmm), /^Reply to your 19:30 message \(task1\)/);
+/** A request post; the user's come from a message (as on the journal), unless `fromMessage` says otherwise (Backroom's). */
+const request = (id: string, number: number, author: string, state: "open" | "answered" | "cancelled" = "open", fromMessage = author === "$user"): EnginePost => ({
+  seq: number,
+  number,
+  id,
+  kind: "request",
+  author,
+  to: ["W"],
+  body: "do it",
+  about: [{ requestId: id, number }],
+  at: null,
+  after: null,
+  turn: false,
+  request: { id, parentId: null, rootId: id, owner: "W", returnTo: author, state, answer: null, corrections: 0, message: fromMessage ? { id: `m-${id}`, index: 0, steer: false, attachmentIds: [] } : null },
 });
 
-test("the tag and rooms-board agree on a real post, its answer and the poster's wake-up", async (t) => {
-  const stack = await createTestStack();
-  t.after(() => stack.close());
-  const board = new Board({ repos: stack.repos, execute: (command) => stack.service.execute(parseCommand(command)), afterSeat: () => stack.tick(2), statusOf: (id) => stack.scheduler.participantStatus(id) });
-  await board.run(["post", "@sol2 Check the parser."], agentKey("sol1", stack.roomId));
-  await stack.tick(2);
-  stack.fake.completeRun(stack.threadOf("sol2"), { text: "The parser is fine." });
-  await stack.tick(3);
-  stack.fake.completeRun(stack.threadOf("sol1"), { text: "Noted; nothing more to do." });
-  await stack.tick(2);
+const context = (posts: EnginePost[]): ReplyContext => ({
+  requestPost: (id) => posts.find((post) => post.request?.id === id),
+  nameOf: (principal) => (principal === "$user" ? "you" : `@${principal}`),
+});
 
-  const events = stack.repos.listEvents(stack.roomId, 1, Number.MAX_SAFE_INTEGER, 100_000);
-  const tasks = stack.repos.listTasks(stack.roomId);
-  const runs = tasks.flatMap((t) => stack.repos.listRunsForTask(t.id));
-  const aliases = new Map(stack.repos.listParticipants(stack.roomId).map((p) => [p.id, p.alias]));
-  const live: ReplyContext = { tasks: tasks as never, runs, events: events as never, aliasOf: (id) => aliases.get(id) ?? id };
-  const answer = events.find((e) => e.kind === "assistant.reply" && e.speaker.type === "participant" && e.speaker.participantId === stack.participants.sol2)!;
-  const woken = events.find((e) => e.kind === "assistant.reply" && e.speaker.type === "participant" && e.speaker.participantId === stack.participants.sol1)!;
-  const answeredBy = (reply: typeof answer) => tasks.filter((t) => runs.some((r) => r.taskId === t.id && r.resultEventId === reply.id)) as never as Task[];
-  assert.match(replyText(replySources(answeredBy(answer), live), hhmm), /^↩ sol1's \d\d:\d\d message$/);
-  assert.equal(replyText(replySources(answeredBy(woken), live), hhmm), `after sol2's result · ${hhmm(answer.createdAt)}`);
+const claim = (requestId: string, number: number, outcome: EngineClaim["outcome"]): EngineClaim => ({ requestId, number, outcome, returnTo: "$user" });
 
-  const index = await board.run(["index"], agentKey("sol2", stack.roomId));
-  assert.match(index, new RegExp(`#${answer.postNumber}  assistant\\.reply  @sol2 → @sol1 · `), "an answer to a member's post goes to that member");
-  assert.match(index, new RegExp(`#${woken.postNumber}  assistant\\.reply  @sol1 · after @sol2's result #${answer.postNumber} · `), "a wake-up's report says what it follows, as the page does");
-  assert.doesNotMatch(index, /→ user/, "nobody here answered the user");
-  const read = await board.run(["read", String(woken.postNumber)], agentKey("sol2", stack.roomId));
-  assert.match(read, new RegExp(`^\\[#${woken.postNumber} assistant\\.reply · @sol1 · after @sol2's result #${answer.postNumber} · `));
+test("each outcome the engine gives a claim gets its own words, with the request's board number", () => {
+  const posts = [request("A", 12, "$user"), request("B", 14, "C"), request("X", 20, "$user", "cancelled"), request("T", 21, "C", "answered")];
+  const words = (c: EngineClaim) => replyText(claimPieces(c, context(posts)));
+  assert.equal(words(claim("A", 12, "answered")), "answers #12 from you");
+  assert.equal(words(claim("B", 14, "answered")), "answers #14 from @C");
+  assert.equal(words(claim("A", 12, "already_answered")), "#12 was answered already");
+  assert.equal(words(claim("X", 20, "late")), "late for #20: it was cancelled");
+  assert.equal(words(claim("T", 21, "late")), "late for #21: it was handed to a fresh seat");
+  // A late claim on a request the page does not hold: no reason given rather than a guessed one.
+  assert.equal(words(claim("Q", 30, "late")), "late for #30");
+  assert.equal(words(claim("A", 12, "superseded")), "#12 stays open: input it had not seen came in");
+  assert.equal(words(claim("A", 12, "pending_activity")), "#12 stays open: a review or background work is still running");
+  // Backroom's briefing to a member, made in the user's name: its acknowledgement does not say "from you".
+  const briefing = { ...request("seat-briefing:W:seated", 2, "$user", "open", false), id: "b" };
+  assert.equal(replyText(claimPieces(claim("seat-briefing:W:seated", 2, "answered"), context([...posts, briefing]))), "answers #2 (seat briefing)");
+  // A request the page does not hold (older than the loaded posts): its number is still read from the claim.
+  assert.equal(replyText(claimPieces(claim("Z", 3, "answered"), context(posts))), "answers #3");
+});
+
+test("a reply that named no request, an update and a failure say so; how it came about is named", () => {
+  const output = (disposition: NonNullable<EnginePost["output"]>["disposition"], source: NonNullable<EnginePost["output"]>["source"], claims: EngineClaim[] = []): EnginePost => ({
+    seq: 30,
+    number: 30,
+    id: "o",
+    kind: "output",
+    author: "W",
+    to: [],
+    body: "text",
+    about: disposition === "yield" ? [] : [{ requestId: "A", number: 12 }],
+    at: null,
+    after: null,
+    turn: source === "final" || source === "continuation",
+    output: { disposition, claims, source, runId: null, activityId: null, t3: null, afterAnswer: false },
+  });
+  const posts = [request("A", 12, "$user")];
+  assert.equal(replyText(replyPieces(output("yield", "final"), context(posts))), "answers nothing");
+  assert.equal(replyText(replyPieces(output("progress", "continuation"), context(posts))), "update on #12");
+  assert.equal(replyText(replyPieces(output("error", "final"), context(posts))), "failed on #12");
+  assert.equal(replyText(replyPieces(output("answer", "answer", [claim("A", 12, "answered"), claim("A", 12, "late")]), context(posts))), "answers #12 from you · late for #12: it was handed to a fresh seat");
+  assert.equal(sourceWords(output("answer", "final")), null);
+  assert.equal(sourceWords(output("answer", "answer")), "rooms-board answer");
+  assert.equal(sourceWords(output("progress", "continuation")), "continued on its own");
+  assert.equal(sourceWords(output("answer", "idle")), "background work ended without a further turn");
+});
+
+test("on a real journal, the tag of a member's final names the request it answered by the read API's number", async (t) => {
+  const room = await Room.create();
+  t.after(() => room.close());
+  // As the user's message path (L4a) writes it: the request ID names the message it came from.
+  const asked = "msg:m1:0:W";
+  room.host.request(room.room, { actor: "$user", id: asked, to: "W", body: "Fix the date test." });
+  await room.until(() => room.running("W"));
+  room.complete("W", "Fixed: the parser now reads ISO weeks.");
+  await room.until(() => room.state(asked) === "answered");
+  const view = journalView({ p: room.p });
+  const post = view.posts.find((p) => p.request?.id === asked)!;
+  const reply = view.posts.find((p) => p.output?.claims.some((c) => c.requestId === asked && c.outcome === "answered"))!;
+  assert.ok(post && reply, "the request and its answer are on the board");
+  const text = replyText(replyPieces(reply, context(view.posts)));
+  assert.equal(text, `answers #${post.number} from you`);
+  assert.equal(post.request?.state, "answered", "the request's marker");
+  assert.equal(post.request?.answer?.number, reply.number, "the marker points at the reply");
+});
+
+test("what Backroom wrote in the user's name is Backroom's: any request without a user message, and notes that are not the user's", () => {
+  assert.equal(backroomNotice(request("msg:m1:0:W", 3, "$user")), null, "a request from the user's message is the user's");
+  assert.equal(backroomNotice(request("seat-briefing:W:seated", 4, "$user", "open", false)), "seat briefing");
+  assert.equal(backroomNotice(request("moved:W:x", 5, "$user", "open", false)), "new Consigliere notice");
+  assert.equal(backroomNotice(request("reseat:abc", 6, "$user", "open", false)), "reseat checkpoint");
+  assert.equal(backroomNotice(request("takeover:abc", 7, "$user", "open", false)), "reseat handover");
+  assert.equal(backroomNotice(request("reseat-off:abc", 8, "$user", "open", false)), "reseat called off");
+  assert.equal(backroomNotice(request("something-new:abc", 9, "$user", "open", false)), "Backroom's request", "no user message: Backroom's, whatever the ID");
+  assert.equal(backroomNotice(request("board:abc", 10, "C")), null, "a member's request is the member's");
+
+  const note = (source: "post" | "t3-message", room: boolean, author = "$user") =>
+    ({ kind: "note" as const, author, note: { source, room, t3: null, afterAnswer: false } });
+  assert.equal(backroomNote(note("post", false)), true, "a reseat called off");
+  assert.equal(backroomNote(note("post", true)), false, "the user's /note to the room");
+  assert.equal(backroomNote(note("t3-message", false)), false, "typed in T3");
+  assert.equal(backroomNote(note("post", false, "W")), false, "a member's note");
+});
+
+test("'into the turn' only when a run already running took the request", () => {
+  const runs = [{ reservedSeq: 10, inputs: [8, 12] }, { reservedSeq: 20, inputs: [15] }];
+  assert.equal(intoRunningTurn({ seq: 12 }, runs), true, "steered into the run reserved at 10");
+  assert.equal(intoRunningTurn({ seq: 15 }, runs), false, "a run reserved after it: a turn of its own (an idle member, or a turn T3 ran after)");
+  assert.equal(intoRunningTurn({ seq: 8 }, runs), false, "posted before the run: its ordinary input");
+  assert.equal(intoRunningTurn({ seq: 30 }, runs), false, "not delivered yet");
 });

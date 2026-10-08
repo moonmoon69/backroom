@@ -252,7 +252,7 @@ export function BrowserChoices({
 /**
  * The Browser tab of the room's side panel, in the order it matters to agents: first whether they are told about
  * browsers at all, then which browsers they may use, each with the name and description they read (editable here),
- * one of them the default that starts for each task; then that default's process, with Start or Stop at the bottom.
+ * one of them the default that starts for each turn; then that default's process, with Start or Stop at the bottom.
  * The browsers themselves are managed under Browsers on the overview.
  */
 export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) => void }) {
@@ -285,8 +285,8 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
         <span>
           Let this room&rsquo;s agents use browsers
           <span className="hint">
-            Each task&rsquo;s instructions then list the browsers ticked below, with what each is for, and how to drive them; the default starts
-            before the task is sent. While this is off, agents are not told about browsers and the browser tool refuses this room.
+            Each turn&rsquo;s briefing then lists the browsers ticked below, with what each is for, and how to drive them; the default starts
+            before the turn is sent. While this is off, agents are not told about browsers and the browser tool refuses this room.
           </span>
         </span>
       </label>

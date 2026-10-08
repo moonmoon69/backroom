@@ -14,6 +14,7 @@ import { accessForKey, reconcileBrowserCatalog, roomsUsingBrowser } from "../bro
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig } from "../config.ts";
 import { KokoroSpeech } from "../speech/kokoro.ts";
+import { withFakeControls } from "./fakeControls.ts";
 import { createHttpApp } from "./http.ts";
 
 const config = loadConfig();
@@ -110,7 +111,9 @@ const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config
 const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
 stack.scheduler.start(config.tickMs);
 
-const server = serve({ fetch: app.fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {
+// The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
+const fetch = adapter instanceof FakeT3Adapter ? withFakeControls(app.fetch, adapter) : app.fetch;
+const server = serve({ fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {
   log(`listening on http://127.0.0.1:${info.port} (db ${config.dbPath})`);
   // rooms-board needs the file too, so it is written whether or not this service runs browsers.
   {

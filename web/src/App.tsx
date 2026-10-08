@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 /** How long the overview's drawer takes to slide in (styles.css, ov-slide). */
 const SLIDE_MS = 160;
@@ -15,12 +15,12 @@ import { ProvidersSection } from "./components/Providers.tsx";
 import { PairingPanel } from "./components/StatusStrip.tsx";
 import { FilePreviewHost } from "./components/FilePreview.tsx";
 import { useToast } from "./components/Toast.tsx";
-import { RoomContext, type FollowUpPrefill, type RoomContextValue } from "./context.tsx";
+import { RoomContext, seatLookups, type RoomContextValue } from "./context.tsx";
 import { Overview } from "./components/Overview.tsx";
 import { OverviewRoom } from "./components/OverviewRoom.tsx";
 import { CloseIcon } from "./components/icons.tsx";
 import { useTheme } from "./theme.ts";
-import { roomKey, threadKey, useFinishNotifications, useLooking } from "./news.ts";
+import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
 import type { Selection } from "./selection.ts";
 import { isRunActive, type BrowserListItem, type CommandResult, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project, type T3ThreadShell } from "./types.ts";
@@ -47,6 +47,8 @@ export function App() {
   const [selection, setSelection] = useState<Selection | null>(storedSelection);
   const selectedRoomId = selection?.kind === "room" ? selection.id : null;
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  /** The service runs the old runtime (no ROOMS_ENGINE=1): its rooms come in shapes this page does not read. */
+  const [oldRuntimeRoom, setOldRuntimeRoom] = useState(false);
   // T3's projects and threads, for the overview. Kept at the last good reading while T3 does not answer.
   const [projects, setProjects] = useState<T3Project[] | null>(null);
   const [threads, setThreads] = useState<T3ThreadShell[]>([]);
@@ -60,8 +62,6 @@ export function App() {
   // The open room's side panel (Members, Browser, Git); the Git tab reads in full only while it shows.
   const [roomPanel, setRoomPanel] = useState<InspectorTab | null>(null);
   const [pairingOpen, setPairingOpen] = useState(false);
-  const [followUp, setFollowUp] = useState<FollowUpPrefill | null>(null);
-  const followUpNonce = useRef(0);
   const [theme, setTheme] = useTheme();
   // On the overview page the room last opened stays open but is not the one being looked at. The page opens on its
   // cards; a room opened from there covers it, and Esc (outside a dialog) goes back.
@@ -97,7 +97,10 @@ export function App() {
   }, [report]);
 
   const loadRooms = useCallback(() => {
-    api.rooms().then(setRooms).catch(report);
+    api
+      .rooms()
+      .then((list) => (list.every((room) => "counts" in room) ? setRooms(list) : setOldRuntimeRoom(true)))
+      .catch(report);
   }, [report]);
 
   // Presets change only from this UI (or another tab of it), so they are read at the start and after a change.
@@ -138,7 +141,14 @@ export function App() {
     }
     api
       .room(selectedRoomId)
-      .then(setSnapshot)
+      .then((next) => {
+        // A service without ROOMS_ENGINE=1 serves the old shape, which nothing here reads (see oldRuntimeRoom).
+        if ((next as { engine?: unknown }).engine === true) setSnapshot(next);
+        else {
+          setSnapshot(null);
+          setOldRuntimeRoom(true);
+        }
+      })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) {
           setSelection(null);
@@ -198,24 +208,29 @@ export function App() {
   // ---- news: what finished while you were not looking (see news.ts) ----
   const looking = useLooking();
   const lookingHere = looking && !outside;
-  const openKey = selection?.kind === "room" ? roomKey(selection.id) : selection?.kind === "thread" ? threadKey(selection.id) : null;
-  const openNewsAt =
-    selection?.kind === "room" ? rooms.find((r) => r.id === selection.id)?.news?.latest?.at : selection?.kind === "thread" ? threads.find((t) => t.id === selection.id)?.news?.at : undefined;
-  // The open room or thread is seen up to its newest finish while you look at it, on every device.
+  // The open room is seen up to its newest finish (a journal sequence), a thread outside rooms up to its newest
+  // finish's time, while you look at it, on every device.
+  const openRoomId = selection?.kind === "room" ? selection.id : null;
+  const openThreadId = selection?.kind === "thread" ? selection.id : null;
+  const openRoomSeq = openRoomId ? rooms.find((r) => r.id === openRoomId)?.news.latest?.seq : undefined;
+  const openThreadAt = openThreadId ? threads.find((t) => t.id === openThreadId)?.news?.at : undefined;
   useEffect(() => {
-    if (!openKey || !openNewsAt || !lookingHere) return;
-    api.markSeen(openKey, openNewsAt).then(
-      () => {
-        setRooms((list) => list.map((room) => (roomKey(room.id) === openKey && room.news?.latest?.at === openNewsAt ? { ...room, news: { unseen: 0, latest: null } } : room)));
-        setThreads((list) => list.map((thread) => (threadKey(thread.id) === openKey && thread.news?.at === openNewsAt ? { ...thread, news: null } : thread)));
-      },
-      // A service older than marks: its lists carry no news either.
+    if (!openRoomId || openRoomSeq === undefined || !lookingHere) return;
+    api.markRoomSeen(openRoomId, openRoomSeq).then(
+      () => setRooms((list) => list.map((room) => (room.id === openRoomId && room.news.latest?.seq === openRoomSeq ? { ...room, news: { ...room.news, seenSeq: openRoomSeq, unseen: 0, latest: null } } : room))),
       () => undefined,
     );
-  }, [openKey, openNewsAt, lookingHere]);
+  }, [openRoomId, openRoomSeq, lookingHere]);
+  useEffect(() => {
+    if (!openThreadId || !openThreadAt || !lookingHere) return;
+    api.markThreadSeen(openThreadId, openThreadAt).then(
+      () => setThreads((list) => list.map((thread) => (thread.id === openThreadId && thread.news?.at === openThreadAt ? { ...thread, news: null } : thread))),
+      () => undefined,
+    );
+  }, [openThreadId, openThreadAt, lookingHere]);
   // The overview leaves out the news of what you are looking at, so it does not flash before the mark lands.
   const sideRooms = useMemo(
-    () => (lookingHere && selection?.kind === "room" ? rooms.map((room) => (room.id === selection.id && room.news?.unseen ? { ...room, news: { unseen: 0, latest: null } } : room)) : rooms),
+    () => (lookingHere && selection?.kind === "room" ? rooms.map((room) => (room.id === selection.id && room.news.unseen ? { ...room, news: { ...room.news, unseen: 0, latest: null } } : room)) : rooms),
     [rooms, lookingHere, selection],
   );
   const sideThreads = useMemo(
@@ -223,7 +238,7 @@ export function App() {
     [threads, lookingHere, selection],
   );
   // The tab's title counts what is new, so a background tab shows it: "(3) Backroom".
-  const newCount = sideRooms.reduce((sum, room) => sum + (room.news?.unseen ?? 0), 0) + sideThreads.filter((thread) => thread.news).length;
+  const newCount = sideRooms.reduce((sum, room) => sum + room.news.unseen, 0) + sideThreads.filter((thread) => thread.news).length;
   useEffect(() => {
     document.title = newCount > 0 ? `(${newCount}) Backroom` : "Backroom";
   }, [newCount]);
@@ -241,8 +256,18 @@ export function App() {
     ? Object.values(snapshot.participantStatus).some((s) => isRunActive(s.status) || s.externalActivity)
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
+  // The stream announces the journal's appends; a member's status also comes from T3 (a turn starts or ends there), so
+  // the open room is read again on a timer too: often while anything runs, seldom when all is quiet.
+  const roomBusy = snapshot ? snapshotRunning || snapshot.runs.some((run) => run.phase !== "terminal") : false;
+  useEffect(() => {
+    if (!selectedRoomId) return;
+    const timer = setInterval(loadSnapshot, roomBusy ? 4000 : 15000);
+    return () => clearInterval(timer);
+  }, [selectedRoomId, loadSnapshot, roomBusy]);
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
-  const costs = useRoomCosts(snapshot ? snapshot.room.id : null, snapshot ? snapshot.events.filter((e) => e.kind === "assistant.reply" || e.kind === "t3.turn").length : 0);
+  // A new reply is priced at once: the nonce is the seq of the newest post that stands for a turn (spend is keyed by those).
+  const lastReplySeq = snapshot ? snapshot.posts.reduce((seq, post) => (post.turn ? post.seq : seq), 0) : 0;
+  const costs = useRoomCosts(snapshot ? snapshot.room.id : null, lastReplySeq);
 
   // Git: the folder and commit count the Git tab shows start over in each room.
   const [gitPath, setGitPath] = useState<string | null>(null);
@@ -282,11 +307,6 @@ export function App() {
         }
         return result;
       } catch (error) {
-        if (error instanceof ApiError && error.code === "stale_revision") {
-          toast(`The task changed since you loaded it; refreshed. ${error.message}`);
-          onRoomChanged();
-          return null;
-        }
         if (error instanceof ApiError && error.issues && error.issues.length > 0) {
           toast(`${error.message}`);
           return null;
@@ -311,17 +331,15 @@ export function App() {
   const contextValue = useMemo<RoomContextValue | null>(() => {
     if (!snapshot) return null;
     const byId = new Map(snapshot.participants.map((p) => [p.id, p]));
+    const participantById = (id: string) => byId.get(id);
     return {
       snapshot,
       runCommand,
       refetch: onRoomChanged,
-      participantById: (id) => byId.get(id),
+      participantById,
       aliasOf: (id) => byId.get(id)?.alias ?? id,
       colorOf: () => MEMBER_ACCENT,
-      addFollowUp: (prerequisites) => {
-        followUpNonce.current += 1;
-        setFollowUp({ prerequisites, nonce: followUpNonce.current });
-      },
+      ...seatLookups(snapshot, participantById),
       desk,
       deskError,
       costs,
@@ -441,6 +459,17 @@ export function App() {
     </Dialog>
   ) : null;
 
+  // Until the old runtime is removed (Z4) a service may run without ROOMS_ENGINE=1. Its rooms come in the old shapes,
+  // which this page does not read: say so plainly instead of failing on them.
+  if (oldRuntimeRoom) {
+    return (
+      <div className="old-runtime" role="alert">
+        <h1>Backroom</h1>
+        <p>This page needs Backroom's engine runtime. Restart the service with ROOMS_ENGINE=1, then reload.</p>
+      </div>
+    );
+  }
+
   // The overview: one page of every project, room, thread, crew member and browser; what is opened from it covers the
   // page.
   return (
@@ -492,7 +521,6 @@ export function App() {
                       <ErrorBoundary key={`sheet:${selection.id}`} onReset={() => setSelection(null)} header={<div className="sheet-head">{overviewButton}</div>}>
                         <OverviewRoom
                           project={projects?.find((p) => p.id === contextValue.snapshot.room.projectId) ?? null}
-                          followUp={followUp}
                           panel={roomPanel}
                           onPanel={setRoomPanel}
                           onClose={() => setOutside(true)}

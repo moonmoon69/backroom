@@ -179,7 +179,7 @@ export const THREAD_CHOICES: Array<{ key: ThreadLifecycleChoice; label: string; 
 ];
 
 /**
- * Delete a room: the room's own record (messages, tasks, images) goes; each member's T3 thread is kept, settled,
+ * Delete a room: the room's own record (its board, images) goes; each member's T3 thread is kept, settled,
  * archived, or deleted in T3, chosen per thread (default keep).
  */
 function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onCommand: RunCommand; onClose: () => void }) {
@@ -192,8 +192,9 @@ function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onComma
     api.room(room.id).then(setSnapshot).catch(() => setSnapshot(null));
   }, [room.id]);
   const crew = snapshot ? snapshot.participants.filter(isActiveParticipant) : [];
-  const running = snapshot ? snapshot.tasks.filter((t) => t.state === "running" || t.state === "dispatching" || t.state === "needs_input").length : 0;
-  const pending = snapshot ? snapshot.tasks.filter((t) => t.state === "queued" || t.state === "held" || t.state === "blocked").length : 0;
+  // From the room's journal: members in a turn the room started, and requests nobody has answered yet.
+  const running = snapshot ? snapshot.counts.busy : 0;
+  const pending = snapshot ? snapshot.counts.openRequests : 0;
   const deleting = Object.values(choices).includes("delete");
   const setAll = (choice: ThreadLifecycleChoice) => setChoices(Object.fromEntries(crew.map((p) => [p.id, choice])));
 
@@ -221,9 +222,9 @@ function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onComma
     <Dialog title={`Delete "${room.title}"?`} onClose={onClose} wide>
       <form onSubmit={submit} className="form">
         <p className="muted">
-          This removes the room's conversation, tasks and images from Backroom. The members' threads live in T3 Code; choose what happens to each.
-          {running > 0 ? ` ${running} task${running === 1 ? " is" : "s are"} running: those turns keep running in T3, the room just stops following them.` : ""}
-          {pending > 0 ? ` ${pending} waiting task${pending === 1 ? "" : "s"} will not be sent.` : ""}
+          This removes the room's board and images from Backroom. The members' threads live in T3 Code; choose what happens to each.
+          {running > 0 ? ` ${running} member${running === 1 ? " is" : "s are"} in a turn: those turns keep running in T3, the room just stops following them.` : ""}
+          {pending > 0 ? ` ${pending} open request${pending === 1 ? "" : "s"} will not be answered here.` : ""}
         </p>
         {!snapshot ? (
           <p className="muted mono">Loading members…</p>

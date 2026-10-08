@@ -1,6 +1,6 @@
 /**
  * Text edits behind the composer's controls. The text is the single source of truth: every control
- * (mention, note, timing, "it's a reference", prerequisite pick) rewrites the text and the parser reads it back.
+ * (mention, note, timing, "it's a reference") rewrites the text and the parser reads it back.
  * Offsets come from the parser's draft of the same text (src/parser/explicit.ts).
  */
 import type { DraftAssignment, MentionSpan } from "../types.ts";
@@ -12,7 +12,7 @@ export interface TextEdit {
 }
 
 const REF = String.raw`(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)`;
-/** Timing directives as the parser reads them in an assignment's head: /now, /hold, /after <refs>. */
+/** Timing directives as the parser reads them in an assignment's head: /now, /steer, and the retired /hold, /after <refs>. */
 const DIRECTIVES = new RegExp(String.raw`\/(?:hold|now|steer)\b\s*|\/after\b\s*(?:${REF}(?:\s*,\s*${REF})*[\s,]*)?`, "gi");
 const NOTE = /^(\s*)\/note\b[ \t]*/i;
 
@@ -27,10 +27,10 @@ function insertToken(text: string, at: number, token: string): TextEdit {
 }
 
 /**
- * Set an assignment's timing directive: drop any /now, /hold, /after in its head, then write `/now` or `/hold`
- * right after its addressing. `null` just removes the directive (the assignment falls back to its default timing).
+ * Set an assignment's timing directive: drop any directive in its head (a retired /hold or /after too), then write
+ * `/now` or `/steer` right after its addressing. `null` just removes it (the assignment starts now, or next).
  */
-export function setTiming(text: string, assignment: DraftAssignment, timing: "now" | "hold" | "steer" | null): TextEdit {
+export function setTiming(text: string, assignment: DraftAssignment, timing: "now" | "steer" | null): TextEdit {
   const head = text.slice(assignment.start, assignment.insertAt);
   const stripped = head.replace(DIRECTIVES, "");
   const base = `${text.slice(0, assignment.start)}${stripped}${text.slice(assignment.insertAt)}`;
@@ -51,19 +51,6 @@ export function splitAtMention(text: string, mention: MentionSpan): TextEdit {
 export function mentionToReference(text: string, mention: MentionSpan): TextEdit {
   if (text[mention.start] !== "@") return { text, caret: mention.start };
   return { text: `${text.slice(0, mention.start)}${text.slice(mention.start + 1)}`, caret: mention.end - 1 };
-}
-
-/** Replace `@alias` after the assignment's /after directive with a concrete task label. */
-export function pickPrerequisite(text: string, assignment: DraftAssignment, alias: string, label: string): TextEdit | null {
-  const head = text.slice(assignment.start, assignment.insertAt);
-  const after = /\/after\b/i.exec(head);
-  if (!after) return null;
-  const pattern = new RegExp(String.raw`(?<![\w@])@${escapeRegExp(alias)}(?![\w-])`, "i");
-  const rest = head.slice(after.index);
-  const match = pattern.exec(rest);
-  if (!match) return null;
-  const at = assignment.start + after.index + match.index;
-  return { text: `${text.slice(0, at)}${label}${text.slice(at + match[0].length)}`, caret: at + label.length };
 }
 
 /** Replace a mention's alias (alias pools: "@sol" → "@sol2"). */
@@ -91,19 +78,8 @@ export function toggleNote(text: string): TextEdit {
   return { text: next, caret: next.length };
 }
 
-/** Prefix the text with `/after task3, task4 ` (follow-up from a task card). */
-export function prependAfter(text: string, labels: string[]): TextEdit {
-  const prefix = `/after ${labels.join(", ")} `;
-  const rest = text.replace(/^\s+/, "");
-  return { text: `${prefix}${rest}`, caret: prefix.length };
-}
-
 /** Same rule as the parser: an @mention at the start of the text, a line, or a sentence always addresses. */
 export function isSentenceStart(text: string, position: number): boolean {
   const before = text.slice(0, position);
   return /^\s*$/.test(before) || /\n\s*$/.test(before) || /[.!?;:]\s+$/.test(before);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

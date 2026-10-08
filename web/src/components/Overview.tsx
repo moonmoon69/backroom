@@ -318,9 +318,9 @@ const tierOf = (state: TileState): number => (state.needs > 0 ? 0 : state.unseen
 
 function roomState(room: RoomListItem, detail: OverviewRoom | undefined): TileState {
   return {
-    needs: detail?.needs ?? room.activity?.needsInput ?? 0,
-    busy: detail ? detail.members.filter((m) => describeStatus(m.status).motion !== null).length : Math.max(room.working, room.activity?.turn ?? 0) + (room.activity?.background ?? 0),
-    unseen: room.news?.unseen ?? 0,
+    needs: detail?.needs ?? room.counts.needsYou,
+    busy: detail ? detail.members.filter((m) => describeStatus(m.status).motion !== null || m.status.working).length : room.counts.busy + room.counts.working,
+    unseen: room.news.unseen,
   };
 }
 
@@ -355,7 +355,7 @@ function RoomCard({
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
 }) {
   const { needs, busy } = roomState(room, detail);
-  const news = room.news && room.news.unseen > 0 ? room.news : null;
+  const news = room.news.unseen > 0 ? room.news : null;
   return (
     <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget}>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`}>
@@ -376,10 +376,11 @@ function RoomCard({
           {/* The Consigliere first: what he says is the room's news. */}
           {[...detail.members].sort((a, b) => Number(b.consigliere) - Number(a.consigliere)).map((member) => {
             const described = describeStatus(member.status);
-            // A turn's latest line; else the task it is on; else what it last said (also between turns, while its
+            // A turn's latest line; else the request it is on; else what it last said (also between turns, while its
             // background work runs).
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
-            const when = member.live || member.doing ? "" : age(member.lastReply?.at);
+            // T3's time of it, or the lower bound when T3 did not time it.
+            const when = member.live || member.doing ? "" : age(member.lastReply?.at ?? member.lastReply?.after);
             return (
               <li key={member.id} className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`} title={line ? oneLine(line, 400) : described.label}>
                 <span className="avatar avatar-xs" aria-hidden="true">

@@ -1,12 +1,5 @@
 import { createContext, useContext } from "react";
-import type { CommandResult, DeskResponse, GitResponse, Participant, PrerequisiteRef, RoomCommand, RoomCosts, RoomSnapshot } from "./types.ts";
-
-export interface FollowUpPrefill {
-  /** Prerequisite task revisions preselected as after_all. */
-  prerequisites: Array<PrerequisiteRef & { label: string }>;
-  /** Monotonic token so the composer can detect a new prefill even with the same content. */
-  nonce: number;
-}
+import type { CommandResult, DeskResponse, EngineSeatView, GitResponse, Participant, RoomCommand, RoomCosts, RoomSnapshot } from "./types.ts";
 
 export interface RoomContextValue {
   snapshot: RoomSnapshot;
@@ -17,12 +10,14 @@ export interface RoomContextValue {
   aliasOf: (id: string) => string;
   /** The accent that marks a participant's rows: one quiet colour for everyone (MEMBER_ACCENT); logos tell them apart. */
   colorOf: (id: string) => string;
-  /** Prefill the composer with an after_all schedule on the given task revisions. */
-  addFollowUp: (prerequisites: FollowUpPrefill["prerequisites"]) => void;
+  /** A journal seat (a member's binding, current or past) and the member it is. */
+  seatOf: (seatId: string) => { seat: EngineSeatView | undefined; participant: Participant | undefined };
+  /** A journal principal as the page names it: "you" for the user, "Backroom" for the system, "@alias" for a seat. */
+  nameOf: (principal: string) => string;
   /** Latest room desk (T3 thread views per participant), or null before the first fetch. */
   desk: DeskResponse | null;
   deskError: string | null;
-  /** What the room's threads have used and its list-price value, per participant and task; null before the first read. */
+  /** What the room's threads have used and its list-price value, per participant and per reply; null before the first read. */
   costs: RoomCosts | null;
   /** The room's git state: its working folders in brief, and the full view of the one the Git tab shows. */
   git: GitState;
@@ -45,4 +40,23 @@ export function useRoom(): RoomContextValue {
   const value = useContext(RoomContext);
   if (!value) throw new Error("useRoom must be used inside a RoomContext provider");
   return value;
+}
+
+/** The seat → member lookups of a room snapshot: a seat is a binding, so a member's every seat maps to it. */
+export function seatLookups(snapshot: RoomSnapshot, participantById: (id: string) => Participant | undefined): Pick<RoomContextValue, "seatOf" | "nameOf"> {
+  const seats = new Map(snapshot.seats.map((seat) => [seat.seatId, seat]));
+  const memberOfBinding = new Map(snapshot.bindings.map((binding) => [binding.id, binding.participantId]));
+  const seatOf = (seatId: string) => {
+    const seat = seats.get(seatId);
+    const participantId = seat?.participantId ?? memberOfBinding.get(seatId) ?? null;
+    return { seat, participant: participantId ? participantById(participantId) : undefined };
+  };
+  const nameOf = (principal: string): string => {
+    if (principal === "$user") return "you";
+    if (principal === "$system") return "Backroom";
+    const { seat, participant } = seatOf(principal);
+    const alias = participant?.alias ?? seat?.alias;
+    return alias ? `@${alias}` : "a former seat";
+  };
+  return { seatOf, nameOf };
 }

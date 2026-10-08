@@ -27,7 +27,9 @@ import type {
   RoomCommand,
   RoomListItem,
   RoomSnapshot,
-  Run,
+  EngineBoardPage,
+  EngineNoticeMarks,
+  EngineRunDetail,
   StatusResponse,
   T3Project,
   T3ThreadShell,
@@ -96,11 +98,20 @@ export const api = {
   /** A thread used directly (outside any room). */
   thread: (threadId: string): Promise<ThreadView> => get(`/api/threads/${encodeURIComponent(threadId)}`),
   rooms: (): Promise<RoomListItem[]> => get("/api/rooms"),
-  /** A room ("room:<id>") or thread ("thread:<id>") was on screen up to `at`, its newest finish. */
-  markSeen: (key: string, at: string): Promise<{ key: string; at: string }> => post("/api/seen", { key, at }),
+  /** A room ("room:<id>") was on screen up to journal sequence `seq`, its newest finish. */
+  markRoomSeen: (roomId: string, seq: number): Promise<{ key: string; seq: number }> => post("/api/seen", { key: `room:${roomId}`, seq }),
+  /** A thread outside rooms ("thread:<id>") was on screen up to `at`, its newest finish. */
+  markThreadSeen: (threadId: string, at: string): Promise<{ key: string; at: string }> => post("/api/seen", { key: `thread:${threadId}`, at }),
   room: (roomId: string): Promise<RoomSnapshot> => get(`/api/rooms/${encodeURIComponent(roomId)}`),
-  run: (roomId: string, runId: string): Promise<Run> =>
+  /** Older posts of a room's board: those before journal sequence `before`, newest last. */
+  board: (roomId: string, before: number, limit = 100): Promise<EngineBoardPage> =>
+    get(`/api/rooms/${encodeURIComponent(roomId)}/board?before=${before}&limit=${limit}`),
+  /** A run with the exact briefing T3 received. */
+  run: (roomId: string, runId: string): Promise<EngineRunDetail> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/runs/${encodeURIComponent(runId)}`),
+  /** Take notices off "needs you" without acting on them: by ID, or every one up to a journal sequence. */
+  dismissNotices: (roomId: string, marks: { ids: string[] } | { through: number }): Promise<EngineNoticeMarks> =>
+    post(`/api/rooms/${encodeURIComponent(roomId)}/notices/dismiss`, marks),
   parse: (roomId: string, text: string): Promise<Draft> =>
     post(`/api/rooms/${encodeURIComponent(roomId)}/parse`, { text }),
   command: (command: RoomCommand): Promise<CommandResult> => post("/api/commands", command),
@@ -172,7 +183,7 @@ export const api = {
   threadBrowserBriefing: (threadId: string): Promise<{ text: string }> => get(`/api/threads/${encodeURIComponent(threadId)}/browser-briefing`),
   /** Wipe logins, history and saved tabs; the browser keeps its name, purpose and address. */
   browserReset: (browserId: string): Promise<RoomBrowserStatus> => post(`/api/browsers/${encodeURIComponent(browserId)}/reset`, {}),
-  /** Upload one image as raw bytes; the returned id is referenced from message.create / task.create. */
+  /** Upload one image as raw bytes; the returned id is referenced from message.create. */
   uploadAttachment: (roomId: string, file: File): Promise<Attachment> =>
     request(`/api/rooms/${encodeURIComponent(roomId)}/attachments`, {
       method: "POST",
@@ -284,7 +295,7 @@ function usePolled<T>(key: string | null, intervalMs: number, read: (key: string
   return value;
 }
 
-/** The room's costs; `replies` is how many replies the room holds, so a new one is priced at once. */
+/** The room's costs; `replies` changes when the room has a new reply, so it is priced at once. */
 export const useRoomCosts = (roomId: string | null, replies = 0): RoomCosts | null => usePolled(roomId, 30_000, api.roomCosts, replies);
 /** A thread's costs; `replies` is how many replies its view holds, so a new one is priced at once. */
 export const useThreadCosts = (threadId: string | null, replies = 0): ThreadCosts | null => usePolled(threadId, 30_000, api.threadCosts, replies);
