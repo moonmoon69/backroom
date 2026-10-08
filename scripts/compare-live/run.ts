@@ -137,10 +137,20 @@ class Job {
     this.save();
   }
 
+  /** T3's version and its harnesses'; a failed read is retried, then the server version alone is read from T3's environment. */
   private async versions(): Promise<Record<string, unknown>> {
-    if (!this.options.t3) return { serverVersion: "fake", harnesses: [] };
-    const versions = await this.options.t3.versions(true);
-    return { serverVersion: versions.serverVersion, harnesses: versions.harnesses.filter((h) => h.enabled).map((h) => ({ instanceId: h.instanceId, version: h.version })), at: iso() };
+    const t3 = this.options.t3;
+    if (!t3) return { serverVersion: "fake", harnesses: [] };
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const versions = await t3.versions(true);
+        return { serverVersion: versions.serverVersion, harnesses: versions.harnesses.filter((h) => h.enabled).map((h) => ({ instanceId: h.instanceId, version: h.version })), at: iso() };
+      } catch (error) {
+        this.note(`T3 versions not read (attempt ${attempt}): ${(error as Error).message}`);
+        await sleep(5000);
+      }
+    }
+    return { serverVersion: (await t3.describe()).serverVersion, harnesses: null, at: iso() };
   }
 
   async run(): Promise<JobRecord> {
