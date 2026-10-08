@@ -152,10 +152,16 @@ class Service {
     await until("the service to answer", () => fetch(`${this.base}/api/status`).then((r) => r.ok), 30_000, 300);
   }
 
-  stop(): void {
+  /** Stopped, and gone once this returns: whoever reads its data next (sqlite3 in the Z2 gate) finds nothing locked. */
+  async stop(): Promise<void> {
     const child = this.child;
     this.child = null;
-    child?.kill("SIGTERM");
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise((done) => child.once("exit", done));
+    child.kill("SIGTERM");
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    await exited;
+    clearTimeout(timer);
   }
 
   /** The service dies as in a crash (SIGKILL: no shutdown of any kind), and nothing answers on its port any more. */
@@ -1396,7 +1402,7 @@ async function main(): Promise<void> {
   } finally {
     browser.close();
     if (o.keep) log(`--keep: the service stays on ${service.base}`);
-    else service.stop();
+    else await service.stop();
   }
 }
 
