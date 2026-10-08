@@ -580,7 +580,7 @@ export class EngineHost {
       const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
       try {
         const origin = runOrigin(detail, t3Run, hostMessages);
-        if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail);
+        if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail, t3Run.ordinal);
         else if (origin === "host") {
           const failed = hostRuns.find((r) => r.dispatchMessageId === t3Run.userMessageId);
           if (failed) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, requestIds: finalTargets(p, failed) });
@@ -612,7 +612,7 @@ export class EngineHost {
    * T3 lists no background work any more; each requester is woken once. In every other case the final is non-waking
    * progress under the latest pending activity ("after"), and nothing settles.
    */
-  private continuation(roomId: string, seatId: string, id: string, text: string, replied: boolean, detail: T3ThreadDetail): void {
+  private continuation(roomId: string, seatId: string, id: string, text: string, replied: boolean, detail: T3ThreadDetail, ordinal: number): void {
     const p = this.project(roomId);
     const pending = pendingActivities(p, seatId);
     // Activities this import released before a crash (H1): their outputs are written whatever T3 lists now.
@@ -623,7 +623,8 @@ export class EngineHost {
       // The run's own key goes on the last output, so the import counts as done only once every activity is settled;
       // after a crash between them, the ones still pending or released are settled on the next look.
       settle.forEach((a, index) => {
-        this.settleActivity(roomId, seatId, a, index === settle.length - 1 ? id : `${id}:${a.id}`, text);
+        // Judged by what T3 ran before this continuation: a host run it queued behind it was not seen in it.
+        this.settleActivity(roomId, seatId, a, index === settle.length - 1 ? id : `${id}:${a.id}`, text, ordinal);
         this.step("settled", roomId, seatId, a.runId);
       });
       return;
@@ -682,14 +683,16 @@ export class EngineHost {
    * that one would count as unseen and the answer would come out superseded, with nothing left to deliver it again. So
    * then the activity is released by its own status first (the engine counts a pending activity as open work), and the
    * output is tied to that later run. The release names the output's key: after a crash between the two, the caller
-   * finds it with `releasedFor` and writes the output. With no later run the activity's own output settles it, as before.
+   * finds it with `releasedFor` and writes the output. When no carrier's watermark is later than the activity's, the
+   * activity's own output settles it, as before. Watermarks are compared, not runs: a confirmed steer raises a run's
+   * watermark after its activity was registered.
    */
-  private settleActivity(roomId: string, seatId: string, a: Activity, sourceKey: string, body: string): void {
+  private settleActivity(roomId: string, seatId: string, a: Activity, sourceKey: string, body: string, beforeOrdinal?: number): void {
     const p = this.project(roomId);
     const open = openOwned(p, a.requestIds, seatId);
     const disposition: Disposition = open.length ? { kind: "answer", requestIds: open } : { kind: "yield" };
-    const carrier = open.length ? newestCarrier(p, seatId, open) : null;
-    if (isPending(a) && (!carrier || carrier.id === a.runId)) {
+    const carrier = open.length ? newestCarrier(p, seatId, open, beforeOrdinal === undefined ? {} : { beforeOrdinal }) : null;
+    if (isPending(a) && (!carrier || carrier.through <= a.through)) {
       this.exec(roomId, { type: "output", actor: SYSTEM, id: sourceKey, author: seatId, sourceKey, association: { kind: "activity", id: a.id }, activityCompletion: "done", body, disposition });
       return;
     }
@@ -946,11 +949,12 @@ export class EngineHost {
    * activity it is associated with the run carrying them (the live one, or the latest that did). The engine decides
    * each outcome, and the caller must read it: an answer can come out pending_activity, superseded or late.
    *
-   * H1: the answer is judged by the newest run that carried the requests, since that is what the member has seen. When
-   * that run is not the one that registered the covering activity (a later run delivered the review's answer or a
-   * correction), the activity is released first and one output tied to that run answers them all; an output tied to the
-   * activity would be judged by the older run's watermark and come out superseded by what the member just read. A
-   * blocked answer still releases the hold, as it always did: the member's next reply answers the request (L3 says so).
+   * H1: the answer is judged by the newest run that carried the requests and that T3 started, since that is what the
+   * member has seen (with none, the newest T3 has taken). When that run's watermark is later than a covering activity's
+   * (a later run delivered the review's answer or a correction, or a steer brought it into this one), the activities are
+   * released first and one output tied to that run answers them all; an output tied to an activity would be judged by
+   * its older watermark and come out superseded by what the member just read. A blocked answer still releases the
+   * hold, as it always did: the member's next reply answers the request (L3 says so).
    */
   answer(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[] }): { claims: ClaimOutcome[] } {
     const p = this.project(roomId);
@@ -980,16 +984,17 @@ export class EngineHost {
       const others = openOwned(p, a.requestIds, seatId).filter((id) => !ids.includes(id));
       if (others.length) throw new HostRefusal(`${ids.map((id) => `#${id}`).join(" ")} share background work with ${others.map((id) => `#${id}`).join(" ")}: answer them together, rooms-board answer ${[...ids, ...others].map((id) => `#${id}`).join(" ")} "…".`);
     }
-    const carrier = newestCarrier(p, seatId, ids);
+    const carrierOf = (of: readonly string[]) => newestCarrier(p, seatId, of) ?? newestCarrier(p, seatId, of, { accepted: true });
+    const carrier = carrierOf(ids);
     if (!carrier) {
-      const lost = ids.filter((id) => !newestCarrier(p, seatId, [id]));
+      const lost = ids.filter((id) => !carrierOf([id]));
       throw new HostRefusal(`${(lost.length ? lost : ids).map((id) => `#${id}`).join(" ")} did not reach you in one turn: answer each separately.`);
     }
-    if (activities.some((a) => a.runId !== carrier.id || !isPending(a))) {
+    if (activities.some((a) => a.through < carrier.through || !isPending(a))) {
       for (const a of activities) if (isPending(a)) this.release(roomId, seatId, a, sourceKey(input.id));
       return { claims: claimsOf(this.member(roomId, { type: "output", actor: seatId, id: input.id, author: seatId, sourceKey: sourceKey(input.id), association: { kind: "run", id: carrier.id }, body: input.body, disposition: { kind: "answer", requestIds: ids } })) };
     }
-    // Every covering activity was registered in the newest run: each one's own output settles it, as before H1.
+    // No carrier's watermark is later than a covering activity's: each one's own output settles it, as before H1.
     const rest = ids.filter((id) => !activities.some((a) => a.requestIds.includes(id)));
     const claims: ClaimOutcome[] = [];
     let index = 0;

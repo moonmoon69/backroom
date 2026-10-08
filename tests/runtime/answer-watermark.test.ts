@@ -232,3 +232,33 @@ test("H1: with no later run the settle is unchanged: one activity output, nothin
   assert.equal(answer.association.kind, "activity");
   assert.deepEqual(releases(room), []);
 });
+
+/** The host records W's next run as accepted while T3 still says "starting"; T3 then runs it before the host looks again. */
+function acceptedNotYetSeenRunning(r: Room): void {
+  const W = r.threadOf("W");
+  const arm = () => {
+    r.fake.onDetail = { threadId: W, run: () => {
+      const live = r.fake.liveRun(W);
+      if (live) live.status = "starting";
+      else arm();
+    } };
+  };
+  arm();
+}
+
+test("H1: an answer in a turn the host has not yet seen start, with no earlier run that carried the request, is answered, not refused", async () => {
+  room = await Room.create();
+  const a = ask(room, "C", "W", "Write the migration.");
+  acceptedNotYetSeenRunning(room);
+  await room.tick();
+  room.fake.liveRun(room.threadOf("W"))!.status = "running";
+  const run = room.p.runs.get(room.p.seats.get("W")!.activeRunId!)!;
+  assert.equal(run.phase, "accepted", "T3 runs the turn; the host has recorded it as accepted only");
+  room.working("W", "Writing it.");
+  assert.deepEqual(room.answer("W", "Migration written.", [a]).map((c) => c.outcome), ["answered"]);
+  room.complete("W", "Handoff.");
+  await room.tick(3);
+  assert.equal(room.answeredClaims(a).length, 1);
+  assert.equal(room.wakes("C"), 1);
+  assert.match(room.prompt("C"), /Migration written\./);
+});

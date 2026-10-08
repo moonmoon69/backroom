@@ -95,15 +95,22 @@ export function openOwned(p: Projection, ids: readonly string[], seatId: string)
 }
 
 /**
- * The seat's newest run T3 took that carried every one of these requests: the live run when it does. Its watermark is
- * what the member has seen when it answers them, so an answer is judged by it (H1): a review or correction a later
- * run delivered is seen, and only what came after that run's watermark counts as unseen (K1).
+ * The seat's newest run that carried every one of these requests and that T3 took and started: its watermark is what
+ * the member has seen when it answers them, so an answer is judged by it (H1). A review or correction that run
+ * delivered is seen; only what came after its watermark counts as unseen (K1). A run counts once it has an accepted
+ * record and is running or ended: a run whose send T3 refused or never recorded was never seen, and one T3 queued
+ * behind the member's own continuation (the R3 race) is not seen by that continuation. `beforeOrdinal` keeps only runs
+ * T3 ran before the one given (the continuation being imported). With `accepted`, a run T3 has taken but not yet been
+ * seen starting counts too: the fallback when no started run carried the requests.
  */
-export function newestCarrier(p: Projection, seatId: string, ids: readonly string[]): Run | null {
+export function newestCarrier(p: Projection, seatId: string, ids: readonly string[], options: { beforeOrdinal?: number; accepted?: boolean } = {}): Run | null {
   const records = runRecords(p);
+  const before = options.beforeOrdinal ?? Infinity;
   let newest: Run | null = null;
   for (const run of p.runs.values()) {
-    if (run.seatId !== seatId || run.phase === "prepared" || run.phase === "sending" || run.phase === "rejected") continue;
+    const t3 = records.get(run.id)?.t3;
+    const started = run.phase === "running" || run.phase === "terminal" || (options.accepted === true && run.phase === "accepted");
+    if (run.seatId !== seatId || !t3 || t3.ordinal >= before || !started) continue;
     const allowed = allowedIds(p, run);
     if (!ids.every((id) => allowed.has(id))) continue;
     if (!newest || records.get(run.id)!.reservedSeq > records.get(newest.id)!.reservedSeq) newest = run;
