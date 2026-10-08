@@ -42,7 +42,8 @@ import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
 import { browsersForRoom, effectiveBrowser, roomsUsingBrowser, threadKey } from "../browser/catalog.ts";
 import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
-import { Board, BoardError } from "../app/board.ts";
+import { BoardError } from "../app/board.ts";
+import { boardFor } from "../app/boardEngine.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
@@ -893,7 +894,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
 
   // rooms-board: the same CLI contract and token as rooms-browser. It reads a room's posts and seats saved crew.
-  const board = new Board({
+  // With ROOMS_ENGINE=1 the board is the engine's journal (src/app/boardEngine.ts).
+  const board = boardFor(stack.engine, {
     repos: stack.repos,
     execute: (command) => stack.service.execute(parseCommand(command)),
     statusOf: (participantId) => stack.scheduler.participantStatus(participantId),

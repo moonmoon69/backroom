@@ -83,7 +83,7 @@ export interface BoardDeps {
 }
 
 /** What participant.retire did with the member's T3 thread. */
-interface RetiredThread {
+export interface RetiredThread {
   action: string;
   result: "done" | "kept" | "failed";
   detail?: string;
@@ -92,7 +92,7 @@ interface RetiredThread {
 const PAST: Record<string, string> = { settle: "settled", archive: "archived", delete: "deleted" };
 
 /** What became of a retired member's T3 thread, in a sentence for the retire reply. */
-function threadOutcome(thread: RetiredThread | undefined): string {
+export function threadOutcome(thread: RetiredThread | undefined): string {
   if (!thread) return "It had no T3 thread.";
   if (thread.result === "done") return `Its T3 thread was ${PAST[thread.action] ?? thread.action}, as the user's retire setting says.`;
   if (thread.result === "failed") return `Its T3 thread stays as it was: T3 could not ${thread.action} it (${thread.detail ?? "failed"}).`;
