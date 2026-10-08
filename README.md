@@ -295,7 +295,7 @@ No model reads your message. The composer and the server run the same fixed rule
 - **a condition**, before the address or after it: `when @grok finishes, @claude write the summary`, `@grok deploy it when claude finishes`;
 - **pronouns:** "once she's done", "once they're finished", "when both are done", "when @all finished".
 
-`/now` on an assignment takes away a wait its text implies. A condition Backroom could not observe ("when the tests pass") is no wait: it stays in the instruction, and the plan says so. In a room with a Consigliere none of this applies, because the whole message is his and sequencing it is his job (see [The Consigliere](#the-consigliere)).
+`/now` on an assignment takes away a wait its text implies. A condition Backroom could not observe ("when the tests pass") is no wait: it stays in the instruction, and the plan says so. In a room with a Consigliere a message that names members goes to him whole, so it implies no wait: sequencing the work is his job (see [The Consigliere](#the-consigliere)); `/after` and `/hold` are refused there too.
 
 **3. Deliver.** A request goes to its member's thread straight away, or after that thread's current turn ends. The member's final reply answers it: the reply says "answers #41", and the request's marker turns from **open** to **answered**. While it is open, **Correct…** under your message sends an amendment, which the member's next turn brings, and **Cancel** withdraws it (the member's running turn stops when it works on nothing else).
 
