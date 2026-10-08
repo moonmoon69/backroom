@@ -156,9 +156,7 @@ h2 {
 /* Section labels: T3's text-xs font-medium muted-foreground, sentence case. */
 .label,
 .lane-title,
-.wo-id,
 .stamp,
-.dep-word,
 legend {
   font-size: var(--text-sm);
   font-weight: 500;
@@ -1663,18 +1661,6 @@ button.primary.destructive {
   font-size: 1.05em;
 }
 
-/* ---- work orders (task cards) ---- */
-
-
-.wo-head {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-
-
-
 .stamp {
   padding: 0 6px;
   border-radius: var(--radius-sm);
@@ -1688,27 +1674,6 @@ button.primary.destructive {
 .stamp-needs_input {
   --state: var(--input);
 }
-
-.task-instruction {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.wo-dep {
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  display: flex;
-  gap: 5px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.dep-sep {
-  color: var(--fg-dim);
-}
-
-
-
 
 .task-actions {
   display: flex;
@@ -2372,15 +2337,6 @@ button.primary.destructive {
   color: var(--ok);
 }
 
-.plan-pill.tone-after {
-  color: var(--accent);
-}
-
-.plan-pill.tone-held {
-  color: var(--fg-muted);
-  border-style: dashed;
-}
-
 .plan-pill.tone-warn {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 50%, transparent);
@@ -2462,19 +2418,6 @@ button.primary.destructive {
   }
 }
 
-.queue-header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--line);
-}
-
-.queue-header h2 {
-  margin: 0;
-  font-size: var(--text-lg);
-}
-
 .queue-body {
   overflow: auto;
   padding: 8px 10px;
@@ -2507,7 +2450,6 @@ button.primary.destructive {
   color: var(--fg-dim);
 }
 
-.lane .work-order + .work-order,
 .native-requests .native-card + .native-card {
   margin-top: 6px;
 }
@@ -2774,11 +2716,6 @@ legend {
   margin: 0;
 }
 
-.dependents {
-  margin: 4px 0 0;
-  padding-left: 18px;
-  font-size: var(--text-sm);
-}
 
 /* ---- toasts ---- */
 .toast-stack {

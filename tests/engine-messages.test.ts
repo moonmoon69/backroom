@@ -1,5 +1,5 @@
 /**
- * The user's message path on the engine (plan item L4a): src/app/engineMessages.ts, the parser's engine mode (D2) and
+ * The user's message path on the engine (plan item L4a): src/app/engineMessages.ts, the parser's refusals (D2) and
  * the host's /steer. Each test is named after the README "Writing messages" behaviour it keeps (section: behaviour),
  * or after D2's rejections and the user's controls. What that section says about the composer itself (opening it,
  * keys, drafts, chips, the plan rows and their one-click fixes) is the web UI's, item L5; /add and /remove are L4b's.
@@ -80,7 +80,7 @@ interface Room {
   ids: Record<string, string>;
   dir: string;
   run(command: RoomCommandInput): Promise<unknown>;
-  /** What the composer does: parse in engine mode, then message.create with the draft's assignments. */
+  /** What the composer does: parse, then message.create with the draft's assignments. */
   say(text: string, attachmentIds?: string[], clientMessageId?: string): Promise<{ messageId: string; requestIds: string[]; noteIds: string[] }>;
   draft(text: string): Draft;
   tick(times?: number): Promise<void>;
@@ -167,7 +167,7 @@ const errorsOf = (d: Draft) => d.unresolved.filter((u) => u.severity === "error"
 
 // ---------------- How a message becomes tasks ----------------
 
-test("How a message becomes tasks, 1. split: each recipient of an assignment gets its own request with the same text, all sharing the message's ID", async (t) => {
+test("How a message becomes requests, 1. split: each recipient of an assignment gets its own request with the same text, all sharing the message's ID", async (t) => {
   const r = await engineRoom(["sol", "grok", "claude"]);
   t.after(() => r.close());
   const created = await r.say("@sol @grok review the diff");
@@ -182,7 +182,7 @@ test("How a message becomes tasks, 1. split: each recipient of an assignment get
   assert.equal(r.runs("claude").length, 0);
 });
 
-test("How a message becomes tasks, 1. split: text before the first address is context every recipient's request carries", async (t) => {
+test("How a message becomes requests, 1. split: text before the first address is context every recipient's request carries", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
   const created = await r.say("The build is red. @sol fix it. @grok find the cause");
@@ -192,7 +192,7 @@ test("How a message becomes tasks, 1. split: text before the first address is co
   assert.match(r.prompt("sol", 0), /The build is red\.\n\nfix it\./);
 });
 
-test("How a message becomes tasks, 1. split: a client that sends only the message text (today's composer) still gets the preamble, read from it", async (t) => {
+test("How a message becomes requests, 1. split: a client that sends only the message text (today's composer) still gets the preamble, read from it", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.run({ type: "message.create", roomId: r.roomId, sourceText: "The build is red. @sol fix it", assignments: [{ recipients: [r.ids.sol!], instruction: "fix it" }] });
@@ -204,7 +204,7 @@ test("How a message becomes tasks, 1. split: a client that sends only the messag
 /** A message.create carrying a field the command no longer has (Z4): refused before anything is recorded. */
 const unknownField = (field: string) => (e: Error) => e instanceof CommandValidationError && e.message.includes(field);
 
-test("How a message becomes tasks, 2. timing (D2): /hold is refused with a hint by the parser; the command has no field for it", async (t) => {
+test("How a message becomes requests, 2. timing (D2): /hold is refused with a hint by the parser; the command has no field for it", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
   assert.deepEqual(errorsOf(r.draft("/hold @sol save this for later")), [HOLD_GONE]);
@@ -212,7 +212,7 @@ test("How a message becomes tasks, 2. timing (D2): /hold is refused with a hint 
   assert.equal(requestsOf(r).length, 0);
 });
 
-test("How a message becomes tasks, 2. timing (D2): /after is refused with a hint, on a task or on a member", async (t) => {
+test("How a message becomes requests, 2. timing (D2): /after is refused with a hint, whatever it names", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
   assert.deepEqual(errorsOf(r.draft("/after task41 @grok review the implementation")), [AFTER_GONE]);
@@ -223,7 +223,7 @@ test("How a message becomes tasks, 2. timing (D2): /after is refused with a hint
   assert.equal(requestsOf(r).length, 0);
 });
 
-test("How a message becomes tasks, 2. timing (D2): every implied wait is refused with a hint naming whom it waited for", async (t) => {
+test("How a message becomes requests, 2. timing (D2): every implied wait is refused with a hint naming whom it waited for", async (t) => {
   const r = await engineRoom(["claude", "grok", "codex"]);
   t.after(() => r.close());
   const refused = (text: string) => errorsOf(r.draft(text)).join(" | ");
@@ -237,7 +237,7 @@ test("How a message becomes tasks, 2. timing (D2): every implied wait is refused
   assert.equal(r.draft("@claude build it, then @grok deploy it").hints.some((h) => h.includes("/after")), false, "no hint points at /after");
 });
 
-test("How a message becomes tasks, 2. timing: /now still starts an assignment now, past an implied wait", async (t) => {
+test("How a message becomes requests, 2. timing: /now still starts an assignment now, past an implied wait", async (t) => {
   const r = await engineRoom(["claude", "grok"]);
   t.after(() => r.close());
   assert.deepEqual(errorsOf(r.draft("@claude build it. @grok /now read the notes")), []);
@@ -248,7 +248,7 @@ test("How a message becomes tasks, 2. timing: /now still starts an assignment no
   assert.equal(r.runs("grok").length, 1, "both start at once");
 });
 
-test("How a message becomes tasks, 3. deliver: a request goes to its member's thread straight away, or after that thread's current turn ends", async (t) => {
+test("How a message becomes requests, 3. deliver: a request goes to its member's thread straight away, or after that thread's current turn ends", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
@@ -818,7 +818,7 @@ test("Retry and Stop: the user stops a member's turn, which fails with a notice 
   await assert.rejects(r.run({ type: "run.stop", roomId: r.roomId, participantId: r.ids.sol! }), /not running anything/);
 });
 
-// ---------------- Limits and the flag ----------------
+// ---------------- Limits ----------------
 
 test("§7: the message API refuses a post over 1 MiB", async (t) => {
   const r = await engineRoom(["sol"]);

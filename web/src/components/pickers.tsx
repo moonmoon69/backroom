@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
-import type { ModelOptionDescriptor, ModelSelection, ProjectRefs, RuntimeMode, T3ThreadShell, ThreadBindingInput, WorkspaceChoice } from "../types.ts";
+import type { ModelOptionDescriptor, ModelSelection, ProjectRefs, RuntimeMode, T3ThreadShell, WorkspaceChoice } from "../types.ts";
 import { defaultOptionValue, selectionFor, useCatalog } from "./catalog.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { Popover } from "./Popover.tsx";
@@ -433,48 +433,6 @@ export function ThreadList({
     </div>
   );
 }
-
-/** Thread binding picker: create a new thread or attach an existing one; attaching shows what is inherited. */
-export function ThreadBindingPicker({
-  projectId,
-  value,
-  onChange,
-}: {
-  projectId: string;
-  value: ThreadBindingInput;
-  onChange: (thread: ThreadBindingInput) => void;
-}) {
-  const threads = useAttachableThreads(projectId);
-  const selected = value.mode === "attach" ? (threads ?? []).find((t) => t.id === value.threadId) ?? null : null;
-  return (
-    <fieldset className="thread-picker">
-      <legend>Thread</legend>
-      <label className="radio">
-        <input type="radio" name="thread-mode" checked={value.mode === "create"} onChange={() => onChange({ mode: "create" })} />
-        Create new thread
-      </label>
-      <label className="radio">
-        <input
-          type="radio"
-          name="thread-mode"
-          checked={value.mode === "attach"}
-          onChange={() => onChange({ mode: "attach", threadId: "" })}
-        />
-        Attach an existing T3 thread
-        {threads === null ? <span className="muted"> (loading…)</span> : <span className="muted"> ({threads.length} available in this project)</span>}
-      </label>
-      {value.mode === "attach" ? (
-        <>
-          <ThreadList threads={threads} selectedId={value.threadId || null} onSelect={(thread) => onChange({ mode: "attach", threadId: thread.id })} />
-          {selected ? <InheritedLine thread={selected} /> : null}
-        </>
-      ) : null}
-    </fieldset>
-  );
-}
-
-export const threadBindingReady = (thread: ThreadBindingInput): boolean =>
-  thread.mode === "create" || thread.threadId.length > 0;
 
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const { toast } = useToast();

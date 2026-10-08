@@ -39,6 +39,17 @@ export function setTiming(text: string, assignment: DraftAssignment, timing: "no
   return insertToken(base, at, `/${timing}`);
 }
 
+/**
+ * What a plan row offers for a timing D2 refuses: "Remove /hold" or "Remove /after" for a directive written in the
+ * assignment's head, and "Send it now" (/now) for a wait the text implies (then, a name, a condition, a pronoun),
+ * which /now lifts.
+ */
+export function timingFixes(assignment: Pick<DraftAssignment, "timing" | "after" | "unresolved">): { remove: "hold" | "after" | null; sendNow: boolean } {
+  const remove = assignment.timing === "hold" || assignment.timing === "after" ? assignment.timing : null;
+  const sendNow = remove === null && assignment.timing !== "now" && (assignment.after.length > 0 || assignment.unresolved.some((u) => u.field === "wait"));
+  return { remove, sendNow };
+}
+
 /** Start a new line before a reference mention so it addresses a new assignment. */
 export function splitAtMention(text: string, mention: MentionSpan): TextEdit {
   let from = mention.start;

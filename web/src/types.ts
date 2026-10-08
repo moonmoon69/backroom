@@ -273,7 +273,7 @@ export interface EngineSeatView {
   awaits: number;
 }
 
-/** A member's status in the old shape, from the journal and T3, with the seat's background work and backlog. */
+/** A member's status (ParticipantStatus), from the journal and T3, with the seat's background work and backlog. */
 export interface EngineMemberStatus extends ParticipantStatus {
   seatId: string | null;
   working: boolean;

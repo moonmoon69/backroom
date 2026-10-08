@@ -3,7 +3,7 @@
  * service; T3 holds the projects, threads and messages, and the room only forwards commands and reads them back.
  * A direct message goes to T3 exactly as typed (no briefing), like typing in T3 Code: it starts a run, or is steered
  * into the run in progress. A thread seated in a room is refused: the room coordinates it, and a message sent around
- * the room would bypass its queue. Reading a thread back is in threadView.ts.
+ * the room would bypass its board. Reading a thread back is in threadView.ts.
  */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -113,7 +113,7 @@ export class DirectThreads {
             messageId: randomUUID(),
             text: command.text,
             images: turnImages(command.images),
-            // A live session only switches model when the message names one (see Scheduler.send).
+            // A live session only switches model when the message names one.
             modelSelection: shell.modelSelection,
             // Into the run in progress, as T3 Code's composer does by default; otherwise it starts a run (T3 queues
             // it when a run is being prepared or waits on a request).

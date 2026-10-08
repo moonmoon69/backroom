@@ -57,6 +57,7 @@ import { roomStateView } from "../app/roomState.ts";
 import { orderProjects } from "../app/service.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
 import { mountEngineView, startedByHost } from "./engineView.ts";
+import { seatsWithLiveRuns } from "../runtime/index.ts";
 
 /** Agents' browser tools (bin/rooms-browser): the engine, the token the CLI presents, and the command briefings name. */
 export interface BrowserToolsHttp {
@@ -308,12 +309,12 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   mountEngineView(app, stack, costs);
 
   // A thread outside rooms was on screen up to `at` (the newest finish it showed): its news is seen, on every device. A
-  // room's mark is a journal sequence (src/server/engineView.ts), which takes the room keys that carry one.
+  // room's mark is a journal sequence, taken before this by src/server/engineView.ts.
   app.post("/api/seen", async (c) => {
     const body = (await c.req.json().catch(() => null)) as { key?: unknown; at?: unknown } | null;
     const key = typeof body?.key === "string" ? body.key : "";
     const at = typeof body?.at === "string" ? body.at : "";
-    if (!SEEN_KEY.test(key) || Number.isNaN(Date.parse(at))) throw new RoomError("invalid_seen", "key must be room:<id> or thread:<id>, and at an ISO time");
+    if (!SEEN_KEY.test(key) || Number.isNaN(Date.parse(at))) throw new RoomError("invalid_seen", "key must be thread:<id> with at an ISO time, or room:<id> with seq a journal sequence");
     return c.json({ key, at: markSeen(stack.repos, key, at) });
   });
 
@@ -573,8 +574,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const room = stack.repos.getRoom(roomId);
     if (!room) throw new RoomError("not_found", "room not found", 404);
     const body = (await c.req.json()) as { text?: string };
-    // Busy, for alias pools (@sol → a free member of sol1, sol2, …): a run of its seat the journal has not ended.
-    const live = new Set([...stack.engine.view(roomId).runs.values()].filter((r) => r.phase !== "terminal").map((r) => r.seatId));
+    // Busy, for alias pools (@sol → a free member of sol1, sol2, …): its seat has a live run.
+    const live = seatsWithLiveRuns(stack.engine.view(roomId));
     const participants = stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias, busy: live.has(stack.repos.currentBinding(p.id)?.id ?? "") }));
     return c.json(parseExplicit(body.text ?? "", participants, { consigliereId: room.consigliereId }));
   });
@@ -588,7 +589,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
 
   // Images attached to messages typed in T3 Code live as files under T3's userdata/attachments, named by id.
-  // Those ids appear on t3.message events; they are served here when the id is not a room attachment.
+  // Those ids appear on notes typed in T3; they are served here when the id is not a room attachment.
   const t3Attachment = (id: string): { path: string; mimeType: string } | null => {
     if (!/^[A-Za-z0-9-]{1,120}$/.test(id)) return null;
     for (const [ext, mimeType] of [[".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".gif", "image/gif"], [".webp", "image/webp"]] as const) {

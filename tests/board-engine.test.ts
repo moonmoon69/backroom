@@ -768,7 +768,7 @@ test("seat, reseat and retire run the room commands L4b routes to the journal, t
   await bare.refused("c", ["retire", "v"], /no seat lifecycle/);
 });
 
-test("the route hook: with the engine on, /api/board-tools is the journal's board; refusals are 4xx with the sentence", async (t) => {
+test("the route hook: /api/board-tools is the journal's board; refusals are 4xx with the sentence", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const app = createHttpApp(f.stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: f.dir, ROOMS_PORT: "0" }), "/nonexistent/dist", { tools: null, token: "secret", command: "rooms-browser" });

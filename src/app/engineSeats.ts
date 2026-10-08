@@ -307,7 +307,7 @@ export class EngineSeats {
   // ---------------- each tick, per seat (the host's watch) ----------------
 
   /**
-   * What the old observe pass did for a member's thread and the host does not: mirror the thread's model, options and
+   * What the seat lifecycle does for a member's thread each tick, beside the host: mirror the thread's model, options and
    * modes, keep its title "room · alias", and carry the member's reseat a step on. Called after the host's own work on
    * the seat, so a continuation's import is done.
    */

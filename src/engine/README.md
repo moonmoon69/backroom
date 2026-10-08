@@ -2,7 +2,7 @@
 
 The board's journal and the rules over it. Each room has one append-only event log; requests, answers, runs, cursors,
 background work and subscriptions are folds of that log, never stored work of their own. The host in `src/runtime`
-drives T3 from it (`ROOMS_ENGINE=1`), the orchestrator posts on it through `rooms-board` (L3; members only read it and
+drives T3 from it, the orchestrator posts on it through `rooms-board` (L3; members only read it and
 answer in their final replies, H5) and the user through the message API (L4a); the read API (`src/server/engineView.ts`) reads it. This is the core as carved in L6 of the stage 4/5 plan
 ("Lean semantics"): 18 commands, 21 event kinds, nothing about provider evidence; H6 added `keep_alive`, a 19th command
 that writes a `notice`. Approvals, questions and Stop are not

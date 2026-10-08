@@ -179,15 +179,6 @@ export const PersonPlusIcon = () => (
   </Icon>
 );
 
-/** A checklist: the room's tasks. */
-export const TasksIcon = () => (
-  <Icon name="tasks">
-    <path d="M1.9 3.9 3.2 5.2 5.5 2.8" />
-    <path d="M1.9 9.4 3.2 10.7 5.5 8.3" />
-    <path d="M7.75 4h6.5M7.75 9.5h6.5M7.75 13.5h6.5" />
-  </Icon>
-);
-
 /** A branch leaving a line: the room's git (branches, worktrees, commits, uncommitted changes). */
 export const BranchIcon = ({ small = false }: { small?: boolean }) => (
   <Icon name="branch" small={small}>
@@ -215,7 +206,7 @@ export const ImageIcon = () => (
   </Icon>
 );
 
-/** A note with a folded corner: a room note (shared context, no task). */
+/** A note with a folded corner: a room note (shared context, no request). */
 export const NoteIcon = () => (
   <Icon name="note">
     <path d="M2.75 3.25c0-.55.45-1 1-1h8.5c.55 0 1 .45 1 1v6.5l-4 4h-5.5c-.55 0-1-.45-1-1z" />

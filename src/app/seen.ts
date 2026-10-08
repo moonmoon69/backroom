@@ -1,16 +1,16 @@
 /**
- * What you have seen: one mark per room and per thread outside rooms, the time of the newest finish that was on screen
+ * What you have seen of a thread outside rooms: one mark per thread, the time of the newest finish that was on screen
  * when you looked. The service keeps them (in kv), so looking on one device clears the news on the others. Before a
- * room or thread has a mark, "since" stands in: the time this service first kept marks, so what finished before then
- * is not news.
+ * thread has a mark, "since" stands in: the time this service first kept marks, so what finished before then is not
+ * news. A room's mark is a journal sequence (src/server/engineView.ts).
  */
 import type { Repos } from "../db/repos.ts";
 
 const PREFIX = "seen.";
 const SINCE = `${PREFIX}since`;
 
-/** "room:<id>" or "thread:<id>". */
-export const SEEN_KEY = /^(room|thread):[A-Za-z0-9_-]{1,80}$/;
+/** "thread:<id>". */
+export const SEEN_KEY = /^thread:[A-Za-z0-9_-]{1,80}$/;
 
 /** Start keeping marks (once): from now on, finishes are news until seen. */
 export function startSeen(repos: Repos, at = new Date().toISOString()): void {

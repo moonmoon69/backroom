@@ -41,7 +41,7 @@ interface Props {
 
 /**
  * Right side panel, switched from the header: People (who is seated, their threads), Browser (the room's browser) and
- * Git (the room's folders: branch, uncommitted files, commits, worktrees). What the tasks are doing is the status bar
+ * Git (the room's folders: branch, uncommitted files, commits, worktrees). What the members are doing is the status bar
  * above the conversation (WorkBar.tsx).
  */
 export function Inspector({ tab, onClose, onManageBrowser }: Props) {

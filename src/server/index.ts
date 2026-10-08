@@ -11,7 +11,8 @@ import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
-import { accessForKey, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
+import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
+import { seatsWithLiveRuns } from "../runtime/index.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig } from "../config.ts";
 import { KokoroSpeech } from "../speech/kokoro.ts";
@@ -64,9 +65,8 @@ const stack = createStack({
     new RoomBrowsers({
       dataDir: config.dataDir,
       ...config.browser,
-      // Busy while any room using the browser has a run its journal has not ended; changes are shown in those rooms.
-      isBusy: (browserId) =>
-        roomsUsingBrowser(repos, browserId).some((room) => [...stack.engine.view(room.id).runs.values()].some((run) => run.phase !== "terminal")),
+      // Busy while any room using the browser has a seat with a live run; changes are shown in those rooms.
+      isBusy: (browserId) => browserBusy(repos, browserId, (roomId) => seatsWithLiveRuns(stack.engine.view(roomId)).size > 0),
       onChange: (browserId) => {
         browserTools?.browserChanged(browserId);
         for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);

@@ -39,6 +39,7 @@ import {
   replaceMention,
   setTiming,
   splitAtMention,
+  timingFixes,
   toggleNote,
   type TextEdit,
 } from "./composerText.ts";
@@ -508,7 +509,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   };
 
   const showPlan = text.trim().length > 0 || attachments.length > 0;
-  // Someone addressed (without /steer or a wait) is mid-turn: say that the message waits, and how to steer instead.
+  // Someone addressed (without /steer) is mid-turn: say that the message waits for the turn, and how to steer instead.
   const busyAddressed =
     draft?.kind === "task"
       ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && !a.slashCommand).flatMap((a) => a.recipients.filter(isBusy)))]
@@ -1021,8 +1022,7 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
   };
   const offerSteer = busy.length > 0 && !assignment.slashCommand;
   // The fixes for what D2 refuses: a retired /hold or /after is removed; a wait the text implies is overridden by /now.
-  const retired = assignment.timing === "hold" || assignment.timing === "after" ? assignment.timing : null;
-  const implied = !retired && assignment.timing !== "now" && assignment.after.length > 0;
+  const { remove: retired, sendNow: implied } = timingFixes(assignment);
   const menu = offerSteer || steering || retired !== null || implied;
 
   return (

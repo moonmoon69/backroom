@@ -60,6 +60,14 @@ export function keepAliveRun(p: Projection, run: Run): boolean {
 }
 
 /** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
+/**
+ * The seats busy with a run: one the journal has not ended and T3 has not refused (prepared, sending, accepted, running
+ * or uncertain). An alias pool picks another member then, and a room's browser is not stopped for idleness.
+ */
+export function seatsWithLiveRuns(p: Projection): Set<string> {
+  return new Set([...p.runs.values()].filter((run) => run.phase !== "terminal" && run.phase !== "rejected").map((run) => run.seatId));
+}
+
 export const RESEAT_CHECKPOINT = "reseat:";
 
 /** The seat's background work on the journal. The host registers none since H5; the core keeps the commands. */

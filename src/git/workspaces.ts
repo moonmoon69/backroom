@@ -1,12 +1,11 @@
 /**
  * Where a room's participants work: each one's folder (the T3 worktree its thread has, or else the project's folder,
  * which is where T3 starts the agent) and, read with git on this machine, the branch and commit checked out there.
- * The briefing tells every agent where everyone works, each finished task records where its work is, and the Git
- * tab groups the room by folder.
+ * The briefing tells every agent where everyone works, and the Git tab groups the room by folder.
  */
 import type { T3Adapter } from "../adapter/types.ts";
 import type { Repos } from "../db/repos.ts";
-import type { ArtifactRef, Participant } from "../domain/types.ts";
+import type { Participant } from "../domain/types.ts";
 import { canonicalPath, readCheckoutSummary } from "./reader.ts";
 
 /** A room folder and who works in it. */
@@ -89,14 +88,3 @@ export async function roomWorkspaces(adapter: T3Adapter, repos: Repos, roomId: s
   });
 }
 
-/** Where a participant's work is, as recorded with a finished task's reply. Null when the folder is unknown. */
-export function workspaceArtifact(workspace: Workspace | undefined): ArtifactRef | null {
-  if (!workspace?.folder) return null;
-  return {
-    kind: "workspace",
-    path: workspace.folder,
-    ...(workspace.branch ? { branch: workspace.branch } : {}),
-    ...(workspace.headSha ? { commit: workspace.headSha } : {}),
-    ...(workspace.changed !== null ? { note: workspace.changed === 0 ? "nothing uncommitted" : `${workspace.changed} file${workspace.changed === 1 ? "" : "s"} uncommitted` } : {}),
-  };
-}

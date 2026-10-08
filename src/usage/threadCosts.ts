@@ -192,14 +192,14 @@ export class ThreadCosts {
     this.sources = sources;
   }
 
-  /** The calls of one or more threads (a participant rebound to another thread has several), all time. */
+  /** The calls of one or more threads (a member reseated has several), all time. */
   cost(threadIds: string[]): ThreadCost {
     const read = this.calls(threadIds);
     if ("reason" in read) return unavailable(read.reason, read.provider);
     return this.summarise(read.calls, read.provider);
   }
 
-  /** What the threads used between two moments: a task's run, from its start to its end. */
+  /** What the threads used between two moments: a turn, from its start to its end. */
   costBetween(threadIds: string[], fromMs: number, toMs: number): ThreadCost {
     const read = this.calls(threadIds);
     if ("reason" in read) return unavailable(read.reason, read.provider);

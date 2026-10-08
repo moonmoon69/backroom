@@ -2,10 +2,9 @@
  * L4c: the read API on the engine journal (src/server/engineView.ts; shapes in src/domain/engineView.ts).
  *
  * Gate (plan item L4c): the snapshot's counts equal the same counts taken from fold(journal) on the H1, S2 and S4 logs (as H5 runs them: members only answer)
- * (checked after every tick, and again after a restart and a rebuild); on a thread with two replies the per-reply
- * spend equals what the old route computes for the same timestamps. Also: times from T3 by one rule, spend once per
- * T3 run, news and seen by journal sequence, needs-you bounded, SSE on every append, desk startedByRoom, member status
- * with the flag on, and nothing registered with the flag off.
+ * (checked after every tick, and again after a restart and a rebuild); on a thread with two replies each reply's spend
+ * is what its thread used since the one before. Also: times from T3 by one rule, spend once per T3 run, news and seen
+ * by journal sequence, needs-you bounded, SSE on every append, desk startedByRoom, member status.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -457,7 +456,7 @@ function machine(t: TestContext) {
   return { root, project, bind, line, config };
 }
 
-// ---------------- the routes, on a stack with the flag on ----------------
+// ---------------- the routes, on a stack ----------------
 
 async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], options: { config?: ReturnType<typeof loadConfig>; fake?: FakeT3Adapter } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "backroom-engine-view-"));
@@ -494,7 +493,7 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
   const tick = async (times = 1) => {
     for (let i = 0; i < times; i += 1) await engine.tick();
   };
-  /** What the composer does (L4a): parse in engine mode, then message.create with the draft's assignments. */
+  /** What the composer does (L4a): parse, then message.create with the draft's assignments. */
   const say = async (text: string, attachmentIds: string[] = []) => {
     const draft = parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), { consigliereId: null });
     return (await run({
@@ -755,7 +754,7 @@ test("SSE fires on every append: the host's, a write straight to its store, and 
   await reader.cancel();
 });
 
-test("gate: per-reply spend on a thread with two replies: each reply has what its thread used since the one before (the old route's arithmetic), the rest is the open turn", async (t) => {
+test("gate: per-reply spend on a thread with two replies: each reply has what its thread used since the one before, the rest is the open turn", async (t) => {
   const m = machine(t);
   // Two host runs on the member's thread, whose T3 runs end at known moments a and b.
   const a = Date.now() - 60_000;

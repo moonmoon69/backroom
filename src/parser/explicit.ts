@@ -351,6 +351,11 @@ interface Head {
   addressed: boolean;
   /** A leading condition that names no participant ("when the tests pass, @bob …"): kept in the instruction. */
   conditionPrefix: string | null;
+  /**
+   * A leading condition that names participants ("when @grok finishes, @bob …"): a wait on their work, refused like the
+   * others, unless /now in the same head lifts it (the clause then goes back into the instruction).
+   */
+  condition: string | null;
 }
 
 /**
@@ -378,6 +383,8 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
   const pendingAfter: Array<Array<{ token: string; because: "after" | "condition" }>> = [];
   const sequenceFlags: boolean[] = [];
   const conditionPrefixes: Array<string | null> = [];
+  /** Per assignment: its head had a leading condition that names participants (the other implied waits are not read then). */
+  const conditionFlags: boolean[] = [];
   let preamble = "";
 
   const isSentenceStart = (position: number): boolean => {
@@ -431,14 +438,14 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
 
   const parseHead = (from: number): Head => {
     const assignment = emptyAssignment(from);
-    const head: Head = { assignment, end: from, sequence: false, mentions: [], afterTokens: [], addressed: false, conditionPrefix: null };
+    const head: Head = { assignment, end: from, sequence: false, mentions: [], afterTokens: [], addressed: false, conditionPrefix: null, condition: null };
     let position = skipSpace(text, from);
     let lastWasAddress = false;
     let conditionSeen = false;
     let conditionPrefix: string | null = null;
     for (;;) {
       const rest = text.slice(position);
-      if (!head.addressed && !head.sequence && assignment.timing === null) {
+      if (!head.addressed && !head.sequence && assignment.timing === null && head.condition === null) {
         const lead = SEQUENCE_LEAD.exec(rest);
         if (lead && startsAddress(text, position + lead[0].length, nameForms)) {
           head.sequence = true;
@@ -454,7 +461,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
           for (const participant of condition.participants) {
             head.afterTokens.push({ token: `@${participant.alias}`, because: "condition" });
           }
-          if (condition.participants.length > 0) assignment.timing = "after";
+          if (condition.participants.length > 0) head.condition = condition.clause;
           else conditionPrefix = condition.clause;
           assignment.consumed.push(condition.clause);
           position = condition.addressAt;
@@ -470,7 +477,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
           span.participantId = participant.id;
           if (!assignment.recipients.includes(participant.id)) assignment.recipients.push(participant.id);
         } else if (alias.toLowerCase() === ALL_ALIAS) {
-          // @all: everyone seated in the room, one task each; in a room with a Consigliere, the workers and never him.
+          // @all: everyone seated in the room, one request each; in a room with a Consigliere, the workers and never him.
           const crew = participants.filter((p) => p.id !== consigliereId);
           for (const everyone of crew) if (!assignment.recipients.includes(everyone.id)) assignment.recipients.push(everyone.id);
           if (crew.length === 0) assignment.unresolved.push({ field: "recipients", severity: "error", message: "@all: nobody is in this room yet" });
@@ -543,6 +550,12 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
         continue;
       }
       break;
+    }
+    // /now lifts a leading condition's wait: the condition goes back into the instruction, as one Backroom cannot observe.
+    if (head.condition !== null && assignment.timing === "now") {
+      conditionPrefix = head.condition;
+      head.afterTokens = head.afterTokens.filter((token) => token.because !== "condition");
+      head.condition = null;
     }
     head.end = position;
     head.conditionPrefix = conditionPrefix;
@@ -637,6 +650,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
       assignments.push(assignment);
       pendingAfter.push(head.afterTokens);
       sequenceFlags.push(head.sequence);
+      conditionFlags.push(head.condition !== null);
       index += 1;
     }
     if (splitAt < text.length && nextSequence) sequenceFlags[index] = true;
@@ -659,8 +673,10 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
       const participant = mention ? byAlias.get((mention[1] as string).toLowerCase()) : undefined;
       const earlier = participant ? latestEarlier(assignments, current, participant.id) : -1;
       if (earlier >= 0) addAfter(assignment, earlier, because);
+      // A leading condition on work outside the message (its member has no earlier assignment here).
+      else if (because === "condition") waitsOutside(assignment);
     }
-    if (assignment.timing === null) {
+    if (assignment.timing === null && !conditionFlags[current]) {
       // "@fable check it when @grok finishes": a wait for grok's assignment in this message, or for grok's work outside it.
       for (const match of assignment.instruction.matchAll(TRAILING_CONDITION)) {
         const named = nameForms.find(({ form }) => form === (match[1] as string).toLowerCase())?.participant;
@@ -687,8 +703,8 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
         if (earlier >= 0) addAfter(assignment, earlier, "mention");
       }
     }
-    // A condition at the start of the instruction that names what it waits for is taken out of the text
-    // ("when @grok finishes please send a message" → "please send a message"), as the plan shows the wait apart.
+    // A condition at the start of the instruction that names what the assignment waits for is taken out of the text
+    // ("when @grok finishes please send a message" → "please send a message"): the plan row shows that wait, refused.
     // Trailing conditions stay: in "tell me when @fable finishes" the condition is the point of the instruction.
     const leading = LEADING_CONDITION_CLAUSE.exec(assignment.instruction);
     if (leading) {

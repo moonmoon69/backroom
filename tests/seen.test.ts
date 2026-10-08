@@ -8,13 +8,14 @@ import { createTestStack } from "./helpers.ts";
 // Marks and finishes are times to the millisecond: let one pass between a mark and what should count after it.
 const later = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-test("a seen mark refuses a key that is not a room's or a thread's, a time that is not one, and a sequence that is not one", async (t) => {
+test("a seen mark refuses a key that is not a room's or a thread's, a room's mark by time, a time that is not one, and a sequence that is not one", async (t) => {
   // A room's news itself is counted from its journal (tests/engine-view.test.ts); its mark is a journal sequence.
   const stack = await createTestStack();
   t.after(() => stack.close());
   const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-seen", ROOMS_PORT: "0" }), "/nonexistent/dist");
   const seen = (body: Record<string, unknown>) => app.request("/api/seen", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   assert.equal((await seen({ key: "room:../etc", at: "2026-10-09T00:00:00.000Z" })).status, 400);
+  assert.equal((await seen({ key: `room:${stack.roomId}`, at: "2026-10-09T00:00:00.000Z" })).status, 400, "a room's mark is a sequence, not a time");
   assert.equal((await seen({ key: `thread:${stack.threadOf("sol1")}`, at: "yesterday" })).status, 400);
   assert.equal((await seen({ key: `room:${stack.roomId}`, seq: "three" })).status, 400);
   assert.equal((await seen({ key: `room:${stack.roomId}`, seq: 0 })).status, 200);

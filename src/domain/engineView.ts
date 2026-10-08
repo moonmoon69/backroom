@@ -283,7 +283,7 @@ export interface EngineSeatView {
 }
 
 /**
- * A member's status, in the shape the old UI reads (ParticipantStatus), now from the journal and T3: T3's thread status,
+ * A member's status, in the ParticipantStatus shape, from the journal and T3: T3's thread status,
  * background liveness and missing thread from T3's thread list; approvals and questions from native_requests (kept off
  * the journal, plan §6); `activeRunId` is the seat's host run; `externalActivity` is a T3 run the room did not start.
  */
@@ -339,7 +339,7 @@ export interface EngineNoticeMarks {
 }
 
 export interface EngineRoomSnapshot {
-  /** Tells this shape from the old RoomSnapshot. */
+  /** Always true: the journal's shape (a checkout from before the engine served another; scripts/compare-live tells them apart by it). */
   engine: true;
   room: Room;
   participants: Participant[];

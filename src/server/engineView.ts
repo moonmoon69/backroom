@@ -5,7 +5,7 @@
  * Everything is read from the journal's fold on each request, through the host's projection, and kept nowhere else, so
  * a restart or a rebuild gives the same view. The journal has no clock: times come from T3 by one rule (EngineTime),
  * read once per T3 run or message and remembered (they never change once T3 has them). The user's marks (seen, notices
- * dismissed) are journal sequences in rooms.sqlite's kv, next to the old seen marks.
+ * dismissed) are journal sequences in rooms.sqlite's kv, next to the threads' seen marks (src/app/seen.ts).
  */
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -541,8 +541,8 @@ export function journalView(input: ViewInput): JournalView {
 }
 
 /**
- * News: the room's finishes after the seen mark, one per turn (EnginePost.turn), as the old news had one reply per
- * turn: an explicit answer and the same turn's final are one finish, and an idle settle repeats one. In a room with a
+ * News: the room's finishes after the seen mark, one per turn (EnginePost.turn): an explicit answer and the same turn's
+ * final are one finish, and an idle settle repeats one. In a room with a
  * Consigliere only his (the workers answer him).
  */
 export function newsOf(view: JournalView, seenSeq: number, onlySeats: ReadonlySet<string> | null): EngineNews {
@@ -1001,7 +1001,7 @@ function replyAnchors(p: Projection): Anchor[] {
   return out;
 }
 
-/** A member's live line mid-turn, as the old overview reads it from T3. */
+/** A member's live line mid-turn, read from T3: its latest message, the tools running, or a notice. */
 async function liveLine(adapter: T3Adapter, threadId: string): Promise<string | null> {
   try {
     const detail = await adapter.getThreadDetail(threadId, { bounded: true });
@@ -1016,7 +1016,7 @@ async function liveLine(adapter: T3Adapter, threadId: string): Promise<string | 
   return null;
 }
 
-/** Threads outside rooms, as the old overview lists them (they are on no journal): live line or last words, and news. */
+/** Threads outside rooms (they are on no journal): live line or last words, and news. */
 async function looseThreads(stack: AppStack, list: Map<string, T3ThreadShell> | null): Promise<unknown[]> {
   const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
   const loose = [...(list?.values() ?? [])].filter((t) => !bound.has(t.id) && !t.archivedAt && !t.settledAt && !t.deletedAt && t.lineage.relationshipToParent !== "subagent").slice(0, 40);

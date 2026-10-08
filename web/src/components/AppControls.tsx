@@ -291,7 +291,7 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
           His rules
           <textarea className="mono" rows={14} value={rules.text} spellCheck={false} onChange={(e) => setRules({ ...rules, text: e.target.value })} />
           <span className="hint">
-            Sent to every Consigliere with each message Backroom delivers to him, in every room. {rules.custom ? "This is your wording." : "This is Backroom's wording; change it to your liking."} A change takes effect with
+            Sent to every Consigliere, in every room, with his first briefing and again after his context was compacted or the wording changed. {rules.custom ? "This is your wording." : "This is Backroom's wording; change it to your liking."} A change takes effect with
             his next message. In it, <code>rooms-board</code> stands for the board command his briefing spells out.
           </span>
           <span className="task-actions">

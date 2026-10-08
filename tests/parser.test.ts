@@ -297,3 +297,18 @@ test("with one participant, a message that addresses nobody is for them", () => 
   assert.ok(parseExplicit("review the diff", participants).unresolved.some((u) => u.field === "recipients"), "several participants: still ask who");
   assert.ok(parseExplicit("review the diff", []).unresolved.some((u) => u.field === "recipients"), "nobody seated: still ask who");
 });
+
+test("/now lifts a leading condition's wait as it lifts the others, and the condition stays in the instruction", () => {
+  const people = [{ id: "g", alias: "grok" }, { id: "c", alias: "claude" }];
+  const refused = parseExplicit("@grok build it. when @grok finishes, @claude write the summary", people);
+  assert.deepEqual(refused.assignments[1]!.after, [{ index: 0, because: "condition" }]);
+  assert.equal(refused.assignments[1]!.timing, null, "a condition is no written directive: the plan offers /now, not a removal");
+  assert.deepEqual(errorsOf(refused), ["Waiting for @grok is gone: send this once @grok is done, have the Consigliere sequence it, or add /now to send it now."]);
+  const now = parseExplicit("@grok build it. when @grok finishes, @claude /now write the summary", people);
+  assert.deepEqual(errorsOf(now), []);
+  assert.deepEqual([now.assignments[1]!.after, now.assignments[1]!.timing, now.assignments[1]!.instruction], [[], "now", "when @grok finishes, write the summary"]);
+  // On work outside the message too.
+  assert.deepEqual(errorsOf(parseExplicit("when @grok finishes, @claude write the summary", people)), ["Waiting for other work is gone: send this once it is done, have the Consigliere sequence it, or add /now to send it now."]);
+  assert.deepEqual(errorsOf(parseExplicit("when @grok finishes, @claude /now write the summary", people)), []);
+});
+
