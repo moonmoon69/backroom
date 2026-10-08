@@ -156,9 +156,10 @@ describe("S5: runs without a report", () => {
 });
 
 describe("the verdict's limits", () => {
-  test("every verdict carries the plan's limits and T2's rule as the user decided it", () => {
+  test("every verdict carries the plan's limits and T2's rule as the Consigliere decided it (board #411)", () => {
     assert.equal(VERDICT_LIMITS.length, 8);
-    assert.ok(VERDICT_LIMITS.some((l) => /V's review comes before the report/.test(l) && /mostly measures the review exchange/.test(l)));
+    assert.ok(VERDICT_LIMITS.some((l) => /V's review comes before the report/.test(l) && /mostly measures the review exchange/.test(l) && /decided by the Consigliere, board #411/.test(l)));
+    assert.ok(!VERDICT_LIMITS.some((l) => /user decision|the user decided/i.test(l)));
     assert.ok(VERDICT_LIMITS.some((l) => /Small N/.test(l)));
     assert.ok(VERDICT_LIMITS.some((l) => /Claude only/.test(l)));
   });
