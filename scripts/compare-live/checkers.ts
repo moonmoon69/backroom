@@ -52,27 +52,21 @@ export const MEMBER_PARTS: Record<TaskId, Record<string, string[]>> = {
  * match somewhere in the text. The "facts" part also needs one line that says legacy is unused (LEGACY_UNUSED).
  */
 export const T1_FACTS: Array<{ name: string; pattern: RegExp }> = [
-  { name: "node:fs", pattern: /node:fs\b|["'`]fs["'`]/i },
-  ...["args", "text", "format", "dates", "legacy", "types"].map((name) => ({ name: `${name}.ts`, pattern: specifier(name) })),
+  { name: "node:fs", pattern: /node:fs|\bfs\b/i },
+  { name: "args", pattern: /\bargs(\.ts)?\b/i },
+  { name: "text", pattern: /\btext(\.ts)?\b/i },
+  { name: "format", pattern: /\bformat(\.ts)?\b/i },
+  { name: "dates", pattern: /\bdates(\.ts)?\b/i },
+  { name: "legacy", pattern: /\blegacy(\.ts)?\b/i },
+  { name: "types", pattern: /\btypes(\.ts)?\b/i },
   { name: "cli.ts:6", pattern: /cli\.ts:6(?!\d)/ },
 ];
-
-/** A module named as a module: `args.ts`, `./args.ts`, `src/args.ts` or `./args` (a bare word is ordinary English). */
-function specifier(name: string): RegExp {
-  return new RegExp(`(?:\\./|src/|\\b)${name}\\.ts\\b|\\./${name}\\b`, "i");
-}
 
 /** One line of a T1 answer must say both of these: that legacy (./legacy.ts, legacyBanner) is unused. */
 const LEGACY_UNUSED = {
   legacy: /legacy/i,
   unused: /unused|not used|never used|isn't used|is not used|unreferenced|dead|never called|not called|isn't called|never referenced|not referenced/i,
 };
-
-/** A report that says nothing is unused. */
-const NOTHING_UNUSED = /\b(no|none of (the|them|its)|none)\b[^.\n]{0,40}\b(unused|dead)\b|\b(all|every one) of (the|its|them)?\s*(seven|7)?\s*(imports|modules)?[^.\n]{0,20}\bare used\b|\ball (seven|7) (imports|modules) are used\b/i;
-
-/** Another module (or another import line) named in the same clause as "unused": that module is called unused too. */
-const OTHER_MODULES = [/node:fs\b/i, ...["args", "text", "format", "dates", "types"].map(specifier), /cli\.ts:[1-57](?!\d)/];
 
 /** The task's checker: T1 = facts on text; T2 = monthEnd + leapYear on folder; T3 = catalog + slowCheckLog on folder; T4 = slugify + json on folder, plus reportCoversBoth when text is not null. */
 export async function checkTask(task: TaskId, input: CheckInput): Promise<CheckResult> {
@@ -104,17 +98,16 @@ export async function checkTask(task: TaskId, input: CheckInput): Promise<CheckR
 
 // ---- text checks ----------------------------------------------------------------------------------------------
 
+/**
+ * Lenient on purpose: a false negative fails a correct report (and counts as premature, which G1 gates) for whichever
+ * side phrased it that way; a false positive only misses a rare wrong report. Bare module names count.
+ */
 function judgeFacts(text: string | null): PartResult {
   if (text === null || text.trim() === "") return { pass: false, detail: "no answer text" };
   const missing = T1_FACTS.filter((fact) => !fact.pattern.test(text)).map((fact) => fact.name);
   const saysUnused = text.split(/\r?\n/).some((line) => LEGACY_UNUSED.legacy.test(line) && LEGACY_UNUSED.unused.test(line));
   if (!saysUnused) missing.push("a line saying legacy is unused");
   if (missing.length > 0) return { pass: false, detail: `missing: ${missing.join(", ")}` };
-  if (NOTHING_UNUSED.test(text)) return { pass: false, detail: "says no import is unused" };
-  // Clauses (split at ". ", ";", "|" and line ends) that call something unused must name no other module.
-  const clauses = text.split(/\r?\n|\|/).flatMap((line) => line.split(/\.\s+|;/));
-  const wrong = clauses.find((clause) => LEGACY_UNUSED.unused.test(clause) && OTHER_MODULES.some((module) => module.test(clause)));
-  if (wrong !== undefined) return { pass: false, detail: `calls another import unused: "${wrong.trim().slice(0, 120)}"` };
   return { pass: true, detail: `all ${T1_FACTS.length} facts and the legacy-unused line are present` };
 }
 

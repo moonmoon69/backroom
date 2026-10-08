@@ -106,7 +106,7 @@ describe("T1: the imports of src/cli.ts", () => {
   test("T1_FACTS names every imported module and the line of the unused one", () => {
     assert.deepEqual(
       T1_FACTS.map((fact) => fact.name),
-      ["node:fs", "args.ts", "text.ts", "format.ts", "dates.ts", "legacy.ts", "types.ts", "cli.ts:6"],
+      ["node:fs", "args", "text", "format", "dates", "legacy", "types", "cli.ts:6"],
     );
     assert.ok(!T1_FACTS.find((fact) => fact.name === "cli.ts:6")?.pattern.test("src/cli.ts:60"));
   });
@@ -346,14 +346,25 @@ describe("review round 1 (R7, S1)", () => {
     assert.equal(log("2026-10-08T10:03:30.000Z").pass, false);
   });
 
-  test("S1: the T1 facts check refuses the reviewer's wrong reports and keeps the right one", async () => {
+  test("R8: correct T1 reports in any phrasing pass (the check is lenient on purpose)", async () => {
     const facts = async (text: string) => (await checkTask("T1", { folder: null, text })).parts.facts ?? { pass: false, detail: "no facts part" };
     const right = readFileSync(join(REFERENCE_DIR, "T1", "report.md"), "utf8");
     assert.equal((await facts(right)).pass, true);
-    const base = "Imports: node:fs, ./args.ts, ./text.ts, ./format.ts, ./dates.ts, ./legacy.ts, ./types.ts (src/cli.ts:1-7).";
-    assert.equal((await facts(`${base}\nunused: legacy (src/cli.ts:6) and types (src/cli.ts:7)`)).pass, false);
-    assert.equal((await facts(`${base.replace(", ./types.ts", "")}\nThe types are fine. legacy at src/cli.ts:6 is unused.`)).pass, false);
-    assert.equal((await facts(`${base}\nlegacy at src/cli.ts:6 is used once; none is unused.`)).pass, false);
-    assert.equal((await facts(`${base}\nlegacy (src/cli.ts:6) is unused; the other six are used.`)).pass, true);
+    for (const line of [
+      "No other import is unused.",
+      "None of the other six is unused.",
+      "There is no unused import except ./legacy.ts.",
+      "./types.ts (src/cli.ts:7) is a type-only import, erased at runtime, but it is not unused: the Row type is used.",
+      "./legacy.ts is unused, unlike ./format.ts, which formatRow uses.",
+    ]) {
+      const result = await facts(`${right}\n${line}`);
+      assert.equal(result.pass, true, `${line}: ${result.detail}`);
+    }
+    const table = ["| module | line | used |", "|---|---|---|", "| node:fs | cli.ts:1 | yes |", "| args | cli.ts:2 | yes |", "| text | cli.ts:3 | yes |", "| format | cli.ts:4 | yes |", "| dates | cli.ts:5 | yes |", "| legacy | cli.ts:6 | unused |", "| types | cli.ts:7 | yes |"].join("\n");
+    assert.equal((await facts(table)).pass, true, "bare-name table");
+    assert.equal((await facts("src/cli.ts imports node:fs and the args, text, format, dates, legacy and types modules. Only legacy is unused (src/cli.ts:6).")).pass, true, "bare-name prose");
+    // Still refused: no line calls legacy unused, or the line number is missing.
+    assert.equal((await facts("Imports: node:fs, args, text, format, dates, legacy, types (src/cli.ts:1-7). Everything is used.")).pass, false);
+    assert.equal((await facts("Imports: node:fs, args, text, format, dates, types. legacy is unused.")).pass, false);
   });
 });

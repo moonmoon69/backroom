@@ -590,7 +590,7 @@ function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecor
     }
   }
   if (aborted.length > 0) {
-    lines.push("", "## Jobs that did not close (not measured; their spend counts against the cap)", "", "| job | side | task | run | status | spent | why |", "|---|---|---|---|---|---|---|");
+    lines.push("", "## Jobs not measured: aborted, or superseded by a re-run (their spend counts against the cap)", "", "| job | side | task | run | status | spent | why |", "|---|---|---|---|---|---|---|");
     for (const { job, spentUsd } of aborted) lines.push(`| ${job.jobId} | ${job.side} | ${job.task} | ${job.run} | ${job.status} | $${spentUsd.toFixed(2)} | ${(job.notes.at(-1) ?? "").split("\n")[0]} |`);
     lines.push("", `Campaign spend, every job: $${(measures.reduce((n, m) => n + m.spend.totalUsd, 0) + aborted.reduce((n, a) => n + a.spentUsd, 0)).toFixed(2)}.`);
   }

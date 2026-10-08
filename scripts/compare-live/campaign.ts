@@ -75,7 +75,8 @@ export interface JobRecord {
   task: TaskId;
   run: number;
   jobId: string;
-  status: "running" | "closed" | "aborted";
+  /** superseded: a closed job whose evidence failed the accuracy check and was re-run under its label, with the user's OK (set by hand, with a note naming the OK). */
+  status: "running" | "closed" | "aborted" | "superseded";
   /** How the window closed: quiet for 3 minutes after the report, the 30-minute cap after it, or no report in 60. */
   close: "quiet" | "did not quiesce" | "no report" | null;
   dry: boolean;

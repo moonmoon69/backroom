@@ -107,9 +107,9 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
   T3: including the log read up to T3's time of the report, so a report before the last slow-check finished is
   premature). The log is judged run by run: the last-started run must have finished and passed, and no run may still
   be in progress (runs can overlap).
-- **T1's facts** need each module named as a module (`args.ts`, `./args.ts`, `src/args.ts`; `node:fs`), the line
-  `cli.ts:6`, a line calling legacy unused, no claim that nothing is unused, and no clause that calls another module or
-  import line unused.
+- **T1's facts** are matched leniently on purpose: each module's name (bare or as `args.ts`, `./args.ts`, …), the line
+  `cli.ts:6`, and one line that calls legacy unused. A false negative would fail a correct report, and count as
+  premature, for whichever side phrased it that way (which G1 gates); a false positive only misses a rare wrong report.
 - **Early member answers** (reported, not gated): a member's answer while its own parts failed on the copy taken then.
   Reviewers' answers are not checked. On the old side every member turn end is an answer. T1's part is judged on the
   answer's text, so once a member has given the facts its later answers are not early (added after the first R0 job,
@@ -149,7 +149,15 @@ thread has no T3 record in the evidence, when a call on a model with no price wa
 no readable timestamp, when one message id is counted on two threads, when a transcript in the job folder's project
 belongs to no job thread, when the report's copy is newer than T3's report (see step 5), and when any job transcript
 mentions `scripts/compare-live`, `backroom-handoff`, the fixture repo or another job's folder (a leak). A Consigliere
-final that mentions JOB-DONE without a line that says it is not a report; the report warns about it. `--register-gate` needs
+final that mentions JOB-DONE without a line that says it is not a report; the report warns about it.
+
+**When the accuracy check fails.** Any difference blocks `--register-gate` and `--verdict`, including the report-copy
+check, which can fire on a harmless edit made in the board's lag window (likeliest during the old runtime's
+after-report wakes). Then there is no verdict: the differences are in `report.md` for the user to see. A job may be
+re-run under the same label only when its evidence failed (a difference in what was recorded, never its results), and
+only with the user's OK. The earlier attempt's `job.json` gets `"status": "superseded"` and a note naming the OK; both
+attempts stay in the campaign folder, and the report lists the superseded one, with its spend, among the jobs not
+measured. `--register-gate` needs
 exactly 2 closed old jobs per task; `--verdict` needs N closed jobs per task and side.
 
 ## Recomputing one job by hand
@@ -199,8 +207,8 @@ check compares T3's runs (the fake's) with the instance's own run records. The q
   not say which side a job is on; the board command in the briefings does (`compare-old`/`compare-new`).
 - The crew is Claude only (Codex is out of quota until 2026-10-14; Cursor is not signed in).
 - Other rooms share the account's rate limits; overlap is recorded per job.
-- T1's facts check is still text matching: a report could pass it with an odd phrasing that is wrong in substance.
-  Both R0 T1 reports were read in full and are right.
+- T1's facts check is lenient text matching (see the pass rules): a report could pass it while wrong in substance, e.g.
+  calling a second import unused or saying nothing else is used. Both R0 T1 reports were read in full and are right.
 - JOB-DONE near misses ("JOB-DONE:", "Status: JOB-DONE", "JOB-DONE ✅") are not reports: such a job runs to the
   60-minute "no report" close, and the report warns about it. None happened in R0.
 - T2 measures the review exchange more than defect-catching: the leap-year defect is easy to spot, and in R0 the
