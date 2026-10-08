@@ -275,7 +275,7 @@ class Browser {
 // ---------------- the room ----------------
 
 type Snapshot = {
-  room: { id: string };
+  room: { id: string; consigliereId: string | null };
   bindings: Array<{ id: string; participantId: string; threadId: string }>;
   posts: any[];
   requests: any[];
@@ -876,6 +876,29 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     },
   });
   check.passed.push(...two.passed);
+
+  // 19. The Consigliere reseats himself: a fresh seat of his takes over as Consigliere. The conversation with him keeps
+  // everything from before the reseat (L5 review B3): the user's first message and his first report.
+  room.board("fable", "reseat", "fable");
+  await room.settle("fable");
+  await until("his handover to the fresh seat", async () => (await room.snapshot()).posts.some((p) => p.kind === "transfer" && p.transfer.oldSeatId === seat.fable), 60_000);
+  browser.click(/button "Back to the overview"/);
+  browser.waitFor("Rehearsal");
+  browser.click(/button "Rehearsal(?! B)/);
+  await check.state("the chat keeps his history after he is reseated", (x) => {
+    const handover = x.posts.find((p) => p.kind === "transfer" && p.transfer.oldSeatId === seat.fable);
+    return handover && x.room.consigliereId && x.room.consigliereId !== room.participant.fable
+      ? `#${handover.number} handed seat ${seat.fable.slice(0, 8)} to ${handover.transfer.newSeatId.slice(0, 8)}; the Consigliere is now participant ${x.room.consigliereId.slice(0, 8)}`
+      : null;
+  }, ["Get the date parser fixed and reviewed, then report.", "Report: the date parser is fixed and reviewed (PASS)."], {
+    extra: () => {
+      const chat = browser.eval<{ label: string | null; first: boolean; report: boolean }>(
+        "() => { const log = document.querySelector('.timeline'); const text = log?.textContent ?? ''; return { label: log?.getAttribute('aria-label') ?? null, first: text.includes('Get the date parser fixed and reviewed, then report.'), report: text.includes('Report: the date parser is fixed and reviewed (PASS).') }; }",
+      );
+      if (chat.label !== "Conversation with the Consigliere" || !chat.first || !chat.report) fail(`the chat after his reseat: ${JSON.stringify(chat)}`);
+      log("  page: the chat with the fresh Consigliere still holds the first message and his first report");
+    },
+  });
 
   // Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs.
   const db = new DatabaseSync(join(room.dataDir, "rooms.sqlite"), { readOnly: true });
