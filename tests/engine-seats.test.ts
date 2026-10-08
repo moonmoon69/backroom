@@ -12,6 +12,7 @@ import { ENGINE_BOARD_RULES, engineSeatFacts, seatFacts } from "../src/app/consi
 import { readEngineReseats } from "../src/app/reseat.ts";
 import { standingText } from "../src/briefing/assemble.ts";
 import { RoomError } from "../src/domain/errors.ts";
+import { T3Unavailable } from "../src/adapter/types.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import { decide, inputTree } from "../src/engine/index.ts";
 import type { ClaimOutcome, Projection, Run } from "../src/engine/index.ts";
@@ -563,6 +564,104 @@ test("a checkpoint that arrives with other work answers only itself: the other r
     const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
     assert.deepEqual(transfer.data.kind === "transfer" ? transfer.data.owned : null, [b]);
     assert.equal(h.wakes("V"), 1, "V's only wake is its seat briefing");
+  } finally {
+    h.close();
+  }
+});
+
+test("retire with a request the member asked still open: its answer wakes no retired thread; the Consigliere is told once", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const threadW = h.thread("W");
+    const q = `question:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: q, to: h.seat("V"), body: "Which node version does CI use?" });
+    assert.equal(h.p.requests.get(q)!.parentId, null, "a question outside any turn stands alone");
+    await h.tick();
+    assert.ok(h.running("V"));
+    await h.run({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" });
+    const wakes = h.fake.runsOf(threadW).length;
+    h.complete("V", "Node 24.");
+    await h.tick();
+    assert.deepEqual(h.claims(q).map((c) => [c.outcome, c.returnTo]), [["answered", seatW]]);
+    const notice = h.p.events.find((e) => e.data.kind === "notice" && e.data.intent === "attention" && /Undeliverable/.test(e.data.body))!;
+    assert.deepEqual(notice.data.kind === "notice" ? notice.data.recipients : null, [h.seat("C")]);
+    await h.tick();
+    assert.equal(h.fake.runsOf(threadW).length, wakes, "the retired thread is never woken");
+    assert.equal(h.wakes("C"), 1, "the Consigliere is told once");
+  } finally {
+    h.close();
+  }
+});
+
+test("a review still open at the transfer: its answer reaches the fresh seat, whose final answers the parent once", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const a = h.request("C", "W", "Implement A.");
+    await h.tick();
+    const review = `review:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: review, to: h.seat("V"), body: "Please review A." });
+    h.complete("W", "A written; review asked.");
+    await h.tick();
+    assert.ok(h.running("V"));
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
+    await h.tick();
+    h.complete("W", "CHECKPOINT: waiting for the review of A.");
+    await h.tick();
+    const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
+    assert.ok(transfer.data.kind === "transfer");
+    assert.deepEqual([transfer.data.owned, transfer.data.awaited], [[a], [review]]);
+    const fresh = transfer.data.newSeatId;
+    assert.equal(h.p.requests.get(review)!.returnTo, fresh);
+    h.complete("V", "PASS.");
+    await h.tick();
+    const freshThread = h.s.repos.getBinding(fresh)!.threadId;
+    const [first] = h.runs(fresh);
+    assert.deepEqual(first!.envelope.inputs.map((i) => i.intent), ["transfer", "request", "result"]);
+    h.fake.completeRun(freshThread, { text: "A is reviewed and done." });
+    await h.tick();
+    assert.deepEqual(h.claims(a).filter((c) => c.outcome === "answered").map((c) => c.returnTo), [h.seat("C")]);
+    assert.equal(h.wakes("C"), 1, "woken once, by the one final that answers A and the takeover");
+    assert.equal(h.fake.runsOf(h.thread("V")).length, 2, "V: its seat briefing and the review, nothing more");
+  } finally {
+    h.close();
+  }
+});
+
+test("T3 away while the fresh seat is made, then a restart before the transfer: one fresh thread, one transfer, one takeover", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: "carry on" });
+    await h.tick();
+    h.complete("W", "CHECKPOINT: idle.");
+    // T3 cannot make the fresh thread once: the reseat waits and asks again with the same IDs.
+    const launch = h.fake.launchThread.bind(h.fake);
+    let away = 1;
+    h.fake.launchThread = async (input) => {
+      if (away-- > 0) throw new T3Unavailable("T3 is not reachable (simulated)");
+      return launch(input);
+    };
+    await h.tick();
+    const [record] = readEngineReseats(h.s.repos, h.roomId);
+    assert.equal(record!.stage, "checkpoint");
+    assert.equal(h.p.seats.get(seatW)!.status, "active");
+    // The fresh thread is made; the transfer fails once (as a crash would stop it); then the service restarts.
+    h.host.transfer = () => {
+      throw new Error("simulated crash before the transfer");
+    };
+    await h.tick();
+    assert.equal(readEngineReseats(h.s.repos, h.roomId)[0]!.stage, "seated");
+    h.restart();
+    await h.tick(2);
+    const fresh = record!.fresh;
+    assert.equal(h.p.events.filter((e) => e.data.kind === "transfer").length, 1);
+    assert.equal([...h.p.requests.keys()].filter((id) => id.startsWith("takeover:")).length, 1);
+    assert.equal(h.s.repos.listParticipants(h.roomId).filter((p) => p.alias.startsWith("W")).length, 2, "W and one fresh W2");
+    assert.equal(h.s.repos.currentBinding(fresh.participantId)!.threadId, fresh.threadId, "the thread chosen before T3 was asked");
+    assert.equal(h.fake.threads.has(fresh.threadId), true);
+    assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 0);
   } finally {
     h.close();
   }
