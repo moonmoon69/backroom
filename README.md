@@ -715,7 +715,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_TICK_MS` | `1500` | Scheduler poll interval |
 | `ROOMS_WEB_DIST` | `web/dist` | The built UI the service serves (a second instance can serve another build) |
 | `ROOMS_BRIEFING_BUDGET` | `60000` | Characters per delivery before older room context is condensed |
-| `ROOMS_THREAD_ACTION_TIMEOUT_MS` | `5000` | How long deleting a room waits for T3 to settle, archive or delete each member's thread (all are sent at once); an action still unanswered then is reported as timed out and may still go through |
+| `ROOMS_THREAD_ACTION_TIMEOUT_MS` | `5000` | How long deleting a room waits for T3 to settle, archive or delete each member's thread. All are sent at once, so the page waits at most this long; an action still unanswered then is reported as timed out and may still go through (a dispatch itself waits up to 60 s; its late outcome goes to the service log). 60 s or more never fires |
 | `ROOMS_BROWSER_MODE` | `auto` | Room browser: `vnc` (Xvfb + noVNC), `window`, `headless`, or `off`. `auto` picks `vnc` on Linux with the tools installed, otherwise `window` (macOS or a Linux desktop) or `headless` |
 | `ROOMS_BROWSER_CHROME` | found automatically | Path to Chrome or Chromium |
 | `ROOMS_BROWSER_BIND` | `127.0.0.1` | Address noVNC listens on (for example a Tailscale IP) |

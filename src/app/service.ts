@@ -108,7 +108,11 @@ export function orderProjects<T extends { id: string }>(repos: Repos, projects: 
     .map(({ project }) => project);
 }
 
-/** How long room deletion waits for T3 to answer each thread action (ROOMS_THREAD_ACTION_TIMEOUT_MS). */
+/**
+ * How long room deletion waits for T3 to answer each thread action (ROOMS_THREAD_ACTION_TIMEOUT_MS). Well under the
+ * 60 s an HTTP adapter dispatch may itself wait (twice its 30 s request limit): the page answers within a few seconds,
+ * and an action T3 answers later still goes through, its outcome logged. A limit of 60 s or more never fires.
+ */
 export const THREAD_ACTION_TIMEOUT_MS = 5000;
 
 export interface RoomServiceOptions {
@@ -416,15 +420,15 @@ export class RoomService {
   // ---------- rooms & participants ----------
 
   /**
-   * Delete a room. The T3 thread actions (settle/archive/delete as chosen per participant; a thread also bound in
-   * another room, or a retired member's, is left as it is) are all sent at once; the room's stored data is removed in one
-   * transaction without waiting for them, and the answer waits at most the per-call limit. A failed action leaves that
-   * thread as it was; an action T3 has not answered by then is reported as a timeout, and its late outcome is logged.
+   * Delete a room. Its stored data is removed in one transaction first; then the T3 thread actions (settle/archive/
+   * delete as chosen per participant; a thread also bound in another room, or a retired member's, is left as it is) are
+   * all sent at once, and the answer waits at most the per-call limit. A failed action leaves that thread as it was; an
+   * action T3 has not answered by then is reported as a timeout, and its late outcome is logged.
    */
   private async deleteRoom(command: Extract<RoomCommand, { type: "room.delete" }>): Promise<CommandResult> {
     type ThreadResult = Extract<CommandResult, { type: "room.deleted" }>["threads"][number];
     const room = this.requireRoom(command.roomId);
-    const results: Array<ThreadResult | Promise<ThreadResult>> = [];
+    const results: Array<ThreadResult | (() => Promise<ThreadResult>)> = [];
     for (const participant of this.repos.listParticipants(room.id)) {
       const binding = this.repos.currentBinding(participant.id);
       if (!binding) continue;
@@ -437,11 +441,12 @@ export class RoomService {
         results.push({ ...entry, result: "kept", ...(elsewhere && action !== "keep" ? { detail: "also used in another room" } : {}) });
         continue;
       }
-      results.push(this.threadActionWithin(room, entry, action));
+      results.push(() => this.threadActionWithin(room, entry, action));
     }
     this.db.transaction(() => this.repos.deleteRoomCascade(room.id));
     this.notify(room.id);
-    return { type: "room.deleted", roomId: room.id, threads: await Promise.all(results) };
+    // Sent only once the room is gone: a delete that fails changes no thread, and a second delete finds no room.
+    return { type: "room.deleted", roomId: room.id, threads: await Promise.all(results.map((result) => (typeof result === "function" ? result() : result))) };
   }
 
   /** Sends one thread action now and answers within the limit: done, failed, or timeout (the late outcome is logged). */

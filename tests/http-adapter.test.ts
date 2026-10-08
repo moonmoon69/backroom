@@ -39,14 +39,19 @@ function mockFetch(routes: Record<string, (recorded: Recorded) => { status: numb
   return { fetchImpl, calls };
 }
 
-/** An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames). */
+/**
+ * An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames).
+ * A handler that returns a promise answers when it settles; `closed` counts the sockets closed.
+ */
 function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
   const frames: Array<{ tag: string; payload: any; url: string }> = [];
+  const sockets = { opened: 0, closed: 0 };
   class Socket {
     private readonly listeners = new Map<string, Array<(event: any) => void>>();
     readonly url: string;
     constructor(url: string) {
       this.url = url;
+      sockets.opened += 1;
       queueMicrotask(() => this.emit("open", {}));
     }
     addEventListener(type: string, listener: (event: any) => void): void {
@@ -58,21 +63,26 @@ function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
     send(data: string): void {
       const frame = JSON.parse(data) as { id: string; tag: string; payload: unknown };
       frames.push({ tag: frame.tag, payload: frame.payload, url: this.url });
+      const answer = (exit: unknown) => this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
+      const failure = (error: unknown) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] });
       queueMicrotask(() => {
-        let exit: unknown;
+        let value: unknown;
         try {
-          exit = { _tag: "Success", value: handlers[frame.tag]?.(frame.payload) ?? null };
+          value = handlers[frame.tag]?.(frame.payload) ?? null;
         } catch (error) {
-          exit = { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] };
+          answer(failure(error));
+          return;
         }
-        this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
+        if (value instanceof Promise) value.then((late) => answer({ _tag: "Success", value: late ?? null }), (error) => answer(failure(error)));
+        else answer({ _tag: "Success", value });
       });
     }
     close(): void {
+      sockets.closed += 1;
       this.emit("close", {});
     }
   }
-  return { Socket, frames };
+  return { Socket, frames, sockets };
 }
 
 const ENVIRONMENT = { environmentId: "env", label: "box", serverVersion: "0.0.46-nightly.20261003.2610", orchestrationProtocolVersion: 2 };
@@ -122,6 +132,24 @@ test("a message is dispatched over the RPC socket with the contract's fields; ev
   await adapter.sendMessage({ commandId: "cmd-3", threadId: "thread-1", messageId: "msg-3", text: "also", mode: { type: "steer", runId: RUN } });
   assert.deepEqual(frames.slice(1).map((f) => f.payload.dispatchMode), [{ type: "queue_after_active" }, { type: "steer_active", targetRunId: RUN }]);
   assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 1, "commands share one socket");
+  adapter.close();
+});
+
+test("the shared socket stays open while a command waits for T3, and closes after a quiet spell once it is answered", async () => {
+  // T3 under load answers a settle after 300 ms; the quiet spell is 100 ms. The socket used to close 100 ms after the
+  // call started, failing a settle T3 then applied.
+  const { fetchImpl } = mockFetch(base);
+  const slow = () => new Promise((resolve) => setTimeout(() => resolve({ sequence: 12 }), 300));
+  const { Socket, frames, sockets } = mockSocket({ "orchestration.dispatchCommand": slow });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, requestTimeoutMs: 2000, commandLinkIdleMs: 100 });
+  const first = adapter.setThreadLifecycle({ commandId: "cmd-a", threadId: "thread-1", action: "settle" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = adapter.setThreadLifecycle({ commandId: "cmd-b", threadId: "thread-old", action: "archive" });
+  await Promise.all([first, second]);
+  assert.deepEqual(frames.map((f) => [f.payload.type, f.payload.threadId]), [["thread.settle", "thread-1"], ["thread.archive", "thread-old"]]);
+  assert.deepEqual(sockets, { opened: 1, closed: 0 }, "one socket, still open right after the answers");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(sockets, { opened: 1, closed: 1 }, "closed after the quiet spell");
   adapter.close();
 });
 
