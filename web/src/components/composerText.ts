@@ -1,6 +1,6 @@
 /**
  * Text edits behind the composer's controls. The text is the single source of truth: every control
- * (mention, note, timing, "it's a reference") rewrites the text and the parser reads it back.
+ * (mention, timing, "it's a reference") rewrites the text and the parser reads it back.
  * Offsets come from the parser's draft of the same text (src/parser/explicit.ts).
  */
 import type { DraftAssignment, MentionSpan } from "../types.ts";
@@ -14,7 +14,6 @@ export interface TextEdit {
 const REF = String.raw`(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)`;
 /** Timing directives as the parser reads them in an assignment's head: /now, /steer, and the retired /hold, /after <refs>. */
 const DIRECTIVES = new RegExp(String.raw`\/(?:hold|now|steer)\b\s*|\/after\b\s*(?:${REF}(?:\s*,\s*${REF})*[\s,]*)?`, "gi");
-const NOTE = /^(\s*)\/note\b[ \t]*/i;
 
 /** Insert `token` at `at`, keeping one space on each side. */
 function insertToken(text: string, at: number, token: string): TextEdit {
@@ -75,18 +74,6 @@ export function insertMention(text: string, caret: number, alias: string): TextE
   const at = text.trim().length === 0 ? 0 : Math.max(0, Math.min(caret, text.length));
   const base = text.trim().length === 0 ? "" : text;
   return insertToken(base, at, `@${alias}`);
-}
-
-export const isNote = (text: string): boolean => NOTE.test(text);
-
-/** Add or remove a leading `/note `. */
-export function toggleNote(text: string): TextEdit {
-  if (isNote(text)) {
-    const next = text.replace(NOTE, "$1");
-    return { text: next, caret: next.length };
-  }
-  const next = `/note ${text.replace(/^\s+/, "")}`;
-  return { text: next, caret: next.length };
 }
 
 /** Same rule as the parser: an @mention at the start of the text, a line, or a sentence always addresses. */

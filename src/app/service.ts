@@ -55,7 +55,6 @@ export type CommandResult =
     }
   /** After participant.reseat: the checkpoint request the member was sent (src/app/engineSeats.ts). */
   | { type: "participant.reseating"; participantId: string; eventId: string }
-  | { type: "note.created"; eventId: string }
   /** The engine's message path: one request per recipient per assignment, sharing the message's ID. */
   | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
   | { type: "request.updated"; requestId: string; applied: boolean }
@@ -285,7 +284,6 @@ export class RoomService {
         return this.setParticipantRuntimeMode(command);
       // The journal's commands: the engine's handlers above take them (bootstrap.ts registers both).
       case "message.create":
-      case "room.note.create":
       case "request.cancel":
       case "request.correct":
       case "run.retry":

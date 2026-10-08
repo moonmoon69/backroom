@@ -7,7 +7,7 @@
  * - `/steer` makes the request a steered one (`steer:` ID): the host sends it into the recipient's running turn, or it
  *   waits for the turn to end like any other; in a room with a Consigliere every message is his, and steered;
  * - a T3 slash command goes to the member's thread exactly as typed, and is recorded as a note;
- * - `/note` is a room note: no request, and every seat's next briefing carries it;
+ * - a message that starts with `/note` is refused: room notes are gone (N1);
  * - the user cancels or corrects a request, retries a failed run, and stops what a member runs in T3.
  *
  * Decision D2: nothing waits on other work. The parser refuses held or chained assignments, and the command has no field
@@ -20,12 +20,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { T3Adapter, TurnImage } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable, isRunActive } from "../adapter/types.ts";
-import { ROOM_NOTE } from "../briefing/envelope.ts";
 import type { Repos } from "../db/repos.ts";
 import type { Assignment, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_TOTAL_BYTES, type Participant, type Room } from "../domain/types.ts";
-import { parseExplicit } from "../parser/explicit.ts";
+import { NOTE_DIRECTIVE, NOTE_GONE, parseExplicit } from "../parser/explicit.ts";
 import type { EngineHost } from "../runtime/index.ts";
 import { STEER_REQUEST } from "../runtime/steer.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
@@ -103,8 +102,6 @@ export class EngineMessages {
     switch (command.type) {
       case "message.create":
         return this.create({ roomId: command.roomId, preamble: command.preamble ?? null, sourceText: command.sourceText, clientMessageId: command.clientMessageId ?? null, attachmentIds: command.attachmentIds, assignments: command.assignments });
-      case "room.note.create":
-        return this.note(command.roomId, command.text);
       case "request.cancel":
         return this.journal(async () => {
           const result = await this.host.cancel(this.room(command.roomId).id, { actor: USER, id: `cancel:${randomUUID()}`, requestId: command.requestId });
@@ -139,6 +136,8 @@ export class EngineMessages {
    */
   private async create(input: { roomId: string; preamble: string | null; sourceText: string | null; clientMessageId: string | null; attachmentIds: string[]; assignments: Assignment[] }): Promise<CommandResult> {
     const room = this.room(input.roomId);
+    // N1: a message that starts with /note, or a request that would, is refused; "@bob /note …" is a T3 command, T3's to take.
+    if (NOTE_DIRECTIVE.test((input.sourceText ?? "").trim()) || input.assignments.some((a) => !a.slashCommand && NOTE_DIRECTIVE.test(a.instruction.trim()))) throw new RoomError("note_gone", NOTE_GONE);
     const participants = new Map(this.repos.listParticipants(room.id).map((p) => [p.id, p]));
     const consigliere = room.consigliereId ? participants.get(room.consigliereId) ?? null : null;
     for (const assignment of input.assignments) {
@@ -211,15 +210,6 @@ export class EngineMessages {
       this.host.note(room.id, { actor: USER, id, body: `To @${participant.alias} (T3 command, sent as typed): ${instruction}` });
     });
     return id;
-  }
-
-  /** `/note`: a room note by the user. No request, nobody woken; every seat's next briefing carries it. */
-  private note(roomId: string, text: string): Promise<CommandResult> {
-    return this.journal(async () => {
-      this.size(text);
-      const receipt = this.host.note(this.room(roomId).id, { actor: USER, id: `note:${randomUUID()}`, body: text, milestone: ROOM_NOTE });
-      return { type: "note.created", eventId: receipt.events[0]!.id };
-    });
   }
 
   // ---------------- checks ----------------

@@ -69,7 +69,7 @@ export type EnginePostKind =
   | "correction"
   /** The requester withdraws a request. */
   | "cancel"
-  /** Wakes nobody: the user's /note, a member's `rooms-board note`, messages and turns from T3 (plan §3). */
+  /** Wakes nobody: messages and turns from T3 (plan §3), keep-alive replies and Backroom's own notes; journals from before N1 also hold the user's and members' notes. */
   | "note"
   /** A follow-up (H5): a member's turn that answered nothing, or background work that ended; it wakes the orchestrator. */
   | "progress"
@@ -150,7 +150,7 @@ export interface EnginePost extends EngineTime {
   note?: {
     /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn on the member's thread the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends; keep-alive: a seat's reply to a keep-alive (H6). */
     source: "post" | "t3-message" | "t3-turn" | "deferred-cancel" | "keep-alive";
-    /** A /note to the whole room: every member's next briefing carries it. */
+    /** The user's note to the whole room, which a journal from before N1 may hold: every member's next briefing carries it. */
     room: boolean;
     t3: EngineT3Ref | null;
     /** Under a request its author had already answered (a self-started turn after the answer, plan §5). */

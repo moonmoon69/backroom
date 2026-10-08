@@ -402,7 +402,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
                       ? "No crew seated yet; open People (the two-person icon above) to add a member, then hand out work here."
                       : "The board is empty; address the crew to post the first request."}
                   </p>
-                  <pre className="worked-example mono">{"@sol1 investigate the parser\n@sol1 @sol2 independently check the tests\n/note keep the public API stable"}</pre>
+                  <pre className="worked-example mono">{"@sol1 investigate the parser\n@sol1 @sol2 independently check the tests"}</pre>
                   <p className="muted">Each line is one message. Send a follow-up once the work it builds on is answered.</p>
                 </div>
               ) : null}

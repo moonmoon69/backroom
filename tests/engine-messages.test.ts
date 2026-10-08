@@ -17,7 +17,8 @@ import { startAttemptKey } from "../src/app/consigliere.ts";
 import { MAX_POST_BYTES, messageIdOf } from "../src/app/engineMessages.ts";
 import { CommandValidationError, parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
-import { AFTER_GONE, HOLD_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
+import { AFTER_GONE, HOLD_GONE, NOTE_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
+import { ROOM_NOTE } from "../src/briefing/envelope.ts";
 
 /**
  * The fake T3, plus: a hook on a steered message just before T3 takes it; steer sends lost to an outage, refused, or
@@ -133,7 +134,6 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
       const draft = room.draft(text);
       const errors = draft.unresolved.filter((u) => u.severity === "error");
       if (errors.length) throw new Error(`draft refused: ${errors.map((u) => u.message).join("; ")}`);
-      if (draft.kind === "note") return (await run({ type: "room.note.create", roomId, text: draft.instruction })) as never;
       return (await run({
         type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds, ...(clientMessageId ? { clientMessageId } : {}),
         assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
@@ -331,11 +331,22 @@ test("Several assignments in one message: two assignments both start now, each r
 
 // ---------------- Notes ----------------
 
-test("Notes: a note creates no request and starts no turn, and every member's next briefing carries it", async (t) => {
+test("Notes: a message that starts with the note directive is refused with one sentence and records nothing; a room note a journal already holds reaches every member's next briefing once", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
-  const note = (await r.say("/note we keep the public API as it is")) as unknown as { type: string; eventId: string };
-  assert.equal(note.type, "note.created");
+  // N1: room notes are gone. The composer's draft is refused, and so is the message sent anyway, with or without its text.
+  const draft = r.draft("/note we keep the public API as it is");
+  assert.deepEqual([draft.kind, draft.assignments.length, draft.unresolved.map((u) => [u.severity, u.message])], ["task", 0, [["error", NOTE_GONE]]]);
+  await assert.rejects(r.say("/note we keep the public API as it is"), new RegExp(`draft refused: ${NOTE_GONE}`));
+  const [before, sent] = [r.events().length, r.fake.commands.length];
+  for (const [sourceText, slashCommand] of [["/note we keep the public API as it is", false], ["/note we keep the public API as it is", true], [undefined, false]] as const) {
+    const command = { type: "message.create", roomId: r.roomId, ...(sourceText ? { sourceText } : {}), assignments: [{ recipients: [r.ids.sol!], instruction: "/note we keep the public API as it is", slashCommand }] } as RoomCommandInput;
+    await assert.rejects(r.run(command), (error: Error) => error.message === NOTE_GONE);
+  }
+  assert.equal(r.events().length, before, "nothing is recorded");
+  assert.equal(r.fake.commands.length, sent, "nothing goes to T3");
+  // A room note from before N1, as the journal holds it: it creates no request and wakes nobody.
+  r.stack.engine!.note(r.roomId, { actor: "$user", id: "note:before-n1", body: "we keep the public API as it is", milestone: ROOM_NOTE });
   assert.equal(requestsOf(r).length, 0);
   await r.tick();
   assert.equal(r.runs("sol").length + r.runs("grok").length, 0, "nobody is woken");

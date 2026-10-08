@@ -33,20 +33,18 @@ import {
 } from "../types.ts";
 import {
   insertMention,
-  isNote,
   isSentenceStart,
   mentionToReference,
   replaceMention,
   setTiming,
   splitAtMention,
   timingFixes,
-  toggleNote,
   type TextEdit,
 } from "./composerText.ts";
 import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
-import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
+import { ChevronIcon, CloseIcon, ImageIcon } from "./icons.tsx";
 import { useMenuFocus } from "../keys.ts";
 
 interface Props {
@@ -364,7 +362,6 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   // ---- plan + submit ----
 
   const crewDraft = draft && (draft.kind === "participant.add" || draft.kind === "participant.remove") ? draft : null;
-  const noteOn = isNote(text);
   const plan = evaluate(draft, readyIds.length, uploading, attachedCount);
   const canSubmit = plan.ready && !submitting;
   const assignmentCount = draft?.kind === "task" ? draft.assignments.length : 0;
@@ -392,25 +389,23 @@ export function Composer({ overlay: asOverlay = false }: Props) {
       const result =
         draft.kind === "participant.add" && draft.add
           ? await runCommand({ type: "participant.create", roomId, alias: draft.add.alias, thread: { mode: "create" } })
-          : draft.kind === "note"
-              ? await runCommand({ type: "room.note.create", roomId, text: draft.instruction })
-              : draft.kind === "task"
-                ? await runCommand({
-                    type: "message.create",
-                    roomId,
-                    sourceText: text,
-                    preamble: draft.preamble,
-                    clientMessageId: (messageId.current = messageId.current?.key === JSON.stringify([text, readyIds]) ? messageId.current : { key: JSON.stringify([text, readyIds]), id: newMessageId() }).id,
-                    attachmentIds: readyIds,
-                    assignments: draft.assignments.map((a) => ({
-                      recipients: a.recipients,
-                      instruction: a.instruction,
-                      slashCommand: Boolean(a.slashCommand),
-                      // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
-                      delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),
-                    })),
-                  })
-                : null;
+          : draft.kind === "task"
+            ? await runCommand({
+                type: "message.create",
+                roomId,
+                sourceText: text,
+                preamble: draft.preamble,
+                clientMessageId: (messageId.current = messageId.current?.key === JSON.stringify([text, readyIds]) ? messageId.current : { key: JSON.stringify([text, readyIds]), id: newMessageId() }).id,
+                attachmentIds: readyIds,
+                assignments: draft.assignments.map((a) => ({
+                  recipients: a.recipients,
+                  instruction: a.instruction,
+                  slashCommand: Boolean(a.slashCommand),
+                  // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
+                  delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),
+                })),
+              })
+            : null;
       if (result) {
         messageId.current = null;
         setText("");
@@ -519,9 +514,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const addressed = draft?.kind === "task" ? [...new Set(draft.assignments.flatMap((a) => a.recipients))] : [];
   const plainTo = consigliere ?? (crew.length === 1 ? (crew[0] as Participant) : null);
   const stripTo =
-    draft?.kind === "note" || noteOn ? (
-      <span className="mono">note for the room</span>
-    ) : crewDraft ? (
+    crewDraft ? (
       <span className="mono">{crewSummary(crewDraft)}</span>
     ) : addressed.length > 0 || plainTo ? (
       <>
@@ -663,11 +656,9 @@ export function Composer({ overlay: asOverlay = false }: Props) {
 
       {showPlan ? (
         <PlanPreview
-          text={text}
           draft={draft}
           typingMention={mention !== null}
           hasImages={readyIds.length > 0 || uploading}
-          noteOn={noteOn}
           crewDraft={crewDraft}
           edit={edit}
           onFocusAssignment={setFocusAssignment}
@@ -704,17 +695,6 @@ export function Composer({ overlay: asOverlay = false }: Props) {
             e.target.value = "";
           }}
         />
-        <button
-          type="button"
-          className={`composer-tool note-button${noteOn ? " active" : ""}`}
-          aria-pressed={noteOn}
-          aria-label="Room note"
-          title="Room note: shared context for everyone, no member is invoked"
-          onClick={() => applyEdit(toggleNote(text))}
-        >
-          <NoteIcon />
-          <span className="composer-tool-label">Note</span>
-        </button>
         <span className="spacer" />
         {/* Keys mean nothing on a touch screen; there the keys hint is hidden (styles.css), the waiting note is not. */}
         {busyAddressed.length > 0 ? (
@@ -771,10 +751,6 @@ function evaluate(draft: Draft | null, readyImages: number, uploading: boolean, 
   if (!draft || draft.kind === "empty") return blocked("Send", attached > 0 ? "Address someone with @name" : null);
   if (draft.kind === "participant.add") return draft.add && draft.unresolved.length === 0 ? { ready: true, label: "Add", reason: null } : blocked("Add", firstMessage(draft.unresolved));
   if (draft.kind === "participant.remove") return draft.participant ? { ready: true, label: "Remove…", reason: null } : blocked("Remove…", firstMessage(draft.unresolved));
-  if (draft.kind === "note") {
-    if (attached > 0) return blocked("Post note", "Notes cannot carry images");
-    return draft.instruction.length > 0 ? { ready: true, label: "Post note", reason: null } : blocked("Post note", "Write the note");
-  }
   const { assignments } = draft;
   const count = assignments.reduce((sum, a) => sum + a.recipients.length, 0);
   const label = `Send${count > 1 ? ` ${count}` : ""}`;
@@ -795,20 +771,16 @@ const firstMessage = (list: Unresolved[]): string | null => list[0]?.message ?? 
 // ---- plan preview ----
 
 function PlanPreview({
-  text,
   draft,
   typingMention,
   hasImages,
-  noteOn,
   crewDraft,
   edit,
   onFocusAssignment,
 }: {
-  text: string;
   draft: Draft | null;
   typingMention: boolean;
   hasImages: boolean;
-  noteOn: boolean;
   crewDraft: Draft | null;
   edit: Edit;
   onFocusAssignment: (index: number | null) => void;
@@ -828,27 +800,6 @@ function PlanPreview({
     );
   }
 
-  if (noteOn || draft?.kind === "note") {
-    const body = draft?.kind === "note" ? draft.instruction : text.replace(/^\s*\/note\b\s*/i, "");
-    return (
-      <ol className="plan" aria-label="Plan">
-        <li className="plan-row plan-single">
-          <span className="plan-num mono">·</span>
-          <span className="plan-text serif">
-            <span className="note-mark mono">note</span>{" "}
-            {body ? truncate(body, 160) : <span className="plan-placeholder">shared context for the room; nobody is invoked</span>}
-          </span>
-          <span />
-        </li>
-        {hasImages ? (
-          <li className="plan-notes">
-            <span className="plan-error">notes cannot carry images; remove them or address someone</span>
-          </li>
-        ) : null}
-      </ol>
-    );
-  }
-
   if (!draft || draft.kind !== "task" || draft.assignments.length === 0) {
     return (
       <ol className="plan" aria-label="Plan">
@@ -858,6 +809,7 @@ function PlanPreview({
           <span className="plan-text plan-placeholder">{draft?.preamble ? truncate(draft.preamble, 120) : "start with @name to address someone"}</span>
           <span />
         </li>
+        {draft ? <IssueLine issues={draft.unresolved.filter((u) => u.severity === "error")} /> : null}
       </ol>
     );
   }
@@ -1245,7 +1197,6 @@ const formatBytes = (bytes: number): string =>
 const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | null }> = [
   { name: "now", description: "Start now", hint: null },
   { name: "steer", description: "If they are mid-turn, send into the running turn", hint: null },
-  { name: "note", description: "Room note for everyone; nobody is woken", hint: "text" },
   { name: "add", description: "Seat a new member on a new T3 thread", hint: "name" },
   { name: "remove", description: "Remove a member from the room", hint: "@name" },
 ];
@@ -1258,7 +1209,7 @@ function roomPlaceholders(aliases: string[]): string[] {
     // One participant: every message is for them, so the examples need no @name.
     return [
       `review the diff  ·  with one member here, no @${a} needed`,
-      `/steer also check the logs  ·  /note keep the public API`,
+      `/steer also check the logs`,
       `/compact  ·  type / for the room's and ${a}'s commands`,
       `/add new-name  ·  /remove @${a}`,
     ];
@@ -1267,7 +1218,7 @@ function roomPlaceholders(aliases: string[]): string[] {
     `@${a} fix the failing test  ·  @${b} review the open pull request`,
     aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} /steer also check the logs`,
     `@${a} /compact  ·  type / for the room's and ${a}'s commands`,
-    `/note keep the public API  ·  @${a} /steer also check the logs`,
+    `@${a} /steer also check the logs`,
     `/add new-name  ·  /remove @${b}`,
   ];
 }

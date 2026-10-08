@@ -1056,8 +1056,9 @@ export class EngineHost {
   }
 
   /**
-   * `rooms-board note`. A note about a request names it (`requestIds`), or it reaches nobody's briefing (L2); the user's
-   * room note (`/note`) is marked with the `room` milestone instead, and reaches every seat's next briefing.
+   * A note that wakes nobody: a T3 command the user sent as typed, a reseat called off. A note about a request names it
+   * (`requestIds`), or it reaches nobody's briefing (L2); one with the `room` milestone (the user's room note, which
+   * journals from before N1 hold) reaches every seat's next briefing.
    */
   note(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[]; milestone?: string }): CommitReceipt {
     return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body, ...(input.requestIds ? { requestIds: input.requestIds } : {}), ...(input.milestone ? { milestone: input.milestone } : {}) });

@@ -109,7 +109,7 @@ test("what Backroom wrote in the user's name is Backroom's: any request without 
   const note = (source: "post" | "t3-message", room: boolean, author = "$user") =>
     ({ kind: "note" as const, author, note: { source, room, t3: null, afterAnswer: false } });
   assert.equal(backroomNote(note("post", false)), true, "a reseat called off");
-  assert.equal(backroomNote(note("post", true)), false, "the user's /note to the room");
+  assert.equal(backroomNote(note("post", true)), false, "the user's note to the room, from before N1");
   assert.equal(backroomNote(note("t3-message", false)), false, "typed in T3");
   assert.equal(backroomNote(note("post", false, "W")), false, "a member's note");
 });

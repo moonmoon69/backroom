@@ -48,7 +48,7 @@ Each part below starts from what T3 Code does (read from [its source and docs](h
 
 In T3 Code each thread is its own conversation. An agent can involve others: it can delegate a task to a child agent on any provider and wait for the result, and T3's tools let it read, message and start other threads. What gets delegated, to whom and in what order is decided by that agent while it works, and you see it in its thread afterwards.
 
-In a room, several threads share one conversation, and you decide who does what, or tell your Consigliere what you want and let him decide. Each request is a numbered post on the room's board, and each member's final reply answers it, ending with a Handoff that says where the work is (folder, branch, commit). Nothing waits on other work by itself: the Consigliere sends the next step when the one it builds on has answered. A room note reaches everyone.
+In a room, several threads share one conversation, and you decide who does what, or tell your Consigliere what you want and let him decide. Each request is a numbered post on the room's board, and each member's final reply answers it, ending with a Handoff that says where the work is (folder, branch, commit). Nothing waits on other work by itself: the Consigliere sends the next step when the one it builds on has answered.
 
 ### The plan before anything runs
 
@@ -344,14 +344,11 @@ Type `/` at the start of the message to see these, each with a description:
 ```
 /now @grok …                                   start now: no wait is read into the text
 /steer @grok also cover the edge cases         deliver into grok's running turn (see below)
-/note preserve the public API                  a room note everyone sees; no request
 /add alice                                     seat a new member on a new thread (T3's default model)
 /remove @alice                                 retire a member (asks what happens to its T3 thread)
 ```
 
-### Notes
-
-A **note** is a message to the room rather than to anyone in it. Click **Note** under the composer (it toggles a `/note` prefix on the text) and send. The note appears in the timeline with a dashed border, creates no request and starts no turn, and from then on every member receives it in their briefings as shared room context, like your messages and other members' replies. Use it for decisions, constraints and facts you want everyone to have without asking anyone to act: "we keep the public API as it is", "the deploy window is Friday". Notes are text only; a message with images cannot be a note.
+Room notes are gone: everything goes through the Consigliere or the member you address, so a message that starts with `/note` is refused and nothing is sent. A board that already holds notes still shows them.
 
 ### Images
 
@@ -405,7 +402,7 @@ The board is the room's journal (`data/board.sqlite`), and the members only answ
 
 - **A member's final reply is its answer** to the requests its turn was given, and it wakes the Consigliere. The post starts with the member's T3 status: idle, or what still runs (a turn, background tasks, subagents, by name). Nothing holds a request open: neither background work nor a review keeps it open.
 - **Later turns are follow-ups.** A turn the member starts itself (when a background task it left running ends), one typed in T3 Code, or one another agent's message started is posted as a follow-up on the member's request, with its status, and wakes the Consigliere. Background work that ends without a further turn gets one follow-up from Backroom after 30 s of quiet, so he learns that it ended.
-- **Members do not post.** `rooms-board post` is the Consigliere's (you post from the page). Members keep `read`, `index`, `members`, `rules`, `state`, `note`, `keepalive` (to read the setting) and `crew`. In a room without a Consigliere, any member may also seat, write the room state and set keep-alives. Members never post to each other, so the Consigliere routes reviews.
+- **Members do not post.** `rooms-board post` is the Consigliere's (you post from the page). Members keep `read`, `index`, `members`, `rules`, `state`, `keepalive` (to read the setting) and `crew`. In a room without a Consigliere, any member may also seat, write the room state and set keep-alives. Members never post to each other, so the Consigliere routes reviews.
 - **Corrections and cancels.** A correction that reaches a member while it works on the request means that turn's reply does not answer it; its next turn brings the correction and answers. A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
 - **A failed turn** reaches the Consigliere and whoever asked for the request as an error notice on the board; when you asked, you see it under **Needs you**. **Retry** (or `rooms-board retry <number>`) runs it again with what it was given.
 - **Keep-alives.** A thread's prompt cache lasts an hour, and rereading a large thread cold costs many times a warm wake (for a 700k context, about 9 dollars on Fable and 3.50 on Opus, against about 25 cents warm). So while the Consigliere waits on work in flight (a member still working, or background work or a subagent of his own) and nothing has woken him for 55 minutes, Backroom wakes him with a keep-alive post: a line saying there is nothing to do, then the status lines of that work. He replies in one line and uses no tools, and the reply is a note that wakes nobody. A keep-alive never goes out with nothing in flight or while his own turn runs, and a turn is followed by at most one keep-alive per interval: the next comes only an interval after the keep-alive's own turn. Members get keep-alives only when the Consigliere turns them on for them. `rooms-board keepalive` shows the setting; the Consigliere changes it with `keepalive @name on|off` and `keepalive every <minutes>` (1 to 59, the room's own interval; 55 or less leaves the wake time to reach the model within the hour), and `ROOMS_KEEPALIVE_MS` sets the interval for rooms that set none. Work that never ends (a dev server left running) keeps a seat warm without end, one keep-alive per interval (about 6.50 dollars a day for a large Consigliere context): have it stopped, or turn keep-alives off for that seat; there is no cap.
@@ -424,7 +421,6 @@ The board is the room's saved record: every request and answer, who sent it, to 
   bin/rooms-board members --as sol.a3a51677            # who is seated: model, what each is doing, its requests, context, thread
   bin/rooms-board rules --as sol.a3a51677              # the standing part of the briefing again: who you are, the rules, where everyone works, browsers, room state
   bin/rooms-board state --as sol.a3a51677              # the room state
-  bin/rooms-board note "…" --as sol.a3a51677           # a note that wakes nobody
   bin/rooms-board keepalive --as sol.a3a51677          # the room's keep-alive setting
   bin/rooms-board crew --as sol.a3a51677               # your saved crew
   bin/rooms-board help
@@ -583,7 +579,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 The overview's header holds **+** (a new project) and **Arrange** on the left, and the app-wide controls on the right: the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel), **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)) and the settings menu (two sliders): **Consigliere…** (see [The Consigliere](#the-consigliere)), **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)), the theme (System, Light, Dark) and the look (Plain, [Pixel](#the-pixel-look)). The header of each page opened over the overview carries only that page's controls.
 
-Controls that open, close, toggle or add something are icons with a hover name (people, globe, branch, ⋯, ×, +, image, note, theme); actions that change something (**Send**, **Start browser**, **Retry**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
+Controls that open, close, toggle or add something are icons with a hover name (people, globe, branch, ⋯, ×, +, image, theme); actions that change something (**Send**, **Start browser**, **Retry**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
 A room's tile shows what it asks of you: **N need you** (an approval, a question, a failure), **N busy**, and **N new** when something finished there since you last looked (see [below](#what-finished-while-you-were-away)); under them each member's state and what it is doing. A thread's tile shows its agent's state the same way, **needs you** when it waits on you, and **new** (or **failed**) when its turn ended since you last looked.
 
