@@ -1273,14 +1273,15 @@ export type CommandResult =
   | {
       type: "room.deleted";
       roomId: string;
-      threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }>;
+      /** timeout: sent, but T3 had not answered within the service's limit; it may still go through. */
+      threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed" | "timeout"; detail?: string }>;
     }
   | { type: "participant.created"; participantId: string; threadId: string; alias?: string }
   | {
       type: "participant.updated";
       participantId: string;
       /** Present after participant.retire: what happened to its T3 thread. */
-      thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed"; detail?: string };
+      thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
     }
   | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
   | { type: "note.created"; eventId: string }

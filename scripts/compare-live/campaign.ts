@@ -42,6 +42,13 @@ export const CREW: { consigliere: { name: string; modelSelection: ModelSelection
   runtimeMode: "full-access",
 };
 
+/**
+ * How a new-side report can reach the board with no T3 message behind it: an explicit `rooms-board answer`, or a
+ * `rooms-board note` (a Consigliere whose request from the user was closed early is told to use one, since members
+ * cannot post to the user). Such a report has no T3 time: its check fails and the accuracy check fails the job.
+ */
+export const NO_T3_REPORT: ReadonlySet<string> = new Set(["answer", "note"]);
+
 /** The quiet the job window closes on, the cap after the report, and the cap without one. */
 export const QUIET_MS = 180_000;
 export const AFTER_REPORT_CAP_MS = 30 * 60_000;
@@ -67,6 +74,11 @@ export interface Snapshot {
   /** Answers: the parts of the checker that are this member's, and whether they all passed. */
   ownParts?: string[];
   ownPass?: boolean;
+  /** Where `at` came from: the old instance's record of the post, or on the new side T3's exact time or the runner's first sight of it. */
+  clock?: "instance" | "t3" | "seen";
+  /** New side: how the post came (output source, or "t3-turn") and what its claims came to (information for Z1's behaviour checks). */
+  via?: string;
+  claims?: string[];
 }
 
 export interface JobRecord {
@@ -84,6 +96,8 @@ export interface JobRecord {
   folder: string;
   fixture: { tag: string; commit: string };
   prompt: string;
+  /** New side: the user message's client ID (message.create's clientMessageId) and the requests the journal made of it. */
+  message?: { clientMessageId: string; requestIds: string[] };
   projectId: string | null;
   roomId: string | null;
   crew: typeof CREW;
@@ -103,7 +117,8 @@ export interface JobRecord {
     quietSince: string | null;
     closeAt: string | null;
   };
-  report: { postId: string; text: string } | null;
+  /** `via` (new side): how the report came, "final" for a run's final; "answer" (`rooms-board answer`) has no T3 message. */
+  report: { postId: string; text: string; via?: string } | null;
   snapshots: Snapshot[];
   /** T3 threads outside the job seen running while the window was open (sampled from T3's shell). */
   overlap: { samples: number; threads: string[] };

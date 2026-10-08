@@ -56,7 +56,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -72,6 +72,8 @@ export interface HttpAdapterOptions {
   requestTimeoutMs?: number;
   /** How often a launched thread's worktree is looked for while T3 makes it. Default 500ms. */
   worktreePollMs?: number;
+  /** How long the shared command socket stays open after its last call has been answered. Default 30s. */
+  commandLinkIdleMs?: number;
 }
 
 interface ShellSnapshot {
@@ -173,6 +175,11 @@ class RpcConnection {
   closed = false;
   private nextId = 1;
   private readonly waiting = new Map<string, (exit: RpcExit | Error) => void>();
+
+  /** Requests sent and not yet answered (nor timed out). */
+  get pending(): number {
+    return this.waiting.size;
+  }
   private readonly open: Promise<void>;
   private failOpen: (error: Error) => void = () => {};
   private readonly socket: WebSocketLike;
@@ -222,13 +229,14 @@ class RpcConnection {
     if (this.closed) return Promise.reject(new T3Unavailable(`T3 RPC ${tag}: connection closed`));
     const id = String(this.nextId++);
     return new Promise<T>((resolve, reject) => {
+      // Sent from here on: no answer, by the time limit or because the socket went, leaves the outcome unknown.
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        reject(new T3Unavailable(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
+        reject(new T3OutcomeUnknown(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.waiting.set(id, (exit) => {
         clearTimeout(timer);
-        if (exit instanceof Error) reject(new T3Unavailable(`T3 RPC ${tag}: ${exit.message}`));
+        if (exit instanceof Error) reject(new T3OutcomeUnknown(`T3 RPC ${tag}: ${exit.message} before T3 answered`));
         else if (exit._tag === "Success") resolve(exit.value as T);
         else reject(new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
       });
@@ -419,6 +427,7 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly shellCacheMs: number;
   private readonly requestTimeoutMs: number;
   private readonly worktreePollMs: number;
+  private readonly commandLinkIdleMs: number;
   private shellCache: { at: number; value: ShellSnapshot } | null = null;
   /** The last protocol check: a server on protocol 2 is trusted for a minute, a mismatch is checked again within seconds. */
   private protocolCheck: { at: number; error: T3ProtocolMismatch | null } | null = null;
@@ -432,6 +441,7 @@ export class HttpT3Adapter implements T3Adapter {
     this.shellCacheMs = options.shellCacheMs ?? 750;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.worktreePollMs = options.worktreePollMs ?? 500;
+    this.commandLinkIdleMs = options.commandLinkIdleMs ?? 30_000;
   }
 
   setAccessToken(token: string | null): void {
@@ -562,7 +572,8 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   // Commands and short reads share one socket, as T3's own client keeps one: a dispatch is then a single frame. It is
-  // closed after a quiet spell, and dropped when a request on it times out or it fails. A call that may take minutes
+  // closed after a quiet spell (counted from when its last call was answered, never while one is waiting), and dropped
+  // when a request on it times out or it fails. A call that may take minutes
   // (a worktree checkout, an update) gets a socket of its own, so its wait never rides on the shared one.
   private commandLink: Promise<RpcConnection> | null = null;
   private commandLinkIdle: ReturnType<typeof setTimeout> | null = null;
@@ -603,14 +614,19 @@ export class HttpT3Adapter implements T3Adapter {
     }
     const connection = await link;
     if (this.commandLinkIdle) clearTimeout(this.commandLinkIdle);
-    this.commandLinkIdle = setTimeout(() => this.dropCommandLink(), 30_000);
-    this.commandLinkIdle.unref?.();
+    this.commandLinkIdle = null;
     try {
       return await connection.request<T>(tag, payload, Math.max(1, deadline - Date.now()));
     } catch (error) {
       // No answer in time, or the socket went: the link is in doubt, and the next call opens a new one.
       if (error instanceof T3Unavailable && this.commandLink === link) this.dropCommandLink();
       throw error;
+    } finally {
+      if (this.commandLink === link && connection.pending === 0) {
+        if (this.commandLinkIdle) clearTimeout(this.commandLinkIdle);
+        this.commandLinkIdle = setTimeout(() => this.dropCommandLink(), this.commandLinkIdleMs);
+        this.commandLinkIdle.unref?.();
+      }
     }
   }
 

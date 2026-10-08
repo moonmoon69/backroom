@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl } from "../src/adapter/auth.ts";
-import { T3CommandRejected, T3ProtocolMismatch, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
 
 interface Recorded {
   url: string;
@@ -39,14 +39,19 @@ function mockFetch(routes: Record<string, (recorded: Recorded) => { status: numb
   return { fetchImpl, calls };
 }
 
-/** An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames). */
+/**
+ * An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames).
+ * A handler that returns a promise answers when it settles; `closed` counts the sockets closed.
+ */
 function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
   const frames: Array<{ tag: string; payload: any; url: string }> = [];
+  const sockets = { opened: 0, closed: 0 };
   class Socket {
     private readonly listeners = new Map<string, Array<(event: any) => void>>();
     readonly url: string;
     constructor(url: string) {
       this.url = url;
+      sockets.opened += 1;
       queueMicrotask(() => this.emit("open", {}));
     }
     addEventListener(type: string, listener: (event: any) => void): void {
@@ -58,21 +63,26 @@ function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
     send(data: string): void {
       const frame = JSON.parse(data) as { id: string; tag: string; payload: unknown };
       frames.push({ tag: frame.tag, payload: frame.payload, url: this.url });
+      const answer = (exit: unknown) => this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
+      const failure = (error: unknown) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] });
       queueMicrotask(() => {
-        let exit: unknown;
+        let value: unknown;
         try {
-          exit = { _tag: "Success", value: handlers[frame.tag]?.(frame.payload) ?? null };
+          value = handlers[frame.tag]?.(frame.payload) ?? null;
         } catch (error) {
-          exit = { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] };
+          answer(failure(error));
+          return;
         }
-        this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
+        if (value instanceof Promise) value.then((late) => answer({ _tag: "Success", value: late ?? null }), (error) => answer(failure(error)));
+        else answer({ _tag: "Success", value });
       });
     }
     close(): void {
+      sockets.closed += 1;
       this.emit("close", {});
     }
   }
-  return { Socket, frames };
+  return { Socket, frames, sockets };
 }
 
 const ENVIRONMENT = { environmentId: "env", label: "box", serverVersion: "0.0.46-nightly.20261003.2610", orchestrationProtocolVersion: 2 };
@@ -123,6 +133,60 @@ test("a message is dispatched over the RPC socket with the contract's fields; ev
   assert.deepEqual(frames.slice(1).map((f) => f.payload.dispatchMode), [{ type: "queue_after_active" }, { type: "steer_active", targetRunId: RUN }]);
   assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 1, "commands share one socket");
   adapter.close();
+});
+
+test("the shared socket stays open while a command waits for T3, and closes after a quiet spell once it is answered", async () => {
+  // T3 under load answers a settle after 300 ms; the quiet spell is 100 ms. The socket used to close 100 ms after the
+  // call started, failing a settle T3 then applied.
+  const { fetchImpl } = mockFetch(base);
+  const slow = () => new Promise((resolve) => setTimeout(() => resolve({ sequence: 12 }), 300));
+  const { Socket, frames, sockets } = mockSocket({ "orchestration.dispatchCommand": slow });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, requestTimeoutMs: 2000, commandLinkIdleMs: 100 });
+  const first = adapter.setThreadLifecycle({ commandId: "cmd-a", threadId: "thread-1", action: "settle" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = adapter.setThreadLifecycle({ commandId: "cmd-b", threadId: "thread-old", action: "archive" });
+  await Promise.all([first, second]);
+  assert.deepEqual(frames.map((f) => [f.payload.type, f.payload.threadId]), [["thread.settle", "thread-1"], ["thread.archive", "thread-old"]]);
+  assert.deepEqual(sockets, { opened: 1, closed: 0 }, "one socket, still open right after the answers");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(sockets, { opened: 1, closed: 1 }, "closed after the quiet spell");
+  adapter.close();
+});
+
+test("a command T3 never answers, and every other one waiting on the socket its limit drops, are unknown, not failed; a refusal stays a refusal", async () => {
+  // Dispatches wait twice the request limit: 200 ms here. thread-1's settle is never answered; thread-old's archive is
+  // applied by T3, whose answer would come after the drop; thread-busy's is refused at once.
+  const { fetchImpl } = mockFetch(base);
+  const { Socket, sockets } = mockSocket({
+    "orchestration.dispatchCommand": (payload: { threadId: string }) => {
+      if (payload.threadId === "thread-busy") throw new Error("thread is busy");
+      if (payload.threadId === "thread-1") return new Promise(() => {});
+      if (payload.threadId === "thread-old") return new Promise((resolve) => setTimeout(() => resolve({ sequence: 13 }), 400));
+      return { sequence: 14 };
+    },
+  });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, requestTimeoutMs: 100 });
+  const never = adapter.setThreadLifecycle({ commandId: "cmd-a", threadId: "thread-1", action: "settle" }).catch((error: unknown) => error);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const applied = adapter.setThreadLifecycle({ commandId: "cmd-b", threadId: "thread-old", action: "archive" }).catch((error: unknown) => error);
+  const refused = await adapter.setThreadLifecycle({ commandId: "cmd-c", threadId: "thread-busy", action: "settle" }).catch((error: unknown) => error);
+  assert.ok(refused instanceof T3CommandRejected && !(refused instanceof T3OutcomeUnknown), String(refused));
+  const [first, second] = await Promise.all([never, applied]);
+  assert.ok(first instanceof T3OutcomeUnknown, String(first));
+  assert.match((first as Error).message, /timed out after \d+ms/);
+  assert.ok(second instanceof T3OutcomeUnknown, `the call waiting when the socket was dropped: ${String(second)}`);
+  assert.match((second as Error).message, /connection closed before T3 answered/);
+  assert.ok(second instanceof T3Unavailable, "still an outage for callers that resend with the same IDs");
+  assert.equal(sockets.opened, 1);
+  await adapter.setThreadLifecycle({ commandId: "cmd-d", threadId: "thread-2", action: "settle" });
+  assert.equal(sockets.opened, 2, "the next command opens a new socket");
+  adapter.close();
+
+  // Nothing was sent when the socket cannot be had at all: that is an outage, not an unknown outcome.
+  const down = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl: mockFetch({ ...base, "POST /api/auth/websocket-ticket": () => ({ status: 503, body: {} }) }).fetchImpl, webSocketImpl: Socket, requestTimeoutMs: 100 });
+  const unsent = await down.setThreadLifecycle({ commandId: "cmd-e", threadId: "thread-1", action: "settle" }).catch((error: unknown) => error);
+  assert.ok(unsent instanceof T3Unavailable && !(unsent instanceof T3OutcomeUnknown), String(unsent));
+  down.close();
 });
 
 test("images are stored in T3 first, and the message names the stored attachments", async () => {

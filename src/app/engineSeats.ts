@@ -55,10 +55,15 @@ export interface EngineSeatsDeps {
   mirror(participant: Participant, shell: T3ThreadShell): boolean;
   /** A member's thread title: "room · alias". */
   title(room: Room, participant: Participant): string;
+  /**
+   * The service's T3 thread action within its per-call limit (RoomService.threadActionWithin): done, failed, or timeout
+   * when T3 has not confirmed it; a late outcome is logged under `what`.
+   */
+  threadAction(what: string, entry: { alias: string; threadId: string }, action: ThreadLifecycleAction): Promise<{ result: "done" | "failed" | "timeout"; detail?: string }>;
   log?(message: string, detail?: unknown): void;
 }
 
-type ThreadOutcome = { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed"; detail?: string };
+type ThreadOutcome = { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
 
 export class EngineSeats {
   private readonly deps: EngineSeatsDeps;
@@ -586,12 +591,10 @@ export class EngineSeats {
     if (action === "keep") return { threadId: binding.threadId, action, result: "kept" };
     const elsewhere = this.repos.listActiveBindings().some((b) => b.threadId === binding.threadId && b.participantId !== participant.id && this.repos.getParticipant(b.participantId)?.roomId !== participant.roomId);
     if (elsewhere) return { threadId: binding.threadId, action, result: "kept", detail: "also used in another room" };
-    try {
-      await this.deps.adapter.setThreadLifecycle({ commandId: randomUUID(), threadId: binding.threadId, action });
-      return { threadId: binding.threadId, action, result: "done" };
-    } catch (error) {
-      return { threadId: binding.threadId, action, result: "failed", detail: message(error) };
-    }
+    // Within the same per-call limit as room deletion: T3 answering late, or not at all, holds nobody up.
+    const room = this.repos.getRoom(participant.roomId);
+    const { result, detail } = await this.deps.threadAction(`@${participant.alias} left room "${room?.title ?? participant.roomId}"`, { alias: participant.alias, threadId: binding.threadId }, action);
+    return { threadId: binding.threadId, action, result, ...(detail !== undefined ? { detail } : {}) };
   }
 
   private async shell(threadId: string): Promise<T3ThreadShell | null> {

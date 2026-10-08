@@ -98,16 +98,18 @@ export interface RoomOptions {
   host?: Partial<EngineHostOptions>;
   /** The images a post came with, by its body (what L4a will record with a request). */
   images?: (body: string) => TurnImage[];
+  /** Members' aliases by seat, where they differ from the seat ID (as a binding ID does). */
+  aliases?: Record<string, string>;
 }
 
 /** rooms.sqlite's side of a briefing for the test room: one member per seat, the orchestrator its Consigliere. */
-function testSource(r: { room: string; seats: () => string[]; orchestrator: string | null; bodyOf: (eventId: string) => string | null }, images?: (body: string) => TurnImage[]): BriefingSource {
+function testSource(r: { room: string; seats: () => string[]; orchestrator: string | null; bodyOf: (eventId: string) => string | null }, images?: (body: string) => TurnImage[], aliases: Record<string, string> = {}): BriefingSource {
   const at = new Date(0).toISOString();
   const participant = (seat: string): Participant => ({ id: seat, roomId: r.room, alias: seat, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
   const room: DomainRoom = { id: r.room, projectId: "project_demo", environmentId: null, title: "runtime", nextSequence: 1, nextTaskNumber: 1, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, consigliereId: r.orchestrator, createdAt: at, updatedAt: at };
   return {
     standing: (_roomId, seatId) => ({ room, participant: participant(seatId), participantsById: new Map(r.seats().map((s) => [s, participant(s)])), board: { command: "/repo/bin/rooms-board", as: `${seatId}.key` } }),
-    alias: (_roomId, seatId) => seatId,
+    alias: (_roomId, seatId) => aliases[seatId] ?? seatId,
     images: (_roomId, eventId) => {
       const body = images ? r.bodyOf(eventId) : null;
       return body !== null && images ? images(body) : [];
@@ -158,7 +160,7 @@ export class Room {
       store: this.store,
       adapter: this.fake,
       rooms: () => [this.room],
-      briefing: testSource({ room: this.room, seats: () => seats, orchestrator, bodyOf }, this.options.images),
+      briefing: testSource({ room: this.room, seats: () => seats, orchestrator, bodyOf }, this.options.images, this.options.aliases),
       now: () => this.clock,
       log: (message, detail) => this.logs.push({ message, detail }),
       onStep: (step, at) => {
