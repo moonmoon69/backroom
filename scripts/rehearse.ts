@@ -1,7 +1,7 @@
 /**
  * The browser rehearsal on a throwaway service (stage 4/5 plan, item L5: `--step ui`; Z2 adds `--step room`).
  *
- *   node scripts/rehearse.ts --step ui --as <rooms-browser key> [--browser backroom-dev] [--port 4471]
+ *   node scripts/rehearse.ts --step ui|room --as <rooms-browser key> [--browser backroom-dev] [--port 4471]
  *        [--data <dir>] [--out <dir>] [--keep]
  *
  * It starts its own service from this checkout (ROOMS_ADAPTER=fake ROOMS_ENGINE=1 ROOMS_PORT=<port>
@@ -22,10 +22,18 @@
  *   through a second connection, which the host replays): a run in phase "uncertain" (the host writes it only on its way
  *   to failing a run), an output whose claim comes out "late" (the host never names a closed request), and a blocked
  *   delivery (a reservation over a tiny byte budget; the real one is 4 MiB). Each is a command `decide` accepts.
+ *   (`--step ui` only.)
+ *
+ * `--step room` (Z2) plays one whole job with nothing written by hand: the user's assignment from the composer, the
+ * Consigliere hands it to the worker, the worker asks the reviewer, a review finding, the user's correction from the page
+ * passed on by the Consigliere, the service killed (SIGKILL) and started again while two turns run, PASS, his report;
+ * then a turn T3 fails and the user's Retry from the page, a reseat, and a retire (refused first while the member has
+ * work). The fake T3 keeps its threads in <data>/fake-t3.json (ROOMS_FAKE_STATE), so it comes back from the kill as
+ * real T3 would, since T3 is not Backroom's process; the script reads that file as T3's own record of what it ran.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -36,7 +44,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // ---------------- options ----------------
 
 interface Options {
-  step: "ui";
+  step: "ui" | "room";
   as: string;
   browser: string;
   port: number;
@@ -53,7 +61,7 @@ function options(argv: string[]): Options {
   };
   const step = take("--step");
   const as = take("--as");
-  if (step !== "ui") fail(step === "room" ? "--step room is Z2's (the whole-room rehearsal); it is not built yet" : "usage: node scripts/rehearse.ts --step ui --as <rooms-browser key>");
+  if (step !== "ui" && step !== "room") fail("usage: node scripts/rehearse.ts --step ui|room --as <rooms-browser key>");
   if (!as) fail("--as <key> is required: the rooms-browser key of the room whose browser this uses");
   const data = resolve(take("--data") ?? join(repo, "data", `rehearse-${step}`));
   return {
@@ -122,25 +130,64 @@ class Service {
     }
     mkdirSync(this.o.data, { recursive: true });
     writeFileSync(join(this.o.data, ".rehearse"), "data of scripts/rehearse.ts; deleted by its next run\n");
+    await this.spawn();
+    log(`service on ${this.base} (data ${this.o.data}, log service.log there)`);
+  }
+
+  private async spawn(): Promise<void> {
     const logFd = openSync(join(this.o.data, "service.log"), "a");
+    // The room step's fake T3 keeps its threads in a file, so they outlive a restart of the service as T3's do.
+    const kept = this.o.step === "room" ? { ROOMS_FAKE_STATE: this.t3File } : {};
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
-    this.child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
+    const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_ENGINE: "1", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off" },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_ENGINE: "1", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
-    this.child.on("exit", (code, signal) => {
-      if (this.child) log(`the service exited by itself (code ${code}, signal ${signal}): see ${join(this.o.data, "service.log")}`);
+    this.child = child;
+    child.on("exit", (code, signal) => {
+      if (this.child === child) log(`the service exited by itself (code ${code}, signal ${signal}): see ${join(this.o.data, "service.log")}`);
     });
     await until("the service to answer", () => fetch(`${this.base}/api/status`).then((r) => r.ok), 30_000, 300);
-    log(`service on ${this.base} (data ${this.o.data}, log service.log there)`);
   }
 
   stop(): void {
     const child = this.child;
     this.child = null;
     child?.kill("SIGTERM");
+  }
+
+  /** The service dies as in a crash (SIGKILL: no shutdown of any kind), and nothing answers on its port any more. */
+  async kill(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    if (!child) fail("no service to kill");
+    const exited = new Promise((done) => child.once("exit", done));
+    child.kill("SIGKILL");
+    await exited;
+    await until("the port to be free", () => fetch(`${this.base}/api/status`).then(() => false, () => true), 10_000);
+  }
+
+  /** Started again on the same data directory (and the fake T3's same file). */
+  async restart(): Promise<void> {
+    await this.spawn();
+  }
+
+  get t3File(): string {
+    return join(this.o.data, "fake-t3.json");
+  }
+  /** The fake T3's own record (the room step only): each thread's runs, in order, as T3 keeps them. */
+  t3Runs(threadId: string): Array<{ id: string; status: string }> {
+    const state = JSON.parse(readFileSync(this.t3File, "utf8")) as { threads: Array<{ shell: { id: string }; runs: Array<{ id: string; status: string }> }> };
+    return (state.threads.find((t) => t.shell.id === threadId)?.runs ?? []).map((r) => ({ id: r.id, status: r.status }));
+  }
+  /** service.log from a given length on: what the service logged since then. */
+  logSince(offset: number): string {
+    return readFileSync(join(this.o.data, "service.log"), "utf8").slice(offset);
+  }
+  logLength(): number {
+    return readFileSync(join(this.o.data, "service.log"), "utf8").length;
   }
 
   async call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
@@ -223,11 +270,49 @@ class Browser {
     if (!result.ok || !/Element matching one of .* found\./.test(result.out)) fail(`the page never showed ${JSON.stringify(text)}: ${result.out.trim().split("\n")[0]}`);
     log(`  page: wait-for ${JSON.stringify(text)} matched`);
   }
+  /** Error-level console lines accepted once: the browser's own, for requests it could not make while the service was down. */
+  private readonly outage = new Set<string>();
+  private errorLines(): string[] {
+    return this.on("console").split("\n").filter((line) => /\[error\]/i.test(line));
+  }
   /** Any error-level console line since the page loaded fails the rehearsal. */
   consoleClean(): void {
-    const out = this.on("console");
-    const errors = out.split("\n").filter((line) => /\[error\]/i.test(line));
+    const errors = this.errorLines().filter((line) => !this.outage.has(line));
     if (errors.length > 0) fail(`error-level console lines:\n${errors.join("\n")}`);
+  }
+  /**
+   * After the service was down: the lines Chrome itself writes for requests to it that failed then (connection refused
+   * or cut) are expected, are logged, and are not counted again; any other error-level line fails as always.
+   */
+  acceptOutage(): string[] {
+    const fresh = this.errorLines().filter((line) => !this.outage.has(line));
+    const other = fresh.filter((line) => !/net::ERR_(CONNECTION_REFUSED|CONNECTION_RESET|EMPTY_RESPONSE|INCOMPLETE_CHUNKED_ENCODING|CONNECTION_CLOSED)/.test(line));
+    if (other.length > 0) fail(`error-level console lines around the restart:\n${other.join("\n")}`);
+    for (const line of fresh) this.outage.add(line);
+    return fresh;
+  }
+  /** Poll the page (every half second) until `ok` holds for what `fn` reads; the last reading goes into the failure. */
+  poll<T>(what: string, fn: string, ok: (value: T) => boolean, ms = 15_000): T {
+    const start = Date.now();
+    let reads = 1;
+    let value = this.eval<T>(fn);
+    while (!ok(value) && Date.now() < start + ms) {
+      execFileSync("sleep", ["0.5"]);
+      value = this.eval<T>(fn);
+      reads += 1;
+    }
+    if (!ok(value)) fail(`${what}, after ${reads} reads in ${((Date.now() - start) / 1000).toFixed(1)} s: ${JSON.stringify(value)}`);
+    if (reads > 1) log(`  page: ${what}: as expected on read ${reads}, after ${((Date.now() - start) / 1000).toFixed(1)} s`);
+    return value;
+  }
+  /** Open a room from the overview by its card, matched on its exact title: a kept thread's card ("<room> · alias") and a
+   *  room whose title only starts the same ("<room> B") are other cards. */
+  openRoom(title: string): void {
+    const exact = new RegExp(`button "[^"]*".* description="Open ${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
+    this.waitFor(title);
+    this.click(exact);
+    this.poll<string | null>(`the room ${JSON.stringify(title)} to open`, "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
+    log(`  page: opened the room ${JSON.stringify(title)} by its card`);
   }
   eval<T>(fn: string): T {
     const out = this.on("eval", fn);
@@ -275,8 +360,10 @@ class Browser {
 // ---------------- the room ----------------
 
 type Snapshot = {
-  room: { id: string; consigliereId: string | null };
+  room: { id: string; title: string; consigliereId: string | null };
   bindings: Array<{ id: string; participantId: string; threadId: string }>;
+  /** The journal's length: every event, posts and the board's own records. */
+  head: number;
   posts: any[];
   requests: any[];
   runs: any[];
@@ -294,9 +381,12 @@ type Alias = (typeof MEMBERS)[number];
 
 class Room {
   roomId = "";
+  title = "";
   readonly participant = {} as Record<Alias, string>;
   readonly seat = {} as Record<Alias, string>;
   readonly thread = {} as Record<Alias, string>;
+  /** Each member's alias now: a reseat's fresh seat has a numbered one ("worker2"). */
+  readonly name: Record<Alias, string> = { fable: "fable", worker: "worker", reviewer: "reviewer" };
   private readonly service: Service;
   private readonly o: Options;
   constructor(service: Service, o: Options) {
@@ -307,9 +397,10 @@ class Room {
     return this.o.data;
   }
 
-  async create(): Promise<void> {
+  async create(title: string): Promise<void> {
     const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
-    this.roomId = (await this.service.command<{ roomId: string }>({ type: "room.create", projectId: "project_demo", title: "Rehearsal", consigliere: false })).roomId;
+    this.title = title;
+    this.roomId = (await this.service.command<{ roomId: string }>({ type: "room.create", projectId: "project_demo", title, consigliere: false })).roomId;
     for (const alias of MEMBERS) {
       this.participant[alias] = (await this.service.command<{ participantId: string }>({ type: "participant.create", roomId: this.roomId, alias, modelSelection: model, thread: { mode: "create" } })).participantId;
     }
@@ -355,7 +446,7 @@ class Room {
     return { roomId, participant, snapshot, attach };
   }
   key(alias: Alias): string {
-    return `${alias}.${this.roomId.slice(0, 8)}`;
+    return `${this.name[alias]}.${this.roomId.slice(0, 8)}`;
   }
   /** A member's rooms-board command, with its own key. */
   board(alias: Alias, ...args: string[]): string {
@@ -367,6 +458,29 @@ class Room {
       const e = error as { stdout?: string; stderr?: string };
       fail(`rooms-board ${args[0]} as @${alias} failed: ${(e.stderr || e.stdout || "").trim()}`);
     }
+  }
+  /** A member command the board must refuse: its message. */
+  refused(alias: Alias, ...args: string[]): string {
+    try {
+      const out = execFileSync(process.execPath, [join(repo, "bin", "rooms-board.mjs"), "--api", join(this.o.data, "browser-api.json"), "--as", this.key(alias), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      fail(`rooms-board ${args.join(" ")} as @${alias} was not refused: ${out.trim()}`);
+    } catch (error) {
+      if (error instanceof RehearsalFailure) throw error;
+      const message = ((error as { stderr?: string }).stderr ?? "").trim();
+      log(`  @${alias}$ rooms-board ${args.join(" ")} → refused: ${message.split("\n")[0]}`);
+      return message;
+    }
+  }
+  /** After a reseat: the member's fresh seat ("worker2") and thread take the old ones' place; its runs are held too. */
+  async rebind(alias: Alias): Promise<void> {
+    const s = await this.snapshot();
+    const fresh = s.seats.find((x) => new RegExp(`^${alias}\\d+$`).test(x.alias ?? "") && x.status === "active" && x.seatId !== this.seat[alias]);
+    if (!fresh) fail(`no fresh seat for @${alias}: ${JSON.stringify(s.seats.map((x) => [x.alias, x.status]))}`);
+    this.name[alias] = fresh.alias;
+    this.seat[alias] = fresh.seatId;
+    this.thread[alias] = fresh.threadId;
+    this.participant[alias] = fresh.participantId;
+    await this.service.fake("hold", { threadId: fresh.threadId, hold: true });
   }
   /** A user message to the Consigliere; its request ID. */
   async message(text: string): Promise<string> {
@@ -479,9 +593,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
 
   // Open the room as the user does: from the overview, then the board.
   browser.open();
-  browser.waitFor("Rehearsal");
+  browser.openRoom(room.title);
   browser.consoleClean();
-  browser.click(/button "Rehearsal/);
   browser.waitFor("Board");
   browser.click(/tab "Board/);
   browser.consoleClean();
@@ -866,8 +979,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     attachmentIds: [image],
     assignments: [{ recipients: [second.participant.alpha!, second.participant.beta!], instruction: "independently check the date tests", schedule: { mode: "now" }, after: [] }],
   });
-  browser.waitFor("Rehearsal B");
-  browser.click(/button "Rehearsal B/);
+  browser.openRoom("Rehearsal B");
   const two = new Checks(second, browser);
   await two.state("one message to two members, with its image", (x) => {
     const posts = x.posts.filter((p) => p.kind === "request" && p.request.message?.id === both.messageId);
@@ -889,8 +1001,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   await room.settle("fable");
   await until("his handover to the fresh seat", async () => (await room.snapshot()).posts.some((p) => p.kind === "transfer" && p.transfer.oldSeatId === seat.fable), 60_000);
   browser.click(/button "Back to the overview"/);
-  browser.waitFor("Rehearsal");
-  browser.click(/button "Rehearsal(?! B)/);
+  // By the room card's exact title: after the reseats the overview also holds the kept threads "Rehearsal · fable" and
+  // "Rehearsal · worker", and a card for "Rehearsal B".
+  browser.openRoom(room.title);
+  browser.click(/tab "[^"]*fable/);
   await check.state("the chat keeps his history after he is reseated", (x) => {
     const handover = x.posts.find((p) => p.kind === "transfer" && p.transfer.oldSeatId === seat.fable);
     return handover && x.room.consigliereId && x.room.consigliereId !== room.participant.fable
@@ -898,10 +1012,12 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
       : null;
   }, ["Get the date parser fixed and reviewed, then report.", "Report: the date parser is fixed and reviewed (PASS)."], {
     extra: () => {
-      const chat = browser.eval<{ label: string | null; first: boolean; report: boolean }>(
+      // Polled: the same texts are on the board too, so they can match before the chat view has replaced it.
+      browser.poll<{ label: string | null; first: boolean; report: boolean }>(
+        "the chat after his reseat",
         "() => { const log = document.querySelector('.timeline'); const text = log?.textContent ?? ''; return { label: log?.getAttribute('aria-label') ?? null, first: text.includes('Get the date parser fixed and reviewed, then report.'), report: text.includes('Report: the date parser is fixed and reviewed (PASS).') }; }",
+        (chat) => chat.label === "Conversation with the Consigliere" && chat.first && chat.report,
       );
-      if (chat.label !== "Conversation with the Consigliere" || !chat.first || !chat.report) fail(`the chat after his reseat: ${JSON.stringify(chat)}`);
       log("  page: the chat with the fresh Consigliere still holds the first message and his first report");
     },
   });
@@ -918,8 +1034,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   // Held before the fake T3's 4 s auto-reply can end his first turn, so the turn holds while it is checked.
   await service.fake("hold", { threadId: astra.threadId, hold: true });
   browser.click(/button "Back to the overview"/);
-  browser.waitFor(opening.slice(0, 20));
-  browser.click(new RegExp(`button "${opening.slice(0, 20)}`));
+  browser.openRoom((await talkSnapshot()).room.title);
   browser.click(/tab "[^"]*astra/);
   const chatHas = (text: string, row: string) => browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.${row}')].some((r) => r.textContent.includes(${JSON.stringify(text)}))`);
   const talked = new Checks({ snapshot: talkSnapshot }, browser);
@@ -948,8 +1063,13 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   });
   check.passed.push(...talked.passed);
 
-  // Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs.
-  const db = new DatabaseSync(join(room.dataDir, "rooms.sqlite"), { readOnly: true });
+  oldTablesEmpty(room.dataDir);
+  return check.passed;
+}
+
+/** Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs. */
+function oldTablesEmpty(dataDir: string): void {
+  const db = new DatabaseSync(join(dataDir, "rooms.sqlite"), { readOnly: true });
   try {
     const count = (table: string) => (db.prepare(`select count(*) as n from ${table}`).get() as { n: number }).n;
     const old = { tasks: count("tasks"), task_revisions: count("task_revisions"), runs: count("runs") };
@@ -958,6 +1078,305 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   } finally {
     db.close();
   }
+}
+
+// ---------------- the whole room (--step room, Z2) ----------------
+
+async function rehearseRoom(service: Service, browser: Browser, room: Room): Promise<string[]> {
+  const check = new Checks(room, browser);
+  const { seat } = room;
+  const claimOf = (s: Snapshot, requestId: string, outcome: string) => s.posts.find((p) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === requestId && c.outcome === outcome));
+  /** The newest request to `owner` under `parentId` (null: not under any). */
+  const requestTo = (s: Snapshot, owner: string, parentId: string | null) => s.posts.filter((p) => p.kind === "request" && p.request.owner === owner && p.request.parentId === parentId).at(-1);
+  /** The member's run now, if it has one. */
+  const runOf = (s: Snapshot, alias: Alias) => {
+    const at = s.seats.find((x) => x.seatId === seat[alias]);
+    return at?.activeRunId ? s.runs.find((r) => r.id === at.activeRunId) : undefined;
+  };
+  const finalOf = (s: Snapshot, runId: string) => s.posts.filter((p) => p.kind === "output" && p.output.runId === runId && p.output.source === "final");
+
+  // Open the room as the user does: its card on the overview, then the board.
+  browser.open();
+  browser.openRoom(room.title);
+  browser.click(/tab "Board/);
+  browser.consoleClean();
+
+  // 1. The assignment: the user types it to the Consigliere in the composer; his turn runs on it.
+  const assignment = "Get the date parser fixed and reviewed, then report.";
+  browser.click(/button "(Write a message|Continue your draft)"/);
+  browser.fill(/textbox "Message"/, assignment);
+  browser.on("press", "Enter");
+  const ask = (await until("the user's message on the board", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === assignment))).request.id as string;
+  // Sending closes the composer; Escape now would close the room.
+  if (browser.eval<boolean>("() => Boolean(document.querySelector('.composer-overlay'))")) browser.on("press", "Escape");
+  await room.live("fable");
+  let s = await room.snapshot();
+  const U = room.post(s, ask).number as number;
+  await check.state("the assignment, typed in the composer: his open request, his turn on it", (x) => {
+    const post = room.post(x, ask);
+    const run = runOf(x, "fable");
+    return post.request.owner === seat.fable && post.request.state === "open" && run?.phase === "running" && run.requestIds.includes(ask)
+      ? `#${post.number} by $user to @fable, open; his run ${run.id.slice(0, 8)} running on it`
+      : null;
+  }, [assignment, "open · @fable working"], { show: U });
+
+  // 2. He hands it to the worker and ends his turn: his final cannot answer while that request is open.
+  room.board("fable", "post", "@worker fix the date parser in src/dates.ts: two-digit years and leap days");
+  s = await room.snapshot();
+  const fix = requestTo(s, seat.worker, ask)?.request.id as string;
+  if (!fix) fail("his post is not a child of the user's request");
+  await room.finish("fable", "I asked @worker for the fix; I will report once it is reviewed.");
+  await room.live("worker");
+  const A = room.post(await room.snapshot(), fix).number as number;
+  await check.state("handed to the worker: his final leaves the assignment open", (x) => {
+    const out = claimOf(x, ask, "pending_activity");
+    const run = runOf(x, "worker");
+    return out && room.post(x, ask).request.state === "open" && run?.requestIds.includes(fix) ? `#${out.number} claims #${U}: pending_activity; @worker's run ${run.id.slice(0, 8)} works on #${A}` : null;
+  }, [`#${U} stays open: a review or background work is still running`, `waits on #${A}`], { show: U });
+
+  // 3. The worker asks the reviewer for a review and ends its turn.
+  room.board("worker", "post", "@reviewer review the date parser fix in src/dates.ts");
+  s = await room.snapshot();
+  const review1 = requestTo(s, seat.reviewer, fix)?.request.id as string;
+  if (!review1) fail("the worker's review request is not a child of its request");
+  await room.finish("worker", "The fix is in; I asked @reviewer for a review.");
+  await room.live("reviewer");
+  const V1 = room.post(await room.snapshot(), review1).number as number;
+  await check.state("the worker asks for a review: its request waits on it", (x) => {
+    const out = claimOf(x, fix, "pending_activity");
+    const run = runOf(x, "reviewer");
+    return out && run?.requestIds.includes(review1) ? `#${out.number} claims #${A}: pending_activity; @reviewer's run ${run.id.slice(0, 8)} works on #${V1}` : null;
+  }, [`#${A} stays open: a review or background work is still running`, `waits on #${V1}`], { show: A });
+
+  // 4. The review finds a fault: its answer closes the review request and wakes the worker with it.
+  const finding = "FINDING: 1900-02-29 parses as a valid date; 1900 is not a leap year, so it must be refused.";
+  await room.finish("reviewer", finding);
+  const fixRun = await room.live("worker");
+  await check.state("a review finding: it answers the review request and wakes the worker", (x) => {
+    const out = claimOf(x, review1, "answered");
+    const run = runOf(x, "worker");
+    return out && out.body === finding && run?.id === fixRun.id && run.inputs.includes(out.seq) && room.post(x, fix).request.state === "open"
+      ? `#${out.number} by @reviewer answers #${V1} with the finding; @worker's run ${run.id.slice(0, 8)} has it (inputs #${run.inputs.join(", #")}); #${A} open`
+      : null;
+  }, [`answers #${V1} from @worker`, "1900-02-29 parses as a valid date"], { focus: (x) => claimOf(x, review1, "answered")?.number });
+
+  // 5. The correction: the user adds to the assignment from the page, and the Consigliere passes it on while the
+  // worker's turn on the finding still runs. That turn had not seen it, so its final cannot answer the request.
+  const userCorrection = "Also make sure 30 February is refused in every year.";
+  browser.show(U);
+  browser.click(/button "Correct…"/);
+  browser.fill(new RegExp(`textbox "Correction to #${U}"`), userCorrection);
+  browser.click(/button "Send correction"/);
+  await room.live("fable");
+  await check.state("the user's correction from the page reaches the Consigliere", (x) => {
+    const c = x.posts.find((p) => p.kind === "correction" && p.author === "$user" && p.about.some((r: any) => r.requestId === ask));
+    const run = runOf(x, "fable");
+    return c && c.body === userCorrection && run?.inputs.includes(c.seq) && room.post(x, ask).request.corrections === 1 ? `#${c.number} correction by the user on #${U}; @fable's run ${run.id.slice(0, 8)} has it` : null;
+  }, [`you corrected #${U}`, "corrected 1×"], { focus: (x) => x.posts.find((p) => p.kind === "correction" && p.author === "$user")?.number });
+  room.board("fable", "correct", `#${A}`, "Also refuse 30 February in every year (the user's correction).");
+  await room.finish("fable", "I passed your correction on to @worker.");
+  room.board("worker", "post", "@reviewer review again: 1900-02-29 is refused now");
+  s = await room.snapshot();
+  const review2 = requestTo(s, seat.reviewer, fix)?.request.id as string;
+  if (!review2 || review2 === review1) fail("the worker's second review request is not a child of its request");
+  await room.finish("worker", "Fixed the finding; I asked @reviewer to review again.");
+  await check.state("the correction came in during the worker's turn: its final leaves the request open", (x) => {
+    const relayed = x.posts.find((p) => p.kind === "correction" && p.author === seat.fable && p.about.some((r: any) => r.requestId === fix));
+    const his = x.posts.filter((p) => p.kind === "output" && p.author === seat.fable && p.output.claims.some((c: any) => c.requestId === ask && c.outcome === "pending_activity"));
+    const out = finalOf(x, fixRun.id)[0];
+    const claim = out?.output.claims.find((c: any) => c.requestId === fix);
+    return relayed && his.length === 2 && claim?.outcome === "superseded"
+      ? `#${relayed.number} @fable corrects #${A}; his final #${his[1].number} leaves #${U} pending_activity; @worker's final #${out.number} claims #${A}: superseded`
+      : null;
+  }, [`@fable corrected #${A}`, `#${A} stays open: input it had not seen came in`], { focus: (x) => finalOf(x, fixRun.id)[0]?.number });
+
+  // 6. The worker's next turn takes the correction, the reviewer's runs on the second review: both are running when the
+  // service is killed (SIGKILL) and started again. T3 (the fake, kept in its file) still runs both turns meanwhile.
+  const correctionRun = await until("@worker's turn on the correction", async () => {
+    const run = runOf(await room.snapshot(), "worker");
+    return run && run.id !== fixRun.id && run.phase === "running" ? run : null;
+  });
+  const reviewRun2 = await room.live("reviewer");
+  const V2 = room.post(await room.snapshot(), review2).number as number;
+  const before = await check.state("two turns running before the kill", (x) => {
+    const w = runOf(x, "worker");
+    const r = runOf(x, "reviewer");
+    const relayed = x.posts.find((p) => p.kind === "correction" && p.author === seat.fable);
+    return w?.id === correctionRun.id && w.phase === "running" && relayed && w.inputs.includes(relayed.seq) && r?.id === reviewRun2.id && r.phase === "running" && r.requestIds.includes(review2)
+      ? `@worker's run ${w.id.slice(0, 8)} on the correction #${relayed.number}; @reviewer's run ${r.id.slice(0, 8)} on #${V2}; journal head ${x.head}`
+      : null;
+  }, ["Working ·"], { show: A });
+  const t3Before = Object.fromEntries(MEMBERS.map((a) => [a, service.t3Runs(room.thread[a])]));
+  await service.kill();
+  log("KILL: the service was killed with SIGKILL while @worker's and @reviewer's turns run");
+  browser.screenshot("the-page-while-the-service-is-down");
+  const logAt = service.logLength();
+  await service.restart();
+  log("the service started again on the same data; waiting 5 s (three ticks) before comparing");
+  await sleep(5_000);
+  await check.state("after the restart: the same turns go on, nothing sent or imported twice", (x) => {
+    const w = runOf(x, "worker");
+    const r = runOf(x, "reviewer");
+    const t3Same = MEMBERS.every((a) => JSON.stringify(service.t3Runs(room.thread[a])) === JSON.stringify(t3Before[a]));
+    return w?.id === correctionRun.id && w.phase === "running" && r?.id === reviewRun2.id && r.phase === "running" && x.head === before.head && x.runs.length === before.runs.length && t3Same
+      ? `the same runs ${w.id.slice(0, 8)} and ${r.id.slice(0, 8)} running; journal head ${x.head} and ${x.runs.length} runs, as before; T3's runs per thread unchanged (${MEMBERS.map((a) => `@${a} ${t3Before[a]!.length}`).join(", ")})`
+      : null;
+  }, ["Working ·"], {
+    show: A,
+    extra: () => {
+      const lines = browser.acceptOutage();
+      log(`  page: ${lines.length} console line(s) from Chrome for requests it made while the service was down${lines.length ? `, e.g. ${lines[0]!.slice(0, 160)}` : ""}`);
+    },
+  });
+  // The worker's turn ends after the restart: imported once, and the page (never reloaded) shows it.
+  await room.finish("worker", "30 February is refused in every year now; the second review is still running.");
+  await check.state("after the restart the worker's turn is imported once: its request waits on the second review", (x) => {
+    const outs = finalOf(x, correctionRun.id);
+    const claim = outs[0]?.output.claims.find((c: any) => c.requestId === fix);
+    return outs.length === 1 && claim?.outcome === "pending_activity" ? `#${outs[0].number}, the one final of run ${correctionRun.id.slice(0, 8)}, claims #${A}: pending_activity (#${V2} open)` : null;
+  }, ["30 February is refused in every year now"], { focus: (x) => finalOf(x, correctionRun.id)[0]?.number });
+
+  // 7. PASS: the second review answers; the worker's final answers the assignment.
+  await room.finish("reviewer", "PASS: 1900-02-29 and 30 February are refused, and the tests cover both.");
+  const passRun = await room.live("worker");
+  await room.finish("worker", "Fixed, corrected and reviewed: PASS from @reviewer.");
+  await check.state("PASS: the second review answers, and the worker's final answers its request", (x) => {
+    const pass = claimOf(x, review2, "answered");
+    const done = claimOf(x, fix, "answered");
+    return pass && done && done.output.runId === passRun.id ? `#${pass.number} answers #${V2} (PASS); #${done.number} answers #${A}` : null;
+  }, [`answers #${V2} from @worker`, `answers #${A} from @fable`]);
+  const failures = service.logSince(logAt).split("\n").filter((line) => /tick failed|room step failed|seat step failed|already bound|refused/.test(line));
+  if (failures.length > 0) fail(`service.log since the restart:\n${failures.slice(0, 5).join("\n")}`);
+  log("  service.log since the restart: no failed tick or step, nothing refused");
+
+  // 8. His report answers the user.
+  await room.live("fable");
+  const report = "Report: the date parser is fixed, your correction is in, and the review passed.";
+  await room.finish("fable", report);
+  s = await check.state("the report answers the user's assignment", (x) => {
+    const out = claimOf(x, ask, "answered");
+    return out && out.body === report && room.post(x, ask).request.state === "answered" ? `#${out.number} answers #${U}` : null;
+  }, [`answers #${U} from you`]);
+  browser.show(U);
+  browser.waitFor(`answered · #${room.post(s, ask).request.answer.number}`);
+  browser.click(/tab "[^"]*fable/);
+  browser.poll<{ label: string | null; assignment: boolean; report: boolean }>(
+    "the chat with him",
+    `() => { const log = document.querySelector('.timeline'); const text = log?.textContent ?? ''; return { label: log?.getAttribute('aria-label') ?? null, assignment: text.includes(${JSON.stringify(assignment)}), report: text.includes(${JSON.stringify(report)}) }; }`,
+    (chat) => chat.label === "Conversation with the Consigliere" && chat.assignment && chat.report,
+  );
+  browser.consoleClean();
+  browser.screenshot("the-chat-with-his-report");
+  log("  page: the chat with him holds the assignment and his report");
+  browser.click(/tab "Board/);
+
+  // 9. A turn T3 fails (a provider error); its notice offers Retry, and the user retries it from the page.
+  await room.settle("fable");
+  const tag = await room.message("Tag v1.2 now that the parser fix is in.");
+  await room.live("fable");
+  room.board("fable", "post", "@worker tag v1.2");
+  s = await room.snapshot();
+  const tagJob = requestTo(s, seat.worker, tag)?.request.id as string;
+  if (!tagJob) fail("his post is not a child of the user's request");
+  await room.finish("fable", "I asked @worker to tag v1.2.");
+  const failing = await room.live("worker");
+  const T = room.post(await room.snapshot(), tag).number as number;
+  const B = room.post(await room.snapshot(), tagJob).number as number;
+  await room.finish("worker", "provider error: the model is overloaded", { outcome: "error" });
+  await check.state("a turn T3 failed: its notice offers Retry", (x) => {
+    const notice = x.posts.find((p) => p.kind === "notice" && p.notice.retryRunId === failing.id);
+    return notice && notice.about.some((r: any) => r.requestId === tagJob) && room.post(x, tagJob).request.state === "open"
+      ? `notice #${notice.number} (${notice.notice.intent}) to ${notice.to.join(", ")}, retryRunId=${failing.id.slice(0, 8)}, about #${B}; #${B} still open`
+      : null;
+  }, ["Retry", "the model is overloaded"], { focus: (x) => x.posts.find((p) => p.kind === "notice" && p.notice.retryRunId === failing.id)?.number });
+  browser.click(/button "Retry"/);
+  await check.state("Retry from the page: the failed turn is sent again", (x) => {
+    const retry = x.posts.find((p) => p.kind === "retry" && p.retry.runId === failing.id);
+    const notice = x.posts.find((p) => p.kind === "notice" && p.notice.runId === failing.id);
+    const run = runOf(x, "worker");
+    return retry && notice?.notice.retried && !notice.notice.retryRunId && run && run.id !== failing.id && run.requestIds.includes(tagJob)
+      ? `retry #${retry.number} by ${retry.author}; notice #${notice.number} retried=true; @worker's new run ${run.id.slice(0, 8)} works on #${B}`
+      : null;
+  }, ["retried a failed turn"], { focus: (x) => x.posts.find((p) => p.kind === "retry")?.number });
+  // The failure's notice woke him (requester and Consigliere): he takes note while the retried turn runs.
+  await room.settle("fable");
+  await room.finish("worker", "Tagged v1.2.");
+  await room.live("fable");
+  await room.finish("fable", "v1.2 is tagged.");
+  await check.state("the retried turn answers, and his reply the user's request", (x) => {
+    const job = claimOf(x, tagJob, "answered");
+    const user = claimOf(x, tag, "answered");
+    return job && user ? `#${job.number} answers #${B}; #${user.number} answers #${T}` : null;
+  }, [`answers #${B} from @fable`, `answers #${T} from you`]);
+
+  // 10. He reseats the worker: its checkpoint, then a fresh seat of it takes over and works.
+  await room.settle("fable");
+  const oldWorker = seat.worker;
+  room.board("fable", "reseat", "worker", "carry on with the parser follow-ups");
+  await until("the reseat's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === oldWorker));
+  await room.live("worker");
+  await room.finish("worker", "Checkpoint: the parser fix and the v1.2 tag are done and answered; nothing is open.");
+  const handover = await until("the handover to the fresh seat", async () => (await room.snapshot()).posts.find((p) => p.kind === "transfer" && p.transfer.oldSeatId === oldWorker), 60_000);
+  await room.rebind("worker");
+  // The fresh seat's first turn (the takeover he asked for) ends; its answer wakes him once.
+  await room.settle("worker");
+  await room.settle("fable");
+  await check.state("a reseat: a fresh seat of the worker takes over", (x) => {
+    const old = x.seats.find((w) => w.seatId === oldWorker);
+    const fresh = x.seats.find((w) => w.seatId === seat.worker);
+    const takeover = x.posts.find((p) => p.kind === "request" && p.request.owner === seat.worker && p.author === seat.fable);
+    return old?.status === "retired" && fresh?.status === "active" && fresh.threadId !== old.threadId && takeover?.request.state === "answered"
+      ? `#${handover.number} hands ${oldWorker.slice(0, 8)} to ${seat.worker.slice(0, 8)}; the old seat retired, the fresh one active on its own thread; takeover #${takeover.number} answered`
+      : null;
+  }, ["open work handed to its fresh seat"], { focus: () => handover.number });
+  room.board("fable", "post", `@${room.name.worker} add a --strict flag to the parser`);
+  const strict = requestTo(await room.snapshot(), seat.worker, null)?.request.id as string;
+  if (!strict) fail("no request to the fresh worker");
+  await room.live("worker");
+  await room.finish("worker", "The --strict flag is in.");
+  await room.settle("fable");
+  await check.state("the fresh seat's work lands", (x) => {
+    const out = claimOf(x, strict, "answered");
+    return out && out.author === seat.worker ? `#${out.number} by the fresh seat answers #${room.post(x, strict).number}` : null;
+  }, ["The --strict flag is in."], { focus: (x) => claimOf(x, strict, "answered")?.number });
+  // Back on the overview the old seat's kept thread has a card of its own ("<room> · worker"): the room's card is still
+  // the one opened, by its exact title.
+  browser.click(/button "Back to the overview"/);
+  browser.poll<string[]>("the kept thread's card on the overview", "() => [...document.querySelectorAll('.ov-room-title')].map((t) => t.textContent)", (titles) => titles.includes(room.title) && titles.includes(`${room.title} · worker`));
+  log(`  page: the overview has the room's card and the kept thread's "${room.title} · worker"`);
+  browser.openRoom(room.title);
+  browser.click(/tab "Board/);
+
+  // 11. He retires the reviewer: refused while it has work open, done once it has none.
+  room.board("fable", "post", "@reviewer check the --strict flag's help text");
+  const help = requestTo(await room.snapshot(), seat.reviewer, null)?.request.id as string;
+  if (!help) fail("no request to the reviewer");
+  await room.live("reviewer");
+  const H = room.post(await room.snapshot(), help).number as number;
+  const refusal = room.refused("fable", "retire", "reviewer");
+  if (!/cannot be retired now/.test(refusal) || !refusal.includes(`#${H}`)) fail(`the refusal does not name the open work #${H}: ${refusal}`);
+  await room.finish("reviewer", "The help text is fine.");
+  await room.settle("reviewer");
+  await room.settle("fable");
+  room.board("fable", "retire", "reviewer");
+  await check.state("a retire: the reviewer leaves the room", (x) => {
+    const r = x.seats.find((w) => w.seatId === seat.reviewer);
+    return r?.status === "retired" && claimOf(x, help, "answered") ? `@reviewer's seat ${seat.reviewer.slice(0, 8)} retired after answering #${H}` : null;
+  }, [], {
+    extra: () => {
+      browser.poll<string | null>("the members after the retire", "() => document.querySelector('[aria-label^=\"Members (\"]')?.getAttribute('aria-label') ?? null", (label) => label === "Members (2)");
+      log("  page: Members (2)");
+    },
+  });
+
+  // Where the room ends: nothing open, no run unresolved, no background work pending; nothing in the old tables.
+  const end = await room.snapshot();
+  const unresolved = end.runs.filter((r) => r.phase !== "terminal");
+  if (end.requests.length > 0 || unresolved.length > 0 || end.seats.some((x) => x.activities.length > 0)) {
+    fail(`the room did not end quiet: ${end.requests.length} open request(s), ${unresolved.length} unresolved run(s), activities ${JSON.stringify(end.seats.flatMap((x) => x.activities))}`);
+  }
+  log(`the room ends quiet: ${end.posts.length} posts, ${end.runs.length} runs all terminal, no open request, no pending activity`);
+  oldTablesEmpty(room.dataDir);
   return check.passed;
 }
 
@@ -971,8 +1390,8 @@ async function main(): Promise<void> {
   try {
     await service.start();
     const room = new Room(service, o);
-    await room.create();
-    passed = await rehearseUi(service, browser, room);
+    await room.create(o.step === "ui" ? "Rehearsal" : "Whole room");
+    passed = o.step === "ui" ? await rehearseUi(service, browser, room) : await rehearseRoom(service, browser, room);
     log(`DONE: ${passed.length} states checked in the API and on the page, console clean`);
   } finally {
     browser.close();

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStoredAuth } from "../adapter/auth.ts";
 import { FakeT3Adapter } from "../adapter/fake.ts";
+import { persistFake } from "../adapter/fakeState.ts";
 import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
@@ -25,8 +26,11 @@ const log = (message: string, detail?: unknown) => {
 
 let adapter: T3Adapter;
 if (config.adapter === "fake") {
-  adapter = new FakeT3Adapter({ autoCompleteMs: 4000 });
-  log("using the fake T3 adapter (demo mode)");
+  const fake = new FakeT3Adapter({ autoCompleteMs: 4000 });
+  // Kept in a file when asked, so its threads outlive a restart of the service as T3's do (scripts/rehearse.ts --step room).
+  const stateFile = process.env.ROOMS_FAKE_STATE;
+  adapter = stateFile ? persistFake(fake, stateFile) : fake;
+  log(`using the fake T3 adapter (demo mode${stateFile ? `, kept in ${stateFile}` : ""})`);
 } else {
   const stored = readStoredAuth(config.dataDir);
   const baseUrl = config.t3BaseUrl ?? stored?.baseUrl ?? "http://127.0.0.1:3773";

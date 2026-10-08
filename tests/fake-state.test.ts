@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
+import { FakeT3Adapter } from "../src/adapter/fake.ts";
+import { persistFake } from "../src/adapter/fakeState.ts";
+
+function stateFile(t: TestContext): string {
+  const dir = mkdtempSync(join(tmpdir(), "rooms-fake-state-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return join(dir, "fake-t3.json");
+}
+
+const launch = (fake: FakeT3Adapter, threadId: string) =>
+  fake.launchThread({ commandId: `launch:${threadId}`, threadId, projectId: "project_demo", title: "Room · worker", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" } });
+const send = (fake: FakeT3Adapter, threadId: string, n: number) =>
+  fake.sendMessage({ commandId: `cmd:${n}`, threadId, messageId: `msg:${n}`, text: `message ${n}`, mode: { type: "start" } });
+
+test("a kept fake T3 comes back after a restart with its threads, runs, receipts and held threads", async (t) => {
+  const file = stateFile(t);
+  const before = persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file);
+  await launch(before, "thread-a");
+  before.setHeld("thread-a", true);
+  await send(before, "thread-a", 1);
+  assert.ok(existsSync(file), "written after the calls that changed it");
+
+  // The service is killed: a new process makes a new fake from the same file.
+  const after = persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file);
+  const detail = (await after.getThreadDetail("thread-a"))!;
+  assert.deepEqual(detail.runs.map((r) => [r.id, r.status]), [["run:thread:thread-a:ordinal:1", "running"]]);
+  assert.ok(after.held.has("thread-a"));
+  // The same command again is a replay T3 keeps a receipt for; a new one gets the next ordinal, not ordinal 1 again.
+  await send(after, "thread-a", 1);
+  await send(after, "thread-a", 2);
+  const runs = (await after.getThreadDetail("thread-a"))!.runs;
+  assert.deepEqual(runs.map((r) => [r.id, r.status]), [["run:thread:thread-a:ordinal:1", "running"], ["run:thread:thread-a:ordinal:2", "queued"]]);
+  after.completeRun("thread-a", { text: "Done." });
+  const ended = persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file);
+  assert.deepEqual((await ended.getThreadDetail("thread-a"))!.runs.map((r) => r.status), ["completed", "running"]);
+});
+
+test("a run left running and not held still ends by itself after the restart", async (t) => {
+  const file = stateFile(t);
+  const before = persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file);
+  await launch(before, "thread-b");
+  await send(before, "thread-b", 1);
+  const after = persistFake(new FakeT3Adapter({ autoCompleteMs: 20 }), file);
+  const end = Date.now() + 2_000;
+  while ((await after.getThreadDetail("thread-b"))!.runs[0]!.status === "running" && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await after.getThreadDetail("thread-b"))!.runs[0]!.status, "completed");
+  // And the end was written: a third start sees it.
+  assert.equal((await persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file).getThreadDetail("thread-b"))!.runs[0]!.status, "completed");
+});
