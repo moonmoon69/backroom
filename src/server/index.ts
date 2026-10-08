@@ -51,6 +51,7 @@ const stack = createStack({
   dbPath: config.dbPath,
   adapter,
   briefingBudgetChars: config.briefingBudgetChars,
+  threadActionTimeoutMs: config.threadActionTimeoutMs,
   browserCommand,
   boardCommand,
   log,

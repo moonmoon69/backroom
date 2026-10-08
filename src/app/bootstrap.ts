@@ -74,13 +74,18 @@ export function createStack(input: {
   latestRelease?: ReleaseLookup;
   /** Run the engine runtime (src/runtime) beside the old one; defaults to ROOMS_ENGINE=1. */
   engine?: boolean;
+  /** Per-call limit on the T3 thread actions room deletion sends (src/app/service.ts THREAD_ACTION_TIMEOUT_MS). */
+  threadActionTimeoutMs?: number;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
   startSeen(repos);
   const hub = new ChangeHub();
   const notify = (roomId: string) => hub.notify(roomId);
-  const service = new RoomService(db, repos, input.adapter, notify);
+  const service = new RoomService(db, repos, input.adapter, notify, {
+    ...(input.threadActionTimeoutMs !== undefined ? { threadActionTimeoutMs: input.threadActionTimeoutMs } : {}),
+    ...(input.log ? { log: input.log } : {}),
+  });
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;
   const presence = new T3Presence(input.adapter, input.log ? { log: input.log } : {});
   const scheduler = new Scheduler(

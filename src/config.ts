@@ -17,6 +17,8 @@ export interface Config {
   webDistDir: string;
   /** Delivery budget for a single briefing, in characters. */
   briefingBudgetChars: number;
+  /** How long deleting a room waits for T3 to answer each thread action, in milliseconds. */
+  threadActionTimeoutMs: number;
   /** Room browsers (see src/browser/roomBrowsers.ts). */
   browser: {
     mode: "vnc" | "window" | "headless" | "off" | null;
@@ -70,6 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tickMs: Number(env.ROOMS_TICK_MS ?? 1500),
     webDistDir: resolve(env.ROOMS_WEB_DIST ?? "web/dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
+    threadActionTimeoutMs: Number(env.ROOMS_THREAD_ACTION_TIMEOUT_MS ?? 5000),
     browser: {
       mode: parseBrowserMode(env.ROOMS_BROWSER_MODE),
       chromePath: env.ROOMS_BROWSER_CHROME ?? null,
