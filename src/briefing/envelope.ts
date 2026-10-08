@@ -75,10 +75,13 @@ export interface ContextPost {
   requestIds: string[];
 }
 
+/** The milestone that marks the user's room note (`/note`): shared context for every seat, about no request (L4a). */
+export const ROOM_NOTE = "room";
+
 /**
  * Notes and non-waking progress in (envelope.base, envelope.contextThrough], written by others, on requests the seat
  * asked or owns as of the watermark: a member's turn after its answer, "still working" posts nobody follows. They wake
- * nobody; this is how they reach the requester's next briefing.
+ * nobody; this is how they reach the requester's next briefing. The user's room notes reach every seat this way.
  */
 export function relatedContext(events: readonly JournalEvent[], envelope: Envelope, seatId: string): ContextPost[] {
   const upTo = events.filter((event) => event.seq <= envelope.contextThrough);
@@ -92,7 +95,7 @@ export function relatedContext(events: readonly JournalEvent[], envelope: Envelo
   for (const event of upTo) {
     if (event.seq <= envelope.base || inputs.has(event.id)) continue;
     const d = event.data;
-    if ((d.kind === "note" || d.kind === "progress") && d.author !== seatId && !d.recipients.includes(seatId) && related(d.requestIds)) {
+    if ((d.kind === "note" || d.kind === "progress") && d.author !== seatId && !d.recipients.includes(seatId) && (related(d.requestIds) || d.kind === "note" && d.milestone === ROOM_NOTE)) {
       out.push({ eventId: event.id, seq: event.seq, kind: d.kind, body: d.body, requestIds: [...d.requestIds] });
     } else if (d.kind === "output" && d.author !== seatId && !d.recipients.includes(seatId) && d.disposition.kind === "progress" && related(d.disposition.requestIds)) {
       out.push({ eventId: event.id, seq: event.seq, kind: "progress", body: d.body, requestIds: [...d.disposition.requestIds] });

@@ -7,6 +7,7 @@ import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { EngineStore } from "../engine/index.ts";
 import { EngineHost, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
+import { engineMessages, messageImages } from "./engineMessages.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -103,7 +104,7 @@ export function createStack(input: {
       store: engineStore,
       adapter: input.adapter,
       rooms: () => repos.listRooms().map((room) => room.id),
-      briefing: bindingSource(repos, input.boardCommand ? { boardCommand: input.boardCommand } : {}),
+      briefing: bindingSource(repos, { ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}), images: messageImages(repos) }),
       budgetChars: input.briefingBudgetChars,
       watch: nativeRequestMirror(repos, notify),
       notify,
@@ -116,6 +117,8 @@ export function createStack(input: {
     // imports from the members' threads.
     scheduler.start = (intervalMs: number) => engine.start(intervalMs);
     scheduler.tick = () => engine.tick();
+    // The user's messages, notes and controls go on the journal (L4a).
+    service.useEngine(engineMessages({ repos, host: engine, adapter: input.adapter }));
   }
   return {
     db,
