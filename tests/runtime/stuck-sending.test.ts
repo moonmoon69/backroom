@@ -73,7 +73,7 @@ test("a T3 run ID already bound to an earlier run does not leave the new run in 
 });
 
 test("a retry after a reused T3 run ID waits for the turn T3 was given, then runs under the next ID and answers; one notice in all", async () => {
-  room = await Room.create({ seats: ["C", "W"] });
+  room = await Room.create({ seats: ["C", "W"], aliases: { W: "worker" } });
   await job(room, "W", "First job.");
   await relaunch(room, "W");
   const second = room.user("W", "Second job.");
@@ -82,6 +82,7 @@ test("a retry after a reused T3 run ID waits for the turn T3 was given, then run
   assert.equal(failed.phase, "terminal");
   assert.equal(room.notices().length, 1);
   assert.deepEqual([...room.notices()[0]!.recipients].sort(), ["$user", "C"], "the asker and the orchestrator");
+  assert.match(room.notices()[0]!.body, /^T3 gave @worker's turn the run ID run:thread:thread:W:ordinal:1, which an earlier run already holds/, "the member by its alias, not its seat ID");
   // T3 runs the turn it was given all the same: the thread is busy, so nothing else is sent to it meanwhile.
   assert.equal(room.running("W"), true);
   await room.until(() => room.running("C"));
