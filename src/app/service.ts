@@ -15,6 +15,8 @@ import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, movedInstruction, retireThreadChoice, seatInstruction, startAttemptKey } from "./consigliere.ts";
 import { RESEAT_KEY_PREFIX, checkpointInstruction, readReseats, takeoverInstruction, writeReseats, type Reseat } from "./reseat.ts";
+import { EngineSeats } from "./engineSeats.ts";
+import type { EngineHost } from "../runtime/host.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   PENDING_TASK_STATES,
@@ -107,6 +109,24 @@ export class RoomService {
     this.adapter = adapter;
     this.notify = notify;
     this.direct = new DirectThreads(repos, adapter);
+  }
+
+  /** Stage 4/5 (L4b): with ROOMS_ENGINE=1 the seat lifecycle runs on the engine journal (src/app/engineSeats.ts). */
+  private engineSeats: EngineSeats | null = null;
+
+  useEngine(host: EngineHost, log?: (message: string, detail?: unknown) => void): EngineSeats {
+    this.engineSeats = new EngineSeats({
+      repos: this.repos,
+      adapter: this.adapter,
+      host,
+      notify: this.notify,
+      transaction: (fn) => this.db.transaction(fn),
+      seatFresh: (room, old, ids) => this.seatFresh(room, old, { seat: ids }),
+      mirror: (participant, shell) => this.syncParticipantFromThread(participant, shell),
+      title: threadTitleFor,
+      ...(log ? { log } : {}),
+    });
+    return this.engineSeats;
   }
 
   // ---------- shared helpers (also used by the scheduler) ----------
@@ -714,7 +734,8 @@ export class RoomService {
     });
     // In a room that has a Consigliere his messages arrive bare, so a new member is told the standing facts first.
     const consigliere = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
-    if (consigliere && !consigliere.retiredAt && spec.seatBriefing !== false) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
+    if (this.engineSeats) this.engineSeats.seated(room, participant, binding, { briefing: spec.seatBriefing !== false });
+    else if (consigliere && !consigliere.retiredAt && spec.seatBriefing !== false) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
     this.notify(room.id);
     return { type: "participant.created", participantId: participant.id, threadId: bound.threadId, alias: participant.alias };
   }
@@ -862,6 +883,7 @@ export class RoomService {
    * other member gets the seat briefing; a move tells every member, in one line, who he is now.
    */
   private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>, except: string | null = null): Promise<CommandResult> {
+    if (this.engineSeats) return this.engineSeats.designate(command);
     const room = this.requireRoom(command.roomId);
     const previous = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
     if (command.participantId === null) {
@@ -971,6 +993,7 @@ export class RoomService {
   }
 
   private async rebindParticipant(command: Extract<RoomCommand, { type: "participant.rebind" }>): Promise<CommandResult> {
+    if (this.engineSeats) this.engineSeats.refuseRebind();
     const participant = this.requireParticipant(command.participantId);
     const room = this.requireRoom(participant.roomId);
     const runningTasks = this.repos
@@ -1024,6 +1047,7 @@ export class RoomService {
    * commits; a failure is reported in the result and leaves the thread as it was.
    */
   private async retireParticipant(command: Extract<RoomCommand, { type: "participant.retire" }>): Promise<CommandResult> {
+    if (this.engineSeats) return this.engineSeats.retire(command);
     const participant = this.requireParticipant(command.participantId);
     const tasks = this.repos.listTasks(participant.roomId).filter((task) => task.participantId === participant.id);
     const inFlight = tasks.filter((task) => task.state === "dispatching" || task.state === "running" || task.state === "needs_input");
@@ -1096,6 +1120,7 @@ export class RoomService {
    * when the work in hand is done; advanceReseats does the rest when the post has landed. Nobody is woken for it.
    */
   private async reseatParticipant(command: Extract<RoomCommand, { type: "participant.reseat" }>): Promise<CommandResult> {
+    if (this.engineSeats) return this.engineSeats.reseat(command);
     const participant = this.requireParticipant(command.participantId);
     const by = this.requireParticipant(command.by);
     if (by.roomId !== participant.roomId) throw new RoomError("unknown_participant", `member ${command.by} is not in this room`);
@@ -1233,7 +1258,7 @@ export class RoomService {
    * folder: its worktree, or the project folder. The checkpoint and the moved tasks assume that folder, so when T3 cannot
    * say where the old seat worked the reseat is called off rather than seated elsewhere; T3 being away is retried.
    */
-  private async seatFresh(room: Room, old: Participant, reseat: Reseat): Promise<void> {
+  private async seatFresh(room: Room, old: Participant, reseat: Pick<Reseat, "seat">): Promise<void> {
     const preset = old.presetId ? this.repos.getPreset(old.presetId) : null;
     const binding = this.repos.currentBinding(old.id);
     const shell = await (binding ? this.adapter.getThreadShell(binding.threadId) : Promise.resolve(null)).catch((error: unknown) => {

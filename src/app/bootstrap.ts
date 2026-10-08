@@ -7,6 +7,7 @@ import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { EngineStore } from "../engine/index.ts";
 import { EngineHost, bindingSource, nativeRequestMirror } from "../runtime/index.ts";
 import { Scheduler } from "../scheduler/scheduler.ts";
+import type { EngineSeats } from "./engineSeats.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -52,6 +53,8 @@ export interface AppStack {
   presence: T3Presence;
   /** The engine runtime over data/board.sqlite, with ROOMS_ENGINE=1 only (stage 4/5; off until cutover). */
   engine: EngineHost | null;
+  /** The seat lifecycle on the engine (seat, Consigliere, retire, reseat), with ROOMS_ENGINE=1 only. */
+  seats: EngineSeats | null;
   close(): void;
 }
 
@@ -98,19 +101,33 @@ export function createStack(input: {
   const engineStore = (input.engine ?? process.env.ROOMS_ENGINE === "1")
     ? new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"))
     : null;
+  // Each tick, per seat: approvals and questions mirrored, then the seat lifecycle's part (thread title and settings, reseats).
+  let seats: EngineSeats | null = null;
+  const mirror = nativeRequestMirror(repos, notify);
   const engine = engineStore
     ? new EngineHost({
       store: engineStore,
       adapter: input.adapter,
       rooms: () => repos.listRooms().map((room) => room.id),
-      briefing: bindingSource(repos, input.boardCommand ? { boardCommand: input.boardCommand } : {}),
+      briefing: bindingSource(repos, {
+        adapter: input.adapter,
+        browsers,
+        ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}),
+        ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
+        ...(input.log ? { log: input.log } : {}),
+      }),
       budgetChars: input.briefingBudgetChars,
-      watch: nativeRequestMirror(repos, notify),
+      watch: async (at, shell, detail) => {
+        await mirror(at, shell, detail);
+        await seats?.watch(at, shell, detail);
+      },
       notify,
       ...(input.log ? { log: input.log } : {}),
     })
     : null;
   if (engine) {
+    seats = service.useEngine(engine, input.log);
+    seats.reconcile();
     // The old scheduler stays built (the UI still reads its statuses until L4c) but never ticks: whoever starts or ticks
     // it (the server, the API's manual ticks) drives the engine host instead, so one runtime alone dispatches to and
     // imports from the members' threads.
@@ -128,6 +145,7 @@ export function createStack(input: {
     updates: new T3Updates(input.adapter, input.latestRelease),
     presence,
     engine,
+    seats,
     close() {
       engine?.close();
       engineStore?.close();
