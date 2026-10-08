@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, deliveredInputs, envelopeBytes, fold, inputTree, selectPrefix, unread } from "../../src/engine/index.ts";
+import { decide, deliveredInputs, EngineStore, envelopeBytes, fold, inputTree, selectPrefix, unread } from "../../src/engine/index.ts";
 import type { Command, RoomEvent } from "../../src/engine/index.ts";
 import { assertions, outcomes, Room } from "./helpers.ts";
 
@@ -419,6 +419,25 @@ test("log fold and decision are deterministic and caller-owned frozen payloads n
   const before = JSON.stringify(after); fold(after); fold(after); assert.equal(JSON.stringify(after), before);
   assert.deepEqual(fold(after), fold(JSON.parse(before) as RoomEvent[]));
   assert.throws(() => fold([...after, after[0]!]), /event order/);
+});
+
+test("a command type the lean core does not have is refused through decide and through the store", () => {
+  const r = new Room();
+  const dropped = [
+    { type: "control_phase", id: "c", actor: "$system", controlId: "x/interrupt", phase: "obsolete", evidence: "stale caller" },
+    { type: "user_answer", id: "u", actor: "$user", requestId: "A", body: "yes" },
+    { type: "bind_provider", id: "b", actor: "$system", runId: "run", providerRunId: "t3", evidence: "stale caller" },
+  ] as unknown as Command[];
+  const store = new EngineStore(":memory:");
+  try {
+    for (const command of dropped) {
+      assert.throws(() => decide(r.log, command), /unknown command type/);
+      assert.throws(() => store.execute("room", command), /unknown command type/);
+    }
+    assert.equal(store.load("room").length, 0);
+  } finally {
+    store.close();
+  }
 });
 
 test("phase records the T3 run as a typed field: only once T3 has the run, never changed, never shared by two runs", () => {

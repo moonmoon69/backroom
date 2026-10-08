@@ -24,9 +24,11 @@ fit) and `orchestrator`. All of it can be thrown away and rebuilt from the log.
 
 Principals are seat IDs, `$user` and `$system` (the host).
 
-A journal written before L6 that holds an event kind the carve dropped (any control, provider or protocol event; a
-mid-turn cancel used to write a control) does not fold: there is no backward compatibility. Such journals exist only in
-throwaway and rehearsal data folders, which are made afresh.
+There is no backward compatibility: every engine journal written before L6 must be recreated. One that holds an event
+kind the carve dropped (any control, provider or protocol event; a mid-turn cancel used to write a control) does not
+fold, and in one that does, the runs T3 accepted carry no `providerRunId`, so the host finds no T3 run for them (no
+import baseline, no answer carrier, no times in the read API). Such journals exist only in throwaway and rehearsal data
+folders.
 
 ## Commands
 

@@ -134,6 +134,26 @@ test("an interrupt T3 could not take (unreachable) is sent again on a later tick
   assert.deepEqual(room.notices(), [], "the stopped turn is not a failure");
 });
 
+test("'cancel that, do this instead': a steer sent while T3 is still ending the cancelled turn waits for a fresh turn (review P6)", async () => {
+  room = await Room.create();
+  const { a } = await wOnA(room);
+  // T3 takes the interrupt command, but the turn takes a moment to stop (as a real agent harness does).
+  const taken: string[] = [];
+  room.fake.interruptRun = async (input) => { taken.push(input.commandId); };
+  await room.cancel("C", a);
+  assert.equal(taken.length, 1);
+  room.host.request(room.room, { actor: "$user", id: "steer:1", to: "W", body: "Instead: fix text.ts." });
+  await room.tick(2);
+  const t3 = room.fake.thread(room.threadOf("W"));
+  assert.equal(t3.messages.some((m) => m.role === "user" && m.runId === t3.runs[0]!.id && /fix text\.ts/.test(m.text)), false, "nothing is steered into the turn being stopped");
+  room.fake.completeRun(room.threadOf("W"), { text: "(stopped)", outcome: "interrupted" });
+  await room.tick(2);
+  assert.deepEqual(room.notices().filter((n) => n.intent === "error"), [], "the stopped turn is not a failure");
+  assert.equal(room.state("steer:1"), "open");
+  assert.equal(room.running("W"), true, "W's next turn carries the steered request");
+  assert.match(room.prompt("W"), /fix text\.ts/);
+});
+
 test("hunt 3: a cancel landing while the host reads the finished run never yields a late-output notice", async () => {
   room = await Room.create();
   const { a } = await wOnA(room);

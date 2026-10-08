@@ -12,9 +12,9 @@
  * the engine, not the disk. It exits 0 only if the median total of the three rooms is at most 2,500 ms and the median
  * of their last-100-append means is at most 2.5 ms. The same workload then runs on the data disk (--disk; default
  * data/long-room), where every commit also waits for SQLite's fsync (synchronous=FULL), and is reported only.
- * Every journal file is removed when the script ends.
+ * Every journal file is removed when the script ends, and each folder too when nothing else is in it.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
@@ -119,6 +119,11 @@ async function measure(base: string, label: string): Promise<Measured> {
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });
+    try {
+      rmdirSync(base); // only when nothing else is in it
+    } catch {
+      // not empty: someone else's runs are there
+    }
   }
 }
 

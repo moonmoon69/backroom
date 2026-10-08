@@ -717,7 +717,8 @@ export class EngineHost {
       return;
     }
     const run = p.runs.get(runId)!;
-    if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active") return;
+    // Nothing goes into a turn a cancel is stopping: the steer waits for the seat's next turn.
+    if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active" || stoppingCancel(p, run) !== null) return;
     const offered = new Set(run.receipts.flatMap((r) => inputTree(r.envelope.inputs).map((i) => i.eventId)));
     if (!unread(p, seatId, run.through).some((i) => i.intent === "request" && i.requestIds.some(wantsSteer) && !offered.has(i.eventId))) return;
     const receiptId = steerReceiptId(randomUUID(), randomUUID());

@@ -419,6 +419,9 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       }
       break;
     }
+    default:
+      // A command the lean core dropped (or never had) is refused, never taken as an empty success.
+      throw new Error(`unknown command type: ${(command as { type: string }).type}`);
   }
   // emit has already applied and validated each event exactly once.
   return result();
