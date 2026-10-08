@@ -27,6 +27,8 @@ export interface VerdictJob {
   room: RoomRecord | null;
   /** The background work each member (by role: W1, V, W2) started in T3 in the job window, from its transcripts (backgroundWorkOf); null when not read. */
   background?: Record<string, BackgroundTask[]> | null;
+  /** Evidence completed after an abort (run.ts --finish): late-evidence.json, its proof that nothing changed after the close. */
+  late?: { closeAt: string; completedAt: string; decision: string; unchanged: boolean; summary: string } | null;
 }
 
 /** A closed job's record, measure and instance-room.json, and each member's background work from its transcripts. */
@@ -39,6 +41,7 @@ export function loadVerdictJob(dir: string, measure: JobMeasure): VerdictJob {
     measure,
     room: existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as RoomRecord) : null,
     background: window && !job.dry ? Object.fromEntries(job.seats.filter((s) => s.role !== "C").map((s) => [s.role, backgroundWorkOf(dir, s.threadId, window[0], window[1])])) : null,
+    late: existsSync(join(dir, "late-evidence.json")) ? (JSON.parse(readFileSync(join(dir, "late-evidence.json"), "utf8")) as NonNullable<VerdictJob["late"]>) : null,
   };
 }
 
@@ -507,6 +510,21 @@ export function behaviourSection(jobs: VerdictJob[], notes: string | null): stri
   return lines;
 }
 
+// ---------------- evidence completed after an abort ----------------
+
+/** Jobs whose window closed and whose evidence was copied later (run.ts --finish), with the proof nothing changed in between. */
+export function lateEvidenceSection(jobs: VerdictJob[]): string[] {
+  const late = jobs.filter((j) => j.late);
+  const lines = ["## Evidence completed after an abort", ""];
+  if (late.length === 0) return [...lines, "None: every job's evidence was copied at its close."];
+  lines.push(
+    "These jobs closed (window, outcome and final copy of the folder recorded at the close) and were aborted while their evidence was being copied; the evidence was copied later from the same sources by `run.ts --finish`, on the decision named. Their window, close and outcome are as recorded at the close.",
+    "",
+  );
+  for (const { job, late: l } of late) lines.push(`- **${job.side} ${job.task}#${job.run} ${job.jobId}**: closed ${l?.closeAt}, evidence completed ${l?.completedAt} (${l?.decision}). ${l?.unchanged ? "Nothing changed after the close" : "**Something changed after the close**"}: ${l?.summary}.`);
+  return lines;
+}
+
 // ---------------- every run's numbers ----------------
 
 /** report.md under a heading of the verdict: its title dropped, its headings one level down. */
@@ -518,7 +536,7 @@ export function embeddedReport(report: string): string[] {
 /** The sections verdict.md carries after the gate's table, before its limits; and the measurements after them. */
 export function verdictSections(jobs: VerdictJob[], report: string, notes: string | null): { beforeLimits: string[]; afterLimits: string[] } {
   return {
-    beforeLimits: [...behaviourSection(jobs, notes), "", ...rulesSection(jobs), "", ...briefingSection(jobs)],
+    beforeLimits: [...behaviourSection(jobs, notes), "", ...lateEvidenceSection(jobs), "", ...rulesSection(jobs), "", ...briefingSection(jobs)],
     afterLimits: embeddedReport(report),
   };
 }
