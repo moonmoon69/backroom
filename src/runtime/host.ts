@@ -28,6 +28,8 @@ import {
 
 const SYSTEM = "$system";
 const MiB = 1024 * 1024;
+/** With `stuckMs`: the fewest failed attempts in a row before a run's step counts as stuck, so a gap alone never does. */
+const STUCK_ATTEMPTS = 3;
 /** The last line of a steered message: what the member does with what came into its turn. */
 const STEER_NOTE = "This came into your running turn: take it into account in the work you are doing now, and cover it in your final reply for this turn.";
 
@@ -55,6 +57,8 @@ export interface EngineHostOptions {
   unrecordedMs?: number;
   /** How many times T3 may refuse a message before its run fails visibly (a passing refusal is retried). */
   refusals?: number;
+  /** How long a run not yet matched to a T3 run may keep failing its step (an outage aside) before it fails visibly: 2 minutes. */
+  stuckMs?: number;
   now?: () => number;
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
   /**
@@ -99,6 +103,7 @@ export class EngineHost {
   private readonly idleSettleMs: number;
   private readonly unrecordedMs: number;
   private readonly refusalLimit: number;
+  private readonly stuckMs: number;
   private readonly now: () => number;
   private readonly log: (message: string, detail?: unknown) => void;
   private timer: NodeJS.Timeout | null = null;
@@ -108,6 +113,8 @@ export class EngineHost {
   /** Per run: when its message was first sent, and how often T3 refused it. Bounds only; nothing is decided from them. */
   private readonly firstSent = new Map<string, number>();
   private readonly refused = new Map<string, number>();
+  /** Per run not yet matched to a T3 run: since when, and how often in a row, its step has thrown (H4). A bound only. */
+  private readonly stuck = new Map<string, { since: number; attempts: number }>();
   /** Host runs whose cancel's interrupt T3 has taken (or refused); T3 keeps one receipt per command ID, so a restart may send it once more. */
   private readonly interrupted = new Set<string>();
   /** Per `bg:` activity: since when its thread has been idle with nothing in the background (§2 iii). */
@@ -134,6 +141,7 @@ export class EngineHost {
     this.idleSettleMs = options.idleSettleMs ?? 30_000;
     this.unrecordedMs = options.unrecordedMs ?? 5 * 60_000;
     this.refusalLimit = options.refusals ?? 3;
+    this.stuckMs = options.stuckMs ?? 2 * 60_000;
     this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => {});
   }
@@ -273,7 +281,29 @@ export class EngineHost {
     await this.advance(roomId, seatId, id, load);
   }
 
+  /**
+   * Move a run on, bounded (H4): a run T3 has not been matched to (prepared, sending) whose step throws on every attempt,
+   * for `stuckMs` and at least STUCK_ATTEMPTS times in a row, fails visibly with the error, so it never sits there with
+   * only a log line. An outage is not counted: the run waits for T3 and is sent when it is back. Once a run is matched
+   * to a T3 run, that run ends on its own, and failing ours would drop the member's reply, so the bound stops there.
+   */
   private async advance(roomId: string, seatId: string, runId: string, load: Loader): Promise<void> {
+    try {
+      await this.advanceRun(roomId, seatId, runId, load);
+      this.stuck.delete(runId);
+    } catch (error) {
+      const run = this.project(roomId).runs.get(runId);
+      if (this.halted || error instanceof T3Unavailable || !run || run.phase === "terminal" || run.providerRunId) throw error;
+      const streak = this.stuck.get(runId) ?? { since: this.now(), attempts: 0 };
+      streak.attempts += 1;
+      this.stuck.set(runId, streak);
+      if (streak.attempts < STUCK_ATTEMPTS || this.now() - streak.since < this.stuckMs) throw error;
+      this.log("run failed: its step kept failing before T3 had it", { roomId, seatId, runId, attempts: streak.attempts, error: message(error) });
+      this.fail(roomId, runId, `Backroom could not get @${seatId}'s turn to T3: the same step failed ${streak.attempts} times in ${Math.round((this.now() - streak.since) / 1000)} s (${message(error)})`);
+    }
+  }
+
+  private async advanceRun(roomId: string, seatId: string, runId: string, load: Loader): Promise<void> {
     let run = this.project(roomId).runs.get(runId)!;
     const threadId = this.project(roomId).seats.get(seatId)!.threadId;
     if (run.phase === "prepared") {
@@ -296,6 +326,12 @@ export class EngineHost {
         detail = await load(true);
         t3Run = detail ? runForMessage(detail, run.dispatchMessageId) : null;
         if (!t3Run) return; // Recorded later or lost: the next tick looks for the message by its ID, and resends it.
+      }
+      // The journal binds a T3 run ID to one run only. T3 numbers a thread's runs, so it gives an ID again when it counts
+      // them from 1 again: binding it would be refused on every tick. The run fails at once, with its notice and Retry.
+      if ([...this.project(roomId).runs.values()].some((other) => other.id !== runId && other.providerRunId === t3Run.id)) {
+        this.fail(roomId, runId, `T3 gave @${seatId}'s turn the run ID ${t3Run.id}, which an earlier run already holds (T3 counted the thread's runs from 1 again, as after a restart or a rollback), so Backroom cannot follow the turn; T3 may still run it`);
+        return;
       }
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:accepted`, runId, phase: "accepted", evidence: `t3run:${t3Run.id} ordinal:${t3Run.ordinal}`, providerRunId: t3Run.id });
       this.step("accepted", roomId, seatId, runId);
@@ -441,6 +477,7 @@ export class EngineHost {
     }
     this.firstSent.delete(runId);
     this.refused.delete(runId);
+    this.stuck.delete(runId);
     this.interrupted.delete(runId);
     this.sweepActivities(roomId);
   }
