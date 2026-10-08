@@ -29,7 +29,7 @@ export const roomKey = (roomId: string): string => `room:${roomId}`;
 export const threadKey = (threadId: string): string => `thread:${threadId}`;
 
 /** A room's news in words: "@sol1 replied", "@sol1's turn failed". */
-export function describeRoomNews(latest: NonNullable<NonNullable<RoomListItem["news"]>["latest"]>): string {
+export function describeRoomNews(latest: NonNullable<RoomListItem["news"]["latest"]>): string {
   const who = latest.alias ? `@${latest.alias}` : "A member";
   return latest.kind === "failed" ? `${who}'s turn failed` : `${who} replied`;
 }
@@ -105,6 +105,8 @@ export function useFinishNotifications(rooms: RoomListItem[], threads: T3ThreadS
   const on = useNotifyOn();
   const openedAt = useRef(Date.now());
   const announced = useRef(new Map<string, string>());
+  /** Per room, the newest finish when this page first saw it: those are the overview's to show, not announced. */
+  const roomBaseline = useRef(new Map<string, number>());
   const open = useRef(onOpen);
   open.current = onOpen;
 
@@ -120,18 +122,23 @@ export function useFinishNotifications(rooms: RoomListItem[], threads: T3ThreadS
   }, []);
 
   useEffect(() => {
-    const finishes: Array<{ key: string; at: string; title: string; body: string }> = [];
+    // A room's finish is its post's journal sequence (the journal has no clock): one is new when it is past the newest
+    // this page saw first for that room. A thread's finish is its time, as before.
+    const finishes: Array<{ key: string; mark: string; old: boolean; title: string; body: string }> = [];
     for (const room of rooms) {
-      const latest = room.news?.latest;
-      if (latest) finishes.push({ key: roomKey(room.id), at: latest.at, title: `${describeRoomNews(latest)} in ${room.title}`, body: plain(latest.preview) || (latest.kind === "failed" ? "The turn ended with an error." : "") });
+      const latest = room.news.latest;
+      const key = roomKey(room.id);
+      const first = roomBaseline.current.get(key);
+      if (first === undefined) roomBaseline.current.set(key, latest?.seq ?? room.head);
+      if (latest) finishes.push({ key, mark: `seq:${latest.seq}`, old: first === undefined || latest.seq <= first, title: `${describeRoomNews(latest)} in ${room.title}`, body: plain(latest.preview) || (latest.kind === "failed" ? "The turn ended with an error." : "") });
     }
     for (const thread of threads) {
-      if (thread.news) finishes.push({ key: threadKey(thread.id), at: thread.news.at, title: thread.title || "Thread", body: thread.news.state === "error" ? "The turn ended with an error." : "Finished." });
+      if (thread.news) finishes.push({ key: threadKey(thread.id), mark: `at:${thread.news.at}`, old: Date.parse(thread.news.at) < openedAt.current, title: thread.title || "Thread", body: thread.news.state === "error" ? "The turn ended with an error." : "Finished." });
     }
     for (const finish of finishes) {
-      if (announced.current.get(finish.key) === finish.at) continue;
-      announced.current.set(finish.key, finish.at);
-      if (!on || looking || Date.parse(finish.at) < openedAt.current) continue;
+      if (announced.current.get(finish.key) === finish.mark) continue;
+      announced.current.set(finish.key, finish.mark);
+      if (!on || looking || finish.old) continue;
       void show(finish.title, finish.body, finish.key, () => open.current(finish.key)).catch(() => undefined);
     }
   }, [rooms, threads, looking, on]);

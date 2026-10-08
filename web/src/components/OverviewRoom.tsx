@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useRoom, type FollowUpPrefill } from "../context.tsx";
+import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type T3Project } from "../types.ts";
 import { BackgroundBar } from "./BackgroundBar.tsx";
 import { Composer } from "./Composer.tsx";
@@ -26,14 +26,12 @@ const BOARD_WINDOW = 60;
  */
 export function OverviewRoom({
   project,
-  followUp,
   panel,
   onPanel,
   onClose,
   onManageBrowser,
 }: {
   project: T3Project | null;
-  followUp: FollowUpPrefill | null;
   /** The side panel's tab, or none: kept by the app, which reads the Git tab in full only while it shows. */
   panel: InspectorTab | null;
   onPanel: (tab: InspectorTab | null) => void;
@@ -50,7 +48,8 @@ export function OverviewRoom({
   }, [snapshot.room.id, onPanel]);
   const togglePanel = (tab: InspectorTab) => onPanel(panel === tab ? null : tab);
   const members = snapshot.participants.filter(isActiveParticipant);
-  const posts = snapshot.events.filter((event) => event.kind !== "task.status" && event.kind !== "system").length;
+  // The board's size: every post on the journal (the page holds the newest of them).
+  const posts = snapshot.counts.posts;
   const chat = consigliere !== null && view === "chat";
   return (
     <div className={`sheet ${chat ? "sheet-chat" : "sheet-board"}`}>
@@ -91,7 +90,7 @@ export function OverviewRoom({
         <section className="sheet-main" aria-label={chat ? `Conversation with ${consigliere?.alias}` : "Board"}>
           <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} />
           <BackgroundBar />
-          <Composer followUp={followUp} overlay />
+          <Composer overlay />
         </section>
         {panel ? <Inspector tab={panel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
       </div>

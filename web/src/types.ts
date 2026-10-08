@@ -33,19 +33,22 @@ export interface Room {
   updatedAt: string;
 }
 
+/** GET /api/rooms: a room with what is going on in it, read from its journal (EngineRoomListItem). */
 export interface RoomListItem extends Room {
   participantCount: number;
-  working: number;
-  waiting: number;
-  /** Live thread state from the scheduler's last poll: mid-turn, background work running, only monitoring, needs you. */
-  activity?: { turn: number; background: number; monitoring: number; needsInput: number };
-  /** What finished since the room was last seen on any device: replies and failed runs, the newest described. */
-  news?: RoomNews;
+  /** The journal's head: the seq of its last event. */
+  head: number;
+  counts: Pick<EngineRoomCounts, "needsYou" | "busy" | "waiting" | "working">;
+  /** What finished since the room was last seen on any device, keyed by journal sequence. */
+  news: RoomNews;
 }
 
+/** News: the room's finishes since you last looked (EngineNews). In a room with a Consigliere, only his. */
 export interface RoomNews {
+  /** The seq you have seen the room up to. */
+  seenSeq: number;
   unseen: number;
-  latest: { at: string; alias: string | null; kind: "reply" | "failed"; preview: string } | null;
+  latest: { seq: number; number: number; at: string | null; seatId: string; alias: string | null; kind: "reply" | "failed"; preview: string } | null;
 }
 
 export interface Participant {
@@ -78,54 +81,226 @@ export interface SessionBinding {
   retiredAt: string | null;
 }
 
-/** "member.message": a message one member's agent sent another's thread with T3's tools (work, a steer, a question, an answer). */
-export type RoomEventKind = "user.message" | "note" | "assistant.reply" | "t3.turn" | "t3.message" | "member.message" | "task.status" | "system";
+// ---- The room's journal, as the read API serves it (src/domain/engineView.ts; tests/web-engine-types.test.ts keeps
+// these copies equal to it) ----
 
-export type Speaker =
-  | { type: "user" }
-  | { type: "participant"; participantId: string; bindingId: string }
-  /** member.message: a sender whose thread is not a member of the room, named by its thread's title. */
-  | { type: "outside"; threadId: string; title: string }
-  | { type: "system" };
+/** Who wrote or is owed something on the journal: a seat ID (a member's binding ID), "$user" or "$system" (Backroom). */
+export type EnginePrincipal = string;
 
-export interface ArtifactRef {
-  path?: string;
-  kind?: string;
-  additions?: number;
-  deletions?: number;
-  branch?: string;
-  commit?: string;
-  note?: string;
+/**
+ * When something happened. The journal has no clock: `at` is exact only for what T3 timed (its messages and turns, a
+ * run's final), else null; `after` is a lower bound (the latest exact time of anything earlier), null when nothing
+ * earlier has one. Neither is ever guessed.
+ */
+export interface EngineTime {
+  at: string | null;
+  after: string | null;
 }
 
-/** The artifact that says where a reply's work is: folder (path), branch, commit, uncommitted count (note). */
-export const isWorkspaceArtifact = (artifact: ArtifactRef): boolean => artifact.kind === "workspace";
+/** A request named by a post: its ID and the board number of the post that made it (null when unknown). */
+export interface EngineRef {
+  requestId: string;
+  number: number | null;
+}
 
-export interface RoomEvent {
-  id: string;
-  roomId: string;
-  /** Its place in the room's log of everything that happens: ordering only. */
-  sequence: number;
-  /** A post's number as the board cites it ("#51"); null for status lines and system notes. Absent from an older service, whose post numbers were the sequence. */
-  postNumber?: number | null;
-  kind: RoomEventKind;
-  speaker: Speaker;
-  text: string;
-  taskId: string | null;
+export interface EngineT3Ref {
+  threadId: string;
   runId: string | null;
-  artifacts: ArtifactRef[];
-  /** Images the user attached to this message (user.message events). */
-  attachmentIds: string[];
-  /** assistant.reply: the participant's earlier messages in the same turn (progress notes between tool calls). */
-  progress: Array<{ text: string; at: string }>;
-  /** t3.turn: the prompt typed directly in T3 that started the turn. */
-  prompt: string | null;
-  /** member.message: the member whose thread the message arrived in. */
-  to: string | null;
-  /** t3.turn: how the turn ended. Null on other kinds and on turns recorded before this was kept. */
-  outcome: "completed" | "interrupted" | "failed" | null;
-  sourceRef: { threadId: string; messageId: string; t3RunId: string | null } | null;
-  createdAt: string;
+  messageId: string | null;
+}
+
+export type EnginePostKind = "request" | "correction" | "cancel" | "note" | "progress" | "output" | "notice" | "retry" | "transfer" | "blocked";
+
+/** How an answer attempt came out for one request: the engine decides it. */
+export interface EngineClaim extends EngineRef {
+  outcome: "answered" | "already_answered" | "late" | "superseded" | "pending_activity";
+  returnTo: EnginePrincipal;
+}
+
+/** A post on the board: one journal event that says something (`rooms-board index` lists the same ones). */
+export interface EnginePost extends EngineTime {
+  seq: number;
+  /** The board's #n. Read it; never compute it from `seq`. */
+  number: number;
+  /** The journal event's ID: spend per reply (RoomCosts.replies) is keyed by it. */
+  id: string;
+  kind: EnginePostKind;
+  author: EnginePrincipal;
+  /** Whom it wakes. */
+  to: EnginePrincipal[];
+  body: string;
+  /** The requests it is about; a request post names itself. */
+  about: EngineRef[];
+  request?: {
+    id: string;
+    parentId: string | null;
+    rootId: string;
+    owner: EnginePrincipal;
+    returnTo: EnginePrincipal;
+    /** The open/answered marker. */
+    state: "open" | "answered" | "cancelled";
+    answer: { seq: number; number: number } | null;
+    corrections: number;
+  };
+  output?: {
+    /** answer: names requests (claims say what each came to); yield: answers nothing; progress: an update under held work; error: a failed run. */
+    disposition: "answer" | "yield" | "progress" | "error";
+    claims: EngineClaim[];
+    /** final: a run's last message; answer: `rooms-board answer`; continuation: a turn the member started itself; idle: background work ended without a further turn. */
+    source: "final" | "answer" | "continuation" | "idle" | "other";
+    runId: string | null;
+    activityId: string | null;
+    t3: EngineT3Ref | null;
+    afterAnswer: boolean;
+  };
+  note?: {
+    /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends. */
+    source: "post" | "t3-message" | "t3-turn" | "deferred-cancel";
+    t3: EngineT3Ref | null;
+    /** Under a request its author had already answered (a self-started turn after the answer). */
+    afterAnswer: boolean;
+  };
+  progress?: { milestone: string | null; working: boolean };
+  notice?: EngineNoticeState;
+  cancel?: { applied: boolean };
+  retry?: { runId: string };
+  transfer?: { oldSeatId: string; newSeatId: string; owned: string[]; awaited: string[] };
+  blocked?: EngineBlockedView;
+}
+
+export interface EngineNoticeState {
+  intent: "error" | "attention";
+  runId: string | null;
+  /** The run the user can retry from here (failed, not retried, its seat not retired). */
+  retryRunId: string | null;
+  retried: boolean;
+  dismissed: boolean;
+  /** It waits on the user: addressed to the user, not dismissed or retried, its requests not all closed. */
+  needsYou: boolean;
+}
+
+/** An open request, with its owner and return address. */
+export interface EngineRequestView {
+  id: string;
+  number: number;
+  seq: number;
+  parentId: string | null;
+  rootId: string;
+  owner: EnginePrincipal;
+  returnTo: EnginePrincipal;
+  state: "open" | "answered" | "cancelled";
+  preview: string;
+  corrections: number;
+  /** Open requests made under it (reviews it asked for). */
+  openChildren: string[];
+  /** Pending background work holding it open. */
+  activityIds: string[];
+  /** Its owner's live run, when that run works on it. */
+  runId: string | null;
+}
+
+export type EngineRunPhase = "prepared" | "sending" | "accepted" | "running" | "uncertain" | "rejected" | "terminal";
+
+/** A host run: one wake of a seat. */
+export interface EngineRunView {
+  id: string;
+  seatId: string;
+  threadId: string;
+  phase: EngineRunPhase;
+  t3RunId: string | null;
+  reservedSeq: number;
+  through: number;
+  inputs: number[];
+  requestIds: string[];
+  failure: string | null;
+  output: { seq: number; number: number } | null;
+  startedAt: string | null;
+  endedAt: string | null;
+}
+
+/** GET /api/rooms/:roomId/runs/:runId: a run with the exact briefing T3 received. */
+export interface EngineRunDetail extends EngineRunView {
+  briefing: string | null;
+  images: Array<{ eventId: string; names: string[] }>;
+}
+
+/** Background work holding requests open: `bg:` T3 listed work at turn end; `work:` the member said `working`. */
+export interface EngineActivityView {
+  id: string;
+  kind: "bg" | "work" | "other";
+  seatId: string;
+  runId: string;
+  requestIds: string[];
+  status: "pending" | "uncertain" | "done" | "failed";
+  /** Held by the member: it ends only with `rooms-board answer` (or a cancel). */
+  memberHeld: boolean;
+  /** "working since …" (exact for `bg:`, a lower bound for `work:`; null when unknown). */
+  since: string | null;
+}
+
+/** A delivery the engine could not make: one input with its open requests over the byte budget. */
+export interface EngineBlockedView {
+  seatId: string;
+  eventId: string;
+  number: number | null;
+  requiredBytes: number;
+}
+
+/** A seat: a member's binding on the journal. */
+export interface EngineSeatView {
+  seatId: string;
+  participantId: string | null;
+  alias: string | null;
+  threadId: string;
+  status: "active" | "stopping" | "retired";
+  orchestrator: boolean;
+  cursor: number;
+  activeRunId: string | null;
+  /** Addressed input waiting for its next run. */
+  unread: number;
+  blocked: EngineBlockedView | null;
+  activities: EngineActivityView[];
+  owns: number;
+  awaits: number;
+}
+
+/** A member's status in the old shape, from the journal and T3, with the seat's background work and backlog. */
+export interface EngineMemberStatus extends ParticipantStatus {
+  seatId: string | null;
+  working: boolean;
+  unread: number;
+}
+
+export interface EngineRoomCounts {
+  posts: number;
+  requests: number;
+  openRequests: number;
+  runs: number;
+  unresolvedRuns: number;
+  notices: number;
+  blocked: number;
+  pendingActivities: number;
+  unread: number;
+  /** Notices that need you plus open approvals and questions. */
+  needsYou: number;
+  /** Seats with an active run. */
+  busy: number;
+  /** Seats with unread input and no run. */
+  waiting: number;
+  /** Seats with pending background work. */
+  working: number;
+}
+
+/** The user's notice marks: every notice at or below `through` is handled, and so are `ids`. */
+export interface EngineNoticeMarks {
+  through: number;
+  ids: string[];
+}
+
+export interface EngineBoardPage {
+  head: number;
+  posts: EnginePost[];
+  earlier: boolean;
 }
 
 /** GET /api/overview: a thread outside rooms, shown as a room of one. */
@@ -145,31 +320,31 @@ export interface OverviewThread {
   news: { at: string; state: "completed" | "error" } | null;
 }
 
-/** GET /api/overview: every room with its members and what each is doing, for Look → Overview. */
+/** GET /api/overview: every room with its members and what each is doing, for Look → Overview (EngineOverviewRoom). */
 export interface OverviewRoom {
   id: string;
   projectId: string;
   title: string;
   consigliereId: string | null;
-  /** Things waiting on you in the room: approvals and questions, held or blocked work, failures. */
+  /** Things waiting on you in the room: notices that need you, approvals and questions. */
   needs: number;
   members: Array<{
     id: string;
     alias: string;
     modelSelection: ModelSelection;
-    /** The crew member it was seated as, for its look. Absent from an older service. */
-    presetId?: string | null;
-    roleName: string | null;
+    /** The crew member it was seated as, for its look. */
+    presetId: string | null;
     consigliere: boolean;
-    status: ParticipantStatus;
+    status: EngineMemberStatus;
     /** The last line of a turn in progress: a progress note, or the tools running. */
     live: string | null;
-    /** The room task the member is on, if any. */
+    /** The request its live run works on. */
     doing: string | null;
-    lastReply: { at: string; text: string } | null;
+    /** What it last said; `at` is null when T3 did not time it. */
+    lastReply: { at: string | null; text: string } | null;
   }>;
-  /** The room state's first line, the tile's blurb; null without a state, absent from an older service. */
-  state?: { line: string; by: string; at: string } | null;
+  /** The room state's first line, the tile's blurb; null without a state. */
+  state: { line: string; by: string; at: string } | null;
   updatedAt: string;
 }
 
@@ -188,8 +363,13 @@ export const ATTACHMENT_MIME_TYPES: ReadonlySet<string> = new Set(["image/png", 
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_MAX_TOTAL_BYTES = 80 * 1024 * 1024;
 
+/**
+ * An assignment's timing as the parser (src/parser/explicit.ts) reads it. On the engine (decision D2) nothing waits on
+ * other work: the parser refuses /after, /hold and implied waits, so a message that can be sent is always "now".
+ */
 export type ScheduleMode = "now" | "after_all" | "manual";
 
+/** The parser's reference to a task (the old runtime); the engine parser never produces one. */
 export interface PrerequisiteRef {
   taskId: string;
   revision: number;
@@ -199,88 +379,6 @@ export type Schedule =
   | { mode: "now" }
   | { mode: "manual" }
   | { mode: "after_all"; prerequisites: PrerequisiteRef[] };
-
-export type TaskState =
-  | "queued"
-  | "held"
-  | "blocked"
-  | "dispatching"
-  | "running"
-  | "needs_input"
-  | "succeeded"
-  | "failed"
-  | "interrupted"
-  | "cancelled";
-
-export const PENDING_STATES: ReadonlySet<TaskState> = new Set(["queued", "held", "blocked"]);
-export const ACTIVE_STATES: ReadonlySet<TaskState> = new Set(["dispatching", "running", "needs_input"]);
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set(["succeeded", "failed", "interrupted", "cancelled"]);
-
-export interface Task {
-  id: string;
-  roomId: string;
-  number: number;
-  revision: number;
-  sourceEventId: string;
-  participantId: string;
-  instruction: string;
-  sourceText: string | null;
-  attachmentIds: string[];
-  /** "steer": sent into the recipient's running turn instead of waiting for it to end. */
-  delivery: "queue" | "steer";
-  /** A T3 slash command sent verbatim ("/compact …"). */
-  slashCommand: boolean;
-  /** "seat": the standing facts Backroom sends a member of a room that has a Consigliere. "wake": Backroom's task
-   * for a member who posted work on the board, run with the answer when that work ends. */
-  kind: "assignment" | "seat" | "wake";
-  scheduleMode: ScheduleMode;
-  prerequisites: PrerequisiteRef[];
-  state: TaskState;
-  stateReason: string | null;
-  currentRunId: string | null;
-  userOutcome: "blocked" | null;
-  /** When you took a failed task off your list without retrying it; a retry clears it. */
-  dismissedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type RunStatus =
-  | "pending"
-  | "dispatched"
-  | "accepted"
-  | "running"
-  | "needs_input"
-  | "succeeded"
-  | "failed"
-  | "interrupted";
-
-export interface Run {
-  id: string;
-  taskId: string;
-  taskRevision: number;
-  attempt: number;
-  bindingId: string;
-  threadId: string;
-  commandId: string;
-  messageId: string;
-  /** The T3 run that carries this run's message, once T3 reports it. */
-  t3RunId: string | null;
-  status: RunStatus;
-  /** Sent into a run that was already running (steering); shares that run's reply. */
-  steered: boolean;
-  briefing: string;
-  includedFromSequence: number;
-  includedToSequence: number;
-  interruptRequestedAt: string | null;
-  acceptedAt: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  resultEventId: string | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
 
 export interface NativeRequest {
   participantId: string;
@@ -329,19 +427,37 @@ export interface BackgroundTask {
   updatedAt: string;
 }
 
+/** GET /api/rooms/:roomId: the room read from its journal (EngineRoomSnapshot). */
 export interface RoomSnapshot {
+  /** Tells this shape from the old runtime's snapshot. */
+  engine: true;
   room: Room;
   participants: Participant[];
   bindings: SessionBinding[];
-  tasks: Task[];
-  runs: Run[];
-  events: RoomEvent[];
+  /** The journal's head: the seq of its last event. */
+  head: number;
+  seats: EngineSeatView[];
+  /** The newest posts, oldest first. */
+  posts: EnginePost[];
+  /** Older posts exist before the first in `posts` (GET …/board?before=<seq>). */
+  earlier: boolean;
+  /** Every open request. */
+  requests: EngineRequestView[];
+  runs: EngineRunView[];
+  /** Notices that need you, oldest first, whether or not they are in `posts`. */
+  needsYou: EnginePost[];
+  blocked: EngineBlockedView[];
   nativeRequests: NativeRequest[];
-  participantStatus: Record<string, ParticipantStatus>;
+  participantStatus: Record<string, EngineMemberStatus>;
+  counts: EngineRoomCounts;
+  news: RoomNews;
+  notices: EngineNoticeMarks;
   /** The room's effective browser and its process; null when it has none or the service cannot run browsers. */
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
-  /** The room state: null until one is written; absent from an older service. */
-  state?: RoomState | null;
+  /** The room state: null until one is written. */
+  state: RoomState | null;
+  /** Whether T3 answered for this read: when not, member status is "unknown" and untimed posts stay untimed. */
+  t3: { reachable: boolean };
 }
 
 /** The room state (rooms-board state): the Consigliere's summary of where the room stands, replaced whole at each write. */
@@ -501,6 +617,7 @@ export interface ThreadCosts {
   openTurn: ThreadCost | null;
 }
 
+/** GET /api/rooms/:roomId/costs (EngineRoomCosts): spend per member, per reply and per turn in progress. */
 export interface RoomCosts {
   readAt: string;
   pricesFetchedAt: string | null;
@@ -508,12 +625,17 @@ export interface RoomCosts {
   /** Participants with no estimate; the room's figure leaves them out. */
   withoutEstimate: string[];
   participants: Record<string, ThreadCost>;
-  /** Per reply event (assistant.reply and t3.turn): what its thread used since the thread's previous reply. */
+  /**
+   * Per reply, by journal event ID: what its thread used since the thread's previous reply. Only the post that carries a
+   * T3 run has one (a run's final, a T3 turn's note, a continuation): explicit answers and idle settles carry none.
+   */
   replies: Record<string, ThreadCost>;
   /** Per seated participant: what its thread has used since its last reply, the turn in progress. */
   openTurns: Record<string, ThreadCost>;
-  /** Per seated participant: its context meter. Absent from an older service. */
-  contexts?: Record<string, ContextMeter>;
+  /** Per seated participant: its context meter. */
+  contexts: Record<string, ContextMeter>;
+  /** Threads left whole because a reply's T3 time is not known: their replies carry no figure. */
+  unsplit: string[];
 }
 
 /** A member's context meter, from its Claude transcript (src/domain/contextMeter.ts). Information only. */
@@ -1056,8 +1178,6 @@ export type ThreadLifecycleChoice = "keep" | "settle" | "archive" | "delete";
 
 export type RoomCommand =
   | { type: "room.create"; projectId: string; title: string; consigliere?: boolean }
-  /** Take a failed task off your list without retrying it. */
-  | { type: "task.dismiss"; taskId: string }
   /** Drop a question you will not answer. */
   | { type: "native.userInput.dismiss"; participantId: string; requestId: string }
   /** Make a seated member the room's Consigliere, move the mark, or clear it (null). */
@@ -1101,39 +1221,26 @@ export type RoomCommand =
   | { type: "preset.delete"; presetId: string }
   /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
   | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }
-  | {
-      type: "task.create";
-      roomId: string;
-      recipients: string[];
-      instruction: string;
-      sourceText?: string | null;
-      attachmentIds?: string[];
-      schedule: Schedule;
-    }
-  /** A message split into assignments; `after` holds indices of earlier assignments to wait for. */
+  /**
+   * A message: one request per recipient per assignment (src/app/engineMessages.ts). Each assignment's `schedule` is
+   * "now" and `after` empty (D2); `preamble` is the text before the first address, context for every recipient; the
+   * same `clientMessageId` sent again records nothing twice.
+   */
   | {
       type: "message.create";
       roomId: string;
       sourceText: string | null;
+      preamble?: string;
+      clientMessageId?: string;
       attachmentIds: string[];
-      assignments: Array<{ recipients: string[]; instruction: string; schedule: Schedule; after: number[] }>;
+      assignments: Array<{ recipients: string[]; instruction: string; schedule: { mode: "now" }; after: number[]; slashCommand?: boolean; delivery?: "queue" | "steer" }>;
     }
   | { type: "room.note.create"; roomId: string; text: string }
-  | {
-      type: "task.update";
-      taskId: string;
-      revision: number;
-      instruction?: string;
-      participantId?: string;
-      schedule?: Schedule;
-      carryDependents?: boolean;
-    }
-  | { type: "task.release"; taskId: string; revision: number }
-  | { type: "task.cancel"; taskId: string; revision: number }
-  | { type: "task.interrupt"; taskId: string; runId: string }
-  | { type: "task.retry"; taskId: string; revision: number; reattachDependents: boolean }
-  | { type: "task.markBlocked"; taskId: string; revision: number; reason: string }
-  | { type: "task.unblock"; taskId: string; revision: number }
+  /** The user's controls on the journal, by journal IDs: withdraw or amend a request of yours, retry a failed run, stop a member's turn. */
+  | { type: "request.cancel"; roomId: string; requestId: string }
+  | { type: "request.correct"; roomId: string; requestId: string; text: string }
+  | { type: "run.retry"; roomId: string; runId: string; text?: string }
+  | { type: "run.stop"; roomId: string; participantId: string }
   | { type: "native.approval.respond"; participantId: string; requestId: string; decision: ApprovalDecision }
   | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> }
   /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
@@ -1167,10 +1274,11 @@ export type CommandResult =
       /** Present after participant.retire: what happened to its T3 thread. */
       thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed"; detail?: string };
     }
-  | { type: "tasks.created"; taskIds: string[]; eventId: string }
+  | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
   | { type: "note.created"; eventId: string }
-  | { type: "task.updated"; taskId: string; revision: number }
-  | { type: "task.interrupt.requested"; taskId: string; runId: string }
+  | { type: "request.updated"; requestId: string; applied: boolean }
+  | { type: "run.retried"; runId: string; eventId: string }
+  | { type: "run.stopped"; participantId: string }
   | { type: "native.responded"; requestId: string }
   | { type: "project.created"; projectId: string }
   | { type: "browser.created"; browserId: string }
@@ -1184,8 +1292,6 @@ export interface ApiErrorBody {
   message: string;
   issues?: Array<{ path: string; message: string }>;
 }
-
-export const taskLabel = (task: Pick<Task, "number">): string => `task${task.number}`;
 
 export interface SubagentUsage {
   taskId: string;

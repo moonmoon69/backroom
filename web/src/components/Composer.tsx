@@ -15,7 +15,7 @@ import {
 } from "react";
 import { api, ApiError, attachmentUrl, useProviders } from "../api.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
-import { useRoom, type FollowUpPrefill } from "../context.tsx";
+import { useRoom } from "../context.tsx";
 import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
 import { roomKey } from "../news.ts";
 import { parseDraft } from "../parser.ts";
@@ -24,7 +24,7 @@ import {
   ATTACHMENT_MAX_TOTAL_BYTES,
   ATTACHMENT_MIME_TYPES,
   isActiveParticipant,
-  taskLabel,
+  isRunActive,
   type Draft,
   type DraftAssignment,
   type MentionSpan,
@@ -36,8 +36,6 @@ import {
   isNote,
   isSentenceStart,
   mentionToReference,
-  pickPrerequisite,
-  prependAfter,
   replaceMention,
   setTiming,
   splitAtMention,
@@ -47,10 +45,9 @@ import {
 import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
-import { ChevronIcon, CloseIcon, Glyph, ImageIcon, NoteIcon } from "./icons.tsx";
+import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
 
 interface Props {
-  followUp: FollowUpPrefill | null;
   /** Look → Overview: closed to a strip until wanted, then over the conversation (composerOverlay.tsx). */
   overlay?: boolean;
 }
@@ -89,18 +86,18 @@ type Edit = (make: (source: string) => TextEdit | null) => void;
 
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
-export function Composer({ followUp, overlay: asOverlay = false }: Props) {
+export function Composer({ overlay: asOverlay = false }: Props) {
   const { snapshot, runCommand, colorOf, aliasOf } = useRoom();
   const roomId = snapshot.room.id;
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
   const consigliere = crew.find((p) => p.id === snapshot.room.consigliereId) ?? null;
   const { providers } = useProviders(true, 120_000);
-  /** Examples built from this room (its participants and latest task), so every placeholder can be run as is. */
+  /** Examples built from this room's members, so every placeholder can be run as is. */
   const placeholders = useMemo(() => {
     // With a Consigliere the plain message is his; the other examples would teach the wrong habit.
     if (consigliere) return [`Message ${consigliere.alias}  ·  he hands the work to the others and reports back`, `@name tells ${consigliere.alias} who you want on it  ·  everything goes through him`];
-    return roomPlaceholders(crew.map((p) => p.alias), snapshot.tasks[snapshot.tasks.length - 1]?.number ?? null);
-  }, [crew, snapshot.tasks, consigliere]);
+    return roomPlaceholders(crew.map((p) => p.alias));
+  }, [crew, consigliere]);
   /** T3 slash commands offered to every one of these participants (a command must exist for each recipient). */
   const commandsFor = useCallback(
     (participantIds: string[]) => {
@@ -132,19 +129,18 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
   const [mention, setMention] = useState<MentionState | null>(null);
   /** "/" typed: the room's commands, plus the addressed members' T3 commands after an @name. */
   const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[]; atStart: boolean }) | null>(null);
-  /** "/after " typed: pick a task by what it says instead of remembering its number. */
-  const [taskPick, setTaskPick] = useState<MentionState | null>(null);
   const [dragging, setDragging] = useState(false);
   const [focusAssignment, setFocusAssignment] = useState<number | null>(null);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
-  // Parsed in the browser on every keystroke: the plan and the highlighting always match the text exactly.
-  const { participants, tasks, participantStatus } = snapshot;
+  // Parsed in the browser on every keystroke, in engine mode: the plan, the highlighting and D2's refusals (/after,
+  // /hold and implied waits are gone) always match the text exactly, before anything is sent.
+  const { participants, participantStatus } = snapshot;
   const consigliereId = snapshot.room.consigliereId;
   const parsedDraft = useMemo(
-    () => (text.trim().length === 0 ? null : parseDraft(text, { participants, tasks, participantStatus, room: { consigliereId } })),
-    [text, participants, tasks, participantStatus, consigliereId],
+    () => (text.trim().length === 0 ? null : parseDraft(text, { participants, participantStatus, room: { consigliereId } })),
+    [text, participants, participantStatus, consigliereId],
   );
   // A leading slash command must be one of the recipients' T3 commands (checked once T3's list is loaded).
   const draft = useMemo(() => {
@@ -190,18 +186,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
     const result = make(text);
     if (result) applyEdit(result);
   };
-
-  // Follow-up prefill from a task card: write `/after taskN ` at the start of the text.
-  const lastNonce = useRef(0);
-  useEffect(() => {
-    if (!followUp || followUp.nonce === lastNonce.current) return;
-    lastNonce.current = followUp.nonce;
-    const labels = followUp.prerequisites.map((p) => {
-      const task = snapshot.tasks.find((t) => t.id === p.taskId);
-      return task ? taskLabel(task) : (/^task\d+/.exec(p.label)?.[0] ?? p.taskId);
-    });
-    applyEdit(prependAfter(textRef.current, labels));
-  }, [followUp, snapshot.tasks, applyEdit]);
 
   // Keep the mirror scrolled with the textarea (typing can scroll it without a scroll event on some engines).
   useLayoutEffect(() => {
@@ -329,13 +313,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
     } else {
       setSlashPick(null);
     }
-    const afterRef = /\/after\s+(?:(?:task\d+|#\d+|@[a-z0-9_-]+)\s*,\s*)*((?:task|#)?\d*)$/i.exec(before);
-    if (afterRef && !/@[a-z0-9_-]*$/i.test(before)) {
-      const token = afterRef[1] ?? "";
-      setTaskPick({ start: caret - token.length, query: token.replace(/^(?:task|#)/i, ""), index: 0 });
-    } else {
-      setTaskPick(null);
-    }
     const match = /(^|\s)@([a-z0-9_-]*)$/i.exec(before);
     if (!match) {
       setMention(null);
@@ -354,15 +331,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
     return crew.length > 1 && "all".startsWith(mention.query) ? [{ id: "@all", alias: "all", modelSelection: { model: `everyone (${crew.length})` } }, ...people] : people;
   }, [mention, crew]);
 
-  const taskMatches = useMemo(() => {
-    if (!taskPick) return [];
-    const open = new Set(["queued", "held", "blocked", "dispatching", "running", "needs_input"]);
-    return [...snapshot.tasks]
-      .filter((t) => t.state !== "cancelled" && (taskPick.query === "" || String(t.number).startsWith(taskPick.query)))
-      .sort((a, b) => Number(open.has(b.state)) - Number(open.has(a.state)) || b.number - a.number)
-      .slice(0, 8);
-  }, [taskPick, snapshot.tasks]);
-
   const slashMatches = useMemo(() => {
     if (!slashPick) return [];
     const room = (slashPick.atStart ? ROOM_COMMANDS : ADDRESSED_ROOM_COMMANDS).map((c) => ({ ...c, group: "room" as const }));
@@ -378,14 +346,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
     const token = `/${name} `;
     applyEdit({ text: `${text.slice(0, slashPick.start)}${token}${text.slice(caret).replace(/^\s+/, "")}`, caret: slashPick.start + token.length });
     setSlashPick(null);
-  };
-
-  const acceptTask = (number: number) => {
-    if (!taskPick) return;
-    const caret = textarea.current?.selectionStart ?? text.length;
-    const token = `task${number} `;
-    applyEdit({ text: `${text.slice(0, taskPick.start)}${token}${text.slice(caret).replace(/^\s+/, "")}`, caret: taskPick.start + token.length });
-    setTaskPick(null);
   };
 
   const acceptMention = (alias: string) => {
@@ -407,10 +367,17 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
   const canSubmit = plan.ready && !submitting;
   const assignmentCount = draft?.kind === "task" ? draft.assignments.length : 0;
 
-  /** Participants mid-turn (room work or typing in T3): a plain send waits for them; /steer or ⌘Enter goes into the turn. */
-  const isBusy = (id: string): boolean =>
-    snapshot.tasks.some((t) => t.participantId === id && (t.state === "dispatching" || t.state === "running" || t.state === "needs_input")) ||
-    Boolean(snapshot.participantStatus[id]?.externalActivity);
+  /** Participants mid-turn (a room run, or a turn in T3): a plain send waits for them; /steer goes into the turn. */
+  const isBusy = (id: string): boolean => {
+    const status = snapshot.participantStatus[id];
+    return Boolean(status && (status.activeRunId !== null || status.externalActivity || isRunActive(status.status)));
+  };
+
+  /**
+   * The message's own ID (message.create's clientMessageId): kept while the same text is sent again (a send that
+   * failed on the way, a second click), so the service records it once; a new text gets a new one.
+   */
+  const messageId = useRef<{ text: string; id: string } | null>(null);
 
   const submit = async () => {
     if (!draft || submitting || !evaluate(draft, readyIds.length, uploading, attachedCount).ready) return;
@@ -430,12 +397,15 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
                     type: "message.create",
                     roomId,
                     sourceText: text,
+                    preamble: draft.preamble,
+                    clientMessageId: (messageId.current = messageId.current?.text === text ? messageId.current : { text, id: newMessageId() }).id,
                     attachmentIds: readyIds,
                     assignments: draft.assignments.map((a) => ({
                       recipients: a.recipients,
                       instruction: a.instruction,
-                      schedule: a.schedule ?? { mode: "now" },
-                      after: a.after.map((ref) => ref.index),
+                      // D2: nothing waits on other work; the parser refuses a message that would.
+                      schedule: { mode: "now" as const },
+                      after: [],
                       slashCommand: Boolean(a.slashCommand),
                       // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
                       delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),
@@ -443,6 +413,7 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
                   })
                 : null;
       if (result) {
+        messageId.current = null;
         setText("");
         setMention(null);
         setFocusAssignment(null);
@@ -503,24 +474,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
         return;
       }
     }
-    if (taskPick && taskMatches.length > 0) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const step = event.key === "ArrowDown" ? 1 : -1;
-        setTaskPick({ ...taskPick, index: (taskPick.index + step + taskMatches.length) % taskMatches.length });
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        const pick = taskMatches[taskPick.index] ?? taskMatches[0];
-        if (pick) acceptTask(pick.number);
-        return;
-      }
-      if (event.key === "Escape") {
-        setTaskPick(null);
-        return;
-      }
-    }
     if (deleteWholeMention(event)) {
       setMention(null);
       return;
@@ -560,7 +513,7 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
   // Someone addressed (without /steer or a wait) is mid-turn: say that the message waits, and how to steer instead.
   const busyAddressed =
     draft?.kind === "task"
-      ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && a.schedule?.mode === "now" && a.after.length === 0).flatMap((a) => a.recipients.filter(isBusy)))]
+      ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && !a.slashCommand).flatMap((a) => a.recipients.filter(isBusy)))]
       : [];
 
   // The strip says who a message goes to: whoever the draft addresses, else who a plain message reaches.
@@ -584,9 +537,14 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
     ) : (
       <span className="muted">start with @name to address someone</span>
     );
-  const queued = snapshot.tasks.filter((t) => t.state === "queued" || t.state === "blocked").length;
-  const held = snapshot.tasks.filter((t) => t.state === "held").length;
-  const stripFacts = [queued > 0 ? `${queued} queued` : "nothing queued", ...(held > 0 ? [`${held} held`] : []), ...(attachedCount > 0 ? [`${attachedCount} image${attachedCount === 1 ? "" : "s"}`] : [])];
+  // What the strip says about the room: requests still open, and members with posts they have not been given yet.
+  const openRequests = snapshot.counts.openRequests;
+  const waiting = snapshot.counts.waiting;
+  const stripFacts = [
+    openRequests > 0 ? `${openRequests} open request${openRequests === 1 ? "" : "s"}` : "nothing open",
+    ...(waiting > 0 ? [`${waiting} waiting`] : []),
+    ...(attachedCount > 0 ? [`${attachedCount} image${attachedCount === 1 ? "" : "s"}`] : []),
+  ];
 
   const composer = (
     <div
@@ -632,7 +590,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
             onBlur={() =>
               setTimeout(() => {
                 setMention(null);
-                setTaskPick(null);
                 setSlashPick(null);
               }, 150)
             }
@@ -657,28 +614,6 @@ export function Composer({ followUp, overlay: asOverlay = false }: Props) {
                 <span className="slash-desc muted">{command.description}</span>
                 <span className="slash-group mono">
                   {command.group === "room" ? "room" : `T3 · ${slashPick.recipients.map((id) => `@${aliasOf(id)}`).join(" ")}`}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {taskPick && taskMatches.length > 0 ? (
-          <ul className="mention-menu task-menu" role="listbox" aria-label="Wait for a task">
-            {taskMatches.map((t, index) => (
-              <li
-                key={t.id}
-                role="option"
-                aria-selected={index === taskPick.index}
-                className={index === taskPick.index ? "active" : ""}
-                style={identityStyle(colorOf(t.participantId))}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  acceptTask(t.number);
-                }}
-              >
-                <span className="identity mono">@{aliasOf(t.participantId)}</span> <span className="task-menu-text">{t.instruction}</span>{" "}
-                <span className="muted mono">
-                  {t.state.replace("_", " ")} · task{t.number}
                 </span>
               </li>
             ))}
@@ -843,9 +778,7 @@ function evaluate(draft: Draft | null, readyImages: number, uploading: boolean, 
   }
   const { assignments } = draft;
   const count = assignments.reduce((sum, a) => sum + a.recipients.length, 0);
-  const held = assignments.length > 0 && assignments.every((a) => a.schedule?.mode === "manual");
-  const startsNow = assignments.some((a) => a.schedule?.mode === "now" && a.after.length === 0);
-  const label = `${held ? "Hold" : startsNow ? "Send" : "Queue"}${count > 1 ? ` ${count}` : ""}`;
+  const label = `Send${count > 1 ? ` ${count}` : ""}`;
   if (assignments.length === 0) return blocked(label, firstMessage(draft.unresolved));
   const blocking = assignments.flatMap((a) => issuesOf(a, readyImages > 0));
   if (blocking.length > 0) return blocked(label, firstMessage(blocking));
@@ -974,16 +907,6 @@ function PlanPreview({
             {errors.map((u, i) => (
               <span key={`e${i}`} className="plan-error">
                 {u.message}
-                {u.candidates && u.candidates.length > 0 ? (
-                  <CandidateOptions
-                    options={u.candidates.map((c) => ({ key: c.taskId, label: c.label }))}
-                    onPick={(key) => {
-                      const alias = /^@([a-z0-9][a-z0-9_-]*)/i.exec(u.message)?.[1];
-                      const number = /^task(\d+)/.exec(u.candidates?.find((c) => c.taskId === key)?.label ?? "")?.[1];
-                      if (alias && number) edit((source) => pickPrerequisite(source, assignment, alias, `task${number}`));
-                    }}
-                  />
-                ) : null}
                 {u.participantCandidates && u.participantCandidates.length > 0 ? (
                   <CandidateOptions
                     options={u.participantCandidates.map((c) => ({ key: c.alias, label: `@${c.alias}${c.busy ? " (busy)" : ""}` }))}
@@ -1031,7 +954,7 @@ function PlanPreview({
                 <span className="plan-placeholder">{missingWhat?.message ?? "…"}</span>
               )}
             </span>
-            <TimingPill assignment={assignment} assignments={assignments} aliasOf={aliasOf} edit={edit} />
+            <TimingPill assignment={assignment} aliasOf={aliasOf} edit={edit} />
           </PlanRow>
         );
       })}
@@ -1065,107 +988,56 @@ function PlanRow({
   );
 }
 
-function TimingPill({ assignment, assignments, aliasOf, edit }: { assignment: DraftAssignment; assignments: DraftAssignment[]; aliasOf: (id: string) => string; edit: Edit }) {
+/**
+ * When an assignment starts, decision D2: "now", or "next" when a recipient is mid-turn (it starts when that turn
+ * ends). Nothing waits on other work, so there is no third answer. A busy recipient can instead be sent into its
+ * running turn (/steer), which is "now" too.
+ */
+function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment; aliasOf: (id: string) => string; edit: Edit }) {
   const { snapshot } = useRoom();
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLSpanElement>(null);
   useDismiss(wrapper, open, () => setOpen(false));
 
-  const names = (index: number) => (assignments[index]?.recipients ?? []).map((id) => `@${aliasOf(id)}`).join(" ");
-  const external = assignment.schedule?.mode === "after_all" ? assignment.schedule.prerequisites : [];
-  const externalLabels = external.map((p) => {
-    const task = snapshot.tasks.find((t) => t.id === p.taskId);
-    return task ? taskLabel(task) : p.taskId;
+  const busy = assignment.recipients.filter((id) => {
+    const status = snapshot.participantStatus[id];
+    return Boolean(status && (status.activeRunId !== null || status.externalActivity || isRunActive(status.status)));
   });
-  const waits = [...externalLabels, ...assignment.after.map((ref) => String(ref.index + 1))];
-  const reasons = [
-    ...externalLabels.map((label) => `waits for ${label}`),
-    ...assignment.after.map(
-      (ref) => `waits for ${ref.index + 1}: ${ref.because === "then" ? "follows 'then'" : ref.because === "after" ? `/after ${names(ref.index)}` : ref.because === "condition" ? `waits until ${names(ref.index)} finishes` : `names ${names(ref.index)}`}`,
-    ),
-  ];
-  const unresolved = assignment.schedule === null;
-  const held = assignment.schedule?.mode === "manual";
-  const implicitWait = assignment.timing === null && assignment.after.length > 0;
-  const isNow = !unresolved && !held && waits.length === 0;
-  // Sending to someone who is mid-turn is fine: the task queues and starts when their current turn ends.
-  const busy = assignment.recipients.filter(
-    (id) =>
-      snapshot.tasks.some((t) => t.participantId === id && (t.state === "dispatching" || t.state === "running" || t.state === "needs_input" || t.state === "queued")) ||
-      Boolean(snapshot.participantStatus[id]?.externalActivity),
-  );
   const steering = assignment.delivery === "steer";
-  const queuedBehind = isNow && busy.length > 0 && !steering;
-  const intoTurn = isNow && busy.length > 0 && steering;
-  const label = unresolved
-    ? assignment.timing === "after" ? "after ?" : "timing ?"
-    : held ? "held" : waits.length > 0 ? `after ${waits.join(", ")}` : intoTurn ? "into turn" : queuedBehind ? "next" : "now";
-  const title = unresolved
-    ? "Timing is not resolved yet"
-    : held
-      ? "Held until you release it"
-      : reasons.length > 0
-        ? reasons.join("\n")
-        : intoTurn
-          ? `Sent to ${busy.map((id) => `@${aliasOf(id)}`).join(", ")} now, mid-turn. Cursor, Grok and OpenCode take it into the running turn (one reply answers both); Claude answers it in its own turn right after.`
-          : queuedBehind
-            ? `${busy.map((id) => `@${aliasOf(id)}`).join(", ")} ${busy.length === 1 ? "is" : "are"} working; this starts when the current turn ends`
-            : steering
-              ? "/steer: if the recipient is mid-turn when this is sent, it goes into that turn"
-              : "Starts right away";
-  const tone = unresolved ? "warn" : held ? "held" : waits.length > 0 ? "after" : intoTurn ? "steer" : "now";
+  const next = busy.length > 0 && !steering && !assignment.slashCommand;
+  const label = next ? "next" : "now";
+  const who = busy.map((id) => `@${aliasOf(id)}`).join(", ");
+  const title = next
+    ? `${who} ${busy.length === 1 ? "is" : "are"} working; this starts when the current turn ends`
+    : steering && busy.length > 0
+      ? `Sent into ${who}'s running turn now: one reply answers both`
+      : steering
+        ? "/steer: if the recipient is mid-turn when this is sent, it goes into that turn"
+        : "Starts right away";
 
-  const choose = (timing: "now" | "hold" | "steer" | null) => {
+  const choose = (timing: "steer" | null) => {
     setOpen(false);
     edit((source) => setTiming(source, assignment, timing));
   };
+  const offerSteer = busy.length > 0 && !assignment.slashCommand;
 
   return (
     <span className="plan-timing" ref={wrapper}>
-      <button type="button" className={`plan-pill mono tone-${tone}`} title={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        {label} <ChevronIcon dir="down" small />
+      <button type="button" className={`plan-pill mono tone-${next ? "next" : steering ? "steer" : "now"}`} title={title} aria-haspopup={offerSteer || steering ? "menu" : undefined} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!offerSteer && !steering}>
+        {label}
+        {offerSteer || steering ? <ChevronIcon dir="down" small /> : null}
       </button>
-      {open ? (
+      {open && (offerSteer || steering) ? (
         <div className="menu menu-up menu-right" role="menu">
-          {implicitWait ? (
-            <button type="button" role="menuitem" onClick={() => choose("now")} title="Adds /now: start without waiting">
-              Don't wait <span className="muted mono">/now</span>
+          {steering ? (
+            <button type="button" role="menuitem" onClick={() => choose(null)} title="Removes /steer: wait for the current turn to end">
+              Wait for the turn to end <span className="muted mono">remove /steer</span>
             </button>
-          ) : assignment.timing === "now" ? (
-            <>
-              <button type="button" role="menuitemradio" aria-checked="true" disabled>
-                Now <Glyph name="check" text="✓" />
-              </button>
-              <button type="button" role="menuitem" onClick={() => choose(null)}>
-                Default timing <span className="muted mono">remove /now</span>
-              </button>
-            </>
           ) : (
-            <button
-              type="button"
-              role="menuitemradio"
-              aria-checked={isNow}
-              disabled={isNow}
-              onClick={() => choose(assignment.timing === "hold" || assignment.timing === "after" ? null : "now")}
-              title={assignment.timing ? `Remove /${assignment.timing}` : "Start now"}
-            >
-              Now{isNow ? <> <Glyph name="check" text="✓" /></> : null}
+            <button type="button" role="menuitem" onClick={() => choose("steer")} title="Adds /steer: the agent reads it mid-turn; one reply answers both">
+              Send into the running turn <span className="muted mono">/steer</span>
             </button>
           )}
-          <button type="button" role="menuitemradio" aria-checked={held} disabled={held} onClick={() => choose("hold")} title="Adds /hold: saved until you release it">
-            Hold{held ? <> <Glyph name="check" text="✓" /></> : null} <span className="muted mono">/hold</span>
-          </button>
-          {queuedBehind || (steering && !held) ? (
-            steering ? (
-              <button type="button" role="menuitem" onClick={() => choose(null)} title="Removes /steer: wait for the current turn to end">
-                Wait for the turn to end <span className="muted mono">remove /steer</span>
-              </button>
-            ) : (
-              <button type="button" role="menuitem" onClick={() => choose("steer")} title="Adds /steer: the agent reads it mid-turn; one reply answers both (⌘/Ctrl+Enter does this for one send)">
-                Send into the running turn <span className="muted mono">/steer</span>
-              </button>
-            )
-          ) : null}
         </div>
       ) : null}
     </span>
@@ -1352,39 +1224,48 @@ const formatBytes = (bytes: number): string =>
 
 /** Placeholder examples rotate on each focus so the syntax is discoverable without crowding one line. */
 
-/** Room commands for the "/" menu. At the start of a message: all of them; right after an @name: the per-assignment ones. */
+/**
+ * Room commands for the "/" menu. At the start of a message: all of them; right after an @name: the per-assignment
+ * ones. /after and /hold are gone (D2): nothing waits on other work.
+ */
 const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | null }> = [
-  { name: "after", description: "Wait for tasks to finish first", hint: "task41 or @name" },
-  { name: "hold", description: "Save for later; send when you release it", hint: null },
-  { name: "now", description: "Start now, without waiting for anything", hint: null },
+  { name: "now", description: "Start now", hint: null },
   { name: "steer", description: "If they are mid-turn, send into the running turn", hint: null },
-  { name: "note", description: "Room note for everyone; no task", hint: "text" },
+  { name: "note", description: "Room note for everyone; nobody is woken", hint: "text" },
   { name: "add", description: "Seat a new member on a new T3 thread", hint: "name" },
   { name: "remove", description: "Remove a member from the room", hint: "@name" },
 ];
-const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["after", "hold", "now", "steer"].includes(c.name));
+const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["now", "steer"].includes(c.name));
 
-/** Placeholder examples from the room's own participants and tasks (generic names only when the room is empty). */
-function roomPlaceholders(aliases: string[], lastTask: number | null): string[] {
+/** Placeholder examples from the room's own participants (generic names only when the room is empty). */
+function roomPlaceholders(aliases: string[]): string[] {
   const [a = "alice", b = aliases.length > 1 ? (aliases[1] as string) : "bob"] = aliases;
   if (aliases.length === 1) {
     // One participant: every message is for them, so the examples need no @name.
     return [
       `review the diff  ·  with one member here, no @${a} needed`,
-      `/steer also check the logs  ·  /hold save this for later`,
+      `/steer also check the logs  ·  /note keep the public API`,
       `/compact  ·  type / for the room's and ${a}'s commands`,
-      lastTask ? `/after task${lastTask} review it  ·  /note keep the public API` : `/note keep the public API`,
       `/add new-name  ·  /remove @${a}`,
     ];
   }
-  const examples = [
-    `@${a} fix the failing test. @${b} check ${a}'s fix`,
+  return [
+    `@${a} fix the failing test  ·  @${b} review the open pull request`,
     aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} /steer also check the logs`,
     `@${a} /compact  ·  type / for the room's and ${a}'s commands`,
-    lastTask ? `/after task${lastTask} @${b} review it  ·  /hold @${a} save this for later` : `/hold @${a} save this for later  ·  /note keep the public API`,
+    `/note keep the public API  ·  @${a} /steer also check the logs`,
     `/add new-name  ·  /remove @${b}`,
   ];
-  return examples;
+}
+
+/** A v4 UUID for a message. crypto.randomUUID exists only on secure origins; the page may be served over plain HTTP. */
+function newMessageId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**

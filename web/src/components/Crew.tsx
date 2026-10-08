@@ -10,7 +10,6 @@ import {
   type ParticipantStatus,
   type Preset,
   type RuntimeMode,
-  type ThreadBindingInput,
   type CommandResult,
   type ThreadLifecycleChoice,
   type WorkspaceChoice,
@@ -22,7 +21,7 @@ import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
-import { InheritedLine, RUNTIME_MODE_INFO, ThreadBindingPicker, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, threadBindingReady, useAttachableThreads, workspaceReady } from "./pickers.tsx";
+import { InheritedLine, RUNTIME_MODE_INFO, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, useAttachableThreads, workspaceReady } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
 import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
@@ -31,12 +30,13 @@ import { Popover } from "./Popover.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
-type MenuAction = "open" | "details" | "settings" | "rebind" | "remove" | "consigliere" | "unconsigliere";
+type MenuAction = "open" | "details" | "settings" | "remove" | "consigliere" | "unconsigliere";
 
 
 /**
  * The People tab of the room's side panel: everyone seated, each opening its thread menu (open in T3, details,
- * settings, rebind, remove), and a way to add someone.
+ * settings, remove), and a way to add someone. A member is not rebound to another thread on the board: the Consigliere
+ * reseats it on a fresh one (rooms-board reseat).
  */
 export function CrewPanel() {
   const { snapshot, desk, runCommand } = useRoom();
@@ -76,7 +76,6 @@ export function CrewPanel() {
       {dialog?.action === "open" ? <OpenInT3Dialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "details" ? <ThreadDetailsDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "settings" ? <ParticipantSettingsDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
-      {dialog?.action === "rebind" ? <RebindDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "remove" ? <RemoveParticipantDialog participant={dialog.participant} onClose={() => setDialog(null)} /> : null}
       {dialog?.action === "consigliere" ? (
         <Dialog title={`Make ${dialog.participant.alias} the Consigliere`} onClose={() => setDialog(null)}>
@@ -228,7 +227,7 @@ function ParticipantChip({
         onClick={() => setOpen((v) => !v)}
         title={
           described.tone === "missing"
-            ? "Rebind to another thread or remove the member"
+            ? "Its thread is gone: remove the member, or have the Consigliere reseat it"
             : `${participant.alias} · ${participant.modelSelection.model} · ${described.label}${described.detail ? ` (${described.detail})` : ""}`
         }
       >
@@ -253,6 +252,7 @@ function ParticipantChip({
           </span>
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
           {described.detail ? <span className={`crew-activity mono status-${described.tone}`}>{described.detail}</span> : null}
+          <SeatLines participant={participant} />
           {desk ? <ContextReadout desk={desk} /> : <span className="crew-context mono no-reading">context —</span>}
           {meter ? <ContextMeterLine meter={meter} besideReading={Boolean(desk?.contextWindow)} /> : null}
           {spend?.available ? (
@@ -279,9 +279,6 @@ function ParticipantChip({
           <button type="button" role="menuitem" onClick={() => pick("settings")}>
             Settings…
           </button>
-          <button type="button" role="menuitem" onClick={() => pick("rebind")}>
-            Rebind thread…
-          </button>
           {isConsigliere ? (
             <button type="button" role="menuitem" title="The room goes back to one board with the composer; nobody is removed" onClick={() => pick("unconsigliere")}>
               Remove as Consigliere
@@ -297,6 +294,47 @@ function ParticipantChip({
         </Popover>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * What the room's journal adds to a member's T3 status: background work it holds requests open with ("working since
+ * …"), a run Backroom cannot tell T3 received (uncertain), posts it has not been given yet, and a delivery that cannot
+ * be made.
+ */
+function SeatLines({ participant }: { participant: Participant }) {
+  const { snapshot } = useRoom();
+  const seatId = snapshot.participantStatus[participant.id]?.seatId ?? null;
+  const seat = seatId ? snapshot.seats.find((s) => s.seatId === seatId) : undefined;
+  if (!seat) return null;
+  const run = seat.activeRunId ? snapshot.runs.find((r) => r.id === seat.activeRunId) : undefined;
+  const numbers = (ids: readonly string[]) =>
+    ids
+      .map((id) => snapshot.requests.find((q) => q.id === id)?.number)
+      .filter((n): n is number => n !== undefined)
+      .map((n) => `#${n}`)
+      .join(" ");
+  const clock = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "an unknown time");
+  return (
+    <>
+      {run?.phase === "uncertain" ? (
+        <span className="crew-activity mono status-error" title="Backroom cannot tell whether T3 received this turn; it keeps checking and never sends it twice">
+          turn uncertain
+        </span>
+      ) : null}
+      {seat.activities.map((activity) => (
+        <span key={activity.id} className="crew-activity mono status-working" title={activity.kind === "bg" ? "Background work T3 listed when its turn ended holds the request open" : "It said it is still working: the request stays open until it answers"}>
+          working since {clock(activity.since)}
+          {activity.requestIds.length > 0 ? ` on ${numbers(activity.requestIds)}` : ""}
+        </span>
+      ))}
+      {seat.blocked ? <span className="crew-activity mono status-error">blocked delivery{seat.blocked.number !== null ? `: #${seat.blocked.number}` : ""}</span> : null}
+      {!seat.blocked && seat.unread > 0 && seat.activeRunId === null ? (
+        <span className="crew-activity mono" title="Posts addressed to it that its next turn brings">
+          {seat.unread} unread
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -439,81 +477,26 @@ export function ParticipantSettingsDialog({
   );
 }
 
-export function RebindDialog({ participant, onClose }: { participant: Participant; onClose: () => void }) {
-  const { runCommand, snapshot } = useRoom();
-  const [thread, setThread] = useState<ThreadBindingInput>({ mode: "create" });
-  const [outstanding, setOutstanding] = useState<"carry" | "block" | null>(null);
-  const [busy, setBusy] = useState(false);
-  const pending = snapshot.tasks.filter(
-    (t) => t.participantId === participant.id && (t.state === "queued" || t.state === "held" || t.state === "blocked"),
-  );
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!outstanding) return;
-    setBusy(true);
-    const result = await runCommand({ type: "participant.rebind", participantId: participant.id, thread, outstandingTasks: outstanding });
-    setBusy(false);
-    if (result) onClose();
-  };
-  return (
-    <Dialog title={`Rebind ${participant.alias} to another thread`} onClose={onClose}>
-      <form className="form" onSubmit={submit}>
-        <p className="muted">
-          The current binding is retired and kept in history. A bootstrap briefing is delivered to the replacement
-          thread.
-        </p>
-        <ThreadBindingPicker projectId={snapshot.room.projectId} value={thread} onChange={setThread} />
-        <fieldset>
-          <legend>
-            Outstanding tasks ({pending.length} pending) <span className="required">required</span>
-          </legend>
-          <label className="radio">
-            <input type="radio" name="outstanding" checked={outstanding === "carry"} onChange={() => setOutstanding("carry")} />
-            <span>
-              <strong>Carry</strong>
-              <span className="hint">Pending tasks are delivered to the replacement thread.</span>
-            </span>
-          </label>
-          <label className="radio">
-            <input type="radio" name="outstanding" checked={outstanding === "block"} onChange={() => setOutstanding("block")} />
-            <span>
-              <strong>Block</strong>
-              <span className="hint">Pending tasks are marked blocked until you unblock them.</span>
-            </span>
-          </label>
-        </fieldset>
-        <div className="dialog-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={busy || !outstanding || !threadBindingReady(thread)}>
-            Rebind
-          </button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
 /** Retire a participant: past replies stay attributed, the T3 thread is untouched, pending work is handled explicitly. */
 export function RemoveParticipantDialog({ participant, onClose }: { participant: Participant; onClose: () => void }) {
   const { runCommand, snapshot } = useRoom();
   const { toast } = useToast();
-  const [pendingTasks, setPendingTasks] = useState<"cancel" | "keep" | null>(null);
   const [thread, setThread] = useState<ThreadLifecycleChoice>("keep");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const pending = snapshot.tasks.filter(
-    (t) => t.participantId === participant.id && (t.state === "queued" || t.state === "held" || t.state === "blocked"),
-  );
+  // Its open work on the journal: requests it owns and has not answered, and its run. Removal is refused while it has any.
+  const seatIds = new Set(snapshot.bindings.filter((b) => b.participantId === participant.id).map((b) => b.id));
+  const owned = snapshot.requests.filter((q) => seatIds.has(q.owner));
+  const running = snapshot.runs.some((run) => seatIds.has(run.seatId) && run.phase !== "terminal");
   // A thread T3 no longer has cannot be settled, archived, or deleted; the choice is skipped and "keep" sent.
   const threadMissing = snapshot.participantStatus[participant.id]?.threadMissing === true;
   const deleting = thread === "delete" && !threadMissing;
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!pendingTasks || (deleting && !confirmed)) return;
+    if (deleting && !confirmed) return;
     setBusy(true);
-    const result = (await runCommand({ type: "participant.retire", participantId: participant.id, pendingTasks, thread: threadMissing ? "keep" : thread })) as CommandResult | null;
+    // The engine refuses a member with open requests or a run, so there is no pending work to decide about.
+    const result = (await runCommand({ type: "participant.retire", participantId: participant.id, pendingTasks: "keep", thread: threadMissing ? "keep" : thread })) as CommandResult | null;
     setBusy(false);
     if (!result) return;
     const outcome = result.type === "participant.updated" && "thread" in result ? (result as Extract<CommandResult, { type: "participant.updated" }>).thread : undefined;
@@ -550,31 +533,20 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
             I understand the thread and its history are deleted in T3 permanently.
           </label>
         ) : null}
-        <fieldset>
-          <legend>
-            Pending tasks ({pending.length}) <span className="required">required</span>
-          </legend>
-          <label className="radio">
-            <input type="radio" name="pending-tasks" checked={pendingTasks === "cancel"} onChange={() => setPendingTasks("cancel")} />
-            <span>
-              <strong>Cancel its pending tasks</strong>
-              <span className="hint">Queued, held and blocked work assigned to it is cancelled.</span>
-            </span>
-          </label>
-          <label className="radio">
-            <input type="radio" name="pending-tasks" checked={pendingTasks === "keep"} onChange={() => setPendingTasks("keep")} />
-            <span>
-              <strong>Keep them blocked so I can reassign</strong>
-              <span className="hint">Pending work stays on the board as blocked until you edit it onto someone else.</span>
-            </span>
-          </label>
-        </fieldset>
+        {owned.length > 0 || running ? (
+          <p className="status-warn">
+            @{participant.alias} {running ? "is in a turn" : ""}
+            {running && owned.length > 0 ? " and " : ""}
+            {owned.length > 0 ? `owns ${owned.length} open request${owned.length === 1 ? "" : "s"} (${owned.map((q) => `#${q.number}`).join(", ")})` : ""}: removal is refused until
+            {owned.length > 0 ? " they are answered or cancelled" : " the turn ends"}.
+          </p>
+        ) : null}
         <p className="muted hint">Removal is refused while the member has work in progress; stop or wait for it first.</p>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary destructive" disabled={busy || !pendingTasks || (deleting && !confirmed)}>
+          <button type="submit" className="primary destructive" disabled={busy || (deleting && !confirmed)}>
             {busy ? "Removing…" : `Remove @${participant.alias}`}
           </button>
         </div>
