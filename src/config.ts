@@ -21,7 +21,8 @@ export interface Config {
   threadActionTimeoutMs: number;
   /**
    * H6, the engine runtime: how long a seat with work in flight may go without a wake before it gets a keep-alive, in
-   * milliseconds (ROOMS_KEEPALIVE_MS): 55 minutes by default, under the prompt cache's hour; 0 turns keep-alives off.
+   * milliseconds (ROOMS_KEEPALIVE_MS): 55 minutes by default, from a minute to under the prompt cache's hour; 0 turns
+   * keep-alives off.
    * A room may set its own (`rooms-board keepalive every <minutes>`).
    */
   keepAliveMs: number;
@@ -60,8 +61,9 @@ export function readT3RuntimeOrigin(userDataDir: string): string | null {
 function parseKeepAliveMs(value: string | undefined): number {
   if (value === undefined || value === "") return 55 * 60_000;
   const ms = Number(value);
-  if (!Number.isInteger(ms) || ms < 0 || ms >= 60 * 60_000) {
-    throw new Error(`ROOMS_KEEPALIVE_MS must be 0 (off) or a whole number of milliseconds under 3600000, the prompt cache's hour (got "${value}")`);
+  // A minute at least, as the board's `keepalive every` takes: a unit slip (55 for 55 minutes) would wake seats back to back.
+  if (!Number.isInteger(ms) || (ms !== 0 && (ms < 60_000 || ms >= 60 * 60_000))) {
+    throw new Error(`ROOMS_KEEPALIVE_MS must be 0 (off) or a whole number of milliseconds from 60000 (a minute) to 3599999, under the prompt cache's hour (got "${value}")`);
   }
   return ms;
 }

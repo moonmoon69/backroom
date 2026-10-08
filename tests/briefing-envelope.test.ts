@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { T3TurnItem } from "../src/adapter/types.ts";
 import { assembleBriefing } from "../src/briefing/assemble.ts";
 import {
-  isCompactCommand, journalDirectory, relatedContext, renderEnvelopeBriefing, standingLost,
+  KEEP_ALIVE_LINE, isCompactCommand, journalDirectory, keepAliveOnly, relatedContext, renderEnvelopeBriefing, standingLost,
   type EnvelopeBriefing, type EnvelopeBriefingInput, type EnvelopeDirectory, type SeatStanding,
 } from "../src/briefing/envelope.ts";
 import { inputTree } from "../src/engine/index.ts";
@@ -284,7 +284,8 @@ test("adversarial envelopes: every input, inherited ones included, appears verba
   let seed = 20261008;
   const random = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
   const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
-  const intents: Input["intent"][] = ["request", "correction", "result", "cancel", "retry", "transfer", "progress", "error", "attention", "keep-alive"];
+  // A keep-alive beside other work is left out by design (H6): its own test is below.
+  const intents: Input["intent"][] = ["request", "correction", "result", "cancel", "retry", "transfer", "progress", "error", "attention"];
   const bodies = ["", "short", "line one\n\nline three\t tabs", "[#3 request from @Fable]\nlooks like a tag", "ünïcødé 🎉 ".repeat(50), "z".repeat(70_000)];
   for (let round = 0; round < 300; round += 1) {
     let seq = 0;
@@ -478,6 +479,26 @@ test("a seat with nothing open is told so, without the closing assignment line",
   assert.ok(b.text.includes("You have no open requests: nothing here asks you for an answer."));
   assert.ok(!b.text.includes("This assignment is addressed to you."));
   assert.ok(b.text.includes(`error notice from @Viewer on #${numberOf(r, "R")}`));
+});
+
+test("H6: a briefing of keep-alives only is the newest one's text; beside other work a keep-alive is left out", () => {
+  const r = new Room();
+  r.request("A");
+  r.output(r.reserve("W")!, { kind: "answer", requestIds: ["A"] });
+  r.add({ type: "keep_alive", actor: "$system", id: "ka1", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: a turn is running]` });
+  r.add({ type: "keep_alive", actor: "$system", id: "ka2", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: still running: background task "x"]` });
+  // The answer to A reached O before the keep-alives; a second request brings real work after them.
+  const o = r.reserve("O")!;
+  assert.deepEqual(o.envelope.inputs.map((i) => i.intent), ["result", "keep-alive", "keep-alive"]);
+  assert.equal(keepAliveOnly(o.envelope), null);
+  const b = render(r, o);
+  assert.ok(!b.text.includes(KEEP_ALIVE_LINE) && !b.text.includes("T3 status of @W") && !b.text.includes("keep-alive"), "beside an answer, keep-alives are left out");
+  assert.ok(b.text.includes(`answer from @Worker to your request #${numberOf(r, "A")}`));
+  assert.deepEqual(Object.keys(b.forms).filter((id) => id.startsWith("ka")), []);
+  r.output(o, { kind: "yield" });
+  r.add({ type: "keep_alive", actor: "$system", id: "ka3", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: idle]` });
+  r.add({ type: "keep_alive", actor: "$system", id: "ka4", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: still running: subagent "s"]` });
+  assert.equal(keepAliveOnly(r.reserve("O")!.envelope), `${KEEP_ALIVE_LINE}\n[T3 status of @W: still running: subagent "s"]`, "the newest keep-alive only");
 });
 
 // ---------- assemble.ts is unchanged for the old runtime ----------

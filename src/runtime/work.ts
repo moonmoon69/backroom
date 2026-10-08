@@ -53,6 +53,12 @@ export function finalTargets(p: Projection, run: Run): string[] {
   return checkpoints.length > 0 ? checkpoints : selected;
 }
 
+/** H6: a run that brought only keep-alives: it asks nothing, and its reply is a note. */
+export function keepAliveRun(p: Projection, run: Run): boolean {
+  const delivered = inputTree(deliveredInputs(p, run.id));
+  return delivered.length > 0 && delivered.every((i) => i.intent === "keep-alive");
+}
+
 /** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
 export const RESEAT_CHECKPOINT = "reseat:";
 

@@ -133,6 +133,35 @@ test("never with nothing in flight: a member that answered and is idle, one whos
   assert.equal(room.wakes("C"), wakes);
 });
 
+test("an overdue seat with nothing in flight has its threads read once a minute, not on every tick", async () => {
+  room = await Room.create();
+  room.user("C", "Have the docs checked.");
+  await room.tick();
+  room.post("C", "W", "Check the docs.");
+  room.complete("C", "Asked W.");
+  await room.tick();
+  room.complete("W", "Docs are fine.");
+  await room.tick(2);
+  room.complete("C", "W checked them.");
+  await room.tick(3);
+  const reads = new Map<string, number>();
+  const detail = room.fake.getThreadDetail.bind(room.fake);
+  room.fake.getThreadDetail = async (threadId: string) => {
+    reads.set(threadId, (reads.get(threadId) ?? 0) + 1);
+    return detail(threadId);
+  };
+  after(room, "C", KEEP_ALIVE_MS);
+  await room.tick(5);
+  assert.deepEqual([reads.get(room.threadOf("C")), reads.get(room.threadOf("W"))], [1, 1], "one look at C's thread and at W's, then none");
+  room.clock += 59_999;
+  await room.tick(3);
+  assert.deepEqual([reads.get(room.threadOf("C")), reads.get(room.threadOf("W"))], [1, 1]);
+  room.clock += 1;
+  await room.tick();
+  assert.deepEqual([reads.get(room.threadOf("C")), reads.get(room.threadOf("W"))], [2, 2], "a minute on, one more look");
+  assert.equal(keepAlives(room).length, 0);
+});
+
 test("never during the seat's own turn: a long host run, then a turn T3 starts itself; the interval counts from that turn's end", async () => {
   room = await Room.create();
   room.user("C", "Have W build the release.");
@@ -254,7 +283,7 @@ test("a crash and restart does not double it: the keep-alive posted before the c
   assert.equal(room.wakes("C"), wakes + 1);
 });
 
-test("a keep-alive overtaken by a turn of the seat's is not sent on its own; with real work it gives only its status lines", async () => {
+test("a keep-alive overtaken by a turn of the seat's is not sent on its own; beside real work it is left out, so the briefing holds only the reply's own fresh status", async () => {
   room = await Room.create();
   await handOff(room);
   const wakes = room.wakes("C");
@@ -268,26 +297,41 @@ test("a keep-alive overtaken by a turn of the seat's is not sent on its own; wit
   await room.tick(3);
   assert.equal(room.wakes("C"), wakes + 1, "only C's own turn: the stale keep-alive is not sent");
   assert.equal(room.unread("C").map((i) => i.intent).join(), "keep-alive");
+  // The stale keep-alive costs no reads while it waits: the listed shell is past its turn already.
+  let reads = 0;
+  const detail = room.fake.getThreadDetail.bind(room.fake);
+  room.fake.getThreadDetail = async (threadId: string) => {
+    if (threadId === room.threadOf("C")) reads += 1;
+    return detail(threadId);
+  };
+  await room.tick(5);
+  assert.equal(reads, 0, "C's thread is not read on every tick for a stale keep-alive");
+  room.fake.getThreadDetail = detail;
 
-  // W answers: C's run brings W's answer and the stale keep-alive, which gives only its status lines.
+  // W answers: C's run brings W's answer and the stale keep-alive, which is left out (its status line is out of date).
   room.complete("W", "Built.");
   await room.tick(2);
   assert.equal(room.wakes("C"), wakes + 2);
   const prompt = room.prompt("C");
   assert.ok(!prompt.includes(KEEP_ALIVE_LINE), "no keep-alive line beside real work");
-  assert.match(prompt, /status from Backroom of the work you are waiting on\]\n\[T3 status of @W: a turn is running/);
+  assert.doesNotMatch(prompt, /keep-alive from Backroom/);
+  assert.deepEqual(prompt.split("\n").filter((l) => l.startsWith("[T3 status of @W")), ["[T3 status of @W: idle]"], "one status for W, its answer's own");
   assert.match(prompt, /answer from @W/);
   room.complete("C", "W built it.");
   await room.tick(2);
+  assert.equal(room.unread("C").length, 0, "the keep-alive went with that run, not left behind");
   assert.equal(keepAliveReplies(room, "C").length, 0, "a run with real work ends as usual");
   assert.equal(room.outputs().filter((o) => o.author === "C").at(-1)!.disposition.kind, "yield");
 });
 
-test("ROOMS_KEEPALIVE_MS: 55 minutes by default, 0 for off, and refused at or over the cache's hour", () => {
+test("ROOMS_KEEPALIVE_MS: 55 minutes by default, 0 for off, a minute to under the cache's hour, and refused otherwise", () => {
   const base = { ROOMS_DATA_DIR: "data-test" };
   assert.equal(loadConfig(base).keepAliveMs, KEEP_ALIVE_MS);
   assert.equal(KEEP_ALIVE_MS, 55 * 60_000);
   assert.equal(loadConfig({ ...base, ROOMS_KEEPALIVE_MS: "0" }).keepAliveMs, 0);
   assert.equal(loadConfig({ ...base, ROOMS_KEEPALIVE_MS: "1800000" }).keepAliveMs, 1_800_000);
-  for (const bad of ["3600000", "-1", "soon", "1.5"]) assert.throws(() => loadConfig({ ...base, ROOMS_KEEPALIVE_MS: bad }), /ROOMS_KEEPALIVE_MS/, bad);
+  assert.equal(loadConfig({ ...base, ROOMS_KEEPALIVE_MS: "60000" }).keepAliveMs, 60_000);
+  assert.equal(loadConfig({ ...base, ROOMS_KEEPALIVE_MS: "3599999" }).keepAliveMs, 3_599_999);
+  // Under a minute is refused: a unit slip (55 for 55 minutes) would wake seats back to back.
+  for (const bad of ["55", "1000", "59999", "3600000", "-1", "soon", "1.5"]) assert.throws(() => loadConfig({ ...base, ROOMS_KEEPALIVE_MS: bad }), /ROOMS_KEEPALIVE_MS/, bad);
 });

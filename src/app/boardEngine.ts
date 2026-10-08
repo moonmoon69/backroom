@@ -94,7 +94,8 @@ The Consigliere's (the user posts from the page):
   retry #n                        runs a failed turn again; #n is its error notice or its request.
   state "<text>"                  replaces the room state (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters).
   keepalive @name on|off          turns keep-alives on or off for that seat (on for you and off for members by default).
-  keepalive every <minutes>       the room's keep-alive interval, 1 to 59 minutes, or "default".
+  keepalive every <minutes>       the room's keep-alive interval, 1 to 59 minutes (55 or less leaves the wake time to
+                                  reach the model within the cache's hour), or "default".
   crew                            the user's saved crew, by name, with model.
   seat <saved crew name>          seats that saved crew member in this room.
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
@@ -731,6 +732,7 @@ export class BoardEngine {
       `Interval: ${span} (${room.intervalMs === null ? "Backroom's default" : "this room's own"}).`,
       `On for: ${list(true)}.`,
       `Off for: ${list(false)}.`,
+      "Work that never ends (a dev server left running) keeps a seat warm without end, one keep-alive per interval: have it stopped, or turn keep-alives off for that seat.",
     ].join("\n");
   }
 

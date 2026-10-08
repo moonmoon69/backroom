@@ -7,7 +7,8 @@
  * requests (plan §5), and its assignment: its open requests with their corrections, and the requests, corrections,
  * cancels, retries and handovers this envelope brings, with the content a retry or handover carries over.
  *
- * Every input of the envelope is rendered, inherited ones included; none is ever dropped. Past the character budget
+ * Every input of the envelope is rendered, inherited ones included; none is ever dropped, except a keep-alive beside
+ * other work (H6), which has nothing to add: each reply carries its member's own status. Past the character budget
  * (60,000 by default, plan §7) the lowest-priority posts are condensed to a preview, and if that is still too long to a
  * line with their size, each with its `rooms-board read <n>` pointer. The envelope keeps them whole.
  */
@@ -84,14 +85,10 @@ export interface ContextPost {
 /**
  * H6: the first line of a keep-alive, Backroom's notice to an idle seat while work it waits on is still in flight; the
  * status lines of that work follow it. A briefing that brings only keep-alives is the newest one's text and nothing
- * else (`keepAliveOnly`); one that also brings work gives a keep-alive's status lines only.
+ * else (`keepAliveOnly`); in one that also brings work, keep-alives are left out: their status lines are out of date
+ * by then, and every reply carries its member's own.
  */
 export const KEEP_ALIVE_LINE = "Keep-alive from Backroom: nothing to do. Work you are waiting on is still in flight, and this wake only keeps your thread's cache warm. Reply in one line and use no tools.";
-
-/** A keep-alive's status lines, without its first line. */
-export function keepAliveStatus(body: string): string {
-  return body.startsWith(KEEP_ALIVE_LINE) ? body.slice(KEEP_ALIVE_LINE.length).replace(/^\n/, "") : body;
-}
 
 /** The text of a briefing whose inputs are all keep-alives: the newest one's. Null when the envelope brings anything else. */
 export function keepAliveOnly(envelope: Envelope): string | null {
@@ -282,7 +279,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       case "attention":
         return `${item.intent} notice from ${by}${on(item.requestIds)}`;
       case "keep-alive":
-        return `status from ${by} of the work you are waiting on`;
+        return `keep-alive from ${by}`;
     }
   };
 
@@ -291,12 +288,13 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   const rendered = new Set<string>();
   const units: Unit[] = [];
   const place = (slots: Slot[], item: Input, tier: number, carrier: number | null) => {
+    if (item.intent === "keep-alive") return;
     const tag = tagOf(item) + (carrier === null ? "" : `, carried over by #${carrier}`);
     if (rendered.has(item.eventId)) {
       slots.push(`[#${number(item.eventId, item.seq)} ${tag}] (the same post as above)`);
     } else {
       rendered.add(item.eventId);
-      const made = unit(item.eventId, item.seq, tag, item.intent === "keep-alive" ? keepAliveStatus(item.body) : item.body, tier, true);
+      const made = unit(item.eventId, item.seq, tag, item.body, tier, true);
       units.push(made);
       slots.push(made);
     }
@@ -304,7 +302,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
     for (const inherited of item.inherited) place(slots, inherited, TIER.inherited, n);
   };
 
-  const inputs = [...envelope.inputs].sort((a, b) => a.seq - b.seq);
+  const inputs = [...envelope.inputs].filter((i) => i.intent !== "keep-alive").sort((a, b) => a.seq - b.seq);
   const postSlots: Slot[] = [];
   const assignmentSlots: Slot[] = [];
   for (const item of inputs.filter((i) => !ASSIGNMENT_INTENTS.has(i.intent))) place(postSlots, item, TIER.post, null);

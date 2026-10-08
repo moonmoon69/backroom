@@ -651,14 +651,14 @@ test("H6 keepalive: anyone prints the setting; the Consigliere turns it on or of
   assert.deepEqual([of("c"), of("w")], [{ intervalMs: 55 * 60_000, on: true, chosen: false }, { intervalMs: 55 * 60_000, on: false, chosen: false }]);
   const shown = await f.cli("w", "keepalive");
   assert.match(shown, /nothing has woken for 55 minutes gets a keep-alive post/);
-  assert.match(shown, /\nInterval: 55 minutes \(Backroom's default\)\.\nOn for: @c \(the Consigliere's default\)\.\nOff for: @w \(members' default\), @v \(members' default\)\.$/);
+  assert.match(shown, /\nInterval: 55 minutes \(Backroom's default\)\.\nOn for: @c \(the Consigliere's default\)\.\nOff for: @w \(members' default\), @v \(members' default\)\.\nWork that never ends \(a dev server left running\) keeps a seat warm without end/);
 
   // Members only read it; the Consigliere sets it, and nothing goes on the journal.
   await f.refused("w", ["keepalive", "@w", "on"], exactly("rooms-board: only this room's Consigliere (@c) sets keep-alives."));
   const heads = f.heads();
-  assert.match(await f.cli("c", "keepalive", "@w", "on"), /\nOn for: @c \(the Consigliere's default\), @w \(turned on\)\.\nOff for: @v \(members' default\)\.$/);
+  assert.match(await f.cli("c", "keepalive", "@w", "on"), /\nOn for: @c \(the Consigliere's default\), @w \(turned on\)\.\nOff for: @v \(members' default\)\.\n/);
   assert.match(await f.cli("c", "keepalive", "every", "10"), /\nInterval: 10 minutes \(this room's own\)\./);
-  assert.match(await f.cli("c", "keepalive", "@c", "off"), /\nOn for: @w \(turned on\)\.\nOff for: @c \(turned off\), @v \(members' default\)\.$/);
+  assert.match(await f.cli("c", "keepalive", "@c", "off"), /\nOn for: @w \(turned on\)\.\nOff for: @c \(turned off\), @v \(members' default\)\.\n/);
   assert.deepEqual(f.heads(), heads, "the setting is not on the board");
   assert.deepEqual([of("c"), of("w"), of("v")], [{ intervalMs: 600_000, on: false, chosen: true }, { intervalMs: 600_000, on: true, chosen: true }, { intervalMs: 600_000, on: false, chosen: false }]);
 
