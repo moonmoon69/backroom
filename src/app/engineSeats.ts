@@ -213,13 +213,14 @@ export class EngineSeats {
     }
     const binding = this.repos.currentBinding(participant.id);
     if (binding && present(this.view(room.id), binding.id)) {
-      this.refuseOpen(room.id, binding.id, participant.alias, "retired");
+      this.refuseOpen(room.id, binding.id, participant.alias, "retired", false);
       const shell = await this.shell(binding.threadId);
       if (shell && !threadFree(shell)) {
         throw new RoomError("participant_busy", `@${participant.alias} cannot be retired now: its T3 thread is in a turn (${shell.status}). Retire it once that turn has ended.`, 409);
       }
       // Read again after the await: work may have reached the seat meanwhile. The core checks the run and requests too.
-      this.refuseOpen(room.id, binding.id, participant.alias, "retired");
+      // An unread answer holds it only while T3 still has its thread unarchived: otherwise nothing will ever wake it.
+      this.refuseOpen(room.id, binding.id, participant.alias, "retired", shell !== null && !shell.archivedAt);
       this.host.retire(room.id, { actor, id: `retire:${binding.id}`, seatId: binding.id, evidence: shell ? `lean: T3 thread ${binding.threadId} ${shell.status}` : `lean: T3 no longer lists thread ${binding.threadId}` });
     }
     this.deps.transaction(() => {
@@ -546,10 +547,10 @@ export class EngineSeats {
 
   /**
    * Refuse with every piece of open work the seat has, named: its run (or the turn a cancel is stopping), its open
-   * requests, its pending activities, and answers to what it asked that have not reached it. Other posts it has not read
-   * (notices, cancels) do not hold it; they stay on the board.
+   * requests, its pending activities, and (with `answers`) answers to what it asked that have not reached it. Other posts
+   * it has not read (notices, cancels) do not hold it; they stay on the board.
    */
-  private refuseOpen(roomId: string, seatId: string, alias: string, verb: string): void {
+  private refuseOpen(roomId: string, seatId: string, alias: string, verb: string, answers: boolean): void {
     const p = this.view(roomId);
     const seat = p.seats.get(seatId)!;
     const reasons: string[] = [];
@@ -559,8 +560,8 @@ export class EngineSeats {
     if (owned.length > 0) reasons.push(`it owns open request${owned.length > 1 ? "s" : ""} ${owned.map((r) => this.number(p, r.id)).join(", ")}: answer or cancel ${owned.length > 1 ? "them" : "it"} first`);
     for (const a of pendingActivities(p, seatId)) reasons.push(this.describeActivity(p, a));
     // An answer to a question it asked that has not reached it yet would be lost on it: it is about to be woken.
-    const answers = unread(p, seatId).filter((i) => i.intent === "result");
-    if (answers.length > 0) reasons.push(`the answer${answers.length > 1 ? "s" : ""} ${answers.map((i) => `#${i.seq}`).join(", ")} to what it asked ${answers.length > 1 ? "have" : "has"} not reached it yet (it is about to be woken)`);
+    const unreadAnswers = answers ? unread(p, seatId).filter((i) => i.intent === "result") : [];
+    if (unreadAnswers.length > 0) reasons.push(`the answer${unreadAnswers.length > 1 ? "s" : ""} ${unreadAnswers.map((i) => `#${i.seq}`).join(", ")} to what it asked ${unreadAnswers.length > 1 ? "have" : "has"} not reached it yet (it is about to be woken)`);
     if (reasons.length > 0) throw new RoomError("open_work", `@${alias} cannot be ${verb} now: ${reasons.join("; ")}.`, 409);
   }
 

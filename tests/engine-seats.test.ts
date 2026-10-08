@@ -832,10 +832,10 @@ test("M1: retire is refused while an answer to the member's own question has not
     const q = `question:${seatW}`;
     h.host.post(h.roomId, { actor: seatW, id: q, to: h.seat("V"), body: "Which node version?" });
     await h.tick();
-    h.fake.startExternalRun(h.thread("W"), "typed in T3 meanwhile");
-    h.complete("V", "Node 24.");
-    await h.tick();
+    // V answers during its turn; W's thread is idle and listed, and the next tick would wake W with the answer.
+    h.host.answer(h.roomId, { actor: h.seat("V"), id: "v-answer", body: "Node 24.", requestIds: [q] });
     const answer = h.p.events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === q))!;
+    assert.equal(h.host.unread(h.roomId, seatW), 1);
     await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, new RegExp(`the answer #${answer.seq} to what it asked has not reached it yet`));
   } finally {
     h.close();
@@ -917,6 +917,25 @@ test("rooms-board through the route: rules prints the engine's standing facts; s
     assert.equal(h.p.seats.get(seatV)!.status, "retired");
     const event = h.p.events.find((e) => e.data.kind === "seat.retired")!;
     assert.equal(event.data.kind === "seat.retired" ? event.data.author : null, "$user", "the room command path retires as the user");
+  } finally {
+    h.close();
+  }
+});
+
+for (const action of ["archive", "delete"] as const) test(`R2-F1: a member whose thread T3 has ${action}d can be retired with an answer that can never reach it`, async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const threadW = h.thread("W");
+    const q = `question:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: q, to: h.seat("V"), body: "Which node version?" });
+    await h.tick();
+    await h.fake.setThreadLifecycle({ commandId: `${action}-w`, threadId: threadW, action });
+    h.complete("V", "Node 24.");
+    await h.tick(3);
+    assert.equal(h.host.unread(h.roomId, seatW), 1, "the answer waits for W, whom nothing can wake");
+    await h.run({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" });
+    assert.equal(h.p.seats.get(seatW)!.status, "retired");
   } finally {
     h.close();
   }
