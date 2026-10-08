@@ -7,7 +7,7 @@ import { canonicalJSON, exactAlias, resultDigest, sourceKey, sourceIdentity, too
 import { validateCapability, validateSourceCheckpoint, validateOriginalNativeSource, validateOperationSource, validateOperationPacket, operationKey, parseActivity, localReceipts } from "./operations.ts";
 import { declarationBinding, declarationLimits, originalDeclarationOwner, validateDeclaredSource } from "./declared.ts";
 import type { OperationBinding, OperationReceipt } from "./operation-types.ts";
-import type { Association, ClaimOutcome, Command, Control, Decision, Disposition, EventData, Principal, Projection, Request, RoomEvent, Run } from "./types.ts";
+import type { Association, ClaimOutcome, Command, Control, Decision, Disposition, EventData, Principal, Projection, Request, RoomEvent, Run, Seat } from "./types.ts";
 
 function requireThat(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -125,6 +125,15 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
   const attention = (body: string, causeId: string, ids: string[], author: Principal) => {
     const o = view().orchestrator;
     notice("attention", body, ids, o ? [o] : [], causeId, author);
+  };
+  /** A seat leaves (transfer, retire) only when it is known to be quiet: no run, provider uncertainty, background work or control. */
+  const quiescent = (s: Seat, evidence: string) => {
+    requireThat(s.status === "active" && s.activeRunId === null, "old run must be reconciled and stopped");
+    requireThat(evidence.length > 0, "provider quiescence proof reference required");
+    requireThat(![...initial.providerHolds.values()].some((h) => h.held && h.seatId === s.id), "provider uncertainty prevents transfer");
+    requireThat(![...initial.activities.values()].some((a) => a.seatId === s.id && unresolved(a.status)), "known background work prevents transfer");
+    requireThat(![...initial.controls.values()].some((c) => run(c.runId).seatId === s.id && c.phase !== "obsolete"
+      && (c.phase !== "accepted" || initial.providerHolds.get(JSON.stringify([s.id, c.runId, `control_effect:${c.id}`]))?.held !== false)), "unresolved runtime control prevents transfer");
   };
   const undeliverable = (targets: Principal[], causeId: string, ids: string[], author: Principal) => {
     if (targets.some((t) => !active(view(), t))) attention("Undeliverable to immutable retired seat; original content remains on board", causeId, ids, author);
@@ -720,12 +729,7 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       manager();
       actor();
       const s = seat(command.oldSeatId);
-      requireThat(s.status === "active" && s.activeRunId === null, "old run must be reconciled and stopped");
-      requireThat(command.evidence.length > 0, "provider quiescence proof reference required");
-      requireThat(![...initial.providerHolds.values()].some((h) => h.held && h.seatId === s.id), "provider uncertainty prevents transfer");
-      requireThat(![...initial.activities.values()].some((a) => a.seatId === s.id && unresolved(a.status)), "known background work prevents transfer");
-      requireThat(![...initial.controls.values()].some((c) => run(c.runId).seatId === s.id && c.phase !== "obsolete"
-        && (c.phase !== "accepted" || initial.providerHolds.get(JSON.stringify([s.id, c.runId, `control_effect:${c.id}`]))?.held !== false)), "unresolved runtime control prevents transfer");
+      quiescent(s, command.evidence);
       requireThat(command.newSeatId.length > 0 && !command.newSeatId.startsWith("$") && !initial.seats.has(command.newSeatId), "fresh immutable seat ID required");
       requireThat(command.threadId.length > 0 && ![...initial.seats.values()].some((x) => x.threadId === command.threadId), "fresh provider thread required");
       const owned = [...initial.requests.values()].filter((r) => r.owner === s.id && r.state === "open").map((r) => r.id);
@@ -733,6 +737,23 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       requireThat(sameIds(command.owned, owned) && sameIds(command.awaited, awaited), "transfer must name exact open owned/awaited requests");
       emit({ kind: "transfer", oldSeatId: s.id, newSeatId: command.newSeatId, threadId: command.threadId, cutoff: log.length,
         owned, awaited, inherited: unread(initial, s.id), author: command.actor, recipients: [command.newSeatId], body: command.body, evidence: command.evidence });
+      break;
+    }
+    case "retire": {
+      // A seat leaves without a successor: transfer's checks, and it may own no open request, since nothing takes it over.
+      manager();
+      actor();
+      const s = seat(command.seatId);
+      quiescent(s, command.evidence);
+      requireThat(![...initial.requests.values()].some((r) => r.owner === s.id && r.state === "open"), "open owned requests prevent retirement; transfer, answer or cancel them");
+      emit({ kind: "seat.retired", seatId: s.id, author: command.actor, evidence: command.evidence });
+      break;
+    }
+    case "designate": {
+      requireThat(command.actor === "$user", "only the user designates the orchestrator");
+      if (command.seatId !== null) requireThat(seat(command.seatId).status === "active", "orchestrator must be an active seat");
+      if (initial.orchestrator === command.seatId) return result("idle");
+      emit({ kind: "orchestrator.set", seatId: command.seatId, author: command.actor });
       break;
     }
     case "output": {

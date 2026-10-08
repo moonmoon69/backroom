@@ -62,8 +62,14 @@ export function finalTargets(p: Projection, run: Run): string[] {
   }
   const marked = workingMarks(p, run.seatId, reservedSeq(p, run.id));
   const allowed = allowedIds(p, run);
-  return [...targets].filter((id) => !marked.has(id) && allowed.has(id));
+  const selected = [...targets].filter((id) => !marked.has(id) && allowed.has(id));
+  // A reseat's checkpoint run answers the checkpoint only: the seat's other requests stay open for the fresh seat (L4b).
+  const checkpoints = selected.filter((id) => id.startsWith(RESEAT_CHECKPOINT) && p.requests.get(id)?.returnTo === "$user");
+  return checkpoints.length > 0 ? checkpoints : selected;
 }
+
+/** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
+export const RESEAT_CHECKPOINT = "reseat:";
 
 export function isPending(a: Activity): boolean {
   return a.status === "pending" || a.status === "uncertain";
@@ -92,6 +98,48 @@ export function openOwned(p: Projection, ids: readonly string[], seatId: string)
     const q = p.requests.get(id);
     return q?.state === "open" && q.owner === seatId;
   });
+}
+
+/**
+ * The seat's newest run that carried every one of these requests and that T3 took and started: its watermark is what
+ * the member has seen when it answers them, so an answer is judged by it (H1). A review or correction that run
+ * delivered is seen; only what came after its watermark counts as unseen (K1). A run counts once it has an accepted
+ * record and is running or ended: a run whose send T3 refused or never recorded was never seen, and one T3 queued
+ * behind the member's own continuation (the R3 race) is not seen by that continuation. `beforeOrdinal` keeps only runs
+ * T3 ran before the one given (the continuation being imported). With `accepted`, a run T3 has taken but not yet been
+ * seen starting counts too: the fallback when no started run carried the requests.
+ */
+export function newestCarrier(p: Projection, seatId: string, ids: readonly string[], options: { beforeOrdinal?: number; accepted?: boolean } = {}): Run | null {
+  const records = runRecords(p);
+  const before = options.beforeOrdinal ?? Infinity;
+  let newest: Run | null = null;
+  for (const run of p.runs.values()) {
+    const t3 = records.get(run.id)?.t3;
+    const started = run.phase === "running" || run.phase === "terminal" || (options.accepted === true && run.phase === "accepted");
+    if (run.seatId !== seatId || !t3 || t3.ordinal >= before || !started) continue;
+    const allowed = allowedIds(p, run);
+    if (!ids.every((id) => allowed.has(id))) continue;
+    if (!newest || records.get(run.id)!.reservedSeq > records.get(newest.id)!.reservedSeq) newest = run;
+  }
+  return newest;
+}
+
+/** The evidence of an activity the host released for an output tied to a later run (H1); the output's key follows. */
+export const RELEASED = "lean: released for ";
+
+/**
+ * Activities released for an output that is not written yet (a crash came between the two commits), with that output's
+ * key, for the keys `mine` selects. The caller that released them writes the output on its next attempt.
+ */
+export function releasedFor(p: Projection, seatId: string, mine: (sourceKey: string) => boolean): Array<{ activity: Activity; sourceKey: string }> {
+  const out: Array<{ activity: Activity; sourceKey: string }> = [];
+  for (const e of p.events) {
+    if (e.data.kind !== "activity.status" || !e.data.evidence.startsWith(RELEASED)) continue;
+    const sourceKey = e.data.evidence.slice(RELEASED.length);
+    const activity = p.activities.get(e.data.activityId);
+    if (activity?.seatId === seatId && mine(sourceKey) && !p.sourceKeys.has(sourceKey)) out.push({ activity, sourceKey });
+  }
+  return out;
 }
 
 /**

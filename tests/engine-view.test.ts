@@ -14,14 +14,18 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, type TestContext } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
+import type { SendMessageInput } from "../src/adapter/types.ts";
+import { runReplies } from "../src/adapter/types.ts";
 import { createStack } from "../src/app/bootstrap.ts";
+import { isPost } from "../src/app/boardEngine.ts";
 import { loadConfig } from "../src/config.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { EngineBoardPage, EngineOverview, EnginePost, EngineRoomListItem, EngineRoomSnapshot, EngineRunDetail, EngineStreamData } from "../src/domain/engineView.ts";
 import { EngineStore, fold, unread } from "../src/engine/index.ts";
 import type { EngineHost } from "../src/runtime/index.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
-import { T3Times, anchorsOf, journalView, newsOf, replyCarriers, timesOf } from "../src/server/engineView.ts";
+import { parseExplicit } from "../src/parser/explicit.ts";
+import { T3Times, anchorsOf, journalView, newsOf, postKind, replyCarriers, timesOf, turnPosts } from "../src/server/engineView.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
 import { Room } from "./runtime/helpers.ts";
@@ -66,6 +70,8 @@ function assertMatchesFold(room: Room, label: string): void {
     assert.equal(view.runs.filter((r) => r.seatId === seat.id).length, [...f.runs.values()].filter((r) => r.seatId === seat.id).length, `${label}: runs of ${seat.id}`);
   }
   assert.deepEqual(view.blocked.map((b) => [b.seatId, b.eventId]), [...f.blocked.entries()], `${label}: blocked`);
+  // The page lists exactly the posts `rooms-board index` lists (L3's isPost).
+  for (const event of events) assert.equal(postKind(event) !== null, isPost(event), `${label}: #${event.seq} ${event.data.kind} is a post on the board and the page alike`);
 }
 
 /** After the scenario: the same view after a restart (new store and host over the file) and after a rebuild. */
@@ -306,6 +312,9 @@ test("T3 not answering leaves times null and is read again later, never guessed"
   down = false;
   clock = 1000;
   await t3.fill(anchorsOf(p).values());
+  assert.equal(reads, 1, "T3 is not asked again at once while it is down");
+  clock = 2500;
+  await t3.fill(anchorsOf(p).values());
   assert.equal(reads, 2, "a failed read is not remembered as read");
   assert.ok(timesOf(p, anchorsOf(p), (x) => t3.time(x)).some((t) => t.at !== null));
   await t3.fill(anchorsOf(p).values());
@@ -318,6 +327,54 @@ test("T3 not answering leaves times null and is read again later, never guessed"
   await t3.fill([gone]);
   assert.equal(reads, 3, "one read finds it absent; it is not asked for again");
   assert.equal(t3.time(gone), null);
+});
+
+test("a run that ends right after its thread was read gets its end time on the next read, not seconds later", async () => {
+  room = await Room.create();
+  room.user("W", "Hello.");
+  await room.tick();
+  let clock = 0;
+  let reads = 0;
+  const counted = { getThreadDetail: async (id: string) => {
+    reads += 1;
+    return room.fake.getThreadDetail(id);
+  } };
+  const t3 = new T3Times(counted, { now: () => clock, rereadMs: 2000 });
+  await t3.fill(anchorsOf(room.p).values());
+  assert.equal(reads, 1, "read while the run is live");
+  room.complete("W", "Hi.");
+  await room.tick(2);
+  clock = 10;
+  await t3.fill(anchorsOf(room.p).values());
+  assert.equal(reads, 2, "the final's anchor is new: read at once");
+  const final = journalView({ p: room.p, times: timesOf(room.p, anchorsOf(room.p), (x) => t3.time(x)) }).posts.find((post) => post.output?.source === "final")!;
+  assert.equal(final.at, room.fake.thread(room.threadOf("W")).runs[0]!.completedAt);
+});
+
+test("a partial T3 read is not evidence that a message is gone: a later complete read gives its time", async () => {
+  room = await Room.create();
+  room.user("W", "Hello.");
+  await room.tick();
+  const typed = room.fake.sendUserMessage(room.threadOf("W"), "typed in T3 mid-turn");
+  room.complete("W", "Hi.");
+  await room.tick(2);
+  const p = room.p;
+  const anchor = [...anchorsOf(p).values()].find((a) => "message" in a && a.message === typed)!;
+  assert.ok(anchor, "the typed message is anchored");
+  let partial = true;
+  let clock = 0;
+  const windowed = { getThreadDetail: async (id: string) => {
+    const detail = (await room.fake.getThreadDetail(id))!;
+    // A window of the latest history: every run, but the typed message is outside it.
+    return partial ? { ...detail, partial: true, messages: detail.messages.filter((m) => m.id !== typed) } : detail;
+  } };
+  const t3 = new T3Times(windowed, { now: () => clock, rereadMs: 2000 });
+  await t3.fill(anchorsOf(p).values());
+  assert.equal(t3.time(anchor), null, "not in the window");
+  partial = false;
+  clock = 5000;
+  await t3.fill(anchorsOf(p).values());
+  assert.equal(t3.time(anchor), room.fake.thread(room.threadOf("W")).messages.find((m) => m.id === typed)!.createdAt, "read again, and found");
 });
 
 // ---------------- spend: once per T3 run ----------------
@@ -348,6 +405,10 @@ test("spend is carried once per T3 run: an explicit answer and an idle settle on
     const event = p.events.find((e) => e.id === carrier.eventId)!.data;
     assert.ok(event.kind === "output" && event.sourceKey.startsWith("final:"), "the run's final carries it");
   }
+  // News counts the same posts: one per turn, not the explicit answer beside its final nor the idle settle's repeat.
+  const view = journalView({ p });
+  assert.deepEqual(view.posts.filter((post) => post.turn).map((post) => post.id).sort(), all.map((c) => c.eventId).sort());
+  assert.equal(newsOf(view, 0, null).unseen, 2);
 });
 
 /** A machine as ThreadCosts reads it: T3's V2 database and price table, and a Claude transcript folder. */
@@ -371,9 +432,9 @@ function machine(t: TestContext) {
 
 // ---------------- the routes, on a stack with the flag on ----------------
 
-async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], options: { config?: ReturnType<typeof loadConfig> } = {}) {
+async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], options: { config?: ReturnType<typeof loadConfig>; fake?: FakeT3Adapter } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "backroom-engine-view-"));
-  const fake = new FakeT3Adapter({ autoCompleteMs: null });
+  const fake = options.fake ?? new FakeT3Adapter({ autoCompleteMs: null });
   const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, engine: true });
   const engine = stack.engine as EngineHost;
   const run = (command: RoomCommandInput) => stack.service.execute(parseCommand(command));
@@ -381,8 +442,8 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
   const seats: Record<string, { participantId: string; seatId: string; threadId: string }> = {};
   for (const alias of aliases) {
     const { participantId } = (await run({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } })) as { participantId: string };
+    // participant.create seats the member on the board (L4b): seat ID = binding ID.
     const binding = stack.repos.currentBinding(participantId)!;
-    engine.seat(roomId, { actor: "$user", id: `seat:${alias}`, seatId: binding.id, threadId: binding.threadId });
     seats[alias] = { participantId, seatId: binding.id, threadId: binding.threadId };
   }
   const config = options.config ?? loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(dir, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: join(dir, "t3"), CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex") });
@@ -406,7 +467,15 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
   const tick = async (times = 1) => {
     for (let i = 0; i < times; i += 1) await engine.tick();
   };
-  return { dir, fake, stack, engine, roomId, seats, app, get, post, ask, tick, run };
+  /** What the composer does (L4a): parse in engine mode, then message.create with the draft's assignments. */
+  const say = async (text: string, attachmentIds: string[] = []) => {
+    const draft = parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), [], { consigliereId: null, engine: true });
+    return (await run({
+      type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds,
+      assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, schedule: a.schedule ?? { mode: "now" }, after: [], slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
+    })) as { messageId: string; requestIds: string[] };
+  };
+  return { dir, fake, stack, engine, roomId, seats, app, get, post, ask, tick, run, say };
 }
 
 test("the room snapshot: counts equal the fold's, member status from the journal and T3, nothing from the old tables", async (t) => {
@@ -684,6 +753,136 @@ test("gate: per-reply spend on a thread with two replies equals the old route's 
   assert.deepEqual(after.participants[s.seats.sol1!.participantId], before.participants[old.participants.sol1 as string], "the thread's total");
   assert.deepEqual(after.unsplit, []);
   assert.deepEqual(Object.keys(after.replies).sort(), finals.map((post) => post.id).sort(), "keyed by journal event ID, nothing else");
+});
+
+test("a user message is one message: its requests share the message, with its images and whether it was steered", async (t) => {
+  const s = await engineStack(t);
+  const image = s.stack.service.storeAttachment({ roomId: s.roomId, name: "screen.png", mimeType: "image/png", data: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]) }).id;
+  const sent = await s.say("Look at this. @worker @reviewer check the layout", [image]);
+  assert.equal(sent.requestIds.length, 2);
+  const snapshot = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+  const requests = snapshot.posts.filter((post) => post.kind === "request");
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((post) => post.request!.message), [
+    { id: sent.messageId, index: 0, steer: false, attachmentIds: [image] },
+    { id: sent.messageId, index: 0, steer: false, attachmentIds: [image] },
+  ], "one message to two members: two requests, one message, its image");
+  assert.deepEqual(snapshot.requests.map((q) => q.messageId), [sent.messageId, sent.messageId]);
+  // A member's own request comes from no user message.
+  await s.tick();
+  s.engine.post(s.roomId, { actor: s.seats.worker!.seatId, id: "member-post", to: s.seats.reviewer!.seatId, body: "Second opinion?" });
+  const steered = await s.say("@worker /steer also check the colours");
+  const after = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+  assert.equal(after.posts.find((post) => post.request?.id === "member-post")!.request!.message, null);
+  assert.deepEqual(after.posts.find((post) => post.request?.id === steered.requestIds[0])!.request!.message, { id: steered.messageId, index: 0, steer: true, attachmentIds: [] });
+});
+
+/** The fake T3 with a hook on a steered message just before T3 takes it (as L4a's tests have). */
+class SteerFake extends FakeT3Adapter {
+  beforeSteer: (() => void) | null = null;
+  constructor() {
+    super({ autoCompleteMs: null });
+  }
+  override async sendMessage(input: SendMessageInput): Promise<void> {
+    if (input.mode.type === "steer") {
+      const hook = this.beforeSteer;
+      this.beforeSteer = null;
+      hook?.();
+    }
+    return super.sendMessage(input);
+  }
+}
+
+/** Every T3 run on the threads that ended with something said stands for exactly one turn post, and no post stands for another run. */
+function assertOneTurnPerT3Run(fake: FakeT3Adapter, p: ReturnType<EngineHost["view"]>, threadIds: string[]): void {
+  const turns = [...turnPosts(p).values()];
+  for (const threadId of threadIds) {
+    const carried = turns.filter((turn) => turn.threadId === threadId && turn.t3RunId !== null).map((turn) => turn.t3RunId!);
+    assert.equal(new Set(carried).size, carried.length, "no T3 run stands for two posts");
+    const thread = fake.threads.get(threadId)!;
+    const said = thread.runs.filter((run) => run.completedAt !== null && runReplies(thread, run.id).length > 0).map((run) => run.id);
+    assert.deepEqual([...carried].sort(), [...said].sort(), "every T3 run that said something is one turn post");
+  }
+  const carriers = [...replyCarriers(p, () => null).values()].flat();
+  assert.equal(carriers.length, turns.filter((turn) => turn.t3RunId !== null).length, "spend follows the turn posts");
+}
+
+test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered, adopted or imported as a note", async (t) => {
+  const fake = new SteerFake();
+  const s = await engineStack(t, ["sol"], { fake });
+  const thread = s.seats.sol!.threadId;
+  const view = () => s.engine.view(s.roomId);
+  // Into the running turn: one T3 run, one final.
+  await s.say("@sol build it");
+  await s.tick();
+  await s.say("@sol /steer also cover the edge cases");
+  await s.tick();
+  fake.completeRun(thread, { text: "Built, edge cases covered." });
+  await s.tick(2);
+  assertOneTurnPerT3Run(fake, view(), [thread]);
+  // The turn ends as T3 takes the steer: T3's own run for it is adopted, its reply the adopted run's final.
+  await s.say("@sol next part");
+  await s.tick();
+  fake.beforeSteer = () => fake.completeRun(thread, { text: "Next part done." });
+  await s.say("@sol /steer also add tests");
+  await s.tick(3);
+  fake.completeRun(thread, { text: "Tests added." });
+  await s.tick(2);
+  assertOneTurnPerT3Run(fake, view(), [thread]);
+  // More input came before T3 ran the steer: its reply is a note, and an ordinary run carries the rest.
+  await s.say("@sol third part");
+  await s.tick();
+  fake.beforeSteer = () => fake.completeRun(thread, { text: "Third part done." });
+  await s.say("@sol /steer and the docs");
+  await s.tick();
+  await s.say("@sol and the changelog");
+  await s.tick(2);
+  fake.completeRun(thread, { text: "Docs done." });
+  await s.tick(2);
+  fake.completeRun(thread, { text: "Changelog done." });
+  await s.tick(2);
+  const p = view();
+  assert.ok(p.events.some((e) => e.data.kind === "note" && e.data.body.includes("Docs done.")), "the steer's own run came back as a note");
+  assertOneTurnPerT3Run(fake, p, [thread]);
+  assert.equal(fake.threads.get(thread)!.runs.length, 6);
+});
+
+test("M3: the news filter's Consigliere (rooms.sqlite) and the journal's orchestrator agree as he is made, changed and cleared", async (t) => {
+  const s = await engineStack(t, ["cons", "worker"]);
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) {
+      await s.tick(2);
+      let live = false;
+      for (const seat of Object.values(s.seats)) {
+        const run = s.fake.threads.get(seat.threadId)!.runs.find((r) => r.completedAt === null);
+        if (run) {
+          live = true;
+          s.fake.completeRun(seat.threadId, { text: `ok from ${seat.seatId}` });
+        }
+      }
+      if (!live) return;
+    }
+  };
+  const check = async (expected: string | null) => {
+    await settle();
+    const p = s.engine.view(s.roomId);
+    const consigliere = s.stack.repos.getRoom(s.roomId)!.consigliereId;
+    assert.equal(consigliere, expected === null ? null : s.seats[expected]!.participantId, "rooms.sqlite");
+    assert.equal(p.orchestrator, expected === null ? null : s.seats[expected]!.seatId, "the journal");
+    const [item] = await s.get<EngineRoomListItem[]>("/api/rooms");
+    const view = journalView({ p });
+    assert.equal(item!.news.unseen, newsOf(view, 0, p.orchestrator === null ? null : new Set([p.orchestrator])).unseen, "news follows the journal's orchestrator");
+    return item!.news.unseen;
+  };
+  s.ask("worker", "One.");
+  s.ask("cons", "Two.");
+  assert.equal(await check(null), 2, "no Consigliere: everyone's turns are news");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: s.seats.cons!.participantId });
+  await check("cons");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: s.seats.worker!.participantId });
+  await check("worker");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: null });
+  await check(null);
 });
 
 test("with the flag off nothing is registered: the old routes answer as before", async () => {

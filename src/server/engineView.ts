@@ -12,10 +12,13 @@ import { streamSSE } from "hono/streaming";
 import type { T3Adapter, T3ThreadShell } from "../adapter/types.ts";
 import { backgroundOf, isRunActive, runForMessage, runPrompt } from "../adapter/types.ts";
 import type { AppStack } from "../app/bootstrap.ts";
+import { isPost } from "../app/boardEngine.ts";
+import { messageAttachmentIds, messageOf } from "../app/engineMessages.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { isAfter, seenMarks } from "../app/seen.ts";
 import { liveFeed, runningRun } from "../app/threadView.ts";
 import { effectiveBrowser } from "../browser/catalog.ts";
+import { ROOM_NOTE } from "../briefing/envelope.ts";
 import type { Repos } from "../db/repos.ts";
 import type {
   EngineActivityView, EngineBlockedView, EngineBoardPage, EngineClaim, EngineMemberStatus, EngineNews, EngineNoticeMarks,
@@ -41,12 +44,19 @@ export type Anchor =
 interface RunTimes { requestedAt: string | null; startedAt: string | null; completedAt: string | null }
 
 /**
- * T3's times for the anchors the journal names, read from each thread in full when an anchor is not known yet (at
- * most once per `rereadMs` a thread) and remembered: a message's or a finished run's times never change.
+ * T3's times for the anchors the journal names, read from each thread in full when an anchor is not known yet, and
+ * remembered: a message's or a finished run's times never change. An anchor a read left unknown (T3 down, a queued
+ * run's start) is read for again at most once per `rereadMs`; a new one at once.
  */
 export class T3Times {
-  private readonly threads = new Map<string, { runs: Map<string, RunTimes>; messages: Map<string, string>; readAt: number }>();
-  /** Runs and messages a successful read of their thread did not have (rolled back, deleted): not asked for again. */
+  private readonly threads = new Map<string, { runs: Map<string, RunTimes>; messages: Map<string, string>; partial: boolean }>();
+  /** When a read last left an anchor (with its field) unknown. */
+  private readonly tried = new Map<string, number>();
+  /**
+   * Runs and messages a successful read of their thread did not have (rolled back, deleted): not asked for again. A
+   * read T3 cut short (a window of the latest messages) lists every run but not every message, so it is evidence of a
+   * run's absence only.
+   */
   private readonly absent = new Set<string>();
   private readonly reading = new Map<string, Promise<boolean>>();
   private readonly adapter: Pick<T3Adapter, "getThreadDetail">;
@@ -73,15 +83,19 @@ export class T3Times {
     const due = new Map<string, Anchor[]>();
     for (const a of anchors) {
       if (this.time(a) !== null || this.absent.has(keyOf(a))) continue;
-      const readAt = this.threads.get(a.threadId)?.readAt;
-      if (readAt !== undefined && this.now() - readAt < this.rereadMs) continue;
+      const last = this.tried.get(fieldKey(a));
+      if (last !== undefined && this.now() - last < this.rereadMs) continue;
       due.set(a.threadId, [...(due.get(a.threadId) ?? []), a]);
     }
     const results = await Promise.all([...due].map(async ([threadId, wanted]) => {
-      if (!(await this.read(threadId))) return false;
-      const thread = this.threads.get(threadId)!;
-      for (const a of wanted) if ("message" in a ? !thread.messages.has(a.message) : !thread.runs.has(a.run)) this.absent.add(keyOf(a));
-      return true;
+      const read = await this.read(threadId);
+      const thread = this.threads.get(threadId);
+      for (const a of wanted) {
+        if (this.time(a) !== null) continue;
+        this.tried.set(fieldKey(a), this.now());
+        if (read && thread && ("message" in a ? !thread.partial && !thread.messages.has(a.message) : !thread.runs.has(a.run))) this.absent.add(keyOf(a));
+      }
+      return read;
     }));
     return results.every(Boolean);
   }
@@ -92,10 +106,10 @@ export class T3Times {
     const promise = (async () => {
       try {
         const detail = await this.adapter.getThreadDetail(threadId);
-        const known = this.threads.get(threadId) ?? { runs: new Map<string, RunTimes>(), messages: new Map<string, string>(), readAt: 0 };
+        const known = this.threads.get(threadId) ?? { runs: new Map<string, RunTimes>(), messages: new Map<string, string>(), partial: false };
         for (const run of detail?.runs ?? []) known.runs.set(run.id, { requestedAt: run.requestedAt, startedAt: run.startedAt, completedAt: run.completedAt });
         for (const message of detail?.messages ?? []) known.messages.set(message.id, message.createdAt);
-        known.readAt = this.now();
+        known.partial = detail?.partial === true;
         this.threads.set(threadId, known);
         return true;
       } catch {
@@ -111,6 +125,9 @@ export class T3Times {
 
 function keyOf(a: Anchor): string {
   return JSON.stringify("message" in a ? [a.threadId, "message", a.message] : [a.threadId, "run", a.run]);
+}
+function fieldKey(a: Anchor): string {
+  return JSON.stringify("message" in a ? [a.threadId, "message", a.message] : [a.threadId, "run", a.run, a.field]);
 }
 
 /** The command an event came from: the journal's command key is [actor, command ID]. */
@@ -189,8 +206,9 @@ export function timesOf(p: Projection, anchors: ReadonlyMap<number, Anchor>, tim
 /** The board's #n of an event. The journal seq, as L2's briefings cite it (journalDirectory's default). */
 export const boardNumber = (seq: number): number => seq;
 
-/** What an event says on the board, or null for bookkeeping: the posts `rooms-board index` lists (L3's isPost). */
+/** What an event says on the board, or null for bookkeeping: exactly the posts `rooms-board index` lists (L3's isPost). */
 export function postKind(event: RoomEvent): EnginePostKind | null {
+  if (!isPost(event)) return null;
   const d = event.data;
   switch (d.kind) {
     case "request": case "correction": case "cancel": case "note": case "progress": case "notice": case "retry": case "transfer":
@@ -198,10 +216,43 @@ export function postKind(event: RoomEvent): EnginePostKind | null {
     case "delivery.blocked":
       return "blocked";
     case "output":
-      return d.disposition.kind === "silent" ? null : "output";
+      return "output";
     default:
       return null;
   }
+}
+
+/**
+ * The posts that stand for a turn (EnginePost.turn), each with its thread and T3 run: a run's final (its T3 run, or
+ * none when T3 never recorded it), and the note or continuation output a T3 turn the room did not start was imported
+ * as (its own `t3run:` key; a settle's sibling outputs are not). One post per T3 run: the first wins.
+ */
+export function turnPosts(p: Projection): Map<string, { threadId: string; t3RunId: string | null }> {
+  const threads = [...new Set([...p.seats.values()].map((s) => s.threadId))].sort((a, b) => b.length - a.length);
+  const t3 = t3RunIds(p);
+  const out = new Map<string, { threadId: string; t3RunId: string | null }>();
+  const seen = new Set<string>();
+  for (const event of p.events) {
+    if (!postKind(event)) continue;
+    const d = event.data;
+    let turn: { threadId: string; t3RunId: string | null } | null = null;
+    if (d.kind === "output" && d.sourceKey.startsWith("final:") && d.association.kind === "run") {
+      const run = p.runs.get(d.association.id);
+      const threadId = run ? p.seats.get(run.seatId)?.threadId : undefined;
+      if (threadId) turn = { threadId, t3RunId: t3.get(d.association.id) ?? null };
+    } else if (d.kind === "output" || d.kind === "note") {
+      const key = t3RunKey(commandOf(event).id, threads);
+      if (key?.own) turn = { threadId: key.threadId, t3RunId: key.runId };
+    }
+    if (!turn) continue;
+    if (turn.t3RunId !== null) {
+      const key = JSON.stringify([turn.threadId, turn.t3RunId]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.set(event.id, turn);
+  }
+  return out;
 }
 
 export interface SeatMeta { participantId: string; alias: string }
@@ -214,6 +265,8 @@ export interface ViewInput {
   /** T3's times as read (T3Times.time): a run's own start and end. */
   t3?: (a: Anchor) => string | null;
   marks?: EngineNoticeMarks;
+  /** The attachment IDs of a user message's images (L4a's record); none by default. */
+  attachments?: (messageId: string) => string[];
 }
 
 /** The whole journal as the read API shows it. Pure: the same projection gives the same view. */
@@ -251,6 +304,11 @@ export function journalView(input: ViewInput): JournalView {
   const retried = new Set(p.events.flatMap((e) => (e.data.kind === "retry" ? [e.data.runId] : [])));
   const activityStart = new Map(p.events.flatMap((e) => (e.data.kind === "activity.started" ? [[e.data.activity.id, e.seq] as const] : [])));
   const dismissed = new Set(marks.ids);
+  const turns = turnPosts(p);
+  const messageRef = (requestId: string) => {
+    const ref3 = messageOf(requestId);
+    return ref3 ? { id: ref3.messageId, index: ref3.index, steer: ref3.steer, attachmentIds: input.attachments?.(ref3.messageId) ?? [] } : null;
+  };
 
   const eventById = (eventId: string | null | undefined): RoomEvent | undefined => {
     const seq = eventId ? seqOf.get(eventId) : undefined;
@@ -277,6 +335,7 @@ export function journalView(input: ViewInput): JournalView {
       to: "recipients" in d ? [...d.recipients] : [],
       body: "",
       about: [] as EngineRef[],
+      turn: turns.has(event.id),
       ...timeOf(event.seq),
     };
     const post: EnginePost = base;
@@ -289,6 +348,7 @@ export function journalView(input: ViewInput): JournalView {
           id: d.request.id, parentId: d.request.parentId, rootId: d.request.rootId,
           owner: q?.owner ?? d.request.owner, returnTo: q?.returnTo ?? d.request.returnTo,
           state: q?.state ?? "open", answer: at(q?.answerId ?? null), corrections: q?.corrections.length ?? 0,
+          message: messageRef(d.request.id),
         };
         break;
       }
@@ -309,6 +369,7 @@ export function journalView(input: ViewInput): JournalView {
         const message = id.startsWith("t3msg:") ? threads.find((t) => id.startsWith(`t3msg:${t}:`)) : undefined;
         post.note = {
           source: turn ? "t3-turn" : message ? "t3-message" : id.startsWith("cancel-deferred:") ? "deferred-cancel" : "post",
+          room: d.milestone === ROOM_NOTE,
           t3: turn ? { threadId: turn.threadId, runId: turn.runId, messageId: null } : message ? { threadId: message, runId: null, messageId: id.slice(`t3msg:${message}:`.length) } : null,
           afterAnswer: d.author.startsWith("$") ? false : d.requestIds.some((r) => answeredBefore(r, event.seq, d.author)),
         };
@@ -376,10 +437,9 @@ export function journalView(input: ViewInput): JournalView {
   const pending = [...p.activities.values()].filter(isPending);
   const activityView = (a: Activity): EngineActivityView => {
     const seq = activityStart.get(a.id);
-    const time = seq === undefined ? null : timeOf(seq);
     return {
       id: a.id, kind: a.id.startsWith("bg:") ? "bg" : a.id.startsWith("work:") ? "work" : "other", seatId: a.seatId, runId: a.runId,
-      requestIds: [...a.requestIds], status: a.status, memberHeld: memberHeld(p, a), since: time ? (time.at ?? time.after) : null,
+      requestIds: [...a.requestIds], status: a.status, memberHeld: memberHeld(p, a), since: seq === undefined ? { at: null, after: null } : timeOf(seq),
     };
   };
   const activities = pending.map(activityView);
@@ -430,6 +490,7 @@ export function journalView(input: ViewInput): JournalView {
       openChildren: children.get(q.id) ?? [],
       activityIds: pending.filter((a) => a.requestIds.includes(q.id)).map((a) => a.id),
       runId: live && LIVE.has(live.phase) && workOf(live).includes(q.id) ? live.id : null,
+      messageId: messageOf(q.id)?.messageId ?? null,
     });
   }
   requests.sort((a, b) => a.seq - b.seq);
@@ -474,20 +535,20 @@ export function journalView(input: ViewInput): JournalView {
   };
 }
 
-/** News: the room's finishes after the seen mark. In a room with a Consigliere only his (the workers answer him). */
+/**
+ * News: the room's finishes after the seen mark, one per turn (EnginePost.turn), as the old news had one reply per
+ * turn: an explicit answer and the same turn's final are one finish, and an idle settle repeats one. In a room with a
+ * Consigliere only his (the workers answer him).
+ */
 export function newsOf(view: JournalView, seenSeq: number, onlySeats: ReadonlySet<string> | null): EngineNews {
-  const finishes = view.posts.filter((post) => {
-    if (post.seq <= seenSeq || post.author.startsWith("$") || (onlySeats && !onlySeats.has(post.author))) return false;
-    if (post.output) return post.output.disposition !== "progress";
-    return post.note?.source === "t3-turn";
-  });
+  const finishes = view.posts.filter((post) => post.turn && post.seq > seenSeq && !post.author.startsWith("$") && (!onlySeats || onlySeats.has(post.author)));
   const newest = finishes[finishes.length - 1];
   const seat = newest ? view.seats.find((s) => s.seatId === newest.author) : undefined;
   return {
     seenSeq,
     unseen: finishes.length,
     latest: newest
-      ? { seq: newest.seq, number: newest.number, at: newest.at ?? newest.after, seatId: newest.author, alias: seat?.alias ?? null, kind: newest.output?.disposition === "error" ? "failed" : "reply", preview: newest.body.slice(0, 400) }
+      ? { seq: newest.seq, number: newest.number, at: newest.at, after: newest.after, seatId: newest.author, alias: seat?.alias ?? null, kind: newest.output?.disposition === "error" ? "failed" : "reply", preview: newest.body.slice(0, 400) }
       : null,
   };
 }
@@ -495,35 +556,16 @@ export function newsOf(view: JournalView, seenSeq: number, onlySeats: ReadonlySe
 // ---------------- spend ----------------
 
 /**
- * The replies that carry spend: one per T3 run, never per output. A host run's final (by its `final:` source key)
- * carries its T3 run; a T3 turn's note or a continuation's output carries the run in its own `t3run:` key (a settle's
- * sibling outputs do not). Explicit answers and idle settles carry none. Only posts count: a reply with nothing to show
- * leaves its spend to the next one, as the old route's replies did. `at` is the T3 run's completedAt.
+ * The replies that carry spend: the turn posts (turnPosts) that have a T3 run, one per T3 run, never per output.
+ * Explicit answers and idle settles carry none. Only posts count: a reply with nothing to show leaves its spend to the
+ * next one, as the old route's replies did. `at` is the T3 run's completedAt.
  */
 export function replyCarriers(p: Projection, time: (a: Anchor) => string | null): Map<string, Array<{ eventId: string; t3RunId: string; at: string | null }>> {
-  const threads = [...new Set([...p.seats.values()].map((s) => s.threadId))].sort((a, b) => b.length - a.length);
-  const t3 = t3RunIds(p);
   const out = new Map<string, Array<{ eventId: string; t3RunId: string; at: string | null }>>();
-  const seen = new Set<string>();
-  const add = (threadId: string, t3RunId: string, eventId: string) => {
-    const key = JSON.stringify([threadId, t3RunId]);
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.set(threadId, [...(out.get(threadId) ?? []), { eventId, t3RunId, at: time({ threadId, run: t3RunId, field: "completedAt" }) }]);
-  };
-  for (const event of p.events) {
-    if (!postKind(event)) continue;
-    const d = event.data;
-    if (d.kind === "output" && d.sourceKey.startsWith("final:") && d.association.kind === "run") {
-      const run = p.runs.get(d.association.id);
-      const id = t3.get(d.association.id);
-      const threadId = run ? p.seats.get(run.seatId)?.threadId : undefined;
-      if (id && threadId) add(threadId, id, event.id);
-      continue;
-    }
-    if (d.kind !== "output" && d.kind !== "note") continue;
-    const key = t3RunKey(commandOf(event).id, threads);
-    if (key?.own) add(key.threadId, key.runId, event.id);
+  for (const [eventId, turn] of turnPosts(p)) {
+    if (turn.t3RunId === null) continue;
+    const at = time({ threadId: turn.threadId, run: turn.t3RunId, field: "completedAt" });
+    out.set(turn.threadId, [...(out.get(turn.threadId) ?? []), { eventId, t3RunId: turn.t3RunId, at }]);
   }
   return out;
 }
@@ -716,7 +758,7 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
     const anchors = anchorsOf(p);
     const reachable = await times.fill(anchors.values());
     const time = (a: Anchor) => times.time(a);
-    const view = journalView({ p, meta: metaOf(roomId), times: timesOf(p, anchors, time), t3: time, marks: noticeMarks(repos, roomId) });
+    const view = journalView({ p, meta: metaOf(roomId), times: timesOf(p, anchors, time), t3: time, marks: noticeMarks(repos, roomId), attachments: (messageId) => messageAttachmentIds(repos, roomId, messageId) });
     return { p, view, reachable };
   };
   const consigliereSeats = (room: Room): Set<string> | null => {
@@ -911,7 +953,7 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
             return {
               id: participant.id, alias: participant.alias, modelSelection: participant.modelSelection, presetId: participant.presetId,
               consigliere: room.consigliereId === participant.id, status, live, doing,
-              lastReply: reply ? { at: reply.at ?? reply.after, text: reply.body.slice(0, 400) } : null,
+              lastReply: reply ? { at: reply.at, after: reply.after, text: reply.body.slice(0, 400) } : null,
             };
           }),
         );

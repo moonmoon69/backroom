@@ -89,6 +89,11 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
         p.seats.set(d.seatId, { id: d.seatId, threadId: d.threadId, cursor: 0, status: "active", activeRunId: null });
         if (d.orchestrator) p.orchestrator = d.seatId;
         break;
+      case "seat.retired":
+        editEntry(p, "seats", d.seatId).status = "retired";
+        if (p.orchestrator === d.seatId) p.orchestrator = null;
+        break;
+      case "orchestrator.set": p.orchestrator = d.seatId; break;
       case "request":
         p.requests.set(d.request.id, { ...d.request, state: "open", answerId: null, live: d.live });
         break;

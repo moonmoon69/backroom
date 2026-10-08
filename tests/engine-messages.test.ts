@@ -92,6 +92,17 @@ interface Room {
   close(): void;
 }
 
+
+/** A member in rooms.sqlite with no seat on the board, as a crash between the two stores would leave it: L4b's
+ *  participant.create seats every member it makes, so tests that need one write it directly. */
+function unseatedMember(repos: AppStack["repos"], roomId: string, alias: string): string {
+  const at = new Date().toISOString();
+  const id = `unseated:${alias}:${roomId}`;
+  repos.insertParticipant({ id, roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
+  repos.insertBinding({ id: `binding:${id}`, participantId: id, generation: 1, threadId: `thread:${id}`, deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: at, retiredAt: null });
+  return id;
+}
+
 async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: string; fake?: Fake; dir?: string; fresh?: boolean } = {}): Promise<Room> {
   const fake = options.fake ?? new Fake();
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "backroom-l4a-"));
@@ -106,9 +117,8 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
     roomId = ((await run({ type: "room.create", projectId: "project_demo", title: "engine" })) as { roomId: string }).roomId;
     for (const alias of aliases) {
       ids[alias] = ((await run({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } })) as { participantId: string }).participantId;
-      // Seats are L4b's; until then a test seats each member's binding itself (seat ID = binding ID).
-      const binding = stack.repos.currentBinding(ids[alias]!)!;
-      stack.engine!.seat(roomId, { actor: "$user", id: `seat:${alias}`, seatId: binding.id, threadId: binding.threadId, orchestrator: alias === options.consigliere });
+      // participant.create seats the member on the board (L4b); the Consigliere is designated there.
+      if (alias === options.consigliere) stack.engine!.designate(roomId, { id: `designate:${alias}`, seatId: stack.repos.currentBinding(ids[alias]!)!.id });
     }
     if (options.consigliere) stack.repos.setRoomConsigliere(roomId, ids[options.consigliere]!, new Date().toISOString());
   }
@@ -779,7 +789,7 @@ test("§7: the message API refuses a post over 1 MiB", async (t) => {
 test("a member with no seat on the board yet is refused rather than given an old task", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
-  const late = ((await r.run({ type: "participant.create", roomId: r.roomId, alias: "late", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } })) as { participantId: string }).participantId;
+  const late = unseatedMember(r.stack.repos, r.roomId, "late");
   await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [late], instruction: "hello" }] }), /no seat on this room's board/);
   assert.equal(r.stack.repos.listTasks(r.roomId).length, 0);
 });

@@ -899,7 +899,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     repos: stack.repos,
     execute: (command) => stack.service.execute(parseCommand(command)),
     statusOf: (participantId) => stack.scheduler.participantStatus(participantId),
-    standing: (participantId) => stack.scheduler.standingText(participantId),
+    standing: (participantId) => (stack.seats ? stack.seats.standingText(participantId) : stack.scheduler.standingText(participantId)),
     // A new room state reaches open pages through the room's stream, like any change.
     notify: (roomId) => stack.hub.notify(roomId),
     contextOf: (participant) => {
@@ -911,7 +911,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       await stack.scheduler.tick();
       await stack.scheduler.tick();
     },
-  });
+  }, stack.seats);
   app.post("/api/board-tools", async (c) => {
     if (!browserTools || c.req.header("authorization") !== `Bearer ${browserTools.token}`) {
       return c.json({ error: "unauthorized", message: "rooms-board could not authenticate: the service was restarted or this is not its data folder" }, 401);
