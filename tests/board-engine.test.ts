@@ -526,6 +526,74 @@ test("the host's texts reach members with board numbers, never request IDs", asy
   await f.refused("c", ["post", "@w /compact"], /is a slash command/);
 });
 
+test("cancel and correct are the requester's only: the Consigliere cannot close or change work someone else waits on", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  // The worker's review of its own request: the Consigliere did not ask it.
+  const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
+  await f.tick();
+  const [r] = f.posted(await f.cli("w", "post", "@v review the parser diff"));
+  f.complete("w", "built; review asked");
+  await f.tick(2);
+  await f.refused("c", ["cancel", `#${f.num(r!)}`], /only @w, who asked #\d+, can cancel it; ask @w\./);
+  await f.refused("c", ["correct", `#${f.num(r!)}`, "skip the tests"], /only @w, who asked #\d+, can correct it/);
+  // The user's request to the Consigliere: only the user withdraws or changes it.
+  f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:plan", to: f.seat("c"), body: "plan the release" });
+  await f.refused("c", ["cancel", `#${f.num("user:plan")}`], /only the user, who asked #\d+, can cancel it\.$/);
+  await f.refused("c", ["correct", `#${f.num("user:plan")}`, "never mind"], /only the user, who asked #\d+, can correct it\.$/);
+  // The requester's own cancel is unchanged: the worker withdraws its review.
+  assert.deepEqual(kinds(await f.appended(() => f.cli("w", "cancel", `#${f.num(r!)}`))).slice(0, 1), ["cancel"]);
+  assert.equal(f.request(a!).state, "open");
+});
+
+test("a post outside a host turn while background work holds several requests must say which one it is for", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  const [a] = f.posted(await f.cli("c", "post", "@w run job A in the background"));
+  await f.tick();
+  f.fake.background(f.thread("w"), ["job-a"]);
+  f.complete("w", "job A started");
+  await f.tick();
+  const [b] = f.posted(await f.cli("c", "post", "@w run job B in the background"));
+  await f.tick();
+  f.fake.background(f.thread("w"), ["job-a", "job-b"]);
+  f.complete("w", "job B started");
+  await f.tick();
+  f.fake.startSelfRun(f.thread("w"));
+  await f.tick();
+  // A continuation: no host run, two requests held by background work.
+  const refusal = await f.refused("w", ["post", "@v review jobs A and B"], new RegExp(`your work still going on holds #${f.num(a!)}, #${f.num(b!)}: say which one this post is for, post --for #n`));
+  assert.doesNotMatch(refusal.message, /#board:|\$user/);
+  const [r] = f.posted(await f.cli("w", "post", "--for", `#${f.num(a!)}`, "@v review job A"));
+  assert.equal(f.request(r!).parentId, a);
+  // The continuation ends with nothing left in the background: B is answered, A stays open while its review is open.
+  f.fake.background(f.thread("w"), []);
+  f.complete("w", "both jobs done; review of A asked");
+  await f.tick(2);
+  assert.deepEqual([f.request(a!).state, f.request(b!).state], ["open", "answered"]);
+
+  // With one held request the post goes under it, as before.
+  const g = await Fixture.create();
+  t.after(() => g.close());
+  const [one] = g.posted(await g.cli("c", "post", "@w run the job in the background"));
+  await g.tick();
+  g.fake.background(g.thread("w"), ["job"]);
+  g.complete("w", "job started");
+  await g.tick();
+  g.fake.startSelfRun(g.thread("w"));
+  await g.tick();
+  const [child] = g.posted(await g.cli("w", "post", "@v review the job"));
+  assert.equal(g.request(child!).parentId, one);
+});
+
+test("no text a member reads names the user as someone to post to", async (t) => {
+  const f = await Fixture.create({ orchestrator: null });
+  t.after(() => f.close());
+  f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:job", to: f.seat("w"), body: "do the thing" });
+  const refusal = await f.refused("w", ["working", `#${f.num("user:job")}`, "still on it"], /use rooms-board note, which the user reads on the board/);
+  assert.doesNotMatch(refusal.message, /\$user/);
+});
+
 test("retry: the Consigliere's, once per failed turn, and never for a turn whose requests are all closed", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
@@ -546,6 +614,27 @@ test("retry: the Consigliere's, once per failed turn, and never for a turn whose
   const notices = f.p().events.filter((e) => e.data.kind === "notice" && e.data.intent === "error");
   await f.refused("c", ["retry", `#${notices.at(-1)!.seq}`], /nothing to redo/);
   await f.refused("c", ["retry", `#${f.num(a!)}`], /nothing to redo/);
+});
+
+test("retry of a background job's failure is refused with a sentence, not as 'not a failed turn'", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  const [a] = f.posted(await f.cli("c", "post", "@w run the job in the background"));
+  await f.tick();
+  f.fake.background(f.thread("w"), ["job"]);
+  f.complete("w", "job started");
+  await f.tick();
+  const activity = [...f.p().activities.values()].find((x) => x.requestIds.includes(a!))!;
+  // No host path fails background work today; the engine's form of it is an error output on the activity.
+  const w = f.seat("w");
+  f.restart(() => {
+    const store = new EngineStore(join(f.dir, "board.sqlite"));
+    store.execute(f.roomId, { type: "output", actor: "$system", id: "bg-failed", author: w, sourceKey: "bg-failed", association: { kind: "activity", id: activity.id }, activityCompletion: "failed", body: "the job crashed", disposition: { kind: "error", requestIds: [a!] } });
+    store.close();
+  });
+  const notice = f.p().events.find((e) => e.data.kind === "notice" && e.data.intent === "error")!;
+  assert.equal(notice.data.kind === "notice" && notice.data.causeId, `activity:${activity.id}`);
+  await f.refused("c", ["retry", `#${notice.seq}`], /is the failure of background work, not of a turn; a background job is not retried: post the work again/);
 });
 
 test("a post made while the host is still sending the turn is a child of that turn's request", async (t) => {

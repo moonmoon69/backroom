@@ -19,7 +19,7 @@ import { roomStateSection } from "../briefing/assemble.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 import { HostRefusal, type EngineHost } from "../runtime/index.ts";
-import { finalTargets, lastAnswered, ownedTarget, pendingActivities } from "../runtime/work.ts";
+import { finalTargets, lastAnswered, openOwned, ownedTarget, pendingActivities } from "../runtime/work.ts";
 import { BOARD_PAGE_CHARS, Board, BoardError, threadOutcome, type BoardDeps, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
 import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
@@ -106,7 +106,7 @@ interface Caller {
 /** Engine refusals a member can meet, in words it can act on. The rest are passed on as they are. */
 const ENGINE_WORDS: Record<string, string> = {
   "author seat is not active": "your seat is not active now (a cancel is stopping your turn, or you were reseated); try again when your turn has ended",
-  "requester authorization required": "only whoever asked for that request, or the Consigliere, can do that",
+  "requester authorization required": "only whoever asked for that request can do that",
   "closed request needs a new request": "that request is closed; post a new request that cites it",
   "unrelated causal parent": "a post can only go under a request you own",
   "own request cannot create a wake": "you cannot post to yourself; use note",
@@ -119,6 +119,11 @@ const REF = /^#?\d+$/;
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/** The start of a text, to quote it back in a hint. */
+function excerpt(text: string): string {
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
 }
 
 function bytes(text: string): number {
@@ -241,9 +246,11 @@ export class BoardEngine {
     return ids.map((id) => this.label(p, id)).join(", ");
   }
 
-  /** The host's texts name requests and seats by ID; members type post numbers and aliases. */
+  /** The host's texts name requests and seats by ID; members type post numbers and aliases, and cannot post to the user. */
   private words(p: Projection, text: string): string {
     const names = [
+      ["rooms-board post @$user", "rooms-board note, which the user reads on the board"] as const,
+      ["@$user", "the user"] as const,
       ...[...p.requests.keys()].map((id) => [`#${id}`, this.label(p, id)] as const),
       ...[...p.seats.keys()].map((id) => [`@${id}`, `@${this.alias(id)}`] as const),
     ].filter(([raw]) => !/^.\d+$/.test(raw)).sort((a, b) => b[0].length - a[0].length);
@@ -369,11 +376,17 @@ export class BoardEngine {
       forRequest = q.id;
     } else {
       const run = await this.settled(c);
+      const now = this.view(c.room.id);
       if (run?.phase === "sending") {
         // T3 has the message but the host has not seen it start: the turn's requests are the run's own (§1).
-        const targets = finalTargets(this.view(c.room.id), run);
+        const targets = finalTargets(now, run);
         if (targets.length === 1) forRequest = targets[0];
-        else if (targets.length > 1) throw new BoardError(`rooms-board: this turn works on ${this.labels(p, targets)}: say which one this post is for, post --for #n "${text.slice(0, 40)}…".`);
+        else if (targets.length > 1) throw new BoardError(`rooms-board: this turn works on ${this.labels(p, targets)}: say which one this post is for, post --for #n "${excerpt(text)}".`);
+      } else if (!run || !["accepted", "running", "uncertain"].includes(run.phase)) {
+        // Outside a host turn (a continuation of background work), the host puts the post under the one request that
+        // work holds; with several it cannot tell which, and a post under none would let them close while it is open.
+        const held = [...new Set(pendingActivities(now, c.seatId).flatMap((a) => openOwned(now, a.requestIds, c.seatId)))];
+        if (held.length > 1) throw new BoardError(`rooms-board: your work still going on holds ${this.labels(now, held)}: say which one this post is for, post --for #n "${excerpt(text)}".`);
       }
     }
     const made: string[] = [];
@@ -537,9 +550,14 @@ export class BoardEngine {
     return `Correction #${event?.seq ?? "?"} to ${this.label(after, q.id)} → ${this.name(q.owner)}: it reaches it with its next turn, and its answer to ${this.label(after, q.id)} then takes it into account.`;
   }
 
+  /**
+   * Cancel and correct are the requester's alone: the owner is told, and the requester is the one waiting for the
+   * answer. Anyone else (the Consigliere too) would close or change work someone else is waiting on, unseen by them.
+   */
   private mayControl(c: Caller, p: Projection, q: Request, verb: string): void {
-    if (q.returnTo !== c.seatId && p.orchestrator !== c.seatId) {
-      throw new BoardError(`rooms-board: only whoever asked ${this.label(p, q.id)} (${this.name(q.returnTo)}) or the Consigliere can ${verb} it.`, 403);
+    if (q.returnTo !== c.seatId) {
+      const asker = q.returnTo === "$user" ? "the user" : this.name(q.returnTo);
+      throw new BoardError(`rooms-board: only ${asker}, who asked ${this.label(p, q.id)}, can ${verb} it${q.returnTo === "$user" ? "" : `; ask ${asker}`}.`, 403);
     }
   }
 
@@ -602,7 +620,10 @@ export class BoardEngine {
     if (!event) throw new BoardError(`rooms-board: this room has no post #${n}.`, 404);
     const d = event.data;
     let run: Run | undefined;
-    if (d.kind === "notice" && d.intent === "error") run = p.runs.get(d.causeId);
+    if (d.kind === "notice" && d.intent === "error") {
+      if (d.causeId.startsWith("activity:")) throw new BoardError(`rooms-board: #${n} is the failure of background work, not of a turn; a background job is not retried: post the work again.`, 409);
+      run = p.runs.get(d.causeId);
+    }
     else if (d.kind === "output" && d.disposition.kind === "error" && d.association.kind === "run") run = p.runs.get(d.association.id);
     else if (d.kind === "request") {
       const id = d.request.id;
