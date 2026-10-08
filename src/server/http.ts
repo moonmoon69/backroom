@@ -56,6 +56,7 @@ import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { orderProjects } from "../app/service.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
+import { mountEngineView } from "./engineView.ts";
 
 export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
   const room = stack.repos.getRoom(roomId);
@@ -326,6 +327,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- crew library ----
   app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
+
+  // With ROOMS_ENGINE=1 the room routes read the engine journal (src/server/engineView.ts, L4c). Registered before the
+  // old ones below, they answer first; without the flag nothing is registered and every route is as before.
+  mountEngineView(app, stack, costs);
 
   // ---- rooms ----
   app.get("/api/rooms", (c) => {

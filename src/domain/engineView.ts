@@ -80,7 +80,9 @@ export type EnginePostKind =
   /** A failed run sent again. */
   | "retry"
   /** A reseat: the old seat's open work handed to the new seat. */
-  | "transfer";
+  | "transfer"
+  /** A delivery the engine could not make (plan §7): Backroom's notice of it. */
+  | "blocked";
 
 /** How an answer attempt came out, per request (the engine decides it; see src/engine/README.md). */
 export interface EngineClaim extends EngineRef {
@@ -88,7 +90,11 @@ export interface EngineClaim extends EngineRef {
   returnTo: EnginePrincipal;
 }
 
-/** A post on the board: one journal event that says something. Bookkeeping (run phases, reservations, syncs) is not a post. */
+/**
+ * A post on the board: one journal event that says something, the same events `rooms-board index` lists (L3's isPost):
+ * requests, corrections, cancels, notes, progress, notices, retries, transfers, blocked deliveries, and outputs that are
+ * not silent. Bookkeeping (run phases, reservations, syncs, activities) is not a post.
+ */
 export interface EnginePost extends EngineTime {
   /** Its place in the journal: order, news and seen are keyed by it. */
   seq: number;
@@ -141,6 +147,7 @@ export interface EnginePost extends EngineTime {
   cancel?: { applied: boolean };
   retry?: { runId: string };
   transfer?: { oldSeatId: string; newSeatId: string; owned: string[]; awaited: string[] };
+  blocked?: EngineBlockedView;
 }
 
 export interface EngineNoticeState {
