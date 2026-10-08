@@ -44,7 +44,8 @@ export type CommandResult =
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
-  | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }> }
+  /** timeout: the action was sent but T3 had not answered within the limit; it may still apply it (the late outcome is logged). */
+  | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed" | "timeout"; detail?: string }> }
   | { type: "preset.saved"; presetId: string }
   | { type: "preset.deleted"; presetId: string }
   | { type: "settings.updated" }
@@ -107,6 +108,15 @@ export function orderProjects<T extends { id: string }>(repos: Repos, projects: 
     .map(({ project }) => project);
 }
 
+/** How long room deletion waits for T3 to answer each thread action (ROOMS_THREAD_ACTION_TIMEOUT_MS). */
+export const THREAD_ACTION_TIMEOUT_MS = 5000;
+
+export interface RoomServiceOptions {
+  /** Per-call limit on the T3 thread actions room deletion sends (they run concurrently). */
+  threadActionTimeoutMs?: number;
+  log?: (message: string, detail?: unknown) => void;
+}
+
 export class RoomService {
   private readonly db: Database;
   private readonly repos: Repos;
@@ -115,13 +125,18 @@ export class RoomService {
   /** Projects and threads used outside any room. */
   private readonly direct: DirectThreads;
   private readonly engineHandlers: EngineHandler[] = [];
+  private readonly threadActionTimeoutMs: number;
+  private readonly log: (message: string, detail?: unknown) => void;
 
-  constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}) {
+  constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}, options: RoomServiceOptions = {}) {
     this.db = db;
     this.repos = repos;
     this.adapter = adapter;
     this.notify = notify;
     this.direct = new DirectThreads(repos, adapter);
+    const limit = options.threadActionTimeoutMs;
+    this.threadActionTimeoutMs = limit !== undefined && Number.isFinite(limit) && limit > 0 ? limit : THREAD_ACTION_TIMEOUT_MS;
+    this.log = options.log ?? (() => {});
   }
 
   /** Stage 4/5 (L4b): with ROOMS_ENGINE=1 the seat lifecycle runs on the engine journal (src/app/engineSeats.ts). */
@@ -401,13 +416,15 @@ export class RoomService {
   // ---------- rooms & participants ----------
 
   /**
-   * Delete a room. T3 thread actions run first (settle/archive/delete as chosen per participant; a thread also bound in
-   * another room is kept), then the room's stored data is removed in one transaction. A failed T3 action is reported
-   * and leaves that thread as it was; the room is still deleted.
+   * Delete a room. The T3 thread actions (settle/archive/delete as chosen per participant; a thread also bound in
+   * another room, or a retired member's, is left as it is) are all sent at once; the room's stored data is removed in one
+   * transaction without waiting for them, and the answer waits at most the per-call limit. A failed action leaves that
+   * thread as it was; an action T3 has not answered by then is reported as a timeout, and its late outcome is logged.
    */
   private async deleteRoom(command: Extract<RoomCommand, { type: "room.delete" }>): Promise<CommandResult> {
+    type ThreadResult = Extract<CommandResult, { type: "room.deleted" }>["threads"][number];
     const room = this.requireRoom(command.roomId);
-    const results: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }> = [];
+    const results: Array<ThreadResult | Promise<ThreadResult>> = [];
     for (const participant of this.repos.listParticipants(room.id)) {
       const binding = this.repos.currentBinding(participant.id);
       if (!binding) continue;
@@ -415,20 +432,46 @@ export class RoomService {
       const elsewhere = this.repos
         .listActiveBindings()
         .some((b) => b.threadId === binding.threadId && this.repos.getParticipant(b.participantId)?.roomId !== room.id);
+      const entry = { participantId: participant.id, alias: participant.alias, threadId: binding.threadId, action };
       if (action === "keep" || participant.retiredAt || elsewhere) {
-        results.push({ participantId: participant.id, alias: participant.alias, threadId: binding.threadId, action, result: "kept", ...(elsewhere && action !== "keep" ? { detail: "also used in another room" } : {}) });
+        results.push({ ...entry, result: "kept", ...(elsewhere && action !== "keep" ? { detail: "also used in another room" } : {}) });
         continue;
       }
-      try {
-        await this.adapter.setThreadLifecycle({ commandId: randomUUID(), threadId: binding.threadId, action });
-        results.push({ participantId: participant.id, alias: participant.alias, threadId: binding.threadId, action, result: "done" });
-      } catch (error) {
-        results.push({ participantId: participant.id, alias: participant.alias, threadId: binding.threadId, action, result: "failed", detail: (error as Error).message });
-      }
+      results.push(this.threadActionWithin(room, entry, action));
     }
     this.db.transaction(() => this.repos.deleteRoomCascade(room.id));
     this.notify(room.id);
-    return { type: "room.deleted", roomId: room.id, threads: results };
+    return { type: "room.deleted", roomId: room.id, threads: await Promise.all(results) };
+  }
+
+  /** Sends one thread action now and answers within the limit: done, failed, or timeout (the late outcome is logged). */
+  private threadActionWithin<T extends { alias: string; threadId: string }>(
+    room: Room,
+    entry: T,
+    action: ThreadLifecycleAction,
+  ): Promise<T & { result: "done" | "failed" | "timeout"; detail?: string }> {
+    const limit = this.threadActionTimeoutMs;
+    const sent = (async () => this.adapter.setThreadLifecycle({ commandId: randomUUID(), threadId: entry.threadId, action }))();
+    return new Promise((resolve) => {
+      let late = false;
+      const timer = setTimeout(() => {
+        late = true;
+        resolve({ ...entry, result: "timeout", detail: `T3 had not answered after ${limit / 1000} s; the ${action} may still go through` });
+      }, limit);
+      sent.then(
+        () => {
+          clearTimeout(timer);
+          if (late) this.log(`room "${room.title}" deleted: @${entry.alias}'s thread ${entry.threadId} ${action} finished late in T3`);
+          else resolve({ ...entry, result: "done" });
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          const detail = error instanceof Error ? error.message : String(error);
+          if (late) this.log(`room "${room.title}" deleted: @${entry.alias}'s thread ${entry.threadId} ${action} failed late in T3`, detail);
+          else resolve({ ...entry, result: "failed", detail });
+        },
+      );
+    });
   }
 
   private async createRoom(command: Extract<RoomCommand, { type: "room.create" }>): Promise<CommandResult> {

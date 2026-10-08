@@ -209,8 +209,14 @@ function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onComma
       const threads = (result as Extract<CommandResult, { type: "room.deleted" }>).threads;
       const done = threads.filter((t) => t.result === "done").map((t) => `@${t.alias} ${t.action === "delete" ? "deleted" : `${t.action}d`}`);
       const failed = threads.filter((t) => t.result === "failed").map((t) => `@${t.alias}: ${t.detail ?? "failed"}`);
+      const late = threads.filter((t) => t.result === "timeout").map((t) => `@${t.alias} ${t.action}`);
       toast(
-        [`Deleted "${room.title}".`, done.length > 0 ? `Threads: ${done.join(", ")}.` : "Threads kept in T3.", failed.length > 0 ? `Not changed in T3: ${failed.join("; ")}.` : ""]
+        [
+          `Deleted "${room.title}".`,
+          done.length > 0 ? `Threads: ${done.join(", ")}.` : late.length > 0 ? "" : "Threads kept in T3.",
+          late.length > 0 ? `Sent to T3, not confirmed in time (may still go through): ${late.join(", ")}.` : "",
+          failed.length > 0 ? `Not changed in T3: ${failed.join("; ")}.` : "",
+        ]
           .filter(Boolean)
           .join(" "),
       );

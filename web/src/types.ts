@@ -1273,7 +1273,8 @@ export type CommandResult =
   | {
       type: "room.deleted";
       roomId: string;
-      threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed"; detail?: string }>;
+      /** timeout: sent, but T3 had not answered within the service's limit; it may still go through. */
+      threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed" | "timeout"; detail?: string }>;
     }
   | { type: "participant.created"; participantId: string; threadId: string; alias?: string }
   | {
