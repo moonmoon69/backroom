@@ -4,12 +4,13 @@
  * every run's numbers (report.md, embedded). Reporting only: it reads the job records, their evidence and the measures
  * measure.ts made, and nothing here feeds the gate, the measurement, the quiet rule or the checkers.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { EnginePost } from "../../src/domain/engineView.ts";
 import type { JobRecord, Snapshot } from "./campaign.ts";
 import type { JobMeasure } from "./measure.ts";
 import { TASK_IDS } from "./tasks.ts";
+import { TranscriptTokens } from "./tokens.ts";
 
 /** A job's instance-room.json, reduced to what is read here (old side: bindings and runs.briefing; new side: the read API). */
 export interface RoomRecord {
@@ -24,13 +25,72 @@ export interface VerdictJob {
   job: JobRecord;
   measure: JobMeasure;
   room: RoomRecord | null;
+  /** T3: the background work W1 started in the job window, from its transcripts (backgroundWorkOf); null elsewhere. */
+  w1Background?: string[] | null;
 }
 
-/** A closed job's record, measure and instance-room.json. */
+/** A closed job's record, measure and instance-room.json; on T3, W1's background work from its transcripts. */
 export function loadVerdictJob(dir: string, measure: JobMeasure): VerdictJob {
   const job = JSON.parse(readFileSync(join(dir, "job.json"), "utf8")) as JobRecord;
   const path = join(dir, "instance-room.json");
-  return { job, measure, room: existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as RoomRecord) : null };
+  const w1 = job.seats.find((s) => s.role === "W1");
+  const window = job.times.postedAt && job.times.closeAt ? ([Date.parse(job.times.postedAt), Date.parse(job.times.closeAt)] as const) : null;
+  return {
+    job,
+    measure,
+    room: existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as RoomRecord) : null,
+    w1Background: job.task === "T3" && w1 && window && !job.dry ? backgroundWorkOf(dir, w1.threadId, window[0], window[1]) : null,
+  };
+}
+
+function jsonlUnder(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .sort()
+    .flatMap((name) => (statSync(join(dir, name)).isDirectory() ? jsonlUnder(join(dir, name)) : name.endsWith(".jsonl") ? [join(dir, name)] : []));
+}
+
+/**
+ * The background work a thread started in T3 between `from` and `to`, from T3's side of the evidence: its Claude
+ * sessions (the job's copy of T3's state rows) and their transcripts with their subagents' (the job's copies). A Bash
+ * call with run_in_background, a Monitor, or a subagent (Agent or Task) with run_in_background; once per tool call.
+ */
+export function backgroundWorkOf(dir: string, threadId: string, from: number, to: number): string[] {
+  const projectsDir = join(dir, "transcripts");
+  const stateDb = join(dir, "t3", "state-subset.sqlite");
+  if (!existsSync(stateDb)) return [];
+  const sessions = new TranscriptTokens({ stateDb, projectsDir, ratesPath: join(dir, "no-rates") }).sessions(threadId);
+  const projects = existsSync(projectsDir) ? readdirSync(projectsDir).sort() : [];
+  const seen = new Map<string, { at: number; text: string }>();
+  for (const session of sessions) {
+    for (const project of projects) {
+      const own = join(projectsDir, project, `${session}.jsonl`);
+      for (const file of [...(existsSync(own) ? [own] : []), ...jsonlUnder(join(projectsDir, project, session))]) {
+        for (const line of readFileSync(file, "utf8").split("\n")) {
+          if (!line.includes('"tool_use"')) continue;
+          let row: { timestamp?: unknown; message?: { content?: unknown } };
+          try {
+            row = JSON.parse(line) as typeof row;
+          } catch {
+            continue;
+          }
+          const at = Date.parse(String(row.timestamp));
+          if (Number.isNaN(at) || at < from || at > to || !Array.isArray(row.message?.content)) continue;
+          for (const block of row.message.content as Array<{ type?: unknown; id?: unknown; name?: unknown; input?: Record<string, unknown> }>) {
+            if (block.type !== "tool_use" || typeof block.id !== "string" || seen.has(block.id)) continue;
+            const background = block.input?.run_in_background === true;
+            const what =
+              block.name === "Bash" && background ? `background Bash "${String(block.input?.command ?? "").slice(0, 60)}"`
+              : block.name === "Monitor" ? "Monitor"
+              : (block.name === "Agent" || block.name === "Task") && background ? `background subagent "${String(block.input?.description ?? "").slice(0, 60)}"`
+              : null;
+            if (what) seen.set(block.id, { at, text: `${what} at ${new Date(at).toISOString().slice(11, 19)}` });
+          }
+        }
+      }
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.at - b.at).map((b) => b.text);
 }
 
 const median = (values: number[]): number | null => {
@@ -221,15 +281,17 @@ export type CheckOutcome = "pass" | "FAIL" | "n/a";
 export interface BehaviourCheck {
   id: string;
   outcome: CheckOutcome;
+  /** Shown beside the outcome in the table. */
+  note?: string;
   evidence: string;
 }
 
 /** The plan's behaviour checks (Z1), in its order. */
 export const BEHAVIOUR_CHECKS: Array<{ id: string; title: string }> = [
   { id: "plainFinal", title: "a plain final answered its request (every request of the job closed, at least one by a run's final)" },
-  { id: "backgroundHeld", title: "T3 background work held the request until it ended (T3)" },
+  { id: "backgroundHeld", title: "T3 background work held the request until it ended (T3; n/a where W1's transcripts show no background work)" },
   { id: "earlyReview", title: "an early review was not skipped (T2, §1 case 7)" },
-  { id: "consigliereHeld", title: "the review exchange held the Consigliere (T2)" },
+  { id: "consigliereHeld", title: "the review exchange held the Consigliere (T2, §1 case 2: a review under a worker's request)" },
   { id: "subagentClean", title: "subagent use left no stuck state (T1; n/a where no subagent ran)" },
   { id: "quiet", title: "the job went quiet within 30 minutes of its report" },
   { id: "noEarlyAnswer", title: "no member answered (closed a request) while its own part of the checker failed" },
@@ -242,7 +304,7 @@ export const BEHAVIOUR_CHECKS: Array<{ id: string; title: string }> = [
  * prompt. A failure is a defect for the runtime unless its classification (by hand, from the board and transcript)
  * finds an agent cause.
  */
-export function behaviourChecks({ job, measure, room }: VerdictJob): BehaviourCheck[] {
+export function behaviourChecks({ job, measure, room, w1Background }: VerdictJob): BehaviourCheck[] {
   const posts = room?.posts ?? [];
   const runs = room?.runs ?? [];
   const roleOfSeat = new Map((room?.seats ?? []).map((s) => [s.seatId, job.seats.find((j) => j.participantId === s.participantId)?.role ?? "?"] as const));
@@ -258,7 +320,7 @@ export function behaviourChecks({ job, measure, room }: VerdictJob): BehaviourCh
   const describe = (p: EnginePost | undefined) => (p ? `#${p.number}${p.output ? ` (${p.output.source})` : ` (${p.kind})`}` : "none");
   const snapshotOf = (p: EnginePost | undefined): Snapshot | undefined => (p ? job.snapshots.find((s) => s.postId === p.id) : undefined);
   const out: BehaviourCheck[] = [];
-  const add = (id: string, outcome: CheckOutcome, evidence: string) => out.push({ id, outcome, evidence });
+  const add = (id: string, outcome: CheckOutcome, evidence: string, note?: string) => out.push({ id, outcome, evidence, ...(note ? { note } : {}) });
 
   if (!room?.engine || !Number.isFinite(promptSeq)) {
     for (const check of BEHAVIOUR_CHECKS) add(check.id, "FAIL", room?.engine ? "the prompt's request is not on the recorded journal" : "no journal recorded for the job");
@@ -277,25 +339,29 @@ export function behaviourChecks({ job, measure, room }: VerdictJob): BehaviourCh
   const byFinal = how.get("answered by final") ?? 0;
   add("plainFinal", open.length === 0 && byFinal > 0 ? "pass" : "FAIL", `${requests.length} requests: ${[...how].map(([k, n]) => `${n} ${k}`).join(", ")}${open.length ? `; open at the close: ${open.join(", ")}` : ""}`);
 
-  // 2. T3: W1's requests stayed open while its background work ran, and closed only once the slow-check had ended.
+  // 2. T3: when W1 started background work in T3 (its transcripts say so, not the runtime), each of W1's requests closed
+  // only once the slow-check had ended (the copy at its answer: no run still going); which hold kept it open, if any.
   if (job.task !== "T3") add("backgroundHeld", "n/a", "not T3");
+  else if (!w1Background || w1Background.length === 0) add("backgroundHeld", "n/a", `W1 started no background work in T3 (no background Bash, Monitor or background subagent in its transcripts${w1Background ? "" : "; none read"})`);
   else {
     const w1 = requests.filter((q) => role(q.request?.owner ?? "") === "W1");
-    const w1Outputs = inJob.filter((p) => p.kind === "output" && role(p.author) === "W1");
-    const held = w1Outputs.filter((p) => p.output?.activityId || p.output?.claims.some((c) => c.outcome === "pending_activity" && w1.some((q) => q.id === c.requestId)));
-    if (held.length === 0) add("backgroundHeld", "n/a", `no background work held W1's request${w1.length === 1 ? "" : "s"} (no pending_activity claim, no activity settled)`);
-    else {
-      const results = w1.map((q) => {
-        const answer = answerPost(q);
-        const log = snapshotOf(answer)?.check.parts.slowCheckLog;
-        return { q, answer, ok: answer !== undefined && log?.pass === true, detail: answer === undefined ? "never answered" : log ? `${log.pass ? "slow-check ended and passed" : "slow-check not ended or not passed"} at the answer (${log.detail ?? ""})` : "no copy of the answer" };
-      });
-      add(
-        "backgroundHeld",
-        results.every((r) => r.ok) ? "pass" : "FAIL",
-        `held by ${held.map(describe).join(", ")}; ${results.map((r) => `#${r.q.number} answered by ${describe(r.answer)}: ${r.detail}`).join("; ")}`,
-      );
-    }
+    const ofW1 = (p: EnginePost) => role(p.author) === "W1";
+    const runtimeHolds = [...new Set(inJob.filter((p) => ofW1(p) && p.output?.activityId?.startsWith("bg:")).map((p) => `${p.output?.activityId} settled by ${describe(p)}`))];
+    const memberMarks = inJob.filter((p) => ofW1(p) && ((p.kind === "progress" && p.progress?.working) || p.output?.activityId?.startsWith("work:")));
+    const pending = inJob.filter((p) => ofW1(p) && p.output?.claims.some((c) => c.outcome === "pending_activity" && w1.some((q) => q.id === c.requestId)));
+    const results = w1.map((q) => {
+      const answer = answerPost(q);
+      const log = snapshotOf(answer)?.check.parts.slowCheckLog;
+      const ended = log !== undefined && !/had not finished|no run started/.test(log.detail ?? "");
+      return { q, ok: answer !== undefined && ended, text: `#${q.number} answered by ${describe(answer)}: ${answer === undefined ? "never answered" : log ? `${ended ? "the slow-check had ended" : "the slow-check had not ended"} at the answer (${log.detail ?? ""})` : "no copy of the answer"}` };
+    });
+    const holds = [
+      runtimeHolds.length ? `runtime hold ${runtimeHolds.join(", ")}` : "",
+      memberMarks.length ? `member's working mark ${memberMarks.map((p) => (p.output?.activityId ? `${p.output.activityId} via ${describe(p)}` : describe(p))).join(", ")}` : "",
+      pending.length ? `pending_activity claims ${pending.map(describe).join(", ")}` : "",
+    ].filter(Boolean);
+    const note = runtimeHolds.length > 0 ? "runtime hold" : memberMarks.length > 0 ? "member's mark only" : "no hold";
+    add("backgroundHeld", results.length > 0 && results.every((r) => r.ok) ? "pass" : "FAIL", `background work in T3: ${w1Background.join(", ")}; holds: ${holds.join("; ") || "none"}; ${results.map((r) => r.text).join("; ") || "W1 had no request"}`, note);
   }
 
   // Review requests: owned by V, and the request each one holds (its parent when a worker asked; itself when the Consigliere did).
@@ -324,17 +390,18 @@ export function behaviourChecks({ job, measure, room }: VerdictJob): BehaviourCh
     }
   }
 
-  // 4. T2: the Consigliere is not woken while a review exchange is open.
+  // 4. T2, §1 case 2: the Consigliere is not woken while a worker's request is held by the review it asked under it.
+  const ownReviews = reviews.filter((r) => holder(r) === r).map((r) => `#${r.number}`);
   if (job.task !== "T2") add("consigliereHeld", "n/a", "not T2");
-  else if (reviews.length === 0) add("consigliereHeld", "n/a", "no review request");
+  else if (reviews.every((r) => holder(r) === r)) add("consigliereHeld", "n/a", reviews.length === 0 ? "no review request" : `every review was asked by the Consigliere himself (${ownReviews.join(", ")}), not under a worker's request`);
   else {
-    const results = reviews.map((r) => {
+    const results = reviews.filter((r) => holder(r) !== r).map((r) => {
       const hold = holder(r);
       const end = answerPost(hold)?.seq ?? Number.POSITIVE_INFINITY;
       const woken = runs.filter((run) => role(run.seatId ?? "") === "C" && (run.reservedSeq ?? -1) > r.seq && (run.reservedSeq ?? -1) < end);
       return { ok: woken.length === 0, text: `review #${r.number} held #${hold.number} until ${Number.isFinite(end) ? `#${end}` : "the close"}: ${woken.length === 0 ? "no Consigliere wake in between" : `woken by ${woken.map((w) => `inputs ${(w.inputs ?? []).map((n) => `#${n}`).join(" ")}`).join("; ")}`}` };
     });
-    add("consigliereHeld", results.every((r) => r.ok) ? "pass" : "FAIL", results.map((r) => r.text).join("; "));
+    add("consigliereHeld", results.every((r) => r.ok) ? "pass" : "FAIL", `${results.map((r) => r.text).join("; ")}${ownReviews.length ? `; asked by the Consigliere himself, not judged: ${ownReviews.join(", ")}` : ""}`);
   }
 
   // 5. T1: a subagent ran, and nothing of the job was left pending at the close.
@@ -372,12 +439,13 @@ export function behaviourSection(jobs: VerdictJob[], notes: string | null): stri
     `| check | ${newJobs.map(({ job }) => `${job.task}#${job.run} ${job.jobId}`).join(" | ")} |`,
     `|---|${newJobs.map(() => "---|").join("")}`,
   ];
-  for (const check of BEHAVIOUR_CHECKS) lines.push(`| ${check.title} | ${newJobs.map(({ job }) => checks.get(job.jobId)?.find((c) => c.id === check.id)?.outcome ?? "–").join(" | ")} |`);
+  const cell = (c: BehaviourCheck | undefined) => (c ? `${c.outcome}${c.note ? ` (${c.note})` : ""}` : "–");
+  for (const check of BEHAVIOUR_CHECKS) lines.push(`| ${check.title} | ${newJobs.map(({ job }) => cell(checks.get(job.jobId)?.find((c) => c.id === check.id))).join(" | ")} |`);
   const failures = [...checks.values()].flat().filter((c) => c.outcome === "FAIL").length;
   lines.push("", `${failures === 0 ? "No check failed." : `**${failures} check${failures === 1 ? "" : "s"} failed.**`}`, "", "### Evidence per job", "");
   for (const { job } of newJobs) {
     lines.push(`- **${job.task}#${job.run} ${job.jobId}**`);
-    for (const c of checks.get(job.jobId) ?? []) lines.push(`  - ${c.id}: ${c.outcome} — ${c.evidence}`);
+    for (const c of checks.get(job.jobId) ?? []) lines.push(`  - ${c.id}: ${cell(c)} — ${c.evidence}`);
   }
   if (notes !== null) lines.push("", "### Classification of the failures (by hand, from the board and transcripts)", "", notes.trim());
   return lines;

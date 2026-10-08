@@ -3,12 +3,15 @@
  * on the new side and the embedded report, on constructed records.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { after, describe, test } from "node:test";
 import type { EnginePost } from "../../src/domain/engineView.ts";
 import type { JobRecord, Snapshot } from "./campaign.ts";
 import type { JobMeasure } from "./measure.ts";
 import type { TaskId } from "./tasks.ts";
-import { behaviourChecks, embeddedReport, lineDiff, normalizeRules, rulesOf, standingPart, verdictSections, type RoomRecord, type VerdictJob } from "./verdict-report.ts";
+import { backgroundWorkOf, behaviourChecks, embeddedReport, lineDiff, normalizeRules, rulesOf, standingPart, verdictSections, type RoomRecord, type VerdictJob } from "./verdict-report.ts";
 
 const SEATS = { C: "seat-c", W1: "seat-w1", V: "seat-v" } as const;
 
@@ -178,7 +181,7 @@ describe("behaviour checks on the new side", () => {
     assert.match(checks.find((c) => c.id === "consigliereHeld")?.evidence ?? "", /inputs #14/);
   });
 
-  test("T2: a review the Consigliere asked himself holds him until V answers; case 7 is n/a", () => {
+  test("T2: a review the Consigliere asked himself exercises neither hold: both checks are n/a, with the review named", () => {
     const posts = [request(10, "prompt", SEATS.C, null, 20), request(12, "a", SEATS.W1, "prompt", 13), output(13, SEATS.W1, [["a", "answered"]]), request(15, "r", SEATS.V, "prompt", 16), output(16, SEATS.V, [["r", "answered"]]), output(20, SEATS.C, [["prompt", "answered"]])];
     const room = engineRoom(posts, [
       { id: "c1", seatId: SEATS.C, reservedSeq: 11, inputs: [10] },
@@ -187,26 +190,55 @@ describe("behaviour checks on the new side", () => {
     ]);
     const checks = behaviourChecks({ job: jobRecord("T2", "new"), measure: measureOf("T2", "new"), room });
     assert.equal(outcome(checks, "earlyReview"), "n/a");
-    assert.equal(outcome(checks, "consigliereHeld"), "pass");
+    assert.equal(outcome(checks, "consigliereHeld"), "n/a");
+    assert.match(checks.find((c) => c.id === "consigliereHeld")?.evidence ?? "", /asked by the Consigliere himself \(#15\)/);
   });
 
-  const t3 = (logPass: boolean, held: boolean) => {
+  test("T2: the Consigliere asks W1 and V together; W1's answer wakes him while V's review is open: n/a, not a false FAIL", () => {
+    const posts = [request(10, "prompt", SEATS.C, null, 20), request(12, "a", SEATS.W1, "prompt", 14), request(13, "r", SEATS.V, "prompt", 17), output(14, SEATS.W1, [["a", "answered"]]), output(17, SEATS.V, [["r", "answered"]]), output(20, SEATS.C, [["prompt", "answered"]])];
+    const room = engineRoom(posts, [
+      { id: "c1", seatId: SEATS.C, reservedSeq: 11, inputs: [10] },
+      { id: "c2", seatId: SEATS.C, reservedSeq: 15, inputs: [14] },
+      { id: "c3", seatId: SEATS.C, reservedSeq: 18, inputs: [17] },
+    ]);
+    assert.equal(outcome(behaviourChecks({ job: jobRecord("T2", "new"), measure: measureOf("T2", "new"), room }), "consigliereHeld"), "n/a");
+  });
+
+  // W1's request #12: held (pending_activity at #18, closed by a continuation settling `activity` at #22), or closed at #18.
+  const t3 = (logDetail: string, hold: "bg" | "work" | null, background: string[] = ["background Bash \"npm run slow-check\" at 00:01:00"]) => {
     const posts = [
       request(10, "prompt", SEATS.C, null, 24),
-      request(12, "a", SEATS.W1, "prompt", held ? 22 : 18),
-      output(18, SEATS.W1, [["a", held ? "pending_activity" : "answered"]]),
-      ...(held ? [output(22, SEATS.W1, [["a", "answered"]], "continuation", null, "bg:w1-run")] : []),
+      request(12, "a", SEATS.W1, "prompt", hold ? 22 : 18),
+      output(18, SEATS.W1, [["a", hold ? "pending_activity" : "answered"]]),
+      ...(hold ? [output(22, SEATS.W1, [["a", "answered"]], hold === "bg" ? "continuation" : "answer", null, `${hold}:w1-run`)] : []),
       output(24, SEATS.C, [["prompt", "answered"]]),
     ];
-    const answerId = held ? "out-22" : "out-18";
-    const snapshots = [{ kind: "answer", alias: "W1", postId: answerId, at: "2026-01-01T00:10:00Z", dir: "", check: { pass: logPass, parts: { catalog: { pass: true }, slowCheckLog: { pass: logPass, detail: logPass ? "last run passed" : "a run in progress" } } } }] as unknown as Snapshot[];
-    return { job: jobRecord("T3", "new", { snapshots }), measure: measureOf("T3", "new"), room: engineRoom(posts, []) } satisfies VerdictJob;
+    const snapshots = [{ kind: "answer", alias: "W1", postId: hold ? "out-22" : "out-18", at: "2026-01-01T00:10:00Z", dir: "", check: { pass: false, parts: { catalog: { pass: true }, slowCheckLog: { pass: logDetail.includes("passed"), detail: logDetail } } } }] as unknown as Snapshot[];
+    return { job: jobRecord("T3", "new", { snapshots }), measure: measureOf("T3", "new"), room: engineRoom(posts, []), w1Background: background } satisfies VerdictJob;
   };
+  const RUNNING = "a run (pid 7) had not finished up to 2026-01-01T00:10:00Z";
 
-  test("T3: background work held W1's request, closed once the slow-check had ended; closed while it ran fails; nothing held is n/a", () => {
-    assert.equal(outcome(behaviourChecks(t3(true, true)), "backgroundHeld"), "pass");
-    assert.equal(outcome(behaviourChecks(t3(false, true)), "backgroundHeld"), "FAIL");
-    assert.equal(outcome(behaviourChecks(t3(true, false)), "backgroundHeld"), "n/a");
+  test("T3: n/a only when W1's transcripts show no background work; otherwise the request must stay open until the slow-check ended", () => {
+    const held = behaviourChecks(t3("the last run (pid 7) passed", "bg")).find((c) => c.id === "backgroundHeld");
+    assert.equal(held?.outcome, "pass");
+    assert.equal(held?.note, "runtime hold");
+    assert.match(held?.evidence ?? "", /runtime hold bg:w1-run settled by #22 \(continuation\)/);
+    // Ended, even with a failing last run: the hold did its part (the early-answer check judges the result).
+    assert.equal(outcome(behaviourChecks(t3("the last run (pid 7) failed", "bg")), "backgroundHeld"), "pass");
+    assert.equal(outcome(behaviourChecks(t3(RUNNING, "bg")), "backgroundHeld"), "FAIL");
+    // The defect the check exists for: background work ran, the runtime held nothing, the final closed the request mid-run.
+    const unheld = behaviourChecks(t3(RUNNING, null)).find((c) => c.id === "backgroundHeld");
+    assert.equal(unheld?.outcome, "FAIL");
+    assert.match(unheld?.evidence ?? "", /holds: none/);
+    // No background work in the transcripts: n/a, whatever the runtime recorded.
+    assert.equal(outcome(behaviourChecks(t3("the last run (pid 7) passed", null, [])), "backgroundHeld"), "n/a");
+  });
+
+  test("T3: a request held only by the member's own working mark is reported as that", () => {
+    const check = behaviourChecks(t3("the last run (pid 7) passed", "work")).find((c) => c.id === "backgroundHeld");
+    assert.equal(check?.outcome, "pass");
+    assert.equal(check?.note, "member's mark only");
+    assert.match(check?.evidence ?? "", /member's working mark work:w1-run via #22 \(answer\)/);
   });
 
   test("an early member post fails only when it closed a request; an open request or a pending activity at the close fails", () => {
@@ -234,6 +266,41 @@ describe("behaviour checks on the new side", () => {
   test("a job whose journal was not recorded fails every check", () => {
     const checks = behaviourChecks({ job: jobRecord("T1", "new"), measure: measureOf("T1", "new"), room: null });
     assert.ok(checks.length === 8 && checks.every((c) => c.outcome === "FAIL"));
+  });
+});
+
+describe("W1's background work, from T3's side of the evidence", () => {
+  const scratch = join(import.meta.dirname, `.scratch-verdict-${process.pid}`);
+  after(() => rmSync(scratch, { recursive: true, force: true }));
+
+  test("background Bash, Monitor and background subagents in the window, the session's own transcript and its subagents'", () => {
+    mkdirSync(join(scratch, "t3"), { recursive: true });
+    const db = new DatabaseSync(join(scratch, "t3", "state-subset.sqlite"));
+    db.exec("CREATE TABLE orchestration_v2_projection_provider_threads (thread_id TEXT, driver TEXT, payload_json TEXT)");
+    db.prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?)").run("t-w1", "claudeAgent", JSON.stringify({ nativeThreadRef: { nativeId: "sess-w1" } }));
+    db.prepare("INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?)").run("t-v", "claudeAgent", JSON.stringify({ nativeThreadRef: { nativeId: "sess-v" } }));
+    db.close();
+    const project = join(scratch, "transcripts", "-home-x-tally");
+    mkdirSync(join(project, "sess-w1", "subagents"), { recursive: true });
+    const use = (at: string, id: string, name: string, input: Record<string, unknown>) => JSON.stringify({ timestamp: at, message: { content: [{ type: "tool_use", id, name, input }] } });
+    writeFileSync(
+      join(project, "sess-w1.jsonl"),
+      [
+        use("2026-01-01T00:00:30Z", "early", "Bash", { command: "npm run slow-check", run_in_background: true }),
+        use("2026-01-01T00:01:00Z", "fg", "Bash", { command: "npm test" }),
+        use("2026-01-01T00:02:00Z", "bg", "Bash", { command: "npm run slow-check", run_in_background: true }),
+        use("2026-01-01T00:02:00Z", "bg", "Bash", { command: "npm run slow-check", run_in_background: true }),
+        use("2026-01-01T00:03:00Z", "mon", "Monitor", { command: "tail -f .slow-check.log" }),
+        "not json",
+      ].join("\n"),
+    );
+    writeFileSync(join(project, "sess-w1", "subagents", "agent-1.jsonl"), use("2026-01-01T00:04:00Z", "sub", "Agent", { description: "watch the check", run_in_background: true }));
+    writeFileSync(join(project, "sess-v.jsonl"), use("2026-01-01T00:02:30Z", "other", "Bash", { command: "sleep 1", run_in_background: true }));
+    assert.deepEqual(backgroundWorkOf(scratch, "t-w1", Date.parse("2026-01-01T00:01:00Z"), Date.parse("2026-01-01T00:10:00Z")), [
+      'background Bash "npm run slow-check" at 00:02:00',
+      "Monitor at 00:03:00",
+      'background subagent "watch the check" at 00:04:00',
+    ]);
   });
 });
 
