@@ -41,7 +41,7 @@ import {
   type Snapshot,
 } from "./campaign.ts";
 import { MEMBER_PARTS, checkTask, type CheckInput } from "./checkers.ts";
-import { EngineInstance, LegacyInstance, type BoardPost, type InstanceDriver, type InstanceThreadView } from "./instance.ts";
+import { EngineInstance, HttpError, LegacyInstance, type BoardPost, type InstanceDriver, type InstanceThreadView } from "./instance.ts";
 import { measureJob, type ThreadRecord } from "./measure.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB, copyTranscripts, exportStateSubset, liveT3 } from "./t3.ts";
 import { TASKS, TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
@@ -194,7 +194,7 @@ class Job {
     const consigliere = await instance.ensurePreset(CREW.consigliere.name, CREW.consigliere.modelSelection, CREW.runtimeMode);
     const member = await instance.ensurePreset(CREW.member.name, CREW.member.modelSelection, CREW.runtimeMode);
     await instance.setConsiglierePreset(consigliere);
-    this.record.projectId = await instance.createProject(this.record.folder, `tally-${this.record.jobId}`);
+    this.record.projectId = await this.createProject();
     this.record.times.seatingStart = iso();
     const room = await instance.createRoom(this.record.projectId, `tally ${this.record.jobId}`);
     this.record.roomId = room.roomId;
@@ -223,6 +223,10 @@ class Job {
     await Promise.all(this.checks);
     await this.finish();
     return this.record;
+  }
+
+  private createProject(): Promise<string> {
+    return createJobProject(this.options.instance, this.record.folder, `tally-${this.record.jobId}`, (text) => this.note(text));
   }
 
   /** Seat briefings answered, every seat idle in T3, nothing pending on the instance. */
@@ -688,6 +692,28 @@ async function main(): Promise<void> {
     }
     const job = new Job({ campaign, side, task, run: Number(run), instance, worktree: instanceInfo.worktree, t3, cap, quietMs, dry: false }, spent);
     await runOrAbort(job);
+  }
+}
+
+/**
+ * A job's throwaway T3 project. T3 can take the project and still answer the command with a failure (a timeout under
+ * load: twice in R0, once in R1, each time T3 had the project seconds later); the instance then answers 422 or 5xx. The
+ * folder is fresh and the title the job's own, so T3's project for both is the job's: it is taken, with a note.
+ */
+export async function createJobProject(instance: Pick<InstanceDriver, "createProject" | "findProject">, folder: string, title: string, note: (text: string) => void, waitMs = 5000): Promise<string> {
+  try {
+    return await instance.createProject(folder, title);
+  } catch (error) {
+    if (!(error instanceof HttpError) || (error.status !== 422 && error.status < 500)) throw error;
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const found = await instance.findProject(folder, title).catch(() => null);
+      if (found) {
+        note(`project.create answered ${error.status} but T3 has ${title} for the folder (${found}): taken`);
+        return found;
+      }
+      await sleep(waitMs);
+    }
+    throw error;
   }
 }
 

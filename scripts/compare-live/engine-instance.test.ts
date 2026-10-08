@@ -28,7 +28,8 @@ import type { JobRecord } from "./campaign.ts";
 import { CREW } from "./campaign.ts";
 import { EngineInstance, engineBoardPosts, engineQuiet, engineSeatingDone, type BoardPost } from "./instance.ts";
 import { measureJob, verifyJob } from "./measure.ts";
-import { refuseTaintedCheckout } from "./run.ts";
+import { createJobProject, refuseTaintedCheckout } from "./run.ts";
+import { T3Unavailable } from "../../src/adapter/types.ts";
 import { TASKS, TASK_IDS, hasJobDoneLine } from "./tasks.ts";
 
 const SCRATCH = join(import.meta.dirname, `.scratch-engine-${process.pid}`);
@@ -210,6 +211,31 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
       assert.equal(report.via, "answer");
       assert.equal(report.clock, "seen", "no T3 time: the runner's first sight of it");
       await complete(i, r.w1.threadId, "Found them.");
+    } finally {
+      i.close();
+    }
+  });
+
+  test("a project T3 took while answering the command with a failure is taken, with a note; a folder T3 has not is refused", async () => {
+    const i = engineInstance("project");
+    try {
+      // As in R1's first smoke attempt: T3 records the project, then the command times out.
+      const create = i.fake.createProject.bind(i.fake);
+      i.fake.createProject = async (input) => {
+        await create(input);
+        throw new T3Unavailable("T3 RPC project.create timed out after 15000ms");
+      };
+      const folder = join(SCRATCH, "project-folder");
+      mkdirSync(folder, { recursive: true });
+      const notes: string[] = [];
+      const id = await createJobProject(i.driver, folder, "tally-abc123", (text) => notes.push(text), 1);
+      assert.equal(id, i.fake.projects.find((p) => p.workspaceRoot === folder)?.id);
+      assert.match(notes[0] ?? "", /answered 422 but T3 has tally-abc123 for the folder/);
+      // T3 refused and has no project there: the failure stands.
+      i.fake.createProject = async () => {
+        throw new T3Unavailable("refused");
+      };
+      await assert.rejects(createJobProject(i.driver, join(SCRATCH, "elsewhere"), "tally-def456", () => {}, 1), /HTTP 422/);
     } finally {
       i.close();
     }

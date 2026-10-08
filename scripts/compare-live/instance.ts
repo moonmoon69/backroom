@@ -53,6 +53,8 @@ export interface InstanceDriver {
   ensurePreset(name: string, modelSelection: ModelSelection, runtimeMode: RuntimeMode): Promise<string>;
   setConsiglierePreset(presetId: string): Promise<void>;
   createProject(workspaceRoot: string, title: string): Promise<string>;
+  /** T3's project for a folder with this title, as the instance lists T3's projects; null when T3 has none. */
+  findProject(workspaceRoot: string, title: string): Promise<string | null>;
   /** A room with the Consigliere seated and marked. */
   createRoom(projectId: string, title: string): Promise<{ roomId: string; consigliere: { id: string; alias: string; threadId: string } }>;
   seat(roomId: string, presetId: string, alias: string): Promise<{ id: string; alias: string; threadId: string }>;
@@ -131,6 +133,12 @@ abstract class HttpInstance {
     const result = await this.command<{ projectId?: string }>({ type: "project.create", workspaceRoot, title, createIfMissing: false });
     if (!result.projectId) throw new Error(`project.create gave no project id: ${JSON.stringify(result)}`);
     return result.projectId;
+  }
+
+  async findProject(workspaceRoot: string, title: string): Promise<string | null> {
+    const projects = await this.request<Array<{ id: string; title: string; workspaceRoot: string }>>("GET", "/api/t3/projects");
+    const root = workspaceRoot.replace(/\/+$/, "");
+    return projects.find((p) => p.workspaceRoot.replace(/\/+$/, "") === root && p.title === title)?.id ?? null;
   }
 
   async board(argv: string[], as: string): Promise<string> {
