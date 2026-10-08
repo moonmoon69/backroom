@@ -230,3 +230,22 @@ test("K11 the keep-alive text: one line, then status lines, and the rules line",
   say(`K11 sent to C:\n${room.prompt("C").replace(/^/gm, "#   ")}`);
   assert.ok(room.prompt("C").startsWith(KEEP_ALIVE_LINE));
 });
+
+test("K12 reads stay bounded when T3's list says the seat is free but its thread does not (a request left pending after the run)", async () => {
+  room = await Room.create();
+  await handOff(room);
+  after(room, "C", KEEP_ALIVE_MS);
+  // The real adapter's list drops a pending request once no run is active; the thread's detail keeps it (openRequests).
+  room.fake.raiseApproval(room.threadOf("C"));
+  const list = room.fake.listThreads.bind(room.fake);
+  room.fake.listThreads = async (projectId?: string) => (await list(projectId)).map((s) => (s.id === room.threadOf("C") ? { ...s, pendingRequest: null } : s));
+  let reads = 0;
+  const detail = room.fake.getThreadDetail.bind(room.fake);
+  room.fake.getThreadDetail = async (threadId: string) => {
+    if (threadId === room.threadOf("C")) reads += 1;
+    return detail(threadId);
+  };
+  await room.tick(20);
+  say(`K12 C's thread read ${reads} times in 20 ticks within one minute of host time; keep-alives ${keepAlives(room).length}`);
+  assert.ok(reads <= 2, `bounded: ${reads}`);
+});

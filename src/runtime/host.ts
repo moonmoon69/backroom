@@ -55,7 +55,7 @@ export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" 
 
 /** H6: how long a seat with work in flight may go without a wake before it gets a keep-alive: under the prompt cache's hour. */
 export const KEEP_ALIVE_MS = 55 * 60_000;
-/** H6: an overdue seat with nothing in flight is looked at again after this long, not on every tick: a bound on reads only. */
+/** H6: an overdue seat whose threads were read and given no keep-alive is looked at again after this long: a bound on reads only. */
 const KEEP_ALIVE_RECHECK_MS = 60_000;
 
 /**
@@ -168,7 +168,7 @@ export class EngineHost {
   private readonly quietSince = new Map<string, { id: string; at: number }>();
   /** Per seat: the thread state whose turns and messages are all imported (§3), so an unchanged thread is not reread. */
   private readonly seen = new Map<string, string>();
-  /** Per seat: the keep-alive that found nothing in flight, and when, so its threads are read again only after KEEP_ALIVE_RECHECK_MS. */
+  /** Per seat: the turn whose keep-alive check read the threads and posted nothing, and when, so they are read again only after KEEP_ALIVE_RECHECK_MS. */
   private readonly idleSince = new Map<string, { id: string; at: number }>();
   /**
    * Per steer offer: when its message was first sent (or may have been: an unknown acknowledgement), the offers this
@@ -802,7 +802,8 @@ export class EngineHost {
    * whose work is in flight, gets a keep-alive: the prompt cache lasts an hour, and a cold reread of a large thread
    * costs many times a warm one. The listed shell only rules seats out; the seat's own thread decides, as it is now.
    * The ID names that turn, so it is posted once: a restart finds it, and only another interval after the next turn
-   * (the keep-alive's own included) makes another. A seat found with nothing in flight is looked at again a minute on.
+   * (the keep-alive's own included) makes another. A seat whose threads were read and given no keep-alive is looked at
+ * again a minute on, or once the list shows another turn.
    */
   private async keepAlive(roomId: string, seatId: string, listed: T3ThreadShell, imported: boolean, load: Loader, stateOf: (seatId: string) => { load: Loader } | undefined): Promise<void> {
     const { intervalMs, on } = this.keepAliveFor(roomId, seatId);
@@ -818,14 +819,16 @@ export class EngineHost {
     if (unread(p, seatId).some((i) => i.intent !== "keep-alive")) return;
     const checked = this.idleSince.get(seatId);
     if (checked?.id === this.keepAliveId(seatId, listed) && this.now() - checked.at < KEEP_ALIVE_RECHECK_MS) return;
+    // Whenever the threads were read and nothing was posted, the next look waits a minute (or for a turn the list shows):
+    // T3's list and the thread can disagree for a while (a request the thread keeps pending after its run, a held run).
+    const idle = (): void => {
+      this.idleSince.set(seatId, { id: this.keepAliveId(seatId, listed) ?? "", at: this.now() });
+    };
     const detail = await load();
     const id = detail && !detail.runs.some((r) => !isTerminal(r)) ? due(detail.shell) : null;
-    if (!detail || !id) return;
+    if (!detail || !id) return idle();
     const lines = await this.inFlight(roomId, seatId, detail, stateOf);
-    if (lines.length === 0) {
-      this.idleSince.set(seatId, { id: this.keepAliveId(seatId, listed) ?? id, at: this.now() });
-      return;
-    }
+    if (lines.length === 0) return idle();
     this.idleSince.delete(seatId);
     this.exec(roomId, { type: "keep_alive", actor: SYSTEM, id, seatId, body: [KEEP_ALIVE_LINE, ...lines].join("\n") });
     this.step("keep-alive", roomId, seatId);
