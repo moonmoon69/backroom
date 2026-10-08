@@ -219,8 +219,9 @@ export class EngineSeats {
         throw new RoomError("participant_busy", `@${participant.alias} cannot be retired now: its T3 thread is in a turn (${shell.status}). Retire it once that turn has ended.`, 409);
       }
       // Read again after the await: work may have reached the seat meanwhile. The core checks the run and requests too.
-      // An unread answer holds it only while T3 still has its thread unarchived: otherwise nothing will ever wake it.
-      this.refuseOpen(room.id, binding.id, participant.alias, "retired", shell !== null && !shell.archivedAt);
+      // An unread answer holds it only while T3 still lists its thread (neither archived nor deleted, as listThreads
+      // filters): otherwise nothing will ever wake it.
+      this.refuseOpen(room.id, binding.id, participant.alias, "retired", shell !== null && shell.archivedAt === null && shell.deletedAt === null);
       this.host.retire(room.id, { actor, id: `retire:${binding.id}`, seatId: binding.id, evidence: shell ? `lean: T3 thread ${binding.threadId} ${shell.status}` : `lean: T3 no longer lists thread ${binding.threadId}` });
     }
     this.deps.transaction(() => {

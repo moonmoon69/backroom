@@ -940,3 +940,24 @@ for (const action of ["archive", "delete"] as const) test(`R2-F1: a member whose
     h.close();
   }
 });
+
+test("R3: a thread T3 deleted but still returns (deletedAt set, as the real adapter reports it) does not hold a retire either", async () => {
+  const h = await Seats.create();
+  try {
+    // The real adapter's getThreadShell finds a deleted thread in the snapshot with deletedAt set; listThreads leaves it out.
+    const list = h.fake.listThreads.bind(h.fake);
+    h.fake.listThreads = async (projectId?: string) => (await list(projectId)).filter((t) => t.deletedAt === null);
+    const seatW = h.seat("W");
+    const q = `question:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: q, to: h.seat("V"), body: "Which node version?" });
+    await h.tick();
+    h.fake.thread(h.thread("W")).shell.deletedAt = new Date().toISOString();
+    h.complete("V", "Node 24.");
+    await h.tick(3);
+    assert.equal(h.host.unread(h.roomId, seatW), 1, "the answer waits for W, whom nothing can wake");
+    await h.run({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" });
+    assert.equal(h.p.seats.get(seatW)!.status, "retired");
+  } finally {
+    h.close();
+  }
+});
