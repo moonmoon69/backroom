@@ -545,7 +545,7 @@ class Room {
       sourceText: text,
       clientMessageId: randomUUID(),
       attachmentIds: [],
-      assignments: [{ recipients: [this.participant.fable], instruction: text, schedule: { mode: "now" }, after: [] }],
+      assignments: [{ recipients: [this.participant.fable], instruction: text }],
     });
     return result.requestIds[0]!;
   }
@@ -1224,7 +1224,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     sourceText: "@alpha @beta independently check the date tests",
     clientMessageId: randomUUID(),
     attachmentIds: [image],
-    assignments: [{ recipients: [second.participant.alpha!, second.participant.beta!], instruction: "independently check the date tests", schedule: { mode: "now" }, after: [] }],
+    assignments: [{ recipients: [second.participant.alpha!, second.participant.beta!], instruction: "independently check the date tests" }],
   });
   browser.openRoom("Rehearsal B");
   const two = new Checks(second, browser);

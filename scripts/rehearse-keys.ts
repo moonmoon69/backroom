@@ -323,7 +323,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // An approval in the second room ranks its card first (needs you): the next poll moves it under the focus.
   const bindings = (await second.snapshot()).bindings as Array<{ participantId: string; threadId: string }>;
   const alphaThread = bindings.find((b) => b.participantId === second.participant.alpha)!.threadId;
-  await service.command({ type: "message.create", roomId: second.roomId, sourceText: "@alpha check the logs", clientMessageId: crypto.randomUUID(), attachmentIds: [], assignments: [{ recipients: [second.participant.alpha], instruction: "check the logs", schedule: { mode: "now" }, after: [] }] });
+  await service.command({ type: "message.create", roomId: second.roomId, sourceText: "@alpha check the logs", clientMessageId: crypto.randomUUID(), attachmentIds: [], assignments: [{ recipients: [second.participant.alpha], instruction: "check the logs" }] });
   await until("alpha's turn to run", async () => ((await second.snapshot()).runs as Array<{ phase: string }>).some((r) => r.phase === "running"));
   await service.fake("approval", { threadId: alphaThread });
   const needs = await until("the API to say the second room needs you", async () => {
