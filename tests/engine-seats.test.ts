@@ -207,6 +207,7 @@ test("Consigliere: making one briefs every member once, moving him tells them, c
     const rules = h.prompt("V");
     assert.match(rules, /Rules for the Consigliere:/);
     for (const rule of ENGINE_BOARD_RULES) assert.ok(rules.includes(rule), `missing: ${rule.slice(0, 60)}`);
+    assert.ok(rules.includes("- Scope is yours: when a member finds a defect in the code under change, have it fixed before you report unless the user said otherwise; do not ask a member to decide it.\n"));
     h.complete("V", "The plan is ...");
     await h.tick();
 

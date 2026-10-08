@@ -141,10 +141,11 @@ export function engineSeatFacts(consigliere: Pick<Participant, "alias">): string
  * The Consigliere's default rules on the engine: today's, with how work is given, routed and adjusted on the engine's
  * board. Members do not post to each other, so he routes reviews; the board carries no slash commands to members.
  */
-const ENGINE_RULE_CHANGES: ReadonlyArray<readonly [string, string | null]> = [
+const ENGINE_RULE_CHANGES: ReadonlyArray<readonly [string, ...string[]]> = [
   [
     "Keep yourself off the path between worker and reviewer.",
     "You route reviews: members never post to each other. When the work is ready, seat the reviewer and send it the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.",
+    "Scope is yours: when a member finds a defect in the code under change, have it fixed before you report unless the user said otherwise; do not ask a member to decide it.",
   ],
   [
     "Give work by posting on the board:",
@@ -162,12 +163,12 @@ const ENGINE_RULE_CHANGES: ReadonlyArray<readonly [string, string | null]> = [
     "A new message from the user outranks everything.",
     "A new message from the user outranks everything. If it only adjusts running work, correct the request you posted: `rooms-board correct <number> \"the adjustment\"`; the member's turn then does not answer it, and its next turn brings the correction. If it replaces that work, withdraw the request with `rooms-board cancel <number>` and post the new job.",
   ],
-  ["A harness's own slash command for a member", null],
+  ["A harness's own slash command for a member"],
 ];
 
 export const ENGINE_CONSIGLIERE_RULES: string[] = CONSIGLIERE_RULES.flatMap((rule) => {
   const change = ENGINE_RULE_CHANGES.find(([start]) => rule.startsWith(start));
-  return change ? (change[1] === null ? [] : [change[1]]) : [rule];
+  return change ? change.slice(1) : [rule];
 });
 
 /** The engine's default wording of the rules, a line each. */
