@@ -41,6 +41,10 @@ export class Room {
     const receipt = this.p.runs.get(run.id)!.receipts.find((r) => r.id === receiptId)!;
     return { id: receipt.id, digest: receipt.digest };
   }
+  /** The host confirms a sync receipt T3 exposed in the transcript (a steer it saw delivered), before the run ends. */
+  confirm(run: Run, receipt: { id: string; digest: string }): Decision {
+    return this.add({ type: "confirm_sync", actor: "$system", runId: run.id, receiptId: receipt.id, digest: receipt.digest, evidence: "exact sync receipt in the transcript" });
+  }
   restart(): void { this.log = JSON.parse(JSON.stringify(this.log)) as RoomEvent[]; }
   idle(...seats: string[]): void {
     const before = JSON.stringify(this.log);

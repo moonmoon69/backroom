@@ -677,7 +677,7 @@ test("T3 away while the fresh seat is made, then a restart before the transfer: 
 
 // ---------------- review round 1 (#223) ----------------
 
-test("F1: a retire while the member's turn is being stopped is refused, names it, and leaves the seat on the board", async () => {
+test("F1: a retire while the member's turn is being stopped (a cancel) is refused, names the turn, and leaves the seat on the board", async () => {
   const h = await Seats.create();
   try {
     h.slowInterrupts();
@@ -685,10 +685,13 @@ test("F1: a retire while the member's turn is being stopped is refused, names it
     const a = h.request("C", "W", "Build A.");
     await h.tick();
     await h.host.cancel(h.roomId, { actor: h.seat("C"), id: "cancel-A", requestId: a });
-    assert.equal(h.p.seats.get(seatW)!.status, "stopping");
-    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, /@W cannot be retired now: its turn is being stopped \(a cancel\); try again once it has ended/);
+    // Since L6 the core records no control and no stopping state: the seat is active and still in its turn until T3 ends it.
+    assert.equal(h.p.seats.get(seatW)!.status, "active");
+    assert.ok(h.p.seats.get(seatW)!.activeRunId);
+    const events = h.p.events.length;
+    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, /@W cannot be retired now: it is in a turn \(its run is (accepted|running)\)/);
     assert.equal(h.s.repos.getParticipant(h.ids.W!)!.retiredAt, null, "nothing written in rooms.sqlite");
-    assert.equal(h.p.seats.get(seatW)!.status, "stopping", "nothing written in the journal");
+    assert.equal(h.p.events.length, events, "nothing written in the journal");
     // The turn ends; the member is told of the cancel; then it can be retired, and its thread is never sent anything again.
     h.fake.completeRun(h.thread("W"), { text: "(stopped)", outcome: "interrupted" });
     await h.acknowledge();
@@ -703,7 +706,7 @@ test("F1: a retire while the member's turn is being stopped is refused, names it
   }
 });
 
-test("F2: a reseat waits while its member's turn is being stopped, then goes ahead; a reseat asked meanwhile is refused with that reason", async () => {
+test("F2: a reseat waits while its member's turn is being stopped (a cancel), then goes ahead", async () => {
   const h = await Seats.create();
   try {
     h.slowInterrupts();
@@ -712,11 +715,10 @@ test("F2: a reseat waits while its member's turn is being stopped, then goes ahe
     await h.tick();
     await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
     await h.host.cancel(h.roomId, { actor: h.seat("C"), id: "cancel-A", requestId: a });
-    assert.equal(h.p.seats.get(seatW)!.status, "stopping");
+    assert.ok(h.p.seats.get(seatW)!.activeRunId, "still in the turn being stopped");
     await h.tick(2);
     assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 1, "still in progress");
     assert.equal(h.p.events.some((e) => e.id.startsWith("reseat-off:")), false, "not called off");
-    await h.refused({ type: "room.consigliere.set", roomId: h.roomId, participantId: h.ids.W! }, /@W's turn is being stopped \(a cancel\); try again once it has ended/);
     h.fake.completeRun(h.thread("W"), { text: "(stopped)", outcome: "interrupted" });
     await h.tick();
     assert.ok(h.running("W"), "the checkpoint turn");

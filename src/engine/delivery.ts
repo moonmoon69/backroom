@@ -20,7 +20,7 @@ export function inputFor(event: RoomEvent, seatId: Principal): Input | null {
     case "notice": return { ...base, intent: d.intent, body: d.body, requestIds: d.requestIds };
     case "transfer": return { ...base, intent: "transfer", body: d.body, requestIds: [...d.owned, ...d.awaited], inherited: d.inherited };
     case "retry": return { ...base, intent: "retry", body: d.body, requestIds: d.requestIds, inherited: d.inherited };
-    default: return null; // Notes, operations, live responses and receipts never wake.
+    default: return null; // Notes, seat and run records never wake.
   }
 }
 

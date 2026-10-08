@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, deliveredInputs, envelopeBytes, fold, inputTree, selectPrefix, unread } from "../../src/engine/index.ts";
+import { decide, deliveredInputs, EngineStore, envelopeBytes, fold, inputTree, selectPrefix, unread } from "../../src/engine/index.ts";
 import type { Command, RoomEvent } from "../../src/engine/index.ts";
 import { assertions, outcomes, Room } from "./helpers.ts";
 
@@ -11,17 +11,6 @@ test("source reuse cannot silently replace immutable content or explicit disposi
   assert.throws(() => r.output(run, { kind: "yield" }, false, { sourceKey: "emission", body: "original" }), /source identity conflicts/);
   assert.equal(r.output(run, { requestIds: ["A"], kind: "answer" }, false, { association: { id: run.id, kind: "run" }, sourceKey: "emission", body: "original" }).outcome, "duplicate");
   assert.equal(r.p.requests.get("A")!.answerId !== null, true);
-});
-
-test("a live reply cannot overwrite a cancel-generated interruption control identity", () => {
-  const r = new Room(); r.request("A"); const run = r.reserve("W")!;
-  r.add({ type: "request", id: "Q", actor: "W", to: "$user", body: "approve", parentId: "A", live: { runId: run.id, providerRequestId: "provider-question" } });
-  r.add({ type: "cancel", id: "cancel", actor: "$user", requestId: "A" });
-  const before = JSON.stringify(r.log);
-  assert.throws(() => r.add({ type: "runtime_reply", id: "cancel/interrupt", actor: "$user", requestId: "Q", body: "yes", commandId: "response" }), /fresh control identity/);
-  assert.equal(JSON.stringify(r.log), before); assert.equal(r.p.controls.get("cancel/interrupt")!.kind, "interrupt");
-  const control = r.p.controls.get("cancel/interrupt")!;
-  assert.throws(() => fold([...r.log, { id: "corrupt", seq: r.log.length + 1, commandKey: "corrupt", data: { kind: "control.prepared", control, recipients: [] } }]), /control identity reused/);
 });
 
 test("normal worker/reviewer exchange resumes original roots and ends without acknowledgement returns", () => {
@@ -93,8 +82,8 @@ test("K1 an unread result supersedes only the open request it walks up to", () =
 test("K1 a result already seen through a confirmed sync or a later run does not supersede", () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!;
   r.request("R", "V", "W", "A"); r.finish(r.reserve("V")!, "R");
-  const receipt = r.sync(w);
-  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] }, true, { receipts: [receipt] })), ["answered"]);
+  r.confirm(w, r.sync(w));
+  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] })), ["answered"]);
   r.request("B"); const w2 = r.reserve("W")!;
   r.add({ type: "activity_start", actor: "W", activityId: "bg", runId: w2.id, requestIds: ["B"], status: "pending" });
   r.request("R2", "V", "W", "B"); r.output(w2, { kind: "yield" });
@@ -122,7 +111,8 @@ for (const confirmed of [false, true]) test(`T2 ${confirmed ? "confirmed" : "los
   r.request("B"); r.request("C"); const receipt = r.sync(w); r.request("D");
   // An arbitrary read or citation changes no state; only exact receipt exposure counts.
   assert.equal(unread(r.p, "W").length, 4);
-  r.output(w, { kind: "yield" }, true, { body: "I read C", receipts: confirmed ? [receipt] : [] });
+  if (confirmed) r.confirm(w, receipt);
+  r.output(w, { kind: "yield" }, true, { body: "I read C" });
   assert.deepEqual(unread(r.p, "W").map((i) => i.requestIds), confirmed ? [["D"]] : [["B"], ["C"], ["D"]]);
   assert.equal(r.p.seats.get("W")!.cursor, confirmed ? r.p.runs.get(w.id)!.receipts[0]!.envelope.through : w.envelope.through);
   assertions(r);
@@ -134,7 +124,7 @@ test("T2 transcript confirmation survives fold and overlapping receipts never sk
   assert.throws(() => r.add({ type: "confirm_sync", actor: "$system", runId: w.id, receiptId: first.id, digest: "fake", evidence: "transcript" }), /invalid sync/);
   r.add({ type: "confirm_sync", actor: "$system", runId: w.id, receiptId: second.id, digest: second.digest, evidence: "verified complete tool result in transcript" });
   r.restart(); r.request("D");
-  r.output(w, { kind: "yield" }, true, { receipts: [first] });
+  r.confirm(w, first); r.output(w, { kind: "yield" });
   assert.deepEqual(deliveredInputs(r.p, w.id).map((i) => i.requestIds), [["A"], ["B"], ["C"]]);
   assert.deepEqual(unread(r.p, "W").map((i) => i.requestIds), [["D"]]); assertions(r);
 });
@@ -167,8 +157,8 @@ test("T4 correction-after-H supersedes answer; confirmed correction later permit
 test("T4 confirmed sync makes racing correction available without another turn", () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!;
   r.add({ type: "correct", actor: "O", requestId: "A", body: "Correction" });
-  const receipt = r.sync(w);
-  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] }, true, { receipts: [receipt] })), ["answered"]);
+  r.confirm(w, r.sync(w));
+  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] })), ["answered"]);
   r.idle("W"); assertions(r);
 });
 
@@ -348,48 +338,6 @@ test("T18 error failure scope excludes unrelated old context and bounded notices
   assert.equal(unread(r.p, "X").length, 0); r.idle("W"); assertions(r);
 });
 
-test("T19 live reply is a durable control outside the delivery cursor, including an intervening request", () => {
-  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
-  r.add({ type: "request", id: "live-Q", actor: "W", to: "$user", parentId: "A", body: "May I continue?", live: { runId: w.id, providerRequestId: "provider-Q" } });
-  r.request("B");
-  assert.throws(() => r.add({ type: "runtime_reply", actor: "V", requestId: "live-Q", commandId: "bad-reply", body: "Approve" }), /authorized/);
-  r.add({ type: "runtime_reply", id: "reply", actor: "$user", requestId: "live-Q", commandId: "response:Q", body: "Continue" });
-  assert.equal(r.p.seats.get("W")!.cursor, 0);
-  assert.throws(() => r.add({ type: "runtime_reply", actor: "$user", requestId: "live-Q", commandId: "conflict", body: "No" }), /authorized/);
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "uncertain", evidence: "ack lost" });
-  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] }, false)), ["pending_activity"]);
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "accepted", evidence: "durable response receipt" });
-  assert.deepEqual(outcomes(r.output(w, { kind: "answer", requestIds: ["A"] }, false)), ["pending_activity"]);
-  const effect = [...r.p.providerHolds.values()].find((h) => h.code === "control_effect:reply")!;
-  assert.deepEqual(effect.requestIds, ["live-Q", "A"]);
-  r.add({ type: "provider_hold", actor: "$system", hold: { ...effect, held: false, detail: "FAKE original runtime effect completion proof" } });
-  r.finish(w, "A");
-  assert.equal(r.p.requests.get("A")!.state, "answered");
-  assert.deepEqual(unread(r.p, "W").map((i) => i.requestIds), [["B"]]);
-  assert.equal(r.p.controls.get("reply")!.commandId, "response:Q"); assertions(r);
-});
-
-for (const outcome of ["accepted", "obsolete"] as const) test(`T19 lost control receipt can reconcile ${outcome} after terminal without a worker turn`, () => {
-  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
-  r.add({ type: "request", id: "Q", actor: "W", to: "$user", parentId: "A", body: "Question", live: { runId: w.id, providerRequestId: "runtime:Q" } });
-  r.add({ type: "runtime_reply", id: "reply", actor: "$user", requestId: "Q", body: "Answer retained", commandId: "cmd:reply" });
-  r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "uncertain", evidence: "transport timeout" });
-  r.output(w, { kind: "yield" }); r.restart();
-  assert.throws(() => r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "sending", evidence: "retry blindly" }), /blindly resent/);
-  const d = r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: outcome, evidence: outcome === "accepted" ? "durable late receipt" : "proven closed/unapplied runtime request" });
-  assert.equal(d.events.filter((e) => e.data.kind === "notice").length, outcome === "obsolete" ? 1 : 0);
-  if (outcome === "obsolete") assert.ok(d.events.some((e) => e.data.kind === "notice" && e.data.body.includes("Answer retained")));
-  assert.equal(r.p.controls.get("reply")!.commandId, "cmd:reply"); r.idle("W"); assertions(r);
-});
-
-test("message-mode user question uses an ordinary result, distinct from live control", () => {
-  const r = new Room(); r.request("A"); const w = r.reserve("W")!;
-  r.request("Q", "$user", "W", "A"); r.output(w, { kind: "yield" });
-  r.add({ type: "user_answer", actor: "$user", requestId: "Q", body: "Message answer" });
-  const w2 = r.reserve("W")!;
-  assert.deepEqual(w2.envelope.inputs.map((i) => i.requestIds), [["Q"]]); r.finish(w2, "A"); assertions(r);
-});
-
 for (const beforeTransfer of [true, false]) test(`T20 result ${beforeTransfer ? "before" : "after"} atomic transfer is delivered once with required content`, () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!; r.request("R", "V", "W", "A"); r.output(w, { kind: "yield" });
   const v = r.reserve("V")!;
@@ -407,7 +355,7 @@ for (const beforeTransfer of [true, false]) test(`T20 result ${beforeTransfer ? 
   assert.equal(r.p.requests.get("A")!.owner, "W2"); r.idle("W2"); assertions(r);
 });
 
-test("T20 even a terminal latest run cannot transfer across known background or uncertain live control", () => {
+test("T20 even a terminal latest run cannot transfer across known background work", () => {
   const r = new Room(); r.request("A"); const w = r.reserve("W")!;
   r.add({ type: "activity_start", actor: "W", activityId: "child", runId: w.id, requestIds: ["A"], status: "uncertain" });
   r.output(w, { kind: "yield" });
@@ -426,14 +374,14 @@ test("T20 successive transfers preserve full inherited input and explicit future
   r.finish(w, "A"); r.idle("W3"); assertions(r);
 });
 
-test("T21 cancellation interrupts one co-batched run but does not silently finish independent requests", () => {
+test("T21 cancelling one co-batched request does not silently finish the independent ones", () => {
   const r = new Room(); r.request("A"); r.request("B", "W", "X"); r.request("old", "W", "V");
   r.output(r.reserve("W")!, { kind: "yield" });
   r.add({ type: "correct", actor: "O", requestId: "A", body: "A changes" });
   r.add({ type: "correct", actor: "X", requestId: "B", body: "B changes" });
   const w = r.reserve("W")!;
-  r.add({ type: "cancel", id: "stop", actor: "$user", requestId: "A" });
-  r.add({ type: "control_phase", actor: "$system", controlId: "stop/interrupt", phase: "accepted", evidence: "interrupt command accepted, not proof of termination" });
+  const cancel = r.add({ type: "cancel", id: "stop", actor: "$user", requestId: "A" });
+  assert.deepEqual(cancel.events.map((e) => e.data.kind), ["cancel"], "stopping the live turn is the host's; the core records no control");
   assert.throws(() => r.reserve("W"), /unresolved/);
   const failure = r.output(w, { kind: "error", requestIds: ["B"] });
   const notice = failure.events.find((e) => e.data.kind === "notice")!;
@@ -471,4 +419,39 @@ test("log fold and decision are deterministic and caller-owned frozen payloads n
   const before = JSON.stringify(after); fold(after); fold(after); assert.equal(JSON.stringify(after), before);
   assert.deepEqual(fold(after), fold(JSON.parse(before) as RoomEvent[]));
   assert.throws(() => fold([...after, after[0]!]), /event order/);
+});
+
+test("a command type the lean core does not have is refused through decide and through the store", () => {
+  const r = new Room();
+  const dropped = [
+    { type: "control_phase", id: "c", actor: "$system", controlId: "x/interrupt", phase: "obsolete", evidence: "stale caller" },
+    { type: "user_answer", id: "u", actor: "$user", requestId: "A", body: "yes" },
+    { type: "bind_provider", id: "b", actor: "$system", runId: "run", providerRunId: "t3", evidence: "stale caller" },
+  ] as unknown as Command[];
+  const store = new EngineStore(":memory:");
+  try {
+    for (const command of dropped) {
+      assert.throws(() => decide(r.log, command), /unknown command type/);
+      assert.throws(() => store.execute("room", command), /unknown command type/);
+    }
+    assert.equal(store.load("room").length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test("phase records the T3 run as a typed field: only once T3 has the run, never changed, never shared by two runs", () => {
+  const r = new Room(); r.request("A"); r.request("B", "V");
+  const reserve = (seatId: string, runId: string) => r.add({ type: "reserve", actor: "$system", seatId, runId, dispatchCommandId: `d:${runId}`, dispatchMessageId: `m:${runId}`, maxBytes: 1_000_000 });
+  reserve("W", "w"); reserve("V", "v");
+  assert.throws(() => r.add({ type: "phase", actor: "$system", runId: "w", phase: "sending", evidence: "frozen", providerRunId: "t3:1" }), /needs a phase T3 took/);
+  r.add({ type: "phase", actor: "$system", runId: "w", phase: "accepted", evidence: "t3run:t3:1 ordinal:1", providerRunId: "t3:1" });
+  assert.equal(r.p.runs.get("w")!.providerRunId, "t3:1");
+  assert.throws(() => r.add({ type: "phase", actor: "$system", runId: "w", phase: "running", evidence: "t3run:t3:2", providerRunId: "t3:2" }), /provider binding changed/);
+  assert.throws(() => r.add({ type: "phase", actor: "$system", runId: "v", phase: "accepted", evidence: "t3run:t3:1", providerRunId: "t3:1" }), /already bound to another local run/);
+  r.add({ type: "phase", actor: "$system", runId: "w", phase: "running", evidence: "t3run:t3:1", providerRunId: "t3:1" });
+  r.add({ type: "phase", actor: "$system", runId: "v", phase: "accepted", evidence: "no T3 run ID" });
+  assert.equal(r.p.runs.get("v")!.providerRunId, undefined);
+  r.restart();
+  assert.equal(fold(r.log).runs.get("w")!.providerRunId, "t3:1");
 });

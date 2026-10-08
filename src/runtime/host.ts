@@ -23,7 +23,7 @@ import { adoptableSteers, steerMessageIds, steerOffers, steerReceiptId, wantsSte
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import {
   DEFERRED_CANCEL, RELEASED, activityStartedSeq, committed, deferredCancels, finalTargets, frozenDispatch, isPending,
-  lastAnswered, latestAnswer, memberHeld, newestCarrier, openOwned, pendingActivities, releasedFor, runRecords, type Dispatch,
+  lastAnswered, latestAnswer, memberHeld, newestCarrier, openOwned, pendingActivities, releasedFor, runRecords, stoppingCancel, type Dispatch,
 } from "./work.ts";
 
 const SYSTEM = "$system";
@@ -108,6 +108,8 @@ export class EngineHost {
   /** Per run: when its message was first sent, and how often T3 refused it. Bounds only; nothing is decided from them. */
   private readonly firstSent = new Map<string, number>();
   private readonly refused = new Map<string, number>();
+  /** Host runs whose cancel's interrupt T3 has taken (or refused); T3 keeps one receipt per command ID, so a restart may send it once more. */
+  private readonly interrupted = new Set<string>();
   /** Per `bg:` activity: since when its thread has been idle with nothing in the background (§2 iii). */
   private readonly idleSince = new Map<string, number>();
   /** Per seat: the thread state whose turns and messages are all imported (§3), so an unchanged thread is not reread. */
@@ -295,7 +297,7 @@ export class EngineHost {
         t3Run = detail ? runForMessage(detail, run.dispatchMessageId) : null;
         if (!t3Run) return; // Recorded later or lost: the next tick looks for the message by its ID, and resends it.
       }
-      this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:accepted`, runId, phase: "accepted", evidence: `t3run:${t3Run.id} ordinal:${t3Run.ordinal}` });
+      this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:accepted`, runId, phase: "accepted", evidence: `t3run:${t3Run.id} ordinal:${t3Run.ordinal}`, providerRunId: t3Run.id });
       this.step("accepted", roomId, seatId, runId);
       run = this.project(roomId).runs.get(runId)!;
     }
@@ -310,7 +312,7 @@ export class EngineHost {
     }
     if (!isTerminal(t3Run)) {
       if (run.phase === "accepted" && (t3Run.status === "running" || t3Run.status === "waiting")) {
-        this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:running`, runId, phase: "running", evidence: `t3run:${t3Run.id}` });
+        this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:running`, runId, phase: "running", evidence: `t3run:${t3Run.id}`, providerRunId: t3Run.id });
         this.step("running", roomId, seatId, runId);
       }
       await this.sendInterrupts(roomId, runId, threadId, t3Run);
@@ -439,45 +441,36 @@ export class EngineHost {
     }
     this.firstSent.delete(runId);
     this.refused.delete(runId);
+    this.interrupted.delete(runId);
     this.sweepActivities(roomId);
   }
 
   // ---------------- §6 cancel ----------------
 
-  /** Interrupts the core prepared for a cancel go out once T3 has the run; the control is then marked obsolete. */
+  /** The interrupt of a cancel that stops this run (§6) goes out once T3 has the run and while T3 still runs it. */
   private async sendInterrupts(roomId: string, runId: string, threadId: string, t3Run: T3Run): Promise<void> {
-    const controls = [...this.project(roomId).controls.values()].filter((c) => c.runId === runId && c.kind === "interrupt" && c.phase === "prepared");
-    // A cancel and a tick can both get here for one control: each marks it only while it is still prepared.
-    const stillPrepared = (id: string) => this.project(roomId).controls.get(id)?.phase === "prepared";
-    for (const c of controls) {
-      if (!stillPrepared(c.id)) continue;
-      if (isTerminal(t3Run)) {
-        this.exec(roomId, { type: "control_phase", actor: SYSTEM, id: `obsolete:${c.id}:ended`, controlId: c.id, phase: "obsolete", evidence: "lean: the run had already ended; no interrupt sent" });
-        continue;
+    const p = this.project(roomId);
+    const cancelId = stoppingCancel(p, p.runs.get(runId)!);
+    if (!cancelId || isTerminal(t3Run) || this.interrupted.has(runId)) return;
+    try {
+      await this.adapter.interruptRun({ commandId: `interrupt:${cancelId}`, threadId, runId: t3Run.id });
+    } catch (error) {
+      if (!(error instanceof T3CommandRejected)) {
+        this.log("interrupt not sent; trying again", message(error));
+        return;
       }
-      try {
-        await this.adapter.interruptRun({ commandId: c.commandId, threadId, runId: t3Run.id });
-      } catch (error) {
-        if (!(error instanceof T3CommandRejected)) {
-          this.log("interrupt not sent; trying again", message(error));
-          continue;
-        }
-      }
-      if (!stillPrepared(c.id)) continue;
-      this.exec(roomId, { type: "control_phase", actor: SYSTEM, id: `obsolete:${c.id}:sent`, controlId: c.id, phase: "obsolete", evidence: "lean: interrupt sent directly" });
     }
+    this.interrupted.add(runId);
   }
 
   private interruptedByCancel(roomId: string, runId: string): boolean {
     const p = this.project(roomId);
-    const ids = new Set([...p.controls.values()].filter((c) => c.runId === runId && c.kind === "interrupt").map((c) => c.id));
-    return p.events.some((e) => e.data.kind === "control.phase" && ids.has(e.data.controlId) && e.data.evidence === "lean: interrupt sent directly");
+    return stoppingCancel(p, p.runs.get(runId)!) !== null;
   }
 
   /**
    * Cancels recorded while their request's owner was in a turn working on other requests too. They apply when that turn
-   * ends (`atTurnEnd`), or at once when the owner has no live run. The core's interrupt control for such a cancel is
-   * marked obsolete in the same breath: nothing is interrupted, and the seat is never left stopping.
+   * ends (`atTurnEnd`), or at once when the owner has no live run. Nothing is interrupted.
    */
   private applyDeferredCancels(roomId: string, seatId: string, atTurnEnd: boolean): void {
     const p = this.project(roomId);
@@ -488,11 +481,6 @@ export class EngineHost {
         this.exec(roomId, { type: "cancel", actor: d.actor, id: d.cancelId, requestId: d.requestId });
       } catch (error) {
         this.log("deferred cancel not applied", { requestId: d.requestId, error: message(error) });
-        continue;
-      }
-      const control = this.project(roomId).controls.get(`${d.cancelId}/interrupt`);
-      if (control?.phase === "prepared") {
-        this.exec(roomId, { type: "control_phase", actor: SYSTEM, id: `obsolete:${control.id}:deferred`, controlId: control.id, phase: "obsolete", evidence: "lean: cancel applied as the turn ended; no interrupt" });
       }
     }
     this.sweepActivities(roomId);
@@ -729,7 +717,8 @@ export class EngineHost {
       return;
     }
     const run = p.runs.get(runId)!;
-    if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active") return;
+    // Nothing goes into a turn a cancel is stopping: the steer waits for the seat's next turn.
+    if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active" || stoppingCancel(p, run) !== null) return;
     const offered = new Set(run.receipts.flatMap((r) => inputTree(r.envelope.inputs).map((i) => i.eventId)));
     if (!unread(p, seatId, run.through).some((i) => i.intent === "request" && i.requestIds.some(wantsSteer) && !offered.has(i.eventId))) return;
     const receiptId = steerReceiptId(randomUUID(), randomUUID());

@@ -36,11 +36,8 @@ const TAKEOVER = "takeover:";
 const RESEAT_OFF = "reseat-off:";
 
 const now = (): string => new Date().toISOString();
-/** A seat still on the board: active, or in a turn a cancel is stopping. Only a retired seat has left. */
-const present = (p: Projection, seatId: string): boolean => {
-  const status = p.seats.get(seatId)?.status;
-  return status === "active" || status === "stopping";
-};
+/** A seat still on the board. Only a retired seat has left. */
+const present = (p: Projection, seatId: string): boolean => p.seats.get(seatId)?.status === "active";
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export interface EngineSeatsDeps {
@@ -356,8 +353,6 @@ export class EngineSeats {
     const old = this.repos.getParticipant(record.participantId);
     const p = this.view(roomId);
     if (!old || old.retiredAt || !present(p, record.seatId)) return this.callOff(roomId, record, "it left the room", false);
-    // A turn being stopped (a cancel) ends first; the reseat carries on after it.
-    if (p.seats.get(record.seatId)!.status === "stopping") return;
     if (record.stage === "checkpoint") {
       const q = p.requests.get(record.requestId);
       if (!q) return this.postCheckpoint(roomId, record);
@@ -418,8 +413,6 @@ export class EngineSeats {
     }
     const consigliere = room.consigliereId === old.id || p.orchestrator === record.seatId;
     const asker = this.seatIdOf(record.by);
-    // The takeover is the asker's request: while his own turn is being stopped he cannot make one, so wait a tick.
-    if (!transferred && asker && asker !== record.seatId && p.seats.get(asker)?.status === "stopping") return;
     if (!transferred) {
       const answer = p.requests.get(record.requestId)?.answerId ?? null;
       const event = answer ? p.events.find((e) => e.id === answer) : undefined;
@@ -547,7 +540,7 @@ export class EngineSeats {
   }
 
   /**
-   * Refuse with every piece of open work the seat has, named: its run (or the turn a cancel is stopping), its open
+   * Refuse with every piece of open work the seat has, named: its run, its open
    * requests, its pending activities, and (with `answers`) answers to what it asked that have not reached it. Other posts
    * it has not read (notices, cancels) do not hold it; they stay on the board.
    */
@@ -555,8 +548,7 @@ export class EngineSeats {
     const p = this.view(roomId);
     const seat = p.seats.get(seatId)!;
     const reasons: string[] = [];
-    if (seat.status === "stopping") reasons.push("its turn is being stopped (a cancel); try again once it has ended");
-    else if (seat.activeRunId) reasons.push(`it is in a turn (its run is ${p.runs.get(seat.activeRunId)?.phase ?? "open"})`);
+    if (seat.activeRunId) reasons.push(`it is in a turn (its run is ${p.runs.get(seat.activeRunId)?.phase ?? "open"})`);
     const owned = [...p.requests.values()].filter((r) => r.owner === seatId && r.state === "open");
     if (owned.length > 0) reasons.push(`it owns open request${owned.length > 1 ? "s" : ""} ${owned.map((r) => this.number(p, r.id)).join(", ")}: answer or cancel ${owned.length > 1 ? "them" : "it"} first`);
     for (const a of pendingActivities(p, seatId)) reasons.push(this.describeActivity(p, a));
@@ -615,7 +607,6 @@ export class EngineSeats {
     const seatId = this.seatIdOf(participant.id);
     const seat = seatId ? this.view(participant.roomId).seats.get(seatId) : undefined;
     if (!seatId || !seat || seat.status === "retired") throw new RoomError("no_seat", `@${participant.alias} has no seat on the board`, 409);
-    if (seat.status === "stopping") throw new RoomError("seat_stopping", `@${participant.alias}'s turn is being stopped (a cancel); try again once it has ended.`, 409);
     return seatId;
   }
 

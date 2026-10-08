@@ -10,14 +10,15 @@ test("durable command receipts replay original whole batch after lost local comm
   const r = new DiskRoom();
   try {
     r.request("A"); const run = r.reserve(); r.request("B"); const receipt = r.sync(run); r.request("C");
-    const command = r.outputCommand(run, { kind: "answer", requestIds: ["A", "B"] }, { receipts: [receipt] });
+    r.add({ type: "confirm_sync", actor: "$system", id: "confirm", runId: run.id, receiptId: receipt.id, digest: receipt.digest, evidence: "FAKE exact receipt in the transcript" });
+    const command = r.outputCommand(run, { kind: "answer", requestIds: ["A", "B"] });
     r.reopen({ onBoundary(point) { if (point === "after_commit") throw new Error("lost local commit receipt"); } });
     assert.throws(() => r.add(command), /lost local/);
     r.reopen();
     const head = r.store.load(r.room).length;
     const replay = r.add(command);
-    assert.equal(replay.replayed, true); assert.equal(replay.head, head); assert.equal(replay.events.length, 3);
-    assert.deepEqual(replay.events.map((e) => e.data.kind), ["sync.confirmed", "output", "run.ended"]);
+    assert.equal(replay.replayed, true); assert.equal(replay.head, head); assert.equal(replay.events.length, 2);
+    assert.deepEqual(replay.events.map((e) => e.data.kind), ["output", "run.ended"]);
     assert.throws(() => r.add({ ...command, body: "changed" } as Command), /conflicting command/);
     assert.equal(r.p.runs.get(run.id)!.phase, "terminal"); assert.equal(r.p.seats.get("W")!.activeRunId, null);
     assert.deepEqual(unread(r.p, "W").map((i) => i.eventId), ["C"]);
@@ -91,23 +92,6 @@ test("offered receipts survive restart without consumption; confirmed receipts c
       assert.equal(r.p.requests.get("A")!.state, "open"); r.parity();
     } finally { r.cleanup(); }
   }
-});
-
-test("live controls remain non-waking, claimed and uncertain across terminal and restart; accepted late proof settles only the control", () => {
-  const r = new DiskRoom();
-  try {
-    r.request("A"); const run = r.reserve();
-    r.add({ type: "request", id: "Q", actor: "W", to: "$user", body: "Approve?", parentId: "A", live: { runId: run.id, providerRequestId: "provider-Q" } });
-    r.add({ type: "runtime_reply", id: "reply", actor: "$user", requestId: "Q", body: "approved", commandId: "response-command" });
-    r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "uncertain", evidence: "FAKE lost receipt" });
-    r.add(r.outputCommand(run, { kind: "answer", requestIds: ["A"] })); r.reopen();
-    assert.equal(r.p.requests.get("A")!.state, "open"); assert.equal(r.p.requests.get("Q")!.answerId, "reply");
-    assert.equal(r.store.recovery(r.room).controls[0]!.phase, "uncertain"); assert.equal(unread(r.p, "W").length, 0);
-    const cursor = r.p.seats.get("W")!.cursor;
-    r.add({ type: "control_phase", actor: "$system", controlId: "reply", phase: "accepted", evidence: "FAKE durable late receipt" });
-    r.reopen(); assert.equal(r.p.seats.get("W")!.cursor, cursor); assert.equal(r.store.recovery(r.room).controls.length, 0);
-    assert.equal(r.p.requests.get("A")!.state, "open"); r.parity();
-  } finally { r.cleanup(); }
 });
 
 test("user180 pending background work, passive/subscribed progress and silent consumption survive restart without acknowledgements", () => {
@@ -196,17 +180,6 @@ test("eventless idle checks create no receipt or queue; the same unused identity
     assert.equal(r.add(c).replayed, false); r.request("A"); assert.equal(r.add(c).outcome, "appended");
     r.reopen(); assert.equal(r.add(c).replayed, true); r.parity();
     assert.equal(r.store.audit("unknown-room").ok, true);
-  } finally { r.cleanup(); }
-});
-
-test("provider command IDs cannot alias a dispatch and a response; failed decision leaves no partial live answer claim", () => {
-  const r = new DiskRoom();
-  try {
-    r.request("A"); const run = r.reserve();
-    r.add({ type: "request", actor: "W", id: "Q", to: "$user", parentId: "A", body: "approve", live: { runId: run.id, providerRequestId: "provider-question" } });
-    const before = r.store.load(r.room);
-    assert.throws(() => r.add({ type: "runtime_reply", actor: "$user", id: "reply", requestId: "Q", body: "yes", commandId: run.dispatchCommandId }), /duplicate provider-command/);
-    r.reopen(); assert.deepEqual(r.store.load(r.room), before); assert.equal(r.p.requests.get("Q")!.state, "open"); r.parity();
   } finally { r.cleanup(); }
 });
 

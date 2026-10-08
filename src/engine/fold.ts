@@ -5,9 +5,7 @@ import { editEntry, initializeHistory, rememberEvent } from "./incremental.ts";
 export function emptyProjection(events: readonly RoomEvent[] = []): Projection {
   const p: Projection = {
     events, seats: new Map(), requests: new Map(), runs: new Map(), activities: new Map(),
-    controls: new Map(), subscriptions: [], sourceKeys: new Map(), commandKeys: new Set(),
-    blocked: new Map(), orchestrator: null, providerHolds: new Map(), providerObservations: new Map(),
-    capabilities: new Map(), activityReceipts: new Map(), operationReceipts: new Map(), operationBindings: new Map(), toolResults: new Map(), toolClosures: new Map(),
+    subscriptions: [], sourceKeys: new Map(), commandKeys: new Set(), blocked: new Map(), orchestrator: null,
   };
   initializeHistory(p);
   return p;
@@ -19,71 +17,6 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
     p.commandKeys.add(original.commandKey);
     const d = structuredClone(original.data);
     switch (d.kind) {
-      case "board.capability": p.capabilities.set(d.capability.id, d.capability); break;
-      case "activity.operation_receipt":
-        if (p.activityReceipts.has(d.receipt.key)) throw new Error("duplicate activity receipt");
-        p.activityReceipts.set(d.receipt.key, d.receipt); break;
-      case "activity.native_bound": {
-        const a = editEntry(p, "activities", d.activityId);
-        if (!a.nativeSource || a.nativeSource.nativeId !== null || a.generation !== d.generation)
-          throw new Error("activity native binding changed");
-        a.nativeSource.nativeId = d.nativeId; break;
-      }
-      case "board.operation_receipt":
-        if (p.operationReceipts.has(d.receipt.key)) throw new Error("duplicate operation receipt");
-        p.operationReceipts.set(d.receipt.key, d.receipt); break;
-      case "board.operation_binding": p.operationBindings.set(d.binding.key, d.binding); break;
-      case "tool.closed":
-        if (p.toolClosures.has(d.closure.key)) throw new Error("duplicate tool closure");
-        p.toolClosures.set(d.closure.key, d.closure); break;
-      case "activity.declared_bound": {
-        const a = editEntry(p, "activities", d.activityId);
-        if (!a.declaration || a.declaration.binding) throw new Error("declaration binding changed");
-        a.declaration.binding = d.binding; break;
-      }
-      case "activity.declared_result": {
-        const a = editEntry(p, "activities", d.activityId);
-        if (!a.declaration?.binding || a.declaration.result || a.declaration.binding.bindingReceiptKey !== d.result.bindingReceiptKey)
-          throw new Error("declaration result changed");
-        a.declaration.result = d.result; break;
-      }
-      case "tool.result":
-        if (p.toolResults.has(d.result.key)) throw new Error("duplicate tool result");
-        p.toolResults.set(d.result.key, d.result); break;
-      case "provider.conflict": break;
-      case "transport.frozen": {
-        const target = d.target.kind === "run" ? editEntry(p, "runs", d.target.id) : editEntry(p, "controls", d.target.id);
-        if (target.transport) throw new Error("transport already frozen");
-        target.transport = d.transport;
-        break;
-      }
-      case "transport.attempt": {
-        const target = d.target.kind === "run" ? editEntry(p, "runs", d.target.id) : editEntry(p, "controls", d.target.id);
-        if (!target.transport || d.attempt !== target.transport.attempts + 1) throw new Error("invalid transport attempt");
-        target.transport.attempts = d.attempt;
-        break;
-      }
-      case "provider.bound": {
-        const run = editEntry(p, "runs", d.runId);
-        if (run.providerRunId && run.providerRunId !== d.providerRunId) throw new Error("provider binding changed");
-        run.providerRunId = d.providerRunId;
-        break;
-      }
-      case "provider.status": {
-        const r = editEntry(p, "runs", d.runId);
-        if (r.providerRunId !== d.providerRunId) throw new Error("native status identity changed");
-        r.nativeStatus = d.status; r.queueHeld = d.queueHeld; break;
-      }
-      case "provider.hold": p.providerHolds.set(d.hold.key, d.hold); break;
-      case "provider.observed": {
-        const o = d.observation, prior = p.providerObservations.get(o.seatId);
-        if (!Number.isSafeInteger(o.sequence) || o.sequence < 0 || p.seats.get(o.seatId)?.threadId !== o.threadId
-          || prior && (prior.threadId !== o.threadId || prior.environmentId !== o.environmentId
-            || prior.serverVersion !== o.serverVersion || prior.contract !== o.contract || o.sequence < prior.sequence))
-          throw new Error("invalid provider observation origin/order");
-        p.providerObservations.set(o.seatId, o);
-        break;
-      }
       case "seat.created":
         if (p.seats.has(d.seatId)) throw new Error("seat identity reused");
         p.seats.set(d.seatId, { id: d.seatId, threadId: d.threadId, cursor: 0, status: "active", activeRunId: null });
@@ -95,7 +28,7 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
         break;
       case "orchestrator.set": p.orchestrator = d.seatId; break;
       case "request":
-        p.requests.set(d.request.id, { ...d.request, state: "open", answerId: null, live: d.live });
+        p.requests.set(d.request.id, { ...d.request, state: "open", answerId: null });
         break;
       case "correction": {
         const request = editEntry(p, "requests", d.requestId);
@@ -112,7 +45,12 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
         p.blocked.delete(seat.id);
         break;
       }
-      case "run.phase": editEntry(p, "runs", d.runId).phase = d.phase; break;
+      case "run.phase": {
+        const run = editEntry(p, "runs", d.runId);
+        run.phase = d.phase;
+        if (d.providerRunId !== undefined) run.providerRunId = d.providerRunId;
+        break;
+      }
       case "sync.offered": editEntry(p, "runs", d.runId).receipts.push(d.receipt); break;
       case "sync.confirmed": {
         const run = editEntry(p, "runs", d.runId);
@@ -129,7 +67,6 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
         const seat = editEntry(p, "seats", run.seatId);
         if (d.consumed) seat.cursor = d.through;
         if (seat.activeRunId === run.id) seat.activeRunId = null;
-        if (seat.status === "stopping") seat.status = "active";
         break;
       }
       case "output":
@@ -148,17 +85,6 @@ export function applyEvent(p: Projection, original: RoomEvent): void {
         p.subscriptions = p.subscriptions.filter((s) => s.seatId !== d.subscription.seatId || s.requestId !== d.subscription.requestId);
         if (d.enabled) p.subscriptions.push(d.subscription);
         break;
-      case "control.prepared":
-        if (p.controls.has(d.control.id)) throw new Error("control identity reused");
-        p.controls.set(d.control.id, d.control);
-        if (d.control.kind === "runtime_reply") {
-          const request = editEntry(p, "requests", d.control.requestId);
-          if (request.answerId !== null) throw new Error("duplicate live answer");
-          request.state = "answered";
-          request.answerId = original.id;
-        } else editEntry(p, "seats", editEntry(p, "runs", d.control.runId).seatId).status = "stopping";
-        break;
-      case "control.phase": editEntry(p, "controls", d.controlId).phase = d.phase; break;
       case "transfer": {
         editEntry(p, "seats", d.oldSeatId).status = "retired";
         if (p.seats.has(d.newSeatId)) throw new Error("seat identity reused");

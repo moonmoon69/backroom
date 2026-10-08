@@ -105,7 +105,7 @@ interface Caller {
 
 /** Engine refusals a member can meet, in words it can act on. The rest are passed on as they are. */
 const ENGINE_WORDS: Record<string, string> = {
-  "author seat is not active": "your seat is not active now (a cancel is stopping your turn, or you were reseated); try again when your turn has ended",
+  "author seat is not active": "your seat is no longer active (you were reseated or retired)",
   "requester authorization required": "only whoever asked for that request can do that",
   "closed request needs a new request": "that request is closed; post a new request that cites it",
   "unrelated causal parent": "a post can only go under a request you own",
@@ -763,7 +763,6 @@ export class BoardEngine {
   /** What a seat is doing now, from the journal: a turn, its own work, background work, input about to start a turn. */
   private doing(c: Caller, p: Projection, seatId: string): string {
     const seat = p.seats.get(seatId)!;
-    if (seat.status === "stopping") return "stopping its turn";
     const run = seat.activeRunId ? p.runs.get(seat.activeRunId) : undefined;
     if (run && (run.phase === "prepared" || run.phase === "sending")) return "starting a turn";
     if (run) {

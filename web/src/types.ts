@@ -260,7 +260,7 @@ export interface EngineSeatView {
   participantId: string | null;
   alias: string | null;
   threadId: string;
-  status: "active" | "stopping" | "retired";
+  status: "active" | "retired";
   orchestrator: boolean;
   cursor: number;
   activeRunId: string | null;

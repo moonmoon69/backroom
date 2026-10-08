@@ -1,11 +1,9 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { EngineStore } from "../../src/engine/index.ts";
-import type { LocalOperationPacket } from "../../src/engine/index.ts";
 import type { WorkerInput } from "./store-fixture.ts";
 
 export interface IncrementalWorkerInput extends WorkerInput {
   warm?: boolean;
-  packet?: LocalOperationPacket;
 }
 const input = JSON.parse(process.argv[2]!) as IncrementalWorkerInput;
 function waitFor(path: string): void {
@@ -28,7 +26,7 @@ try {
   if (input.ready) writeFileSync(input.ready, "connection warmed");
   if (input.go) waitFor(input.go);
   armed = true;
-  const receipt = input.packet ? store.commitOperation(input.room, input.packet) : store.execute(input.room, input.command);
+  const receipt = store.execute(input.room, input.command);
   process.stdout.write(JSON.stringify({ ok: true, receipt }));
 } catch (error) {
   process.stdout.write(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));

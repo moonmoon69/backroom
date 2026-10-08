@@ -1,12 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { EntryOverlay, journalHistory, projectionMaps, ProjectionOverlay } from "./incremental.ts";
 import { applyEvent, fold } from "./fold.ts";
 import { decideProjection } from "./transitions.ts";
-import { operationKey, parseActivity, parseOperation, validateCapability } from "./operations.ts";
-import { handleOwnershipKey, outcomeScope, validateScopedHandleHistory } from "./declared.ts";
-import { canonicalJSON } from "./result.ts";
-import type { ActivityPacket, ActivityReceipt, LocalOperationPacket, OperationReceipt } from "./operation-types.ts";
 import type { Command, Decision, Projection, RoomEvent } from "./types.ts";
 
 /** Fault hooks are synchronous, optional test instrumentation; they do no dispatch. */
@@ -112,7 +108,7 @@ function derive(rows: StoredRow[]): Derived {
   }
   const projections: ProjectionRow[] = [];
   const addProjection = (kind: string, id: string, value: unknown) => projections.push({ kind, id, value: canonical(value) });
-  for (const kind of ["seats", "requests", "runs", "activities", "controls", "blocked", "providerHolds", "providerObservations", "capabilities", "activityReceipts", "operationReceipts", "operationBindings", "toolResults", "toolClosures"] as const) {
+  for (const kind of ["seats", "requests", "runs", "activities", "blocked"] as const) {
     for (const [id, value] of p[kind]) addProjection(kind, id, value);
   }
   for (const s of p.subscriptions) addProjection("subscriptions", JSON.stringify([s.seatId, s.requestId]), s);
@@ -132,12 +128,6 @@ function derive(rows: StoredRow[]): Derived {
     if (r.phase !== "terminal") addKey("reservation", r.seatId, r.id);
     for (const receipt of r.receipts) addKey("sync-receipt", receipt.id, r.id);
   }
-  for (const r of p.operationReceipts.values()) addKey("operation-receipt", r.key, r.clientId);
-  for (const r of p.activityReceipts.values()) addKey("activity-receipt", r.key, r.packet.intent.clientId);
-  for (const a of p.activities.values()) if (a.declaration?.binding)
-    addKey("declared-handle", a.declaration.binding.ownershipKey, a.id, digest(a.declaration.registration));
-  for (const c of p.capabilities.values()) addKey("capability", c.id, c.runId);
-  for (const c of p.controls.values()) addKey("provider-command", c.commandId, c.id);
   for (const r of p.requests.values()) if (r.answerId !== null) addKey("claim", r.id, r.answerId);
   for (const [source, id] of p.sourceKeys) {
     const index = log.findIndex((e) => e.id === id);
@@ -189,21 +179,13 @@ function entryKeys(kind: typeof projectionMaps[number], id: string, value: unkno
     if (r.phase !== "terminal") add("reservation", r.seatId, r.id);
     for (const receipt of r.receipts) add("sync-receipt", receipt.id, r.id);
   }
-  if (kind === "activities") {
-    const a = value as import("./types.ts").Activity;
-    if (a.declaration?.binding) add("declared-handle", a.declaration.binding.ownershipKey, a.id, digest(a.declaration.registration));
-  }
-  if (kind === "operationReceipts") { const r = value as OperationReceipt; add("operation-receipt", r.key, r.clientId); }
-  if (kind === "activityReceipts") { const r = value as ActivityReceipt; add("activity-receipt", r.key, r.packet.intent.clientId); }
-  if (kind === "capabilities") { const c = value as import("./operation-types.ts").RunCapability; add("capability", c.id, c.runId); }
-  if (kind === "controls") { const c = value as import("./types.ts").Control; add("provider-command", c.commandId, c.id); }
   if (kind === "requests") { const r = value as import("./types.ts").Request; if (r.answerId !== null) add("claim", r.id, r.answerId); }
   if (kind === "sourceKeys") add("source", id, value as string, source(value as string));
   return rows;
 }
 
 /**
- * Dedicated SQLite event store. No imports/callers in the active application.
+ * Dedicated SQLite event store: every room's journal in one file (the host opens data/board.sqlite).
  * Only log records (including immutable batch provenance) are authoritative.
  * The four other tables can be deleted and rebuilt from engine_event alone.
  */
@@ -473,29 +455,11 @@ export class EngineStore {
       if (prior.digest !== fingerprint) throw new Error("conflicting command identity reuse");
       return { expectedSeq: prior.expected_seq, events: p.events.slice(prior.first_seq - 1, prior.first_seq - 1 + prior.event_count), outcome: prior.outcome, head: p.events.length, replayed: true };
     }
-    this.validateActivityOwnership(room, p, frozen);
-    if (frozen.type === "freeze_transport") {
-      const wire = JSON.parse(frozen.transport.wireJSON) as { commandId: string; messageId?: string };
-      for (const { room: other } of this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[]) {
-        const otherProjection = this.working(other).overlay.p;
-        const transports = [...otherProjection.runs.values(), ...otherProjection.controls.values()].flatMap((r) => r.transport ? [r.transport] : []);
-        if (transports.some((t) => t.environmentId === frozen.transport.environmentId && (() => {
-          const previous = JSON.parse(t.wireJSON) as { commandId: string; messageId?: string };
-          return previous.commandId === wire.commandId || wire.messageId !== undefined && previous.messageId === wire.messageId;
-        })())) throw new Error("provider command/message identity reused across rooms");
-      }
-    }
     if (frozen.type === "output") {
       const source = w.keys.get(keyIdentity({ kind: "source", key: frozen.sourceKey }));
       if (source && source.digest !== sourceDigest(frozen)) throw new Error("conflicting provider source identity reuse");
     }
-    let registrationHistory: Record<string, number> | undefined;
-    if (frozen.type === "activity_operation" && frozen.packet.intent.schema === "backroom.activity.v2"
-      && frozen.packet.intent.operation === "register_activity") {
-      registrationHistory = Object.fromEntries((this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[])
-        .map(({ room: knownRoom }) => [knownRoom, this.working(knownRoom).overlay.p.events.length]));
-    }
-    const decision = decideProjection(w.overlay, frozen, undefined, registrationHistory);
+    const decision = decideProjection(w.overlay, frozen);
     if (decision.expectedSeq !== p.events.length) throw new Error("decision head mismatch");
     this.boundary("after_decide");
     for (const [index, event] of decision.events.entries()) {
@@ -513,131 +477,6 @@ export class EngineStore {
     return { ...decision, head: decision.expectedSeq + decision.events.length, replayed: false };
   }
 
-  /** Rare store-wide check, serialized with all ownership writers. The journal is
-   * the authority for both retained observations and settled ownership tombstones. */
-  private validateActivityOwnership(room: string, p: Projection, command: Command): void {
-    const requestIds = command.type === "local_operation" && command.packet.intent.operation === "finish"
-      && command.packet.intent.disposition.kind === "answer" ? command.packet.intent.disposition.requestIds
-      : command.type === "output" && command.disposition.kind === "answer" ? command.disposition.requestIds : null;
-    if (requestIds) {
-      const declared = [...p.activities.values()].filter((a) => a.declaration?.binding && a.requestIds.some((id) => requestIds.includes(id)));
-      // Local conflicts already produce the established pending_activity receipt.
-      // Foreign known history must fence a fresh claim before committing effects.
-      const rooms = declared.length ? this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[] : [];
-      for (const a of declared) {
-        const { registration, binding, result } = a.declaration!, results = result ? [result] : [];
-        const outcomes = outcomeScope(p, registration, binding!.nativeHandle, binding!.originalSource, results);
-        for (const { room: knownRoom } of rooms) validateScopedHandleHistory(this.working(knownRoom).overlay.p, registration,
-          binding!.nativeHandle, binding!.originalSource, knownRoom, room, results, outcomes);
-      }
-      return;
-    }
-    let scope: { environmentId: string; providerThreadId: string } | undefined;
-    let handle: import("./operation-types.ts").NativeHandle | undefined;
-    let registration: import("./operation-types.ts").DeclaredRegistration | undefined;
-    let original: import("./provider.ts").NativeToolSource | null = null;
-    let results: Pick<import("./operation-types.ts").DeclaredResult, "completion" | "originalSource">[] = [];
-    let newOwner = true;
-    if (command.type === "activity_operation") {
-      const packet = command.packet, intent = packet.intent;
-      if (intent.schema === "backroom.activity.v2" && intent.operation === "bind_activity") {
-        registration = p.activities.get(intent.activityId)?.declaration?.registration;
-        scope = registration; handle = intent.nativeHandle; original = packet.originalSource ?? null;
-      } else if (intent.schema === "backroom.activity.v2" && intent.operation === "record_activity_result") {
-        const declaration = p.activities.get(intent.activityId)?.declaration;
-        registration = declaration?.registration; scope = registration;
-        handle = declaration?.binding?.nativeHandle; original = declaration?.binding?.originalSource ?? null; newOwner = false;
-        results = [{ completion: intent.completion, originalSource: packet.resultSource ?? null }];
-      } else if (intent.schema === "backroom.activity.v1" && intent.operation === "register_activity" && intent.nativeId !== null) {
-        const cap = p.capabilities.get(packet.capabilityId);
-        if (cap && packet.source.providerThreadId) scope = { environmentId: cap.environmentId, providerThreadId: packet.source.providerThreadId };
-        handle = { namespace: "provider_item", value: intent.nativeId };
-      }
-    } else if (command.type === "activity_bind") {
-      const a = p.activities.get(command.activityId), r = a && p.runs.get(a.runId);
-      const receipt = [...p.activityReceipts.values()].find((entry) => entry.packet.intent.schema === "backroom.activity.v1"
-        && entry.packet.intent.operation === "register_activity" && entry.packet.intent.activityId === command.activityId);
-      if (r?.transport && receipt?.packet.source.providerThreadId)
-        scope = { environmentId: r.transport.environmentId, providerThreadId: receipt.packet.source.providerThreadId };
-      handle = { namespace: "provider_item", value: command.nativeId };
-    }
-    if (!scope || !handle) return;
-    const outcomes = registration && outcomeScope(p, registration, handle, original, results);
-    const ownershipKey = handleOwnershipKey(scope, handle);
-    const rooms = [{ room }, ...this.sql("SELECT DISTINCT room FROM engine_event WHERE room<>?").all(room) as { room: string }[]];
-    for (const { room: ownerRoom } of rooms) {
-      const other = this.working(ownerRoom).overlay.p;
-      if (registration && outcomes && (newOwner || ownerRoom !== room)) validateScopedHandleHistory(other, registration, handle, original, ownerRoom, room, results, outcomes);
-      if (!newOwner) continue;
-      for (const existing of other.activities.values()) {
-        if (existing.declaration?.binding?.ownershipKey === ownershipKey) throw new Error("native handle already owned across rooms/generations");
-        if (handle.namespace !== "provider_item" || existing.nativeSource?.nativeId !== handle.value) continue;
-        const run = other.runs.get(existing.runId);
-        const receipt = [...other.activityReceipts.values()].find((entry) => entry.packet.intent.schema === "backroom.activity.v1"
-          && entry.packet.intent.activityId === existing.id && entry.packet.intent.operation === "register_activity");
-        if (run?.transport?.environmentId === scope.environmentId && receipt?.packet.source.providerThreadId === scope.providerThreadId)
-          throw new Error("native handle belongs to strict v1 activity tombstone");
-      }
-    }
-  }
-
-  lookupOperation(room: string, capabilityId: string, intentJSON: string): OperationReceipt | null {
-    return this.transaction("IMMEDIATE", () => this.rawReceipt(room, capabilityId, intentJSON), true);
-  }
-  reserveNative(room: string, seatId: string, maxBytes: number): CommitReceipt {
-    return this.execute(room, { type: "reserve", actor: "$system", id: `reserve:${randomUUID()}`, seatId, runId: randomUUID(), dispatchCommandId: randomUUID(), dispatchMessageId: randomUUID(), maxBytes });
-  }
-  private rawReceipt(room: string, capabilityId: string, intentJSON: string): OperationReceipt | null {
-    const p = this.working(room).overlay.p, cap = p.capabilities.get(capabilityId);
-    if (!cap) throw new Error("unknown run capability");
-    validateCapability(p, cap);
-    const intent = parseOperation(JSON.parse(intentJSON));
-    if (intentJSON !== canonicalJSON(intent) || intent.originRunId !== cap.runId) throw new Error("raw intent scope conflict");
-    const key = operationKey(capabilityId, intent.clientId);
-    if (p.activityReceipts.has(key)) throw new Error("client identity reused by another operation");
-    const receipt = p.operationReceipts.get(key);
-    if (receipt && receipt.intentJSON !== intentJSON) throw new Error("conflicting raw client intent");
-    return receipt ?? null;
-  }
-  commitOperation(room: string, packet: LocalOperationPacket): { receipt: OperationReceipt; replayed: boolean } {
-    const frozen = JSON.parse(canonicalJSON(packet)) as LocalOperationPacket;
-    return this.transaction("IMMEDIATE", () => {
-      const prior = this.rawReceipt(room, frozen.capabilityId, frozen.intentJSON);
-      if (prior) return { receipt: prior, replayed: true };
-      const key = operationKey(frozen.capabilityId, frozen.intent.clientId);
-      this.executeLocked(room, { type: "local_operation", actor: "$system", id: `operation:${digest(key)}`, packet: frozen });
-      const receipt = this.working(room).overlay.p.operationReceipts.get(key);
-      if (!receipt) throw new Error("operation transaction did not commit receipt");
-      return { receipt, replayed: false };
-    }, true);
-  }
-  lookupActivity(room: string, capabilityId: string, intentJSON: string): ActivityReceipt | null {
-    return this.transaction("IMMEDIATE", () => this.rawActivityReceipt(room, capabilityId, intentJSON), true);
-  }
-  private rawActivityReceipt(room: string, capabilityId: string, intentJSON: string): ActivityReceipt | null {
-    const p = this.working(room).overlay.p, cap = p.capabilities.get(capabilityId);
-    if (!cap) throw new Error("unknown run capability");
-    validateCapability(p, cap);
-    const intent = parseActivity(JSON.parse(intentJSON));
-    if (intentJSON !== canonicalJSON(intent) || intent.originRunId !== cap.runId || cap.activityId && cap.activityId !== intent.activityId) throw new Error("original activity intent scope conflict");
-    const key = operationKey(capabilityId, intent.clientId);
-    if (p.operationReceipts.has(key)) throw new Error("client identity reused by another operation");
-    const receipt = p.activityReceipts.get(key);
-    if (receipt && receipt.intentJSON !== intentJSON) throw new Error("conflicting raw activity intent");
-    return receipt ?? null;
-  }
-  commitActivity(room: string, packet: ActivityPacket): { receipt: ActivityReceipt; replayed: boolean } {
-    const frozen = JSON.parse(canonicalJSON(packet)) as ActivityPacket;
-    return this.transaction("IMMEDIATE", () => {
-      const prior = this.rawActivityReceipt(room, frozen.capabilityId, frozen.intentJSON);
-      if (prior) return { receipt: prior, replayed: true };
-      const key = operationKey(frozen.capabilityId, frozen.intent.clientId);
-      this.executeLocked(room, { type: "activity_operation", actor: "$system", id: `activity-operation:${digest(key)}`, packet: frozen });
-      const receipt = this.working(room).overlay.p.activityReceipts.get(key);
-      if (!receipt) throw new Error("activity transaction did not commit receipt");
-      return { receipt, replayed: false };
-    }, true);
-  }
   load(room: string): RoomEvent[] { return this.transaction("IMMEDIATE", () => Array.from(this.working(room, false).overlay.p.events)); }
   project(room: string): Projection {
     return this.transaction("IMMEDIATE", () => {
@@ -648,7 +487,7 @@ export class EngineStore {
   }
   recovery(room: string) {
     const p = this.project(room);
-    return { runs: [...p.runs.values()].filter((r) => r.phase !== "terminal"), controls: [...p.controls.values()].filter((c) => c.phase !== "accepted" && c.phase !== "obsolete"),
+    return { runs: [...p.runs.values()].filter((r) => r.phase !== "terminal"),
       activities: [...p.activities.values()].filter((a) => a.status === "pending" || a.status === "uncertain") };
   }
   audit(room: string): { ok: boolean; mismatches: string[]; head: number } {
