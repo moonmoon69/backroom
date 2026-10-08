@@ -7931,14 +7931,6 @@ span.reply-to {
   border-radius: var(--radius-sm);
 }
 
-/* A service still on the old runtime (without ROOMS_ENGINE=1): this page does not read its shapes. */
-.old-runtime {
-  max-width: 560px;
-  margin: 15vh auto;
-  padding: 0 20px;
-  color: var(--fg-muted);
-}
-
 /* ---- Keyboard (keys.ts): the item the arrows are on, in the plain look (pixel.css draws its own dashed ring) ---- */
 
 /* A member's thread over its room, above the room's drawer and under dialogs and menus. */

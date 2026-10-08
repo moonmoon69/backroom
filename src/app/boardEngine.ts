@@ -1,6 +1,6 @@
 /**
- * The board for agents on the engine (stage 4/5 plan, item L3; H5: members only answer): what bin/rooms-board runs when
- * ROOMS_ENGINE=1. The journal is the board. Members read it; their final replies are their answers, so they run nothing
+ * The board for agents (stage 4/5 plan, item L3; H5: members only answer): what bin/rooms-board runs. The room's
+ * journal is the board. Members read it; their final replies are their answers, so they run nothing
  * else. The Consigliere posts the work (a request per recipient), corrects, cancels and retries it; every read comes
  * from the journal.
  *
@@ -21,7 +21,7 @@ import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, type EngineHost } from "../runtime/index.ts";
 import { followedRequests } from "../runtime/work.ts";
-import { BOARD_PAGE_CHARS, Board, BoardError, threadOutcome, type BoardDeps, type RetiredThread } from "./board.ts";
+import { BOARD_PAGE_CHARS, BoardError, threadOutcome, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
 import { readKeepAlive, writeKeepAlive } from "./keepAlive.ts";
 import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
@@ -30,10 +30,8 @@ import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState
 export const MAX_POST_BYTES = 1024 * 1024;
 
 /**
- * The seat lifecycle on the engine (item L4b, backroom-handoff/L4b/interface.md): with the flag on, the service routes
- * the room commands `seat`, `reseat` and `retire` send (participant.fromPreset, .reseat, .retire) to it. The CLI reads
- * the reseats in progress from it, and refuses those three commands while it is absent: the old paths know nothing of
- * the journal (an old retire would not see the seat's open requests).
+ * The seat lifecycle (src/app/engineSeats.ts): the service routes the room commands `seat`, `reseat` and `retire` send
+ * (participant.fromPreset, .reseat, .retire) to it, and the CLI reads the reseats in progress from it.
  */
 export interface EngineSeatsView {
   reseats(roomId: string): Array<{ participantId: string; seatId: string; requestId: string; stage: "checkpoint" | "seated" }>;
@@ -42,9 +40,9 @@ export interface EngineSeatsView {
 export interface BoardEngineDeps {
   repos: Repos;
   host: EngineHost;
-  /** Runs a room command: how seating, reseating and retiring reach L4b's seat lifecycle. */
+  /** Runs a room command: how seating, reseating and retiring reach the seat lifecycle. */
   execute?(command: RoomCommand): Promise<unknown>;
-  /** L4b's seat lifecycle (`stack.seats`); until it is there, seat, reseat and retire say so. */
+  /** The seat lifecycle (`stack.seats`); a board built without it (in a test) refuses seat, reseat and retire. */
   seats?: EngineSeatsView | null;
   /** A member's standing sections in full, as its first briefing gives them. */
   standing?(participantId: string): Promise<string>;
@@ -52,21 +50,6 @@ export interface BoardEngineDeps {
   /** Called after seating, so the seat briefing is on its way before the caller sends the new member work. */
   afterSeat?(): Promise<void>;
   notify?(roomId: string): void;
-}
-
-/** The board the service runs: the old one, or this one when the engine runtime is on (with L4b's seats, once merged). */
-export function boardFor(engine: EngineHost | null, deps: BoardDeps, seats?: EngineSeatsView | null): { run(argv: string[], as: string | null): Promise<string> } {
-  if (!engine) return new Board(deps);
-  return new BoardEngine({
-    repos: deps.repos,
-    host: engine,
-    execute: deps.execute,
-    ...(seats ? { seats } : {}),
-    ...(deps.standing ? { standing: deps.standing } : {}),
-    ...(deps.contextOf ? { contextOf: deps.contextOf } : {}),
-    ...(deps.afterSeat ? { afterSeat: deps.afterSeat } : {}),
-    ...(deps.notify ? { notify: deps.notify } : {}),
-  });
 }
 
 const HELP = `rooms-board: this room's board. Always pass --as <your key>.
@@ -738,9 +721,9 @@ export class BoardEngine {
 
   // ---------------- seats (L4b) ----------------
 
-  /** Seating, reseating and retiring go through the room commands, which L4b routes to the journal's seat lifecycle. */
+  /** Seating, reseating and retiring go through the room commands, which the service routes to the seat lifecycle. */
   private lifecycle(): (command: RoomCommand) => Promise<unknown> {
-    if (!this.deps.seats || !this.deps.execute) throw new BoardError("rooms-board: seating on the engine arrives with item L4b; it is not available in this build.", 501);
+    if (!this.deps.seats || !this.deps.execute) throw new BoardError("rooms-board: this board has no seat lifecycle: seat, reseat and retire are not available.", 501);
     return this.deps.execute;
   }
 
@@ -772,9 +755,9 @@ export class BoardEngine {
     const { member } = this.target(c, args.shift(), 'reseat needs the member\'s alias, and may take what the fresh seat carries on with: reseat opus "item 4 of docs/plans/x.md".');
     const plan = args.join(" ").trim() || null;
     const execute = this.lifecycle();
-    const result = (await this.act(c, () => execute({ type: "participant.reseat", participantId: member.id, by: c.member.id, plan }))) as { requestId?: string; eventId?: string };
+    const result = (await this.act(c, () => execute({ type: "participant.reseat", participantId: member.id, by: c.member.id, plan }))) as { eventId?: string };
     const p = this.view(c.room.id);
-    const checkpoint = result.requestId ?? result.eventId;
+    const checkpoint = result.eventId;
     const self = member.id === c.member.id;
     return [
       `Asked @${member.alias} for its checkpoint${checkpoint ? `: ${this.label(p, checkpoint)}` : ""}. It runs when ${self ? "this turn ends" : `@${member.alias} has finished the work in hand`}.`,
@@ -787,7 +770,7 @@ export class BoardEngine {
     const { member, seatId } = this.target(c, args[0], "retire needs the member's alias; `members` lists them.");
     if (seatId === c.seatId) throw new BoardError("rooms-board: you cannot retire yourself; `reseat` hands your seat to a fresh one.", 409);
     const execute = this.lifecycle();
-    const result = (await this.act(c, () => execute({ type: "participant.retire", participantId: member.id, pendingTasks: "cancel", thread: retireThreadChoice(this.deps.repos) }))) as { thread?: RetiredThread } | null;
+    const result = (await this.act(c, () => execute({ type: "participant.retire", participantId: member.id, thread: retireThreadChoice(this.deps.repos) }))) as { thread?: RetiredThread } | null;
     return `@${member.alias} has left the room. ${threadOutcome(result?.thread)}`;
   }
 }

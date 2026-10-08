@@ -15,7 +15,7 @@ import { T3CommandRejected, T3Unavailable } from "../src/adapter/types.ts";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
 import { startAttemptKey } from "../src/app/consigliere.ts";
 import { MAX_POST_BYTES, messageIdOf } from "../src/app/engineMessages.ts";
-import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
+import { CommandValidationError, parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
 import { AFTER_GONE, HOLD_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
 
@@ -107,7 +107,7 @@ function unseatedMember(repos: AppStack["repos"], roomId: string, alias: string)
 async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: string; fake?: Fake; dir?: string; fresh?: boolean } = {}): Promise<Room> {
   const fake = options.fake ?? new Fake();
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), "backroom-l4a-"));
-  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, engine: true });
+  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null });
   const run = (command: RoomCommandInput) => stack.service.execute(parseCommand(command));
   const ids: Record<string, string> = {};
   let roomId: string;
@@ -127,7 +127,7 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
     stack, fake, roomId, ids, dir, run,
     draft(text) {
       const r = stack.repos.getRoom(roomId)!;
-      return parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), [], { consigliereId: r.consigliereId, engine: true });
+      return parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), { consigliereId: r.consigliereId });
     },
     async say(text, attachmentIds = [], clientMessageId) {
       const draft = room.draft(text);
@@ -136,11 +136,11 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
       if (draft.kind === "note") return (await run({ type: "room.note.create", roomId, text: draft.instruction })) as never;
       return (await run({
         type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds, ...(clientMessageId ? { clientMessageId } : {}),
-        assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, schedule: a.schedule ?? { mode: "now" }, after: a.after.map((r) => r.index), slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
+        assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
       })) as { messageId: string; requestIds: string[]; noteIds: string[] };
     },
     async tick(times = 2) {
-      for (let i = 0; i < times; i++) await stack.scheduler.tick();
+      for (let i = 0; i < times; i++) await stack.engine.tick();
     },
     seat: (alias) => stack.repos.currentBinding(ids[alias]!)!.id,
     thread: (alias) => stack.repos.currentBinding(ids[alias]!)!.threadId,
@@ -201,11 +201,14 @@ test("How a message becomes tasks, 1. split: a client that sends only the messag
   assert.equal(requestsOf(r)[1]!.body, "and the docs", "an explicit empty preamble is taken as sent");
 });
 
-test("How a message becomes tasks, 2. timing (D2): /hold is refused with a hint, by the parser and by the service", async (t) => {
+/** A message.create carrying a field the command no longer has (Z4): refused before anything is recorded. */
+const unknownField = (field: string) => (e: Error) => e instanceof CommandValidationError && e.message.includes(field);
+
+test("How a message becomes tasks, 2. timing (D2): /hold is refused with a hint by the parser; the command has no field for it", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
   assert.deepEqual(errorsOf(r.draft("/hold @sol save this for later")), [HOLD_GONE]);
-  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "later", schedule: { mode: "manual" } }] }), (e: Error) => e.message === HOLD_GONE);
+  await assert.rejects(async () => r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "later", schedule: { mode: "manual" } }] } as unknown as RoomCommandInput), unknownField("schedule"));
   assert.equal(requestsOf(r).length, 0);
 });
 
@@ -215,8 +218,9 @@ test("How a message becomes tasks, 2. timing (D2): /after is refused with a hint
   assert.deepEqual(errorsOf(r.draft("/after task41 @grok review the implementation")), [AFTER_GONE]);
   assert.deepEqual(errorsOf(r.draft("/after @sol @grok review it")), [AFTER_GONE]);
   assert.deepEqual(errorsOf(r.draft("/after")), [AFTER_GONE], "an unfinished /after says it is gone, not what it lacks");
-  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "build" }, { recipients: [r.ids.grok!], instruction: "review", after: [0] }] }), /Waiting for other work is gone/);
-  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.grok!], instruction: "review", schedule: { mode: "after_all", prerequisites: [{ taskId: "x", revision: 1 }] } }] }), /Waiting for other work is gone/);
+  await assert.rejects(async () => r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "build" }, { recipients: [r.ids.grok!], instruction: "review", after: [0] }] } as unknown as RoomCommandInput), unknownField("after"));
+  await assert.rejects(async () => r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.grok!], instruction: "review", schedule: { mode: "after_all" } }] } as unknown as RoomCommandInput), unknownField("schedule"));
+  assert.equal(requestsOf(r).length, 0);
 });
 
 test("How a message becomes tasks, 2. timing (D2): every implied wait is refused with a hint naming whom it waited for", async (t) => {
@@ -635,7 +639,7 @@ test("T3 slash commands: a tick that imports the command's T3 message before its
   r.complete("sol", "Built.");
   await r.tick();
   // The host's §3 import of the command's T3 message lands between T3 recording it and the note being written.
-  r.fake.afterRecord = () => r.stack.scheduler.tick();
+  r.fake.afterRecord = () => r.stack.engine.tick();
   const created = await r.say("@sol /compact");
   const notes = r.events().filter((e) => e.data.kind === "note");
   assert.deepEqual(notes.map((e) => e.id), created.noteIds, "one note, under the ID both writers use");
@@ -736,7 +740,6 @@ test("The Consigliere: a conversation started with Talk to … gives him its fir
     [[seatId, "$user", "Plan the next release for me.", start.requestId]],
     "one request from the user to his seat, under the start's ID as the message's client ID",
   );
-  assert.equal(r.stack.repos.listTasks(started.roomId).length, 0, "no old task");
   assert.equal(r.stack.repos.listEvents(started.roomId).filter((e) => e.kind === "user.message").length, 0, "no old user message");
   assert.equal(r.stack.engine!.unread(started.roomId, seatId), 1, "his seat has the message unread");
 
@@ -825,26 +828,19 @@ test("§7: the message API refuses a post over 1 MiB", async (t) => {
   assert.equal(requestsOf(r).length, 1);
 });
 
-test("a member with no seat on the board yet is refused rather than given an old task", async (t) => {
+test("a member with no seat on the board yet is refused", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   const late = unseatedMember(r.stack.repos, r.roomId, "late");
   await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [late], instruction: "hello" }] }), /no seat on this room's board/);
-  assert.equal(r.stack.repos.listTasks(r.roomId).length, 0);
+  assert.equal(requestsOf(r).length, 0);
 });
 
-test("without the flag the engine's controls are refused and the parser keeps /after and /hold", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "backroom-l4a-"));
-  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null, engine: false });
-  t.after(() => {
-    stack.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const { roomId } = (await stack.service.execute(parseCommand({ type: "room.create", projectId: "project_demo", title: "old" }))) as { roomId: string };
-  for (const command of [{ type: "request.cancel", roomId, requestId: "r" }, { type: "request.correct", roomId, requestId: "r", text: "t" }, { type: "run.retry", roomId, runId: "r" }, { type: "run.stop", roomId, participantId: "p" }] as const) {
-    await assert.rejects(stack.service.execute(parseCommand(command)), /ROOMS_ENGINE=1/);
-  }
-  const parts = [{ id: "a", alias: "sol" }];
-  assert.equal(parseExplicit("/hold @sol later", parts, []).assignments[0]!.schedule?.mode, "manual");
-  assert.deepEqual(errorsOf(parseExplicit("/hold @sol later", parts, [])), []);
+test("Images: only PNG, JPEG, GIF and WebP are stored, and a message with neither text nor images is refused", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  assert.throws(() => r.stack.service.storeAttachment({ roomId: r.roomId, name: "x.svg", mimeType: "image/svg+xml", data: png }), /PNG, JPEG, GIF, or WebP/);
+  await assert.rejects(async () => r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "" }] }), /instruction is empty/);
+  assert.equal(requestsOf(r).length, 0);
 });

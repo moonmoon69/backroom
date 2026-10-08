@@ -11,13 +11,13 @@ test("desk view aggregates T3 thread data per participant and across the room", 
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-desk", ROOMS_PORT: "0" });
   const app = createHttpApp(stack, config, "/nonexistent/dist");
 
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!, stack.participants.sol2!], instruction: "touch the parser", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!, stack.participants.sol2!], instruction: "touch the parser" }] });
   await stack.tick(2);
   stack.fake.completeRun(stack.threadOf("sol1"), { text: "done", files: [{ path: "src/parser.ts", kind: "modified", additions: 10, deletions: 2 }] });
   stack.fake.completeRun(stack.threadOf("sol2"), { text: "done too", files: [{ path: "src/parser.ts", kind: "modified", additions: 1, deletions: 1 }, { path: "docs/notes.md", kind: "added", additions: 5, deletions: 0 }] });
   await stack.tick(2);
   // Second run on sol1 touching the same file again, to exercise aggregation across checkpoints.
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "touch it again", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "touch it again" }] });
   await stack.tick(2);
   stack.fake.completeRun(stack.threadOf("sol1"), { text: "again", files: [{ path: "src/parser.ts", kind: "modified", additions: 3, deletions: 3 }] });
   await stack.tick(2);
@@ -56,13 +56,13 @@ test("desk view aggregates T3 thread data per participant and across the room", 
   assert.equal(claude.partial, false);
 });
 
-test("a run the room just sent is the room's from the first read, before the scheduler matches it to its task", async (t) => {
+test("a run the room just sent is the room's from the first read", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-desk", ROOMS_PORT: "0" });
   const app = createHttpApp(stack, config, "/nonexistent/dist");
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "look at the screenshot", schedule: { mode: "now" } });
-  // One tick sends the task; T3 starts the run at once, but the scheduler has not seen it yet.
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "look at the screenshot" }] });
+  // One tick sends the request, and T3 starts the run at once.
   await stack.tick(1);
   const live = (await (await app.request(`/api/rooms/${stack.roomId}/participants/${stack.participants.sol1!}/live`)).json()) as { runningRun: { runId: string; startedByRoom: boolean; prompt: string | null; promptImages: string[] } | null };
   assert.ok(live.runningRun, "the run is running");

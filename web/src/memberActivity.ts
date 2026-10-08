@@ -30,7 +30,7 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
  */
 export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null): MemberActivity {
   const idle = (label: string, tone: string): MemberActivity => ({ label, tone, motion: null, detail: null });
-  // Not read yet (a member seated a moment ago, before the scheduler's first look at its thread): ready for work.
+  // Not read yet (a member seated a moment ago, before T3's thread list was read for it): ready for work.
   if (!status) return idle("ready", "idle");
   // A deleted T3 thread outranks everything: the participant cannot receive work until rebound or removed.
   if (status.threadMissing) return idle("thread deleted in T3", "missing");

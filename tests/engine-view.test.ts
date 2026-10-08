@@ -27,7 +27,6 @@ import type { RoomEvent } from "../src/engine/index.ts";
 import { parseExplicit } from "../src/parser/explicit.ts";
 import { T3Times, anchorsOf, journalView, memberStatus, newsOf, postKind, replyCarriers, timesOf, turnPosts } from "../src/server/engineView.ts";
 import { createHttpApp } from "../src/server/http.ts";
-import { createTestStack } from "./helpers.ts";
 import { Room } from "./runtime/helpers.ts";
 
 // ---------------- counts from the fold, taken independently of the view ----------------
@@ -463,7 +462,7 @@ function machine(t: TestContext) {
 async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], options: { config?: ReturnType<typeof loadConfig>; fake?: FakeT3Adapter } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "backroom-engine-view-"));
   const fake = options.fake ?? new FakeT3Adapter({ autoCompleteMs: null });
-  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, engine: true });
+  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null });
   const engine = stack.engine as EngineHost;
   const run = (command: RoomCommandInput) => stack.service.execute(parseCommand(command));
   const { roomId } = (await run({ type: "room.create", projectId: "project_demo", title: "engine" })) as { roomId: string };
@@ -497,10 +496,10 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
   };
   /** What the composer does (L4a): parse in engine mode, then message.create with the draft's assignments. */
   const say = async (text: string, attachmentIds: string[] = []) => {
-    const draft = parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), [], { consigliereId: null, engine: true });
+    const draft = parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), { consigliereId: null });
     return (await run({
       type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds,
-      assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, schedule: a.schedule ?? { mode: "now" }, after: [], slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
+      assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
     })) as { messageId: string; requestIds: string[] };
   };
   return { dir, fake, stack, engine, roomId, seats, app, get, post, ask, tick, run, say };
@@ -756,20 +755,12 @@ test("SSE fires on every append: the host's, a write straight to its store, and 
   await reader.cancel();
 });
 
-test("gate: per-reply spend on a thread with two replies equals the old route's for the same timestamps", async (t) => {
+test("gate: per-reply spend on a thread with two replies: each reply has what its thread used since the one before (the old route's arithmetic), the rest is the open turn", async (t) => {
   const m = machine(t);
-  // The old route: two replies the old scheduler recorded.
-  const old = await createTestStack({ autoCompleteMs: 1 }, ["sol1"]);
-  t.after(() => old.close());
-  for (const instruction of ["first", "second"]) {
-    await old.run({ type: "task.create", roomId: old.roomId, recipients: [old.participants.sol1 as string], instruction, schedule: { mode: "now" } });
-    await old.tick();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await old.tick(2);
-  }
-  const [first, second] = old.repos.listEvents(old.roomId).filter((e) => e.kind === "assistant.reply");
-  assert.ok(first && second);
-  // The engine: two host runs on its own thread, whose T3 runs ended at the same moments.
+  // Two host runs on the member's thread, whose T3 runs end at known moments a and b.
+  const a = Date.now() - 60_000;
+  const b = a + 30_000;
+  const at = (ms: number) => new Date(ms).toISOString();
   const s = await engineStack(t, ["sol1"], { config: m.config(join(m.root, "engine-data")) });
   for (const [index, text] of ["first", "second"].entries()) {
     s.ask("sol1", text);
@@ -777,13 +768,9 @@ test("gate: per-reply spend on a thread with two replies equals the old route's 
     s.fake.completeRun(s.seats.sol1!.threadId, { text: `${text} answer` });
     await s.tick(2);
     const run = s.fake.threads.get(s.seats.sol1!.threadId)!.runs[index]!;
-    run.completedAt = (index === 0 ? first : second).createdAt;
+    run.completedAt = at(index === 0 ? a : b);
   }
-  m.bind(old.threadOf("sol1"), "sess-sol");
   m.bind(s.seats.sol1!.threadId, "sess-sol");
-  const a = Date.parse(first.createdAt);
-  const b = Date.parse(second.createdAt);
-  const at = (ms: number) => new Date(ms).toISOString();
   writeFileSync(join(m.project, "sess-sol.jsonl"), [
     m.line("a", at(a - 1), 1),
     m.line("b", at(a), 2), // at the first reply's moment: the first's
@@ -792,17 +779,14 @@ test("gate: per-reply spend on a thread with two replies equals the old route's 
     m.line("e", at(b + 1), 16), // since the last reply: the open turn
   ].join("\n") + "\n");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  const oldApp = createHttpApp(old, m.config(join(m.root, "old-data")), "/nonexistent/dist");
-  const before = (await (await oldApp.request(`/api/rooms/${old.roomId}/costs`)).json()) as { replies: Record<string, unknown>; openTurns: Record<string, unknown>; participants: Record<string, unknown> };
-  const after = await s.get<{ replies: Record<string, { total: { outputTokens: number } }>; openTurns: Record<string, unknown>; participants: Record<string, unknown>; unsplit: string[] }>(`/api/rooms/${s.roomId}/costs`);
+  type Cost = { total: { outputTokens: number; calls: number } };
+  const after = await s.get<{ replies: Record<string, Cost>; openTurns: Record<string, Cost>; participants: Record<string, Cost>; unsplit: string[] }>(`/api/rooms/${s.roomId}/costs`);
   const finals = journalView({ p: s.engine.view(s.roomId) }).posts.filter((post) => post.output?.source === "final");
   assert.equal(finals.length, 2);
-  assert.deepEqual(after.replies[finals[0]!.id], before.replies[first.id], "the first reply's spend");
-  assert.deepEqual(after.replies[finals[1]!.id], before.replies[second.id], "the second reply's spend");
-  assert.equal(after.replies[finals[0]!.id]!.total.outputTokens, 3);
-  assert.equal(after.replies[finals[1]!.id]!.total.outputTokens, 12);
-  assert.deepEqual(after.openTurns[s.seats.sol1!.participantId], before.openTurns[old.participants.sol1 as string], "the open turn");
-  assert.deepEqual(after.participants[s.seats.sol1!.participantId], before.participants[old.participants.sol1 as string], "the thread's total");
+  assert.deepEqual([after.replies[finals[0]!.id]!.total.outputTokens, after.replies[finals[0]!.id]!.total.calls], [3, 2], "the first reply: everything up to its moment");
+  assert.deepEqual([after.replies[finals[1]!.id]!.total.outputTokens, after.replies[finals[1]!.id]!.total.calls], [12, 2], "the second reply: after the first, up to its moment");
+  assert.deepEqual([after.openTurns[s.seats.sol1!.participantId]!.total.outputTokens, after.openTurns[s.seats.sol1!.participantId]!.total.calls], [16, 1], "the open turn: since the last reply");
+  assert.deepEqual([after.participants[s.seats.sol1!.participantId]!.total.outputTokens, after.participants[s.seats.sol1!.participantId]!.total.calls], [31, 5], "the thread's total");
   assert.deepEqual(after.unsplit, []);
   assert.deepEqual(Object.keys(after.replies).sort(), finals.map((post) => post.id).sort(), "keyed by journal event ID, nothing else");
 });
@@ -935,27 +919,4 @@ test("M3: the news filter's Consigliere (rooms.sqlite) and the journal's orchest
   await check("worker");
   await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: null });
   await check(null);
-});
-
-test("with the flag off nothing is registered: the old routes answer as before", async () => {
-  const previous = process.env.ROOMS_ENGINE;
-  delete process.env.ROOMS_ENGINE;
-  try {
-    const old = await createTestStack();
-    try {
-      assert.equal(old.engine, null);
-      const app = createHttpApp(old, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_PORT: "0" }), "/nonexistent/dist");
-      const snapshot = (await (await app.request(`/api/rooms/${old.roomId}`)).json()) as Record<string, unknown>;
-      assert.equal("engine" in snapshot, false);
-      assert.ok(Array.isArray(snapshot.tasks), "the old snapshot");
-      const [item] = (await (await app.request("/api/rooms")).json()) as Array<Record<string, unknown>>;
-      assert.ok("working" in item! && "activity" in item!, "the old room list");
-      assert.equal((await app.request(`/api/rooms/${old.roomId}/board`)).status, 404, "no engine route");
-      assert.equal((await app.request(`/api/rooms/${old.roomId}/notices/dismiss`, { method: "POST" })).status, 404);
-    } finally {
-      old.close();
-    }
-  } finally {
-    if (previous !== undefined) process.env.ROOMS_ENGINE = previous;
-  }
 });

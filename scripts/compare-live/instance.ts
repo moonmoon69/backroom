@@ -8,7 +8,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { EnginePost, EngineRoomSnapshot, EngineRunDetail } from "../../src/domain/engineView.ts";
-import type { ModelSelection, Participant, RoomEvent, RoomSnapshot, RuntimeMode, Task } from "../../src/domain/types.ts";
+import type { ModelSelection, Participant, RoomEvent, RuntimeMode } from "../../src/domain/types.ts";
 
 /** A post on the board as the runner needs it, the same shape on both sides. */
 export interface BoardPost {
@@ -162,13 +162,26 @@ export class HttpError extends Error {
   }
 }
 
-const PENDING: ReadonlySet<Task["state"]> = new Set(["queued", "dispatching", "running", "needs_input"]);
+/**
+ * The old runtime's room as its API at the B commit serves it (GET /api/rooms/:id), as far as this driver reads it. The
+ * old runtime is gone from this tree (Z4), so its shapes are described here: the driver runs against an old checkout.
+ */
+interface LegacyRoomSnapshot {
+  room: { consigliereId: string | null };
+  participants: Participant[];
+  bindings: Array<{ participantId: string; threadId: string; retiredAt: string | null }>;
+  tasks: Array<{ number: number; kind: "assignment" | "seat" | "wake"; state: string }>;
+  runs: Array<{ id: string }>;
+  events: RoomEvent[];
+}
+
+const PENDING: ReadonlySet<string> = new Set(["queued", "dispatching", "running", "needs_input"]);
 
 export class LegacyInstance extends HttpInstance implements InstanceDriver {
   readonly runtime = "legacy" as const;
 
-  snapshot(roomId: string): Promise<RoomSnapshot> {
-    return this.request<RoomSnapshot>("GET", `/api/rooms/${encodeURIComponent(roomId)}`);
+  snapshot(roomId: string): Promise<LegacyRoomSnapshot> {
+    return this.request<LegacyRoomSnapshot>("GET", `/api/rooms/${encodeURIComponent(roomId)}`);
   }
 
   async createRoom(projectId: string, title: string) {
@@ -189,7 +202,7 @@ export class LegacyInstance extends HttpInstance implements InstanceDriver {
     return this.member(snapshot, participant);
   }
 
-  private member(snapshot: RoomSnapshot, participant: Participant) {
+  private member(snapshot: LegacyRoomSnapshot, participant: Participant) {
     const binding = snapshot.bindings.find((b) => b.participantId === participant.id && b.retiredAt === null);
     if (!binding) throw new Error(`@${participant.alias} has no thread`);
     return { id: participant.id, alias: participant.alias, threadId: binding.threadId };

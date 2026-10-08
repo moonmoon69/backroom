@@ -1,6 +1,6 @@
 /**
- * The Consigliere on the page: the app-wide setting (which saved crew member is the Consigliere of new conversations),
- * read once and shared by the settings picker, the overview's "Talk to …" and the saved crew dialog.
+ * The Consigliere on the page: the app-wide setting (which saved crew member is the Consigliere of new rooms), read once
+ * and shared by the settings picker, the overview's New room and the saved crew dialog.
  */
 import { useSyncExternalStore } from "react";
 import { api } from "./api.ts";
@@ -28,7 +28,7 @@ export function rememberConsigliereSetting(next: string | null): void {
   emit();
 }
 
-/** The id of the saved crew member who is the Consigliere of new conversations, or null. */
+/** The id of the saved crew member who is the Consigliere of new rooms, or null. */
 export function useConsigliereSetting(): string | null {
   return useSyncExternalStore(
     (listener) => {

@@ -18,23 +18,6 @@ export const ModelSelectionSchema = z.object({
 export const RuntimeModeSchema = z.enum(["approval-required", "auto-accept-edits", "auto", "full-access"]);
 export const InteractionModeSchema = z.enum(["default", "plan"]);
 
-export const PrerequisiteRefSchema = z.object({
-  taskId: nonEmpty,
-  revision: z.number().int().min(1),
-});
-
-/** Discriminated: now/manual do not accept prerequisites; after_all requires a nonempty list. */
-export const ScheduleSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("now") }).strict(),
-  z.object({ mode: z.literal("manual") }).strict(),
-  z
-    .object({
-      mode: z.literal("after_all"),
-      prerequisites: z.array(PrerequisiteRefSchema).min(1),
-    })
-    .strict(),
-]);
-
 /** A git branch name git accepts, kept simple: letters, digits, . _ / - ; no "..", "//", or a trailing "/", "." or ".lock". */
 const BranchName = z
   .string()
@@ -122,7 +105,7 @@ export const RoomReorderCommand = z.object({ type: z.literal("room.reorder"), ro
 export const ProjectReorderCommand = z.object({ type: z.literal("project.reorder"), projectIds: z.array(nonEmpty).min(1) }).strict();
 
 /**
- * Delete a room and everything the room stored (messages, tasks, runs, images). Its T3 threads are separate: per
+ * Delete a room and everything the room stored (its members, messages and images). Its T3 threads are separate: per
  * participant, keep them (default), settle them, archive them, or delete them in T3. Threads also bound in another
  * room are always kept. Turns running in T3 keep running; the room only stops coordinating them.
  */
@@ -175,16 +158,6 @@ export const ParticipantUpdateCommand = z
   })
   .strict();
 
-export const ParticipantRebindCommand = z
-  .object({
-    type: z.literal("participant.rebind"),
-    participantId: nonEmpty,
-    thread: ThreadBindingInput,
-    /** Required explicit handling of outstanding pending tasks. */
-    outstandingTasks: z.enum(["carry", "block"]),
-  })
-  .strict();
-
 /**
  * A participant's settings under a name. The name follows the alias rules: it is the alias the preset takes in a room.
  */
@@ -230,7 +203,7 @@ export const ParticipantFromPresetCommand = z
  */
 export const RoomConsigliereSetCommand = z.object({ type: z.literal("room.consigliere.set"), roomId: nonEmpty, participantId: nonEmpty.nullable() }).strict();
 
-/** The saved crew member who is the Consigliere of new conversations, or none (presetId null). Backroom names no model. */
+/** The saved crew member who is the Consigliere of new rooms, or none (presetId null). Backroom names no model. */
 export const ConsiglierePresetSetCommand = z.object({ type: z.literal("consigliere.preset.set"), presetId: nonEmpty.nullable() }).strict();
 
 /**
@@ -260,8 +233,6 @@ export const ParticipantRetireCommand = z
   .object({
     type: z.literal("participant.retire"),
     participantId: nonEmpty,
-    /** Required explicit handling of pending work: cancel it, or keep it blocked for reassignment. */
-    pendingTasks: z.enum(["cancel", "keep"]),
     /** What happens to its T3 thread: left alone (default), settled, archived, or deleted in T3 Code. */
     thread: z.enum(["keep", "settle", "archive", "delete"]).default("keep"),
   })
@@ -291,29 +262,11 @@ export const ParticipantRuntimeModeCommand = z
 
 const AttachmentIds = z.array(nonEmpty).max(20).default([]);
 
-/** One task per recipient with the same instruction (the single-assignment form of message.create). */
-export const TaskCreateCommand = z
-  .object({
-    type: z.literal("task.create"),
-    roomId: nonEmpty,
-    recipients: z.array(nonEmpty).min(1),
-    instruction: nonEmpty,
-    sourceText: z.string().nullable().default(null),
-    attachmentIds: AttachmentIds,
-    schedule: ScheduleSchema,
-    delivery: z.enum(["queue", "steer"]).default("queue"),
-  })
-  .strict();
-
 export const AssignmentSchema = z
   .object({
     recipients: z.array(nonEmpty).min(1),
     /** May be empty only when the message carries attachments. */
     instruction: z.string().trim().default(""),
-    /** Timing against work outside the message. */
-    schedule: ScheduleSchema.default({ mode: "now" }),
-    /** Earlier assignments of the same message (by index) whose tasks this one waits for. */
-    after: z.array(z.number().int().min(0)).default([]),
     /** When the recipient is mid-turn: wait for the turn to end ("queue") or send into the running turn ("steer"). */
     delivery: z.enum(["queue", "steer"]).default("queue"),
     /** The instruction is one of the recipient's T3 slash commands ("/compact …"), sent verbatim without a briefing. */
@@ -322,22 +275,9 @@ export const AssignmentSchema = z
   .strict();
 
 /**
- * A member's post on the board (bin/rooms-board post): the same shape as the user's message, from a member. One task
- * per recipient, and for each a "wake" task for the poster that runs with the answer when it ends.
- */
-export const MemberPostCommand = z
-  .object({
-    type: z.literal("member.post"),
-    roomId: nonEmpty,
-    participantId: nonEmpty,
-    sourceText: z.string().trim().min(1),
-    assignments: z.array(AssignmentSchema).min(1).max(20),
-  })
-  .strict();
-
-/**
- * A user message split into assignments: one room event, one task per recipient per assignment, and
- * in-message dependencies ("@alice fix it. @bob check alice's work") resolved to the tasks created here.
+ * A user message split into assignments: one request per recipient per assignment on the room's journal
+ * (src/app/engineMessages.ts). Nothing waits on other work (decision D2): the parser refuses /after, /hold and the
+ * waits a message implies before anything is sent.
  */
 export const MessageCreateCommand = z
   .object({
@@ -345,9 +285,9 @@ export const MessageCreateCommand = z
     roomId: nonEmpty,
     sourceText: z.string().nullable().default(null),
     /**
-     * Engine runtime only. Text before the first address (the parser's draft.preamble): context every recipient's request
-     * carries; when absent it is read from sourceText. The client's ID for the message: sending it again with the same
-     * ID records nothing twice and sends no T3 command twice.
+     * Text before the first address (the parser's draft.preamble): context every recipient's request carries; when
+     * absent it is read from sourceText. The client's ID for the message: sending it again with the same ID records
+     * nothing twice and sends no T3 command twice.
      */
     preamble: z.string().trim().optional(),
     clientMessageId: z.string().uuid().optional(),
@@ -357,20 +297,11 @@ export const MessageCreateCommand = z
   .strict()
   .superRefine((command, ctx) => {
     command.assignments.forEach((assignment, index) => {
-      for (const earlier of assignment.after) {
-        if (earlier >= index) ctx.addIssue({ code: "custom", path: ["assignments", index, "after"], message: "can only wait for an earlier assignment" });
-      }
       if (assignment.slashCommand && !/^\/[a-z0-9]/i.test(assignment.instruction)) {
         ctx.addIssue({ code: "custom", path: ["assignments", index, "instruction"], message: "a slash command must start with /" });
       }
       if (assignment.slashCommand && assignment.delivery === "steer") {
         ctx.addIssue({ code: "custom", path: ["assignments", index, "delivery"], message: "a slash command starts its own turn; it cannot be sent into a running one" });
-      }
-      if (assignment.delivery === "steer" && assignment.schedule.mode === "manual") {
-        ctx.addIssue({ code: "custom", path: ["assignments", index, "delivery"], message: "a held assignment cannot be sent into a running turn" });
-      }
-      if (assignment.after.length > 0 && assignment.schedule.mode === "manual") {
-        ctx.addIssue({ code: "custom", path: ["assignments", index, "schedule"], message: "a held assignment cannot also wait for another assignment" });
       }
       if (assignment.instruction.length === 0 && command.attachmentIds.length === 0) {
         ctx.addIssue({ code: "custom", path: ["assignments", index, "instruction"], message: "instruction is empty" });
@@ -379,7 +310,7 @@ export const MessageCreateCommand = z
   });
 
 /*
- * The user's controls on the engine's journal (ROOMS_ENGINE=1, plan item L4a). Requests and runs are named by their
+ * The user's controls on the room's journal (plan item L4a). Requests and runs are named by their
  * journal IDs: withdraw a request, amend one still open, retry a failed run with its original content, or stop what
  * a member is running in T3.
  */
@@ -399,59 +330,8 @@ export const RoomNoteCreateCommand = z
   })
   .strict();
 
-export const TaskUpdateCommand = z
-  .object({
-    type: z.literal("task.update"),
-    taskId: nonEmpty,
-    revision: z.number().int().min(1),
-    instruction: nonEmpty.optional(),
-    participantId: nonEmpty.optional(),
-    schedule: ScheduleSchema.optional(),
-    /** When true, dependents that reference the old revision are re-pointed to the new one. */
-    carryDependents: z.boolean().default(false),
-  })
-  .strict();
-
-export const TaskReleaseCommand = z
-  .object({ type: z.literal("task.release"), taskId: nonEmpty, revision: z.number().int().min(1) })
-  .strict();
-
-export const TaskCancelCommand = z
-  .object({ type: z.literal("task.cancel"), taskId: nonEmpty, revision: z.number().int().min(1) })
-  .strict();
-
-export const TaskInterruptCommand = z
-  .object({ type: z.literal("task.interrupt"), taskId: nonEmpty, runId: nonEmpty })
-  .strict();
-
-export const TaskRetryCommand = z
-  .object({
-    type: z.literal("task.retry"),
-    taskId: nonEmpty,
-    revision: z.number().int().min(1),
-    /** Explicit dependent handling: follow the new attempt or stay blocked. */
-    reattachDependents: z.boolean(),
-  })
-  .strict();
-
-/** Take a failed task off the user's list without retrying it (it stays failed on the board). */
-export const TaskDismissCommand = z.object({ type: z.literal("task.dismiss"), taskId: nonEmpty }).strict();
-
 /** Drop a question the user will not answer (T3 dismisses it; the agent goes on, or its turn ends, without the answer). */
 export const NativeUserInputDismissCommand = z.object({ type: z.literal("native.userInput.dismiss"), participantId: nonEmpty, requestId: nonEmpty }).strict();
-
-export const TaskMarkBlockedCommand = z
-  .object({
-    type: z.literal("task.markBlocked"),
-    taskId: nonEmpty,
-    revision: z.number().int().min(1),
-    reason: nonEmpty,
-  })
-  .strict();
-
-export const TaskUnblockCommand = z
-  .object({ type: z.literal("task.unblock"), taskId: nonEmpty, revision: z.number().int().min(1) })
-  .strict();
 
 export const NativeApprovalRespondCommand = z
   .object({
@@ -560,7 +440,6 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoomDeleteCommand,
   ParticipantCreateCommand,
   ParticipantUpdateCommand,
-  ParticipantRebindCommand,
   ParticipantRetireCommand,
   ParticipantReseatCommand,
   ParticipantRuntimeModeCommand,
@@ -574,23 +453,13 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ConsigliereRulesSetCommand,
   ConsigliereRetireThreadSetCommand,
   ConsigliereStartCommand,
-  TaskCreateCommand,
   MessageCreateCommand,
-  MemberPostCommand,
   RoomNoteCreateCommand,
   RequestCancelCommand,
   RequestCorrectCommand,
   RunRetryCommand,
   RunStopCommand,
-  TaskUpdateCommand,
-  TaskReleaseCommand,
-  TaskCancelCommand,
-  TaskInterruptCommand,
-  TaskRetryCommand,
-  TaskMarkBlockedCommand,
-  TaskDismissCommand,
   NativeUserInputDismissCommand,
-  TaskUnblockCommand,
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,
   ProjectCreateCommand,
@@ -606,8 +475,6 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
 
 export type RoomCommand = z.infer<typeof RoomCommandSchema>;
 export type RoomCommandInput = z.input<typeof RoomCommandSchema>;
-export type Schedule = z.infer<typeof ScheduleSchema>;
-export type TaskCreate = z.infer<typeof TaskCreateCommand>;
 export type Assignment = z.infer<typeof AssignmentSchema>;
 export type InlineImage = z.infer<typeof InlineImageSchema>;
 export type WorkspaceChoice = z.infer<typeof WorkspaceChoiceSchema>;

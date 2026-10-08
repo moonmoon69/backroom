@@ -8,9 +8,7 @@ import type {
   Preset,
   Room,
   RoomEvent,
-  Run,
   SessionBinding,
-  Task,
   ThreadBrowsers,
   Attachment,
 } from "../domain/types.ts";
@@ -38,7 +36,6 @@ function rowToRoom(row: Row): Room {
     environmentId: ns(row.environment_id),
     title: s(row.title),
     nextSequence: n(row.next_sequence),
-    nextTaskNumber: n(row.next_task_number),
     browserEnabled: n(row.browser_enabled) === 1,
     defaultBrowserId: ns(row.default_browser_id),
     allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
@@ -103,8 +100,6 @@ function rowToEvent(row: Row): RoomEvent {
     kind: s(row.kind) as RoomEvent["kind"],
     speaker: JSON.parse(s(row.speaker_json)),
     text: s(row.text),
-    taskId: ns(row.task_id),
-    runId: ns(row.run_id),
     artifacts: JSON.parse(s(row.artifacts_json)),
     attachmentIds: JSON.parse(s(row.attachment_ids_json)),
     progress: JSON.parse(s(row.progress_json)),
@@ -115,59 +110,6 @@ function rowToEvent(row: Row): RoomEvent {
       ? { threadId: s(row.source_thread_id), messageId: sourceMessageId, t3RunId: ns(row.source_t3_run_id) }
       : null,
     createdAt: s(row.created_at),
-  };
-}
-
-function rowToTask(row: Row): Task {
-  return {
-    id: s(row.id),
-    roomId: s(row.room_id),
-    number: n(row.number),
-    revision: n(row.revision),
-    sourceEventId: s(row.source_event_id),
-    participantId: s(row.participant_id),
-    instruction: s(row.instruction),
-    sourceText: ns(row.source_text),
-    attachmentIds: JSON.parse(s(row.attachment_ids_json)),
-    delivery: s(row.delivery) === "steer" ? "steer" : "queue",
-    slashCommand: n(row.slash_command) === 1,
-    kind: s(row.kind) === "seat" ? "seat" : s(row.kind) === "wake" ? "wake" : "assignment",
-    scheduleMode: s(row.schedule_mode) as Task["scheduleMode"],
-    prerequisites: JSON.parse(s(row.prerequisites_json)),
-    state: s(row.state) as Task["state"],
-    stateReason: ns(row.state_reason),
-    currentRunId: ns(row.current_run_id),
-    userOutcome: ns(row.user_outcome) as Task["userOutcome"],
-    dismissedAt: ns(row.dismissed_at),
-    createdAt: s(row.created_at),
-    updatedAt: s(row.updated_at),
-  };
-}
-
-function rowToRun(row: Row): Run {
-  return {
-    id: s(row.id),
-    taskId: s(row.task_id),
-    taskRevision: n(row.task_revision),
-    attempt: n(row.attempt),
-    bindingId: s(row.binding_id),
-    threadId: s(row.thread_id),
-    commandId: s(row.command_id),
-    messageId: s(row.message_id),
-    t3RunId: ns(row.t3_run_id),
-    steered: n(row.steered) === 1,
-    status: s(row.status) as Run["status"],
-    briefing: s(row.briefing),
-    includedFromSequence: n(row.included_from_sequence),
-    includedToSequence: n(row.included_to_sequence),
-    interruptRequestedAt: ns(row.interrupt_requested_at),
-    acceptedAt: ns(row.accepted_at),
-    startedAt: ns(row.started_at),
-    completedAt: ns(row.completed_at),
-    resultEventId: ns(row.result_event_id),
-    error: ns(row.error),
-    createdAt: s(row.created_at),
-    updatedAt: s(row.updated_at),
   };
 }
 
@@ -196,10 +138,10 @@ export class Repos {
   insertRoom(room: Room): void {
     this.raw
       .prepare(
-        `INSERT INTO rooms (id, project_id, environment_id, title, next_sequence, next_task_number, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO rooms (id, project_id, environment_id, title, next_sequence, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(room.id, room.projectId, room.environmentId, room.title, room.nextSequence, room.nextTaskNumber, room.createdAt, room.updatedAt);
+      .run(room.id, room.projectId, room.environmentId, room.title, room.nextSequence, room.createdAt, room.updatedAt);
   }
 
   getRoom(id: string): Room | null {
@@ -285,19 +227,30 @@ export class Repos {
     roomIds.forEach((id, index) => update.run(index + 1, id));
   }
 
-  /** Remove a room and everything stored for it, children first (foreign keys are enforced). Caller wraps in a transaction. */
+  /**
+   * Remove a room and everything stored for it, children first (foreign keys are enforced). Caller wraps in a
+   * transaction. The rows to remove are found through the schema's foreign keys, so a database from before the engine
+   * runtime, which keeps the old runtime's tables for a release (their rows point at the room, its members and their
+   * bindings), loses those rows with the room, though nothing here names those tables.
+   */
   deleteRoomCascade(roomId: string): void {
-    const participants = "SELECT id FROM participants WHERE room_id = ?";
-    const tasks = "SELECT id FROM tasks WHERE room_id = ?";
-    this.raw.prepare(`DELETE FROM native_requests WHERE participant_id IN (${participants})`).run(roomId);
-    this.raw.prepare(`DELETE FROM runs WHERE task_id IN (${tasks})`).run(roomId);
-    this.raw.prepare(`DELETE FROM task_revisions WHERE task_id IN (${tasks})`).run(roomId);
-    this.raw.prepare("DELETE FROM tasks WHERE room_id = ?").run(roomId);
-    this.raw.prepare("DELETE FROM attachments WHERE room_id = ?").run(roomId);
-    this.raw.prepare("DELETE FROM events WHERE room_id = ?").run(roomId);
-    this.raw.prepare(`DELETE FROM bindings WHERE participant_id IN (${participants})`).run(roomId);
-    this.raw.prepare("DELETE FROM participants WHERE room_id = ?").run(roomId);
+    this.deleteReferencing("rooms", "id = ?", [roomId], 0);
     this.raw.prepare("DELETE FROM rooms WHERE id = ?").run(roomId);
+  }
+
+  /** Delete every row that references the rows of `table` matching `where`, deepest first, along the foreign keys. */
+  private deleteReferencing(table: string, where: string, params: string[], depth: number): void {
+    if (depth > 8) throw new Error(`deleteRoomCascade: foreign keys nest deeper than 8 under ${table}`);
+    const references = this.raw
+      .prepare(`SELECT m.name AS child, f."from" AS col, f."to" AS parent_col FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f WHERE m.type = 'table' AND f."table" = ?`)
+      .all(table) as Array<{ child: string; col: string; parent_col: string | null }>;
+    for (const { child, col, parent_col } of references) {
+      // A key declared without its column references the parent's primary key.
+      const key = parent_col ?? (this.raw.prepare("SELECT name FROM pragma_table_info(?) WHERE pk = 1").get(table) as { name: string } | undefined)?.name ?? "rowid";
+      const match = `"${col}" IN (SELECT "${key}" FROM "${table}" WHERE ${where})`;
+      this.deleteReferencing(child, match, params, depth + 1);
+      this.raw.prepare(`DELETE FROM "${child}" WHERE ${match}`).run(...params);
+    }
   }
 
   /** Reserve the next event sequence for a room. Caller must be inside a transaction. */
@@ -317,13 +270,6 @@ export class Repos {
   nextPostNumber(roomId: string): number {
     const row = this.raw.prepare("SELECT COALESCE(MAX(post_number), 0) AS highest FROM events WHERE room_id = ?").get(roomId) as Row;
     return n(row.highest) + 1;
-  }
-
-  nextTaskNumber(roomId: string): number {
-    const row = this.raw.prepare("SELECT next_task_number FROM rooms WHERE id = ?").get(roomId) as Row;
-    const number = n(row.next_task_number);
-    this.raw.prepare("UPDATE rooms SET next_task_number = ? WHERE id = ?").run(number + 1, roomId);
-    return number;
   }
 
   // ---- participants ----
@@ -420,46 +366,14 @@ export class Repos {
   insertEvent(e: RoomEvent): void {
     this.raw
       .prepare(
-        `INSERT INTO events (id, room_id, sequence, post_number, kind, speaker_json, text, task_id, run_id, artifacts_json, attachment_ids_json, progress_json, prompt,
+        `INSERT INTO events (id, room_id, sequence, post_number, kind, speaker_json, text, artifacts_json, attachment_ids_json, progress_json, prompt,
            to_participant_id, outcome, source_thread_id, source_message_id, source_t3_run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        e.id, e.roomId, e.sequence, e.postNumber, e.kind, JSON.stringify(e.speaker), e.text, e.taskId, e.runId, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt, e.to, e.outcome,
+        e.id, e.roomId, e.sequence, e.postNumber, e.kind, JSON.stringify(e.speaker), e.text, JSON.stringify(e.artifacts), JSON.stringify(e.attachmentIds), JSON.stringify(e.progress), e.prompt, e.to, e.outcome,
         e.sourceRef?.threadId ?? null, e.sourceRef?.messageId ?? null, e.sourceRef?.t3RunId ?? null, e.createdAt,
       );
-  }
-
-  getEvent(id: string): RoomEvent | null {
-    const row = this.raw.prepare("SELECT * FROM events WHERE id = ?").get(id) as Row | undefined;
-    return row ? rowToEvent(row) : null;
-  }
-
-  /** Whether the T3 run's turn is already in the timeline (a member.message of the run is not its turn). */
-  hasTurnForT3Run(threadId: string, t3RunId: string): boolean {
-    return this.raw.prepare("SELECT 1 AS present FROM events WHERE source_thread_id = ? AND source_t3_run_id = ? AND kind <> 'member.message'").get(threadId, t3RunId) !== undefined;
-  }
-
-  /** Whether a room run owns this T3 run (so its reply arrives as assistant.reply, not as a direct T3 turn). */
-  isRunT3Run(threadId: string, t3RunId: string): boolean {
-    return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND t3_run_id = ?").get(threadId, t3RunId) !== undefined;
-  }
-
-  /** Whether a room run sent this T3 user message (the room's own prompt or steer, not a note typed in T3). */
-  isRunMessage(threadId: string, messageId: string): boolean {
-    return this.raw.prepare("SELECT 1 AS present FROM runs WHERE thread_id = ? AND message_id = ?").get(threadId, messageId) !== undefined;
-  }
-
-  findEventIdForSource(threadId: string, messageId: string): string | null {
-    const row = this.raw.prepare("SELECT id FROM events WHERE source_thread_id = ? AND source_message_id = ?").get(threadId, messageId) as { id: string } | undefined;
-    return row?.id ?? null;
-  }
-
-  hasEventForSource(threadId: string, messageId: string): boolean {
-    const row = this.raw
-      .prepare("SELECT 1 AS present FROM events WHERE source_thread_id = ? AND source_message_id = ?")
-      .get(threadId, messageId);
-    return row !== undefined;
   }
 
   listEvents(roomId: string, fromSequence = 1, toSequence = Number.MAX_SAFE_INTEGER, limit = 5000): RoomEvent[] {
@@ -468,13 +382,6 @@ export class Repos {
         .prepare("SELECT * FROM events WHERE room_id = ? AND sequence >= ? AND sequence <= ? ORDER BY sequence LIMIT ?")
         .all(roomId, fromSequence, toSequence, limit) as Row[]
     ).map(rowToEvent);
-  }
-
-  listRecentEvents(roomId: string, limit: number): RoomEvent[] {
-    const rows = this.raw
-      .prepare("SELECT * FROM events WHERE room_id = ? ORDER BY sequence DESC LIMIT ?")
-      .all(roomId, limit) as Row[];
-    return rows.map(rowToEvent).reverse();
   }
 
   // ---- attachments ----
@@ -494,109 +401,6 @@ export class Repos {
   getAttachmentData(id: string): Uint8Array | null {
     const row = this.raw.prepare("SELECT data FROM attachments WHERE id = ?").get(id) as { data: Uint8Array } | undefined;
     return row ? row.data : null;
-  }
-
-  // ---- tasks ----
-  insertTask(t: Task): void {
-    this.raw
-      .prepare(
-        `INSERT INTO tasks (id, room_id, number, revision, source_event_id, participant_id, instruction, source_text, attachment_ids_json,
-           delivery, slash_command, kind, schedule_mode, prerequisites_json, state, state_reason, current_run_id, user_outcome, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        t.id, t.roomId, t.number, t.revision, t.sourceEventId, t.participantId, t.instruction, t.sourceText, JSON.stringify(t.attachmentIds), t.delivery, t.slashCommand ? 1 : 0, t.kind, t.scheduleMode,
-        JSON.stringify(t.prerequisites), t.state, t.stateReason, t.currentRunId, t.userOutcome, t.createdAt, t.updatedAt,
-      );
-    this.snapshotRevision(t);
-  }
-
-  updateTask(t: Task): void {
-    this.raw
-      .prepare(
-        `UPDATE tasks SET revision = ?, participant_id = ?, instruction = ?, source_text = ?, schedule_mode = ?, prerequisites_json = ?,
-           state = ?, state_reason = ?, current_run_id = ?, user_outcome = ?, dismissed_at = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(
-        t.revision, t.participantId, t.instruction, t.sourceText, t.scheduleMode, JSON.stringify(t.prerequisites), t.state,
-        t.stateReason, t.currentRunId, t.userOutcome, t.dismissedAt, t.updatedAt, t.id,
-      );
-  }
-
-  snapshotRevision(t: Task): void {
-    this.raw
-      .prepare("INSERT OR REPLACE INTO task_revisions (task_id, revision, snapshot_json, created_at) VALUES (?, ?, ?, ?)")
-      .run(t.id, t.revision, JSON.stringify(t), new Date().toISOString());
-  }
-
-  getTask(id: string): Task | null {
-    const row = this.raw.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Row | undefined;
-    return row ? rowToTask(row) : null;
-  }
-
-  listTasks(roomId: string): Task[] {
-    return (this.raw.prepare("SELECT * FROM tasks WHERE room_id = ? ORDER BY number").all(roomId) as Row[]).map(rowToTask);
-  }
-
-  listTasksByState(states: string[]): Task[] {
-    if (states.length === 0) return [];
-    const placeholders = states.map(() => "?").join(",");
-    return (this.raw.prepare(`SELECT * FROM tasks WHERE state IN (${placeholders}) ORDER BY created_at`).all(...states) as Row[]).map(
-      rowToTask,
-    );
-  }
-
-  // ---- runs ----
-  insertRun(r: Run): void {
-    this.raw
-      .prepare(
-        `INSERT INTO runs (id, task_id, task_revision, attempt, binding_id, thread_id, command_id, message_id, t3_run_id, status, steered, briefing,
-           included_from_sequence, included_to_sequence, interrupt_requested_at, accepted_at, started_at, completed_at, result_event_id,
-           error, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        r.id, r.taskId, r.taskRevision, r.attempt, r.bindingId, r.threadId, r.commandId, r.messageId, r.t3RunId, r.status, r.steered ? 1 : 0, r.briefing,
-        r.includedFromSequence, r.includedToSequence, r.interruptRequestedAt, r.acceptedAt, r.startedAt, r.completedAt,
-        r.resultEventId, r.error, r.createdAt, r.updatedAt,
-      );
-  }
-
-  updateRun(r: Run): void {
-    this.raw
-      .prepare(
-        `UPDATE runs SET t3_run_id = ?, status = ?, interrupt_requested_at = ?, accepted_at = ?, started_at = ?, completed_at = ?,
-           result_event_id = ?, error = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(
-        r.t3RunId, r.status, r.interruptRequestedAt, r.acceptedAt, r.startedAt, r.completedAt, r.resultEventId, r.error,
-        r.updatedAt, r.id,
-      );
-  }
-
-  getRun(id: string): Run | null {
-    const row = this.raw.prepare("SELECT * FROM runs WHERE id = ?").get(id) as Row | undefined;
-    return row ? rowToRun(row) : null;
-  }
-
-  listRunsForTask(taskId: string): Run[] {
-    return (this.raw.prepare("SELECT * FROM runs WHERE task_id = ? ORDER BY attempt").all(taskId) as Row[]).map(rowToRun);
-  }
-
-  listRunsForRoom(roomId: string): Run[] {
-    return (
-      this.raw
-        .prepare("SELECT r.* FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.room_id = ? ORDER BY r.created_at")
-        .all(roomId) as Row[]
-    ).map(rowToRun);
-  }
-
-  listRunsByStatus(statuses: string[]): Run[] {
-    if (statuses.length === 0) return [];
-    const placeholders = statuses.map(() => "?").join(",");
-    return (this.raw.prepare(`SELECT * FROM runs WHERE status IN (${placeholders}) ORDER BY created_at`).all(...statuses) as Row[]).map(
-      rowToRun,
-    );
   }
 
   // ---- native requests ----
@@ -722,29 +526,5 @@ export class Repos {
   listKv(prefix: string): Map<string, string> {
     const rows = this.raw.prepare("SELECT key, value FROM kv WHERE substr(key, 1, ?) = ?").all(prefix.length, prefix) as Row[];
     return new Map(rows.map((row) => [s(row.key), s(row.value)]));
-  }
-
-  /**
-   * What finished in a room after `after` (an ISO time), newest first, at most `limit`: members' replies (to room
-   * tasks, or to turns typed in T3), and runs that failed without one. A run the user interrupted is not news.
-   */
-  listRoomFinishes(roomId: string, after: string, limit: number, onlyParticipantId: string | null = null): Array<{ at: string; participantId: string | null; kind: "reply" | "failed"; text: string }> {
-    // In a room with a Consigliere, the workers answer him, not the user: only his replies and failures are news.
-    const who = onlyParticipantId === null ? "" : " AND json_extract(speaker_json, '$.participantId') = ?";
-    const whose = onlyParticipantId === null ? "" : " AND bindings.participant_id = ?";
-    const rows = this.raw
-      .prepare(
-        `SELECT at, participant_id, kind, text FROM (
-           SELECT created_at AS at, json_extract(speaker_json, '$.participantId') AS participant_id, 'reply' AS kind, substr(text, 1, 400) AS text
-             FROM events
-            WHERE room_id = ? AND kind IN ('assistant.reply', 't3.turn') AND json_extract(speaker_json, '$.type') = 'participant' AND text <> '' AND created_at > ?${who}
-           UNION ALL
-           SELECT runs.completed_at, bindings.participant_id, 'failed', substr(COALESCE(runs.error, ''), 1, 400)
-             FROM runs JOIN tasks ON tasks.id = runs.task_id JOIN bindings ON bindings.id = runs.binding_id
-            WHERE tasks.room_id = ? AND runs.status = 'failed' AND runs.result_event_id IS NULL AND runs.completed_at > ?${whose}
-         ) ORDER BY at DESC LIMIT ?`,
-      )
-      .all(...(onlyParticipantId === null ? [roomId, after, roomId, after, limit] : [roomId, after, onlyParticipantId, roomId, after, onlyParticipantId, limit])) as Row[];
-    return rows.map((row) => ({ at: s(row.at), participantId: row.participant_id === null ? null : s(row.participant_id), kind: row.kind === "failed" ? "failed" : "reply", text: s(row.text) }));
   }
 }

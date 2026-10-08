@@ -11,7 +11,7 @@ export interface Config {
   t3BaseUrl: string | null;
   t3AccessToken: string | null;
   t3UserDataDir: string;
-  /** Scheduler tick interval in milliseconds. */
+  /** The engine host's tick interval in milliseconds. */
   tickMs: number;
   /** The built UI the service serves. */
   webDistDir: string;

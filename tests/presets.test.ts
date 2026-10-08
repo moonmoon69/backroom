@@ -62,7 +62,7 @@ test("a preset whose name the room already has is numbered, whatever the capital
   // Asking for a taken alias outright is refused rather than renamed: the name was chosen on purpose.
   await assert.rejects(stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId, alias: "ALICE" }), /already used/);
   // Once Alice is removed her name is free again.
-  await stack.run({ type: "participant.retire", participantId: stack.participants.Alice as string, pendingTasks: "cancel" });
+  await stack.run({ type: "participant.retire", participantId: stack.participants.Alice as string });
   const again = (await stack.run({ type: "participant.fromPreset", roomId: stack.roomId, presetId: saved.presetId })) as { alias: string };
   assert.equal(again.alias, "alice");
 });

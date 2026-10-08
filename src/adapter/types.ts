@@ -510,7 +510,7 @@ export class T3CommandRejected extends Error {
   }
 }
 
-/** Raised when the adapter cannot reach or authenticate with T3. The scheduler retries later. */
+/** Raised when the adapter cannot reach or authenticate with T3. The engine host tries again on a later tick. */
 export class T3Unavailable extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, cause === undefined ? undefined : { cause });
@@ -634,7 +634,7 @@ export interface UsageSummary {
   pricing: { status: string; source: string; fetchedAt: string | null } | null;
 }
 
-// ---------------- derived views shared by the scheduler, the thread view and the desk ----------------
+// ---------------- derived views shared by the engine host, the thread view and the desk ----------------
 
 /**
  * The run a user message belongs to, by the message id the client chose for it: the run it started (T3 names the

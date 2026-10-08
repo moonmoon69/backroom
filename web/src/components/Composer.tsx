@@ -135,8 +135,8 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
-  // Parsed in the browser on every keystroke, in engine mode: the plan, the highlighting and D2's refusals (/after,
-  // /hold and implied waits are gone) always match the text exactly, before anything is sent.
+  // Parsed in the browser on every keystroke: the plan, the highlighting and D2's refusals (/after, /hold and implied
+  // waits are gone) always match the text exactly, before anything is sent.
   const { participants, participantStatus } = snapshot;
   const consigliereId = snapshot.room.consigliereId;
   const parsedDraft = useMemo(
@@ -404,9 +404,6 @@ export function Composer({ overlay: asOverlay = false }: Props) {
                     assignments: draft.assignments.map((a) => ({
                       recipients: a.recipients,
                       instruction: a.instruction,
-                      // D2: nothing waits on other work; the parser refuses a message that would.
-                      schedule: { mode: "now" as const },
-                      after: [],
                       slashCommand: Boolean(a.slashCommand),
                       // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
                       delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),

@@ -473,7 +473,7 @@ export function ParticipantSettingsDialog({
           <span>Model</span>
           <ThreadSettingsRow model={model} onModel={setModel} runtimeMode={mode} onRuntimeMode={setMode} providerFilter={saved.modelSelection.instanceId} />
           <span className="hint">
-            T3&rsquo;s own settings for the thread; changes made in T3 Code show up here too. The provider stays {saved.modelSelection.instanceId}: rebind to a new thread to use another.
+            T3&rsquo;s own settings for the thread; changes made in T3 Code show up here too. The provider stays {saved.modelSelection.instanceId}: seat a member on a new thread to use another.
           </span>
         </div>
         {failures.length > 0 ? (
@@ -518,7 +518,7 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
     if (deleting && !confirmed) return;
     setBusy(true);
     // The engine refuses a member with open requests or a run, so there is no pending work to decide about.
-    const result = (await runCommand({ type: "participant.retire", participantId: participant.id, pendingTasks: "keep", thread: threadMissing ? "keep" : thread })) as CommandResult | null;
+    const result = (await runCommand({ type: "participant.retire", participantId: participant.id, thread: threadMissing ? "keep" : thread })) as CommandResult | null;
     setBusy(false);
     if (!result) return;
     const outcome = result.type === "participant.updated" && "thread" in result ? (result as Extract<CommandResult, { type: "participant.updated" }>).thread : undefined;

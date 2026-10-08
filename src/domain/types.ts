@@ -4,12 +4,10 @@
  */
 
 import type { Look } from "./look.ts";
-import type { RoomStateView } from "../app/roomState.ts";
 
 export type RoomId = string;
 export type ParticipantId = string;
 export type BindingId = string;
-export type TaskId = string;
 export type RunId = string;
 export type EventId = string;
 
@@ -29,11 +27,9 @@ export interface Room {
   title: string;
   /** Next room event sequence to assign. Events are 1-based and dense per room. */
   nextSequence: number;
-  /** Next human-readable task number (task1, task2, ...). */
-  nextTaskNumber: number;
-  /** The room's agents get browsers: started for its tasks and described in their briefings. */
+  /** The room's agents get browsers: started for their work and described in their briefings. */
   browserEnabled: boolean;
-  /** Browser the room's agents use unless a task calls for another; null means "general" (when it exists). */
+  /** Browser the room's agents use unless their work calls for another; null means "general" (when it exists). */
   defaultBrowserId: string | null;
   /** Browsers the room's agents may use; null means all of them. */
   allowedBrowserIds: string[] | null;
@@ -88,11 +84,11 @@ export interface Participant {
   id: ParticipantId;
   roomId: RoomId;
   alias: string;
-  /** Mirror of the bound thread's current configuration in T3, refreshed by the scheduler. */
+  /** Mirror of the bound thread's current configuration in T3, refreshed each tick by the engine host. */
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
-  /** Generation of the current binding. Incremented on rebind. */
+  /** Generation of the current binding. */
   bindingGeneration: number;
   /** Set when the participant was removed from the room; kept for attribution of past events. */
   retiredAt: string | null;
@@ -131,25 +127,24 @@ export interface SessionBinding {
   retiredAt: string | null;
 }
 
+/**
+ * What rooms.sqlite's events table holds. The room's board is its journal (data/board.sqlite); the service writes only
+ * "system" notes here now. The other kinds are the rows the old runtime's timeline left in a database from before the
+ * engine: the user's messages and notes, members' replies, turns typed in T3 ("t3.turn") and notes typed into a running
+ * turn ("t3.message"), and what members sent each other with T3's tools ("member.message").
+ */
 export type RoomEventKind =
   | "user.message"
   | "note"
   | "assistant.reply"
-  /** A turn started directly in T3 on a participant's thread. Display only: never part of briefings or prerequisites. */
   | "t3.turn"
-  /** A message the user typed in T3 into a turn the room started (a mid-turn note). Display only, like t3.turn. */
   | "t3.message"
-  /**
-   * A message one member's agent sent to another member's thread with T3's tools: work handed out, a steer, a queued
-   * follow-up, a question, an answer. Display only, like t3.turn; members read it with rooms-board.
-   */
   | "member.message"
-  | "task.status"
   | "system";
 
 /**
  * The kinds that are posts: what was said, by the user, a member or in T3, as the board and the page list it. Only
- * posts take a post number; task status lines and system notes are the room's bookkeeping and take none.
+ * posts take a post number; system notes are the room's bookkeeping and take none.
  */
 export const POST_KINDS: ReadonlySet<RoomEventKind> = new Set<RoomEventKind>(["user.message", "note", "assistant.reply", "t3.turn", "t3.message", "member.message"]);
 
@@ -178,7 +173,7 @@ export const isFileArtifact = (artifact: ArtifactRef): boolean => Boolean(artifa
 export interface RoomEvent {
   id: EventId;
   roomId: RoomId;
-  /** Its place in the room's log of everything that happens (posts, task status lines, system notes): ordering only. */
+  /** Its place in the room's log of everything that happens (posts, system notes): ordering only. */
   sequence: number;
   /**
    * A post's number, as the page, the board and replies cite it ("#51"); null for events that are not posts. Posts
@@ -189,8 +184,6 @@ export interface RoomEvent {
   kind: RoomEventKind;
   speaker: Speaker;
   text: string;
-  taskId: TaskId | null;
-  runId: RunId | null;
   artifacts: ArtifactRef[];
   /** Images the user attached to this message (user.message events). */
   attachmentIds: string[];
@@ -207,8 +200,6 @@ export interface RoomEvent {
   createdAt: string;
 }
 
-export type ScheduleMode = "now" | "after_all" | "manual";
-
 /** An image the user attached in the room. Bytes live in SQLite; T3 receives them inline with the turn. */
 export interface Attachment {
   id: string;
@@ -224,112 +215,6 @@ export const ATTACHMENT_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_MAX_TOTAL_BYTES = 80 * 1024 * 1024;
 
-export interface PrerequisiteRef {
-  taskId: TaskId;
-  revision: number;
-}
-
-export type TaskState =
-  | "queued"
-  | "held"
-  | "blocked"
-  | "dispatching"
-  | "running"
-  | "needs_input"
-  | "succeeded"
-  | "failed"
-  | "interrupted"
-  | "cancelled";
-
-export const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
-  "succeeded",
-  "failed",
-  "interrupted",
-  "cancelled",
-]);
-
-export const PENDING_TASK_STATES: ReadonlySet<TaskState> = new Set(["queued", "held", "blocked"]);
-
-export interface Task {
-  id: TaskId;
-  roomId: RoomId;
-  /** Human-facing number; displayed as task{number}. */
-  number: number;
-  revision: number;
-  sourceEventId: EventId;
-  participantId: ParticipantId;
-  instruction: string;
-  /** Original text the user submitted, kept for inspection. */
-  sourceText: string | null;
-  /** Images sent with the task's turn (stored by the room, delivered to T3 inline). */
-  attachmentIds: string[];
-  /**
-   * What to do when the recipient is mid-turn: "queue" waits for the turn to end (default); "steer" sends the
-   * message into the running turn (T3's "steer" follow-up behaviour), so one reply answers both.
-   */
-  delivery: "queue" | "steer";
-  /** A T3 slash command ("/compact …"): the instruction is sent verbatim as the turn text, without a briefing. */
-  slashCommand: boolean;
-  /**
-   * "seat": the standing facts Backroom sends a member of a room that has a Consigliere (his messages arrive bare).
-   * Its briefing carries no room messages: the member reads the board by number instead.
-   * "wake": Backroom's own task for a member who posted work on the board: it waits on the task that post made and
-   * runs when that task ends, however it ends, bringing the answer. The poster never waits in a tool call.
-   */
-  kind: "assignment" | "seat" | "wake";
-  scheduleMode: ScheduleMode;
-  prerequisites: PrerequisiteRef[];
-  state: TaskState;
-  /** Visible reason for queued/blocked states. */
-  stateReason: string | null;
-  currentRunId: RunId | null;
-  /** Explicit user outcome override: the user marked the task blocked. */
-  userOutcome: "blocked" | null;
-  /** When the user took a failed task off their list without retrying it; a retry clears it. */
-  dismissedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type RunStatus =
-  | "pending"
-  | "dispatched"
-  | "accepted"
-  | "running"
-  | "needs_input"
-  | "succeeded"
-  | "failed"
-  | "interrupted";
-
-export interface Run {
-  id: RunId;
-  taskId: TaskId;
-  taskRevision: number;
-  attempt: number;
-  bindingId: BindingId;
-  threadId: string;
-  /** Stable T3 command identity for identical retries. */
-  commandId: string;
-  /** The id of the user message sent to T3 for this run; T3 names it on the run it starts (or steers it into one). */
-  messageId: string;
-  /** The T3 run that carries this run's message, once T3 reports it. Several room runs steered into one T3 run share it. */
-  t3RunId: string | null;
-  status: RunStatus;
-  /** True when this run's message was sent into a turn that was already running (steering). */
-  steered: boolean;
-  briefing: string;
-  includedFromSequence: number;
-  includedToSequence: number;
-  interruptRequestedAt: string | null;
-  acceptedAt: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  resultEventId: EventId | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface NativeRequest {
   participantId: ParticipantId;
   threadId: string;
@@ -337,21 +222,6 @@ export interface NativeRequest {
   kind: "approval" | "user-input";
   payload: unknown;
   createdAt: string;
-}
-
-export interface RoomSnapshot {
-  room: Room;
-  participants: Participant[];
-  bindings: SessionBinding[];
-  tasks: Task[];
-  runs: Run[];
-  events: RoomEvent[];
-  nativeRequests: NativeRequest[];
-  participantStatus: Record<ParticipantId, ParticipantStatus>;
-  /** The room's effective browser and its process state; null when it has none or this service cannot run browsers. */
-  browser: { browser: Browser; status: RoomBrowserStatus } | null;
-  /** The room state (rooms-board state): the Consigliere's summary of where the room stands, with its first line; null until one is written. */
-  state: RoomStateView | null;
 }
 
 export type { RoomBrowserStatus } from "../browser/roomBrowsers.ts";
@@ -383,8 +253,4 @@ export interface ParticipantStatus {
    * wakes itself when they finish), "monitoring" when only monitors remain, null when nothing runs in the background.
    */
   background: "working" | "monitoring" | null;
-}
-
-export function taskLabel(task: Pick<Task, "number">): string {
-  return `task${task.number}`;
 }

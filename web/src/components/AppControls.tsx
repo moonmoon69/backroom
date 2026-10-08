@@ -100,7 +100,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
           <button
             type="button"
             role="menuitem"
-            title="Which of your saved crew you talk to in new conversations: he brings in the others, hands out the work and reports back"
+            title="Which of your saved crew is seated as the Consigliere of each new room: you talk to him, he brings in the others, hands out the work and reports back"
             onClick={pick(() => setConsigliereOpen(true))}
           >
             <span className="menu-icon" aria-hidden="true">
@@ -193,7 +193,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
 }
 
 /**
- * The Consigliere of new conversations: a picker over the user's saved crew, with "none". Backroom ships no preset and
+ * The Consigliere of new rooms: a picker over the user's saved crew, with "none". Backroom ships no preset and
  * names no model; a member already seated in a room keeps his mark whatever is chosen here.
  */
 function ConsigliereDialog({ onClose }: { onClose: () => void }) {
@@ -248,16 +248,16 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="Consigliere" onClose={onClose} wide>
       <p className="muted">
-        The one you talk to in a new conversation. He brings in the others from your saved crew, hands out the work, and reports back. Start one with “Talk to …” in a project&rsquo;s new menu. In an
-        existing room, make any member its Consigliere from his menu under Members.
+        The one you talk to in a new room: he is seated as its Consigliere when you make the room with + beside a project on the overview. He brings in the others from your saved crew, hands out the
+        work, and reports back. In an existing room, make any member its Consigliere from his menu under Members.
       </p>
       {presets.length === 0 ? <p className="serif">You have no saved crew yet. Save a member under Crew on the overview first.</p> : null}
-      <fieldset aria-label="Consigliere of new conversations">
+      <fieldset aria-label="Consigliere of new rooms">
         <label className="radio">
           <input type="radio" name="consigliere" checked={current === null} onChange={() => void choose(null)} />
           <span>
             <strong>None</strong>
-            <span className="hint">New conversations are not offered; rooms work as always.</span>
+            <span className="hint">A new room opens empty: you seat its members from Members.</span>
           </span>
         </label>
         {presets.map((preset) => (

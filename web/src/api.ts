@@ -168,7 +168,7 @@ export const api = {
   folders: (path: string): Promise<FolderListing> => get(`/api/t3/folders?path=${encodeURIComponent(path)}`),
   presets: (): Promise<Preset[]> => get("/api/presets"),
   overview: (): Promise<{ rooms: OverviewRoom[]; threads: OverviewThread[]; readAt: string }> => get("/api/overview"),
-  /** App-wide settings: which saved crew member is the Consigliere of new conversations, his rules, and what his retiring does to a thread (absent from an older service). */
+  /** App-wide settings: which saved crew member is the Consigliere of new rooms, his rules, and what his retiring does to a thread (absent from an older service). */
   settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice }> => get("/api/settings"),
   /** Reasons designating this member may not work (plan mode, approvals, an untried harness); it is allowed anyway. */
   consigliereWarnings: (roomId: string, participantId: string): Promise<{ warnings: string[] }> =>

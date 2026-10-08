@@ -3,8 +3,8 @@
  * highlighting follow every keystroke without a round trip. The server parses again on its own endpoint;
  * both read the same rules. Assigning the result to the client Draft type keeps types.ts honest.
  *
- * It runs in engine mode (decision D2): /after, /hold and the waits a message implies are refused with the hint the
- * server gives, so the composer shows them before anything is sent.
+ * Decision D2: /after, /hold and the waits a message implies are refused with the hint the server gives, so the composer
+ * shows them before anything is sent.
  */
 import { parseExplicit, type ParticipantRef } from "../../src/parser/explicit.ts";
 import { isActiveParticipant, isRunActive, type Draft, type RoomSnapshot } from "./types.ts";
@@ -20,6 +20,6 @@ export function parseDraft(text: string, snapshot: Pick<RoomSnapshot, "participa
     };
   });
   // In a room that has a Consigliere, what addresses nobody is for him, and @all leaves him out.
-  const draft: Draft = parseExplicit(text, participants, [], { consigliereId: snapshot.room?.consigliereId ?? null, engine: true });
+  const draft: Draft = parseExplicit(text, participants, { consigliereId: snapshot.room?.consigliereId ?? null });
   return draft;
 }

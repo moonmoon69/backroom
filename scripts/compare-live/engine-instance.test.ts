@@ -54,11 +54,11 @@ function engineInstance(name: string): Instance {
   const dir = join(SCRATCH, name);
   mkdirSync(join(dir, "folder"), { recursive: true });
   const fake = new FakeT3Adapter({ autoCompleteMs: null });
-  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, engine: true });
+  const stack = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null });
   const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(dir, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: join(dir, "t3"), CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex") });
   const app = createHttpApp(stack, config, "/nonexistent/dist", { tools: null, token: "board-token", command: "rooms-board" });
   const fetcher = ((input: string | URL | Request, init?: RequestInit) => app.request(String(input).replace("http://instance", ""), init)) as typeof fetch;
-  stack.engine!.start(10);
+  stack.engine.start(10);
   return { stack, fake, driver: new EngineInstance("http://instance", "board-token", fetcher), close: () => stack.close() };
 }
 
@@ -375,7 +375,7 @@ function newSideJob(name: string, runs: Array<{ threadId: string; t3RunId: strin
   const threads = JSON.parse(readFileSync(join(dir, "t3", "threads.json"), "utf8")) as Array<{ runs: Array<{ id: string; userMessageId?: string | null }>; messages: Array<{ id: string; role: string; runId: string | null }> }>;
   for (const thread of threads) for (const run of thread.runs) run.userMessageId = thread.messages.find((m) => m.role === "user" && m.runId === run.id)?.id ?? null;
   writeFileSync(join(dir, "t3", "threads.json"), JSON.stringify(threads));
-  writeFileSync(join(dir, "instance-room.json"), JSON.stringify({ engine: true, head: 20, counts: { unread: 0, unresolvedRuns: 0 }, seats: [], requests: [], runs: runs.map((run, index) => ({ id: `h${index}`, ...run })) }));
+  writeFileSync(join(dir, "instance-room.json"), JSON.stringify({ head: 20, counts: { unread: 0, unresolvedRuns: 0 }, seats: [], requests: [], runs: runs.map((run, index) => ({ id: `h${index}`, ...run })) }));
   return dir;
 }
 
@@ -453,7 +453,7 @@ describe("a new-side checkout that holds the harness is refused", () => {
 test("each task's prompt goes to the Consigliere verbatim through the engine's parser, as one steered request", () => {
   const participants = [{ id: "p-c", alias: "Fable" }, { id: "p-w1", alias: "W1" }, { id: "p-v", alias: "V" }, { id: "p-w2", alias: "W2" }];
   for (const task of TASK_IDS) {
-    const draft = parseExplicit(TASKS[task].prompt, participants, [], { consigliereId: "p-c", engine: true });
+    const draft = parseExplicit(TASKS[task].prompt, participants, { consigliereId: "p-c" });
     assert.equal(draft.kind, "task", task);
     assert.equal(draft.assignments.length, 1, task);
     assert.deepEqual(draft.assignments[0]!.recipients, ["p-c"], task);

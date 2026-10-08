@@ -1,4 +1,4 @@
-/** Service entry point: loads config, builds the adapter, starts the scheduler and the HTTP API. */
+/** Service entry point: loads config, builds the adapter, starts the engine host and the HTTP API. */
 import { serve } from "@hono/node-server";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -64,9 +64,9 @@ const stack = createStack({
     new RoomBrowsers({
       dataDir: config.dataDir,
       ...config.browser,
-      // Busy while any room using the browser has work in flight; changes are shown in those rooms.
+      // Busy while any room using the browser has a run its journal has not ended; changes are shown in those rooms.
       isBusy: (browserId) =>
-        roomsUsingBrowser(repos, browserId).some((room) => repos.listTasks(room.id).some((t) => t.state === "running" || t.state === "dispatching" || t.state === "needs_input")),
+        roomsUsingBrowser(repos, browserId).some((room) => [...stack.engine.view(room.id).runs.values()].some((run) => run.phase !== "terminal")),
       onChange: (browserId) => {
         browserTools?.browserChanged(browserId);
         for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);
@@ -115,7 +115,7 @@ if (adapter instanceof FakeT3Adapter) {
 // Backroom's voice: loaded when the UI first asks (the model is fetched once into data/models), off with ROOMS_SPEECH=off.
 const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
 const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
-stack.scheduler.start(config.tickMs);
+stack.engine.start(config.tickMs);
 
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
 const fetch = adapter instanceof FakeT3Adapter ? withFakeControls(app.fetch, adapter) : app.fetch;

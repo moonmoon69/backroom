@@ -1,12 +1,12 @@
 /**
- * The seat lifecycle on the engine (stage 4/5 plan, item L4b; ROOMS_ENGINE=1). Seating a member gives it a journal seat
+ * The seat lifecycle on the room's journal (stage 4/5 plan, item L4b). Seating a member gives it a journal seat
  * and, in a room with a Consigliere, the seat briefing; making or clearing the Consigliere designates him in the
  * journal; retiring a member retires its seat; a reseat asks the member for its checkpoint, then transfers its work to a
  * fresh seat in the same folder. The journal records each of these (seat.created, orchestrator.set, seat.retired,
  * transfer); rooms.sqlite keeps the members, their threads and the Consigliere's mark in step with it.
  *
  * A seat is a member's binding: its ID and its thread (src/runtime/bindings.ts). The page and the CLI send the room
- * commands they always have; with the engine on, the service hands those to this class (src/app/service.ts).
+ * commands they always have; the service hands those to this class (src/app/service.ts).
  *
  * What Backroom asks a member for itself (the seat briefing, the checkpoint, the Consigliere's move) is a request from
  * the user, so the one-line answer wakes nobody. Request IDs say what each is: `seat-briefing:`, `reseat:`, `moved:`,
@@ -246,9 +246,6 @@ export class EngineSeats {
           return this.reseat(command);
         case "room.consigliere.set":
           return this.designate(command);
-        case "participant.rebind":
-          // A second binding would be a second seat for one member.
-          return Promise.reject(new RoomError("engine_reseat", "A member is not rebound to another thread here: reseat it (rooms-board reseat <name>) for a fresh one.", 409));
         default:
           return null;
       }
@@ -297,7 +294,7 @@ export class EngineSeats {
     writeEngineReseats(this.repos, room.id, [...list, record]);
     this.postCheckpoint(room.id, record);
     this.deps.notify(room.id);
-    return { type: "participant.reseating", participantId: target.id, taskId: "", eventId: record.requestId };
+    return { type: "participant.reseating", participantId: target.id, eventId: record.requestId };
   }
 
   private postCheckpoint(roomId: string, record: EngineReseat): void {

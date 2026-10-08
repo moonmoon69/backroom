@@ -5,7 +5,7 @@
  *   node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key> [--browser backroom-dev] [--port 4471]
  *        [--data <dir>] [--out <dir>] [--keep]
  *
- * It starts its own service from this checkout (ROOMS_ADAPTER=fake ROOMS_ENGINE=1 ROOMS_PORT=<port>
+ * It starts its own service from this checkout (ROOMS_ADAPTER=fake ROOMS_PORT=<port>
  * ROOMS_DATA_DIR=<dir>, the throwaway service of the plan's conventions; never the user's :4400), scripts a room with
  * a Consigliere, a worker and a reviewer, and for every state the page must show checks two things: the room snapshot
  * from the API (GET /api/rooms/:id) has the expected fields, and `rooms-browser … wait-for <text>` printed a match in
@@ -154,7 +154,7 @@ class Service {
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_ENGINE: "1", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ...kept },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
@@ -1311,18 +1311,17 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   check.passed.push(...talked.passed);
 
   membersOnlyAnswer(await room.snapshot());
-  oldTablesEmpty(room.dataDir);
+  oldTablesAbsent(room.dataDir);
   return check.passed;
 }
 
-/** Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs. */
-function oldTablesEmpty(dataDir: string): void {
+/** The old runtime's queue is gone (Z4; Z2 gated on its tables being empty): a fresh rooms.sqlite has none of its tables. */
+function oldTablesAbsent(dataDir: string): void {
   const db = new DatabaseSync(join(dataDir, "rooms.sqlite"), { readOnly: true });
   try {
-    const count = (table: string) => (db.prepare(`select count(*) as n from ${table}`).get() as { n: number }).n;
-    const old = { tasks: count("tasks"), task_revisions: count("task_revisions"), runs: count("runs") };
-    if (old.tasks + old.task_revisions + old.runs !== 0) fail(`the old runtime's tables are not empty: ${JSON.stringify(old)}`);
-    log(`rooms.sqlite: tasks ${old.tasks}, task_revisions ${old.task_revisions}, runs ${old.runs}`);
+    const old = ["tasks", "task_revisions", "runs"].filter((name) => db.prepare("select 1 from sqlite_master where type = 'table' and name = ?").get(name) !== undefined);
+    if (old.length > 0) fail(`a fresh rooms.sqlite has old runtime tables: ${old.join(", ")}`);
+    log("rooms.sqlite: no tasks, task_revisions or runs table");
   } finally {
     db.close();
   }
@@ -1693,7 +1692,7 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   });
 
   // Where the room ends: nothing open, no run unresolved, no background work pending; H5's rules held throughout;
-  // nothing in the old tables.
+  // no old runtime tables.
   const end = await room.snapshot();
   const unresolved = end.runs.filter((r) => r.phase !== "terminal");
   if (end.requests.length > 0 || unresolved.length > 0 || end.seats.some((x) => x.activities.length > 0)) {
@@ -1701,7 +1700,7 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   }
   log(`the room ends quiet: ${end.posts.length} posts, ${end.runs.length} runs all terminal, no open request, no pending activity`);
   membersOnlyAnswer(end);
-  oldTablesEmpty(room.dataDir);
+  oldTablesAbsent(room.dataDir);
   return check.passed;
 }
 

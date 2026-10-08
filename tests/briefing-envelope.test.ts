@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { T3TurnItem } from "../src/adapter/types.ts";
-import { assembleBriefing } from "../src/briefing/assemble.ts";
 import {
   KEEP_ALIVE_LINE, isCompactCommand, journalDirectory, keepAliveOnly, relatedContext, renderEnvelopeBriefing, standingLost,
   type EnvelopeBriefing, type EnvelopeBriefingInput, type EnvelopeDirectory, type SeatStanding,
@@ -20,7 +19,7 @@ const participant = (seat: string): Participant => ({
 });
 const participants = new Map(Object.keys(ALIASES).map((seat) => [`p-${seat}`, participant(seat)]));
 const backroomRoom: BackroomRoom = {
-  id: "r", projectId: "p", environmentId: null, title: "Improvement", nextSequence: 1, nextTaskNumber: 1, browserEnabled: false,
+  id: "r", projectId: "p", environmentId: null, title: "Improvement", nextSequence: 1, browserEnabled: false,
   defaultBrowserId: null, allowedBrowserIds: null, consigliereId: "p-O", createdAt: "", updatedAt: "",
 };
 const BOARD = { command: "/repo/bin/rooms-board", as: "Worker.key" };
@@ -492,22 +491,12 @@ test("H6: a briefing of keep-alives only is the newest one's text; beside other 
   assert.deepEqual(o.envelope.inputs.map((i) => i.intent), ["result", "keep-alive", "keep-alive"]);
   assert.equal(keepAliveOnly(o.envelope), null);
   const b = render(r, o);
-  assert.ok(!b.text.includes(KEEP_ALIVE_LINE) && !b.text.includes("T3 status of @W") && !b.text.includes("keep-alive"), "beside an answer, keep-alives are left out");
+  // (The Consigliere's rules in the standing part name keep-alives; no keep-alive post is among the inputs.)
+  assert.ok(!b.text.includes(KEEP_ALIVE_LINE) && !b.text.includes("T3 status of @W") && !/keep-alive from /.test(b.text), "beside an answer, keep-alives are left out");
   assert.ok(b.text.includes(`answer from @Worker to your request #${numberOf(r, "A")}`));
   assert.deepEqual(Object.keys(b.forms).filter((id) => id.startsWith("ka")), []);
   r.output(o, { kind: "yield" });
   r.add({ type: "keep_alive", actor: "$system", id: "ka3", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: idle]` });
   r.add({ type: "keep_alive", actor: "$system", id: "ka4", seatId: "O", body: `${KEEP_ALIVE_LINE}\n[T3 status of @W: still running: subagent "s"]` });
   assert.equal(keepAliveOnly(r.reserve("O")!.envelope), `${KEEP_ALIVE_LINE}\n[T3 status of @W: still running: subagent "s"]`, "the newest keep-alive only");
-});
-
-// ---------- assemble.ts is unchanged for the old runtime ----------
-
-test("assemble.ts still builds the old briefing: header, standing, condensation", () => {
-  const b = assembleBriefing({
-    room: backroomRoom, participant: participant("W"), participantsById: participants, board: BOARD,
-    task: { id: "t", roomId: "r", number: 7, revision: 1, sourceEventId: "e", participantId: "p-W", instruction: "Do it", sourceText: null, attachmentIds: [], delivery: "queue", slashCommand: false, kind: "assignment", scheduleMode: "now", prerequisites: [], state: "queued", stateReason: null, currentRunId: null, userOutcome: null, dismissedAt: null, createdAt: "", updatedAt: "" },
-    unseenEvents: [], prerequisiteResults: [], standing: [], budgetChars: 60_000,
-  });
-  assert.equal(b.text, "[Backroom briefing for @Worker in room \"Improvement\". Your standing rules, where everyone works and the room's state: `/repo/bin/rooms-board rules --as Worker.key`]\n\n== Your assignment (task7) ==\nDo it\nThis assignment is addressed to you. Perform only the part addressed to you.");
 });

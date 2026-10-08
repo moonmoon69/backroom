@@ -1,12 +1,12 @@
 /**
- * The read API on the engine journal (stage 4/5 plan, item L4c): what the GET routes serve with ROOMS_ENGINE=1, for the
- * web UI (L5) and the rehearsal script. Pure types: the web may import them with `import type`.
+ * The read API on the engine journal (stage 4/5 plan, item L4c): what the GET routes serve, for the web UI (L5) and the
+ * rehearsal script. Pure types: the web may import them with `import type`.
  *
  * Every list and count here is read from the journal's fold when the request is made, and kept nowhere else: the same
  * journal gives the same view after a restart or a rebuild. The only state outside the journal is the user's own marks
  * (what was seen, which notices were dismissed), in rooms.sqlite's kv, keyed by journal sequence.
  *
- * Routes (registered over the old ones when the flag is on; with it off nothing changes):
+ * Routes (src/server/engineView.ts):
  *   GET  /api/rooms                              EngineRoomListItem[]
  *   GET  /api/rooms/:roomId                      EngineRoomSnapshot      (?posts=N: the newest N posts, 500 by default)
  *   GET  /api/rooms/:roomId/board                EngineBoardPage         (?before=<seq>&limit=N: older posts, newest last)
@@ -421,7 +421,7 @@ export interface EngineStreamData {
 }
 
 /**
- * The room's spend, in the old route's shape, re-keyed to the journal: a reply's spend is everything its thread used
+ * The room's spend, re-keyed to the journal: a reply's spend is everything its thread used
  * since the thread's previous reply, and replies are the outputs and turn notes that carry a T3 run (one per T3 run:
  * a host run's final, a T3 turn's note, a continuation's output), keyed by journal event ID. Explicit answers and idle
  * settles carry no T3 run and get none. A thread whose reply times T3 could not give is not split (`unsplit`).

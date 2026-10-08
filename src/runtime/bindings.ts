@@ -105,7 +105,7 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
 /**
  * Approvals and questions stay off the journal, on the native-requests path the app already has (plan §6): the open ones
  * T3 lists for a seat's thread are mirrored into native_requests, where the user answers them and the status bar shows
- * them, and the rest are resolved. The same rows and rules as the old scheduler's observe pass.
+ * them, and the rest are resolved.
  */
 export function nativeRequestMirror(repos: Repos, notify: (roomId: string) => void) {
   return async (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>): Promise<void> => {

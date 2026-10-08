@@ -211,10 +211,10 @@ test("N3: a crash right after a continuation's follow-up leaves nothing for the 
 
 // ---------------- review round 2 ----------------
 
-/** A flag-on stack with one member seated through the engine and its first request dispatched. */
-async function flagStack(engine: boolean) {
+/** A stack with one member seated through the engine. */
+async function flagStack() {
   const dir = mkdtempSync(join(tmpdir(), "backroom-r2-"));
-  const s = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null, engine });
+  const s = createStack({ dbPath: join(dir, "rooms.sqlite"), adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null });
   const fake = s.adapter as FakeT3Adapter;
   const { roomId } = (await s.service.execute(parseCommand({ type: "room.create", projectId: "project_demo", title: "engine" }))) as { roomId: string };
   const { participantId } = (await s.service.execute(parseCommand({ type: "participant.create", roomId, alias: "worker", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } }))) as { participantId: string };
@@ -222,56 +222,43 @@ async function flagStack(engine: boolean) {
   return { s, fake, roomId, participantId, binding, close: () => { s.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
-test("P5: with the flag on, a question a member's run raises reaches Backroom's native-requests path", async () => {
-  const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
+test("P5: a question a member's run raises reaches Backroom's native-requests path", async () => {
+  const { s, fake, roomId, participantId, binding, close } = await flagStack();
   try {
     assert.ok(s.engine!.view(roomId).seats.has(binding.id), "participant.create seats the member on the board (L4b)");
     s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "Do the thing; ask me if unsure." });
-    await s.scheduler.tick();
+    await s.engine.tick();
     assert.equal(fake.threads.get(binding.threadId)!.runs.length, 1, "dispatched by the host");
     fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
-    await s.scheduler.tick();
-    await s.scheduler.tick();
+    await s.engine.tick();
+    await s.engine.tick();
     assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => r.requestId), ["q-1"], "the member's question is on Backroom's native-requests path, where the user can answer it");
   } finally {
     close();
   }
 });
 
-test("F5: with the flag on, the user answers through Backroom; a request T3 resolves itself is resolved; the seat gets work again", async () => {
-  const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
+test("F5: the user answers through Backroom; a request T3 resolves itself is resolved; the seat gets work again", async () => {
+  const { s, fake, roomId, participantId, binding, close } = await flagStack();
   try {
     assert.ok(s.engine!.view(roomId).seats.has(binding.id), "participant.create seats the member on the board (L4b)");
     s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "First job." });
-    await s.scheduler.tick();
+    await s.engine.tick();
     fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
-    await s.scheduler.tick();
+    await s.engine.tick();
     await s.service.execute(parseCommand({ type: "native.userInput.respond", participantId, requestId: "q-1", answers: { "Proceed?": "yes" } }));
     assert.deepEqual(s.repos.listOpenNativeRequests([participantId]), [], "answered through the service");
     fake.raiseApproval(binding.threadId, "a-1");
-    await s.scheduler.tick();
+    await s.engine.tick();
     assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => [r.requestId, r.kind]), [["a-1", "approval"]]);
     await fake.respondApproval({ commandId: "in-t3", threadId: binding.threadId, requestId: "a-1", decision: "accept" });
-    await s.scheduler.tick();
+    await s.engine.tick();
     assert.deepEqual(s.repos.listOpenNativeRequests([participantId]), [], "resolved in T3, resolved here");
     fake.completeRun(binding.threadId, { text: "First job done." });
     s.engine!.request(roomId, { actor: "$user", id: "req-2", to: binding.id, body: "Second job." });
-    await s.scheduler.tick();
-    await s.scheduler.tick();
+    await s.engine.tick();
+    await s.engine.tick();
     assert.equal(fake.threads.get(binding.threadId)!.runs.length, 2, "the seat gets work again");
-  } finally {
-    close();
-  }
-});
-
-test("F5 control: without the flag, the old scheduler mirrors the same question", async () => {
-  const { s, fake, roomId, participantId, binding, close } = await flagStack(false);
-  try {
-    await s.service.execute(parseCommand({ type: "message.create", roomId, assignments: [{ recipients: [participantId], instruction: "Do the thing." }] }));
-    await s.scheduler.tick();
-    fake.raiseQuestion(binding.threadId, { requestId: "q-1" });
-    await s.scheduler.tick();
-    assert.deepEqual(s.repos.listOpenNativeRequests([participantId]).map((r) => r.requestId), ["q-1"]);
   } finally {
     close();
   }

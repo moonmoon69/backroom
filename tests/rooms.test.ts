@@ -44,92 +44,89 @@ test("deleting a room removes its data and applies the chosen action to each thr
   assert.ok(!stack.fake.threads.has(threads.sol2), "deleted in T3");
   assert.ok(stack.fake.threads.has(threads.claude), "kept in T3");
   assert.equal(stack.repos.getRoom(stack.roomId), null);
-  assert.equal(stack.repos.listTasks(stack.roomId).length, 0);
   assert.equal(stack.repos.listEvents(stack.roomId).length, 0);
   assert.equal(stack.repos.getAttachment(image.id), null);
-  await stack.tick(2); // the scheduler keeps running without the room
+  await stack.tick(2); // the engine host keeps running without the room
 });
 
-for (const engine of [false, true]) {
-  test(`deleting a room sends the thread actions at once, deletes the room without waiting, and reports an action T3 is slow to answer as timed out (engine ${engine ? "on" : "off"})`, async (t) => {
-    const limit = 300;
-    const logged: string[] = [];
-    const aliases = ["sol1", "sol2", "sol3", "sol4", "claude", "gone"];
-    const stack = await createTestStack({ autoCompleteMs: null }, aliases, { engine, threadActionTimeoutMs: limit, log: (message) => logged.push(message) });
-    t.after(() => stack.close());
-    const threads = Object.fromEntries(aliases.map((alias) => [alias, stack.threadOf(alias)]));
-    // A late answer must never surface as an unhandled rejection.
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandled);
-    t.after(() => process.off("unhandledRejection", onUnhandled));
-    // A retired member's thread is left alone, and so is one also seated in another room (pointed at in the store, as above).
-    await stack.run({ type: "participant.retire", participantId: stack.participants.gone!, pendingTasks: "cancel" });
-    const second = (await stack.run({ type: "room.create", projectId: "project_demo", title: "second" })) as { roomId: string };
-    const seat = (await stack.run({ type: "participant.create", roomId: second.roomId, alias: "claude", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } })) as { participantId: string };
-    const seatBinding = stack.repos.currentBinding(seat.participantId);
-    assert.ok(seatBinding);
-    stack.repos.updateBinding({ ...seatBinding, retiredAt: new Date().toISOString() });
-    stack.repos.insertBinding({ ...seatBinding, id: `${seatBinding.id}-shared`, generation: seatBinding.generation + 1, threadId: threads.claude!, retiredAt: null });
+test(`deleting a room sends the thread actions at once, deletes the room without waiting, and reports an action T3 is slow to answer as timed out`, async (t) => {
+  const limit = 300;
+  const logged: string[] = [];
+  const aliases = ["sol1", "sol2", "sol3", "sol4", "claude", "gone"];
+  const stack = await createTestStack({ autoCompleteMs: null }, aliases, { threadActionTimeoutMs: limit, log: (message) => logged.push(message) });
+  t.after(() => stack.close());
+  const threads = Object.fromEntries(aliases.map((alias) => [alias, stack.threadOf(alias)]));
+  // A late answer must never surface as an unhandled rejection.
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  // A retired member's thread is left alone, and so is one also seated in another room (pointed at in the store, as above).
+  await stack.run({ type: "participant.retire", participantId: stack.participants.gone! });
+  const second = (await stack.run({ type: "room.create", projectId: "project_demo", title: "second" })) as { roomId: string };
+  const seat = (await stack.run({ type: "participant.create", roomId: second.roomId, alias: "claude", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } })) as { participantId: string };
+  const seatBinding = stack.repos.currentBinding(seat.participantId);
+  assert.ok(seatBinding);
+  stack.repos.updateBinding({ ...seatBinding, retiredAt: new Date().toISOString() });
+  stack.repos.insertBinding({ ...seatBinding, id: `${seatBinding.id}-shared`, generation: seatBinding.generation + 1, threadId: threads.claude!, retiredAt: null });
 
-    // T3 under load: sol1's and sol4's settles do not answer until released (then sol1's applies, sol4's is refused);
-    // the others take 100 ms each.
-    let release = () => {};
-    const held = new Promise<void>((resolve) => (release = resolve));
-    t.after(() => release());
-    const calls: Array<{ threadId: string; type: string; startedAt: number; endedAt: number | null; roomGone: boolean }> = [];
-    const original = stack.fake.setThreadLifecycle.bind(stack.fake);
-    stack.fake.setThreadLifecycle = async (input) => {
-      const call = { threadId: input.threadId, type: `thread.${input.action}`, startedAt: performance.now(), endedAt: null as number | null, roomGone: stack.repos.getRoom(stack.roomId) === null };
-      calls.push(call);
-      if (input.threadId === threads.sol1 || input.threadId === threads.sol4) await held;
-      else await new Promise((resolve) => setTimeout(resolve, 100));
-      if (input.threadId === threads.sol4) throw new Error("T3 refused thread.settle");
-      await original(input);
-      call.endedAt = performance.now();
-    };
+  // T3 under load: sol1's and sol4's settles do not answer until released (then sol1's applies, sol4's is refused);
+  // the others take 100 ms each.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  t.after(() => release());
+  const calls: Array<{ threadId: string; type: string; startedAt: number; endedAt: number | null; roomGone: boolean }> = [];
+  const original = stack.fake.setThreadLifecycle.bind(stack.fake);
+  stack.fake.setThreadLifecycle = async (input) => {
+    const call = { threadId: input.threadId, type: `thread.${input.action}`, startedAt: performance.now(), endedAt: null as number | null, roomGone: stack.repos.getRoom(stack.roomId) === null };
+    calls.push(call);
+    if (input.threadId === threads.sol1 || input.threadId === threads.sol4) await held;
+    else await new Promise((resolve) => setTimeout(resolve, 100));
+    if (input.threadId === threads.sol4) throw new Error("T3 refused thread.settle");
+    await original(input);
+    call.endedAt = performance.now();
+  };
 
-    const began = performance.now();
-    const answer = stack.run({
-      type: "room.delete",
-      roomId: stack.roomId,
-      threads: Object.fromEntries(["sol1", "sol2", "sol4", "gone"].map((alias) => [stack.participants[alias]!, "settle"]).concat([[stack.participants.sol3!, "archive"], [stack.participants.claude!, "delete"]])),
-    }) as Promise<{ type: string; threads: Array<{ alias: string; threadId: string; action: string; result: string; detail?: string }> }>;
-    const result = await Promise.race([answer, new Promise<null>((resolve) => setTimeout(() => resolve(null), limit + 1500))]);
-    const elapsed = performance.now() - began;
-    assert.ok(result, `the delete answered within the limit (it had not after ${Math.round(elapsed)} ms, with ${calls.length} of 4 actions sent)`);
-    assert.ok(elapsed < limit + 1000, `answered in ${Math.round(elapsed)} ms, limit ${limit} ms`);
+  const began = performance.now();
+  const answer = stack.run({
+    type: "room.delete",
+    roomId: stack.roomId,
+    threads: Object.fromEntries(["sol1", "sol2", "sol4", "gone"].map((alias) => [stack.participants[alias]!, "settle"]).concat([[stack.participants.sol3!, "archive"], [stack.participants.claude!, "delete"]])),
+  }) as Promise<{ type: string; threads: Array<{ alias: string; threadId: string; action: string; result: string; detail?: string }> }>;
+  const result = await Promise.race([answer, new Promise<null>((resolve) => setTimeout(() => resolve(null), limit + 1500))]);
+  const elapsed = performance.now() - began;
+  assert.ok(result, `the delete answered within the limit (it had not after ${Math.round(elapsed)} ms, with ${calls.length} of 4 actions sent)`);
+  assert.ok(elapsed < limit + 1000, `answered in ${Math.round(elapsed)} ms, limit ${limit} ms`);
 
-    assert.equal(result.type, "room.deleted");
-    assert.equal(stack.repos.getRoom(stack.roomId), null, "the room is deleted");
-    assert.deepEqual(
-      result.threads.map((r) => [r.alias, r.action, r.result]).sort(),
-      [["claude", "delete", "kept"], ["sol1", "settle", "timeout"], ["sol2", "settle", "done"], ["sol3", "archive", "done"], ["sol4", "settle", "timeout"]],
-    );
-    assert.match(result.threads.find((r) => r.alias === "sol1")?.detail ?? "", /not answered after 0\.3 s; the settle may still go through/);
-    assert.match(result.threads.find((r) => r.alias === "claude")?.detail ?? "", /another room/);
+  assert.equal(result.type, "room.deleted");
+  assert.equal(stack.repos.getRoom(stack.roomId), null, "the room is deleted");
+  assert.deepEqual(
+    result.threads.map((r) => [r.alias, r.action, r.result]).sort(),
+    [["claude", "delete", "kept"], ["sol1", "settle", "timeout"], ["sol2", "settle", "done"], ["sol3", "archive", "done"], ["sol4", "settle", "timeout"]],
+  );
+  assert.match(result.threads.find((r) => r.alias === "sol1")?.detail ?? "", /not answered after 0\.3 s; the settle may still go through/);
+  assert.match(result.threads.find((r) => r.alias === "claude")?.detail ?? "", /another room/);
 
-    // All four actions were sent at once, not one after another, each once the room was deleted.
-    assert.deepEqual(calls.map((c) => c.threadId).sort(), [threads.sol1, threads.sol2, threads.sol3, threads.sol4].sort(), "no action for the retired or the shared thread");
-    const lastStart = Math.max(...calls.map((c) => c.startedAt));
-    const firstEnd = Math.min(...calls.filter((c) => c.endedAt !== null).map((c) => c.endedAt!));
-    assert.ok(lastStart < firstEnd, "every action was sent before the first one finished");
-    assert.ok(lastStart - began < 50, `all sent within ${Math.round(lastStart - began)} ms of the command`);
-    assert.deepEqual(calls.map((c) => c.roomGone), [true, true, true, true], "each action was sent after the room was deleted");
-    assert.ok(stack.fake.commands.some((c) => c.type === "thread.archive" && c.threadId === threads.sol3));
-    const lifecycle = /^thread\.(settle|archive|delete)$/;
-    assert.ok(!stack.fake.commands.some((c) => lifecycle.test(c.type) && (c.threadId === threads.claude || c.threadId === threads.gone)), "kept threads are not changed in T3");
+  // All four actions were sent at once, not one after another, each once the room was deleted.
+  assert.deepEqual(calls.map((c) => c.threadId).sort(), [threads.sol1, threads.sol2, threads.sol3, threads.sol4].sort(), "no action for the retired or the shared thread");
+  const lastStart = Math.max(...calls.map((c) => c.startedAt));
+  const firstEnd = Math.min(...calls.filter((c) => c.endedAt !== null).map((c) => c.endedAt!));
+  assert.ok(lastStart < firstEnd, "every action was sent before the first one finished");
+  assert.ok(lastStart - began < 50, `all sent within ${Math.round(lastStart - began)} ms of the command`);
+  assert.deepEqual(calls.map((c) => c.roomGone), [true, true, true, true], "each action was sent after the room was deleted");
+  assert.ok(stack.fake.commands.some((c) => c.type === "thread.archive" && c.threadId === threads.sol3));
+  const lifecycle = /^thread\.(settle|archive|delete)$/;
+  assert.ok(!stack.fake.commands.some((c) => lifecycle.test(c.type) && (c.threadId === threads.claude || c.threadId === threads.gone)), "kept threads are not changed in T3");
 
-    // T3 answers later: sol1's settle goes through, sol4's is refused; both are logged, nothing is thrown, and the
-    // answer already given stands.
-    release();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.ok(stack.fake.commands.some((c) => c.type === "thread.settle" && c.threadId === threads.sol1));
-    assert.ok(logged.some((line) => line.includes("@sol1") && line.includes("settle finished late")), logged.join("\n"));
-    assert.ok(logged.some((line) => line.includes("@sol4") && line.includes("settle failed late")), logged.join("\n"));
-    assert.deepEqual(unhandled, []);
-  });
-}
+  // T3 answers later: sol1's settle goes through, sol4's is refused; both are logged, nothing is thrown, and the
+  // answer already given stands.
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(stack.fake.commands.some((c) => c.type === "thread.settle" && c.threadId === threads.sol1));
+  assert.ok(logged.some((line) => line.includes("@sol1") && line.includes("settle finished late")), logged.join("\n"));
+  assert.ok(logged.some((line) => line.includes("@sol4") && line.includes("settle failed late")), logged.join("\n"));
+  assert.deepEqual(unhandled, []);
+});
 
 test("a limit beyond what a timer can hold is held at its maximum: a T3 that answers is done, not timed out at once", async (t) => {
   const stack = await createTestStack({ autoCompleteMs: null }, ["sol1", "sol2", "claude"], { threadActionTimeoutMs: 1e10 });
@@ -180,7 +177,7 @@ test("removing a participant can settle, archive, or delete its T3 thread; threa
   const shared = stack.threadOf("claude");
 
   // Default: the thread is left alone.
-  const keep = (await stack.run({ type: "participant.retire", participantId: stack.participants.sol1!, pendingTasks: "cancel" })) as {
+  const keep = (await stack.run({ type: "participant.retire", participantId: stack.participants.sol1! })) as {
     thread: { action: string; result: string };
   };
   assert.deepEqual(keep.thread, { threadId: archived, action: "keep", result: "kept" });
@@ -194,7 +191,7 @@ test("removing a participant can settle, archive, or delete its T3 thread; threa
     modelSelection: { instanceId: "codex", model: "gpt-6-sol" },
     thread: { mode: "create" },
   })) as { participantId: string };
-  const archiveResult = (await stack.run({ type: "participant.retire", participantId: other.participantId, pendingTasks: "cancel", thread: "archive" })) as {
+  const archiveResult = (await stack.run({ type: "participant.retire", participantId: other.participantId, thread: "archive" })) as {
     thread: { threadId: string; action: string; result: string };
   };
   assert.equal(archiveResult.thread.action, "archive");
@@ -202,7 +199,7 @@ test("removing a participant can settle, archive, or delete its T3 thread; threa
   assert.ok(stack.fake.commands.some((c) => c.type === "thread.archive" && c.threadId === archiveResult.thread.threadId));
 
   // Delete: T3 receives thread.delete and the fake forgets the thread.
-  const deleteResult = (await stack.run({ type: "participant.retire", participantId: stack.participants.sol2!, pendingTasks: "cancel", thread: "delete" })) as {
+  const deleteResult = (await stack.run({ type: "participant.retire", participantId: stack.participants.sol2!, thread: "delete" })) as {
     thread: { action: string; result: string };
   };
   assert.deepEqual(deleteResult.thread, { threadId: deleted, action: "delete", result: "done" });
@@ -223,7 +220,7 @@ test("removing a participant can settle, archive, or delete its T3 thread; threa
   assert.ok(seatBinding);
   stack.repos.updateBinding({ ...seatBinding, retiredAt: new Date().toISOString() });
   stack.repos.insertBinding({ ...seatBinding, id: `${seatBinding.id}-shared`, generation: seatBinding.generation + 1, threadId: shared, retiredAt: null });
-  const sharedResult = (await stack.run({ type: "participant.retire", participantId: stack.participants.claude!, pendingTasks: "cancel", thread: "delete" })) as {
+  const sharedResult = (await stack.run({ type: "participant.retire", participantId: stack.participants.claude!, thread: "delete" })) as {
     thread: { action: string; result: string; detail?: string };
   };
   assert.equal(sharedResult.thread.result, "kept");
@@ -237,8 +234,8 @@ test("the room list counts the participants seated now, not the ones removed", a
   const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-list", ROOMS_PORT: "0" }), "/nonexistent/dist");
   const count = async () => ((await (await app.request("/api/rooms")).json()) as Array<{ id: string; participantCount: number }>).find((r) => r.id === stack.roomId)?.participantCount;
   assert.equal(await count(), 3);
-  await stack.run({ type: "participant.retire", participantId: stack.participants.sol1 as string, pendingTasks: "cancel" });
-  await stack.run({ type: "participant.retire", participantId: stack.participants.sol2 as string, pendingTasks: "cancel" });
+  await stack.run({ type: "participant.retire", participantId: stack.participants.sol1 as string });
+  await stack.run({ type: "participant.retire", participantId: stack.participants.sol2 as string });
   assert.equal(await count(), 1, "two were removed");
   await stack.run({ type: "participant.create", roomId: stack.roomId, alias: "sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } });
   assert.equal(await count(), 2, "and one was added again");

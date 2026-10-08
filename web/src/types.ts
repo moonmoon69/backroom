@@ -20,8 +20,7 @@ export interface Room {
   environmentId: string | null;
   title: string;
   nextSequence: number;
-  nextTaskNumber: number;
-  /** Tasks in this room get a browser (started on demand) described in their briefings. */
+  /** The room's agents get a browser (started on demand) described in their briefings. */
   browserEnabled: boolean;
   /** The room's default browser; null means "general". */
   defaultBrowserId: string | null;
@@ -373,23 +372,6 @@ export const ATTACHMENT_MIME_TYPES: ReadonlySet<string> = new Set(["image/png", 
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_MAX_TOTAL_BYTES = 80 * 1024 * 1024;
 
-/**
- * An assignment's timing as the parser (src/parser/explicit.ts) reads it. On the engine (decision D2) nothing waits on
- * other work: the parser refuses /after, /hold and implied waits, so a message that can be sent is always "now".
- */
-export type ScheduleMode = "now" | "after_all" | "manual";
-
-/** The parser's reference to a task (the old runtime); the engine parser never produces one. */
-export interface PrerequisiteRef {
-  taskId: string;
-  revision: number;
-}
-
-export type Schedule =
-  | { mode: "now" }
-  | { mode: "manual" }
-  | { mode: "after_all"; prerequisites: PrerequisiteRef[] };
-
 export interface NativeRequest {
   participantId: string;
   threadId: string;
@@ -439,7 +421,7 @@ export interface BackgroundTask {
 
 /** GET /api/rooms/:roomId: the room read from its journal (EngineRoomSnapshot). */
 export interface RoomSnapshot {
-  /** Tells this shape from the old runtime's snapshot. */
+  /** Always true: the journal's shape (a checkout from before the engine served another; scripts/compare-live tells them apart by it). */
   engine: true;
   room: Room;
   participants: Participant[];
@@ -1089,11 +1071,11 @@ export interface StatusResponse {
 // ---- Parser draft (src/parser/explicit.ts) ----
 
 export interface Unresolved {
-  field: "recipients" | "prerequisites" | "schedule" | "instruction";
+  /** "wait": the assignment waits on other work, which is refused (D2); "delivery": how it reaches a running turn. */
+  field: "recipients" | "wait" | "delivery" | "instruction";
   message: string;
   /** "incomplete": still being written (guidance, never an error). "error": cannot be sent as written. */
   severity: "incomplete" | "error";
-  candidates?: Array<{ taskId: string; revision: number; label: string }>;
   participantCandidates?: Array<{ participantId: string; alias: string; busy: boolean }>;
 }
 
@@ -1114,15 +1096,13 @@ export interface DependencyRef {
   because: "then" | "mention" | "after" | "condition";
 }
 
-/** One assignment of a message: the same instruction for each recipient, one task per recipient. */
+/** One assignment of a message: the same instruction for each recipient, one request per recipient. */
 export interface DraftAssignment {
   recipients: string[];
   instruction: string;
-  /** Timing against work outside this message; null when unresolved. */
-  schedule: Schedule | null;
-  /** Earlier assignments in this message whose tasks this one waits for. */
+  /** Earlier assignments in this message that this one's text waits for: a wait that is refused (D2), unless /now. */
   after: DependencyRef[];
-  /** The timing directive written for this assignment, if any. */
+  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold and /after are refused. */
   timing: "now" | "hold" | "after" | null;
   delivery: "queue" | "steer";
   slashCommand: string | null;
@@ -1194,7 +1174,7 @@ export type RoomCommand =
   | { type: "room.consigliere.set"; roomId: string; participantId: string | null }
   /** The Consigliere's rules in your own words; null goes back to Backroom's wording. */
   | { type: "consigliere.rules.set"; rules: string | null }
-  /** The saved crew member who is the Consigliere of new conversations, or none. */
+  /** The saved crew member who is the Consigliere of new rooms, or none. */
   | { type: "consigliere.preset.set"; presetId: string | null }
   /** What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat. */
   | { type: "consigliere.retireThread.set"; thread: ThreadLifecycleChoice }
@@ -1223,18 +1203,17 @@ export type RoomCommand =
   | { type: "participant.update"; participantId: string; alias?: string }
   /** Changes the bound T3 thread's model/options; the provider (instanceId) cannot change (409 "cannot switch provider"). */
   | { type: "participant.model.set"; participantId: string; modelSelection: ModelSelection }
-  | { type: "participant.rebind"; participantId: string; thread: ThreadBindingInput; outstandingTasks: "carry" | "block" }
   | { type: "participant.runtimeMode.set"; participantId: string; runtimeMode: RuntimeMode }
-  | { type: "participant.retire"; participantId: string; pendingTasks: "cancel" | "keep"; thread?: ThreadLifecycleChoice }
+  | { type: "participant.retire"; participantId: string; thread?: ThreadLifecycleChoice }
   | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string> }
   | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string> }
   | { type: "preset.delete"; presetId: string }
   /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
   | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }
   /**
-   * A message: one request per recipient per assignment (src/app/engineMessages.ts). Each assignment's `schedule` is
-   * "now" and `after` empty (D2); `preamble` is the text before the first address, context for every recipient; the
-   * same `clientMessageId` sent again records nothing twice.
+   * A message: one request per recipient per assignment (src/app/engineMessages.ts). Nothing waits on other work (D2);
+   * `preamble` is the text before the first address, context for every recipient; the same `clientMessageId` sent again
+   * records nothing twice.
    */
   | {
       type: "message.create";
@@ -1243,7 +1222,7 @@ export type RoomCommand =
       preamble?: string;
       clientMessageId?: string;
       attachmentIds: string[];
-      assignments: Array<{ recipients: string[]; instruction: string; schedule: { mode: "now" }; after: number[]; slashCommand?: boolean; delivery?: "queue" | "steer" }>;
+      assignments: Array<{ recipients: string[]; instruction: string; slashCommand?: boolean; delivery?: "queue" | "steer" }>;
     }
   | { type: "room.note.create"; roomId: string; text: string }
   /** The user's controls on the journal, by journal IDs: withdraw or amend a request of yours, retry a failed run, stop a member's turn. */

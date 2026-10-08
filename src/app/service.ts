@@ -1,42 +1,35 @@
 /**
  * RoomService: the single command handler shared by direct controls, explicit syntax,
- * and any later interpreter. Validates references and state,
- * persists transactionally, and appends room events. The scheduler runs separately.
+ * and any later interpreter. Validates references and state and persists transactionally. What goes on a room's
+ * journal (messages, requests, seats) is the engine's: its handlers take those commands (bootstrap.ts).
  */
 import { randomUUID } from "node:crypto";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { T3Adapter, ThreadLifecycleAction } from "../adapter/types.ts";
 import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable } from "../adapter/types.ts";
-import type { Assignment, RoomCommand, Schedule, WorkspaceChoice } from "../domain/commands.ts";
-import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
-import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
+import type { RoomCommand, WorkspaceChoice } from "../domain/commands.ts";
+import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
-import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, movedInstruction, retireThreadChoice, seatInstruction, startAttemptKey } from "./consigliere.ts";
-import { RESEAT_KEY_PREFIX, checkpointInstruction, readReseats, takeoverInstruction, writeReseats, type Reseat } from "./reseat.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
+import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import type { BriefingSource } from "../runtime/render.ts";
 import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
-  PENDING_TASK_STATES,
   POST_KINDS,
   type Browser,
   type Participant,
-  type PrerequisiteRef,
   type Preset,
   type Room,
   type RoomEvent,
   type Attachment,
   ATTACHMENT_MAX_BYTES,
-  ATTACHMENT_MAX_TOTAL_BYTES,
   ATTACHMENT_MIME_TYPES,
   type SessionBinding,
   type Speaker,
-  type Task,
-  type TaskState,
-  taskLabel,
 } from "../domain/types.ts";
 
 export type CommandResult =
@@ -60,17 +53,14 @@ export type CommandResult =
       /** After participant.retire: what happened to its T3 thread (kept when the choice was keep, it has no binding, or it is seated elsewhere). */
       thread?: { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
     }
-  | { type: "tasks.created"; taskIds: string[]; eventId: string }
-  /** After participant.reseat: the checkpoint task the member was sent, and the post that asked for it. */
-  | { type: "participant.reseating"; participantId: string; taskId: string; eventId: string }
+  /** After participant.reseat: the checkpoint request the member was sent (src/app/engineSeats.ts). */
+  | { type: "participant.reseating"; participantId: string; eventId: string }
   | { type: "note.created"; eventId: string }
-  /** The engine's message path (ROOMS_ENGINE=1): one request per recipient per assignment, sharing the message's ID. */
+  /** The engine's message path: one request per recipient per assignment, sharing the message's ID. */
   | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
   | { type: "request.updated"; requestId: string; applied: boolean }
   | { type: "run.retried"; runId: string; eventId: string }
   | { type: "run.stopped"; participantId: string }
-  | { type: "task.updated"; taskId: string; revision: number }
-  | { type: "task.interrupt.requested"; taskId: string; runId: string }
   | { type: "native.responded"; requestId: string }
   | { type: "browser.created"; browserId: string }
   | { type: "browser.updated"; browserId: string }
@@ -80,16 +70,10 @@ export type CommandResult =
 export const now = (): string => new Date().toISOString();
 
 /**
- * With ROOMS_ENGINE=1 the engine handles some commands instead of the old runtime: the first handler that returns a
- * result has taken the command (src/app/engineMessages.ts for the user's messages; seat lifecycle the same way).
+ * The engine's handlers take the commands that go on a room's journal: the first handler that returns a result has
+ * taken the command (src/app/engineMessages.ts for the user's messages, src/app/engineSeats.ts for the seats).
  */
 export type EngineHandler = (command: RoomCommand) => Promise<CommandResult> | null;
-
-/** The first words of an instruction, for a note that points at it. */
-const headOf = (text: string, max = 80): string => {
-  const line = text.replace(/\s+/g, " ").trim();
-  return line.length > max ? `${line.slice(0, max)}…` : line;
-};
 
 /** A member's thread is named after its room and alias, so T3's list and Backroom's agree. */
 export const threadTitleFor = (room: Pick<Room, "title">, participant: Pick<Participant, "alias">): string => `${room.title} · ${participant.alias}`;
@@ -147,8 +131,13 @@ export class RoomService {
     this.log = options.log ?? (() => {});
   }
 
-  /** Stage 4/5 (L4b): with ROOMS_ENGINE=1 the seat lifecycle runs on the engine journal (src/app/engineSeats.ts). */
+  /** The seat lifecycle on the room's journal (src/app/engineSeats.ts), wired by bootstrap.ts once the host exists. */
   private engineSeats: EngineSeats | null = null;
+
+  private seats(): EngineSeats {
+    if (!this.engineSeats) throw new RoomError("engine_missing", "the engine's seat lifecycle is not wired (bootstrap.ts)", 500);
+    return this.engineSeats;
+  }
 
   useEngineSeats(host: EngineHost, briefing: BriefingSource, log?: (message: string, detail?: unknown) => void): EngineSeats {
     this.engineSeats = new EngineSeats({
@@ -158,7 +147,7 @@ export class RoomService {
       briefing,
       notify: this.notify,
       transaction: (fn) => this.db.transaction(fn),
-      seatFresh: (room, old, ids) => this.seatFresh(room, old, { seat: ids }),
+      seatFresh: (room, old, ids) => this.seatFresh(room, old, ids),
       mirror: (participant, shell) => this.syncParticipantFromThread(participant, shell),
       title: threadTitleFor,
       threadAction: (what, entry, action) => this.threadActionWithin(what, entry, action),
@@ -167,15 +156,13 @@ export class RoomService {
     return this.engineSeats;
   }
 
-  // ---------- shared helpers (also used by the scheduler) ----------
+  // ---------- shared helpers ----------
 
   appendEvent(input: {
     roomId: string;
     kind: RoomEvent["kind"];
     speaker: Speaker;
     text: string;
-    taskId?: string | null;
-    runId?: string | null;
     artifacts?: RoomEvent["artifacts"];
     attachmentIds?: string[];
     progress?: RoomEvent["progress"];
@@ -196,8 +183,6 @@ export class RoomService {
         kind: input.kind,
         speaker: input.speaker,
         text: input.text,
-        taskId: input.taskId ?? null,
-        runId: input.runId ?? null,
         artifacts: input.artifacts ?? [],
         attachmentIds: input.attachmentIds ?? [],
         progress: input.progress ?? [],
@@ -212,68 +197,9 @@ export class RoomService {
     });
   }
 
-  statusEvent(task: Task, text: string, runId: string | null = null): RoomEvent {
-    return this.appendEvent({ roomId: task.roomId, kind: "task.status", speaker: { type: "system" }, text, taskId: task.id, runId });
-  }
-
-  setTaskState(task: Task, state: TaskState, reason: string | null, extra: Partial<Task> = {}): Task {
-    const updated: Task = { ...task, ...extra, state, stateReason: reason, updatedAt: now() };
-    this.repos.updateTask(updated);
-    return updated;
-  }
-
-  /**
-   * A "wake" task: Backroom's own task for a member, run when something they are waiting for has happened. After a
-   * task, it waits on it and carries its answer; without one it runs at once and its instruction says what happened.
-   */
-  createWake(roomId: string, poster: Participant, sourceEventId: string, instruction: string, after: Task | null): Task {
-    const wake: Task = {
-      id: randomUUID(),
-      roomId,
-      number: this.repos.nextTaskNumber(roomId),
-      revision: 1,
-      sourceEventId,
-      participantId: poster.id,
-      instruction,
-      sourceText: null,
-      attachmentIds: [],
-      delivery: "queue",
-      slashCommand: false,
-      kind: "wake",
-      scheduleMode: after ? "after_all" : "now",
-      prerequisites: after ? [{ taskId: after.id, revision: after.revision }] : [],
-      state: "queued",
-      stateReason: after ? `after ${taskLabel(after)}` : null,
-      currentRunId: null,
-      userOutcome: null,
-      dismissedAt: null,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.repos.insertTask(wake);
-    this.statusEvent(wake, after ? `${taskLabel(wake)} → @${poster.alias}: wakes him when ${taskLabel(after)} ends` : `${taskLabel(wake)} → @${poster.alias}: wakes him now`);
-    return wake;
-  }
-
-  /** Block pending dependents of a task with a visible reason. Returns the tasks that were blocked. A "wake" task is
-   *  not blocked by its work ending badly: that is what it is for, and the scheduler runs it with the outcome. */
-  blockPendingDependents(task: Task, reason: string): Task[] {
-    const blocked: Task[] = [];
-    for (const dependent of dependentsOf(task.id, this.repos.listTasks(task.roomId))) {
-      if (!PENDING_TASK_STATES.has(dependent.state) || dependent.state === "blocked" || dependent.kind === "wake") continue;
-      blocked.push(this.setTaskState(dependent, "blocked", reason));
-      this.statusEvent(dependent, `${taskLabel(dependent)} blocked: ${reason}`);
-    }
-    return blocked;
-  }
-
-  private participantsById(roomId: string): Map<string, Participant> {
-    return new Map(this.repos.listParticipants(roomId).map((p) => [p.id, p]));
-  }
-
   // ---------- command entry point ----------
 
-  /** The engine runtime takes the commands this handler accepts (bootstrap.ts, with ROOMS_ENGINE=1 only). */
+  /** The engine takes the commands this handler accepts (bootstrap.ts). */
   useEngine(handler: EngineHandler): void {
     this.engineHandlers.push(handler);
   }
@@ -318,8 +244,6 @@ export class RoomService {
         return { type: "projects.reordered" };
       case "room.delete":
         return this.deleteRoom(command);
-      case "member.post":
-        return this.createMemberPost(command);
       case "participant.create":
         return this.createParticipant(command);
       case "participant.update":
@@ -339,8 +263,6 @@ export class RoomService {
       }
       case "participant.fromPreset":
         return this.seatPreset(command);
-      case "room.consigliere.set":
-        return this.setConsigliere(command);
       case "consigliere.preset.set": {
         if (command.presetId !== null && !this.repos.getPreset(command.presetId)) throw notFound("preset", command.presetId);
         if (command.presetId === null) this.repos.deleteKv(CONSIGLIERE_PRESET_KEY);
@@ -357,62 +279,21 @@ export class RoomService {
         return { type: "settings.updated" };
       case "consigliere.start":
         return this.startConversation(command);
-      case "participant.rebind":
-        return this.rebindParticipant(command);
-      case "participant.retire":
-        return this.retireParticipant(command);
-      case "participant.reseat":
-        return this.reseatParticipant(command);
       case "participant.model.set":
         return this.setParticipantModel(command);
       case "participant.runtimeMode.set":
         return this.setParticipantRuntimeMode(command);
-      case "task.create":
-        return this.createMessage({
-          roomId: command.roomId,
-          sourceText: command.sourceText ?? command.instruction,
-          attachmentIds: command.attachmentIds,
-          assignments: [{ recipients: command.recipients, instruction: command.instruction, schedule: command.schedule, after: [], delivery: command.delivery, slashCommand: false }],
-        });
+      // The journal's commands: the engine's handlers above take them (bootstrap.ts registers both).
       case "message.create":
-        return this.createMessage({
-          roomId: command.roomId,
-          sourceText: command.sourceText ?? command.assignments.map((a) => a.instruction).join("\n"),
-          attachmentIds: command.attachmentIds,
-          assignments: command.assignments,
-        });
       case "room.note.create":
-        return this.createNote(command);
       case "request.cancel":
       case "request.correct":
       case "run.retry":
       case "run.stop":
-        throw new RoomError("engine_only", `${command.type} acts on the engine's board; this service runs without it (ROOMS_ENGINE=1)`, 409);
-      case "task.update":
-        return this.updateTask(command);
-      case "task.release":
-        return this.releaseTask(command);
-      case "task.cancel":
-        return this.cancelTask(command);
-      case "task.interrupt":
-        return this.interruptTask(command);
-      case "task.retry":
-        return this.retryTask(command);
-      case "task.markBlocked":
-        return this.markBlocked(command);
-      case "task.unblock":
-        return this.unblockTask(command);
-      case "task.dismiss": {
-        const task = this.repos.getTask(command.taskId);
-        if (!task) throw notFound("task", command.taskId);
-        if (task.state !== "failed") throw invalidTransition(taskLabel(task), task.state, "dismiss; only a failed task can be taken off your list");
-        this.db.transaction(() => {
-          this.repos.updateTask({ ...task, dismissedAt: now(), updatedAt: now() });
-          this.statusEvent(task, `${taskLabel(task)}: failure dismissed by user`);
-        });
-        this.notify(task.roomId);
-        return { type: "task.updated", taskId: task.id, revision: task.revision };
-      }
+      case "participant.retire":
+      case "participant.reseat":
+      case "room.consigliere.set":
+        throw new RoomError("engine_missing", `${command.type} goes on the room's journal, and no engine handler took it`, 500);
       case "native.userInput.dismiss":
         return this.dismissUserInput(command);
       case "native.approval.respond":
@@ -510,7 +391,6 @@ export class RoomService {
       environmentId,
       title: command.title,
       nextSequence: 1,
-      nextTaskNumber: 1,
       browserEnabled: false,
       defaultBrowserId: null,
       allowedBrowserIds: null,
@@ -579,7 +459,7 @@ export class RoomService {
     const text = !command.enabled
       ? "Browsers turned off for this room"
       : !room.browserEnabled
-        ? `Browsers turned on: tasks in this room get "${browser?.name ?? "a browser"}" by default`
+        ? `Browsers turned on: this room's agents get "${browser?.name ?? "a browser"}" by default`
         : !sameList
           ? `${allowed ? `This room may use these browsers: ${names(allowed)}` : "This room may use every browser"}${defaultMoved ? `; its default is now "${browser?.name ?? "none"}"` : ""}`
           : `Default browser set to "${browser?.name ?? "none"}"`;
@@ -737,7 +617,7 @@ export class RoomService {
     if (command.modelSelection.instanceId !== participant.modelSelection.instanceId) {
       throw new RoomError(
         "provider_fixed",
-        `@${participant.alias}'s thread runs on ${participant.modelSelection.instanceId}; a thread cannot switch provider. Rebind to a new thread instead.`,
+        `@${participant.alias}'s thread runs on ${participant.modelSelection.instanceId}; a thread cannot switch provider. Seat a member on a new thread of that provider instead.`,
         409,
       );
     }
@@ -749,14 +629,14 @@ export class RoomService {
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
       throw error;
     }
-    // Mirror immediately; the scheduler keeps it in sync with T3 afterwards.
+    // Mirror immediately; the seat lifecycle's watch keeps it in sync with T3 afterwards (src/app/engineSeats.ts).
     this.db.transaction(() => this.repos.updateParticipant({ ...participant, modelSelection: command.modelSelection, updatedAt: now() }));
     this.appendEvent({ roomId: participant.roomId, kind: "system", speaker: { type: "system" }, text: `@${participant.alias} model set to ${command.modelSelection.model} in T3` });
     this.notify(participant.roomId);
     return { type: "participant.updated", participantId: participant.id };
   }
 
-  /** Keep the participant's mirror of the thread configuration equal to what T3 reports. Used by the scheduler. */
+  /** Keep the participant's mirror of the thread configuration equal to what T3 reports. Used by the seat lifecycle's watch. */
   syncParticipantFromThread(participant: Participant, shell: { modelSelection: Participant["modelSelection"]; runtimeMode: Participant["runtimeMode"]; interactionMode: Participant["interactionMode"] }): boolean {
     const same =
       JSON.stringify(participant.modelSelection) === JSON.stringify(shell.modelSelection) &&
@@ -786,7 +666,7 @@ export class RoomService {
   ): Promise<CommandResult> {
     const room = this.requireRoom(roomId);
     this.assertAliasFree(room.id, spec.alias, null);
-    if (this.engineSeats && thread.mode === "attach") this.engineSeats.refuseSeatedThread(room.id, thread.threadId);
+    if (thread.mode === "attach") this.seats().refuseSeatedThread(room.id, thread.threadId);
     const bound = await this.bindThread(room, spec, thread, ids);
     const participant: Participant = {
       id: ids?.participantId ?? randomUUID(),
@@ -822,10 +702,8 @@ export class RoomService {
       speaker: { type: "system" },
       text: `@${participant.alias} joined (${participant.modelSelection.model}, ${command.thread.mode === "create" ? "new thread" : "attached thread"})`,
     });
-    // In a room that has a Consigliere his messages arrive bare, so a new member is told the standing facts first.
-    const consigliere = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
-    if (this.engineSeats) this.engineSeats.seated(room, participant, binding, { briefing: spec.seatBriefing !== false });
-    else if (consigliere && !consigliere.retiredAt && spec.seatBriefing !== false) this.sendSeatBriefing(room, participant, seatInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null), "Seat briefing");
+    // The seat on the room's journal; in a room that has a Consigliere it is told the standing facts first.
+    this.seats().seated(room, participant, binding, { briefing: spec.seatBriefing !== false });
     this.notify(room.id);
     return { type: "participant.created", participantId: participant.id, threadId: bound.threadId, alias: participant.alias };
   }
@@ -932,85 +810,11 @@ export class RoomService {
 
   // ---------- the Consigliere ----------
 
-  /**
-   * A task Backroom writes itself for one member: the seat briefing, or the line that names a new Consigliere. It is
-   * delivered like any assignment (so it is retried, shown and answered on the board) but carries no room messages.
-   */
-  private sendSeatBriefing(room: Room, participant: Participant, instruction: string, label: string): Task {
-    return this.db.transaction(() => {
-      const source = this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `${label} sent to @${participant.alias}` });
-      const task: Task = {
-        id: randomUUID(),
-        roomId: room.id,
-        number: this.repos.nextTaskNumber(room.id),
-        revision: 1,
-        sourceEventId: source.id,
-        participantId: participant.id,
-        instruction,
-        sourceText: null,
-        attachmentIds: [],
-        delivery: "queue",
-        slashCommand: false,
-        kind: "seat",
-        scheduleMode: "now",
-        prerequisites: [],
-        state: "queued",
-        stateReason: "ready",
-        currentRunId: null,
-        userOutcome: null,
-        dismissedAt: null,
-        createdAt: now(),
-        updatedAt: now(),
-      };
-      this.repos.insertTask(task);
-      this.statusEvent(task, `${taskLabel(task)} → @${participant.alias}: ${label.toLowerCase()}`);
-      return task;
-    });
+  /** Designate a member as the room's Consigliere, move the mark, or clear it: on the journal (src/app/engineSeats.ts). */
+  private setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>): Promise<CommandResult> {
+    return this.seats().designate(command);
   }
 
-  /**
-   * Designate a member as the room's Consigliere, move the mark, or clear it. A room's first Consigliere means every
-   * other member gets the seat briefing; a move tells every member, in one line, who he is now.
-   */
-  private async setConsigliere(command: Extract<RoomCommand, { type: "room.consigliere.set" }>, except: string | null = null): Promise<CommandResult> {
-    // Also reached from inside the service (a room's first Consigliere, a conversation's start), not only by execute.
-    if (this.engineSeats) return this.engineSeats.designate(command);
-    const room = this.requireRoom(command.roomId);
-    const previous = room.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
-    if (command.participantId === null) {
-      if (room.consigliereId === null) return { type: "room.updated", roomId: room.id };
-      this.db.transaction(() => {
-        this.repos.setRoomConsigliere(room.id, null, now());
-        this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `${previous ? `@${previous.alias} is no longer the Consigliere; this` : "This"} room has no Consigliere` });
-      });
-      this.notify(room.id);
-      return { type: "room.updated", roomId: room.id };
-    }
-    const participant = this.requireParticipant(command.participantId);
-    if (participant.roomId !== room.id) throw new RoomError("unknown_participant", `member ${command.participantId} is not in this room`);
-    if (room.consigliereId === participant.id) return { type: "room.updated", roomId: room.id };
-    const threadId = this.repos.currentBinding(participant.id)?.threadId ?? null;
-    const moved = previous !== null && !previous.retiredAt;
-    this.db.transaction(() => {
-      this.repos.setRoomConsigliere(room.id, participant.id, now());
-      this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${participant.alias} is now the Consigliere of this room` });
-      for (const other of this.repos.listActiveParticipants(room.id)) {
-        // except: a reseated Consigliere, who leaves the room as the mark moves.
-        if (other.id === participant.id || other.id === except) continue;
-        if (moved) this.sendSeatBriefing(room, other, movedInstruction(participant, threadId), "New Consigliere");
-        else this.sendSeatBriefing(room, other, seatInstruction(participant, threadId), "Seat briefing");
-      }
-    });
-    this.notify(room.id);
-    return { type: "room.updated", roomId: room.id };
-  }
-
-  /**
-   * Start a conversation with the Consigliere: a room in the project, the saved crew member the setting names seated
-   * and designated, and the user's message delivered to him. What the attempt intends (the room, the member, the
-   * thread and its T3 command) is written down before T3 is called, so the same request sent again, after an error or
-   * a restart, carries on with them and makes nothing twice.
-   */
   /**
    * Seat the Consigliere chosen in Settings in a new room and designate him. Nothing happens without a choice. When T3
    * cannot seat him the room stays, with a note saying so, and Members can seat him later.
@@ -1029,6 +833,12 @@ export class RoomService {
     }
   }
 
+  /**
+   * Start a conversation with the Consigliere: a room in the project, the saved crew member the setting names seated
+   * and designated, and the user's message delivered to him. What the attempt intends (the room, the member, the
+   * thread and its T3 command) is written down before T3 is called, so the same request sent again, after an error or
+   * a restart, carries on with them and makes nothing twice.
+   */
   private async startConversation(command: Extract<RoomCommand, { type: "consigliere.start" }>): Promise<CommandResult> {
     const key = startAttemptKey(command.requestId);
     type Attempt = { roomId: string; participantId: string; threadId: string; threadCommandId: string; seated: boolean; delivered: boolean };
@@ -1055,17 +865,16 @@ export class RoomService {
       current = { ...current, seated: true };
     }
     await this.setConsigliere({ type: "room.consigliere.set", roomId: current.roomId, participantId: current.participantId });
-    // The message goes the composer's way, through execute: with the engine (ROOMS_ENGINE=1) it is his request on the
-    // board, under the attempt's ID as the message's client ID, so the engine records it once however often it is sent.
-    // Without the engine it was delivered already when the room has the message: the attempt stopped before saying so.
-    if (!this.repos.listEvents(current.roomId).some((event) => event.kind === "user.message")) await this.execute({
+    // The message goes the composer's way, through execute: his request on the board, under the attempt's ID as the
+    // message's client ID, so the engine records it once however often it is sent.
+    await this.execute({
       type: "message.create",
       roomId: current.roomId,
       sourceText: command.text,
       preamble: "",
       clientMessageId: command.requestId,
       attachmentIds: [],
-      assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), schedule: { mode: "now" }, after: [], delivery: "queue", slashCommand: false }],
+      assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), delivery: "queue", slashCommand: false }],
     });
     save({ ...current, delivered: true });
     return { type: "consigliere.started", roomId: current.roomId, participantId: current.participantId };
@@ -1088,270 +897,12 @@ export class RoomService {
     return { type: "participant.updated", participantId: participant.id };
   }
 
-  private async rebindParticipant(command: Extract<RoomCommand, { type: "participant.rebind" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const room = this.requireRoom(participant.roomId);
-    const runningTasks = this.repos
-      .listTasks(room.id)
-      .filter((task) => task.participantId === participant.id && (task.state === "dispatching" || task.state === "running" || task.state === "needs_input"));
-    if (runningTasks.length > 0) {
-      throw new RoomError(
-        "participant_busy",
-        `@${participant.alias} has work in progress (${runningTasks.map(taskLabel).join(", ")}); interrupt it or wait before rebinding`,
-        409,
-      );
-    }
-    const bound = await this.bindThread(room, participant, command.thread);
-    const generation = participant.bindingGeneration + 1;
-    const pending = this.repos.listTasks(room.id).filter((task) => task.participantId === participant.id && PENDING_TASK_STATES.has(task.state));
-    this.db.transaction(() => {
-      const old = this.repos.currentBinding(participant.id);
-      if (old) this.repos.updateBinding({ ...old, retiredAt: now() });
-      this.repos.insertBinding({
-        id: randomUUID(),
-        participantId: participant.id,
-        generation,
-        threadId: bound.threadId,
-        deliveredCursor: 0,
-        bootstrapDeliveredAt: null,
-        createdAt: now(),
-        retiredAt: null,
-      });
-      this.repos.updateParticipant({ ...participant, bindingGeneration: generation, runtimeMode: bound.runtimeMode, modelSelection: bound.modelSelection, interactionMode: bound.interactionMode, updatedAt: now() });
-      if (command.outstandingTasks === "block") {
-        for (const task of pending) {
-          if (task.state === "blocked") continue;
-          this.setTaskState(task, "blocked", `@${participant.alias} was rebound to a new session; confirm or edit before it runs`);
-        }
-      }
-    });
-    this.appendEvent({
-      roomId: room.id,
-      kind: "system",
-      speaker: { type: "system" },
-      text: `@${participant.alias} rebound to a ${command.thread.mode === "create" ? "new" : "different"} thread (generation ${generation}); ` +
-        `${pending.length} pending task(s) ${command.outstandingTasks === "carry" ? "carried over" : "blocked for confirmation"}`,
-    });
-    this.notify(room.id);
-    return { type: "participant.updated", participantId: participant.id };
-  }
-
-  /**
-   * Retire a participant. Its room data stays for attribution; its T3 thread is kept, settled, archived, or deleted
-   * as chosen (a thread also seated in another room is always kept). The T3 action runs after the room bookkeeping
-   * commits; a failure is reported in the result and leaves the thread as it was.
-   */
-  private async retireParticipant(command: Extract<RoomCommand, { type: "participant.retire" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const tasks = this.repos.listTasks(participant.roomId).filter((task) => task.participantId === participant.id);
-    const inFlight = tasks.filter((task) => task.state === "dispatching" || task.state === "running" || task.state === "needs_input");
-    if (inFlight.length > 0) {
-      throw new RoomError(
-        "participant_busy",
-        `@${participant.alias} has work in progress (${inFlight.map(taskLabel).join(", ")}); interrupt it or wait before removing`,
-        409,
-      );
-    }
-    const pending = tasks.filter((task) => PENDING_TASK_STATES.has(task.state));
-    const binding = this.repos.currentBinding(participant.id);
-    const elsewhere = binding
-      ? this.repos
-          .listActiveBindings()
-          .some((b) => b.threadId === binding.threadId && b.participantId !== participant.id && this.repos.getParticipant(b.participantId)?.roomId !== participant.roomId)
-      : false;
-    this.db.transaction(() => {
-      if (binding) this.repos.updateBinding({ ...binding, retiredAt: now() });
-      this.repos.updateParticipant({ ...participant, retiredAt: now(), updatedAt: now() });
-      // A room's Consigliere who leaves takes the mark with him: the room has none until the user names another.
-      if (this.repos.getRoom(participant.roomId)?.consigliereId === participant.id) this.repos.setRoomConsigliere(participant.roomId, null, now());
-      for (const task of pending) {
-        if (command.pendingTasks === "cancel") {
-          const cancelled = this.setTaskState(task, "cancelled", `cancelled: @${participant.alias} was removed from the room`);
-          this.statusEvent(cancelled, `${taskLabel(cancelled)} cancelled (@${participant.alias} removed)`);
-          this.blockPendingDependents(cancelled, `prerequisite ${taskLabel(cancelled)} was cancelled`);
-        } else if (task.state !== "blocked") {
-          const blocked = this.setTaskState(task, "blocked", `@${participant.alias} was removed; edit the task to reassign it`);
-          this.statusEvent(blocked, `${taskLabel(blocked)} blocked: assignee removed`);
-        }
-      }
-    });
-    let thread: NonNullable<Extract<CommandResult, { type: "participant.updated" }>["thread"]> | undefined;
-    if (binding) {
-      const action = command.thread;
-      if (action === "keep") thread = { threadId: binding.threadId, action, result: "kept" };
-      else if (elsewhere) thread = { threadId: binding.threadId, action, result: "kept", detail: "also used in another room" };
-      else {
-        // Within the same per-call limit as room deletion: T3 answering late, or not at all, holds nobody up.
-        const room = this.repos.getRoom(participant.roomId);
-        const { result, detail } = await this.threadActionWithin(`@${participant.alias} removed from room "${room?.title ?? participant.roomId}"`, { alias: participant.alias, threadId: binding.threadId }, action);
-        thread = { threadId: binding.threadId, action, result, ...(detail !== undefined ? { detail } : {}) };
-      }
-    }
-    const threadNote =
-      thread && thread.action !== "keep"
-        ? thread.result === "done"
-          ? `; its T3 thread was ${thread.action === "delete" ? "deleted" : `${thread.action}d`}`
-          : thread.result === "kept"
-            ? `; its T3 thread was kept (${thread.detail ?? "kept"})`
-            : thread.result === "timeout"
-              ? `; T3 has not confirmed the ${thread.action} of its thread (${thread.detail ?? "it may still go through"})`
-              : `; T3 could not ${thread.action} its thread (${thread.detail ?? "failed"})`
-        : "";
-    this.appendEvent({
-      roomId: participant.roomId,
-      kind: "system",
-      speaker: { type: "system" },
-      text: `@${participant.alias} removed from the room; ${pending.length} pending task(s) ${command.pendingTasks === "cancel" ? "cancelled" : "kept blocked for reassignment"}${threadNote}`,
-    });
-    this.notify(participant.roomId);
-    return { type: "participant.updated", participantId: participant.id, ...(thread ? { thread } : {}) };
-  }
-
-  // ---------- reseating (see reseat.ts) ----------
-
-  /**
-   * Ask a member for its checkpoint post, the first step of a reseat. The task is queued like any other, so it runs
-   * when the work in hand is done; advanceReseats does the rest when the post has landed. Nobody is woken for it.
-   */
-  private async reseatParticipant(command: Extract<RoomCommand, { type: "participant.reseat" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const by = this.requireParticipant(command.by);
-    if (by.roomId !== participant.roomId) throw new RoomError("unknown_participant", `member ${command.by} is not in this room`);
-    const room = this.requireRoom(participant.roomId);
-    const pending = readReseats(this.repos, room.id);
-    const already = pending.find((reseat) => reseat.participantId === participant.id || reseat.seat.participantId === participant.id);
-    if (already) {
-      const checkpoint = this.repos.getTask(already.checkpointTaskId);
-      throw new RoomError("reseat_pending", `@${participant.alias} is being reseated already${checkpoint ? ` (checkpoint ${taskLabel(checkpoint)}: ${checkpoint.state})` : ""}`, 409);
-    }
-    if (!this.repos.currentBinding(participant.id)) throw new RoomError("no_binding", `@${participant.alias} has no thread to write a checkpoint on`);
-    const byBinding = this.repos.currentBinding(by.id);
-    const plan = command.plan?.trim() || null;
-    const result = this.db.transaction(() => {
-      const event = this.appendEvent({
-        roomId: room.id,
-        kind: "member.message",
-        speaker: byBinding ? { type: "participant", participantId: by.id, bindingId: byBinding.id } : { type: "system" },
-        text: `@${participant.alias} reseat: write your checkpoint post; a fresh seat takes over from it.${plan ? ` It carries on with: ${plan}` : ""}`,
-        to: participant.id,
-      });
-      const task: Task = {
-        id: randomUUID(),
-        roomId: room.id,
-        number: this.repos.nextTaskNumber(room.id),
-        revision: 1,
-        sourceEventId: event.id,
-        participantId: participant.id,
-        instruction: checkpointInstruction({ consigliere: room.consigliereId === participant.id, plan }),
-        sourceText: event.text,
-        attachmentIds: [],
-        delivery: "queue",
-        slashCommand: false,
-        kind: "assignment",
-        scheduleMode: "now",
-        prerequisites: [],
-        state: "queued",
-        stateReason: "ready",
-        currentRunId: null,
-        userOutcome: null,
-        dismissedAt: null,
-        createdAt: now(),
-        updatedAt: now(),
-      };
-      this.repos.insertTask(task);
-      this.statusEvent(task, `${taskLabel(task)} → @${participant.alias}: checkpoint for a reseat`);
-      const reseat: Reseat = {
-        participantId: participant.id,
-        by: by.id,
-        plan,
-        requestEventId: event.id,
-        checkpointTaskId: task.id,
-        seat: { participantId: randomUUID(), threadId: randomUUID(), commandId: randomUUID() },
-        stage: "checkpoint",
-        requestedAt: now(),
-      };
-      writeReseats(this.repos, room.id, [...pending, reseat]);
-      return { type: "participant.reseating" as const, participantId: participant.id, taskId: task.id, eventId: event.id };
-    });
-    this.notify(room.id);
-    return result;
-  }
-
-  /**
-   * Carry every reseat in progress a step on. Scheduler.runTick calls it after reading the threads and before sending
-   * work, so a fresh seat's first task goes out in the same tick its member's checkpoint landed. Rooms it changed are
-   * added to touched.
-   */
-  async advanceReseats(touched: Set<string>): Promise<void> {
-    for (const key of this.repos.listKv(RESEAT_KEY_PREFIX).keys()) {
-      const roomId = key.slice(RESEAT_KEY_PREFIX.length);
-      for (const reseat of readReseats(this.repos, roomId)) {
-        if (await this.advanceReseat(roomId, reseat)) touched.add(roomId);
-      }
-    }
-  }
-
-  /**
-   * One reseat, as far as it can go now: once the checkpoint has succeeded and its member is idle, seat the fresh
-   * member where the old one worked; hand it the checkpoint and the member's pending tasks; move the Consigliere's mark;
-   * retire the old seat. Each step is recorded, so a crash or T3 outage resumes where it stopped. True when it changed
-   * anything.
-   */
-  private async advanceReseat(roomId: string, start: Reseat): Promise<boolean> {
-    let reseat = start;
-    const save = (next: Reseat | null) =>
-      writeReseats(this.repos, roomId, [...readReseats(this.repos, roomId).filter((r) => r.participantId !== reseat.participantId), ...(next ? [next] : [])]);
-    const room = this.repos.getRoom(roomId);
-    const old = this.repos.getParticipant(reseat.participantId);
-    const checkpoint = this.repos.getTask(reseat.checkpointTaskId);
-    if (!room || !old || !checkpoint) {
-      save(null);
-      return true;
-    }
-    if (reseat.stage === "checkpoint") {
-      if (old.retiredAt) return this.callOffReseat(room, reseat, old, `@${old.alias} was removed from the room`);
-      // Blocked: its thread is gone from T3, or it was removed; nothing would ever run it.
-      if (checkpoint.state === "failed" || checkpoint.state === "interrupted" || checkpoint.state === "cancelled" || checkpoint.state === "blocked") {
-        return this.callOffReseat(room, reseat, old, `its checkpoint ${taskLabel(checkpoint)} ${checkpoint.state}${checkpoint.stateReason && checkpoint.stateReason !== checkpoint.state ? ` (${checkpoint.stateReason})` : ""}`);
-      }
-      if (checkpoint.state !== "succeeded") return false;
-      // Whatever the member is still running (a steer that came after the checkpoint) ends first.
-      const busy = this.repos.listTasks(roomId).some((t) => t.participantId === old.id && (t.state === "dispatching" || t.state === "running" || t.state === "needs_input"));
-      if (busy) return false;
-      try {
-        if (!this.repos.getParticipant(reseat.seat.participantId)) await this.seatFresh(room, old, reseat);
-      } catch (error) {
-        // T3 away: the next tick tries again with the same ids. Anything else calls the reseat off.
-        if (error instanceof RoomError && error.status === 503) return false;
-        return this.callOffReseat(room, reseat, old, `the fresh seat could not be made: ${(error as Error).message}`);
-      }
-      reseat = { ...reseat, stage: "seated" };
-      save(reseat);
-    }
-    const fresh = this.repos.getParticipant(reseat.seat.participantId);
-    if (!fresh) return this.callOffReseat(room, reseat, old, "the fresh seat is gone");
-    const consigliere = room.consigliereId === old.id || room.consigliereId === fresh.id;
-    if (reseat.stage === "seated") {
-      this.db.transaction(() => {
-        this.handOver(room, reseat, old, fresh, checkpoint, consigliere);
-        reseat = { ...reseat, stage: "handed" };
-        save(reseat);
-      });
-    }
-    if (room.consigliereId === old.id) await this.setConsigliere({ type: "room.consigliere.set", roomId, participantId: fresh.id }, old.id);
-    // The old seat's thread goes as the user's retire setting says (kept unless they chose otherwise).
-    if (!this.repos.getParticipant(old.id)?.retiredAt) await this.retireParticipant({ type: "participant.retire", participantId: old.id, pendingTasks: "cancel", thread: retireThreadChoice(this.repos) });
-    save(null);
-    this.notify(roomId);
-    return true;
-  }
-
   /**
    * The fresh seat: the same saved crew member (or, for a seat made without one, the same settings), in the old seat's
-   * folder: its worktree, or the project folder. The checkpoint and the moved tasks assume that folder, so when T3 cannot
-   * say where the old seat worked the reseat is called off rather than seated elsewhere; T3 being away is retried.
+   * folder: its worktree, or the project folder. The checkpoint and the work handed over assume that folder, so when T3
+   * cannot say where the old seat worked the reseat is called off rather than seated elsewhere; T3 being away is retried.
    */
-  private async seatFresh(room: Room, old: Participant, reseat: Pick<Reseat, "seat">): Promise<void> {
+  private async seatFresh(room: Room, old: Participant, ids: EngineReseat["fresh"]): Promise<void> {
     const preset = old.presetId ? this.repos.getPreset(old.presetId) : null;
     const binding = this.repos.currentBinding(old.id);
     const shell = await (binding ? this.adapter.getThreadShell(binding.threadId) : Promise.resolve(null)).catch((error: unknown) => {
@@ -1368,112 +919,15 @@ export class RoomService {
         runtimeMode: preset?.runtimeMode ?? old.runtimeMode,
         interactionMode: "default",
         ...(preset ? { presetId: preset.id } : {}),
-        // A fresh Consigliere learns the rules from his first task, not from a member's seat briefing.
+        // A fresh Consigliere learns the rules from his first briefing, not from a member's seat briefing.
         seatBriefing: room.consigliereId !== old.id,
       },
       { mode: "create", workspace },
-      reseat.seat,
+      ids,
     );
   }
 
-  /**
-   * The fresh seat's first task (it waits on the checkpoint, so the briefing carries the post in full), a wake for the
-   * Consigliere when it ends, and the old seat's pending tasks moved over, after the takeover, at the same revision (so
-   * whatever waits on them still does). Runs inside a transaction.
-   */
-  private handOver(room: Room, reseat: Reseat, old: Participant, fresh: Participant, checkpoint: Task, consigliere: boolean): void {
-    const resultId = checkpoint.currentRunId ? this.repos.getRun(checkpoint.currentRunId)?.resultEventId : null;
-    const result = resultId ? this.repos.getEvent(resultId) : null;
-    const post = result ? `#${result.postNumber ?? result.sequence}` : `(${taskLabel(checkpoint)}'s answer)`;
-    const by = this.repos.getParticipant(reseat.by);
-    const byBinding = by && !by.retiredAt ? this.repos.currentBinding(by.id) : null;
-    // A member's answer goes to the Consigliere who asked; a fresh Consigliere's goes to the user, like his were.
-    const reportTo = !consigliere && by && byBinding && by.id !== old.id ? by : null;
-    const binding = this.repos.currentBinding(fresh.id);
-    // Without a seat briefing (a fresh Consigliere) the first delivery would carry the room's whole history.
-    if (binding && binding.bootstrapDeliveredAt === null && binding.deliveredCursor === 0) {
-      this.repos.updateBinding({ ...binding, deliveredCursor: (this.repos.getRoom(room.id)?.nextSequence ?? 1) - 1 });
-    }
-    const source = this.appendEvent(
-      reportTo && byBinding
-        ? {
-            roomId: room.id,
-            kind: "member.message",
-            speaker: { type: "participant", participantId: reportTo.id, bindingId: byBinding.id },
-            text: `@${fresh.alias} you take over from @${old.alias}: its checkpoint is ${post}.${reseat.plan ? ` Carry on with: ${reseat.plan}` : ""}`,
-            to: fresh.id,
-          }
-        : { roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${fresh.alias} takes over from @${old.alias} as the Consigliere, from its checkpoint ${post}` },
-    );
-    const task: Task = {
-      id: randomUUID(),
-      roomId: room.id,
-      number: this.repos.nextTaskNumber(room.id),
-      revision: 1,
-      sourceEventId: source.id,
-      participantId: fresh.id,
-      instruction: takeoverInstruction({ from: old.alias, consigliere, checkpointPost: post, plan: reseat.plan, reportTo: reportTo?.alias ?? null }),
-      sourceText: source.text,
-      attachmentIds: [],
-      delivery: "queue",
-      slashCommand: false,
-      kind: "assignment",
-      scheduleMode: "after_all",
-      prerequisites: [{ taskId: checkpoint.id, revision: checkpoint.revision }],
-      state: "queued",
-      stateReason: `after ${taskLabel(checkpoint)}`,
-      currentRunId: null,
-      userOutcome: null,
-      dismissedAt: null,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.repos.insertTask(task);
-    this.statusEvent(task, `${taskLabel(task)} → @${fresh.alias}: takes over from @${old.alias}`);
-    if (reportTo) {
-      this.createWake(room.id, reportTo, source.id, `${taskLabel(task)} (@${fresh.alias}: takes over from @${old.alias}) has ended. Its answer is above, among the results; carry on with what you asked it for. If it failed or was stopped, decide what to do about that.`, task);
-    }
-    // Older tasks would be sent first (the queue goes by age): each moved task also waits for the takeover.
-    for (const pending of this.repos.listTasks(room.id)) {
-      if (pending.participantId !== old.id || !PENDING_TASK_STATES.has(pending.state)) continue;
-      const prerequisites = [...pending.prerequisites, { taskId: task.id, revision: task.revision }];
-      this.repos.updateTask({ ...pending, participantId: fresh.id, prerequisites, scheduleMode: pending.scheduleMode === "now" ? "after_all" : pending.scheduleMode, updatedAt: now() });
-      this.statusEvent(pending, `${taskLabel(pending)} moved from @${old.alias} to @${fresh.alias} (reseat); it runs after ${taskLabel(task)}`);
-    }
-    this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `@${old.alias} reseated: @${fresh.alias} takes over from its checkpoint ${post}` });
-  }
-
-  /** A reseat that cannot go on: the member stays seated, and whoever asked is woken to decide. */
-  private callOffReseat(room: Room, reseat: Reseat, old: Participant, why: string): true {
-    this.db.transaction(() => {
-      writeReseats(this.repos, room.id, readReseats(this.repos, room.id).filter((r) => r.participantId !== reseat.participantId));
-      // A checkpoint still waiting (blocked, say) would otherwise run for a reseat that is no longer coming.
-      const checkpoint = this.repos.getTask(reseat.checkpointTaskId);
-      if (checkpoint && PENDING_TASK_STATES.has(checkpoint.state)) {
-        const cancelled = this.setTaskState(checkpoint, "cancelled", "cancelled: the reseat was called off");
-        this.statusEvent(cancelled, `${taskLabel(cancelled)} cancelled (reseat called off)`);
-      }
-      const event = this.appendEvent({ roomId: room.id, kind: "system", speaker: { type: "system" }, text: `Reseat of @${old.alias} called off: ${why}` });
-      const by = this.repos.getParticipant(reseat.by);
-      if (by && !by.retiredAt) {
-        this.createWake(room.id, by, event.id, `The reseat of @${old.alias} was called off: ${why}. ${old.retiredAt ? "" : `@${old.alias} stays seated as it was. `}Decide what to do about that.`, null);
-      }
-    });
-    this.notify(room.id);
-    return true;
-  }
-
-  // ---------- tasks ----------
-
-  private describeSchedule(schedule: Schedule, tasksById: Map<string, Task>): string {
-    if (schedule.mode === "now") return "ready";
-    if (schedule.mode === "manual") return "held until released";
-    const labels = schedule.prerequisites.map((ref) => {
-      const task = tasksById.get(ref.taskId);
-      return task ? taskLabel(task) : ref.taskId;
-    });
-    return `waiting for ${labels.join(", ")}`;
-  }
+  // ---------- images ----------
 
   /** Store an uploaded image for later delivery. Validated against T3's per-turn limits. */
   storeAttachment(input: { roomId: string; name: string; mimeType: string; data: Uint8Array }): Attachment {
@@ -1494,309 +948,6 @@ export class RoomService {
     };
     this.repos.insertAttachment(attachment, input.data);
     return attachment;
-  }
-
-  /** A slash command must be one the recipient's provider offers (T3 lists them per provider). */
-  private async requireSlashCommands(assignments: Assignment[], participants: Map<string, Participant>): Promise<void> {
-    const wanted = assignments.filter((a) => a.slashCommand);
-    if (wanted.length === 0) return;
-    const providers = await this.adapter.listProviders();
-    for (const assignment of wanted) {
-      const name = /^\/([^\s]+)/.exec(assignment.instruction)?.[1] ?? "";
-      for (const recipient of assignment.recipients) {
-        const participant = participants.get(recipient);
-        const offered = providers.find((p) => p.instanceId === participant?.modelSelection.instanceId)?.slashCommands ?? [];
-        if (!offered.some((c) => c.name === name)) {
-          throw new RoomError("unknown_slash_command", `@${participant?.alias ?? recipient}'s provider has no /${name} command`);
-        }
-      }
-    }
-  }
-
-  private requireAttachments(roomId: string, ids: string[]): Attachment[] {
-    const attachments = ids.map((id) => {
-      const attachment = this.repos.getAttachment(id);
-      if (!attachment || attachment.roomId !== roomId) throw new RoomError("unknown_attachment", `attachment ${id} is not in this room`);
-      return attachment;
-    });
-    const total = attachments.reduce((sum, a) => sum + a.sizeBytes, 0);
-    if (total > ATTACHMENT_MAX_TOTAL_BYTES) throw new RoomError("attachment_too_large", "images can total up to 80 MB per message", 413);
-    return attachments;
-  }
-
-  /**
-   * One user message: a single room event and one task per recipient per assignment. An assignment's "after"
-   * indices become prerequisites on every task created for those earlier assignments, pinned at revision 1.
-   */
-  /**
-   * A member's post on the board: work for other members, from one of them. The post is a member.message on the
-   * board (from, to, text); each recipient gets a task as from the user, and the poster gets a "wake" task after each
-   * of them: Backroom runs it with the answer when the work ends, so the poster hands out and goes idle.
-   */
-  private async createMemberPost(command: Extract<RoomCommand, { type: "member.post" }>): Promise<CommandResult> {
-    const poster = this.requireParticipant(command.participantId);
-    if (poster.roomId !== command.roomId) throw new RoomError("unknown_participant", `member ${command.participantId} is not in this room`);
-    if (poster.retiredAt) throw new RoomError("participant_retired", `@${poster.alias} was removed from the room`, 409);
-    if (command.assignments.some((assignment) => assignment.recipients.includes(poster.id))) throw new RoomError("self_addressed", "a post is for other members, not for its poster");
-    return this.createMessage({ roomId: command.roomId, sourceText: command.sourceText, attachmentIds: [], assignments: command.assignments, from: poster });
-  }
-
-  private async createMessage(input: { roomId: string; sourceText: string; attachmentIds: string[]; assignments: Assignment[]; from?: Participant }): Promise<CommandResult> {
-    const room = this.requireRoom(input.roomId);
-    const participants = this.participantsById(room.id);
-    for (const assignment of input.assignments) {
-      for (const recipient of assignment.recipients) {
-        const participant = participants.get(recipient);
-        if (!participant) throw new RoomError("unknown_participant", `member ${recipient} is not in this room`);
-        if (participant.retiredAt) throw new RoomError("participant_retired", `@${participant.alias} was removed from the room`, 409);
-      }
-    }
-    const from = input.from ?? null;
-    const fromBinding = from ? this.repos.currentBinding(from.id) : null;
-    this.requireAttachments(room.id, input.attachmentIds);
-    await this.requireSlashCommands(input.assignments, participants);
-    const tasksById = new Map(this.repos.listTasks(room.id).map((task) => [task.id, task]));
-    for (const assignment of input.assignments) {
-      if (assignment.schedule.mode === "after_all") {
-        const issues = validatePrerequisites(null, assignment.schedule.prerequisites, tasksById);
-        if (issues.length > 0) throw new RoomError("invalid_prerequisites", issues.map((issue) => issue.message).join("; "));
-      }
-    }
-    const created: Task[] = [];
-    const event = this.db.transaction(() => {
-      const sourceEvent = this.appendEvent({
-        roomId: room.id,
-        kind: from ? "member.message" : "user.message",
-        speaker: from && fromBinding ? { type: "participant", participantId: from.id, bindingId: fromBinding.id } : { type: "user" },
-        text: input.sourceText,
-        attachmentIds: input.attachmentIds,
-        to: from ? (input.assignments[0]?.recipients[0] ?? null) : null,
-      });
-      const tasksByAssignment: Task[][] = [];
-      for (const assignment of input.assignments) {
-        const external: PrerequisiteRef[] = assignment.schedule.mode === "after_all" ? assignment.schedule.prerequisites : [];
-        const internal: PrerequisiteRef[] = assignment.after.flatMap((index) =>
-          (tasksByAssignment[index] ?? []).map((task) => ({ taskId: task.id, revision: task.revision })),
-        );
-        const prerequisites = [...external, ...internal];
-        const schedule: Schedule =
-          assignment.schedule.mode === "manual" ? { mode: "manual" } : prerequisites.length > 0 ? { mode: "after_all", prerequisites } : { mode: "now" };
-        const group: Task[] = [];
-        for (const recipient of assignment.recipients) {
-          const task: Task = {
-            id: randomUUID(),
-            roomId: room.id,
-            number: this.repos.nextTaskNumber(room.id),
-            revision: 1,
-            sourceEventId: sourceEvent.id,
-            participantId: recipient,
-            instruction: assignment.instruction || "(See the attached image.)",
-            sourceText: input.sourceText,
-            attachmentIds: input.attachmentIds,
-            delivery: assignment.delivery,
-            slashCommand: assignment.slashCommand,
-            kind: "assignment",
-            scheduleMode: schedule.mode,
-            prerequisites,
-            state: schedule.mode === "manual" ? "held" : "queued",
-            stateReason: this.describeSchedule(schedule, tasksById),
-            currentRunId: null,
-            userOutcome: null,
-            dismissedAt: null,
-            createdAt: now(),
-            updatedAt: now(),
-          };
-          this.repos.insertTask(task);
-          tasksById.set(task.id, task);
-          group.push(task);
-          created.push(task);
-          const alias = participants.get(recipient)?.alias ?? recipient;
-          this.statusEvent(task, `${taskLabel(task)} → @${alias}: ${task.state} (${task.stateReason})`);
-          // The poster is woken with the answer when the work ends, however it ends (see Scheduler.prerequisiteReadiness).
-          if (from) {
-            this.createWake(room.id, from, sourceEvent.id, `${taskLabel(task)} (@${alias}: ${headOf(task.instruction)}) has ended. Its answer is above, among the results; carry on with what you asked it for. If it failed or was stopped, decide what to do about that.`, task);
-          }
-        }
-        tasksByAssignment.push(group);
-      }
-      return sourceEvent;
-    });
-    this.notify(room.id);
-    return { type: "tasks.created", taskIds: created.map((task) => task.id), eventId: event.id };
-  }
-
-  private async createNote(command: Extract<RoomCommand, { type: "room.note.create" }>): Promise<CommandResult> {
-    const room = this.requireRoom(command.roomId);
-    const event = this.appendEvent({ roomId: room.id, kind: "note", speaker: { type: "user" }, text: command.text });
-    this.notify(room.id);
-    return { type: "note.created", eventId: event.id };
-  }
-
-  private requireTaskRevision(taskId: string, revision: number): Task {
-    const task = this.repos.getTask(taskId);
-    if (!task) throw notFound("task", taskId);
-    if (task.revision !== revision) throw stale(taskLabel(task), revision, task.revision);
-    return task;
-  }
-
-  private async updateTask(command: Extract<RoomCommand, { type: "task.update" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (!PENDING_TASK_STATES.has(task.state)) throw invalidTransition(taskLabel(task), task.state, "edit; only pending work can change");
-    const participants = this.participantsById(task.roomId);
-    const participantId = command.participantId ?? task.participantId;
-    const assignee = participants.get(participantId);
-    if (!assignee) throw new RoomError("unknown_participant", `member ${participantId} is not in this room`);
-    if (assignee.retiredAt) throw new RoomError("participant_retired", `@${assignee.alias} was removed from the room; pick another assignee`, 409);
-    const tasksById = new Map(this.repos.listTasks(task.roomId).map((t) => [t.id, t]));
-    const schedule: Schedule = command.schedule ?? (task.scheduleMode === "after_all" ? { mode: "after_all", prerequisites: task.prerequisites } : { mode: task.scheduleMode });
-    if (schedule.mode === "after_all") {
-      const issues = validatePrerequisites(task.id, schedule.prerequisites, tasksById);
-      if (issues.length > 0) throw new RoomError("invalid_prerequisites", issues.map((issue) => issue.message).join("; "));
-    }
-    const revision = task.revision + 1;
-    const updated: Task = {
-      ...task,
-      revision,
-      participantId,
-      instruction: command.instruction ?? task.instruction,
-      scheduleMode: schedule.mode,
-      prerequisites: schedule.mode === "after_all" ? schedule.prerequisites : [],
-      state: schedule.mode === "manual" ? "held" : "queued",
-      stateReason: this.describeSchedule(schedule, tasksById),
-      updatedAt: now(),
-    };
-    this.db.transaction(() => {
-      this.repos.updateTask(updated);
-      this.repos.snapshotRevision(updated);
-      for (const dependent of dependentsOf(task.id, tasksById.values())) {
-        // Every existing reference to this task is now stale (all point at revisions < the new one).
-        if (!PENDING_TASK_STATES.has(dependent.state)) continue; // already accepted by T3; cannot be retargeted
-        if (command.carryDependents) {
-          const carried: Task = {
-            ...dependent,
-            revision: dependent.revision + 1,
-            prerequisites: dependent.prerequisites.map((ref) => (ref.taskId === task.id ? { taskId: task.id, revision } : ref)),
-            // A dependent blocked only by the stale reference becomes eligible again; the scheduler re-checks.
-            state: dependent.state === "blocked" ? "queued" : dependent.state,
-            stateReason: dependent.state === "blocked" ? `waiting for ${taskLabel(task)} (revision ${revision})` : dependent.stateReason,
-            updatedAt: now(),
-          };
-          this.repos.updateTask(carried);
-          this.repos.snapshotRevision(carried);
-          this.statusEvent(carried, `${taskLabel(carried)} now waits for ${taskLabel(task)} revision ${revision}`);
-        } else if (dependent.state !== "blocked") {
-          const reason = `prerequisite ${taskLabel(task)} was edited (now revision ${revision}); re-point or carry the dependency`;
-          this.setTaskState(dependent, "blocked", reason);
-          this.statusEvent(dependent, `${taskLabel(dependent)} blocked: ${reason}`);
-        }
-      }
-      this.statusEvent(updated, `${taskLabel(updated)} edited (revision ${revision}): ${updated.state} (${updated.stateReason})`);
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision };
-  }
-
-  private async releaseTask(command: Extract<RoomCommand, { type: "task.release" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (task.state !== "held") throw invalidTransition(taskLabel(task), task.state, "release; only held work can be released");
-    this.db.transaction(() => {
-      const updated = this.setTaskState(task, "queued", "released; ready");
-      this.statusEvent(updated, `${taskLabel(updated)} released to the queue`);
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision: task.revision };
-  }
-
-  private async cancelTask(command: Extract<RoomCommand, { type: "task.cancel" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (!PENDING_TASK_STATES.has(task.state)) {
-      throw invalidTransition(taskLabel(task), task.state, "cancel; work already accepted by T3 must be interrupted instead");
-    }
-    this.db.transaction(() => {
-      const updated = this.setTaskState(task, "cancelled", "cancelled by user");
-      this.statusEvent(updated, `${taskLabel(updated)} cancelled`);
-      this.blockPendingDependents(updated, `prerequisite ${taskLabel(updated)} was cancelled`);
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision: task.revision };
-  }
-
-  private async interruptTask(command: Extract<RoomCommand, { type: "task.interrupt" }>): Promise<CommandResult> {
-    const task = this.repos.getTask(command.taskId);
-    if (!task) throw notFound("task", command.taskId);
-    const run = this.repos.getRun(command.runId);
-    if (!run || run.taskId !== task.id) throw notFound("run", command.runId);
-    if (task.currentRunId !== run.id || !(run.status === "running" || run.status === "needs_input" || run.status === "accepted")) {
-      throw invalidTransition(taskLabel(task), task.state, "interrupt; no running turn");
-    }
-    const commandId = randomUUID();
-    try {
-      await this.adapter.interruptRun({ commandId, threadId: run.threadId, runId: run.t3RunId });
-    } catch (error) {
-      if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
-      if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
-      throw error;
-    }
-    this.db.transaction(() => {
-      this.repos.updateRun({ ...run, interruptRequestedAt: now(), updatedAt: now() });
-      this.statusEvent(task, `${taskLabel(task)}: interrupt requested; waiting for T3 to report the outcome`, run.id);
-    });
-    this.notify(task.roomId);
-    return { type: "task.interrupt.requested", taskId: task.id, runId: run.id };
-  }
-
-  private async retryTask(command: Extract<RoomCommand, { type: "task.retry" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (!(task.state === "failed" || task.state === "interrupted")) {
-      throw invalidTransition(taskLabel(task), task.state, "retry; only failed or interrupted work can be retried");
-    }
-    this.db.transaction(() => {
-      const updated = this.setTaskState(task, "queued", "retry requested; ready", { currentRunId: null, userOutcome: null, dismissedAt: null });
-      const dependents = dependentsOf(task.id, this.repos.listTasks(task.roomId)).filter((d) => d.state === "blocked");
-      for (const dependent of dependents) {
-        if (command.reattachDependents) {
-          this.setTaskState(dependent, "queued", `waiting for ${taskLabel(task)} (new attempt)`);
-          this.statusEvent(dependent, `${taskLabel(dependent)} reattached to the new attempt of ${taskLabel(task)}`);
-        } else {
-          this.setTaskState(dependent, "blocked", `prerequisite ${taskLabel(task)} is being retried; not reattached`);
-        }
-      }
-      this.statusEvent(
-        updated,
-        `${taskLabel(updated)} retry queued (attempt ${this.repos.listRunsForTask(task.id).length + 1}); ` +
-          `${dependents.length} dependent(s) ${command.reattachDependents ? "will follow this attempt" : "stay blocked"}`,
-      );
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision: task.revision };
-  }
-
-  private async markBlocked(command: Extract<RoomCommand, { type: "task.markBlocked" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (task.state !== "succeeded") throw invalidTransition(taskLabel(task), task.state, "mark blocked; only a completed task can be overridden");
-    this.db.transaction(() => {
-      const updated = this.setTaskState(task, "failed", `marked blocked by user: ${command.reason}`, { userOutcome: "blocked" });
-      this.statusEvent(updated, `${taskLabel(updated)} marked blocked by user: ${command.reason}`);
-      const blocked = this.blockPendingDependents(updated, `prerequisite ${taskLabel(updated)} was marked blocked by the user`);
-      const delivered = dependentsOf(updated.id, this.repos.listTasks(updated.roomId)).filter((d) => !PENDING_TASK_STATES.has(d.state));
-      if (delivered.length > 0) {
-        this.statusEvent(updated, `note: ${delivered.map(taskLabel).join(", ")} already received ${taskLabel(updated)}'s output and were not retracted`);
-      }
-      void blocked;
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision: task.revision };
-  }
-
-  private async unblockTask(command: Extract<RoomCommand, { type: "task.unblock" }>): Promise<CommandResult> {
-    const task = this.requireTaskRevision(command.taskId, command.revision);
-    if (task.state !== "blocked") throw invalidTransition(taskLabel(task), task.state, "unblock");
-    this.db.transaction(() => {
-      const updated = this.setTaskState(task, "queued", "unblocked by user; re-evaluating prerequisites");
-      this.statusEvent(updated, `${taskLabel(updated)} unblocked by user`);
-    });
-    this.notify(task.roomId);
-    return { type: "task.updated", taskId: task.id, revision: task.revision };
   }
 
   // ---------- native requests ----------

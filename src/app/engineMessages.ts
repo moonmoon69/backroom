@@ -1,5 +1,5 @@
 /**
- * The user's message path on the engine (ROOMS_ENGINE=1; stage 4/5 plan, item L4a). What the user sends goes on the
+ * The user's message path (stage 4/5 plan, item L4a). What the user sends goes on the
  * room's journal through the host's API (src/runtime/host.ts), and the host delivers it:
  *
  * - a message makes one request per recipient per assignment, from the user, each carrying the message's preamble as
@@ -10,7 +10,8 @@
  * - `/note` is a room note: no request, and every seat's next briefing carries it;
  * - the user cancels or corrects a request, retries a failed run, and stops what a member runs in T3.
  *
- * Decision D2: nothing waits on other work. Held or chained assignments are refused (the parser says so first).
+ * Decision D2: nothing waits on other work. The parser refuses held or chained assignments, and the command has no field
+ * that would carry them.
  * A message's T3 commands are sent before any of its requests is recorded, so a message T3 refuses leaves nothing that
  * sending it again would duplicate; with the client's message ID, sending it again replays it whole.
  * Which images came with a message is kept with the room's attachments (kv `engine.images:<room>:<message>`), and the
@@ -24,7 +25,7 @@ import type { Repos } from "../db/repos.ts";
 import type { Assignment, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_TOTAL_BYTES, type Participant, type Room } from "../domain/types.ts";
-import { HOLD_GONE, parseExplicit } from "../parser/explicit.ts";
+import { parseExplicit } from "../parser/explicit.ts";
 import type { EngineHost } from "../runtime/index.ts";
 import { STEER_REQUEST } from "../runtime/steer.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
@@ -32,7 +33,6 @@ import type { CommandResult, EngineHandler } from "./service.ts";
 const USER = "$user";
 /** §7: the message API refuses a post over 1 MiB. */
 export const MAX_POST_BYTES = 1024 * 1024;
-const WAIT_GONE = "Waiting for other work is gone: send this once that work is done, or have the Consigliere sequence it.";
 
 /** A request made from a user message: `msg:` or `steer:`, the message ID, the assignment's index, the recipient's seat. */
 export function messageRequestId(delivery: Assignment["delivery"], messageId: string, index: number, seatId: string): string {
@@ -98,13 +98,11 @@ export class EngineMessages {
     this.adapter = adapter;
   }
 
-  /** The commands of the message path; null for any other, which the old service handles. */
+  /** The commands of the message path; null for any other, which the service handles. */
   handle(command: RoomCommand): Promise<CommandResult> | null {
     switch (command.type) {
       case "message.create":
         return this.create({ roomId: command.roomId, preamble: command.preamble ?? null, sourceText: command.sourceText, clientMessageId: command.clientMessageId ?? null, attachmentIds: command.attachmentIds, assignments: command.assignments });
-      case "task.create":
-        return this.create({ roomId: command.roomId, preamble: "", sourceText: null, clientMessageId: null, attachmentIds: command.attachmentIds, assignments: [{ recipients: command.recipients, instruction: command.instruction, schedule: command.schedule, after: [], delivery: command.delivery, slashCommand: false }] });
       case "room.note.create":
         return this.note(command.roomId, command.text);
       case "request.cancel":
@@ -145,8 +143,6 @@ export class EngineMessages {
     const consigliere = room.consigliereId ? participants.get(room.consigliereId) ?? null : null;
     for (const assignment of input.assignments) {
       for (const recipient of assignment.recipients) this.participant(room, recipient);
-      if (assignment.schedule.mode === "manual") throw new RoomError("retired_syntax", HOLD_GONE);
-      if (assignment.schedule.mode === "after_all" || assignment.after.length > 0) throw new RoomError("retired_syntax", WAIT_GONE);
       const forHim = assignment.recipients.length === 1 && assignment.recipients[0] === consigliere?.id;
       if (consigliere && !assignment.slashCommand && !forHim) {
         throw new RoomError("consigliere_room", `In a room with a Consigliere every message is for him: name the members in your text and @${consigliere.alias} hands out the work.`);
@@ -184,7 +180,7 @@ export class EngineMessages {
 
   private preambleOf(room: Room, sourceText: string): string {
     const participants = this.repos.listActiveParticipants(room.id).map((p) => ({ id: p.id, alias: p.alias }));
-    const draft = parseExplicit(sourceText, participants, [], { consigliereId: room.consigliereId, engine: true });
+    const draft = parseExplicit(sourceText, participants, { consigliereId: room.consigliereId });
     return draft.kind === "task" ? draft.preamble : "";
   }
 

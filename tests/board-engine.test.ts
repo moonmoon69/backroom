@@ -77,7 +77,7 @@ class Fixture {
   }
 
   private make(): AppStack {
-    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60_000, engine: true, latestRelease: async () => null, ...(this.keepAliveMs !== undefined ? { keepAliveMs: this.keepAliveMs } : {}) });
+    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60_000, latestRelease: async () => null, ...(this.keepAliveMs !== undefined ? { keepAliveMs: this.keepAliveMs } : {}) });
   }
 
   private makeBoard(): BoardEngine {
@@ -395,7 +395,7 @@ test("4. a key from another room is refused; the room comes from the key only, a
   // A forged key, a retired member's key, and a member with no seat in the journal.
   await f.refused("c", ["index"], /is not the key of a member/, "c.00000000");
   await f.refused("c", ["index"], /pass --as/, "");
-  await f.run({ type: "participant.retire", participantId: f.members.get(f.roomId)!.get("v")!, pendingTasks: "cancel" });
+  await f.run({ type: "participant.retire", participantId: f.members.get(f.roomId)!.get("v")! });
   await f.refused("v", ["index"], /is not the key of a member seated in a room/);
   const unseated = await f.room("drafts", ["u"], null, false);
   await f.refused("u", ["index"], /@u has no seat on this room's board/, f.key("u", unseated));
@@ -722,7 +722,7 @@ test("a note made while the host is still sending the turn goes under that turn'
   await f.refused("w", ["post", "@v review it"], MEMBERS);
 });
 
-test("seat, reseat and retire run the room commands L4b routes to the journal, the Consigliere's only; without L4b they say so", async (t) => {
+test("seat, reseat and retire run the room commands L4b routes to the journal, the Consigliere's only; a board without the seat lifecycle refuses them", async (t) => {
   const commands: Array<Record<string, unknown>> = [];
   let checkpoint = "";
   const f = await Fixture.create({
@@ -756,16 +756,16 @@ test("seat, reseat and retire run the room commands L4b routes to the journal, t
   assert.deepEqual(commands, [
     { type: "participant.fromPreset", roomId: f.roomId, presetId: f.stack.repos.findPresetByName("opus")!.id },
     { type: "participant.reseat", participantId: ids.get("w"), by: ids.get("c"), plan: "carry on with item 4" },
-    { type: "participant.retire", participantId: ids.get("v"), pendingTasks: "cancel", thread: "keep" },
+    { type: "participant.retire", participantId: ids.get("v"), thread: "keep" },
   ]);
 
-  // Without L4b the old paths are never taken: they know nothing of the journal.
-  const bare = await Fixture.create({ lifecycle: { execute: async () => assert.fail("no room command without L4b") } });
+  // A board built without the seat lifecycle sends no room command: it refuses all three.
+  const bare = await Fixture.create({ lifecycle: { execute: async () => assert.fail("no room command without the seat lifecycle") } });
   t.after(() => bare.close());
   await bare.run({ type: "preset.create", name: "sonnet", modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" } });
-  await bare.refused("c", ["seat", "sonnet"], /arrives with item L4b/);
-  await bare.refused("c", ["reseat", "w"], /arrives with item L4b/);
-  await bare.refused("c", ["retire", "v"], /arrives with item L4b/);
+  await bare.refused("c", ["seat", "sonnet"], /no seat lifecycle/);
+  await bare.refused("c", ["reseat", "w"], /no seat lifecycle/);
+  await bare.refused("c", ["retire", "v"], /no seat lifecycle/);
 });
 
 test("the route hook: with the engine on, /api/board-tools is the journal's board; refusals are 4xx with the sentence", async (t) => {

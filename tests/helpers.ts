@@ -2,7 +2,6 @@ import { FakeT3Adapter, type FakeAdapterOptions } from "../src/adapter/fake.ts";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
 import type { RoomCommandInput } from "../src/domain/commands.ts";
 import { parseCommand } from "../src/domain/commands.ts";
-import type { Task } from "../src/domain/types.ts";
 
 export interface TestStack extends AppStack {
   fake: FakeT3Adapter;
@@ -11,14 +10,12 @@ export interface TestStack extends AppStack {
   threadOf(alias: string): string;
   run(command: RoomCommandInput): Promise<unknown>;
   tick(times?: number): Promise<void>;
-  task(number: number): Task;
-  taskByAlias(alias: string): Task[];
 }
 
 export async function createTestStack(
   options: FakeAdapterOptions = { autoCompleteMs: null },
   aliases = ["sol1", "sol2", "claude"],
-  extra: Pick<Parameters<typeof createStack>[0], "browsers" | "latestRelease" | "engine" | "threadActionTimeoutMs" | "log"> = {},
+  extra: Pick<Parameters<typeof createStack>[0], "browsers" | "latestRelease" | "threadActionTimeoutMs" | "log"> = {},
 ): Promise<TestStack> {
   const fake = new FakeT3Adapter(options);
   // Tests never ask npm: no newer T3 unless a test says so.
@@ -49,15 +46,7 @@ export async function createTestStack(
     },
     run,
     async tick(times = 1) {
-      for (let index = 0; index < times; index += 1) await stack.scheduler.tick();
-    },
-    task(number) {
-      const task = stack.repos.listTasks(roomId).find((t) => t.number === number);
-      if (!task) throw new Error(`task${number} not found`);
-      return task;
-    },
-    taskByAlias(alias) {
-      return stack.repos.listTasks(roomId).filter((t) => t.participantId === participants[alias]);
+      for (let index = 0; index < times; index += 1) await stack.engine.tick();
     },
   };
   return test;

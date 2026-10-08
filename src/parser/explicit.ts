@@ -1,18 +1,18 @@
 /**
  * Explicit composer syntax. Deterministic; no model.
  *
- *   @sol2 review the diff                       -> one assignment for sol2, now
- *   @sol1 @sol2 independently investigate       -> one assignment, two independent tasks
+ *   @sol2 review the diff                       -> one assignment for sol2
+ *   @sol1 @sol2 independently investigate       -> one assignment, a request each
  *   @alice do this @bob do that                 -> two assignments
- *   @alice fix it. @bob check alice's work      -> bob's assignment waits for alice's
- *   @alice fix it, then @bob deploy             -> bob waits for alice ("then")
  *   @alice /steer also add tests                -> if alice is mid-turn, sent into that turn
  *   @all review the release notes               -> one assignment, every participant
- *   /after task41 @sol2 review the parser       -> after_all [task41]
- *   /after @sol1 @sol2 review                   -> after sol1's single open task (ambiguous if several)
- *   /hold @sol2 review later                    -> manual hold
  *   /note preserve the public API               -> room note
  *   Sol two, review the parser                  -> spoken alias at the start resolves to sol2
+ *
+ * Nothing waits on other work (decision D2). /after and /hold are refused wherever they are written, and so is a wait
+ * the text implies, with the way out: "@alice fix it, then @bob deploy" ("then"), "@alice fix it. @bob check alice's
+ * work" (naming an earlier recipient), "when @grok finishes, @fable check it" (a condition). /now on an assignment says
+ * it goes now, which takes away the implied wait.
  *
  * In a room that has a Consigliere, every message is for him, whoever it names: he reads the @names as who the user
  * wants on it and hands the work out himself. It is sent into his turn when he is working, so it reaches him while he
@@ -21,12 +21,7 @@
  *
  * Only the addressing/command syntax is interpreted; the remaining text of each assignment is its verbatim instruction.
  * Incomplete or invalid syntax produces a draft with unresolved fields rather than an error.
- *
- * On the engine runtime (`engine: true`, decision D2) nothing waits on other work: /after, /hold and the waits a message
- * implies are refused with a hint (see retireDependencies).
  */
-import type { Schedule } from "../domain/commands.ts";
-import { PENDING_TASK_STATES, TERMINAL_TASK_STATES, type Task } from "../domain/types.ts";
 
 export interface ParticipantRef {
   id: string;
@@ -36,11 +31,11 @@ export interface ParticipantRef {
 }
 
 export interface Unresolved {
-  field: "recipients" | "prerequisites" | "schedule" | "instruction";
+  /** "wait": the assignment waits on other work, which is refused (D2); "delivery": how it reaches a running turn. */
+  field: "recipients" | "wait" | "delivery" | "instruction";
   message: string;
   /** "incomplete": still being written (no recipient or no text yet), shown as guidance. "error": cannot be sent as written. */
   severity: "incomplete" | "error";
-  candidates?: Array<{ taskId: string; revision: number; label: string }>;
   participantCandidates?: Array<{ participantId: string; alias: string; busy: boolean }>;
 }
 
@@ -63,15 +58,13 @@ export interface DependencyRef {
   because: "then" | "mention" | "after" | "condition";
 }
 
-/** One assignment of a message: the same instruction for each recipient, one task per recipient. */
+/** One assignment of a message: the same instruction for each recipient, one request per recipient. */
 export interface DraftAssignment {
   recipients: string[];
   instruction: string;
-  /** Timing against work outside this message: now, held, or after existing tasks. Null when unresolved. */
-  schedule: Schedule | null;
-  /** Earlier assignments in this message whose tasks this one waits for. */
+  /** Earlier assignments in this message that this one's text waits for: a wait that is refused (D2), unless /now. */
   after: DependencyRef[];
-  /** The timing directive written for this assignment, if any. /now and /hold opt out of implicit waiting. */
+  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold and /after are refused. */
   timing: "now" | "hold" | "after" | null;
   /** "/steer": if the recipient is mid-turn, send into that turn instead of waiting for it to end. */
   delivery: "queue" | "steer";
@@ -96,7 +89,7 @@ export interface Draft {
   participant?: { participantId: string; alias: string };
   /** Note text (kind "note"). */
   instruction: string;
-  /** Kind "task": the assignments in message order. */
+  /** Kind "task" (a message): the assignments in message order. */
   assignments: DraftAssignment[];
   /** Kind "task": text before the first address. Not an assignment; everyone receives the whole message as context. */
   preamble: string;
@@ -114,7 +107,6 @@ export interface Draft {
 export const ALL_ALIAS = "all";
 
 const MENTION = /^@([a-z0-9][a-z0-9_-]*)/i;
-const TASK_REF = /^(?:task|#)(\d+)$/i;
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
@@ -145,19 +137,9 @@ const matchesSpoken = (participant: ParticipantRef, wanted: string): boolean =>
 export interface ParseOptions {
   /** The room's Consigliere, when it has one: who an unaddressed message is for, and who @all leaves out. */
   consigliereId?: string | null;
-  /**
-   * A member's post: names are delivered as written (the user's messages go to the Consigliere whole; a member's
-   * do not), and only text that addresses nobody goes to the Consigliere.
-   */
-  direct?: boolean;
-  /**
-   * The engine runtime (ROOMS_ENGINE=1). Decision D2: /after, /hold and the waits a message implies ("then", naming an
-   * earlier recipient, a condition) are gone; the draft refuses them with a hint. /now stays.
-   */
-  engine?: boolean;
 }
 
-export function parseExplicit(text: string, participants: ParticipantRef[], tasks: Task[], options: ParseOptions = {}): Draft {
+export function parseExplicit(text: string, participants: ParticipantRef[], options: ParseOptions = {}): Draft {
   const sourceText = text;
   const trimmed = text.trim();
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
@@ -187,7 +169,7 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
     return draft;
   }
 
-  // /remove @alias — retire a participant (the UI still asks what to do with its pending tasks).
+  // /remove @alias — retire a participant (the UI asks what happens to its T3 thread).
   const removeMatch = /^\/remove\b\s*@?(.*)$/i.exec(trimmed);
   if (removeMatch) {
     draft.kind = "participant.remove";
@@ -214,10 +196,10 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
   // Quoted text is literal: @names and /commands inside code blocks, inline code, "> " quotes, or written as \@name
   // address nobody. They are masked (same length, so offsets hold) while parsing and restored in the output.
   const consigliere = options.consigliereId ? (participants.find((p) => p.id === options.consigliereId) ?? null) : null;
-  const parsed = parseAssignments(maskQuoted(text), participants, options.engine ? [] : tasks, consigliere?.id ?? null);
+  const parsed = parseAssignments(maskQuoted(text), participants, consigliere?.id ?? null);
   const written = [...parsed.assignments];
-  if (consigliere) routeToConsigliere(parsed, consigliere.id, text, options.direct === true);
-  if (options.engine) retireDependencies(parsed, written, participants);
+  if (consigliere) routeToConsigliere(parsed, consigliere.id, text);
+  retireDependencies(parsed, written, participants);
   draft.assignments = parsed.assignments.map((a) => ({ ...a, instruction: unmask(a.instruction) }));
   draft.preamble = unmask(parsed.preamble);
   draft.mentions = parsed.mentions;
@@ -234,28 +216,26 @@ export function parseExplicit(text: string, participants: ParticipantRef[], task
 
 /**
  * In a room that has a Consigliere, what addresses nobody is his: plain text becomes one assignment to him, and an
- * assignment that only lacks a recipient ("/hold think about it") gets him. It is sent as a steer, which reaches him
- * mid-turn (while he waits on the members) and starts a turn of its own when he is idle; a slash command and held or
- * waiting work start their own turn as always.
+ * assignment that only lacks a recipient gets him. It is sent as a steer, which reaches him mid-turn and starts a turn
+ * of its own when he is idle; a slash command starts its own turn as always.
  */
-function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: string, direct = false): void {
-  // The user's message that names members goes to him whole, names and all. Slash commands keep their own path, and
-  // a member's post is delivered as written.
-  const named = !direct && parsed.assignments.some((assignment) => assignment.recipients.some((id) => id !== consigliereId) || assignment.unresolved.some((u) => u.field === "recipients" && u.severity === "error"));
+function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: string): void {
+  // The user's message that names members goes to him whole, names and all. Slash commands keep their own path.
+  const named = parsed.assignments.some((assignment) => assignment.recipients.some((id) => id !== consigliereId) || assignment.unresolved.some((u) => u.field === "recipients" && u.severity === "error"));
   if (named && !parsed.assignments.some((assignment) => assignment.slashCommand !== null) && text.trim().length > 0) {
     const start = text.length - text.trimStart().length;
-    parsed.assignments = [{ ...emptyAssignment(start), recipients: [consigliereId], instruction: text.trim(), schedule: { mode: "now" }, delivery: "steer", end: text.trimEnd().length }];
+    parsed.assignments = [{ ...emptyAssignment(start), recipients: [consigliereId], instruction: text.trim(), delivery: "steer", end: text.trimEnd().length }];
     parsed.preamble = "";
     parsed.hints = [];
     for (const mention of parsed.mentions) Object.assign(mention, { role: "reference", assignment: 0 });
     return;
   }
-  const steerable = (assignment: DraftAssignment) => assignment.slashCommand === null && assignment.timing === null && assignment.schedule?.mode === "now" && assignment.after.length === 0;
+  const steerable = (assignment: DraftAssignment) => assignment.slashCommand === null && assignment.timing === null && assignment.after.length === 0 && !assignment.unresolved.some((u) => u.field === "wait");
   if (parsed.assignments.length === 0) {
     const instruction = parsed.preamble.trim();
     if (instruction.length === 0) return;
     const start = text.length - text.trimStart().length;
-    const assignment: DraftAssignment = { ...emptyAssignment(start), recipients: [consigliereId], instruction, schedule: { mode: "now" }, end: text.trimEnd().length };
+    const assignment: DraftAssignment = { ...emptyAssignment(start), recipients: [consigliereId], instruction, end: text.trimEnd().length };
     const command = /^\/([a-z0-9][\w:.-]*)/i.exec(instruction);
     if (command) assignment.slashCommand = command[1] as string;
     if (steerable(assignment)) assignment.delivery = "steer";
@@ -282,19 +262,17 @@ export const AFTER_GONE = "/after is gone: Backroom no longer waits on other wor
 export const HOLD_GONE = "/hold is gone: keep this as a draft and send it when it should start.";
 
 /**
- * Decision D2 on the engine runtime: nothing waits on other work. A /after or /hold directive is refused wherever it is
- * written. A wait the text implies is refused on each assignment that keeps it, with the way out: send it later, have
- * the Consigliere sequence it, or /now. A message the Consigliere takes whole is his to sequence, so it has none.
- * `written` is the assignments as parsed, before any went to the Consigliere.
+ * Decision D2: nothing waits on other work. A /after or /hold directive is refused wherever it is written. A wait the
+ * text implies is refused on each assignment that keeps it, with the way out: send it later, have the Consigliere
+ * sequence it, or /now. A message the Consigliere takes whole is his to sequence, so it has none. `written` is the
+ * assignments as parsed, before any went to the Consigliere.
  */
 function retireDependencies(parsed: ParsedMessage, written: DraftAssignment[], participants: ParticipantRef[]): void {
   const used = (assignment: DraftAssignment, name: string) => assignment.consumed.some((token) => token.toLowerCase() === `/${name}`);
   const directives = (assignment: DraftAssignment): Unresolved[] => [
-    ...(used(assignment, "after") ? [{ field: "prerequisites" as const, severity: "error" as const, message: AFTER_GONE }] : []),
-    ...(used(assignment, "hold") ? [{ field: "schedule" as const, severity: "error" as const, message: HOLD_GONE }] : []),
+    ...(used(assignment, "after") ? [{ field: "wait" as const, severity: "error" as const, message: AFTER_GONE }] : []),
+    ...(used(assignment, "hold") ? [{ field: "wait" as const, severity: "error" as const, message: HOLD_GONE }] : []),
   ];
-  // What only made sense with waiting: prerequisites, and timing conflicts among /after, /hold and /now.
-  const timing = (u: Unresolved) => u.field === "prerequisites" || (u.field === "schedule" && /\/(?:after|hold|now)\b/.test(u.message));
   const alias = (id: string) => `@${participants.find((p) => p.id === id)?.alias ?? id}`;
   const kept = new Set(parsed.assignments);
   for (const assignment of written) {
@@ -303,19 +281,20 @@ function retireDependencies(parsed: ParsedMessage, written: DraftAssignment[], p
       continue;
     }
     const refused = directives(assignment);
-    const waits = assignment.after.length > 0 || assignment.timing === "after" || assignment.schedule?.mode === "after_all" || assignment.unresolved.some((u) => u.field === "prerequisites");
+    const waits = assignment.after.length > 0 || assignment.timing === "after" || assignment.unresolved.some((u) => u.field === "wait");
     if (refused.length === 0 && waits) {
       const names = [...new Set(assignment.after.flatMap((ref) => (written[ref.index]?.recipients ?? []).map(alias)))];
       const whom = names.length > 0 ? names.join(" and ") : "other work";
       const until = names.length > 0 ? names.join(" and ") : "it";
-      refused.push({ field: "prerequisites", severity: "error", message: `Waiting for ${whom} is gone: send this once ${until} is done, have the Consigliere sequence it, or add /now to send it now.` });
+      refused.push({ field: "wait", severity: "error", message: `Waiting for ${whom} is gone: send this once ${until} is done, have the Consigliere sequence it, or add /now to send it now.` });
     }
-    if (refused.length === 0) continue;
-    assignment.unresolved = [...assignment.unresolved.filter((u) => !timing(u)), ...refused];
+    assignment.unresolved = [...assignment.unresolved.filter((u) => u.field !== "wait"), ...refused];
   }
-  parsed.hints = parsed.hints
-    .map((hint) => hint.replace(/ To wait for someone's work, name them or use \/after\.$/, ""))
-    .filter((hint) => !/\/(?:after|hold)\b|so the room can wait/.test(hint));
+}
+
+/** Marks a wait on work outside the message, which retireDependencies refuses. */
+function waitsOutside(assignment: DraftAssignment): void {
+  if (!assignment.unresolved.some((u) => u.field === "wait")) assignment.unresolved.push({ field: "wait", severity: "error", message: "waits on work outside this message" });
 }
 
 /** Words that, directly before a mid-sentence @mention, make it a reference ("work with @alice") rather than a new address. */
@@ -367,7 +346,7 @@ interface Head {
   sequence: boolean;
   /** Mention spans consumed as addresses. */
   mentions: MentionSpan[];
-  /** Raw /after tokens (and participants named in a leading condition), resolved once earlier assignments are known. */
+  /** /after's @names (and participants named in a leading condition), matched to earlier assignments once they are known. */
   afterTokens: Array<{ token: string; because: "after" | "condition" }>;
   addressed: boolean;
   /** A leading condition that names no participant ("when the tests pass, @bob …"): kept in the instruction. */
@@ -382,14 +361,13 @@ interface Head {
  *   possessive ("@alice's"), directly after a linking word ("work with @alice", "check what @alice did"), or with
  *   nothing after it ("…and tell @alice"). At the start of a sentence or line it always addresses.
  * - "Name," at the start of a sentence addresses too (dictation).
- * - Assignment B waits for an earlier assignment A of the same message when B follows "then" (or "after that"),
- *   or when B's text names one of A's recipients ("@bob check alice's work"). /now or /hold on B opts out;
- *   "/after @alice" on B waits for alice's assignment in this message.
+ * - Assignment B would wait for an earlier assignment A of the same message when B follows "then" (or "after that"),
+ *   when B's text names one of A's recipients ("@bob check alice's work"), or with "/after @alice"; a condition
+ *   ("when @grok finishes") waits too. Such waits are found so that they can be refused (D2); /now on B opts out.
  * - Text before the first address is a preamble; everyone receives the whole message as context.
  */
-function parseAssignments(text: string, participants: ParticipantRef[], tasks: Task[], consigliereId: string | null = null): ParsedMessage {
+function parseAssignments(text: string, participants: ParticipantRef[], consigliereId: string | null = null): ParsedMessage {
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
-  const byId = new Map(participants.map((p) => [p.id, p]));
   const nameForms = participants
     .flatMap((participant) => [participant.alias.toLowerCase(), ...spokenVariants(participant.alias)].map((form) => ({ form, participant })))
     .sort((a, b) => b.form.length - a.form.length);
@@ -451,17 +429,16 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
     return null;
   };
 
-  const parseHead = (from: number, dryRun: boolean): Head => {
+  const parseHead = (from: number): Head => {
     const assignment = emptyAssignment(from);
     const head: Head = { assignment, end: from, sequence: false, mentions: [], afterTokens: [], addressed: false, conditionPrefix: null };
     let position = skipSpace(text, from);
-    let mode: "now" | "manual" | "after_all" | null = null;
     let lastWasAddress = false;
     let conditionSeen = false;
     let conditionPrefix: string | null = null;
     for (;;) {
       const rest = text.slice(position);
-      if (!head.addressed && !head.sequence && mode === null) {
+      if (!head.addressed && !head.sequence && assignment.timing === null) {
         const lead = SEQUENCE_LEAD.exec(rest);
         if (lead && startsAddress(text, position + lead[0].length, nameForms)) {
           head.sequence = true;
@@ -469,7 +446,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
           continue;
         }
       }
-      if (!head.addressed && mode === null && !conditionSeen) {
+      if (!head.addressed && assignment.timing === null && !conditionSeen) {
         const condition = matchCondition(position);
         if (condition) {
           conditionSeen = true;
@@ -477,12 +454,8 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
           for (const participant of condition.participants) {
             head.afterTokens.push({ token: `@${participant.alias}`, because: "condition" });
           }
-          if (condition.participants.length > 0) {
-            mode = "after_all";
-            assignment.timing = "after";
-          } else {
-            conditionPrefix = condition.clause;
-          }
+          if (condition.participants.length > 0) assignment.timing = "after";
+          else conditionPrefix = condition.clause;
           assignment.consumed.push(condition.clause);
           position = condition.addressAt;
           continue;
@@ -558,26 +531,12 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
           assignment.delivery = "steer";
           continue;
         }
-        if (name === "hold") {
-          if (mode !== null && mode !== "manual") assignment.unresolved.push({ field: "schedule", severity: "error", message: "/hold conflicts with /after or /now" });
-          mode = "manual";
-          assignment.timing = "hold";
-          continue;
-        }
-        if (name === "now") {
-          if (mode !== null && mode !== "now") assignment.unresolved.push({ field: "schedule", severity: "error", message: "/now conflicts with another timing directive" });
-          mode = "now";
-          assignment.timing = "now";
-          continue;
-        }
-        if (mode !== null && mode !== "after_all") assignment.unresolved.push({ field: "schedule", severity: "error", message: "/after conflicts with /hold or /now" });
-        mode = "after_all";
-        assignment.timing = "after";
+        // /hold and /after are refused (retireDependencies); /now takes away a wait the text implies.
+        assignment.timing = name as "hold" | "now" | "after";
+        if (name !== "after") continue;
+        // What /after names is consumed with it, so the instruction is the text that follows.
         const refs = /^((?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)(?:\s*,\s*(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*))*)[\s,]*/i.exec(text.slice(position));
-        if (!refs) {
-          assignment.unresolved.push({ field: "prerequisites", severity: "incomplete", message: "/after needs a task such as task41 or @name" });
-          continue;
-        }
+        if (!refs) continue;
         assignment.consumed.push((refs[1] as string).trim());
         head.afterTokens.push(...(refs[1] as string).split(/\s*,\s*/).map((token) => ({ token, because: "after" as const })));
         position += refs[0].length;
@@ -588,10 +547,6 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
     head.end = position;
     head.conditionPrefix = conditionPrefix;
     assignment.insertAt = position;
-    if (!dryRun) {
-      if (mode === "manual") assignment.schedule = { mode: "manual" };
-      else assignment.schedule = { mode: "now" };
-    }
     return head;
   };
 
@@ -622,7 +577,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
   let position = skipSpace(text, 0);
   let index = 0;
   while (position < text.length) {
-    const head = parseHead(position, false);
+    const head = parseHead(position);
     const assignment = head.assignment;
     const bodyStart = head.end;
     // Find where this assignment's body ends: the next address, at a sentence start or mid-sentence.
@@ -653,7 +608,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
         lastReference = mention;
         continue;
       }
-      const probe = parseHead(candidate.at, true);
+      const probe = parseHead(candidate.at);
       if (probe.addressed || probe.assignment.timing !== null) {
         splitAt = candidate.at;
         break;
@@ -697,77 +652,47 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
     }
   }
 
-  // Timing and in-message dependencies.
+  // Waits: on earlier assignments of this message, or on work outside it. Both are refused (retireDependencies).
   assignments.forEach((assignment, current) => {
-    const external: Array<{ taskId: string; revision: number }> = [];
     for (const { token, because } of pendingAfter[current] ?? []) {
       const mention = MENTION.exec(token);
       const participant = mention ? byAlias.get((mention[1] as string).toLowerCase()) : undefined;
       const earlier = participant ? latestEarlier(assignments, current, participant.id) : -1;
-      if (earlier >= 0) {
-        addAfter(assignment, earlier, because);
-        continue;
-      }
-      resolvePrerequisite(token, byAlias, tasks, external, assignment.unresolved);
+      if (earlier >= 0) addAfter(assignment, earlier, because);
     }
     if (assignment.timing === null) {
-      // "@fable check it when @grok finishes": wait for grok's assignment in this message, or grok's open task.
+      // "@fable check it when @grok finishes": a wait for grok's assignment in this message, or for grok's work outside it.
       for (const match of assignment.instruction.matchAll(TRAILING_CONDITION)) {
         const named = nameForms.find(({ form }) => form === (match[1] as string).toLowerCase())?.participant;
         if (!named || assignment.recipients.includes(named.id)) continue;
         const earlier = latestEarlier(assignments, current, named.id);
         if (earlier >= 0) addAfter(assignment, earlier, "condition");
-        else if (assignments.slice(current + 1).some((later) => later.recipients.includes(named.id))) {
-          hints.push(`@${named.alias}'s assignment comes later in this message; put it first so the room can wait for it.`);
-        } else resolvePrerequisite(`@${named.alias}`, byAlias, tasks, external, assignment.unresolved);
+        else if (!assignments.slice(current + 1).some((later) => later.recipients.includes(named.id))) waitsOutside(assignment);
       }
-      if (external.length > 0) assignment.schedule = { mode: "after_all", prerequisites: external };
-      else if (assignment.unresolved.some((u) => u.field === "prerequisites")) assignment.schedule = null;
       if (current > 0 && (sequenceFlags[current] || /^then\b/i.test(assignment.instruction))) addAfter(assignment, current - 1, "then");
       const pronoun = PRONOUN_CONDITION.exec(assignment.instruction);
       if (pronoun && current > 0) {
         const plural = /they|both|everyone|all/i.test(pronoun[1] ?? "");
         for (let earlier = plural ? 0 : current - 1; earlier < current; earlier += 1) addAfter(assignment, earlier, "condition");
       } else if (pronoun && /^@all$/i.test(pronoun[1] ?? "")) {
-        // "@alice cross check when @all finished" as a message of its own: wait for everyone else's open tasks.
-        const open = tasks.filter((t) => !assignment.recipients.includes(t.participantId) && byId.has(t.participantId) && !TERMINAL_TASK_STATES.has(t.state));
-        for (const t of open) {
-          if (!external.some((p) => p.taskId === t.id)) external.push({ taskId: t.id, revision: t.revision });
-        }
-        if (external.length > 0) assignment.schedule = { mode: "after_all", prerequisites: external };
-        else {
-          assignment.unresolved.push({ severity: "error", field: "prerequisites", message: "@all: nobody else has open work to wait for" });
-          assignment.schedule = null;
-        }
+        // "@alice cross check when @all finished" as a message of its own: a wait for everyone else's work.
+        waitsOutside(assignment);
       }
       const prefix = conditionPrefixes[current];
-      if (prefix && !pronoun) {
-        hints.push(`The room cannot wait for "${prefix}"; it is sent as part of the instruction. To wait for someone's work, name them or use /after.`);
-      }
+      if (prefix && !pronoun) hints.push(`The room cannot wait for "${prefix}"; it is sent as part of the instruction.`);
       for (const participantId of referencedParticipants(assignment, mentions, current, nameForms)) {
         // Naming yourself is not a wait; in a group (e.g. @all) naming one member still waits for their earlier part.
         if (assignment.recipients.length === 1 && assignment.recipients[0] === participantId) continue;
         const earlier = latestEarlier(assignments, current, participantId);
-        if (earlier >= 0) {
-          addAfter(assignment, earlier, "mention");
-          continue;
-        }
-        const open = tasks.some((t) => t.participantId === participantId && PENDING_TASK_STATES.has(t.state));
-        const alias = participants.find((p) => p.id === participantId)?.alias;
-        if (open && alias) hints.push(`@${alias} is mentioned and has open work; to wait for it write /after @${alias}.`);
+        if (earlier >= 0) addAfter(assignment, earlier, "mention");
       }
     }
-    // A condition at the start of the instruction that the room now waits for is taken out of the text
-    // ("when @grok finishes please send a message" → "please send a message"), so the agent does not wait again.
+    // A condition at the start of the instruction that names what it waits for is taken out of the text
+    // ("when @grok finishes please send a message" → "please send a message"), as the plan shows the wait apart.
     // Trailing conditions stay: in "tell me when @fable finishes" the condition is the point of the instruction.
     const leading = LEADING_CONDITION_CLAUSE.exec(assignment.instruction);
     if (leading) {
       const waitedFor = new Set(assignment.after.flatMap((d) => (assignments[d.index] as DraftAssignment).recipients));
-      const externalPrereqs = assignment.schedule?.mode === "after_all" ? assignment.schedule.prerequisites : [];
-      for (const ref of externalPrereqs) {
-        const owner = tasks.find((t) => t.id === ref.taskId)?.participantId;
-        if (owner) waitedFor.add(owner);
-      }
       const clause = (leading[1] ?? "").replace(GLOBAL_MENTION, (_, alias: string) => alias);
       const namesWaited = nameForms.some(
         ({ form, participant }) => waitedFor.has(participant.id) && new RegExp(`(?<![\\w@])${escapeRegExp(form)}(?![\\w-])`, "i").test(clause),
@@ -776,12 +701,6 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
       const rest = assignment.instruction.slice(leading[0].length).trim();
       if ((namesWaited || pronounWaited) && rest.length > 0) assignment.instruction = rest;
     }
-    if (assignment.timing === "after") {
-      if (assignment.unresolved.some((u) => u.field === "prerequisites")) assignment.schedule = null;
-      else if (external.length > 0) assignment.schedule = { mode: "after_all", prerequisites: external };
-      else assignment.schedule = { mode: "now" };
-    }
-    if (assignment.unresolved.some((u) => u.field === "schedule")) assignment.schedule = null;
     if (assignment.recipients.length === 0 && !assignment.unresolved.some((u) => u.field === "recipients")) {
       assignment.unresolved.push({ field: "recipients", severity: "incomplete", message: "who is this for? start with @name" });
     }
@@ -793,15 +712,12 @@ function parseAssignments(text: string, participants: ParticipantRef[], tasks: T
     if (leadingCommand) {
       assignment.slashCommand = leadingCommand[1] as string;
       if (assignment.delivery === "steer") {
-        assignment.unresolved.push({ field: "schedule", severity: "error", message: `/${assignment.slashCommand} starts its own turn; it cannot be sent into a running one` });
+        assignment.unresolved.push({ field: "delivery", severity: "error", message: `/${assignment.slashCommand} starts its own turn; it cannot be sent into a running one` });
       }
     }
+    // A directive is syntax only right after the @name; /after and /hold are refused wherever they are written, with no hint.
     const directiveInside = /(?<!\S)\/(after|hold|now|steer|note)\b/i.exec(assignment.instruction);
-    if (assignment.delivery === "steer" && assignment.schedule?.mode === "manual") {
-      assignment.unresolved.push({ field: "schedule", severity: "error", message: "/steer sends into a running turn; it cannot be combined with /hold" });
-      assignment.schedule = null;
-    }
-    if (directiveInside) {
+    if (directiveInside && !/^\/(?:after|hold)$/i.test(directiveInside[0])) {
       hints.push(`"${directiveInside[0]}" in the middle of a sentence is plain text; put it right after the @name.`);
     }
   });
@@ -827,7 +743,7 @@ function unmask(text: string): string {
 }
 
 function emptyAssignment(start: number): DraftAssignment {
-  return { recipients: [], instruction: "", schedule: null, after: [], timing: null, delivery: "queue", slashCommand: null, start, end: start, insertAt: start, unresolved: [], consumed: [] };
+  return { recipients: [], instruction: "", after: [], timing: null, delivery: "queue", slashCommand: null, start, end: start, insertAt: start, unresolved: [], consumed: [] };
 }
 
 function addAfter(assignment: DraftAssignment, index: number, because: DependencyRef["because"]): void {
@@ -870,60 +786,6 @@ function skipSpace(text: string, position: number): number {
   let index = position;
   while (index < text.length && /\s/.test(text[index] as string)) index += 1;
   return index;
-}
-
-function resolvePrerequisite(
-  token: string,
-  byAlias: Map<string, ParticipantRef>,
-  tasks: Task[],
-  prerequisites: Array<{ taskId: string; revision: number }>,
-  unresolved: Unresolved[],
-): void {
-  const taskMatch = TASK_REF.exec(token);
-  if (taskMatch) {
-    const number = Number(taskMatch[1]);
-    const task = tasks.find((t) => t.number === number);
-    if (!task) {
-      unresolved.push({ severity: "error", field: "prerequisites", message: `task${number} does not exist in this room` });
-      return;
-    }
-    if (task.state === "cancelled") {
-      unresolved.push({ severity: "error", field: "prerequisites", message: `task${number} is cancelled and cannot be a prerequisite` });
-      return;
-    }
-    if (!prerequisites.some((p) => p.taskId === task.id)) prerequisites.push({ taskId: task.id, revision: task.revision });
-    return;
-  }
-  const mention = MENTION.exec(token);
-  if (!mention) {
-    unresolved.push({ severity: "error", field: "prerequisites", message: `cannot interpret prerequisite reference "${token}"` });
-    return;
-  }
-  const alias = (mention[1] as string).toLowerCase();
-  const participant = byAlias.get(alias);
-  if (!participant) {
-    unresolved.push({ severity: "error", field: "prerequisites", message: `nobody called @${alias} in this room` });
-    return;
-  }
-  // Candidate tasks for an alias: open (non-terminal) tasks first; fall back to the latest succeeded task.
-  const owned = tasks.filter((t) => t.participantId === participant.id && t.state !== "cancelled");
-  const open = owned.filter((t) => !TERMINAL_TASK_STATES.has(t.state) || PENDING_TASK_STATES.has(t.state));
-  const candidates = open.length > 0 ? open : owned.filter((t) => t.state === "succeeded").slice(-1);
-  if (candidates.length === 1) {
-    const task = candidates[0] as Task;
-    if (!prerequisites.some((p) => p.taskId === task.id)) prerequisites.push({ taskId: task.id, revision: task.revision });
-    return;
-  }
-  if (candidates.length === 0) {
-    unresolved.push({ severity: "error", field: "prerequisites", message: `@${participant.alias} has no task to wait for` });
-    return;
-  }
-  unresolved.push({
-    field: "prerequisites",
-    severity: "error",
-    message: `@${participant.alias} has ${candidates.length} tasks; pick one`,
-    candidates: candidates.map((t) => ({ taskId: t.id, revision: t.revision, label: `task${t.number}: ${t.instruction.slice(0, 60)}` })),
-  });
 }
 
 function escapeRegExp(value: string): string {

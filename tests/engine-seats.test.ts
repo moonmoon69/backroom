@@ -1,6 +1,6 @@
 /**
  * L4b: the seat lifecycle on the engine (src/app/engineSeats.ts), through the room commands the page and the CLI send,
- * on a full stack with ROOMS_ENGINE on and the fake T3. Every T3 run on a member's thread is one wake of it.
+ * on a full stack with the fake T3. Every T3 run on a member's thread is one wake of it.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
-import { CONSIGLIERE_RULES_KEY, ENGINE_BOARD_RULES, ENGINE_DEFAULT_CONSIGLIERE_RULES, engineConsigliereRules, engineSeatFacts, engineSeatInstruction, seatFacts } from "../src/app/consigliere.ts";
+import { CONSIGLIERE_RULES_KEY, ENGINE_BOARD_RULES, ENGINE_DEFAULT_CONSIGLIERE_RULES, engineConsigliereRules, engineSeatFacts, engineSeatInstruction } from "../src/app/consigliere.ts";
 import { readEngineReseats } from "../src/app/reseat.ts";
 import { standingText } from "../src/briefing/assemble.ts";
 import { RoomError } from "../src/domain/errors.ts";
@@ -30,23 +30,25 @@ class Seats {
   readonly ids: Record<string, string> = {};
   private serial = 0;
 
-  private constructor(engine = true) {
-    this.s = this.stack(engine);
+  private constructor() {
+    this.s = this.stack();
   }
 
-  private stack(engine: boolean): AppStack {
-    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60000, latestRelease: async () => null, engine });
+  private stack(): AppStack {
+    return createStack({ dbPath: join(this.dir, "rooms.sqlite"), adapter: this.fake, briefingBudgetChars: 60000, latestRelease: async () => null });
   }
 
   /** Throw the service away and start a new one over the same files and the same T3, as a restart does. */
-  restart(engine = true): void {
+  restart(options: { withoutJournal?: boolean } = {}): void {
     this.s.close();
-    this.s = this.stack(engine);
+    // The journal gone (board.sqlite and its WAL files): rooms.sqlite as a database from before the engine has it.
+    if (options.withoutJournal) for (const file of ["board.sqlite", "board.sqlite-wal", "board.sqlite-shm"]) rmSync(join(this.dir, file), { force: true });
+    this.s = this.stack();
   }
 
   /** A room with these members; the first is made the Consigliere unless `consigliere` is null. Seat briefings answered. */
-  static async create(aliases = ["C", "W", "V"], consigliere: string | null = "C", engine = true): Promise<Seats> {
-    const h = new Seats(engine);
+  static async create(aliases = ["C", "W", "V"], consigliere: string | null = "C"): Promise<Seats> {
+    const h = new Seats();
     h.roomId = ((await h.run({ type: "room.create", projectId: "project_demo", title: "seats" })) as { roomId: string }).roomId;
     for (const alias of aliases) await h.add(alias);
     if (consigliere) {
@@ -94,7 +96,7 @@ class Seats {
   }
 
   async tick(times = 1): Promise<void> {
-    for (let i = 0; i < times; i += 1) await this.s.scheduler.tick();
+    for (let i = 0; i < times; i += 1) await this.s.engine.tick();
   }
 
   wakes(alias: string): number {
@@ -226,16 +228,16 @@ test("retire refuses with open work, naming it, and goes ahead once it is done; 
   try {
     const a = h.request("C", "W", "Build the thing.");
     // Before its turn on it, W owns the open request: that is open work.
-    const error = await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "archive" }, /@W cannot be retired now: it owns open request #\d+: answer or cancel it first/);
+    const error = await h.refused({ type: "participant.retire", participantId: h.ids.W!, thread: "archive" }, /@W cannot be retired now: it owns open request #\d+: answer or cancel it first/);
     assert.doesNotMatch(error.message, /in a turn|activity/);
     assert.equal(h.p.seats.get(h.seat("W"))!.status, "active", "a refused retire changes nothing");
     assert.equal(h.s.repos.getParticipant(h.ids.W!)!.retiredAt, null);
     await h.tick();
     assert.ok(h.running("W"));
-    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "archive" }, /@W cannot be retired now: it is in a turn/);
+    await h.refused({ type: "participant.retire", participantId: h.ids.W!, thread: "archive" }, /@W cannot be retired now: it is in a turn/);
     // A turn the room did not start holds it too: T3 says the thread is busy.
     h.fake.startExternalRun(h.thread("V"), "typed in T3");
-    await h.refused({ type: "participant.retire", participantId: h.ids.V!, pendingTasks: "cancel", thread: "keep" }, /@V cannot be retired now: its T3 thread is in a turn/);
+    await h.refused({ type: "participant.retire", participantId: h.ids.V!, thread: "keep" }, /@V cannot be retired now: its T3 thread is in a turn/);
     h.fake.completeRun(h.thread("V"), { text: "answered in T3" });
 
     // Only the Consigliere retires members from the board.
@@ -266,7 +268,7 @@ test("retire refuses with open work, naming it, and goes ahead once it is done; 
 
     // The default thread setting keeps the thread.
     const threadV = h.thread("V");
-    const kept = (await h.run({ type: "participant.retire", participantId: h.ids.V!, pendingTasks: "cancel", thread: "keep" })) as { thread?: { result: string } };
+    const kept = (await h.run({ type: "participant.retire", participantId: h.ids.V!, thread: "keep" })) as { thread?: { result: string } };
     assert.equal(kept.thread?.result, "kept");
     assert.equal(h.fake.thread(threadV).shell.archivedAt ?? null, null);
   } finally {
@@ -277,10 +279,9 @@ test("retire refuses with open work, naming it, and goes ahead once it is done; 
 test("retiring the Consigliere clears the mark and the orchestrator", async () => {
   const h = await Seats.create();
   try {
-    await h.run({ type: "participant.retire", participantId: h.ids.C!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.C!, thread: "keep" });
     assert.equal(h.p.orchestrator, null);
     assert.equal(h.s.repos.getRoom(h.roomId)!.consigliereId, null);
-    await h.refused({ type: "participant.rebind", participantId: h.ids.W!, thread: { mode: "create" }, outstandingTasks: "carry" }, /reseat it/);
   } finally {
     h.close();
   }
@@ -471,7 +472,6 @@ test("the briefing source has where everyone works, the browsers, and the engine
     assert.equal(input.seatFacts, engineSeatFacts);
     const text = standingText(input);
     assert.ok(text.includes(engineSeatFacts({ alias: "C" })));
-    assert.equal(text.includes(seatFacts({ alias: "C" })), false, "not the old runtime's wording");
     assert.match(text, /== Browsers ==/);
     // A seat briefing envelope says so, so the renderer leaves the facts out of the standing part.
     const briefed = h.runs(h.seat("W"))[0]!;
@@ -511,16 +511,16 @@ test("a restart in the middle of a reseat carries on from the journal and the re
   }
 });
 
-test("at start, members seated without the engine get their seats and the Consigliere's mark becomes the orchestrator", async () => {
-  const h = await Seats.create(["C", "W"], "C", false);
+test("at start, members with no seat on the journal (a database from before the engine) get their seats and the Consigliere's mark becomes the orchestrator", async () => {
+  const h = await Seats.create(["C", "W"], "C");
   try {
-    assert.equal(h.s.engine, null);
-    h.restart(true);
+    h.restart({ withoutJournal: true });
+    assert.equal(h.p.events.some((e) => e.data.kind === "request"), false, "a fresh journal");
     assert.equal(h.p.seats.get(h.seat("C"))?.threadId, h.thread("C"));
     assert.equal(h.p.seats.get(h.seat("W"))?.threadId, h.thread("W"));
     assert.equal(h.p.orchestrator, h.seat("C"));
     const events = h.p.events.length;
-    h.restart(true);
+    h.restart();
     assert.equal(h.p.events.length, events, "a second start adds nothing");
   } finally {
     h.close();
@@ -564,7 +564,7 @@ test("retire with a request the member asked still open: its answer wakes no ret
     assert.ok(h.running("C"), "C is told of the new Consigliere");
     h.complete("C", "Noted.");
     await h.tick();
-    await h.run({ type: "participant.retire", participantId: h.ids.C!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.C!, thread: "keep" });
     const wakes = h.fake.runsOf(threadC).length;
     const wakesW = h.wakes("W");
     h.complete("V", "Node 24.");
@@ -632,14 +632,14 @@ test("F1: a retire while the member's turn is being stopped (a cancel) is refuse
     assert.equal(h.p.seats.get(seatW)!.status, "active");
     assert.ok(h.p.seats.get(seatW)!.activeRunId);
     const events = h.p.events.length;
-    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, /@W cannot be retired now: it is in a turn \(its run is (accepted|running)\)/);
+    await h.refused({ type: "participant.retire", participantId: h.ids.W!, thread: "keep" }, /@W cannot be retired now: it is in a turn \(its run is (accepted|running)\)/);
     assert.equal(h.s.repos.getParticipant(h.ids.W!)!.retiredAt, null, "nothing written in rooms.sqlite");
     assert.equal(h.p.events.length, events, "nothing written in the journal");
     // The turn ends; the member is told of the cancel; then it can be retired, and its thread is never sent anything again.
     h.fake.completeRun(h.thread("W"), { text: "(stopped)", outcome: "interrupted" });
     await h.acknowledge();
     const threadW = h.thread("W");
-    await h.run({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.W!, thread: "keep" });
     assert.equal(h.p.seats.get(seatW)!.status, "retired");
     const wakes = h.fake.runsOf(threadW).length;
     await h.tick(2);
@@ -678,7 +678,7 @@ test("F3: attaching a thread this room's board had is refused before anything is
   const h = await Seats.create();
   try {
     const threadV = h.thread("V");
-    await h.run({ type: "participant.retire", participantId: h.ids.V!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.V!, thread: "keep" });
     const members = h.s.repos.listParticipants(h.roomId).length;
     const events = h.p.events.length;
     await h.refused({ type: "participant.create", roomId: h.roomId, alias: "V9", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "attach", threadId: threadV } }, /was @V's on this room's board, and the board never seats a thread twice/);
@@ -787,7 +787,7 @@ test("M1: retire is refused while an answer to what the member asked has not rea
     assert.equal(h.host.unread(h.roomId, seatC), 1);
     // That turn ends: his thread is idle and listed, and the next tick would wake him with the answer.
     h.fake.completeRun(h.thread("C"), { text: "answered in T3" });
-    await h.refused({ type: "participant.retire", participantId: h.ids.C!, pendingTasks: "cancel", thread: "keep" }, new RegExp(`the answer #${answer.seq} to what it asked has not reached it yet`));
+    await h.refused({ type: "participant.retire", participantId: h.ids.C!, thread: "keep" }, new RegExp(`the answer #${answer.seq} to what it asked has not reached it yet`));
   } finally {
     h.close();
   }
@@ -886,7 +886,7 @@ for (const action of ["archive", "delete"] as const) test(`R2-F1: a member whose
     h.complete("V", "Node 24.");
     await h.tick(3);
     assert.equal(h.host.unread(h.roomId, seatC), 1, "the answer waits for C, whom nothing can wake");
-    await h.run({ type: "participant.retire", participantId: h.ids.C!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.C!, thread: "keep" });
     assert.equal(h.p.seats.get(seatC)!.status, "retired");
   } finally {
     h.close();
@@ -906,7 +906,7 @@ test("R3: a thread T3 deleted but still returns (deletedAt set, as the real adap
     h.complete("V", "Node 24.");
     await h.tick(3);
     assert.equal(h.host.unread(h.roomId, seatC), 1, "the answer waits for C, whom nothing can wake");
-    await h.run({ type: "participant.retire", participantId: h.ids.C!, pendingTasks: "cancel", thread: "keep" });
+    await h.run({ type: "participant.retire", participantId: h.ids.C!, thread: "keep" });
     assert.equal(h.p.seats.get(seatC)!.status, "retired");
   } finally {
     h.close();

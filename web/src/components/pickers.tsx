@@ -434,7 +434,7 @@ export function ThreadList({
   );
 }
 
-/** Thread binding picker (Rebind): create a new thread or attach an existing one; attaching shows what is inherited. */
+/** Thread binding picker: create a new thread or attach an existing one; attaching shows what is inherited. */
 export function ThreadBindingPicker({
   projectId,
   value,

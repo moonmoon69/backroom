@@ -15,12 +15,17 @@ export const LINK_SEATS_TO_PRESETS = `
   ) WHERE preset_id IS NULL;
 `;
 
-/** Posts made before posts had numbers of their own keep the one they had: their sequence. Exported for its test. */
-export const NUMBER_EXISTING_POSTS = `
+/** Posts made before posts had numbers of their own keep the one they had: their sequence (a migration of the events table). */
+const NUMBER_EXISTING_POSTS = `
   UPDATE events SET post_number = sequence
   WHERE post_number IS NULL AND kind IN ('user.message', 'note', 'assistant.reply', 't3.turn', 't3.message', 'member.message');
 `;
 
+/**
+ * The schema, one migration per entry, applied in order and recorded by number, so an entry never moves. The old
+ * runtime's queue (its tasks, their revisions and its runs) is no longer created: a database from before the engine
+ * runtime keeps those tables, which nothing reads or writes, and the entries that only changed them do nothing now.
+ */
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE rooms (
@@ -29,7 +34,6 @@ const MIGRATIONS: string[] = [
     environment_id TEXT,
     title TEXT NOT NULL,
     next_sequence INTEGER NOT NULL DEFAULT 1,
-    next_task_number INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -68,8 +72,6 @@ const MIGRATIONS: string[] = [
     kind TEXT NOT NULL,
     speaker_json TEXT NOT NULL,
     text TEXT NOT NULL,
-    task_id TEXT,
-    run_id TEXT,
     artifacts_json TEXT NOT NULL DEFAULT '[]',
     source_thread_id TEXT,
     source_message_id TEXT,
@@ -78,58 +80,6 @@ const MIGRATIONS: string[] = [
     UNIQUE (room_id, sequence)
   );
   CREATE UNIQUE INDEX idx_events_source ON events(source_thread_id, source_message_id) WHERE source_message_id IS NOT NULL;
-  CREATE TABLE tasks (
-    id TEXT PRIMARY KEY,
-    room_id TEXT NOT NULL REFERENCES rooms(id),
-    number INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
-    source_event_id TEXT NOT NULL,
-    participant_id TEXT NOT NULL REFERENCES participants(id),
-    instruction TEXT NOT NULL,
-    source_text TEXT,
-    schedule_mode TEXT NOT NULL,
-    prerequisites_json TEXT NOT NULL DEFAULT '[]',
-    state TEXT NOT NULL,
-    state_reason TEXT,
-    current_run_id TEXT,
-    user_outcome TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (room_id, number)
-  );
-  CREATE INDEX idx_tasks_room_state ON tasks(room_id, state);
-  CREATE TABLE task_revisions (
-    task_id TEXT NOT NULL REFERENCES tasks(id),
-    revision INTEGER NOT NULL,
-    snapshot_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (task_id, revision)
-  );
-  CREATE TABLE runs (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL REFERENCES tasks(id),
-    task_revision INTEGER NOT NULL,
-    attempt INTEGER NOT NULL,
-    binding_id TEXT NOT NULL REFERENCES bindings(id),
-    thread_id TEXT NOT NULL,
-    command_id TEXT NOT NULL UNIQUE,
-    message_id TEXT NOT NULL UNIQUE,
-    turn_id TEXT,
-    status TEXT NOT NULL,
-    briefing TEXT NOT NULL,
-    included_from_sequence INTEGER NOT NULL,
-    included_to_sequence INTEGER NOT NULL,
-    interrupt_requested_at TEXT,
-    accepted_at TEXT,
-    started_at TEXT,
-    completed_at TEXT,
-    result_event_id TEXT,
-    error TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE INDEX idx_runs_task ON runs(task_id, attempt);
-  CREATE INDEX idx_runs_status ON runs(status);
   CREATE TABLE native_requests (
     participant_id TEXT NOT NULL REFERENCES participants(id),
     thread_id TEXT NOT NULL,
@@ -202,21 +152,17 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX attachments_room ON attachments(room_id);
-  ALTER TABLE tasks ADD COLUMN attachment_ids_json TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE events ADD COLUMN attachment_ids_json TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE events ADD COLUMN progress_json TEXT NOT NULL DEFAULT '[]';
   `,
   // Turns started directly in T3 on a participant's thread are mirrored into the timeline with their prompt.
   `ALTER TABLE events ADD COLUMN prompt TEXT;`,
-  // Mid-turn delivery (steering): per task, and recorded on the run that was sent into a running turn.
-  `
-  ALTER TABLE tasks ADD COLUMN delivery TEXT NOT NULL DEFAULT 'queue';
-  ALTER TABLE runs ADD COLUMN steered INTEGER NOT NULL DEFAULT 0;
-  `,
+  // Mid-turn delivery (steering) on the old runtime's queue.
+  ``,
   // Sidebar order of rooms (drag to reorder); ties fall back to creation time.
   `ALTER TABLE rooms ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;`,
-  // Tasks that run one of the harness's slash commands verbatim ("@claude /compact").
-  `ALTER TABLE tasks ADD COLUMN slash_command INTEGER NOT NULL DEFAULT 0;`,
+  // Slash commands on the old runtime's queue.
+  ``,
   // Rooms with a shared browser for their agents.
   `ALTER TABLE rooms ADD COLUMN browser_enabled INTEGER NOT NULL DEFAULT 0;`,
   // Browsers are a list named by purpose ("general", "backroom-testing"); a room picks its default. Profiles and ports
@@ -275,22 +221,16 @@ const MIGRATIONS: string[] = [
   );
   `,
   // T3's Orchestrator V2: a run's work in T3 is a run (it was a turn in V1), and its id is what Backroom keeps.
-  `
-  ALTER TABLE runs RENAME COLUMN turn_id TO t3_run_id;
-  ALTER TABLE events RENAME COLUMN source_turn_id TO source_t3_run_id;
-  `,
+  `ALTER TABLE events RENAME COLUMN source_turn_id TO source_t3_run_id;`,
   // The board: who a member's message was sent to, and how a turn the room did not start ended.
   `
   ALTER TABLE events ADD COLUMN to_participant_id TEXT;
   ALTER TABLE events ADD COLUMN outcome TEXT;
   `,
-  // The Consigliere: a mark on one member of a room; and the seat briefing, a task Backroom writes itself.
-  `
-  ALTER TABLE rooms ADD COLUMN consigliere_participant_id TEXT;
-  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'assignment';
-  `,
-  // A failed task the user took off their list without retrying it.
-  `ALTER TABLE tasks ADD COLUMN dismissed_at TEXT;`,
+  // The Consigliere: a mark on one member of a room.
+  `ALTER TABLE rooms ADD COLUMN consigliere_participant_id TEXT;`,
+  // Dismissing a failed task, on the old runtime's queue.
+  ``,
   // Roles (named rule sets) are gone: the Consigliere's rules are an app setting, and what a member is to do travels
   // in the assignment itself.
   `
@@ -306,7 +246,7 @@ const MIGRATIONS: string[] = [
   ALTER TABLE participants ADD COLUMN preset_id TEXT;
   ${LINK_SEATS_TO_PRESETS}
   `,
-  // Posts get a number of their own, which only posts take, so the board counts without the gaps that task status lines
+  // Posts get a number of their own, which only posts take, so the board counts without the gaps that status lines
   // and system notes left. Posts made before keep the number they had (their sequence), since replies cite them; the
   // next post in a room takes its highest post number plus one. Unique per room, as the guard against two at once.
   `

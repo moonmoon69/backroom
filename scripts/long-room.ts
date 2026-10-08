@@ -62,7 +62,7 @@ function notes(store: EngineStore, room: string, count: number): number[] {
 function source(roomId: string): BriefingSource {
   const at = new Date(0).toISOString();
   const participant = (id: string): Participant => ({ id, roomId, alias: id, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
-  const room: Room = { id: roomId, projectId: "project_demo", environmentId: null, title: "long room", nextSequence: 1, nextTaskNumber: 1, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, consigliereId: "C", createdAt: at, updatedAt: at };
+  const room: Room = { id: roomId, projectId: "project_demo", environmentId: null, title: "long room", nextSequence: 1, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, consigliereId: "C", createdAt: at, updatedAt: at };
   return {
     standing: (_room, seatId) => ({ room, participant: participant(seatId), participantsById: new Map(SEATS.map((s) => [s, participant(s)])), board: { command: "rooms-board", as: `${seatId}.key` } }),
     alias: (_room, seatId) => seatId,

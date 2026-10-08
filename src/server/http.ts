@@ -13,7 +13,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStoredAuth } from "../adapter/auth.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, backgroundOf, isRunActive, runPrompt } from "../adapter/types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, backgroundOf, runPrompt } from "../adapter/types.ts";
 import type { T3ThreadDetail } from "../adapter/types.ts";
 import {
   backgroundTasks,
@@ -37,14 +37,13 @@ import {
 } from "../app/threadView.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
-import { tasksNeedingYou } from "../domain/workStatus.ts";
-import type { BrowserListItem, RoomSnapshot } from "../domain/types.ts";
+import type { BrowserListItem } from "../domain/types.ts";
 import { browsersForRoom, effectiveBrowser, roomsUsingBrowser, threadKey } from "../browser/catalog.ts";
 import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { BoardError } from "../app/board.ts";
-import { boardFor } from "../app/boardEngine.ts";
-import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, ENGINE_DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
+import { BoardEngine } from "../app/boardEngine.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, ENGINE_DEFAULT_CONSIGLIERE_RULES, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import { previewFile } from "./filePreview.ts";
@@ -57,31 +56,7 @@ import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { orderProjects } from "../app/service.ts";
 import type { SpeechSynth } from "../speech/kokoro.ts";
-import { mountEngineView } from "./engineView.ts";
-
-export function buildRoomSnapshot(stack: AppStack, roomId: string, eventLimit = 500): RoomSnapshot | null {
-  const room = stack.repos.getRoom(roomId);
-  if (!room) return null;
-  const participants = stack.repos.listParticipants(roomId);
-  const participantIds = participants.map((p) => p.id);
-  const participantStatus: RoomSnapshot["participantStatus"] = {};
-  for (const participant of participants) participantStatus[participant.id] = stack.scheduler.participantStatus(participant.id);
-  return {
-    room,
-    participants,
-    bindings: stack.repos.listBindings(participantIds),
-    tasks: stack.repos.listTasks(roomId),
-    runs: stack.repos.listRunsForRoom(roomId).map((run) => ({ ...run, briefing: "" })),
-    events: stack.repos.listRecentEvents(roomId, eventLimit),
-    nativeRequests: stack.repos.listOpenNativeRequests(participantIds),
-    participantStatus,
-    browser: (() => {
-      const browser = stack.browsers ? effectiveBrowser(stack.repos, room) : null;
-      return browser && stack.browsers ? { browser, status: stack.browsers.status(browser.id) } : null;
-    })(),
-    state: roomStateView(stack.repos, roomId),
-  };
-}
+import { mountEngineView, startedByHost } from "./engineView.ts";
 
 /** Agents' browser tools (bin/rooms-browser): the engine, the token the CLI presents, and the command briefings name. */
 export interface BrowserToolsHttp {
@@ -120,9 +95,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const stored = readStoredAuth(config.dataDir);
     let environment: unknown = null;
     let auth: unknown = null;
-    // The scheduler's last error until its next good tick, or this request's own check of T3 when that fails.
-    let error: string | null = stack.scheduler.lastAdapterError;
-    let errorAt: string | null = stack.scheduler.lastAdapterErrorAt;
+    // This request's own check of T3, when it fails.
+    let error: string | null = null;
+    let errorAt: string | null = null;
     if (stack.adapter.kind === "fake" || httpAdapter) {
       try {
         const described = await stack.adapter.describe();
@@ -329,49 +304,11 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   // ---- crew library ----
   app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
 
-  // With ROOMS_ENGINE=1 the room routes read the engine journal (src/server/engineView.ts, L4c). Registered before the
-  // old ones below, they answer first; without the flag nothing is registered and every route is as before.
+  // The room routes read the rooms' journal (src/server/engineView.ts, L4c).
   mountEngineView(app, stack, costs);
 
-  // ---- rooms ----
-  app.get("/api/rooms", (c) => {
-    const seen = seenMarks(stack.repos);
-    const rooms = stack.repos.listRooms().map((room) => {
-      const tasks = stack.repos.listTasks(room.id);
-      // A removed member's old tasks ask nothing of anyone.
-      const seated = new Set(stack.repos.listActiveParticipants(room.id).map((p) => p.id));
-      // What finished since you last looked at the room (on any device), newest first.
-      const finishes = stack.repos.listRoomFinishes(room.id, seen.of(`room:${room.id}`), 100, room.consigliereId);
-      const newest = finishes[0];
-      const alias = newest?.participantId ? (stack.repos.getParticipant(newest.participantId)?.alias ?? null) : null;
-      return {
-        ...room,
-        // Who is seated now: a removed participant stays in the record (its messages and tasks name it) but is not crew.
-        participantCount: stack.repos.listActiveParticipants(room.id).length,
-        working: tasks.filter((t) => t.state === "running" || t.state === "dispatching").length,
-        waiting: tasks.filter((t) => t.state === "queued" || t.state === "held" || t.state === "blocked" || t.state === "needs_input").length,
-        // Live state of the room's threads from the scheduler's last poll (no T3 call): who is mid-turn, who has
-        // background work running (so a quiet thread is waiting, not done), who is only monitoring, who needs you.
-        activity: stack.repos.listActiveParticipants(room.id).reduce(
-          (acc, participant) => {
-            const status = stack.scheduler.participantStatus(participant.id);
-            if (status.pendingApprovals || status.pendingUserInput) acc.needsInput += 1;
-            else if (status.status !== "unknown" && isRunActive(status.status)) acc.turn += 1;
-            else if (status.background === "working") acc.background += 1;
-            else if (status.background === "monitoring") acc.monitoring += 1;
-            return acc;
-          },
-          // Tasks that wait on you besides an approval or question (those are counted per member below): held,
-          // blocked, or a failure nobody has followed up. The status bar above the conversation lists the same.
-          { turn: 0, background: 0, monitoring: 0, needsInput: tasksNeedingYou(tasks.filter((task) => seated.has(task.participantId)), room.consigliereId).filter((task) => task.state !== "needs_input").length },
-        ),
-        news: { unseen: finishes.length, latest: newest ? { at: newest.at, alias, kind: newest.kind, preview: newest.text } : null },
-      };
-    });
-    return c.json(rooms);
-  });
-
-  // A room or thread was on screen up to `at` (the newest finish it showed): its news is seen, on every device.
+  // A thread outside rooms was on screen up to `at` (the newest finish it showed): its news is seen, on every device. A
+  // room's mark is a journal sequence (src/server/engineView.ts), which takes the room keys that carry one.
   app.post("/api/seen", async (c) => {
     const body = (await c.req.json().catch(() => null)) as { key?: unknown; at?: unknown } | null;
     const key = typeof body?.key === "string" ? body.key : "";
@@ -380,24 +317,12 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json({ key, at: markSeen(stack.repos, key, at) });
   });
 
-  app.get("/api/rooms/:roomId", (c) => {
-    const snapshot = buildRoomSnapshot(stack, c.req.param("roomId"));
-    if (!snapshot) throw new RoomError("not_found", "room not found", 404);
-    return c.json(snapshot);
-  });
-
   // The room state alone (the snapshot carries it too): the Consigliere's summary, who wrote it and when; null until one is written.
   app.get("/api/rooms/:roomId/state", (c) => {
     const roomId = c.req.param("roomId");
     if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
     const state = roomStateView(stack.repos, roomId);
     return c.json(state ? { roomId, state } : { roomId, state: null, message: "This room has no state yet: its Consigliere writes it with rooms-board state." });
-  });
-
-  app.get("/api/rooms/:roomId/runs/:runId", (c) => {
-    const run = stack.repos.getRun(c.req.param("runId"));
-    if (!run) throw new RoomError("not_found", "run not found", 404);
-    return c.json(run);
   });
 
   /**
@@ -490,12 +415,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const running = runningRun(detail);
     const latest = detail.runs.find((run) => run.id === shell.latestRunId) ?? null;
     const shownRunId = running?.id ?? latest?.id ?? null;
-    // The run in progress, if any: whether the room sent it, and (for runs typed in T3) the prompt that started it.
-    // A room run is written before its message is sent, so the message that started the run tells from the first read.
+    // The run in progress, if any: whether the room sent it (from the journal), and for any other the prompt that started it.
     const promptMessage = running ? runPrompt(detail, running) : null;
-    const startedByRoom = running
-      ? stack.repos.isRunT3Run(binding.threadId, running.id) || stack.repos.isRunMessage(binding.threadId, running.userMessageId) || stack.scheduler.participantStatus(participant.id).activeRunId !== null
-      : false;
+    const startedByRoom = running ? startedByHost(stack.engine.view(participant.roomId), binding.id, running.id, detail) : false;
     const runningRunView = running
       ? {
           runId: running.id,
@@ -538,7 +460,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       pullRequests: shell.pullRequests,
       linkedPullRequest: shell.linkedPullRequest,
       planProgress: planProgress(detail),
-      backgroundLiveness: backgroundOf(shell) ?? stack.scheduler.participantStatus(participant.id).background,
+      backgroundLiveness: backgroundOf(shell),
       latestUserMessageAt: shell.latestUserMessageAt,
       settledAt: shell.settledAt,
       contextWindow: contextReading(detail),
@@ -562,74 +484,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const participant = stack.repos.getParticipant(c.req.param("participantId"));
     if (!participant || participant.roomId !== c.req.param("roomId")) throw new RoomError("not_found", "member not found", 404);
     return c.json(await deskFor(participant.id));
-  });
-
-  /**
-   * What the room's threads have used and what that is worth at list price: per participant (every thread it has been
-   * bound to, removed participants too), per reply (the turn that produced it) and for the room.
-   */
-  app.get("/api/rooms/:roomId/costs", (c) => {
-    const roomId = c.req.param("roomId");
-    if (!stack.repos.getRoom(roomId)) throw new RoomError("not_found", "room not found", 404);
-    const participants = stack.repos.listParticipants(roomId);
-    const bindings = stack.repos.listBindings(participants.map((p) => p.id));
-    const threadsOf = (participantId: string) => [...new Set(bindings.filter((b) => b.participantId === participantId).map((b) => b.threadId))];
-    const byParticipant: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
-    for (const participant of participants) byParticipant[participant.id] = costs.cost(threadsOf(participant.id));
-
-    // A reply's spend is everything its thread used since the thread's previous reply: the turn that produced it,
-    // with its subagents' work meanwhile. Replies to the room and turns typed in T3 alike, so a thread's replies
-    // divide its spend between them. What the thread has used since its last reply is the turn in progress.
-    const byReply: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
-    const openTurns: Record<string, ReturnType<ThreadCosts["cost"]>> = {};
-    const now = Date.now();
-    const threadOfBinding = new Map(bindings.map((b) => [b.id, b.threadId]));
-    const replies = new Map<string, Array<{ eventId: string; at: number }>>();
-    for (const event of stack.repos.listEvents(roomId)) {
-      if ((event.kind !== "assistant.reply" && event.kind !== "t3.turn") || event.speaker.type !== "participant") continue;
-      const threadId = threadOfBinding.get(event.speaker.bindingId);
-      const at = Date.parse(event.createdAt);
-      if (!threadId || !Number.isFinite(at)) continue;
-      replies.set(threadId, [...(replies.get(threadId) ?? []), { eventId: event.id, at }]);
-    }
-    for (const [threadId, list] of replies) {
-      list.sort((a, b) => a.at - b.at);
-      list.forEach((reply, index) => {
-        const part = costs.costBetween([threadId], index === 0 ? 0 : (list[index - 1] as { at: number }).at + 1, reply.at);
-        if (part.available && part.total.calls > 0) byReply[reply.eventId] = part;
-      });
-    }
-    for (const participant of participants) {
-      if (participant.retiredAt) continue;
-      const threadId = stack.repos.currentBinding(participant.id)?.threadId;
-      if (!threadId) continue;
-      const last = replies.get(threadId)?.reduce((max, reply) => Math.max(max, reply.at), 0) ?? 0;
-      const part = costs.costBetween([threadId], last + 1, now);
-      if (part.available && part.total.calls > 0) openTurns[participant.id] = part;
-    }
-
-    // Each seated member's context meter, on the thread it is bound to now (an earlier thread's context is gone).
-    const contexts: Record<string, ContextMeter> = {};
-    for (const participant of participants) {
-      if (participant.retiredAt) continue;
-      const threadId = stack.repos.currentBinding(participant.id)?.threadId;
-      if (threadId) contexts[participant.id] = costs.context([threadId], participant.modelSelection);
-    }
-
-    const room = costs.cost([...new Set(bindings.map((b) => b.threadId))]);
-    return c.json({
-      readAt: new Date().toISOString(),
-      pricesFetchedAt: costs.pricesFetchedAt(),
-      room,
-      /** Participants with no estimate (a provider without readable usage): the room's figure leaves them out. */
-      withoutEstimate: participants.filter((p) => !byParticipant[p.id]?.available).map((p) => p.id),
-      participants: byParticipant,
-      replies: byReply,
-      /** What each participant's thread has used since its last reply: the turn in progress. */
-      openTurns,
-      /** Per seated participant: its context meter (Claude threads only; the others say why there is none). */
-      contexts,
-    });
   });
 
   /** The same for one thread used on its own. */
@@ -705,13 +559,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     }
   });
 
-  app.get("/api/rooms/:roomId/events", (c) => {
-    const roomId = c.req.param("roomId");
-    const from = Number(c.req.query("from") ?? 1);
-    const to = Number(c.req.query("to") ?? Number.MAX_SAFE_INTEGER);
-    return c.json(stack.repos.listEvents(roomId, from, to));
-  });
-
   // Today's usage per model across all threads (T3 does not split usage by thread). ?tz= IANA zone for the day.
   app.get("/api/t3/usage/today", async (c) => {
     if (!stack.adapter.usageSummary) return c.json({ available: false, buckets: [], pricing: null, readAt: null });
@@ -726,15 +573,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const room = stack.repos.getRoom(roomId);
     if (!room) throw new RoomError("not_found", "room not found", 404);
     const body = (await c.req.json()) as { text?: string };
-    const tasks = stack.repos.listTasks(roomId);
-    const busyByParticipant = new Set(
-      tasks.filter((t) => t.state === "dispatching" || t.state === "running" || t.state === "needs_input" || t.state === "queued").map((t) => t.participantId),
-    );
-    const participants = stack.repos.listActiveParticipants(roomId).map((p) => {
-      const status = stack.scheduler.participantStatus(p.id);
-      return { id: p.id, alias: p.alias, busy: busyByParticipant.has(p.id) || status.externalActivity || status.activeRunId !== null || status.threadMissing };
-    });
-    return c.json(parseExplicit(body.text ?? "", participants, tasks, { consigliereId: room.consigliereId, engine: stack.engine !== null }));
+    // Busy, for alias pools (@sol → a free member of sol1, sol2, …): a run of its seat the journal has not ended.
+    const live = new Set([...stack.engine.view(roomId).runs.values()].filter((r) => r.phase !== "terminal").map((r) => r.seatId));
+    const participants = stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias, busy: live.has(stack.repos.currentBinding(p.id)?.id ?? "") }));
+    return c.json(parseExplicit(body.text ?? "", participants, { consigliereId: room.consigliereId }));
   });
 
   // Images for the composer: raw bytes in, attachment record out. Referenced by id from message.create.
@@ -893,13 +735,13 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     }
   });
 
-  // rooms-board: the same CLI contract and token as rooms-browser. It reads a room's posts and seats saved crew.
-  // With ROOMS_ENGINE=1 the board is the engine's journal (src/app/boardEngine.ts).
-  const board = boardFor(stack.engine, {
+  // rooms-board: the same CLI contract and token as rooms-browser. The board is the room's journal (src/app/boardEngine.ts).
+  const board = new BoardEngine({
     repos: stack.repos,
+    host: stack.engine,
     execute: (command) => stack.service.execute(parseCommand(command)),
-    statusOf: (participantId) => stack.scheduler.participantStatus(participantId),
-    standing: (participantId) => (stack.seats ? stack.seats.standingText(participantId) : stack.scheduler.standingText(participantId)),
+    seats: stack.seats,
+    standing: (participantId) => stack.seats.standingText(participantId),
     // A new room state reaches open pages through the room's stream, like any change.
     notify: (roomId) => stack.hub.notify(roomId),
     contextOf: (participant) => {
@@ -908,10 +750,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     },
     // Two ticks: one may already be in flight and past its dispatch; the second sends the seat briefing for certain.
     afterSeat: async () => {
-      await stack.scheduler.tick();
-      await stack.scheduler.tick();
+      await stack.engine.tick();
+      await stack.engine.tick();
     },
-  }, stack.seats);
+  });
   app.post("/api/board-tools", async (c) => {
     if (!browserTools || c.req.header("authorization") !== `Bearer ${browserTools.token}`) {
       return c.json({ error: "unauthorized", message: "rooms-board could not authenticate: the service was restarted or this is not its data folder" }, 401);
@@ -926,103 +768,17 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     }
   });
 
-  /**
-   * The whole of Backroom on one page (Look → Overview): every room with its members, what each is doing now in one
-   * line, and what needs you. Member state comes from the scheduler's last poll; the live line of a member mid-turn is
-   * read from T3 (bounded), the last reply of an idle one from the room's record.
-   */
-  app.get("/api/overview", async (c) => {
-    const rooms = stack.repos.listRooms();
-    const out = await Promise.all(
-      rooms.map(async (room) => {
-        const participants = stack.repos.listActiveParticipants(room.id);
-        const tasks = stack.repos.listTasks(room.id);
-        const events = stack.repos.listRecentEvents(room.id, 200);
-        const seated = new Set(participants.map((p) => p.id));
-        const needs = tasksNeedingYou(tasks.filter((task) => seated.has(task.participantId)), room.consigliereId).length + stack.repos.listOpenNativeRequests(participants.map((p) => p.id)).length;
-        const members = await Promise.all(
-          participants.map(async (participant) => {
-            const status = stack.scheduler.participantStatus(participant.id);
-            const binding = stack.repos.currentBinding(participant.id);
-            const busy = status.activeRunId !== null || status.externalActivity || (status.status !== "unknown" && isRunActive(status.status));
-            let live: string | null = null;
-            if (busy && binding) {
-              try {
-                const detail = await stack.adapter.getThreadDetail(binding.threadId, { bounded: true });
-                const running = detail ? runningRun(detail) : null;
-                const last = detail && running ? liveFeed(detail, running.id).at(-1) : undefined;
-                if (last?.kind === "message") live = last.text;
-                else if (last?.kind === "tools") live = last.running.length > 0 ? `running ${last.running.join(", ")}` : `ran ${last.count} tool${last.count === 1 ? "" : "s"}`;
-                else if (last?.kind === "notice") live = last.text;
-              } catch {
-                live = null;
-              }
-            }
-            // What the member last said, for a member between turns.
-            const reply = [...events].reverse().find((e) => (e.kind === "assistant.reply" || e.kind === "t3.turn") && e.speaker.type === "participant" && e.speaker.participantId === participant.id && e.text.trim().length > 0);
-            const task = [...tasks].reverse().find((t) => t.participantId === participant.id && (t.state === "running" || t.state === "dispatching" || t.state === "needs_input"));
-            return {
-              id: participant.id,
-              alias: participant.alias,
-              modelSelection: participant.modelSelection,
-              presetId: participant.presetId,
-              consigliere: room.consigliereId === participant.id,
-              status,
-              live,
-              doing: task ? task.instruction : null,
-              lastReply: reply ? { at: reply.createdAt, text: reply.text.slice(0, 400) } : null,
-            };
-          }),
-        );
-        // The room state's first line is the tile's blurb.
-        const state = roomStateView(stack.repos, room.id);
-        return { id: room.id, projectId: room.projectId, title: room.title, consigliereId: room.consigliereId, needs, members, state: state ? { line: state.line, by: state.by, at: state.at } : null, updatedAt: room.updatedAt };
-      }),
-    );
-    // Threads outside rooms, shown as rooms of one: the agent's live line while it works, else what it last said.
-    const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
-    const loose = (await stack.adapter.listThreads()).filter((t) => !bound.has(t.id) && !t.archivedAt && !t.settledAt && !t.deletedAt && t.lineage.relationshipToParent !== "subagent").slice(0, 40);
-    const threads = await Promise.all(
-      loose.map(async (thread) => {
-        let line: string | null = null;
-        try {
-          const detail = await stack.adapter.getThreadDetail(thread.id, { bounded: true });
-          const running = detail ? runningRun(detail) : null;
-          if (detail && running) {
-            const last = liveFeed(detail, running.id).at(-1);
-            if (last?.kind === "message") line = last.text;
-            else if (last?.kind === "tools") line = last.running.length > 0 ? `running ${last.running.join(", ")}` : `ran ${last.count} tool${last.count === 1 ? "" : "s"}`;
-            else if (last?.kind === "notice") line = last.text;
-          } else if (detail) {
-            const said = [...detail.messages].reverse().find((m) => m.role === "assistant" && !m.streaming && m.text.trim().length > 0);
-            line = said ? said.text.slice(0, 400) : null;
-          }
-        } catch {
-          line = null;
-        }
-        // News as the sidebar has it: the last run finished (or failed) after the thread was last looked at.
-        const finishedAt = thread.latestRunCompletedAt;
-        const news =
-          finishedAt && (thread.status === "completed" || thread.status === "failed") && isAfter(finishedAt, seenMarks(stack.repos).of(`thread:${thread.id}`))
-            ? { at: finishedAt, state: thread.status === "failed" ? ("error" as const) : ("completed" as const) }
-            : null;
-        return { id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: backgroundOf(thread), latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line, news };
-      }),
-    );
-    return c.json({ rooms: out, threads, readAt: new Date().toISOString() });
-  });
-
   // ---- the Consigliere ----
-  /** App-wide settings the page reads: which saved crew member is the Consigliere of new conversations. */
+  /** App-wide settings the page reads: which saved crew member is the Consigliere of new rooms. */
   app.get("/api/settings", (c) => {
     const presetId = stack.repos.getKv(CONSIGLIERE_PRESET_KEY);
     const saved = stack.repos.getKv(CONSIGLIERE_RULES_KEY);
-    // On the engine its own default wording is in force (the board's mechanics are added after it, whatever the wording).
-    const defaultText = stack.engine !== null ? ENGINE_DEFAULT_CONSIGLIERE_RULES : DEFAULT_CONSIGLIERE_RULES;
+    // Backroom's default wording (the board's mechanics are added after it, whatever the wording).
+    const defaultText = ENGINE_DEFAULT_CONSIGLIERE_RULES;
     return c.json({
       consiglierePresetId: presetId && stack.repos.getPreset(presetId) ? presetId : null,
       // The rules every Consigliere is given: the user's wording when they saved one, and Backroom's to go back to.
-      consigliereRules: { text: saved && saved.trim() ? consigliereRules(saved) : defaultText, custom: Boolean(saved && saved.trim()), defaultText },
+      consigliereRules: { text: saved && saved.trim() ? saved.trim() : defaultText, custom: Boolean(saved && saved.trim()), defaultText },
       // What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat.
       retireThread: retireThreadChoice(stack.repos),
     });
@@ -1120,28 +876,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const result = await stack.service.execute(command);
     // A deleted browser's process and profile (logins, history) go with it. Rooms never take a browser with them.
     if (command.type === "browser.delete") await stack.browsers?.remove(command.browserId);
-    // Let the scheduler react promptly to new work without waiting for the next interval.
-    void stack.scheduler.tick();
+    // Let the engine host react promptly to new work without waiting for the next interval.
+    void stack.engine.tick();
     return c.json(result);
-  });
-
-  app.get("/api/rooms/:roomId/stream", (c) => {
-    const roomId = c.req.param("roomId");
-    return streamSSE(c, async (stream) => {
-      let closed = false;
-      const unsubscribe = stack.hub.subscribe(roomId, () => {
-        if (!closed) void stream.writeSSE({ event: "room.changed", data: JSON.stringify({ roomId, at: Date.now() }) });
-      });
-      stream.onAbort(() => {
-        closed = true;
-        unsubscribe();
-      });
-      await stream.writeSSE({ event: "hello", data: JSON.stringify({ roomId }) });
-      while (!closed) {
-        await stream.sleep(15000);
-        if (!closed) await stream.writeSSE({ event: "ping", data: String(Date.now()) });
-      }
-    });
   });
 
   // An API path nothing above handles is a 404, never the app shell (a UI newer than the service would read HTML as data).

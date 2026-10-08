@@ -30,6 +30,12 @@ function fakeBrowsers(briefing: Omit<BrowserBriefing, "name" | "description"> | 
   return browsers;
 }
 
+/** The briefing of the member's latest turn, as T3 received it. */
+const briefingOf = (stack: Awaited<ReturnType<typeof createTestStack>>, alias: string) => {
+  const thread = stack.fake.threads.get(stack.threadOf(alias))!;
+  return thread.messages.find((m) => m.id === thread.runs.at(-1)!.userMessageId)!.text;
+};
+
 const RUNNING = { cdpUrl: "http://127.0.0.1:9301", cdpPort: 9301, mode: "vnc" as const, watchUrl: "http://box.ts.net:6101/vnc.html?autoconnect=1" };
 
 test("a room with its browser on starts it and tells each agent where to attach", async (t) => {
@@ -40,10 +46,10 @@ test("a room with its browser on starts it and tells each agent where to attach"
   assert.equal(stack.repos.getRoom(stack.roomId)?.browserEnabled, true);
   assert.match(stack.repos.listEvents(stack.roomId).at(-1)?.text ?? "", /Browsers turned on: .*"general"/);
 
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "check the login page renders", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "check the login page renders" }] });
   await stack.tick();
   assert.deepEqual(browsers.asked, ["general"], "a room without its own default uses general");
-  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  const briefing = briefingOf(stack, "sol1");
   assert.match(briefing, /== Browsers ==/);
   assert.match(briefing, /- general \(this room's default\): General browsing/);
   const key = `sol1.${stack.roomId.slice(0, 8)}`;
@@ -59,10 +65,10 @@ test("rooms without a browser never start one; turning it on twice is recorded o
   const browsers = fakeBrowsers(RUNNING);
   const stack = await createTestStack({ autoCompleteMs: null }, ["sol1", "sol2"], { browsers: () => browsers as never });
   t.after(() => stack.close());
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "plain task", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "plain work" }] });
   await stack.tick();
   assert.deepEqual(browsers.asked, []);
-  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /== Browsers ==/);
+  assert.doesNotMatch(briefingOf(stack, "sol1"), /== Browsers ==/);
 
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
@@ -74,10 +80,9 @@ test("a browser that cannot start leaves the briefing without a browser section"
   const stack = await createTestStack({ autoCompleteMs: null }, ["sol1"], { browsers: () => browsers as never });
   t.after(() => stack.close());
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true });
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "anything", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "anything" }] });
   await stack.tick();
-  assert.equal(stack.task(1).state, "dispatching");
-  assert.doesNotMatch(stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing, /== Browsers ==/);
+  assert.doesNotMatch(briefingOf(stack, "sol1"), /== Browsers ==/);
 });
 
 test("browsers are a list named by purpose; a room picks its default and the briefing names it", async (t) => {
@@ -93,10 +98,10 @@ test("browsers are a list named by purpose; a room picks its default and the bri
 
   await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: created.browserId });
   assert.equal(stack.repos.getRoom(stack.roomId)?.defaultBrowserId, created.browserId);
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "run the smoke test", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "run the smoke test" }] });
   await stack.tick();
   assert.deepEqual(browsers.asked, ["backroom-testing"]);
-  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  const briefing = briefingOf(stack, "sol1");
   assert.match(briefing, /- backroom-testing \(this room's default\): Logged into staging as the test user/);
   assert.match(briefing, /- general \(stopped; starts on first use\): General browsing/, "every browser the room may use is listed");
 
@@ -118,9 +123,9 @@ test("a room can be limited to some browsers; its default must be one of them", 
   assert.deepEqual(stack.repos.getRoom(stack.roomId)?.allowedBrowserIds, [testing]);
   await assert.rejects(stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, browserId: "general" }), (error: RoomError) => error.code === "default_not_allowed");
 
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "check staging", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "check staging" }] });
   await stack.tick();
-  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  const briefing = briefingOf(stack, "sol1");
   assert.match(briefing, /- testing \(this room's default\): Staging logins/);
   assert.doesNotMatch(briefing, /- general/, "browsers outside the room's list are not offered");
 
@@ -146,9 +151,9 @@ test("a room need not use general: dropping it from the list moves the default t
   const notes = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "system").map((e) => e.text);
   assert.ok(notes.includes('This room may use these browsers: testing; its default is now "testing"'), notes.join(" | "));
 
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1!], instruction: "check staging", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "check staging" }] });
   await stack.tick();
-  const briefing = stack.repos.listRunsForTask(stack.task(1).id)[0]!.briefing;
+  const briefing = briefingOf(stack, "sol1");
   assert.match(briefing, /- testing \(this room's default\): Staging logins/);
   assert.doesNotMatch(briefing, /- general/);
 });

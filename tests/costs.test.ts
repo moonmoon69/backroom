@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
 import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
+import { journalView } from "../src/server/engineView.ts";
 import { ThreadCosts } from "../src/usage/threadCosts.ts";
 import { contextPhrase } from "../src/domain/contextMeter.ts";
 import { createTestStack } from "./helpers.ts";
@@ -197,13 +198,14 @@ test("the room's costs: per participant, per reply and for the room", async (t) 
   m.bind(sol, "claudeAgent", "sess-sol");
   m.bind(stack.threadOf("grok"), "cursor", "x");
 
-  await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction: "do it", schedule: { mode: "now" } });
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1 as string], instruction: "do it" }] });
   await stack.tick();
   await new Promise((resolve) => setTimeout(resolve, 20));
   await stack.tick(2);
-  const reply = stack.repos.listEvents(stack.roomId).find((e) => e.kind === "assistant.reply");
-  assert.ok(reply, "the task was answered");
-  const answered = Date.parse(reply.createdAt);
+  // The reply is the member's final on the journal; its moment is its T3 run's end.
+  const [reply] = journalView({ p: stack.engine.view(stack.roomId) }).posts.filter((post) => post.output?.source === "final");
+  assert.ok(reply, "the request was answered");
+  const answered = Date.parse(stack.fake.threads.get(sol)!.runs[0]!.completedAt!);
   const at = (ms: number) => new Date(ms).toISOString();
   writeFileSync(
     join(m.claudeProject, "sess-sol.jsonl"),
@@ -236,41 +238,6 @@ test("the room's costs: per participant, per reply and for the room", async (t) 
   const direct = (await (await app.request(`/api/t3/threads/${sol}/cost`)).json()) as any;
   assert.equal(direct.cost.total.outputTokens, 142);
   assert.equal((await app.request("/api/rooms/nope/costs")).status, 404);
-});
-
-test("a thread's replies divide its spend between them", async (t) => {
-  const m = machine(t);
-  const stack = await createTestStack({ autoCompleteMs: 1 }, ["sol1"]);
-  t.after(() => stack.close());
-  m.bind(stack.threadOf("sol1"), "claudeAgent", "sess-sol");
-  for (const instruction of ["first", "second"]) {
-    await stack.run({ type: "task.create", roomId: stack.roomId, recipients: [stack.participants.sol1 as string], instruction, schedule: { mode: "now" } });
-    await stack.tick();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await stack.tick(2);
-  }
-  const [first, second] = stack.repos.listEvents(stack.roomId).filter((e) => e.kind === "assistant.reply");
-  assert.ok(first && second, "two replies");
-  const a = Date.parse(first.createdAt);
-  const b = Date.parse(second.createdAt);
-  assert.ok(b > a + 2, "the replies are apart in time");
-  const at = (ms: number) => new Date(ms).toISOString();
-  writeFileSync(
-    join(m.claudeProject, "sess-sol.jsonl"),
-    [
-      claudeLine("a", "claude-fable", at(a - 1), { input: 0, read: 0, write: 0, output: 1 }),
-      claudeLine("b", "claude-fable", at(a + 1), { input: 0, read: 0, write: 0, output: 2 }), // after the first reply: the second's turn
-      claudeLine("c", "claude-fable", at(b), { input: 0, read: 0, write: 0, output: 4 }), // at the second reply's moment: the second's
-      claudeLine("d", "claude-fable", at(b + 1), { input: 0, read: 0, write: 0, output: 8 }), // since the last reply: in progress
-    ].join("\n") + "\n",
-  );
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(m.root, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: m.userdata, CLAUDE_CONFIG_DIR: join(m.root, "claude"), CODEX_HOME: join(m.root, "codex") });
-  const app = createHttpApp(stack, config, "/nonexistent/dist");
-  const body = (await (await app.request(`/api/rooms/${stack.roomId}/costs`)).json()) as any;
-  assert.equal(body.replies[first.id].total.outputTokens, 1);
-  assert.equal(body.replies[second.id].total.outputTokens, 6);
-  assert.equal(body.openTurns[stack.participants.sol1 as string].total.outputTokens, 8);
 });
 
 test("a thread on its own gets a room member's figures: the total, one per reply, and the turn in progress", async (t) => {

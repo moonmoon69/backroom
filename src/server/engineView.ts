@@ -1,16 +1,16 @@
 /**
- * The read API on the engine journal (stage 4/5 plan, item L4c), served with ROOMS_ENGINE=1 in place of the routes that
- * read the old events, tasks and runs tables. The shapes are in src/domain/engineView.ts.
+ * The read API on the rooms' journal (stage 4/5 plan, item L4c): the room routes, the board, the overview and the room's
+ * spend. The shapes are in src/domain/engineView.ts.
  *
  * Everything is read from the journal's fold on each request, through the host's projection, and kept nowhere else, so
  * a restart or a rebuild gives the same view. The journal has no clock: times come from T3 by one rule (EngineTime),
  * read once per T3 run or message and remembered (they never change once T3 has them). The user's marks (seen, notices
  * dismissed) are journal sequences in rooms.sqlite's kv, next to the old seen marks.
  */
-import type { Context, Hono, Next } from "hono";
+import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { T3Adapter, T3ThreadShell } from "../adapter/types.ts";
-import { backgroundOf, isRunActive, runForMessage, runPrompt } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
+import { backgroundOf, isRunActive, runForMessage } from "../adapter/types.ts";
 import type { AppStack } from "../app/bootstrap.ts";
 import { isPost } from "../app/boardEngine.ts";
 import { messageAttachmentIds, messageOf } from "../app/engineMessages.ts";
@@ -563,7 +563,7 @@ export function newsOf(view: JournalView, seenSeq: number, onlySeats: ReadonlySe
 /**
  * The replies that carry spend: the turn posts (turnPosts) that have a T3 run, one per T3 run, never per output.
  * Explicit answers and idle settles carry none. Only posts count: a reply with nothing to show leaves its spend to the
- * next one, as the old route's replies did. `at` is the T3 run's completedAt.
+ * next one. `at` is the T3 run's completedAt.
  */
 export function replyCarriers(p: Projection, time: (a: Anchor) => string | null): Map<string, Array<{ eventId: string; t3RunId: string; at: string | null }>> {
   const out = new Map<string, Array<{ eventId: string; t3RunId: string; at: string | null }>>();
@@ -578,7 +578,7 @@ export function replyCarriers(p: Projection, time: (a: Anchor) => string | null)
 type Cost = ReturnType<ThreadCosts["cost"]>;
 
 /**
- * The room's spend (GET /api/rooms/:roomId/costs), the old route's arithmetic on the journal's replies: a reply's spend
+ * The room's spend (GET /api/rooms/:roomId/costs), on the journal's replies: a reply's spend
  * is what its thread used after the thread's previous reply up to its own T3 run's end; the open turn is what the
  * thread used since its last reply. A thread with a reply whose T3 time is unknown is left whole, never split by guess.
  */
@@ -728,16 +728,26 @@ export interface EngineViewOptions {
 }
 
 /** The engine's reader as the routes need it: the host's projection and the rooms it serves. */
-type Reader = Pick<NonNullable<AppStack["engine"]>, "view">;
+type Reader = Pick<AppStack["engine"], "view">;
 
 /**
- * Register the read API over the old room routes (call before them; with ROOMS_ENGINE off, never call it). Hono runs
- * the first matching handler: these answer, except the desk routes, which run the old handler and correct
- * `runningRun.startedByRoom` from the journal, and POST /api/seen, which passes thread marks on to the old handler.
+ * Whether the run T3 is running on a member's thread is the room's (the desk's `runningRun.startedByRoom`): its T3 run
+ * is a host run's, or a host run still being sent matches it by its dispatch message (T3 took it and the host has not
+ * recorded that yet). Otherwise it is a turn typed in T3, or one the member started itself.
+ */
+export function startedByHost(p: Projection, seatId: string, t3RunId: string, detail: T3ThreadDetail | null): boolean {
+  const hostRuns = [...p.runs.values()].filter((r) => r.seatId === seatId);
+  const t3 = t3RunIds(p);
+  if (hostRuns.some((r) => t3.get(r.id) === t3RunId)) return true;
+  return detail !== null && hostRuns.some((r) => (r.phase === "prepared" || r.phase === "sending") && runForMessage(detail, r.dispatchMessageId)?.id === t3RunId);
+}
+
+/**
+ * Register the read API (call before the app's other routes). POST /api/seen takes a room's mark by journal sequence and
+ * passes a thread's mark on to the next handler (src/server/http.ts).
  */
 export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, options: EngineViewOptions = {}): void {
-  const engine: Reader | null = stack.engine;
-  if (!engine) return;
+  const engine: Reader = stack.engine;
   const { repos, adapter } = stack;
   const times = new T3Times(adapter);
   const pollMs = options.pollMs ?? 1000;
@@ -897,46 +907,6 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
     await times.fill(replyAnchors(p));
     return c.json(roomCosts({ costs, repos, roomId, p, time: (a) => times.time(a) }));
   });
-
-  // ---- the desk: the run in progress is the room's when T3 started it from a host dispatch ----
-  const startedByRoom = async (participantId: string, desk: Record<string, unknown>): Promise<void> => {
-    const running = desk.runningRun as { runId: string; startedByRoom: boolean; prompt: string | null; promptImages: string[] } | null | undefined;
-    const participant = repos.getParticipant(participantId);
-    const binding = participant ? repos.currentBinding(participant.id) : null;
-    if (!running || !participant || !binding) return;
-    const p = engine.view(participant.roomId);
-    const hostRuns = [...p.runs.values()].filter((r) => r.seatId === binding.id);
-    const t3 = t3RunIds(p);
-    let ours = hostRuns.some((r) => t3.get(r.id) === running.runId);
-    let detail: Awaited<ReturnType<T3Adapter["getThreadDetail"]>> = null;
-    const load = async () => (detail ??= await adapter.getThreadDetail(binding.threadId, { bounded: true }).catch(() => null));
-    // A host run T3 took but the host has not recorded yet: match it by its dispatch message.
-    const sending = hostRuns.filter((r) => r.phase === "prepared" || r.phase === "sending");
-    if (!ours && sending.length > 0) {
-      const read = await load();
-      ours = read !== null && sending.some((r) => runForMessage(read, r.dispatchMessageId)?.id === running.runId);
-    }
-    if (ours === running.startedByRoom) return;
-    if (ours) {
-      Object.assign(running, { startedByRoom: true, prompt: null, promptImages: [] });
-      return;
-    }
-    // Not the room's after all: show the prompt that started it, as the desk does for a turn typed in T3.
-    const read = await load();
-    const t3Run = read?.runs.find((r) => r.id === running.runId);
-    const prompt = read && t3Run ? runPrompt(read, t3Run) : null;
-    Object.assign(running, { startedByRoom: false, prompt: prompt?.text ?? null, promptImages: (prompt?.attachments ?? []).filter((a) => a.type === "image").map((a) => a.id) });
-  };
-  const correctDesk = (shape: "one" | "all") => async (c: Context, next: Next) => {
-    await next();
-    if (c.res.status !== 200) return;
-    const body = (await c.res.clone().json()) as Record<string, unknown>;
-    if (shape === "one") await startedByRoom(c.req.param("participantId")!, body);
-    else for (const [id, desk] of Object.entries((body.participants ?? {}) as Record<string, Record<string, unknown>>)) await startedByRoom(id, desk);
-    c.res = new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-  };
-  app.get("/api/rooms/:roomId/participants/:participantId/live", correctDesk("one"));
-  app.get("/api/rooms/:roomId/desk", correctDesk("all"));
 
   // ---- the overview ----
   app.get("/api/overview", async (c) => {

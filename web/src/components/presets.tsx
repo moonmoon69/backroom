@@ -195,8 +195,8 @@ export function PresetDialog({
 
   const remove = async () => {
     if (!preset) return;
-    // Deleting the saved crew member new conversations start with is asked about first; seated members stay.
-    if (consigliereSetting === preset.id && !window.confirm(`${preset.name} is your Consigliere for new conversations. Delete it anyway? The setting is cleared; members already seated in rooms stay.`)) return;
+    // Deleting the saved crew member new rooms are seated with is asked about first; seated members stay.
+    if (consigliereSetting === preset.id && !window.confirm(`${preset.name} is your Consigliere for new rooms. Delete it anyway? The setting is cleared; members already seated in rooms stay.`)) return;
     setBusy(true);
     const result = await runCommand({ type: "preset.delete", presetId: preset.id });
     setBusy(false);
