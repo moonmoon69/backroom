@@ -502,6 +502,7 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
     if (outcome && outcome.action !== "keep") {
       if (outcome.result === "done") toast(`@${participant.alias} removed; its thread was ${outcome.action === "delete" ? "deleted" : `${outcome.action}d`} in T3.`, "success");
       else if (outcome.result === "kept") toast(`@${participant.alias} removed; its thread was kept in T3 (${outcome.detail ?? "still in use"}).`, "info");
+      else if (outcome.result === "timeout") toast(`@${participant.alias} removed; the ${outcome.action} of its thread was sent to T3, not confirmed in time (may still go through).`);
       else toast(`@${participant.alias} removed, but T3 did not ${outcome.action} the thread: ${outcome.detail ?? "failed"}`);
     }
     onClose();

@@ -1281,7 +1281,7 @@ export type CommandResult =
       type: "participant.updated";
       participantId: string;
       /** Present after participant.retire: what happened to its T3 thread. */
-      thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed"; detail?: string };
+      thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
     }
   | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
   | { type: "note.created"; eventId: string }

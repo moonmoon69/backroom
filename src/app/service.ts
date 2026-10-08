@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "../db/database.ts";
 import type { Repos } from "../db/repos.ts";
 import type { T3Adapter, ThreadLifecycleAction } from "../adapter/types.ts";
-import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable } from "../adapter/types.ts";
 import type { Assignment, RoomCommand, Schedule, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, invalidTransition, notFound, stale } from "../domain/errors.ts";
 import { dependentsOf, validatePrerequisites } from "../domain/graph.ts";
@@ -44,7 +44,10 @@ export type CommandResult =
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
-  /** timeout: the action was sent but T3 had not answered within the limit; it may still apply it (the late outcome is logged). */
+  /**
+   * timeout: the action was sent and T3 has not confirmed it, within the limit or before its connection went; it may
+   * still apply it (the late outcome is logged).
+   */
   | { type: "room.deleted"; roomId: string; threads: Array<{ participantId: string; alias: string; threadId: string; action: string; result: "done" | "kept" | "failed" | "timeout"; detail?: string }> }
   | { type: "preset.saved"; presetId: string }
   | { type: "preset.deleted"; presetId: string }
@@ -55,7 +58,7 @@ export type CommandResult =
       type: "participant.updated";
       participantId: string;
       /** After participant.retire: what happened to its T3 thread (kept when the choice was keep, it has no binding, or it is seated elsewhere). */
-      thread?: { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed"; detail?: string };
+      thread?: { threadId: string; action: ThreadLifecycleAction | "keep"; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
     }
   | { type: "tasks.created"; taskIds: string[]; eventId: string }
   /** After participant.reseat: the checkpoint task the member was sent, and the post that asked for it. */
@@ -158,6 +161,7 @@ export class RoomService {
       seatFresh: (room, old, ids) => this.seatFresh(room, old, { seat: ids }),
       mirror: (participant, shell) => this.syncParticipantFromThread(participant, shell),
       title: threadTitleFor,
+      threadAction: (what, entry, action) => this.threadActionWithin(what, entry, action),
       ...(log ? { log } : {}),
     });
     return this.engineSeats;
@@ -442,7 +446,7 @@ export class RoomService {
         results.push({ ...entry, result: "kept", ...(elsewhere && action !== "keep" ? { detail: "also used in another room" } : {}) });
         continue;
       }
-      results.push(() => this.threadActionWithin(room, entry, action));
+      results.push(() => this.threadActionWithin(`room "${room.title}" deleted`, entry, action));
     }
     this.db.transaction(() => this.repos.deleteRoomCascade(room.id));
     this.notify(room.id);
@@ -450,9 +454,14 @@ export class RoomService {
     return { type: "room.deleted", roomId: room.id, threads: await Promise.all(results.map((result) => (typeof result === "function" ? result() : result))) };
   }
 
-  /** Sends one thread action now and answers within the limit: done, failed, or timeout (the late outcome is logged). */
+  /**
+   * Sends one thread action now and answers within the limit: done, failed, or timeout. Timeout also when T3 was sent the
+   * action and never answered it (T3OutcomeUnknown: the adapter's own limit, or the connection went): T3 may have
+   * applied it, so it is not reported as failed. The late outcome is logged under `what` (room deletion, a member's
+   * removal or reseat). EngineSeats gets it as a dependency.
+   */
   private threadActionWithin<T extends { alias: string; threadId: string }>(
-    room: Room,
+    what: string,
     entry: T,
     action: ThreadLifecycleAction,
   ): Promise<T & { result: "done" | "failed" | "timeout"; detail?: string }> {
@@ -467,13 +476,16 @@ export class RoomService {
       sent.then(
         () => {
           clearTimeout(timer);
-          if (late) this.log(`room "${room.title}" deleted: @${entry.alias}'s thread ${entry.threadId} ${action} finished late in T3`);
+          if (late) this.log(`${what}: @${entry.alias}'s thread ${entry.threadId} ${action} finished late in T3`);
           else resolve({ ...entry, result: "done" });
         },
         (error: unknown) => {
           clearTimeout(timer);
           const detail = error instanceof Error ? error.message : String(error);
-          if (late) this.log(`room "${room.title}" deleted: @${entry.alias}'s thread ${entry.threadId} ${action} failed late in T3`, detail);
+          if (error instanceof T3OutcomeUnknown) {
+            if (late) this.log(`${what}: @${entry.alias}'s thread ${entry.threadId} ${action}: T3 never answered; outcome unknown, it may have been applied`, detail);
+            else resolve({ ...entry, result: "timeout", detail: `T3 did not answer (${detail}); the ${action} may still go through` });
+          } else if (late) this.log(`${what}: @${entry.alias}'s thread ${entry.threadId} ${action} failed late in T3`, detail);
           else resolve({ ...entry, result: "failed", detail });
         },
       );
@@ -1169,12 +1181,10 @@ export class RoomService {
       if (action === "keep") thread = { threadId: binding.threadId, action, result: "kept" };
       else if (elsewhere) thread = { threadId: binding.threadId, action, result: "kept", detail: "also used in another room" };
       else {
-        try {
-          await this.adapter.setThreadLifecycle({ commandId: randomUUID(), threadId: binding.threadId, action });
-          thread = { threadId: binding.threadId, action, result: "done" };
-        } catch (error) {
-          thread = { threadId: binding.threadId, action, result: "failed", detail: (error as Error).message };
-        }
+        // Within the same per-call limit as room deletion: T3 answering late, or not at all, holds nobody up.
+        const room = this.repos.getRoom(participant.roomId);
+        const { result, detail } = await this.threadActionWithin(`@${participant.alias} removed from room "${room?.title ?? participant.roomId}"`, { alias: participant.alias, threadId: binding.threadId }, action);
+        thread = { threadId: binding.threadId, action, result, ...(detail !== undefined ? { detail } : {}) };
       }
     }
     const threadNote =
@@ -1183,7 +1193,9 @@ export class RoomService {
           ? `; its T3 thread was ${thread.action === "delete" ? "deleted" : `${thread.action}d`}`
           : thread.result === "kept"
             ? `; its T3 thread was kept (${thread.detail ?? "kept"})`
-            : `; T3 could not ${thread.action} its thread (${thread.detail ?? "failed"})`
+            : thread.result === "timeout"
+              ? `; T3 has not confirmed the ${thread.action} of its thread (${thread.detail ?? "it may still go through"})`
+              : `; T3 could not ${thread.action} its thread (${thread.detail ?? "failed"})`
         : "";
     this.appendEvent({
       roomId: participant.roomId,

@@ -56,7 +56,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -229,13 +229,14 @@ class RpcConnection {
     if (this.closed) return Promise.reject(new T3Unavailable(`T3 RPC ${tag}: connection closed`));
     const id = String(this.nextId++);
     return new Promise<T>((resolve, reject) => {
+      // Sent from here on: no answer, by the time limit or because the socket went, leaves the outcome unknown.
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        reject(new T3Unavailable(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
+        reject(new T3OutcomeUnknown(`T3 RPC ${tag} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.waiting.set(id, (exit) => {
         clearTimeout(timer);
-        if (exit instanceof Error) reject(new T3Unavailable(`T3 RPC ${tag}: ${exit.message}`));
+        if (exit instanceof Error) reject(new T3OutcomeUnknown(`T3 RPC ${tag}: ${exit.message} before T3 answered`));
         else if (exit._tag === "Success") resolve(exit.value as T);
         else reject(new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
       });

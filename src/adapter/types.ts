@@ -518,6 +518,18 @@ export class T3Unavailable extends Error {
   }
 }
 
+/**
+ * A call T3 was sent and never answered: it reached its time limit, or the connection went while it waited (one call's
+ * time limit drops the shared socket, and with it every call still waiting there). T3 may have applied it, so it is not
+ * a failure: the outcome is unknown. Still a T3Unavailable for callers that only resend with the same IDs.
+ */
+export class T3OutcomeUnknown extends T3Unavailable {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
+    this.name = "T3OutcomeUnknown";
+  }
+}
+
 /** Raised when the T3 server speaks another orchestration protocol (a V1 server): nothing works until it is updated. */
 export class T3ProtocolMismatch extends T3Unavailable {
   readonly serverVersion: string;
