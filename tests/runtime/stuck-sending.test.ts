@@ -122,10 +122,10 @@ test("a retry that lands on a reused ID again fails again with its own one notic
   room.complete("W", "Third job done.");
   await room.until(() => room.state(third) === "answered");
   assert.equal(room.notices().length, 2);
-  // What T3 ran unfollowed: a reply past the seat's first host run's number is a note under the request; turn 1's is
-  // at that number, which the import counts as the thread's history (a limit H4 leaves, README).
+  // What T3 ran unfollowed is a note under the request, turn 1's too though its number is the seat's first host run's
+  // (review r1, F2: a run on a host message is never the thread's history).
   const notes = room.p.events.flatMap((e) => (e.data.kind === "note" ? [e.data] : []));
-  assert.deepEqual(notes.map((n) => [n.body, n.requestIds]), [["(T3 ran a message after Backroom had recorded it as failed) Turn 2 done, unfollowed.", [third]]]);
+  assert.deepEqual(notes.map((n) => [n.body, n.requestIds]), [1, 2].map((n) => [`(T3 ran a message after Backroom had recorded it as failed) Turn ${n} done, unfollowed.`, [third]]));
   assert.equal(refusals(room), 0);
   assert.equal(room.logs.filter((l) => l.message === "seat step failed").length, 0);
 });
@@ -156,27 +156,35 @@ test("a run whose step keeps failing before T3 has it fails visibly after the bo
   assert.equal(room.logs.filter((l) => l.message === "seat step failed").length, 6);
 });
 
-test("an outage while a run is being sent is not counted against the bound: the run waits and goes out when T3 is back", async () => {
+test("a send T3 cannot take while it lists its threads counts toward the bound; a real outage counts nothing and starts the count again", async () => {
   room = await Room.create({ host: { stuckMs: 60_000 } });
-  const W = room.threadOf("W");
-  let outage = false;
-  const read = room.fake.getThreadDetail.bind(room.fake);
-  room.fake.getThreadDetail = async (threadId: string) => {
-    if (outage && threadId === W) throw new T3Unavailable("T3 is not reachable (simulated)");
-    return read(threadId);
-  };
-  room.crash = (step, at) => {
-    if (step === "sending" && at.seatId === "W") outage = true;
-  };
+  // Two sends fail while T3 answers every read: they count.
+  room.fake.unavailableSends = 2;
   room.user("W", "Fix dates.ts.");
-  await room.tick(3);
-  room.clock += 10 * 60_000;
-  await room.tick(3);
+  await room.tick(2);
+  assert.deepEqual(room.unresolvedRuns(), ["W:sending"]);
+  assert.match(String((room.logs.at(-1)?.detail as { error?: string })?.error), /the message for @W did not reach T3 \(T3 is not reachable \(simulated\)\); it is sent again with the same IDs/);
+  // Then T3 is down for 10 minutes: it lists nothing, so no seat is stepped.
+  const list = room.fake.listThreads.bind(room.fake);
+  let outage = true;
+  room.fake.listThreads = async () => {
+    if (outage) throw new T3Unavailable("T3 is not reachable (simulated)");
+    return list();
+  };
+  for (let i = 0; i < 5; i++) {
+    room.clock += 2 * 60_000;
+    await room.tick();
+  }
   assert.deepEqual(room.unresolvedRuns(), ["W:sending"]);
   assert.deepEqual(room.notices(), []);
-  assert.equal(room.running("W"), false);
+  // T3 is back and the next send fails once more: the third failure in a row, 10 minutes after the first, but the
+  // outage started the count again, so it is the first.
   outage = false;
+  room.fake.unavailableSends = 1;
   await room.tick();
-  assert.equal(room.running("W"), true);
+  assert.deepEqual(room.unresolvedRuns(), ["W:sending"]);
+  assert.deepEqual(room.notices(), []);
+  await room.tick();
+  assert.equal(room.running("W"), true, "sent when T3 takes it");
   assert.deepEqual(room.notices(), []);
 });

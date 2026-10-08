@@ -57,7 +57,7 @@ export interface EngineHostOptions {
   unrecordedMs?: number;
   /** How many times T3 may refuse a message before its run fails visibly (a passing refusal is retried). */
   refusals?: number;
-  /** How long a run not yet matched to a T3 run may keep failing its step (an outage aside) before it fails visibly: 2 minutes. */
+  /** How long a run not yet matched to a T3 run may keep failing its step (sends and reads included) before it fails visibly: 2 minutes. */
   stuckMs?: number;
   now?: () => number;
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
@@ -196,6 +196,8 @@ export class EngineHost {
       shells = new Map((await this.adapter.listThreads()).map((s) => [s.id, s]));
     } catch (error) {
       this.log("t3 unavailable", message(error));
+      // An outage: no seat is stepped, and every run's bound starts again once T3 is back (H4).
+      this.stuck.clear();
       return;
     }
     for (const roomId of this.rooms()) {
@@ -284,8 +286,10 @@ export class EngineHost {
   /**
    * Move a run on, bounded (H4): a run T3 has not been matched to (prepared, sending) whose step throws on every attempt,
    * for `stuckMs` and at least STUCK_ATTEMPTS times in a row, fails visibly with the error, so it never sits there with
-   * only a log line. An outage is not counted: the run waits for T3 and is sent when it is back. Once a run is matched
-   * to a T3 run, that run ends on its own, and failing ours would drop the member's reply, so the bound stops there.
+   * only a log line. A send or a read T3 could not take counts too (send throws it): seats are only stepped once T3
+   * has listed its threads in the tick, so that is not an outage. A real outage, where T3 lists nothing, steps no seat
+   * and counts nothing: the run waits and is sent when T3 is back. Once a run is matched to a T3 run, that run ends on
+   * its own, and failing ours would leave the member's reply unimported, so the bound stops there.
    */
   private async advance(roomId: string, seatId: string, runId: string, load: Loader): Promise<void> {
     try {
@@ -293,7 +297,7 @@ export class EngineHost {
       this.stuck.delete(runId);
     } catch (error) {
       const run = this.project(roomId).runs.get(runId);
-      if (this.halted || error instanceof T3Unavailable || !run || run.phase === "terminal" || run.providerRunId) throw error;
+      if (this.halted || !run || run.phase === "terminal" || run.providerRunId) throw error;
       const streak = this.stuck.get(runId) ?? { since: this.now(), attempts: 0 };
       streak.attempts += 1;
       this.stuck.set(runId, streak);
@@ -374,8 +378,9 @@ export class EngineHost {
 
   /**
    * Send, or resend identically: the run's frozen IDs, never new ones (T3 keeps a receipt per command ID). Returns
-   * whether T3 took the message. An outage or a lost acknowledgement keeps the run sending; T3 refusing it is retried
-   * a few times, then the run fails visibly with its notice, so a passing error never starves the seat silently.
+   * whether T3 took the message. T3 out of reach or a lost acknowledgement keeps the run sending, the first counted
+   * toward the run's bound (advance); T3 refusing it is retried a few times, then the run fails visibly with its
+   * notice, so a passing error never starves the seat silently.
    */
   private async send(roomId: string, seatId: string, run: Run, threadId: string): Promise<boolean> {
     const first = this.firstSent.get(run.id);
@@ -399,8 +404,8 @@ export class EngineHost {
       });
     } catch (error) {
       if (error instanceof T3Unavailable) {
-        this.log("t3 unavailable; the message is sent again with the same IDs", message(error));
-        return false;
+        // T3 listed its threads in this tick, so this is not an outage: the step failed, and counts toward the bound.
+        throw new T3Unavailable(`the message for ${this.named(roomId, seatId)} did not reach T3 (${message(error)}); it is sent again with the same IDs`, error);
       }
       if (error instanceof T3CommandRejected) {
         const count = (this.refused.get(run.id) ?? 0) + 1;
@@ -595,7 +600,9 @@ export class EngineHost {
     // A host message T3 recorded only after its run had failed ("never recorded") runs unmatched: its reply is a note.
     const records = runRecords(p);
     const matched = new Set(hostRuns.filter((r) => r.phase !== "terminal" || records.get(r.id)?.t3).map((r) => r.dispatchMessageId));
-    const runs = detail.runs.filter((r) => r.ordinal > baseline && !matched.has(r.userMessageId) && isTerminal(r)).sort((a, b) => a.ordinal - b.ordinal);
+    // A run on one of the seat's host messages is never the thread's history, whatever its number: after T3 counts the
+    // thread's runs from 1 again (H4), a failed run's message runs under a number at or below the baseline.
+    const runs = detail.runs.filter((r) => (r.ordinal > baseline || hostMessages.has(r.userMessageId)) && !matched.has(r.userMessageId) && isTerminal(r)).sort((a, b) => a.ordinal - b.ordinal);
     for (const t3Run of runs) {
       p = this.project(roomId);
       const id = `t3run:${seat.threadId}:${t3Run.id}`;
