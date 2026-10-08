@@ -1,4 +1,4 @@
-import type { EngineClaim, EnginePost } from "./types.ts";
+import type { EngineClaim, EnginePost, EngineRunView } from "./types.ts";
 
 /**
  * What a member's reply did to the requests it named, said truthfully, for the tag over it. The engine decides each
@@ -18,15 +18,40 @@ export interface ReplyContext {
   nameOf: (principal: string) => string;
 }
 
+/** Backroom's own requests in the user's name (L4b), by what their IDs say they are. */
+const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
+  ["seat-briefing:", "seat briefing"],
+  ["moved:", "new Consigliere notice"],
+  ["reseat:", "reseat checkpoint"],
+  ["takeover:", "reseat handover"],
+  ["reseat-off:", "reseat called off"],
+];
+
 /**
- * A request Backroom made in the user's name (L4b): the standing facts a member of a room with a Consigliere is given
- * when seated ("seat-briefing:…"), or the notice that the Consigliere changed ("moved:…"). Not something the user wrote.
+ * A request Backroom made in the user's name, not something the user wrote: the standing facts a member of a room with
+ * a Consigliere is given when seated, the notice that the Consigliere changed, a reseat's checkpoint, handover and
+ * call-off. Every request the user writes comes from a message (`request.message`); one without it is Backroom's,
+ * whatever its ID.
  */
-export function backroomNotice(post: Pick<EnginePost, "author" | "request">): "seat briefing" | "new Consigliere notice" | null {
+export function backroomNotice(post: Pick<EnginePost, "author" | "request">): string | null {
   if (post.author !== "$user" || !post.request) return null;
-  if (post.request.id.startsWith("seat-briefing:")) return "seat briefing";
-  if (post.request.id.startsWith("moved:")) return "new Consigliere notice";
-  return null;
+  const known = BACKROOM_REQUESTS.find(([prefix]) => post.request!.id.startsWith(prefix));
+  if (known) return known[1];
+  return post.request.message === null ? "Backroom's request" : null;
+}
+
+/** A note Backroom wrote in the user's name (a reseat called off): the user's own notes are /notes to the room, or come from T3. */
+export function backroomNote(post: Pick<EnginePost, "author" | "kind" | "note">): boolean {
+  return post.author === "$user" && post.kind === "note" && post.note?.source === "post" && !post.note.room;
+}
+
+/**
+ * Whether a run that was already running took this request into its turn (a steer T3 accepted mid-turn): a run
+ * delivered it, and that run was reserved before it was posted. A steer to an idle member starts a turn of its own, and
+ * one T3 ran after the running turn (Claude) is adopted by a run reserved after it: neither went into a running turn.
+ */
+export function intoRunningTurn(post: Pick<EnginePost, "seq">, runs: ReadonlyArray<Pick<EngineRunView, "inputs" | "reservedSeq">>): boolean {
+  return runs.some((run) => run.reservedSeq < post.seq && run.inputs.includes(post.seq));
 }
 
 /** One piece of the tag: words, or a board number to reveal. */

@@ -739,6 +739,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     extra: () => {
       browser.fill(/textbox "Message"/, "@worker /compact");
       browser.waitFor("next");
+      // The page learns of the worker's T3 turn on its next read of the room (a turn in T3 appends nothing): poll.
+      const end = Date.now() + 15_000;
+      while (JSON.stringify(pills()) !== JSON.stringify(["next"]) && Date.now() < end) execFileSync("sleep", ["0.5"]);
       if (JSON.stringify(pills()) !== JSON.stringify(["next"])) fail(`plan rows for a T3 command to a busy member: ${JSON.stringify(pills())}`);
       browser.screenshot("plan-row-next");
       browser.fill(/textbox "Message"/, "Also mention the parser fix.");
@@ -751,13 +754,47 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
       log("  page: /hold refused before sending, Send disabled");
     },
   });
-  // Leave no draft behind: select all and delete, as the user would.
-  browser.on("press", "Control+a");
-  browser.on("press", "Backspace");
-  if (browser.eval<string>("() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? ''") !== "") fail("the composer kept a draft");
-  browser.on("press", "Escape");
-  await room.finish("fable", "Release notes drafted.");
   await room.finish("worker", "Done looking.");
+
+  // 15b. Sent from the composer: in his room every message is a steer. To the busy Consigliere it goes into his running
+  // turn ("into the turn"); to him idle it starts a turn of its own (no such tag).
+  const rowSays = (body: string, words: string) =>
+    browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.from-user')].some((row) => row.textContent.includes(${JSON.stringify(body)}) && row.textContent.includes(${JSON.stringify(words)}))`);
+  const sent = (body: string) => async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === body);
+  browser.fill(/textbox "Message"/, "Also mention the parser fix.");
+  browser.on("press", "Enter");
+  await check.state("a message steered into the running turn", (x) => {
+    const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Also mention the parser fix.");
+    const run = p && x.runs.find((r) => r.reservedSeq < p.seq && r.inputs.includes(p.seq));
+    return p && p.request.message?.steer && run ? `#${p.number} request.message.steer=true, delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (before it)` : null;
+  }, ["into the turn"], {
+    focus: (x) => x.posts.find((q) => q.kind === "request" && q.body === "Also mention the parser fix.")?.number,
+    extra: () => {
+      if (!rowSays("Also mention the parser fix.", "into the turn")) fail("the steered message's row does not say 'into the turn'");
+      log("  page: the steered message's own row says into the turn");
+    },
+  });
+  await room.finish("fable", "Release notes drafted, with the parser fix.");
+  await room.settle("fable");
+  browser.click(/button "(Write a message|Continue your draft)"/);
+  browser.fill(/textbox "Message"/, "Please also tag v1.2.");
+  browser.on("press", "Enter");
+  await until("the message to the idle Consigliere", sent("Please also tag v1.2."));
+  await check.state("a message to the idle Consigliere starts a turn of its own", (x) => {
+    const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Please also tag v1.2.");
+    const run = p && x.runs.find((r) => r.inputs.includes(p.seq));
+    return p && p.request.message?.steer && run && run.reservedSeq > p.seq ? `#${p.number} request.message.steer=true, delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (after it)` : null;
+  }, ["Please also tag v1.2."], {
+    focus: (x) => x.posts.find((q) => q.kind === "request" && q.body === "Please also tag v1.2.")?.number,
+    extra: () => {
+      if (rowSays("Please also tag v1.2.", "into the turn")) fail("a message that started a turn of its own says 'into the turn'");
+      log("  page: no 'into the turn' on it");
+    },
+  });
+  if (browser.eval<string>("() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? ''") !== "") fail("the composer kept a draft");
+  // Sending closes the composer; Escape now would close the room.
+  if (browser.eval<boolean>("() => Boolean(document.querySelector('.composer-overlay'))")) browser.on("press", "Escape");
+  await room.finish("fable", "Tagged v1.2.");
 
   // 16. The conversation with the Consigliere: the user's requests and his answers to them, nothing between members.
   browser.click(/tab "[^"]*fable/);
@@ -773,6 +810,30 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
       log("  page: no member-to-member request, nothing typed on another member's thread, in the chat");
     },
   });
+
+  // 16b. The Consigliere reseats the worker (L4b): Backroom's checkpoint request and the handover are Backroom's on the
+  // board, never the user's messages.
+  browser.click(/tab "Board/);
+  room.board("fable", "reseat", "worker");
+  const checkpoint = await until("the reseat's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === seat.worker));
+  await check.state("Backroom's reseat checkpoint, not the user's message", (x) => {
+    const p = x.posts.find((q) => q.id === checkpoint.id);
+    return p && p.author === "$user" && p.request.message === null ? `#${p.number} request ${p.request.id.slice(0, 16)}… by $user with no user message: Backroom's` : null;
+  }, ["Backroom → @worker: reseat checkpoint"], {
+    focus: () => checkpoint.number,
+    extra: () => {
+      const asUsers = browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.from-user')].some((row) => row.getAttribute('data-number') === '${checkpoint.number}')`);
+      if (asUsers) fail("the checkpoint shows as the user's message");
+      log("  page: the checkpoint is Backroom's line, not a message of yours");
+    },
+  });
+  await room.settle("worker");
+  await check.state("the reseat's handover", (x) => {
+    const handover = x.posts.find((p) => p.kind === "transfer" && p.transfer.oldSeatId === seat.worker);
+    return handover ? `#${handover.number} transfer ${handover.transfer.oldSeatId.slice(0, 8)} → ${handover.transfer.newSeatId.slice(0, 8)}` : null;
+  }, ["open work handed to its fresh seat"], { focus: (x) => x.posts.find((p) => p.kind === "transfer")?.number });
+  // The fresh seat's first turn ends by itself (its thread is not held); then the Consigliere is woken once.
+  await room.settle("fable");
 
   // 17. The overview: member status while a turn runs, and the room's news when it ends.
   await room.settle("fable");

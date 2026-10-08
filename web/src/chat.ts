@@ -1,4 +1,4 @@
-import { backroomNotice } from "./replyTo.ts";
+import { backroomNote, backroomNotice } from "./replyTo.ts";
 import type { EnginePost, RoomSnapshot } from "./types.ts";
 
 /**
@@ -39,6 +39,8 @@ export function consigliereChat(posts: readonly EnginePost[], his: { seats: Read
       // His requests (not Backroom's briefings), notes to the room or typed on his thread, and the user's corrections,
       // cancels and retries of his work.
       if (post.kind === "request") return his.seats.has(post.request!.owner) && !backroomNotice(post);
+      // Backroom's notes in the user's name (a reseat called off) only when they concern his requests.
+      if (post.kind === "note" && backroomNote(post)) return post.about.some((ref) => hisRequests.has(ref.requestId));
       if (post.kind === "note") return !post.note?.t3 || his.threads.has(post.note.t3.threadId);
       return post.about.some((ref) => hisRequests.has(ref.requestId));
     }

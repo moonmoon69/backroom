@@ -11,7 +11,7 @@ import {
 } from "react";
 import { api, attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import { backroomNotice, replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
+import { backroomNote, backroomNotice, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
 import { consigliereChat, consigliereSeats } from "../chat.ts";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunDetail, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
@@ -507,7 +507,7 @@ function WorkingSince({ activity, who }: { activity: EngineActivityView; who?: s
  * message, with its images; where each went and each one's marker, with Correct… and Cancel while it is open.
  */
 function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
-  const { nameOf } = useRoom();
+  const { nameOf, snapshot } = useRoom();
   const first = posts[0]!;
   const notice = backroomNotice(first);
   if (notice) return <BackroomRequest post={first} notice={notice} />;
@@ -526,8 +526,8 @@ function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
               <Glyph name="arrow" text="→" /> {owners.join(", ")}
             </span>
           ) : null}
-          {message?.steer ? (
-            <span className="tag mono" title="Sent while the member was mid-turn (/steer): Cursor, Grok and OpenCode take it into that turn; Claude answers it in its own turn right after">
+          {posts.some((post) => intoRunningTurn(post, snapshot.runs)) ? (
+            <span className="tag mono" title="Taken into the member's running turn (/steer): that turn's reply answers it too">
               into the turn
             </span>
           ) : null}
@@ -848,7 +848,7 @@ function Note({ post }: { post: EnginePost }) {
         <div className="chat-stack">
           <div className="chat-head">
             <span className="you-mark mono" title={note.room ? "A note to the whole room: every member's next briefing carries it; nobody is woken" : undefined}>
-              {post.author === "$system" ? "Backroom" : fromT3 ? "you" : note.room ? "note to the room" : "note"}
+              {post.author === "$system" || backroomNote(post) ? "Backroom" : fromT3 ? "you" : note.room ? "note to the room" : "note"}
             </span>
             {fromT3 ? (
               <span className="tag mono direct-tag" title="Typed in T3 Code on a member's thread; recorded on the board as a note, nobody is woken">
