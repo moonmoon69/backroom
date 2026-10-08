@@ -8050,3 +8050,9 @@ span.reply-to {
 [data-skin="pixel"] :is(.inspector, .room-body .timeline):focus-visible {
   outline-offset: calc(var(--u) * -2);
 }
+
+/* A dialog's body that scrolls takes the focus (Tab) so the keys scroll it (Dialog.tsx). */
+:root:not([data-skin="pixel"]) .dialog-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

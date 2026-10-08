@@ -708,6 +708,7 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
   const request = post.request!;
   const [correcting, setCorrecting] = useState(false);
   const [text, setText] = useState("");
+  const correctButton = useRef<HTMLButtonElement>(null);
   const open = request.state === "open";
   return (
     <div className="req-block" data-number={post.number} data-seq={post.seq}>
@@ -717,7 +718,7 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
         {request.corrections > 0 ? <span className="mono muted"> · corrected {request.corrections}×</span> : null}
         {open ? (
           <span className="req-actions">
-            <button type="button" className="link-button" onClick={() => setCorrecting((v) => !v)} title="Add to or change what you asked; the member gets it with the request">
+            <button type="button" ref={correctButton} className="link-button" aria-expanded={correcting} onClick={() => setCorrecting((v) => !v)} title="Add to or change what you asked; the member gets it with the request">
               Correct…
             </button>
             <button
@@ -745,7 +746,21 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
             });
           }}
         >
-          <textarea value={text} rows={2} onChange={(e) => setText(e.target.value)} placeholder={`What changes in #${post.number}`} aria-label={`Correction to #${post.number}`} />
+          {/* Opened, it has the focus (what is typed goes in it, not into a new message); Esc goes back to Correct…. */}
+          <textarea
+            autoFocus
+            value={text}
+            rows={2}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              setCorrecting(false);
+              correctButton.current?.focus();
+            }}
+            placeholder={`What changes in #${post.number}`}
+            aria-label={`Correction to #${post.number}`}
+          />
           <button type="submit" className="small primary" disabled={!text.trim()}>
             Send correction
           </button>

@@ -18,6 +18,7 @@
  * arrows, dialogs, and any key with a modifier (Alt+Left stays the browser's back).
  */
 
+import { useEffect, useRef, type RefObject } from "react";
 import { inReadingOrder, readingTarget, type NavKey, type Placed } from "./keyOrder.ts";
 
 const OWN_ARROW_ROLES = ["listbox", "option", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "radiogroup", "radio", "slider", "spinbutton", "combobox", "grid", "gridcell", "tree", "treeitem", "tablist", "tab", "scrollbar", "textbox", "searchbox"];
@@ -38,6 +39,9 @@ export const isTextField = (element: Element | null): boolean =>
 
 /** Something open that takes Escape before the page does: a dialog, a menu, a popover, a suggestion list, the composer. */
 export const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay";
+
+/** Whether such a thing is open where the keys reach it (not under an inert layer: the room's composer under a member's thread). */
+export const layerOpen = (): boolean => [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]"));
 
 /** The arrow keys and the two ends, without modifiers, outside anything that keeps them: a key the page's navigation takes. */
 export function navKey(event: KeyboardEvent): NavKey | null {
@@ -176,4 +180,42 @@ export function returnFocus(opener: HTMLElement | null): void {
   const usable = (element: HTMLElement | null): element is HTMLElement => Boolean(element?.isConnected && !element.closest("[inert]") && visible(element));
   const target = usable(opener) ? opener : usable(lastOutside) ? lastOutside : null;
   target?.focus({ preventScroll: true });
+}
+
+/**
+ * A menu drawn in place under its button (Settings, a card's ⋯, the room's ⋯, the composer's timing pill), from the
+ * keyboard as a Popover menu is: opened with the focus on its button, the focus goes to its first item; closed with the
+ * focus inside, it goes back to the button; Tab out of it closes it.
+ */
+export function useMenuFocus(wrapper: RefObject<HTMLElement | null>, open: boolean, close: () => void): void {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    const root = wrapper.current;
+    if (!open || !root) return;
+    const button = root.querySelector<HTMLElement>("[aria-haspopup]");
+    if (button && button === document.activeElement) {
+      root.querySelector<HTMLElement>("[role='menu'] [role^='menuitem']:not(:disabled)")?.focus({ preventScroll: true });
+    }
+    let inside = false;
+    // Closed because the focus is leaving (Tab out of it): it goes where it was going, not back to the button.
+    let leaving = false;
+    const onIn = (event: FocusEvent) => {
+      if ((event.target as Element).closest("[role='menu']")) inside = true;
+    };
+    const onOut = (event: FocusEvent) => {
+      const next = event.relatedTarget as Node | null;
+      if (!next || root.contains(next)) return;
+      leaving = true;
+      closeRef.current();
+    };
+    root.addEventListener("focusin", onIn);
+    root.addEventListener("focusout", onOut);
+    return () => {
+      root.removeEventListener("focusin", onIn);
+      root.removeEventListener("focusout", onOut);
+      const now = document.activeElement;
+      if (inside && !leaving && button?.isConnected && (!now || now === document.body || root.contains(now))) button.focus({ preventScroll: true });
+    };
+  }, [wrapper, open]);
 }

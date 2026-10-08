@@ -38,6 +38,8 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   const panel = useRef<HTMLDivElement>(null);
   const strip = useRef<HTMLButtonElement>(null);
   const refocus = useRef(false);
+  /** The composer is under something (a member's thread over its room, a dialog): its page-wide keys are not its. */
+  const covered = useCallback(() => Boolean((strip.current ?? panel.current)?.closest("[inert]")), []);
 
   // On arrival the strip takes the focus (a room opened by a click leaves it on the card behind the drawer), so the
   // first Enter opens the composer; a text field that has the focus keeps it.
@@ -121,20 +123,20 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   useEffect(() => {
     if (!enabled || !isOpen) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector(".dialog-backdrop, .menu")) return;
+      if (event.key !== "Escape" || event.defaultPrevented || covered() || document.querySelector(".dialog-backdrop, .menu")) return;
       event.preventDefault();
       hide();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [enabled, isOpen, hide]);
+  }, [enabled, isOpen, hide, covered]);
 
   // Enter, or a printable key, outside a text field opens the composer (and the key goes in). Enter on a button or
   // link is that control's; nothing opens over a dialog or a menu.
   useEffect(() => {
     if (!enabled) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || covered()) return;
       if (document.querySelector(".dialog-backdrop, dialog[open], .menu")) return;
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target && isTextField(target)) return;
@@ -149,7 +151,7 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [enabled, show]);
+  }, [enabled, show, covered]);
 
   const fieldKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {

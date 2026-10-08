@@ -13,6 +13,7 @@ import { api } from "../api.ts";
 import { rememberConsigliereSetting, useConsigliereSetting } from "../consigliere.ts";
 import { usePresets, usePresetText } from "./presets.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
+import { useMenuFocus } from "../keys.ts";
 
 const THEMES: Array<{ key: ThemeChoice; label: string; icon: ReactNode }> = [
   { key: "system", label: "System", icon: <MonitorIcon /> },
@@ -63,6 +64,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const notifyOn = useNotifyOn();
   const boxSpeech = Boolean(useBoxStatus()?.available);
   const { toast } = useToast();
+  useMenuFocus(wrapper, open, () => setOpen(false));
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {

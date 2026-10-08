@@ -214,10 +214,11 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
         <PageTitle context={view?.project?.title ?? null} contextTitle={view?.project?.workspaceRoot} name={thread?.title ?? "Thread"} />
         {activity && activity.tone !== "idle" ? <span className={`pill thread-pill tone-${activity.tone}`}>{activity.label}</span> : null}
         <span className="spacer" />
-        {thread && browsers && view?.browsers ? (
+        {/* A member's thread is looked at here, not run: its settings, browsers and lifecycle are the room's. */}
+        {thread && !thread.boundToRoom && browsers && view?.browsers ? (
           <ThreadBrowserButton threadId={threadId} browsers={browsers} access={view.browsers} attached={attached} onAttach={setAttached} runCommand={runCommand} onChanged={refresh} />
         ) : null}
-        {thread ? (
+        {thread && !thread.boundToRoom ? (
           <ThreadMenu
             canSpeak={canSpeak}
             autoRead={autoRead}
@@ -240,10 +241,17 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 <span className="mono">{crew.name}</span>
               </span>
             ) : null}
-            <button type="button" className="thread-setting" onClick={() => setDialog("settings")} title="Model and permission mode (applied in T3)">
-              <span className="mono">{thread.modelSelection.model}</span>
-              <span className={`pill pill-mode mode-${thread.runtimeMode}`}>{thread.runtimeMode}</span>
-            </button>
+            {thread.boundToRoom ? (
+              <span className="thread-setting" title="Model and permission mode: a member's are set in its room (its menu, Settings…)">
+                <span className="mono">{thread.modelSelection.model}</span>
+                <span className={`pill pill-mode mode-${thread.runtimeMode}`}>{thread.runtimeMode}</span>
+              </span>
+            ) : (
+              <button type="button" className="thread-setting" onClick={() => setDialog("settings")} title="Model and permission mode (applied in T3)">
+                <span className="mono">{thread.modelSelection.model}</span>
+                <span className={`pill pill-mode mode-${thread.runtimeMode}`}>{thread.runtimeMode}</span>
+              </button>
+            )}
             {view?.contextWindow ? <ContextMeter reading={view.contextWindow} compact /> : null}
             <button
               type="button"
@@ -280,18 +288,34 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
               </span>
             ) : null}
             <span className="spacer" />
-            <span className="muted mono thread-direct-note" title="Messages go to T3 exactly as typed. No room briefing, no queue.">
-              direct thread
-            </span>
+            {thread.boundToRoom ? (
+              <span className="muted mono thread-direct-note" title="A member's thread, read only here: you talk to it, answer its approvals and change its settings in its room">
+                member's thread · read only
+              </span>
+            ) : (
+              <span className="muted mono thread-direct-note" title="Messages go to T3 exactly as typed. No room briefing, no queue.">
+                direct thread
+              </span>
+            )}
           </div>
         ) : null}
         <div className="room-body">
-          <div className="room-centre" ref={centre}>
+          <div
+            className="room-centre"
+            ref={centre}
+            onKeyDown={(event) => {
+              // Up from the composer's strip goes to the conversation above it (as in a room), whose arrows scroll it.
+              if (event.key !== "ArrowUp" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !(event.target as Element).matches(".composer-strip")) return;
+              event.preventDefault();
+              centre.current?.querySelector<HTMLElement>(".timeline")?.focus();
+            }}
+          >
             <div className="timeline-wrap">
               <Transcript
                 key={threadId}
                 view={view}
                 error={error}
+                readOnly={Boolean(thread?.boundToRoom)}
                 costs={costs}
                 lead={voiceName}
                 onRespond={async (command) => {
@@ -580,7 +604,22 @@ function ThreadBrowserButton({
 
 // ---- transcript ----
 
-function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewData | null; error: string | null; onRespond: (command: RoomCommand) => Promise<void>; costs: ThreadCosts | null; lead: string }) {
+function Transcript({
+  view,
+  error,
+  onRespond,
+  costs,
+  lead,
+  readOnly = false,
+}: {
+  view: ThreadViewData | null;
+  error: string | null;
+  onRespond: (command: RoomCommand) => Promise<void>;
+  costs: ThreadCosts | null;
+  lead: string;
+  /** A member's thread: its approvals and questions are answered in its room, not here. */
+  readOnly?: boolean;
+}) {
   // What the turn behind a reply used, and the running total since the user's last message over the replies since.
   const spendOf = (index: number): { spend: ThreadCost; since: number; turns: number } | null => {
     const items = view?.items ?? [];
@@ -661,7 +700,9 @@ function Transcript({ view, error, onRespond, costs, lead }: { view: ThreadViewD
               </div>
             </div>
           ) : null}
-          {view.requests.length > 0 ? (
+          {view.requests.length > 0 && readOnly ? (
+            <p className="chat-status mono thread-partial">Waiting for your answer: answer it in the room.</p>
+          ) : view.requests.length > 0 ? (
             <div className="native-requests thread-requests" role="group" aria-label="Waiting for you">
               {view.requests.map((request) =>
                 request.kind === "approval" ? (

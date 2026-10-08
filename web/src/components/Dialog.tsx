@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { returnFocus } from "../keys.ts";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
@@ -24,7 +24,15 @@ interface DialogProps {
  * Initial focus goes to the element marked `data-autofocus`, otherwise the first enabled field.
  * Focus is set exactly once when the dialog opens; background re-renders never move it. When it closes, focus goes back
  * to the element that opened it (keys.ts, returnFocus).
+ *
+ * While a dialog is open the page under it (#root) is inert, so neither Tab nor the page's arrows reach what is behind
+ * it, and Tab goes round inside the dialog (and the menus it opened). A body that scrolls takes the focus too (Tab), so
+ * the keys scroll it.
  */
+
+/** Dialogs open now: the page under them is inert while there is one. */
+let openDialogs = 0;
+const pageRoot = () => document.getElementById("root");
 export function Dialog({ title, onClose, children, footer, wide, large, manageFocus = false, active = true }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -42,8 +50,10 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
         event.preventDefault();
         event.stopPropagation();
         closeRef.current();
-      } else if (manageFocus && event.key === "Tab") {
-        const candidates = [...root.querySelectorAll<HTMLElement>('a[href], button, input, textarea, select, iframe, [tabindex]')]
+      } else if (event.key === "Tab") {
+        // A menu the dialog opened (portalled beside it) keeps its own Tab.
+        if (document.activeElement?.closest(".popover")) return;
+        const candidates = [...root.querySelectorAll<HTMLElement>('a[href], button, input, textarea, select, iframe, summary, [tabindex]')]
           .filter((element) => element.tabIndex >= 0 && !element.matches(':disabled, [hidden]') && element.getClientRects().length > 0);
         const first = candidates[0] ?? root;
         const last = candidates.at(-1) ?? root;
@@ -60,7 +70,12 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
   useEffect(() => {
     const root = panel.current;
     if (!root) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // What opened it; nothing when the focus was nowhere (a menu item removed as the dialog opened): then the last
+    // element focused outside dialogs and menus (the menu's button) takes it back.
+    const focused = document.activeElement;
+    const opener = focused instanceof HTMLElement && focused !== document.body && focused !== document.documentElement ? focused : null;
+    openDialogs += 1;
+    pageRoot()?.setAttribute("inert", "");
     const preferred = root.querySelector<HTMLElement>("[data-autofocus]");
     const candidates = Array.from(root.querySelectorAll<HTMLElement>("input, textarea, select, button:not(.dialog-close)"));
     const target =
@@ -79,6 +94,8 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
     if (manageFocus) document.addEventListener("focusin", containFocus);
     return () => {
       cancelAnimationFrame(frame);
+      openDialogs -= 1;
+      if (openDialogs === 0) pageRoot()?.removeAttribute("inert");
       if (manageFocus) {
         document.removeEventListener("focusin", containFocus);
         const fallback = [...document.querySelectorAll<HTMLElement>(".dialog:not([inert])")].at(-1)?.querySelector<HTMLElement>(".dialog-close");
@@ -90,6 +107,20 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
       }
     };
   }, [manageFocus]);
+
+  // A body taller than the dialog is a scrolled region: focusable (Tab) and named, so the keys scroll it.
+  const body = useRef<HTMLDivElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (!element) return;
+    const measure = () => setScrolls(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    for (const child of element.children) observer.observe(child);
+    return () => observer.disconnect();
+  });
 
   return createPortal(
     <div className="dialog-backdrop" aria-hidden={!active || undefined} inert={!active} onMouseDown={(event) => active && event.target === event.currentTarget && onClose()}>
@@ -109,7 +140,9 @@ export function Dialog({ title, onClose, children, footer, wide, large, manageFo
               <CloseIcon />
             </button>
           </div>
-          <div className="dialog-body">{children}</div>
+          <div className="dialog-body" ref={body} tabIndex={scrolls ? 0 : undefined} role={scrolls ? "region" : undefined} aria-label={scrolls ? `${title}, scrolls` : undefined}>
+            {children}
+          </div>
           {footer ? <div className="dialog-footer">{footer}</div> : null}
         </ErrorBoundary>
       </div>

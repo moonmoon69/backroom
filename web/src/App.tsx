@@ -20,7 +20,7 @@ import { Overview } from "./components/Overview.tsx";
 import { OverviewRoom } from "./components/OverviewRoom.tsx";
 import { CloseIcon } from "./components/icons.tsx";
 import { KeyHelp } from "./components/KeyHelp.tsx";
-import { byKey, focusWhen, isTextField, itemOf, keyOf, LAYER_SELECTOR, trackFocus } from "./keys.ts";
+import { byKey, focusWhen, isTextField, itemOf, keyOf, layerOpen, trackFocus } from "./keys.ts";
 import { useTheme } from "./theme.ts";
 import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
@@ -220,7 +220,7 @@ export function App() {
     trackFocus();
     const onCapture = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (event.key === "Escape") escapeTaken.current = Boolean(document.querySelector(LAYER_SELECTOR) || target?.closest(".dialog, .menu"));
+      if (event.key === "Escape") escapeTaken.current = layerOpen() || Boolean(target?.closest(".dialog, .menu"));
       if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && !isTextField(target)) {
         const help = Boolean(document.querySelector(".key-help"));
         if (!help && target?.closest(".dialog, .menu")) return;

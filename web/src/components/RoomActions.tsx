@@ -8,6 +8,7 @@ import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
 import { MoreIcon } from "./icons.tsx";
 import { useAutoRead, useSpeechAvailable } from "../speech.ts";
+import { useMenuFocus } from "../keys.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
 
@@ -16,6 +17,7 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const wrapper = useRef<HTMLSpanElement>(null);
+  useMenuFocus(wrapper, open, () => setOpen(false));
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {
@@ -71,6 +73,7 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const wrapper = useRef<HTMLSpanElement>(null);
+  useMenuFocus(wrapper, open, () => setOpen(false));
   useEffect(() => {
     if (!open) return;
     const onDown = (event: MouseEvent) => {

@@ -141,6 +141,9 @@ export function Overview({
   // The item last focused here, by key. A poll that redraws the page can move a card (to another tier, another project),
   // and the browser drops the focus of what it moves: the same item takes it back before the frame is painted.
   const remembered = useRef<string | null>(null);
+  // Whether the item last focused anywhere on the page was that one: only then was it the poll that took the focus. A
+  // dialog that closed (it gives the focus back itself), a click elsewhere, the address bar: none of them is.
+  const holding = useRef(false);
   const wasActive = useRef(active);
   useLayoutEffect(() => {
     const element = root.current;
@@ -149,8 +152,8 @@ export function Overview({
     if (!active || !element) return;
     const lost = !document.activeElement || document.activeElement === document.body;
     // Back from what covered the page: the focus goes to where it was when that opened.
-    const key = activated ? (returnTo ?? remembered.current) : lost ? remembered.current : null;
-    const item = byKey(element, key);
+    const key = activated ? (returnTo ?? remembered.current) : lost && holding.current ? remembered.current : null;
+    const item = byKey(element, key) ?? (activated ? byKey(element, remembered.current) : null);
     if (activated) focusItem(item);
     else item?.focus({ preventScroll: true });
   });
@@ -158,16 +161,18 @@ export function Overview({
     const element = root.current;
     if (!element) return;
     const onFocus = (event: FocusEvent) => {
-      remembered.current = keyOf(event.target as Element) ?? remembered.current;
+      const key = element.contains(event.target as Node) ? keyOf(event.target as Element) : null;
+      remembered.current = key ?? remembered.current;
+      holding.current = key !== null;
     };
     // A click elsewhere on the page is the user moving on: nothing is given the focus back.
     const onPointer = (event: MouseEvent) => {
       if (!itemOf(event.target as Element)) remembered.current = null;
     };
-    element.addEventListener("focusin", onFocus);
+    document.addEventListener("focusin", onFocus);
     element.addEventListener("mousedown", onPointer);
     return () => {
-      element.removeEventListener("focusin", onFocus);
+      document.removeEventListener("focusin", onFocus);
       element.removeEventListener("mousedown", onPointer);
     };
   }, []);
@@ -181,7 +186,9 @@ export function Overview({
       const onPage = !target || target === document.body || target === document.documentElement;
       if (!onPage && !element.contains(target)) return;
       event.preventDefault();
-      focusItem(overviewTarget(element, "ov", itemOf(target) ?? (onPage ? byKey(element, remembered.current) : null), key));
+      // On a card's own button (its ⋯), the card's head is where the arrows start from.
+      const card = target?.closest<HTMLElement>("[data-nav-card]")?.querySelector<HTMLElement>("[data-nav]") ?? null;
+      focusItem(overviewTarget(element, "ov", itemOf(target) ?? card ?? (onPage ? byKey(element, remembered.current) : null), key));
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

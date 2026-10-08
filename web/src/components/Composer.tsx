@@ -46,6 +46,7 @@ import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
 import { ChevronIcon, CloseIcon, ImageIcon, NoteIcon } from "./icons.tsx";
+import { useMenuFocus } from "../keys.ts";
 
 interface Props {
   /** Look → Overview: closed to a strip until wanted, then over the conversation (composerOverlay.tsx). */
@@ -998,6 +999,7 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLSpanElement>(null);
   useDismiss(wrapper, open, () => setOpen(false));
+  useMenuFocus(wrapper, open, () => setOpen(false));
 
   const busy = assignment.recipients.filter((id) => {
     const status = snapshot.participantStatus[id];
