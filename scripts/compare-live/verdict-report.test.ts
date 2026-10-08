@@ -11,7 +11,7 @@ import type { EnginePost } from "../../src/domain/engineView.ts";
 import type { JobRecord, Snapshot } from "./campaign.ts";
 import type { JobMeasure } from "./measure.ts";
 import type { TaskId } from "./tasks.ts";
-import { backgroundWorkOf, behaviourChecks, embeddedReport, lineDiff, normalizeRules, rulesOf, standingPart, verdictSections, type RoomRecord, type VerdictJob } from "./verdict-report.ts";
+import { backgroundWorkOf, behaviourChecks, campaignLimitsSection, embeddedReport, lineDiff, normalizeRules, rulesOf, standingPart, verdictSections, type RoomRecord, type VerdictJob } from "./verdict-report.ts";
 
 const SEATS = { C: "seat-c", W1: "seat-w1", V: "seat-v" } as const;
 
@@ -377,5 +377,19 @@ describe("verdict.md's sections", () => {
     assert.match(text, /\| T1 \| old \| 1 \| 2 \(2–2\) \| 300 \(300–300\) \| 150 \(150–150\) \| 200 \(200–200\) \| 100 \(100–100\) \|/);
     assert.deepEqual(afterLimits, embeddedReport("# Comparison campaign t\n\n## Every run\n\n| a |"));
     assert.deepEqual(afterLimits.slice(2), ["", "### Every run", "", "| a |"]);
+  });
+});
+
+describe("the limits of this campaign", () => {
+  test("the hand-written notes, then T3's load in each job's window, in the order the jobs ran", () => {
+    const job = (jobId: string, postedAt: string, closeAt: string) =>
+      ({ job: { ...jobRecord("T3", "new"), jobId, times: { postedAt, closeAt } }, measure: { ...measureOf("T3", "new"), overlap: { sampled: ["x"], stateDb: ["x", "y"] } }, room: null }) as unknown as VerdictJob;
+    const sample = (at: string, cpuPct: number | null, providerProcs: number) => ({ at: `2026-01-01T${at}Z`, cpuPct, providerProcs, stateDbBytes: 3.8e9 });
+    const samples = [sample("00:00:30", 70, 8), sample("00:01:00", 80, 9), sample("00:01:30", null, 9), sample("00:05:00", 120, 4), sample("00:05:30", 110, 3)];
+    const text = campaignLimitsSection([job("bbb", "2026-01-01T00:04:00Z", "2026-01-01T00:06:00Z"), job("aaa", "2026-01-01T00:00:00Z", "2026-01-01T00:02:00Z")], "- Jobs 1-14 ran under T3's overload.", samples).join("\n");
+    assert.match(text, /## Limits of this campaign\n\n- Jobs 1-14 ran under T3's overload\.\n/);
+    assert.match(text, /\| 1 \| aaa \| new \| T3#1 \| 00:00:00–00:02:00 \| 75 \(80\) \| 9 \| 3\.80 GB \| 1 \/ 2 \| quiet \|/);
+    assert.match(text, /\| 2 \| bbb \| new \| T3#1 \| 00:04:00–00:06:00 \| 115 \(120\) \| 4 \| 3\.80 GB \| 1 \/ 2 \| quiet \|/);
+    assert.match(campaignLimitsSection([], null, []).join("\n"), /No load samples recorded\./);
   });
 });

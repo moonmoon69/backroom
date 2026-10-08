@@ -7,7 +7,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { EnginePost } from "../../src/domain/engineView.ts";
-import type { JobRecord, Snapshot } from "./campaign.ts";
+import { campaignDir, type JobRecord, type Snapshot } from "./campaign.ts";
 import type { JobMeasure } from "./measure.ts";
 import { TASK_IDS } from "./tasks.ts";
 import { TranscriptTokens } from "./tokens.ts";
@@ -525,6 +525,62 @@ export function lateEvidenceSection(jobs: VerdictJob[]): string[] {
   return lines;
 }
 
+// ---------------- the limits of this campaign: T3's load per job ----------------
+
+/** One sample of T3's load (backroom-handoff/Z1/t3-load-sampler.sh: /proc and file sizes, every 30 s). */
+export interface LoadSample {
+  at: string;
+  cpuPct: number | null;
+  providerProcs: number | null;
+  stateDbBytes: number | null;
+}
+
+export function readLoadSamples(path: string): LoadSample[] {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      try {
+        return line.trim() ? [JSON.parse(line) as LoadSample] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * The campaign's own limits: a hand-written limits-notes.md in the campaign folder (decided conditions, such as a change
+ * to T3's load between jobs), then T3's load in each job's window from the sampler's file, copied into the campaign
+ * folder as t3-load.jsonl.
+ */
+export function campaignLimitsSection(jobs: VerdictJob[], notes: string | null, samples: LoadSample[]): string[] {
+  const lines = ["## Limits of this campaign", ""];
+  if (notes !== null) lines.push(notes.trim(), "");
+  lines.push(
+    "### T3's load per job",
+    "",
+    samples.length === 0
+      ? "No load samples recorded."
+      : "T3's server process in each job's window, from the 30-second samples in t3-load.jsonl (read-only: /proc and file sizes): CPU share of one core, median (max), the most provider processes it ran (the account's agent sessions, the job's own included), and its state database's size; then the other T3 threads running during the window, as measure.ts counts them (sampled live / from T3's state database).",
+    "",
+    "| order | job | side | task | window (UTC) | T3 CPU % median (max) | provider processes, max | state DB | other threads running | close |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+  );
+  const ordered = [...jobs].filter(({ job }) => job.times?.postedAt).sort((a, b) => (a.job.times.postedAt ?? "").localeCompare(b.job.times.postedAt ?? ""));
+  for (const [index, { job, measure }] of ordered.entries()) {
+    const from = Date.parse(job.times.postedAt as string);
+    const to = job.times.closeAt ? Date.parse(job.times.closeAt) : Number.POSITIVE_INFINITY;
+    const window = samples.filter((sample) => Date.parse(sample.at) >= from && Date.parse(sample.at) <= to);
+    const cpu = window.map((sample) => sample.cpuPct).filter((v): v is number => typeof v === "number");
+    const procs = window.map((sample) => sample.providerProcs).filter((v): v is number => typeof v === "number");
+    const db = window.find((sample) => typeof sample.stateDbBytes === "number")?.stateDbBytes ?? null;
+    lines.push(
+      `| ${index + 1} | ${job.jobId} | ${job.side} | ${job.task}#${job.run} | ${(job.times.postedAt as string).slice(11, 19)}–${job.times.closeAt?.slice(11, 19) ?? "?"} | ${cpu.length ? `${(median(cpu) as number).toFixed(0)} (${Math.max(...cpu).toFixed(0)})` : "–"} | ${procs.length ? Math.max(...procs) : "–"} | ${db === null ? "–" : `${(db / 1e9).toFixed(2)} GB`} | ${measure.overlap?.sampled.length ?? "–"} / ${measure.overlap?.stateDb?.length ?? "–"} | ${job.close} |`,
+    );
+  }
+  return lines;
+}
+
 // ---------------- every run's numbers ----------------
 
 /** report.md under a heading of the verdict: its title dropped, its headings one level down. */
@@ -535,8 +591,12 @@ export function embeddedReport(report: string): string[] {
 
 /** The sections verdict.md carries after the gate's table, before its limits; and the measurements after them. */
 export function verdictSections(jobs: VerdictJob[], report: string, notes: string | null): { beforeLimits: string[]; afterLimits: string[] } {
+  const campaign = jobs[0]?.job.campaign;
+  const dir = campaign ? campaignDir(campaign) : null;
+  const limits = dir && existsSync(join(dir, "limits-notes.md")) ? readFileSync(join(dir, "limits-notes.md"), "utf8") : null;
+  const samples = dir ? readLoadSamples(join(dir, "t3-load.jsonl")) : [];
   return {
-    beforeLimits: [...behaviourSection(jobs, notes), "", ...lateEvidenceSection(jobs), "", ...rulesSection(jobs), "", ...briefingSection(jobs)],
+    beforeLimits: [...behaviourSection(jobs, notes), "", ...lateEvidenceSection(jobs), "", ...rulesSection(jobs), "", ...briefingSection(jobs), "", ...campaignLimitsSection(jobs, limits, samples)],
     afterLimits: embeddedReport(report),
   };
 }
