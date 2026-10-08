@@ -25,7 +25,7 @@ import { EngineStore, fold, unread } from "../src/engine/index.ts";
 import type { EngineHost } from "../src/runtime/index.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
 import { parseExplicit } from "../src/parser/explicit.ts";
-import { T3Times, anchorsOf, journalView, newsOf, postKind, replyCarriers, timesOf, turnPosts } from "../src/server/engineView.ts";
+import { T3Times, anchorsOf, journalView, memberStatus, newsOf, postKind, replyCarriers, timesOf, turnPosts } from "../src/server/engineView.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
 import { Room } from "./runtime/helpers.ts";
@@ -507,6 +507,26 @@ test("the room snapshot: counts equal the fold's, member status from the journal
   const external = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
   assert.equal(external.participantStatus[s.seats.reviewer!.participantId]!.externalActivity, true);
   assert.equal(external.t3.reachable, true);
+});
+
+test("a host run that has just ended is not taken for the member working on its own, though T3's thread list still shows it", async (t) => {
+  const s = await engineStack(t);
+  s.ask("worker", "Implement slugify.");
+  await s.tick();
+  const threadId = s.seats.worker!.threadId;
+  // T3's thread list as read while the run was live (the read API reuses it for up to a second).
+  const stale = structuredClone(s.fake.threads.get(threadId)!.shell);
+  assert.ok(stale.activeRunId, "read while the run was live");
+  s.fake.completeRun(threadId, { text: "Slugify done." });
+  await s.tick(2);
+  const p = s.engine.view(s.roomId);
+  assert.equal(p.seats.get(s.seats.worker!.seatId)!.activeRunId, null, "the host imported the run's end");
+  const participant = s.stack.repos.getParticipant(s.seats.worker!.participantId)!;
+  const status = (shell: typeof stale) => memberStatus({ participant, repos: s.stack.repos, view: journalView({ p }), shells: new Map([[threadId, shell]]), native: [] });
+  assert.equal(status(stale).externalActivity, false, "the room's own run, just ended");
+  // A run typed in T3 on the same thread is the member working on its own.
+  s.fake.startExternalRun(threadId, "typed in T3");
+  assert.equal(status(structuredClone(s.fake.threads.get(threadId)!.shell)).externalActivity, true);
 });
 
 test("the room list and the overview: needs you = notices plus approvals, busy = active runs, news by journal sequence", async (t) => {
