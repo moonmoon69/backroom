@@ -62,7 +62,7 @@ export const T1_FACTS: Array<{ name: string; pattern: RegExp }> = [
   { name: "cli.ts:6", pattern: /cli\.ts:6(?!\d)/ },
 ];
 
-/** One line of a T1 answer must say both of these: that legacy (./legacy.ts, legacyBanner) is unused. */
+/** One block of a T1 answer (text between blank lines) must say both of these: that legacy (./legacy.ts, legacyBanner) is unused. */
 const LEGACY_UNUSED = {
   legacy: /legacy/i,
   unused: /unused|not used|never used|isn't used|is not used|unreferenced|dead|never called|not called|isn't called|never referenced|not referenced/i,
@@ -105,10 +105,11 @@ export async function checkTask(task: TaskId, input: CheckInput): Promise<CheckR
 function judgeFacts(text: string | null): PartResult {
   if (text === null || text.trim() === "") return { pass: false, detail: "no answer text" };
   const missing = T1_FACTS.filter((fact) => !fact.pattern.test(text)).map((fact) => fact.name);
-  const saysUnused = text.split(/\r?\n/).some((line) => LEGACY_UNUSED.legacy.test(line) && LEGACY_UNUSED.unused.test(line));
-  if (!saysUnused) missing.push("a line saying legacy is unused");
+  // A block, not a line: "legacy" and "unused" may sit on lines of their own (a nested list, a table cell wrapped).
+  const saysUnused = text.split(/\r?\n\s*\r?\n/).some((block) => LEGACY_UNUSED.legacy.test(block) && LEGACY_UNUSED.unused.test(block));
+  if (!saysUnused) missing.push("a block saying legacy is unused");
   if (missing.length > 0) return { pass: false, detail: `missing: ${missing.join(", ")}` };
-  return { pass: true, detail: `all ${T1_FACTS.length} facts and the legacy-unused line are present` };
+  return { pass: true, detail: `all ${T1_FACTS.length} facts and a block saying legacy is unused are present` };
 }
 
 function judgeReportCoversBoth(text: string): PartResult {

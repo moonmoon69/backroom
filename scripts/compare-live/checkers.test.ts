@@ -363,7 +363,10 @@ describe("review round 1 (R7, S1)", () => {
     const table = ["| module | line | used |", "|---|---|---|", "| node:fs | cli.ts:1 | yes |", "| args | cli.ts:2 | yes |", "| text | cli.ts:3 | yes |", "| format | cli.ts:4 | yes |", "| dates | cli.ts:5 | yes |", "| legacy | cli.ts:6 | unused |", "| types | cli.ts:7 | yes |"].join("\n");
     assert.equal((await facts(table)).pass, true, "bare-name table");
     assert.equal((await facts("src/cli.ts imports node:fs and the args, text, format, dates, legacy and types modules. Only legacy is unused (src/cli.ts:6).")).pass, true, "bare-name prose");
-    // Still refused: no line calls legacy unused, or the line number is missing.
+    // "legacy" and "unused" on lines of their own, in one block (a nested list).
+    const nested = ["src/cli.ts imports:", "- src/cli.ts:6 legacyBanner from ./legacy.ts", "  - unused", "- node:fs, ./args.ts, ./text.ts, ./format.ts, ./dates.ts, ./types.ts are used"].join("\n");
+    assert.equal((await facts(nested)).pass, true, "nested list");
+    // Still refused: no block calls legacy unused, or the line number is missing.
     assert.equal((await facts("Imports: node:fs, args, text, format, dates, legacy, types (src/cli.ts:1-7). Everything is used.")).pass, false);
     assert.equal((await facts("Imports: node:fs, args, text, format, dates, types. legacy is unused.")).pass, false);
   });

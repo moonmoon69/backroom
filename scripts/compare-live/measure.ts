@@ -509,7 +509,7 @@ export function reportCopyChecks(job: JobRecord, name: string, t3ReportAt: strin
   return differ.length === 0 ? [] : [{ job: name, what: "the report's copy differs from the last answer's copy before T3's report", measured: differ, recounted: before.dir }];
 }
 
-/** The limits every verdict carries (plan stage45, Z1 "Limits"; the T2 rule as the user decided it for R0, task327). */
+/** The limits every verdict carries (plan stage45, Z1 "Limits"; the T2 rule as the Consigliere decided it, board #411). */
 export const VERDICT_LIMITS = [
   "Small N: 2 or 3 runs per side per task shows only large, consistent differences; the relabelling turns \"could this be chance?\" into a number on these data, not a test of small effects.",
   "Agents behave differently from run to run; interleaving and fresh seats reduce that, they do not remove it.",
@@ -517,8 +517,8 @@ export const VERDICT_LIMITS = [
   "The crew is Claude only (Codex out of quota until 2026-10-14, Cursor not signed in); results may not carry over to other harnesses.",
   "Other rooms on the same account share rate limits and the machine; overlap is recorded per job.",
   "The tasks are toy-sized and show nothing about long-room context growth; the fake 2,000-post benchmark in L6 is the proxy for that.",
-  "T2's rule is that V's review comes before the report, not \"review, then correction\": a run where W1 fixed both defects at once passes. T2 therefore mostly measures the review exchange; the hidden leap-year defect proved easy to spot (user decision, R0, task327).",
-  "T1's facts check is lenient text matching: it can pass a report that is wrong in substance; it does not fail a correct one.",
+  "T2's rule is that V's review comes before the report, not \"review, then correction\": a run where W1 fixed both defects at once passes. T2 therefore mostly measures the review exchange; the hidden leap-year defect proved easy to spot (decided by the Consigliere, board #411).",
+  "T1's facts check is lenient text matching: it can pass a report that is wrong in substance. It needs every module named, \"cli.ts:6\", and one block of text (between blank lines) that names legacy and calls it unused; a correct report that never says so in one block fails.",
 ];
 
 // ---------------- the report ----------------

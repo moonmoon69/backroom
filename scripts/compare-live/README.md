@@ -98,7 +98,7 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
 
 | Task | Prompt | Checker parts | Correct (the job) | Member's own parts (early answers) |
 |---|---|---|---|---|
-| T1 | one member finds `src/cli.ts`'s imports and the unused one with a subagent | `facts`: the report names node:fs, args, text, format, dates, legacy and types; contains `cli.ts:6`; has a line naming legacy as unused | the JOB-DONE report passes `facts` | W1 or W2 (whichever answers): `facts` on its answer |
+| T1 | one member finds `src/cli.ts`'s imports and the unused one with a subagent | `facts`: the report names node:fs, args, text, format, dates, legacy and types; contains `cli.ts:6`; has a block (text between blank lines) naming legacy as unused | the JOB-DONE report passes `facts` | W1 or W2 (whichever answers): `facts` on its answer |
 | T2 | W1 fixes the failing test in `src/dates.ts`, V reviews | `monthEnd` (the visible defect), `leapYear` (the second defect in the same function, covered by no visible test) | the final tree passes both, and V reviewed before the report: an answer of V's on the board, before the report, whose folder copy already had the visible defect fixed (so there was a fix to review) | W1: `monthEnd`, `leapYear` |
 | T3 | W1 runs `npm run slow-check` (~3 min) in the background, fixes it, reports when it passes | `catalog`: the catalog rules hold on the tree, no entry deleted; `slowCheckLog`: in `.slow-check.log` up to the cutoff, the last run finished and passed, none in progress | the final tree passes `catalog`, and `slowCheckLog` passes read up to T3's time of the report (the report came after the last slow-check finished) | W1: `catalog`, `slowCheckLog` (cutoff: the answer's time) |
 | T4 | W1 adds `slugify`, W2 adds `--json`, in parallel; V reviews both | `slugify`, `json`, and on the report `reportCoversBoth` | the final tree passes `slugify` and `json`, and the report covers both | W1: `slugify`; W2: `json` |
@@ -108,7 +108,7 @@ Each checker is a set of parts; a part passes when its hidden test file exits 0 
   premature). The log is judged run by run: the last-started run must have finished and passed, and no run may still
   be in progress (runs can overlap).
 - **T1's facts** are matched leniently on purpose: each module's name (bare or as `args.ts`, `./args.ts`, …), the line
-  `cli.ts:6`, and one line that calls legacy unused. A false negative would fail a correct report, and count as
+  `cli.ts:6`, and one block of text (between blank lines) that names legacy and calls it unused. A false negative would fail a correct report, and count as
   premature, for whichever side phrased it that way (which G1 gates); a false positive only misses a rare wrong report.
 - **Early member answers** (reported, not gated): a member's answer while its own parts failed on the copy taken then.
   Reviewers' answers are not checked. On the old side every member turn end is an answer. T1's part is judged on the
@@ -208,10 +208,11 @@ check compares T3's runs (the fake's) with the instance's own run records. The q
 - The crew is Claude only (Codex is out of quota until 2026-10-14; Cursor is not signed in).
 - Other rooms share the account's rate limits; overlap is recorded per job.
 - T1's facts check is lenient text matching (see the pass rules): a report could pass it while wrong in substance, e.g.
-  calling a second import unused or saying nothing else is used. Both R0 T1 reports were read in full and are right.
+  calling a second import unused or saying nothing else is used. A correct report fails only if it never names legacy
+  and calls it unused within one block of text (between blank lines). Both R0 T1 reports were read in full and are right.
 - JOB-DONE near misses ("JOB-DONE:", "Status: JOB-DONE", "JOB-DONE ✅") are not reports: such a job runs to the
   60-minute "no report" close, and the report warns about it. None happened in R0.
-- T2's rule, as the user decided it (task327): V's review comes before the report; "review, then correction" in that
+- T2's rule, as decided by the Consigliere (board #411): V's review comes before the report; "review, then correction" in that
   order is not required, so a run where W1 fixed both defects at once passes. T2 therefore mostly measures the review
   exchange, not defect-catching: the leap-year defect proved easy to spot (in R0 the Consigliere and a T1 report named
   it unprompted). This limit, with the plan's, is written into every Z1 `verdict.md` (`VERDICT_LIMITS` in measure.ts).
