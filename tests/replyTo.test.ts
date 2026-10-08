@@ -20,7 +20,8 @@ const request = (id: string, number: number, author: string, state: "open" | "an
   about: [{ requestId: id, number }],
   at: null,
   after: null,
-  request: { id, parentId: null, rootId: id, owner: "W", returnTo: author, state, answer: null, corrections: 0 },
+  turn: false,
+  request: { id, parentId: null, rootId: id, owner: "W", returnTo: author, state, answer: null, corrections: 0, message: null },
 });
 
 const context = (posts: EnginePost[]): ReplyContext => ({
@@ -40,6 +41,9 @@ test("each outcome the engine gives a claim gets its own words, with the request
   assert.equal(words(claim("T", 21, "late")), "late for #21: it was handed to a fresh seat");
   assert.equal(words(claim("A", 12, "superseded")), "#12 stays open: input it had not seen came in");
   assert.equal(words(claim("A", 12, "pending_activity")), "#12 stays open: a review or background work is still running");
+  // Backroom's briefing to a member, made in the user's name: its acknowledgement does not say "from you".
+  const briefing = { ...request("seat-briefing:W:seated", 2, "$user"), id: "b" };
+  assert.equal(replyText(claimPieces(claim("seat-briefing:W:seated", 2, "answered"), context([...posts, briefing]))), "answers #2 (seat briefing)");
   // A request the page does not hold (older than the loaded posts): its number is still read from the claim.
   assert.equal(replyText(claimPieces(claim("Z", 3, "answered"), context(posts))), "answers #3");
 });
@@ -56,6 +60,7 @@ test("a reply that named no request, an update and a failure say so; how it came
     about: disposition === "yield" ? [] : [{ requestId: "A", number: 12 }],
     at: null,
     after: null,
+    turn: source === "final" || source === "continuation",
     output: { disposition, claims, source, runId: null, activityId: null, t3: null, afterAnswer: false },
   });
   const posts = [request("A", 12, "$user")];

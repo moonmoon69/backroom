@@ -44,7 +44,7 @@ import { browserSection } from "../briefing/assemble.ts";
 import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { BoardError } from "../app/board.ts";
 import { boardFor } from "../app/boardEngine.ts";
-import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
+import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, DEFAULT_CONSIGLIERE_RULES, ENGINE_DEFAULT_CONSIGLIERE_RULES, consigliereRules, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import { previewFile } from "./filePreview.ts";
@@ -1017,10 +1017,12 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   app.get("/api/settings", (c) => {
     const presetId = stack.repos.getKv(CONSIGLIERE_PRESET_KEY);
     const saved = stack.repos.getKv(CONSIGLIERE_RULES_KEY);
+    // On the engine its own default wording is in force (the board's mechanics are added after it, whatever the wording).
+    const defaultText = stack.engine !== null ? ENGINE_DEFAULT_CONSIGLIERE_RULES : DEFAULT_CONSIGLIERE_RULES;
     return c.json({
       consiglierePresetId: presetId && stack.repos.getPreset(presetId) ? presetId : null,
       // The rules every Consigliere is given: the user's wording when they saved one, and Backroom's to go back to.
-      consigliereRules: { text: consigliereRules(saved), custom: Boolean(saved && saved.trim()), defaultText: DEFAULT_CONSIGLIERE_RULES },
+      consigliereRules: { text: saved && saved.trim() ? consigliereRules(saved) : defaultText, custom: Boolean(saved && saved.trim()), defaultText },
       // What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat.
       retireThread: retireThreadChoice(stack.repos),
     });

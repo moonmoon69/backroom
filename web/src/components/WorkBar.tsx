@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useRoom } from "../context.tsx";
+import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { NativeRequestsPanel } from "./NativeRequests.tsx";
@@ -106,7 +107,7 @@ export function WorkBar() {
   for (const seat of snapshot.seats) {
     if (seat.status === "retired") continue;
     for (const activity of seat.activities) {
-      const since = activity.since ? new Date(activity.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "an unknown time";
+      const since = sinceWords(activity.since);
       items.push({ key: `activity:${activity.id}`, group: "working", participant: seatOf(seat.seatId).participant, what: `working since ${since}`, text: `holds ${refs(activity.requestIds) || "its request"} open${activity.kind === "bg" ? " · background work" : ""}` });
     }
   }

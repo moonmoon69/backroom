@@ -20,6 +20,7 @@ import { ContextMeterLine, ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
+import { sinceWords } from "../engineTime.ts";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
 import { InheritedLine, RUNTIME_MODE_INFO, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, useAttachableThreads, workspaceReady } from "./pickers.tsx";
 import { ThreadDetailsDialog } from "./ThreadDetails.tsx";
@@ -314,7 +315,6 @@ function SeatLines({ participant }: { participant: Participant }) {
       .filter((n): n is number => n !== undefined)
       .map((n) => `#${n}`)
       .join(" ");
-  const clock = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "an unknown time");
   return (
     <>
       {run?.phase === "uncertain" ? (
@@ -324,8 +324,7 @@ function SeatLines({ participant }: { participant: Participant }) {
       ) : null}
       {seat.activities.map((activity) => (
         <span key={activity.id} className="crew-activity mono status-working" title={activity.kind === "bg" ? "Background work T3 listed when its turn ended holds the request open" : "It said it is still working: the request stays open until it answers"}>
-          working since {clock(activity.since)}
-          {activity.requestIds.length > 0 ? ` on ${numbers(activity.requestIds)}` : ""}
+          {`working since ${sinceWords(activity.since)}${activity.requestIds.length > 0 ? ` on ${numbers(activity.requestIds)}` : ""}`}
         </span>
       ))}
       {seat.blocked ? <span className="crew-activity mono status-error">blocked delivery{seat.blocked.number !== null ? `: #${seat.blocked.number}` : ""}</span> : null}

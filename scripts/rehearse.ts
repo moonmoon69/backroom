@@ -16,8 +16,8 @@
  *   with their own keys), and the browser clicks Retry, Dismiss, Cancel and an approval as the user would.
  * - T3's side is the fake adapter, held per thread through its test controls (/api/fake/*, src/server/fakeControls.ts):
  *   each run stays running until the script ends it, so every state holds while it is checked.
- * - Until L4b seats members through the engine, the script seats them on the journal itself (one `seat` command per
- *   binding, as L4b will); with L4b merged it finds them seated and goes on.
+ * - Members are seated by creating them (L4b seats them on the journal), and the Consigliere is designated with
+ *   room.consigliere.set, which briefs the others with journal requests; nothing is seated or briefed by hand.
  * - Three states the L1 host never produces by itself are written as engine commands to the journal (board.sqlite,
  *   through a second connection, which the host replays): a run in phase "uncertain" (the host writes it only on its way
  *   to failing a run), an output whose claim comes out "late" (the host never names a closed request), and a blocked
@@ -309,33 +309,46 @@ class Room {
     for (const alias of MEMBERS) {
       this.participant[alias] = (await this.service.command<{ participantId: string }>({ type: "participant.create", roomId: this.roomId, alias, modelSelection: model, thread: { mode: "create" } })).participantId;
     }
+    // Creating a member seats it on the journal (L4b): seat ID = its binding's ID. Nothing is seated by hand.
     let snap = await this.snapshot();
-    // Members on the journal: L4b seats them with participant.create; until it is merged, the same `seat` commands here.
-    const store = new EngineStore(join(this.o.data, "board.sqlite"));
-    try {
-      for (const alias of MEMBERS) {
-        const binding = snap.bindings.find((b) => b.participantId === this.participant[alias])!;
-        this.seat[alias] = binding.id;
-        this.thread[alias] = binding.threadId;
-        if (!snap.seats.some((s) => s.seatId === binding.id)) {
-          store.execute(this.roomId, { type: "seat", actor: "$user", id: `seat:${binding.id}`, seatId: binding.id, threadId: binding.threadId, ...(alias === "fable" ? { orchestrator: true } : {}) });
-        }
-      }
-    } finally {
-      store.close();
+    for (const alias of MEMBERS) {
+      const binding = snap.bindings.find((b) => b.participantId === this.participant[alias])!;
+      this.seat[alias] = binding.id;
+      this.thread[alias] = binding.threadId;
     }
-    await this.service.command({ type: "room.consigliere.set", roomId: this.roomId, participantId: this.participant.fable });
     // T3's side waits for the script: no run ends by itself.
     for (const alias of MEMBERS) await this.service.fake("hold", { threadId: this.thread[alias], hold: true });
     snap = await until("the three seats on the journal", async () => {
       const s = await this.snapshot();
       return MEMBERS.every((alias) => s.seats.some((seat) => seat.seatId === this.seat[alias])) ? s : null;
     });
-    log(`room ${this.roomId}: ${MEMBERS.map((a) => `@${a}`).join(", ")} seated; @fable is the Consigliere`);
+    // His designation briefs the other members (L4b): each acknowledges in a turn of its own.
+    await this.service.command({ type: "room.consigliere.set", roomId: this.roomId, participantId: this.participant.fable });
+    for (const alias of MEMBERS) await this.settle(alias);
+    log(`room ${this.roomId}: ${MEMBERS.map((a) => `@${a}`).join(", ")} seated; @fable is the Consigliere; the others acknowledged their seat briefing`);
   }
 
   snapshot(): Promise<Snapshot> {
     return this.service.call<Snapshot>("GET", `/api/rooms/${this.roomId}`);
+  }
+
+  /** Another room, without a Consigliere, with these members (seated by L4b) and their runs held. */
+  async second(title: string, aliases: string[]): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<Snapshot>; attach: () => Promise<string> }> {
+    const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+    const roomId = (await this.service.command<{ roomId: string }>({ type: "room.create", projectId: "project_demo", title, consigliere: false })).roomId;
+    const participant: Record<string, string> = {};
+    for (const alias of aliases) participant[alias] = (await this.service.command<{ participantId: string }>({ type: "participant.create", roomId, alias, modelSelection: model, thread: { mode: "create" } })).participantId;
+    const snapshot = () => this.service.call<Snapshot>("GET", `/api/rooms/${roomId}`);
+    for (const binding of (await snapshot()).bindings) await this.service.fake("hold", { threadId: binding.threadId, hold: true });
+    // A 1×1 PNG, uploaded as the composer uploads an image.
+    const attach = async () => {
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+      const response = await fetch(`${this.service.base}/api/rooms/${roomId}/attachments`, { method: "POST", headers: { "content-type": "image/png", "x-file-name": "pixel.png" }, body: png });
+      if (!response.ok) fail(`uploading an image: ${response.status} ${await response.text()}`);
+      return ((await response.json()) as { id: string }).id;
+    };
+    log(`room ${roomId}: ${aliases.map((a) => `@${a}`).join(", ")}, no Consigliere`);
+    return { roomId, participant, snapshot, attach };
   }
   key(alias: Alias): string {
     return `${alias}.${this.roomId.slice(0, 8)}`;
@@ -418,9 +431,9 @@ class Room {
 
 class Checks {
   readonly passed: string[] = [];
-  private readonly room: Room;
+  private readonly room: Pick<Room, "snapshot">;
   private readonly browser: Browser;
-  constructor(room: Room, browser: Browser) {
+  constructor(room: Pick<Room, "snapshot">, browser: Browser) {
     this.room = room;
     this.browser = browser;
   }
@@ -468,6 +481,13 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   browser.waitFor("Board");
   browser.click(/tab "Board/);
   browser.consoleClean();
+
+  // 0. Backroom's seat briefings (L4b, in the user's name) are Backroom's on the board, and so are their acknowledgements.
+  await check.state("Backroom's seat briefing, not the user's message", (x) => {
+    const briefing = x.posts.find((p) => p.kind === "request" && p.author === "$user" && p.request.id.startsWith("seat-briefing:") && p.request.owner === seat.worker);
+    const ack = briefing && claimOf(x, briefing.request.id, "answered");
+    return briefing && ack ? `#${briefing.number} request ${briefing.request.id.slice(0, 24)}… by $user, answered by #${ack.number}` : null;
+  }, ["Backroom → @worker: seat briefing", "(seat briefing)"]);
 
   // 1. The user asks the Consigliere; his turn runs: an open request, with who is on it.
   const ask = await room.message("Get the date parser fixed and reviewed, then report.");
@@ -745,12 +765,40 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   browser.click(/button "Back to the overview"/);
   await check.state("the overview: a member working, then news", (x) => (x.runs.some((r) => r.seatId === seat.fable && r.phase === "running" && r.requestIds.includes(ping)) ? "@fable running" : null), ["1 busy"]);
   await room.finish("fable", "Tag confirmed.");
-  // News is the Consigliere's finishes since the room was last seen (journal sequence): the tile counts them.
+  // News is the Consigliere's finishes since the room was last seen (one per turn, by journal sequence): the tile counts them.
   s = await until("the Consigliere's last reply", async () => {
     const x = await room.snapshot();
     return claimOf(x, ping, "answered") && x.news.unseen >= 1 ? x : null;
   });
   await check.state("news on the room's tile", (x) => (x.news.unseen === s.news.unseen ? `news.unseen=${x.news.unseen} seenSeq=${x.news.seenSeq} latest #${x.news.latest?.number} (${x.news.latest?.kind})` : null), [`${s.news.unseen} new`]);
+
+  // 18. A room without a Consigliere: one message to two members, with an image, is one message on the board.
+  const second = await room.second("Rehearsal B", ["alpha", "beta"]);
+  const image = await second.attach();
+  const both = await service.command<{ messageId: string; requestIds: string[] }>({
+    type: "message.create",
+    roomId: second.roomId,
+    sourceText: "@alpha @beta independently check the date tests",
+    clientMessageId: randomUUID(),
+    attachmentIds: [image],
+    assignments: [{ recipients: [second.participant.alpha!, second.participant.beta!], instruction: "independently check the date tests", schedule: { mode: "now" }, after: [] }],
+  });
+  browser.waitFor("Rehearsal B");
+  browser.click(/button "Rehearsal B/);
+  const two = new Checks(second, browser);
+  await two.state("one message to two members, with its image", (x) => {
+    const posts = x.posts.filter((p) => p.kind === "request" && p.request.message?.id === both.messageId);
+    return posts.length === 2 && posts.every((p) => p.request.message.attachmentIds.includes(image))
+      ? `#${posts.map((p) => p.number).join(", #")} share message ${both.messageId.slice(0, 8)} with attachment ${image.slice(0, 8)}`
+      : null;
+  }, ["→ @alpha, @beta", "independently check the date tests"], {
+    extra: () => {
+      const shape = browser.eval<{ rows: number; images: number }>(`() => ({ rows: [...document.querySelectorAll('.timeline .chat-row.from-user')].filter((row) => row.textContent.includes('independently check the date tests')).length, images: document.querySelectorAll('.timeline img[src="/api/attachments/${image}"]').length })`);
+      if (shape.rows !== 1 || shape.images !== 1) fail(`the message is not one row with its image: ${JSON.stringify(shape)}`);
+      log("  page: one row for both requests, the image once");
+    },
+  });
+  check.passed.push(...two.passed);
   return check.passed;
 }
 

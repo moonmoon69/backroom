@@ -48,7 +48,7 @@ export interface RoomNews {
   /** The seq you have seen the room up to. */
   seenSeq: number;
   unseen: number;
-  latest: { seq: number; number: number; at: string | null; seatId: string; alias: string | null; kind: "reply" | "failed"; preview: string } | null;
+  latest: (EngineTime & { seq: number; number: number; seatId: string; alias: string | null; kind: "reply" | "failed"; preview: string }) | null;
 }
 
 export interface Participant {
@@ -131,6 +131,8 @@ export interface EnginePost extends EngineTime {
   body: string;
   /** The requests it is about; a request post names itself. */
   about: EngineRef[];
+  /** The one post that stands for a turn (a run's final, a T3 turn's note or continuation): spend and news count these. */
+  turn: boolean;
   request?: {
     id: string;
     parentId: string | null;
@@ -141,6 +143,8 @@ export interface EnginePost extends EngineTime {
     state: "open" | "answered" | "cancelled";
     answer: { seq: number; number: number } | null;
     corrections: number;
+    /** The user message it came from: its requests share `id` (one message), with its images. Null for a member's request. */
+    message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
   };
   output?: {
     /** answer: names requests (claims say what each came to); yield: answers nothing; progress: an update under held work; error: a failed run. */
@@ -156,6 +160,8 @@ export interface EnginePost extends EngineTime {
   note?: {
     /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends. */
     source: "post" | "t3-message" | "t3-turn" | "deferred-cancel";
+    /** A /note to the whole room. */
+    room: boolean;
     t3: EngineT3Ref | null;
     /** Under a request its author had already answered (a self-started turn after the answer). */
     afterAnswer: boolean;
@@ -197,6 +203,8 @@ export interface EngineRequestView {
   activityIds: string[];
   /** Its owner's live run, when that run works on it. */
   runId: string | null;
+  /** The user message it came from; null for a member's request. */
+  messageId: string | null;
 }
 
 export type EngineRunPhase = "prepared" | "sending" | "accepted" | "running" | "uncertain" | "rejected" | "terminal";
@@ -234,8 +242,8 @@ export interface EngineActivityView {
   status: "pending" | "uncertain" | "done" | "failed";
   /** Held by the member: it ends only with `rooms-board answer` (or a cancel). */
   memberHeld: boolean;
-  /** "working since …" (exact for `bg:`, a lower bound for `work:`; null when unknown). */
-  since: string | null;
+  /** "working since …": exact (`at`) for `bg:`, a lower bound (`after`) for `work:`. */
+  since: EngineTime;
 }
 
 /** A delivery the engine could not make: one input with its open requests over the byte budget. */
@@ -340,8 +348,8 @@ export interface OverviewRoom {
     live: string | null;
     /** The request its live run works on. */
     doing: string | null;
-    /** What it last said; `at` is null when T3 did not time it. */
-    lastReply: { at: string | null; text: string } | null;
+    /** What it last said, with T3's time (exact `at`, or the lower bound `after`). */
+    lastReply: (EngineTime & { text: string }) | null;
   }>;
   /** The room state's first line, the tile's blurb; null without a state. */
   state: { line: string; by: string; at: string } | null;

@@ -9,13 +9,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api } from "../api.ts";
+import { api, attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
-import { replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
+import { backroomNotice, replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
+import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
 import { Glyph } from "./icons.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
-import { FileBaseContext } from "./filePreviewContext.ts";
+import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -91,8 +92,15 @@ const useBoard = (): Board => {
  * there as a T3 command) are on the board.
  */
 function consigliereChat(posts: EnginePost[], his: ReadonlySet<string>, hisThreads: ReadonlySet<string>): EnginePost[] {
+  const hisRequests = new Set(posts.flatMap((post) => (post.request && his.has(post.request.owner) ? [post.request.id] : [])));
   return posts.filter((post) => {
-    if (post.author === "$user") return !post.note?.t3 || hisThreads.has(post.note.t3.threadId);
+    if (post.author === "$user") {
+      // His requests (not Backroom's briefings to the members), notes to the room or typed on his thread, and the
+      // user's corrections, cancels and retries of his work.
+      if (post.kind === "request") return his.has(post.request!.owner) && !backroomNotice(post);
+      if (post.kind === "note") return !post.note?.t3 || hisThreads.has(post.note.t3.threadId);
+      return post.about.some((ref) => hisRequests.has(ref.requestId));
+    }
     if (his.has(post.author)) {
       if (post.kind === "note") return true;
       if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user") === true;
@@ -111,7 +119,7 @@ const STICK_PX = 40;
 /** Distance from the bottom (px) beyond which "Jump to latest" appears. */
 const JUMP_PX = 240;
 
-type Item = { type: "day"; key: string; label: string } | { type: "post"; post: EnginePost };
+type Item = { type: "day"; key: string; label: string } | { type: "post"; post: EnginePost } | { type: "message"; posts: EnginePost[] };
 
 /** A run that has not ended: what it is doing, in a word. */
 const PHASE_WORDS: Record<EngineRunView["phase"], string> = {
@@ -206,11 +214,23 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     const timed = posts.filter((post) => post.at);
     const spansDays = timed.length > 0 && dayKey(timed[0]!.at!) !== dayKey(timed[timed.length - 1]!.at!);
     let lastDay: string | null = null;
+    // A user message made one request per recipient per assignment: they are one message on the board.
+    const messages = new Map<string, { type: "message"; posts: EnginePost[] }>();
     for (const post of posts) {
+      const messageId = post.author === "$user" ? post.request?.message?.id : undefined;
+      const same = messageId ? messages.get(messageId) : undefined;
+      if (same) {
+        same.posts.push(post);
+        continue;
+      }
       const day = post.at ? dayKey(post.at) : null;
       if (spansDays && day && day !== lastDay) items.push({ type: "day", key: `day-${day}-${post.seq}`, label: dayLabel(post.at!) });
       if (day) lastDay = day;
-      items.push({ type: "post", post });
+      if (post.kind === "request" && post.author === "$user") {
+        const item = { type: "message" as const, posts: [post] };
+        if (messageId) messages.set(messageId, item);
+        items.push(item);
+      } else items.push({ type: "post", post });
     }
     return items;
   }, [posts]);
@@ -317,7 +337,8 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     if (isFar !== far) setFar(isFar);
   };
 
-  const unseen = far ? posts.filter((post) => post.seq > seenSeq && post.kind === "output" && !post.author.startsWith("$")).length : 0;
+  // New replies while scrolled up: one per member turn (an explicit answer and its turn's final are one).
+  const unseen = far ? posts.filter((post) => post.seq > seenSeq && post.turn && !post.author.startsWith("$")).length : 0;
   const scrollControl = useMemo(() => ({ release: () => (stickToBottom.current = false) }), []);
   const noCrew = !snapshot.participants.some(isActiveParticipant);
 
@@ -366,6 +387,8 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
                   <div key={item.key} className="chat-day" role="separator">
                     <span>{item.label}</span>
                   </div>
+                ) : item.type === "message" ? (
+                  <UserMessage key={item.posts[0]!.id} posts={item.posts} chat={chat} />
                 ) : (
                   <PostRow key={item.post.id} post={item.post} chat={chat} />
                 ),
@@ -405,7 +428,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
 function PostRow({ post, chat }: { post: EnginePost; chat: boolean }) {
   switch (post.kind) {
     case "request":
-      return post.author === "$user" ? <UserRequest post={post} chat={chat} /> : <MemberRequest post={post} />;
+      return post.author === "$user" ? <UserMessage posts={[post]} chat={chat} /> : <MemberRequest post={post} />;
     case "output":
       return <Reply post={post} />;
     case "note":
@@ -496,80 +519,158 @@ function RequestMarker({ post }: { post: EnginePost }) {
 
 /** "working since 14:03": background work holding a request open (a `work:` mark or T3's background jobs). */
 function WorkingSince({ activity, who }: { activity: EngineActivityView; who?: string }) {
-  const since = activity.since ? time(activity.since) : null;
   const what = activity.kind === "bg" ? "background work T3 listed when the turn ended" : "the member said it is still working (rooms-board working)";
+  const when = activity.since.at ? ` · since ${fullTime(activity.since.at)}` : activity.since.after ? ` · since some time after ${fullTime(activity.since.after)} (T3 has no exact time for it)` : "";
   return (
-    <span className="working-since mono" title={`${what}${activity.memberHeld ? "; it ends only when the member answers" : ""}${activity.since ? ` · since ${fullTime(activity.since)}` : ""}`}>
-      {" "}· {who ? `${who} ` : ""}working since {since ?? "an unknown time"}
+    <span className="working-since mono" title={`${what}${activity.memberHeld ? "; it ends only when the member answers" : ""}${when}`}>
+      {` · ${who ? `${who} ` : ""}working since ${sinceWords(activity.since)}`}
     </span>
   );
 }
 
-/** The user's own request: their bubble, where it went, and its marker; Cancel and Correct while it is open. */
-function UserRequest({ post, chat }: { post: EnginePost; chat: boolean }) {
-  const { nameOf, runCommand, snapshot } = useRoom();
-  const request = post.request!;
-  const [correcting, setCorrecting] = useState(false);
-  const [text, setText] = useState("");
-  const open = request.state === "open";
+/**
+ * One message of the user's: the requests it made (one per recipient per assignment, sharing `request.message.id`) as one
+ * message, with its images; where each went and each one's marker, with Correct… and Cancel while it is open.
+ */
+function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
+  const { nameOf } = useRoom();
+  const first = posts[0]!;
+  const notice = backroomNotice(first);
+  if (notice) return <BackroomRequest post={first} notice={notice} />;
+  const message = first.request?.message ?? null;
+  const images = message?.attachmentIds ?? [];
+  // One text when every recipient got the same words; otherwise each assignment's own, under whom it went to.
+  const sameText = posts.every((post) => post.body === first.body);
+  const owners = posts.map((post) => nameOf(post.request!.owner));
   return (
-    <div className="chat-row from-user" data-number={post.number} data-seq={post.seq}>
+    <div className="chat-row from-user" data-number={first.number} data-seq={first.seq}>
       <div className="chat-stack">
         <div className="chat-head">
           <span className="you-mark mono">you</span>
           {!chat ? (
             <span className="mono req-to">
-              <Glyph name="arrow" text="→" /> {nameOf(request.owner)}
+              <Glyph name="arrow" text="→" /> {owners.join(", ")}
             </span>
           ) : null}
-          <Stamp post={post} />
+          {message?.steer ? (
+            <span className="tag mono" title="Sent into the member's running turn (/steer): one reply answers both">
+              into the turn
+            </span>
+          ) : null}
+          <Stamp post={first} />
         </div>
-        <div className="bubble-line">
-          <div className="bubble bubble-user">
-            <UserText text={post.body} />
+        {sameText ? (
+          <div className="bubble-line">
+            <div className="bubble bubble-user">
+              {first.body ? <UserText text={first.body} /> : null}
+              {images.length > 0 ? <AttachedImages ids={images} /> : null}
+            </div>
+            <CopyTextButton text={first.body} label="Copy message" className="bubble-side" />
           </div>
-          <CopyTextButton text={post.body} label="Copy message" className="bubble-side" />
+        ) : (
+          <>
+            {posts.map((post, index) => (
+              <div key={post.id} className="bubble-line">
+                <div className="bubble bubble-user">
+                  <span className="mono muted req-to">{owners[index]}</span>
+                  <UserText text={post.body} />
+                  {index === posts.length - 1 && images.length > 0 ? <AttachedImages ids={images} /> : null}
+                </div>
+                <CopyTextButton text={post.body} label="Copy message" className="bubble-side" />
+              </div>
+            ))}
+          </>
+        )}
+        {posts.map((post) => (
+          <RequestFoot key={post.id} post={post} owner={posts.length > 1 ? nameOf(post.request!.owner) : null} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Backroom's briefing to a member, made in the user's name: one line, opening to its text, with its marker. */
+function BackroomRequest({ post, notice }: { post: EnginePost; notice: string }) {
+  const { nameOf } = useRoom();
+  return (
+    <div className="chat-status mono backroom-request" data-number={post.number} data-seq={post.seq} title={whenTitle(post)}>
+      <span className="post-number">#{post.number}</span>
+      <details>
+        <summary>
+          {`Backroom → ${nameOf(post.request!.owner)}: ${notice}`}
+        </summary>
+        <div className="sent-full">
+          <Markdown text={post.body} />
         </div>
-        <div className="req-foot">
-          <RequestMarker post={post} />
-          {request.corrections > 0 ? <span className="mono muted"> · corrected {request.corrections}×</span> : null}
-          {open ? (
-            <span className="req-actions">
-              <button type="button" className="link-button" onClick={() => setCorrecting((v) => !v)} title="Add to or change what you asked; the member gets it with the request">
-                Correct…
-              </button>
-              <button
-                type="button"
-                className="link-button danger"
-                title="Withdraw it: a turn working only on it is stopped"
-                onClick={() => void runCommand({ type: "request.cancel", roomId: snapshot.room.id, requestId: request.id })}
-              >
-                Cancel
-              </button>
-            </span>
-          ) : null}
-        </div>
-        {correcting && open ? (
-          <form
-            className="req-correct"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!text.trim()) return;
-              void runCommand({ type: "request.correct", roomId: snapshot.room.id, requestId: request.id, text: text.trim() }).then((result) => {
-                if (result) {
-                  setText("");
-                  setCorrecting(false);
-                }
-              });
-            }}
-          >
-            <textarea value={text} rows={2} onChange={(e) => setText(e.target.value)} placeholder={`What changes in #${post.number}`} aria-label={`Correction to #${post.number}`} />
-            <button type="submit" className="small primary" disabled={!text.trim()}>
-              Send correction
+      </details>
+      <RequestMarker post={post} />
+    </div>
+  );
+}
+
+/** Images that came with a message, opening in the shared preview. */
+function AttachedImages({ ids }: { ids: string[] }) {
+  const openImage = useOpenImagePreview();
+  return (
+    <div className="event-images">
+      {ids.map((id) => (
+        <button type="button" className="image-preview-trigger" key={id} aria-label="Open attached image" aria-haspopup="dialog" title="Open full size" onClick={() => openImage?.({ src: attachmentUrl(id), alt: "Attached image" })}>
+          <img src={attachmentUrl(id)} alt="Attached image" loading="lazy" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** One request of the user's message: its marker, and Correct… and Cancel while it is open. */
+function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }) {
+  const { runCommand, snapshot } = useRoom();
+  const request = post.request!;
+  const [correcting, setCorrecting] = useState(false);
+  const [text, setText] = useState("");
+  const open = request.state === "open";
+  return (
+    <div className="req-block" data-number={post.number} data-seq={post.seq}>
+      <div className="req-foot">
+        {owner ? <span className="mono muted">#{post.number} → {owner}</span> : null}
+        <RequestMarker post={post} />
+        {request.corrections > 0 ? <span className="mono muted"> · corrected {request.corrections}×</span> : null}
+        {open ? (
+          <span className="req-actions">
+            <button type="button" className="link-button" onClick={() => setCorrecting((v) => !v)} title="Add to or change what you asked; the member gets it with the request">
+              Correct…
             </button>
-          </form>
+            <button
+              type="button"
+              className="link-button danger"
+              title="Withdraw it: a turn working only on it is stopped"
+              onClick={() => void runCommand({ type: "request.cancel", roomId: snapshot.room.id, requestId: request.id })}
+            >
+              Cancel
+            </button>
+          </span>
         ) : null}
       </div>
+      {correcting && open ? (
+        <form
+          className="req-correct"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!text.trim()) return;
+            void runCommand({ type: "request.correct", roomId: snapshot.room.id, requestId: request.id, text: text.trim() }).then((result) => {
+              if (result) {
+                setText("");
+                setCorrecting(false);
+              }
+            });
+          }}
+        >
+          <textarea value={text} rows={2} onChange={(e) => setText(e.target.value)} placeholder={`What changes in #${post.number}`} aria-label={`Correction to #${post.number}`} />
+          <button type="submit" className="small primary" disabled={!text.trim()}>
+            Send correction
+          </button>
+        </form>
+      ) : null}
     </div>
   );
 }
@@ -736,7 +837,9 @@ function Note({ post }: { post: EnginePost }) {
       <div className="chat-row from-user is-note" data-number={post.number} data-seq={post.seq}>
         <div className="chat-stack">
           <div className="chat-head">
-            <span className="you-mark mono">{post.author === "$system" ? "Backroom" : fromT3 ? "you" : "note"}</span>
+            <span className="you-mark mono" title={note.room ? "A note to the whole room: every member's next briefing carries it; nobody is woken" : undefined}>
+              {post.author === "$system" ? "Backroom" : fromT3 ? "you" : note.room ? "note to the room" : "note"}
+            </span>
             {fromT3 ? (
               <span className="tag mono direct-tag" title="Typed in T3 Code on a member's thread; recorded on the board as a note, nobody is woken">
                 in T3

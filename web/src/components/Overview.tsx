@@ -379,7 +379,8 @@ function RoomCard({
             // A turn's latest line; else the request it is on; else what it last said (also between turns, while its
             // background work runs).
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
-            const when = member.live || member.doing ? "" : age(member.lastReply?.at);
+            // T3's time of it, or the lower bound when T3 did not time it.
+            const when = member.live || member.doing ? "" : age(member.lastReply?.at ?? member.lastReply?.after);
             return (
               <li key={member.id} className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`} title={line ? oneLine(line, 400) : described.label}>
                 <span className="avatar avatar-xs" aria-hidden="true">

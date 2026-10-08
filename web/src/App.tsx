@@ -253,8 +253,8 @@ export function App() {
     return () => clearInterval(timer);
   }, [selectedRoomId, loadSnapshot, roomBusy]);
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
-  // A new reply (an output, or a turn's note) is priced at once: the nonce is the seq of the newest one.
-  const lastReplySeq = snapshot ? snapshot.posts.reduce((seq, post) => (post.kind === "output" || post.note?.source === "t3-turn" ? post.seq : seq), 0) : 0;
+  // A new reply is priced at once: the nonce is the seq of the newest post that stands for a turn (spend is keyed by those).
+  const lastReplySeq = snapshot ? snapshot.posts.reduce((seq, post) => (post.turn ? post.seq : seq), 0) : 0;
   const costs = useRoomCosts(snapshot ? snapshot.room.id : null, lastReplySeq);
 
   // Git: the folder and commit count the Git tab shows start over in each room.

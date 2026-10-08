@@ -18,15 +18,28 @@ export interface ReplyContext {
   nameOf: (principal: string) => string;
 }
 
+/**
+ * A request Backroom made in the user's name (L4b): the standing facts a member of a room with a Consigliere is given
+ * when seated ("seat-briefing:…"), or the notice that the Consigliere changed ("moved:…"). Not something the user wrote.
+ */
+export function backroomNotice(post: Pick<EnginePost, "author" | "request">): "seat briefing" | "new Consigliere notice" | null {
+  if (post.author !== "$user" || !post.request) return null;
+  if (post.request.id.startsWith("seat-briefing:")) return "seat briefing";
+  if (post.request.id.startsWith("moved:")) return "new Consigliere notice";
+  return null;
+}
+
 /** One piece of the tag: words, or a board number to reveal. */
 export type ReplyPiece = { text: string } | { ref: number };
 
 const ref = (number: number | null): ReplyPiece => (number === null ? { text: "#?" } : { ref: number });
 
-/** Who asked a request, as the tag says it: "from you", "from @Fable"; nothing when the page does not hold it. */
+/** Who asked a request, as the tag says it: "from you", "from @Fable", "(seat briefing)"; nothing when the page does not hold it. */
 function from(requestId: string, context: ReplyContext): ReplyPiece[] {
   const post = context.requestPost(requestId);
-  return post ? [{ text: ` from ${context.nameOf(post.author)}` }] : [];
+  if (!post) return [];
+  const notice = backroomNotice(post);
+  return [{ text: notice ? ` (${notice})` : ` from ${context.nameOf(post.author)}` }];
 }
 
 /** The words for one claim. */
