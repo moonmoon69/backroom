@@ -139,7 +139,7 @@ test("a transcript that grows is read from where it was left, a line still being
   assert.equal(costs.cost(["thread-1"]).subagents.outputTokens, 5);
 });
 
-test("what a thread used between two moments, for a task's run", (t) => {
+test("what a thread used between two moments, for a reply", (t) => {
   const m = machine(t);
   m.bind("thread-1", "claudeAgent", "sess-1");
   writeFileSync(

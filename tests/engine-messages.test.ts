@@ -165,7 +165,7 @@ const dispatches = (r: Room) => r.fake.commands.filter((c) => c.type === "messag
 const pngId = (r: Room, name: string) => r.stack.service.storeAttachment({ roomId: r.roomId, name, mimeType: "image/png", data: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, name.length]) }).id;
 const errorsOf = (d: Draft) => d.unresolved.filter((u) => u.severity === "error").map((u) => u.message);
 
-// ---------------- How a message becomes tasks ----------------
+// ---------------- How a message becomes requests ----------------
 
 test("How a message becomes requests, 1. split: each recipient of an assignment gets its own request with the same text, all sharing the message's ID", async (t) => {
   const r = await engineRoom(["sol", "grok", "claude"]);

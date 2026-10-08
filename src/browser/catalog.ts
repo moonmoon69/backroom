@@ -58,7 +58,6 @@ export function roomForKey(repos: Repos, key: string): Room | null {
   return repos.listRooms().find((room) => room.id.startsWith(prefix)) ?? null;
 }
 
-/** Rooms with browsers on whose default is this browser. */
 /**
  * Whether a browser is busy: a room that uses it as its default has work in flight (`roomBusy`). A busy browser is never
  * stopped for idleness (RoomBrowsers' isBusy).
@@ -67,6 +66,7 @@ export function browserBusy(repos: Repos, browserId: string, roomBusy: (roomId: 
   return roomsUsingBrowser(repos, browserId).some((room) => roomBusy(room.id));
 }
 
+/** Rooms with browsers on whose default is this browser. */
 export function roomsUsingBrowser(repos: Repos, browserId: string): Room[] {
   return repos.listRooms().filter((room) => room.browserEnabled && effectiveBrowser(repos, room)?.id === browserId);
 }
