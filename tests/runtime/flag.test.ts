@@ -46,7 +46,8 @@ test("with ROOMS_ENGINE=1 the host runs over board.sqlite next to rooms.sqlite a
     const { participantId } = (await s.service.execute(parseCommand({ type: "participant.create", roomId, alias: "worker", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } }))) as { participantId: string };
     // A seat is a participant's binding: seat ID = binding ID, on the binding's thread.
     const binding = s.repos.currentBinding(participantId)!;
-    s.engine.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    // Seating the member seated it on the board too (L4b): no seat briefing, since the room has no Consigliere.
+    assert.equal(s.engine.view(roomId).seats.get(binding.id)?.threadId, binding.threadId);
     // The flag selects the engine: the user's message makes no old task but a request on the journal (L4a).
     await s.service.execute(parseCommand({ type: "message.create", roomId, assignments: [{ recipients: [participantId], instruction: "Hello from the journal." }] }));
     assert.equal(s.repos.listTasks(roomId).length, 0, "no old task with the flag on");

@@ -57,6 +57,8 @@ export interface StandingInput {
   board?: { command: string; as: string } | null;
   /** The room's state as the Consigliere last wrote it; a thread's first briefing carries it. */
   roomState?: RoomState | null;
+  /** A member's standing facts in a room with a Consigliere; `seatFacts` from consigliere.ts when absent (the engine has its own). */
+  seatFacts?: ((consigliere: Pick<Participant, "alias">) => string) | null;
 }
 
 /**
@@ -294,7 +296,7 @@ export function standingSections(input: StandingInput): StandingSections {
     workspaces,
     browsers: input.browsers ? browserSection(input.browsers) : null,
     board: input.board ? boardLine(input.board) : null,
-    seat: hisRoom ? seatFacts(hisRoom) : null,
+    seat: hisRoom ? (input.seatFacts ?? seatFacts)(hisRoom) : null,
     roomState: input.roomState ? roomStateSection(input.roomState) : null,
   };
 }

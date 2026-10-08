@@ -239,7 +239,7 @@ async function flagStack(engine: boolean) {
 test("P5: with the flag on, a question a member's run raises reaches Backroom's native-requests path", async () => {
   const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
   try {
-    s.engine!.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    assert.ok(s.engine!.view(roomId).seats.has(binding.id), "participant.create seats the member on the board (L4b)");
     s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "Do the thing; ask me if unsure." });
     await s.scheduler.tick();
     assert.equal(fake.threads.get(binding.threadId)!.runs.length, 1, "dispatched by the host");
@@ -255,7 +255,7 @@ test("P5: with the flag on, a question a member's run raises reaches Backroom's 
 test("F5: with the flag on, the user answers through Backroom; a request T3 resolves itself is resolved; the seat gets work again", async () => {
   const { s, fake, roomId, participantId, binding, close } = await flagStack(true);
   try {
-    s.engine!.seat(roomId, { actor: "$user", id: "seat-w", seatId: binding.id, threadId: binding.threadId });
+    assert.ok(s.engine!.view(roomId).seats.has(binding.id), "participant.create seats the member on the board (L4b)");
     s.engine!.request(roomId, { actor: "$user", id: "req-1", to: binding.id, body: "First job." });
     await s.scheduler.tick();
     fake.raiseQuestion(binding.threadId, { requestId: "q-1" });

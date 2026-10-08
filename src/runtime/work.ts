@@ -62,8 +62,14 @@ export function finalTargets(p: Projection, run: Run): string[] {
   }
   const marked = workingMarks(p, run.seatId, reservedSeq(p, run.id));
   const allowed = allowedIds(p, run);
-  return [...targets].filter((id) => !marked.has(id) && allowed.has(id));
+  const selected = [...targets].filter((id) => !marked.has(id) && allowed.has(id));
+  // A reseat's checkpoint run answers the checkpoint only: the seat's other requests stay open for the fresh seat (L4b).
+  const checkpoints = selected.filter((id) => id.startsWith(RESEAT_CHECKPOINT) && p.requests.get(id)?.returnTo === "$user");
+  return checkpoints.length > 0 ? checkpoints : selected;
 }
+
+/** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
+export const RESEAT_CHECKPOINT = "reseat:";
 
 export function isPending(a: Activity): boolean {
   return a.status === "pending" || a.status === "uncertain";

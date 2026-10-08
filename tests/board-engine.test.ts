@@ -34,6 +34,16 @@ import { RuntimeFake } from "./runtime/helpers.ts";
 const MiB = MAX_POST_BYTES;
 const REPO = join(import.meta.dirname, "..");
 
+/** A member in rooms.sqlite with no seat on the board, as a crash between the two stores would leave it: L4b's
+ *  participant.create seats every member it makes, so tests that need one write it directly. */
+function unseatedMember(repos: AppStack["repos"], roomId: string, alias: string): string {
+  const at = new Date().toISOString();
+  const id = `unseated:${alias}:${roomId}`;
+  repos.insertParticipant({ id, roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
+  repos.insertBinding({ id: `binding:${id}`, participantId: id, generation: 1, threadId: `thread:${id}`, deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: at, retiredAt: null });
+  return id;
+}
+
 /** A room on the engine: rooms.sqlite and board.sqlite in a temporary folder, the T3 fake kept across restarts. */
 class Fixture {
   readonly dir = mkdtempSync(join(tmpdir(), "backroom-board-engine-"));
@@ -79,11 +89,14 @@ class Fixture {
     const { roomId } = (await this.run({ type: "room.create", projectId: "project_demo", title })) as { roomId: string };
     const ids = new Map<string, string>();
     for (const alias of aliases) {
+      if (!journal) {
+        ids.set(alias, unseatedMember(this.stack.repos, roomId, alias));
+        continue;
+      }
+      // participant.create seats the member on the board (L4b); the orchestrator is designated there.
       const { participantId } = (await this.run({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } })) as { participantId: string };
       ids.set(alias, participantId);
-      if (!journal) continue;
-      const binding = this.stack.repos.currentBinding(participantId)!;
-      this.stack.engine!.seat(roomId, { actor: "$user", id: `seat:${alias}`, seatId: binding.id, threadId: binding.threadId, orchestrator: alias === orchestrator });
+      if (alias === orchestrator) this.stack.engine!.designate(roomId, { id: `designate:${alias}`, seatId: this.stack.repos.currentBinding(participantId)!.id });
     }
     this.members.set(roomId, ids);
     return roomId;

@@ -442,8 +442,8 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
   const seats: Record<string, { participantId: string; seatId: string; threadId: string }> = {};
   for (const alias of aliases) {
     const { participantId } = (await run({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } })) as { participantId: string };
+    // participant.create seats the member on the board (L4b): seat ID = binding ID.
     const binding = stack.repos.currentBinding(participantId)!;
-    engine.seat(roomId, { actor: "$user", id: `seat:${alias}`, seatId: binding.id, threadId: binding.threadId });
     seats[alias] = { participantId, seatId: binding.id, threadId: binding.threadId };
   }
   const config = options.config ?? loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(dir, "data"), ROOMS_PORT: "0", T3_USERDATA_DIR: join(dir, "t3"), CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex") });
@@ -845,6 +845,44 @@ test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered
   assert.ok(p.events.some((e) => e.data.kind === "note" && e.data.body.includes("Docs done.")), "the steer's own run came back as a note");
   assertOneTurnPerT3Run(fake, p, [thread]);
   assert.equal(fake.threads.get(thread)!.runs.length, 6);
+});
+
+test("M3: the news filter's Consigliere (rooms.sqlite) and the journal's orchestrator agree as he is made, changed and cleared", async (t) => {
+  const s = await engineStack(t, ["cons", "worker"]);
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) {
+      await s.tick(2);
+      let live = false;
+      for (const seat of Object.values(s.seats)) {
+        const run = s.fake.threads.get(seat.threadId)!.runs.find((r) => r.completedAt === null);
+        if (run) {
+          live = true;
+          s.fake.completeRun(seat.threadId, { text: `ok from ${seat.seatId}` });
+        }
+      }
+      if (!live) return;
+    }
+  };
+  const check = async (expected: string | null) => {
+    await settle();
+    const p = s.engine.view(s.roomId);
+    const consigliere = s.stack.repos.getRoom(s.roomId)!.consigliereId;
+    assert.equal(consigliere, expected === null ? null : s.seats[expected]!.participantId, "rooms.sqlite");
+    assert.equal(p.orchestrator, expected === null ? null : s.seats[expected]!.seatId, "the journal");
+    const [item] = await s.get<EngineRoomListItem[]>("/api/rooms");
+    const view = journalView({ p });
+    assert.equal(item!.news.unseen, newsOf(view, 0, p.orchestrator === null ? null : new Set([p.orchestrator])).unseen, "news follows the journal's orchestrator");
+    return item!.news.unseen;
+  };
+  s.ask("worker", "One.");
+  s.ask("cons", "Two.");
+  assert.equal(await check(null), 2, "no Consigliere: everyone's turns are news");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: s.seats.cons!.participantId });
+  await check("cons");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: s.seats.worker!.participantId });
+  await check("worker");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: null });
+  await check(null);
 });
 
 test("with the flag off nothing is registered: the old routes answer as before", async () => {

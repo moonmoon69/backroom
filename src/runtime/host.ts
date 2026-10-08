@@ -870,6 +870,28 @@ export class EngineHost {
     return this.member(roomId, { type: "seat", actor: input.actor, id: input.id, seatId: input.seatId, threadId: input.threadId, ...(input.orchestrator ? { orchestrator: true } : {}) });
   }
 
+  /** L4b: a seat leaves with nothing to hand over. The core refuses it as it refuses a transfer, and with open owned work. */
+  retire(roomId: string, input: { actor: string; id: string; seatId: string; evidence: string }): CommitReceipt {
+    return this.member(roomId, { type: "retire", actor: input.actor, id: input.id, seatId: input.seatId, evidence: input.evidence });
+  }
+
+  /** L4b: the user moves or clears the orchestrator. */
+  designate(roomId: string, input: { id: string; seatId: string | null }): CommitReceipt {
+    return this.member(roomId, { type: "designate", actor: "$user", id: input.id, seatId: input.seatId });
+  }
+
+  /**
+   * L4b's reseat: the old seat's open requests, return routes and unread input move to a fresh seat in one event. The
+   * exact lists the core requires are read here, in the same synchronous step; a replay sends the committed ones again.
+   */
+  transfer(roomId: string, input: { actor: string; id: string; oldSeatId: string; newSeatId: string; threadId: string; body: string; evidence: string }): CommitReceipt {
+    const p = this.project(roomId);
+    const done = p.events.find((e) => e.id === input.id && e.data.kind === "transfer")?.data;
+    const owned = done?.kind === "transfer" ? done.owned : [...p.requests.values()].filter((r) => r.owner === input.oldSeatId && r.state === "open").map((r) => r.id);
+    const awaited = done?.kind === "transfer" ? done.awaited : [...p.requests.values()].filter((r) => r.returnTo === input.oldSeatId && r.state === "open").map((r) => r.id);
+    return this.member(roomId, { type: "transfer", actor: input.actor, id: input.id, oldSeatId: input.oldSeatId, newSeatId: input.newSeatId, threadId: input.threadId, owned, awaited, body: input.body, evidence: input.evidence });
+  }
+
   /** A request, as given: the user's message path and a member's post with its parent already chosen. */
   request(roomId: string, input: { actor: string; id: string; to: string; body: string; parentId?: string }): CommitReceipt {
     return this.member(roomId, { type: "request", actor: input.actor, id: input.id, to: input.to, body: input.body, ...(input.parentId ? { parentId: input.parentId } : {}) });
