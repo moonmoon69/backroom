@@ -28,6 +28,7 @@ import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
 import { TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
 import { TranscriptTokens, type Tokens } from "./tokens.ts";
+import { loadVerdictJob, verdictSections } from "./verdict-report.ts";
 
 export type { Tokens };
 
@@ -676,7 +677,8 @@ async function main(): Promise<void> {
   const aborted = listJobs(campaign)
     .filter(({ job }) => job.status !== "closed")
     .map(({ job }) => ({ job, spentUsd: live.between(jobThreads(job), Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY).costUsd }));
-  writeFileSync(join(out, "report.md"), reportMarkdown(campaign, measures, listJobs(campaign).map((j) => j.job), differences, aborted, projectsByFolder()));
+  const report = reportMarkdown(campaign, measures, listJobs(campaign).map((j) => j.job), differences, aborted, projectsByFolder());
+  writeFileSync(join(out, "report.md"), report);
   console.log(`${measures.length} jobs measured; ${join(out, "report.md")}`);
 
   if ((values["register-gate"] || values.verdict) && differences.length > 0) throw new Error(`the accuracy check found ${differences.length} differences: no gate is registered and no verdict given`);
@@ -729,8 +731,17 @@ async function main(): Promise<void> {
     const result = verdict(gate, runs.map(gateRun));
     const lines = [`# Z1 verdict: ${result.verdict}`, "", `chance-pass ${(result.chance.chancePass * 100).toFixed(2)}% (target ${gate.chancePassTarget * 100}%), chance-G3-fail ${(result.chance.chanceG3Fail * 100).toFixed(2)}%, over ${result.chance.labellings} labellings; N = ${gate.N}, K = ${gate.K}.`, "", `G1 ${result.evaluation.g1}, G2 ${result.evaluation.g2}, G3 ${result.evaluation.g3}.`, "", "| task | correct old/new | premature old/new | " + METRICS.join(" | ") + " | material |", "|---|---|---|" + METRICS.map(() => "---|").join("") + "---|"];
     for (const [task, row] of Object.entries(result.evaluation.perTask)) lines.push(`| ${task} | ${row.correct.old}/${row.correct.new} | ${row.premature.old}/${row.premature.new} | ${METRICS.map((m) => row.cells[m]).join(" | ")} | ${row.material.join(", ") || "none"} |`);
+    // Reporting only (verdict-report.ts): the behaviour checks, the rules diff and briefing bytes, every run's numbers.
+    const notesPath = join(out, "behaviour-notes.md");
+    const sections = verdictSections(
+      jobs.flatMap(({ dir }, index) => ((measures[index] as JobMeasure).dry ? [] : [loadVerdictJob(dir, measures[index] as JobMeasure)])),
+      report,
+      existsSync(notesPath) ? readFileSync(notesPath, "utf8") : null,
+    );
+    lines.push("", ...sections.beforeLimits);
     lines.push("", "## Limits", "", ...VERDICT_LIMITS.map((limit) => `- ${limit}`));
-    writeFileSync(join(out, "verdict.md"), `${lines.join("\n")}\n\nEvery run's numbers are in report.md beside this file.\n`);
+    lines.push("", ...sections.afterLimits);
+    writeFileSync(join(out, "verdict.md"), `${lines.join("\n")}\n`);
     console.log(`verdict: ${result.verdict}`);
     if (result.verdict !== "PASS") process.exitCode = 1;
   }

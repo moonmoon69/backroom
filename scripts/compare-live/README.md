@@ -22,6 +22,7 @@ and holds the pass rules, written before any paid run.
 | `tokens.ts` | What a thread's calls used, from T3's state rows and the raw Claude transcripts, with list price |
 | `rawsum.mjs` | The accuracy check's own token reader, sharing no code with `tokens.ts` or `measure.ts` |
 | `gate.ts`, `gate.json` | The Z1 gate: G1–G3, the relabelling, N and K from R0's spread; registered values |
+| `verdict-report.ts` | What `verdict.md` carries beside the gate (reporting only, read from the evidence and the measures): the behaviour checks on the new side, the rules each side delivered with their diff, the briefing bytes per delivered turn, and every run's numbers (report.md, embedded); a hand-written classification of failed checks, `<campaign>/behaviour-notes.md`, is included when present |
 | `*.test.ts` | `node --no-warnings --test scripts/compare-live/*.test.ts` |
 
 ## Setup
