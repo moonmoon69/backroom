@@ -67,7 +67,9 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
    is refused unless `--user-ok "<where the user agreed>"`.
 2. **Folder.** A fresh clone of the fixture at `fixture-v1` in `~/Projects/backroom-compare/jobs/<random id>/tally`, on a
    branch `main`, with no remote, registered as its own throwaway T3 project `tally-<id>`. The path does not say which
-   side the job is on.
+   side the job is on. T3 can take the project and still answer the command with a failure (a timeout under load: two
+   R0 jobs and R1's first smoke attempt aborted so, at $0); the runner then takes T3's project for that fresh folder
+   and title, as the instance lists T3's projects, with a note in `job.json`.
 3. **Seating** (measured apart from the job). Saved crew on the instance: `Fable` (claude-fable-5-1, effort high, 1m
    context) as the Consigliere, `Opus` (claude-opus-5-5, effort xhigh, fast mode off, 1m context) for the members; full
    access; the project folder. The room is created with the Consigliere; W1 and V are seated (W2 too in T4). The runner
