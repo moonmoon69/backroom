@@ -109,6 +109,12 @@ export interface EnginePost extends EngineTime {
   body: string;
   /** The requests it is about; a request post names itself. */
   about: EngineRef[];
+  /**
+   * It stands for one turn of its author: a run's final, or the note or continuation output of a T3 turn the room did
+   * not start. One post per T3 run, never two: explicit answers and idle settles are not turns. Spend
+   * (EngineRoomCosts.replies) is keyed by these posts, and news counts them.
+   */
+  turn: boolean;
   request?: {
     id: string;
     parentId: string | null;
@@ -122,6 +128,12 @@ export interface EnginePost extends EngineTime {
     /** The post that answered it. */
     answer: { seq: number; number: number } | null;
     corrections: number;
+    /**
+     * The user message it came from (L4a): the requests of one message share `id` (show them as one message), `index`
+     * is the assignment's place in it, `steer` says it was sent into a running turn, and `attachmentIds` are the
+     * message's images (GET /api/attachments/:id). Null for a member's request.
+     */
+    message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
   };
   output?: {
     /** answer: it names requests (see `claims` for what each came to); yield: it answers nothing; progress: an update under held work; error: a failed run. */
@@ -138,6 +150,8 @@ export interface EnginePost extends EngineTime {
   note?: {
     /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn on the member's thread the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends. */
     source: "post" | "t3-message" | "t3-turn" | "deferred-cancel";
+    /** A /note to the whole room: every member's next briefing carries it. */
+    room: boolean;
     t3: EngineT3Ref | null;
     /** Under a request its author had already answered (a self-started turn after the answer, plan §5). */
     afterAnswer: boolean;
@@ -186,6 +200,8 @@ export interface EngineRequestView {
   activityIds: string[];
   /** Its owner's live run, when that run works on it. */
   runId: string | null;
+  /** The user message it came from (see EnginePost.request.message); null for a member's request. */
+  messageId: string | null;
 }
 
 export type EngineRunPhase = "prepared" | "sending" | "accepted" | "running" | "uncertain" | "rejected" | "terminal";
@@ -230,8 +246,8 @@ export interface EngineActivityView {
   status: "pending" | "uncertain" | "done" | "failed";
   /** Held by the member: it ends only with `rooms-board answer` (or a cancel), never on its own. */
   memberHeld: boolean;
-  /** "working since …": the time of its registration (EngineTime rule: exact for `bg:`, a lower bound for `work:`). */
-  since: string | null;
+  /** "working since …": when it was registered, by the EngineTime rule (exact for `bg:`, a lower bound for `work:`). */
+  since: EngineTime;
 }
 
 /** A delivery the engine could not make: one input with its open requests over the byte budget (plan §7). */
@@ -303,12 +319,15 @@ export interface EngineRoomCounts {
   working: number;
 }
 
-/** News: the room's finishes since you last looked (keyed by journal sequence). */
+/**
+ * News: the room's finishes since you last looked (keyed by journal sequence): one per turn (EnginePost.turn), by a
+ * member; in a room with a Consigliere, his only (the workers answer him).
+ */
 export interface EngineNews {
   /** The seq you have seen the room up to. */
   seenSeq: number;
   unseen: number;
-  latest: { seq: number; number: number; at: string | null; seatId: string; alias: string | null; kind: "reply" | "failed"; preview: string } | null;
+  latest: (EngineTime & { seq: number; number: number; seatId: string; alias: string | null; kind: "reply" | "failed"; preview: string }) | null;
 }
 
 /** The user's notice marks for a room: every notice at or below `through` is handled, and so are `ids`. */
@@ -371,7 +390,7 @@ export interface EngineOverviewMember {
   live: string | null;
   /** The request its live run works on. */
   doing: string | null;
-  lastReply: { at: string | null; text: string } | null;
+  lastReply: (EngineTime & { text: string }) | null;
 }
 
 export interface EngineOverviewRoom {
