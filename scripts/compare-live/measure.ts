@@ -22,7 +22,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
+import { NO_T3_REPORT, campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
@@ -404,8 +404,8 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   if ((boardReportAt === null) !== (t3ReportAt === null) || (boardReportAt && t3ReportAt && Math.abs(Date.parse(boardReportAt) - Date.parse(t3ReportAt)) > 60_000)) {
     out.push({ job: name, what: "the JOB-DONE report on the board and in T3 differ", measured: t3ReportAt, recounted: boardReportAt });
   }
-  // A report given through `rooms-board answer` (new side) is no T3 message: it has no T3 time, and the job fails here.
-  if (job.report?.via === "answer") out.push({ job: name, what: "the JOB-DONE report came through rooms-board answer: no T3 message carries it", measured: job.report.postId, recounted: null });
+  // A report given through `rooms-board answer` or `note` (new side) is no T3 message: it has no T3 time, and the job fails here.
+  if (job.report?.via && NO_T3_REPORT.has(job.report.via)) out.push({ job: name, what: `the JOB-DONE report came through rooms-board ${job.report.via}: no T3 message carries it`, measured: job.report.postId, recounted: null });
   const cross = measured.briefing.crossCheck;
   if (cross && (cross.equal !== cross.compared || cross.missing > 0)) out.push({ job: name, what: "briefings sent and received differ", measured: cross, recounted: null });
   // A cross-check that compared nothing on a job with turns checks nothing.

@@ -29,9 +29,11 @@ export interface BoardPost {
    * What the member said: on the old side every turn-end reply (assistant.reply); on the new side every output (a run's
    * final, an explicit `rooms-board answer`, a continuation, an idle settle; any disposition) and every note a T3 turn
    * the room did not start was imported as. Both are what the member said at the end of its work, whoever it reached.
+   * On the new side the Consigliere's own `rooms-board note` counts too, for the report only: it is his way to the user
+   * once the user's request is closed (the old board has no note command).
    */
   isAnswer: boolean;
-  /** New side: how it came (output source "final", "answer", "continuation", "idle", "other", or "t3-turn"). */
+  /** New side: how it came (output source "final", "answer", "continuation", "idle", "other"; "t3-turn"; or "note"). */
   via?: string;
   /** New side: what each request it named came to (answered, pending_activity, superseded, late, …). */
   claims?: string[];
@@ -287,6 +289,8 @@ export function engineBoardPosts(snapshot: EngineRoomSnapshot, firstSeen: (post:
   return snapshot.posts.map((post) => {
     const bySeat = !post.author.startsWith("$");
     const turnNote = post.kind === "note" && post.note?.source === "t3-turn";
+    // His own `rooms-board note`: a report there is seen (and fails for lack of a T3 message), not missed.
+    const consigliereNote = post.kind === "note" && post.note?.source === "post" && consigliere.has(post.author);
     return {
       id: post.id,
       number: post.number,
@@ -294,8 +298,8 @@ export function engineBoardPosts(snapshot: EngineRoomSnapshot, firstSeen: (post:
       clock: post.at ? ("t3" as const) : ("seen" as const),
       from: post.author === "$user" ? "user" : bySeat ? (alias.get(post.author) ?? post.author) : post.author.replace(/^\$/, ""),
       fromConsigliere: bySeat && consigliere.has(post.author),
-      isAnswer: bySeat && (post.kind === "output" || turnNote),
-      ...(post.kind === "output" ? { via: post.output?.source ?? "other", claims: (post.output?.claims ?? []).map((c) => c.outcome) } : turnNote ? { via: "t3-turn", claims: [] } : {}),
+      isAnswer: bySeat && (post.kind === "output" || turnNote || consigliereNote),
+      ...(post.kind === "output" ? { via: post.output?.source ?? "other", claims: (post.output?.claims ?? []).map((c) => c.outcome) } : turnNote ? { via: "t3-turn", claims: [] } : consigliereNote ? { via: "note", claims: [] } : {}),
       text: post.body,
     };
   });

@@ -30,6 +30,7 @@ import {
   FIXTURE_TAG,
   INSTANCES,
   NO_REPORT_CAP_MS,
+  NO_T3_REPORT,
   QUIET_MS,
   capCheck,
   jobThreads,
@@ -310,8 +311,8 @@ class Job {
             this.record.times.reportObservedAt = iso();
             this.snapshot("report", consigliere.alias, post);
             this.note(`JOB-DONE report #${post.number}${post.via ? ` (${post.via})` : ""}`);
-            // A report through `rooms-board answer` is no T3 message: measure.ts finds none, and the job fails its check.
-            if (post.via === "answer") this.note("the report came through rooms-board answer: no T3 message carries it, so it has no T3 time and the job fails the accuracy check");
+            // A report through `rooms-board answer` or `note` is no T3 message: measure.ts finds none, and the job fails its check.
+            if (post.via && NO_T3_REPORT.has(post.via)) this.note(`the report came through rooms-board ${post.via}: no T3 message carries it, so it has no T3 time and the job fails the accuracy check`);
           }
         } else {
           this.snapshot("answer", post.from, post);
@@ -370,19 +371,13 @@ class Job {
     }
   }
 
-  /** The caps: 30 minutes after the report ("did not quiesce"), or 60 after the post without one ("no report"). */
+  /** The caps (capClose): 30 minutes after the report ("did not quiesce"), or 60 after the post without one ("no report"). */
   private closeOnCaps(now: number, postedMs: number): boolean {
-    if (this.record.report) {
-      if (now - Date.parse(this.record.times.reportAt as string) < AFTER_REPORT_CAP_MS) return false;
-      this.record.close = "did not quiesce";
-      this.record.times.closeAt = iso(now);
-      this.note("not quiet 30 minutes after the report: closed as did not quiesce");
-      return true;
-    }
-    if (now - postedMs < NO_REPORT_CAP_MS) return false;
-    this.record.close = "no report";
+    const close = capClose(this.record, now, postedMs);
+    if (close === null) return false;
+    this.record.close = close;
     this.record.times.closeAt = iso(now);
-    this.note("no JOB-DONE report in 60 minutes: closed");
+    this.note(close === "did not quiesce" ? "not quiet 30 minutes after the report: closed as did not quiesce" : "no JOB-DONE report in 60 minutes: closed");
     return true;
   }
 
@@ -693,6 +688,19 @@ async function main(): Promise<void> {
     const job = new Job({ campaign, side, task, run: Number(run), instance, worktree: instanceInfo.worktree, t3, cap, quietMs, dry: false }, spent);
     await runOrAbort(job);
   }
+}
+
+/**
+ * Whether a job closes on a cap now. The 30 minutes after the report count from T3's time of the report message on
+ * both sides (read when the board shows it), the board's time only when T3's is not known (the dry run, a failed read):
+ * the board lags T3 by a runtime-dependent delay (old side 2 to 58 s), which would give one side less time to go quiet.
+ */
+export function capClose(record: Pick<JobRecord, "report" | "times">, now: number, postedMs: number): "did not quiesce" | "no report" | null {
+  if (record.report) {
+    const from = record.times.t3ReportAt ?? record.times.reportAt;
+    return from !== null && now - Date.parse(from) >= AFTER_REPORT_CAP_MS ? "did not quiesce" : null;
+  }
+  return now - postedMs >= NO_REPORT_CAP_MS ? "no report" : null;
 }
 
 /**

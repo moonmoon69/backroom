@@ -42,6 +42,13 @@ export const CREW: { consigliere: { name: string; modelSelection: ModelSelection
   runtimeMode: "full-access",
 };
 
+/**
+ * How a new-side report can reach the board with no T3 message behind it: an explicit `rooms-board answer`, or a
+ * `rooms-board note` (a Consigliere whose request from the user was closed early is told to use one, since members
+ * cannot post to the user). Such a report has no T3 time: its check fails and the accuracy check fails the job.
+ */
+export const NO_T3_REPORT: ReadonlySet<string> = new Set(["answer", "note"]);
+
 /** The quiet the job window closes on, the cap after the report, and the cap without one. */
 export const QUIET_MS = 180_000;
 export const AFTER_REPORT_CAP_MS = 30 * 60_000;

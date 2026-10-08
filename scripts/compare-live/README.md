@@ -96,8 +96,11 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
    output, whatever it came to (an answer to the user's request, a yield because that request was answered earlier,
    progress), or the note of a T3 turn the room did not start. measure.ts finds the same message in T3 as the final
    message of a Consigliere run, on both sides. His earlier replies ("work handed out") are not reports. A report given
-   through `rooms-board answer` (new side) is no T3 message: the runner records it (`report.via: "answer"`) and fails its
-   check instead of taking a time from another clock, and the accuracy check fails the job.
+   through `rooms-board answer`, or through his own `rooms-board note` (new side: once the user's request is closed, a
+   note is the board's way to the user, since members cannot post to the user), is no T3 message: the runner records it
+   (`report.via: "answer"` or `"note"`) and fails its check instead of taking a time from another clock, and the
+   accuracy check fails the job. It is seen, not missed: a missed one would run to "no report" and pass as a plain
+   failure of that side.
 7. **Close.** After the report, the room is quiet when, at the same moment: no job thread (the seats' and any T3 thread
    they started: same project, or a seat as its root) has an active run in T3, none has a pending approval or question
    in T3, none has background work in T3 (its pending background tasks: subagents, commands, monitors), and the
@@ -108,7 +111,9 @@ Evidence and reports go to `~/Projects/backroom-handoff/compare-live/<campaign>/
    sample reads T3 and the instance afresh; a read that fails is a sample that is not quiet. The window closes after 3
    minutes of continuous quiet; every sample is in `quiet.jsonl` (new side: with the journal's head, its open requests
    and its pending activities, which do not hold the window open by the plan's rule, for Z1's behaviour checks). It
-   closes as "did not quiesce" 30 minutes after the report, and as "no report" 60 minutes after the post without one.
+   closes as "did not quiesce" 30 minutes after the report, counted from T3's time of the report message on both sides
+   (the board's time only when T3's is not known, as in the dry run), and as "no report" 60 minutes after the post
+   without one.
    (The background-work condition and the 60-minute cap are additions to the plan's wording; both apply to both sides.)
 8. **Evidence**, copied at the close: a final copy of the folder (with `.git`) and its check; `final.diff` against the
    tag; T3's detail of every job thread (`t3/<thread>.json`, `t3/threads.json`); T3's state-database rows for them
@@ -182,8 +187,8 @@ thread has no T3 record in the evidence, when a call on a model with no price wa
 no readable timestamp, when one message id is counted on two threads, when a transcript in the job folder's project
 belongs to no job thread, when the report's copy is newer than T3's report (see step 5), when any job transcript
 mentions `scripts/compare-live`, `backroom-handoff`, the fixture repo or another job's folder (a leak), when the
-briefing cross-check compared no turn on a job with turns, and when the report came through `rooms-board answer` (new
-side: no T3 message carries it). A Consigliere
+briefing cross-check compared no turn on a job with turns, and when the report came through `rooms-board answer` or
+`rooms-board note` (new side: no T3 message carries it). A Consigliere
 final that mentions JOB-DONE without a line that says it is not a report; the report warns about it.
 
 **When the accuracy check fails.** Any difference blocks `--register-gate` and `--verdict`, including the report-copy
@@ -253,6 +258,10 @@ run each was matched to), and on the new side the briefing cross-check must comp
   "V reviewed before the report" compares two times of the same side; on the new side a review V gave with
   `rooms-board answer` is timed at its first sight, so a report within that one poll of it would not count as after it
   (a Consigliere woken by the answer needs a whole turn first).
+- The copies at member answers are taken when the board shows the answer, and only the report's copy has a file-time
+  guard. The old side's board lags T3 by 2 to 58 s, so on the old side W1 has that much more time to change the folder
+  before V's copy is taken, and T2's "V reviewed a fixed tree" (the visible defect fixed in V's copy) can only be easier
+  on the old side.
 - Other rooms share the account's rate limits; overlap is recorded per job.
 - T1's facts check is lenient text matching (see the pass rules): a report could pass it while wrong in substance, e.g.
   calling a second import unused or saying nothing else is used. A correct report fails only if it never names legacy

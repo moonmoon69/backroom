@@ -28,7 +28,7 @@ import type { JobRecord } from "./campaign.ts";
 import { CREW } from "./campaign.ts";
 import { EngineInstance, engineBoardPosts, engineQuiet, engineSeatingDone, type BoardPost } from "./instance.ts";
 import { measureJob, verifyJob } from "./measure.ts";
-import { createJobProject, refuseTaintedCheckout } from "./run.ts";
+import { capClose, createJobProject, refuseTaintedCheckout } from "./run.ts";
 import { T3Unavailable } from "../../src/adapter/types.ts";
 import { TASKS, TASK_IDS, hasJobDoneLine } from "./tasks.ts";
 
@@ -216,6 +216,26 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
     }
   });
 
+  test("a report through the Consigliere's own rooms-board note is seen, marked as such, with no T3 time", async () => {
+    const i = engineInstance("note");
+    try {
+      const r = await seatedRoom(i);
+      await finishSeating(i, r);
+      await i.driver.postAsUser(r.roomId, TASKS.T1.prompt, randomUUID());
+      await until("his run", async () => i.fake.threads.get(r.c.threadId)?.shell.activeRunId);
+      const key = await keyOf(i, r.c.threadId);
+      // He answers the user at once; later, the user's request closed, the board's way to the user is a note.
+      i.fake.completeRun(r.c.threadId, { text: "Handing it out." });
+      await until("his answer", async () => (await i.driver.posts(r.roomId)).some((p) => p.fromConsigliere && p.isAnswer));
+      await i.driver.board(["note", "All found.\n\nJOB-DONE"], key);
+      const report = await until("the note", async () => (await i.driver.posts(r.roomId)).find((p) => p.fromConsigliere && p.isAnswer && hasJobDoneLine(p.text)));
+      assert.equal(report.via, "note");
+      assert.equal(report.clock, "seen", "no T3 time: the runner's first sight of it");
+    } finally {
+      i.close();
+    }
+  });
+
   test("a project T3 took while answering the command with a failure is taken, with a note; a folder T3 has not is refused", async () => {
     const i = engineInstance("project");
     try {
@@ -321,6 +341,7 @@ describe("the new side's quiet rule and board", () => {
       output("s-c", "idle", "answer", null),
       post({ kind: "note", author: "s-w", body: "self-started", note: { source: "t3-turn", room: false, t3: null, afterAnswer: true }, at: "2026-10-08T10:02:00.000Z" }),
       post({ kind: "note", author: "s-w", body: "a note", note: { source: "post", room: false, t3: null, afterAnswer: false } }),
+      post({ kind: "note", author: "s-c", body: "Done.\n\nJOB-DONE", note: { source: "post", room: false, t3: null, afterAnswer: true } }),
       post({ kind: "progress", author: "s-w", body: "working", progress: { milestone: "working", working: true } }),
       post({ kind: "request", author: "$user", body: "the prompt" }),
     ] }), () => "2026-10-08T11:00:00.000Z");
@@ -331,6 +352,7 @@ describe("the new side's quiet rule and board", () => {
       ["Fable", true, true, "idle", "seen", "2026-10-08T11:00:00.000Z"],
       ["W1", true, false, "t3-turn", "t3", "2026-10-08T10:02:00.000Z"],
       ["W1", false, false, null, "seen", "2026-10-08T11:00:00.000Z"],
+      ["Fable", true, true, "note", "seen", "2026-10-08T11:00:00.000Z"],
       ["W1", false, false, null, "seen", "2026-10-08T11:00:00.000Z"],
       ["user", false, false, null, "seen", "2026-10-08T11:00:00.000Z"],
     ]);
@@ -386,12 +408,14 @@ describe("measure.ts on the new side", () => {
     assert.ok(verifyJob(none, noneMeasured).some((d) => d.what === "the briefing cross-check compared no turn"));
   });
 
-  test("a report through rooms-board answer fails the accuracy check", () => {
-    const runs = sampleRuns().map((r) => ({ threadId: r.threadId, t3RunId: r.t3RunId, briefing: r.text }));
-    const dir = newSideJob("via-answer", runs, { postId: "e-report", text: "Done.\n\nJOB-DONE", via: "answer" });
-    const differences = verifyJob(dir, measureJob(dir, { liveStateDb: null }));
-    assert.ok(differences.some((d) => /came through rooms-board answer/.test(d.what)), JSON.stringify(differences));
-  });
+  for (const via of ["answer", "note"]) {
+    test(`a report through rooms-board ${via} fails the accuracy check`, () => {
+      const runs = sampleRuns().map((r) => ({ threadId: r.threadId, t3RunId: r.t3RunId, briefing: r.text }));
+      const dir = newSideJob(`via-${via}`, runs, { postId: "e-report", text: "Done.\n\nJOB-DONE", via });
+      const differences = verifyJob(dir, measureJob(dir, { liveStateDb: null }));
+      assert.ok(differences.some((d) => d.what === `the JOB-DONE report came through rooms-board ${via}: no T3 message carries it`), JSON.stringify(differences));
+    });
+  }
 });
 
 // ---------------- the checkout the members' board command lives in ----------------
@@ -438,4 +462,27 @@ test("each task's prompt goes to the Consigliere verbatim through the engine's p
     assert.equal(draft.preamble, "", task);
     assert.equal(draft.assignments[0]!.delivery, "steer", `${task}: every message is his, steered (an idle Consigliere starts an ordinary run)`);
   }
+});
+
+// ---------------- the caps ----------------
+
+test("the 30 minutes after the report count from T3's report time when known, on both sides; the board's only as fallback", () => {
+  const posted = Date.parse("2026-10-08T10:00:00.000Z");
+  const t3 = "2026-10-08T10:05:00.000Z";
+  // The old side's board shows the report 58 s after T3 has it.
+  const board = "2026-10-08T10:05:58.000Z";
+  const at = (iso: string) => Date.parse(iso);
+  const record = (t3ReportAt: string | null): Pick<JobRecord, "report" | "times"> => ({
+    report: { postId: "p", text: "JOB-DONE" },
+    times: { createdAt: "", seatingStart: null, seatingEnd: null, postedAt: "2026-10-08T10:00:00.000Z", reportAt: board, t3ReportAt, reportObservedAt: board, quietSince: null, closeAt: null },
+  });
+  assert.equal(capClose(record(t3), at("2026-10-08T10:34:59.999Z"), posted), null);
+  assert.equal(capClose(record(t3), at("2026-10-08T10:35:00.000Z"), posted), "did not quiesce", "30 minutes after T3's time, not the board's");
+  // T3's time not known (the dry run, a failed read): the board's time.
+  assert.equal(capClose(record(null), at("2026-10-08T10:35:00.000Z"), posted), null);
+  assert.equal(capClose(record(null), at("2026-10-08T10:35:58.000Z"), posted), "did not quiesce");
+  // No report: 60 minutes after the post.
+  const none: Pick<JobRecord, "report" | "times"> = { report: null, times: { ...record(null).times, reportAt: null } };
+  assert.equal(capClose(none, at("2026-10-08T10:59:59.999Z"), posted), null);
+  assert.equal(capClose(none, at("2026-10-08T11:00:00.000Z"), posted), "no report");
 });
