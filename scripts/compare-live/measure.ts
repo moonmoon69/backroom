@@ -550,7 +550,15 @@ async function main(): Promise<void> {
         G3: "on no metric, primary or secondary, worse on K or more tasks; and no task with a material regression",
         chance: "exhaustive relabelling within each task; PASS needs chance-pass <= chancePassTarget",
       },
-      fromR0: { campaign, jobs: old.length, spread: bySpread, wideTasks, medianJobUsd: median(spend), z1CapUsd: Math.min(250, 1.5 * 4 * 2 * N * (median(spend) ?? 0)) },
+      // max / min per task and metric; "unbounded" where a run has no value (no report: no wall-clock) or the min is 0.
+      fromR0: {
+        campaign,
+        jobs: old.length,
+        spread: Object.fromEntries(Object.entries(bySpread).map(([task, row]) => [task, Object.fromEntries(Object.entries(row).map(([metric, v]) => [metric, Number.isFinite(v) ? v : "unbounded"]))])),
+        wideTasks,
+        medianJobUsd: median(spend),
+        z1CapUsd: Math.min(250, 1.5 * 4 * 2 * N * (median(spend) ?? 0)),
+      },
     };
     writeFileSync(path, `${JSON.stringify(gate, null, 2)}\n`);
     console.log(`gate.json registered: N = ${N}, K = ${K}`);

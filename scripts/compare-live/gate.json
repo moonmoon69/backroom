@@ -1,0 +1,76 @@
+{
+  "registeredAt": "2026-10-08T02:35:53.384Z",
+  "item": "Z1 (plan stage45-plan.md), registered by R0",
+  "primary": [
+    "wakes",
+    "tokens"
+  ],
+  "secondary": [
+    "turns",
+    "wallToReportMs"
+  ],
+  "material": {
+    "tokens": {
+      "ratio": 1.5
+    },
+    "wallToReportMs": {
+      "ratio": 1.5
+    },
+    "wakes": {
+      "plus": 2
+    },
+    "turns": {
+      "plus": 2
+    }
+  },
+  "chancePassTarget": 0.1,
+  "N": 3,
+  "K": 2,
+  "definitions": {
+    "better": "every new run strictly below every old run on the metric (smaller is better); worse the other way round; ties, 0 against 0 included, are neither",
+    "wakes": "the Consigliere's T3 runs requested in the job window, minus the one the user's post started; after-report wakes included",
+    "tokens": "input + cache read + cache write + output over the job window, every job thread, subagents included",
+    "turns": "T3 runs requested in the job window on the seats' threads",
+    "wallToReportMs": "from the user's post to the first final message of a Consigliere run with a JOB-DONE line; a job without one has the worst value",
+    "G1": "on every task, new correct runs >= old correct runs and new premature reports <= old premature reports",
+    "G2": "on at least one primary metric, better on K or more of the 4 tasks",
+    "G3": "on no metric, primary or secondary, worse on K or more tasks; and no task with a material regression",
+    "chance": "exhaustive relabelling within each task; PASS needs chance-pass <= chancePassTarget"
+  },
+  "fromR0": {
+    "campaign": "r0",
+    "jobs": 8,
+    "spread": {
+      "T1": {
+        "wakes": 2,
+        "tokens": 1.2238534373747032,
+        "turns": 1.6666666666666667,
+        "wallToReportMs": 1.0902058605081348
+      },
+      "T2": {
+        "wakes": 1,
+        "tokens": 1.131788687450628,
+        "turns": 1,
+        "wallToReportMs": 1.4191601238925304
+      },
+      "T3": {
+        "wakes": 2,
+        "tokens": 1.3306410952963412,
+        "turns": 1.7857142857142858,
+        "wallToReportMs": "unbounded"
+      },
+      "T4": {
+        "wakes": 2.125,
+        "tokens": 1.4449824578783377,
+        "turns": 1.6071428571428572,
+        "wallToReportMs": 3.7730822356490807
+      }
+    },
+    "wideTasks": [
+      "T3",
+      "T4"
+    ],
+    "medianJobUsd": 2.283243725,
+    "z1CapUsd": 82.1967741
+  }
+}
