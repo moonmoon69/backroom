@@ -2,18 +2,22 @@
  * Golden files for the L6 carve-out, generated from the core as merged (K1, L2, L1, L3, L4a, L4b, L4c and H1 on engine at
  * 24961b1). Run once before the carve; the lean core is then checked against them by tests/engine/golden.test.ts.
  *
- *   node --no-warnings=ExperimentalWarning tests/engine/golden/generate.ts [--reuse-raw]
+ *   GOLDEN_RAW=<folder for the raw recordings> node --no-warnings=ExperimentalWarning tests/engine/golden/generate.ts [--reuse-raw]
  *
  * 1. Record: each source suite runs under record.ts, which writes every `decide` and `EngineStore.execute` call as
  *    (state before, command, state after) to $GOLDEN_RAW/<source>.jsonl.
  * 2. Rebuild: the lines of one source form a tree of journal states rooted at the empty journal. Only kept commands
- *    (plan §6 and L4b: 18) are followed, without the dropped fields (`request.live`, `output.receipts`, activity
- *    generation/native source/declaration). A history is the path from the root to a leaf; commands that changed
- *    nothing (refused, duplicate, idle, replayed) are replayed at the state they were tried in, each once.
+ *    (plan §6 and L4b: 18) and `control_phase` on a cancel's interrupt control are followed, without the dropped fields
+ *    (`request.live`, activity generation/native source/declaration). A history is the path from the root to a leaf;
+ *    commands that changed nothing (refused, duplicate, idle, replayed) are replayed at the state they were tried in,
+ *    each once.
  * 3. Neutralise: a cancel that prepares an interrupt control is followed at once by the host's `control_phase obsolete`
- *    (§6, "until L6, the host neutralises it"): the recorded one is moved there, or one is added. Those commands are
- *    marked `leftOut` and their control events are not part of the lean core. A command refused only because the core's
- *    control left its author's seat stopping is dropped (the lean core has no such state).
+ *    (§6, "until L6, the host neutralises it"): the recorded one is moved there, or one is added. Every `control_phase`
+ *    is marked `leftOut` and control events are not part of the lean core; one the core then refuses (an `accepted`
+ *    after the neutraliser) is kept with its refusal. A command refused only because the core's control left its
+ *    author's seat stopping is dropped (the lean core has no such state). An output that echoes sync receipts (dropped
+ *    with the protocol) is replayed as the host does it: a `confirm_sync` per receipt, then the same output without
+ *    them; if a confirmation is refused, the output is not replayed.
  * 4. Replay each history from the empty journal with `decide`, and with an `EngineStore` in memory, and write: every
  *    command with the decision (`outcome`, `expectedSeq`, `events`) or its refusal, and the kept projection maps at the
  *    end in canonical JSON (maps as [key, value] pairs sorted by key; `events` is the concatenation of the decisions).
@@ -29,7 +33,8 @@ import { canonical, stateOf } from "./digest.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
-const RAW = process.env.GOLDEN_RAW ?? "/home/moonmoon69/Projects/backroom-handoff/L6/golden-raw";
+const RAW = process.env.GOLDEN_RAW ?? "";
+if (!RAW) throw new Error("GOLDEN_RAW (the folder for the raw recordings) is required");
 const CORE = "24961b1";
 
 export const SOURCES: { name: string; file: string }[] = [
@@ -48,17 +53,16 @@ export const KEPT = new Set(["seat", "retire", "designate", "request", "correct"
 
 /** Why a recorded command is not followed, or null when it is a kept command without dropped fields. */
 function dropped(command: Command): string | null {
-  if (command.type === "control_phase") return command.phase === "obsolete" && command.controlId.endsWith("/interrupt") ? null : "control_phase";
+  if (command.type === "control_phase") return command.controlId.endsWith("/interrupt") ? null : "control_phase";
   if (!KEPT.has(command.type)) return command.type;
   if (command.type === "request" && command.live) return "request.live";
-  if (command.type === "output" && command.receipts?.length) return "output.receipts";
   if (command.type === "activity_start" && (command.generation !== undefined || command.nativeSource !== undefined || command.declaration !== undefined)) return "activity_start.provider";
   return null;
 }
 
 const plain = <T>(value: T): T => JSON.parse(canonical(value)) as T;
 
-interface Tried { command: Command; loop: boolean }
+interface Tried { command: Command; loop: boolean; group?: number; neutraliser?: boolean }
 interface Line { via: "decide" | "store"; before: string; after: string | null; command: Command; outcome?: string; error?: string }
 export interface Step { command: Command; leftOut?: "control"; expect: { outcome: Decision["outcome"]; expectedSeq: number; events: RoomEvent[] } | { error: string }; store?: { error: string } | { outcome: string } }
 export interface KeptMaps {
@@ -86,7 +90,7 @@ function record(source: { name: string; file: string }): void {
   console.log(`recorded ${source.name}: ${summary[1]} tests pass`);
 }
 
-interface Report { storeOnly: number; lines: number; states: number; leaves: number; sequences: number; steps: number; cut: Record<string, number>; neutralised: number; moved: number; droppedStopping: number; storeDiffers: number; digestChecked: number }
+interface Report { receiptsSplit: number; controlRefused: number; storeOnly: number; lines: number; states: number; leaves: number; sequences: number; steps: number; cut: Record<string, number>; neutralised: number; moved: number; droppedStopping: number; storeDiffers: number; digestChecked: number }
 
 /** Histories of one source: root-to-leaf paths over kept commands, each no-op command attached once. */
 export function histories(lines: Line[], report: Report): { commands: Tried[]; leaf: string }[] {
@@ -147,12 +151,26 @@ function message(error: unknown): string { return error instanceof Error ? error
 
 /** Replay one history with `decide` from the empty journal, neutralising cancels' interrupt controls as the host does. */
 export function replay(commands: Tried[], report: Report): { steps: Step[]; log: RoomEvent[]; modified: boolean } {
-  const pending = [...commands];
   let modified = false;
+  // An output with receipts becomes a confirm_sync per receipt and the output without them, as one group.
+  const pending: Tried[] = commands.flatMap((tried, group) => {
+    const c = tried.command;
+    if (c.type !== "output" || !c.receipts?.length) return [tried];
+    report.receiptsSplit += 1;
+    modified = true;
+    const { receipts, ...output } = c;
+    const runId = c.association.kind === "run" ? c.association.id : "";
+    return [
+      ...receipts.map((r, n): Tried => ({ command: { type: "confirm_sync", actor: "$system", id: `${c.id}:confirm:${n + 1}`, runId, receiptId: r.id, digest: r.digest, evidence: "exact sync receipt in the transcript" }, loop: tried.loop, group })),
+      { command: output as Command, loop: tried.loop, group },
+    ];
+  });
+  const failedGroups = new Set<number>();
   const steps: Step[] = [];
   let log: RoomEvent[] = [];
   while (pending.length) {
-    const { command, loop } = pending.shift()!;
+    const { command, loop, group, neutraliser } = pending.shift()!;
+    if (group !== undefined && failedGroups.has(group)) continue;
     const leftOut = command.type === "control_phase";
     let decision: Decision;
     try {
@@ -167,14 +185,17 @@ export function replay(commands: Tried[], report: Report): { steps: Step[]; log:
         modified = true;
         continue;
       }
-      if (leftOut) throw new Error(`a neutralising control_phase was refused: ${text}`);
-      steps.push({ command, expect: { error: text } });
+      if (neutraliser) throw new Error(`a neutralising control_phase was refused: ${text}`);
+      if (leftOut) report.controlRefused += 1;
+      if (group !== undefined) failedGroups.add(group);
+      steps.push({ command, ...(leftOut ? { leftOut: "control" as const } : {}), expect: { error: text } });
       continue;
     }
     if (loop && decision.events.length) {
       // Recorded as changing nothing, yet the core appends: the store refused it for its own state (a damaged index in a
       // store fault test), not for the room's. Not a decision of the core; left out.
       report.storeOnly += 1;
+      if (group !== undefined) failedGroups.add(group);
       continue;
     }
     steps.push({ command, ...(leftOut ? { leftOut: "control" as const } : {}), expect: { outcome: decision.outcome, expectedSeq: decision.expectedSeq, events: plain(decision.events) } });
@@ -182,14 +203,14 @@ export function replay(commands: Tried[], report: Report): { steps: Step[]; log:
     for (const event of decision.events) {
       if (event.data.kind !== "control.prepared" || event.data.control.kind !== "interrupt") continue;
       const controlId = event.data.control.id;
-      const later = pending.findIndex(({ command: c }) => c.type === "control_phase" && c.controlId === controlId);
+      const later = pending.findIndex(({ command: c }) => c.type === "control_phase" && c.controlId === controlId && c.phase === "obsolete");
       if (later >= 0) {
         if (later > 0) { report.moved += 1; modified = true; }
-        pending.unshift(...pending.splice(later, 1));
+        pending.unshift({ ...pending.splice(later, 1)[0]!, neutraliser: true });
       } else {
         report.neutralised += 1;
         modified = true;
-        pending.unshift({ command: { type: "control_phase", actor: "$system", id: `golden:obsolete:${controlId}`, controlId, phase: "obsolete", evidence: "lean: interrupt sent directly" }, loop: false });
+        pending.unshift({ command: { type: "control_phase", actor: "$system", id: `golden:obsolete:${controlId}`, controlId, phase: "obsolete", evidence: "lean: interrupt sent directly" }, loop: false, neutraliser: true });
       }
     }
   }
@@ -229,7 +250,7 @@ function main(): void {
   for (const source of SOURCES) {
     if (!reuse) record(source);
     const lines = readFileSync(join(RAW, `${source.name}.jsonl`), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
-    const report: Report = { storeOnly: 0, lines: lines.length, states: 0, leaves: 0, sequences: 0, steps: 0, cut: {}, neutralised: 0, moved: 0, droppedStopping: 0, storeDiffers: 0, digestChecked: 0 };
+    const report: Report = { receiptsSplit: 0, controlRefused: 0, storeOnly: 0, lines: lines.length, states: 0, leaves: 0, sequences: 0, steps: 0, cut: {}, neutralised: 0, moved: 0, droppedStopping: 0, storeDiffers: 0, digestChecked: 0 };
     const sequences: Sequence[] = [];
     for (const [index, { commands, leaf }] of histories(lines, report).entries()) {
       const { steps, log, modified } = replay(commands, report);
