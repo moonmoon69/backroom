@@ -266,9 +266,28 @@ describe("behaviour checks on the new side", () => {
     // T4 (no slow-check rule): W2's background work in a run that carried its request, answered after it ended, passes.
     const t4 = { ...job, job: jobRecord("T4", "new", { snapshots: [] }), background: { V: [task("00:03:10", "00:03:50", "bgv")] } };
     assert.equal(check(t4)?.outcome, "pass");
-    // Background work started in no run that carried a request: n/a, listed.
+    // Background work started after the request's answer: n/a, listed.
     const outside = { ...t4, background: { V: [task("00:08:00", "00:09:00", "late")] } };
     assert.equal(check(outside)?.outcome, "n/a");
+  });
+
+  test("background work started in a continuation, after the first carrying run and before the answer, is judged too", () => {
+    // V's run v-1 (00:03–00:04) carries #14; a continuation starts a second background run at 00:04:30 that ends at
+    // 00:08; the runtime settles V's request at 00:05 (an idle or continuation output): FAIL.
+    const job = t3(PASSED, "bg", { W1: [task("00:01:30", "00:05:00")], V: [task("00:04:30", "00:08:00", "bgv2")] });
+    const room = job.room as RoomRecord;
+    room.posts = [...(room.posts ?? []), request(14, "r", SEATS.V, "a", 17), at(output(16, SEATS.V, [["r", "pending_activity"]], "final", "v-1"), "00:04:00"), at(output(17, SEATS.V, [["r", "answered"]], "continuation", null, "bg:v-1"), "00:05:00")];
+    room.runs = [...(room.runs ?? []), { id: "v-1", seatId: SEATS.V, reservedSeq: 15, inputs: [14], requestIds: ["r"], startedAt: "2026-01-01T00:03:00Z", endedAt: "2026-01-01T00:04:00Z" }];
+    const v = check(job);
+    assert.equal(v?.outcome, "FAIL");
+    assert.equal(v?.note, "runtime hold");
+    assert.match(v?.evidence ?? "", /@V's #14 answered by #17 \(continuation\) at 00:05:00: 0 of 1 background task/);
+    // With another request of V's open meanwhile, the failure is marked for the hand classification.
+    room.posts = [...room.posts, request(15, "r2", SEATS.V, "a", null)];
+    const unsure = check(job);
+    assert.equal(unsure?.outcome, "FAIL");
+    assert.equal(unsure?.note, "runtime hold; to classify by hand");
+    assert.match(unsure?.evidence ?? "", /another request of @V open meanwhile: #15; to classify by hand/);
   });
 
   test("an early member post fails only when it closed a request; an open request or a pending activity at the close fails", () => {

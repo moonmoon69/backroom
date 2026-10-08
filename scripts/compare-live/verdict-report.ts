@@ -366,15 +366,15 @@ export function behaviourChecks({ job, measure, room, background }: VerdictJob):
   add("plainFinal", open.length === 0 && byFinal > 0 ? "pass" : "FAIL", `${requests.length} requests: ${[...how].map(([k, n]) => `${n} ${k}`).join(", ")}${open.length ? `; open at the close: ${open.join(", ")}` : ""}`);
 
   // 2. Background work (every task; T3 is where it is expected). A member's background work in T3 (its transcripts say
-  // so, not the runtime) started in a run that carried one of its requests must have ended, by T3's own record, before
-  // that request was answered; on T3, W1's requests also only once the slow-check had ended (the copy at its answer: the
+  // so, not the runtime) started between the first run that carried one of its requests and that request's answer
+  // (continuations included) must have ended, by T3's own record, before the answer; on T3, W1's requests also only once the slow-check had ended (the copy at its answer: the
   // last run finished; anything else, a missing log included, is not ended). Which hold kept each open, if any.
   const tasksOf = (r: string) => background?.[r] ?? [];
   const members = ["W1", "V", "W2"].filter((r) => tasksOf(r).length > 0);
   if (members.length === 0) add("backgroundHeld", "n/a", `no member started background work in T3 (no background Bash, Monitor or background subagent in the members' transcripts${background ? "" : "; none read"})`);
   else {
     const answerAt = (p: EnginePost | undefined) => (p ? (p.at ? Date.parse(p.at) : snapshotOf(p) ? Date.parse((snapshotOf(p) as Snapshot).at) : p.after ? Date.parse(p.after) : null) : null);
-    const judged: Array<{ ok: boolean; text: string }> = [];
+    const judged: Array<{ ok: boolean; unsure: boolean; text: string }> = [];
     const holds: string[] = [];
     let runtimeHeld = false;
     let memberHeld = false;
@@ -390,23 +390,34 @@ export function behaviourChecks({ job, measure, room, background }: VerdictJob):
       holds.push(`@${r}: ${tasksOf(r).map(describeTask).join(", ")}; holds: ${held.join("; ") || "none"}`);
       for (const q of own) {
         const carriers = runs.filter((run) => role(run.seatId ?? "") === r && run.startedAt && ((run.requestIds ?? []).includes(q.id) || (run.inputs ?? []).includes(q.seq)));
-        const started = tasksOf(r).filter((t) => carriers.some((run) => t.startedAt >= Date.parse(run.startedAt as string) && t.startedAt <= (run.endedAt ? Date.parse(run.endedAt) : Number.POSITIVE_INFINITY)));
-        const slowCheck = r === "W1" && job.task === "T3";
-        if (started.length === 0 && !slowCheck) continue;
         const answer = answerPost(q);
         const at = answerAt(answer);
+        // From the first run that carried it to its answer: background work started there, continuations included.
+        const from = Math.min(...carriers.map((run) => Date.parse(run.startedAt as string)));
+        const started = tasksOf(r).filter((t) => t.startedAt >= from && t.startedAt <= (at ?? Number.POSITIVE_INFINITY));
+        const slowCheck = r === "W1" && job.task === "T3";
+        if (started.length === 0 && !slowCheck) continue;
         const unended = started.filter((t) => t.endedAt === null || at === null || at < t.endedAt);
+        // Another request of the member open meanwhile: its background work may be that request's, so a failure is for the hand classification.
+        const firstSeq = Math.min(...carriers.map((run) => run.reservedSeq ?? Number.POSITIVE_INFINITY));
+        const meanwhile = own.filter((o) => o !== q && o.seq < (answer?.seq ?? Number.POSITIVE_INFINITY) && (answerPost(o)?.seq ?? Number.POSITIVE_INFINITY) > firstSeq);
         const log = slowCheck ? snapshotOf(answer)?.check.parts.slowCheckLog : undefined;
         const logEnded = !slowCheck || (log !== undefined && (log.pass || /^the last run \(pid [^)]*\) failed$/.test(log.detail ?? "")));
         const parts = [
           started.length ? `${started.length - unended.length} of ${started.length} background task${started.length === 1 ? "" : "s"} started in its runs had ended` : "",
           slowCheck ? `the slow-check ${logEnded ? "had ended" : "had not ended"} (${log ? log.detail : "no copy of the answer"})` : "",
         ].filter(Boolean);
-        judged.push({ ok: answer !== undefined && unended.length === 0 && logEnded, text: `@${r}'s #${q.number} answered by ${describe(answer)}${at === null ? "" : ` at ${clock(at)}`}: ${answer === undefined ? "never answered" : parts.join("; ")}` });
+        const ok = answer !== undefined && unended.length === 0 && logEnded;
+        const unsure = !ok && meanwhile.length > 0 && answer !== undefined && logEnded;
+        judged.push({ ok, unsure, text: `@${r}'s #${q.number} answered by ${describe(answer)}${at === null ? "" : ` at ${clock(at)}`}: ${answer === undefined ? "never answered" : parts.join("; ")}${unsure ? ` (another request of @${r} open meanwhile: ${meanwhile.map((o) => `#${o.number}`).join(", ")}; to classify by hand)` : ""}` });
       }
     }
     if (judged.length === 0) add("backgroundHeld", "n/a", `background work outside the runs that carried a request: ${holds.join(" | ")}`);
-    else add("backgroundHeld", judged.every((j) => j.ok) ? "pass" : "FAIL", `${holds.join(" | ")}; ${judged.map((j) => j.text).join("; ")}`, runtimeHeld ? "runtime hold" : memberHeld ? "member's mark only" : "no hold");
+    else {
+      const failed = judged.filter((j) => !j.ok);
+      const hold = runtimeHeld ? "runtime hold" : memberHeld ? "member's mark only" : "no hold";
+      add("backgroundHeld", failed.length === 0 ? "pass" : "FAIL", `${holds.join(" | ")}; ${judged.map((j) => j.text).join("; ")}`, failed.length > 0 && failed.every((j) => j.unsure) ? `${hold}; to classify by hand` : hold);
+    }
   }
 
   // Review requests: owned by V, and the request each one holds (its parent when a worker asked; itself when the Consigliere did).
