@@ -353,8 +353,11 @@ class Browser {
   compose(text: string): void {
     const value = "() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? null";
     this.click(/textbox "Message"/);
-    this.on("press", "Control+a");
-    this.on("press", "Backspace");
+    // Only a draft that is there is deleted: Backspace in an empty composer closes it (the overlay's own key).
+    if (this.eval<string | null>(value)) {
+      this.on("press", "Control+a");
+      this.on("press", "Backspace");
+    }
     this.poll<string | null>("the composer to be empty", value, (v) => v === "");
     this.fill(/textbox "Message"/, text);
     this.poll<string | null>(`the composer to hold ${JSON.stringify(text)}`, value, (v) => v === text);
