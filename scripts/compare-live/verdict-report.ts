@@ -17,7 +17,7 @@ export interface RoomRecord {
   engine?: boolean;
   seats?: Array<{ seatId: string; participantId: string | null; alias: string | null }>;
   bindings?: Array<{ id: string; participantId: string }>;
-  runs?: Array<{ id: string; seatId?: string; bindingId?: string; briefing?: string | null; createdAt?: string; reservedSeq?: number; through?: number; inputs?: number[] }>;
+  runs?: Array<{ id: string; seatId?: string; bindingId?: string; briefing?: string | null; createdAt?: string; reservedSeq?: number; through?: number; inputs?: number[]; requestIds?: string[]; startedAt?: string | null; endedAt?: string | null }>;
   posts?: EnginePost[];
 }
 
@@ -25,23 +25,34 @@ export interface VerdictJob {
   job: JobRecord;
   measure: JobMeasure;
   room: RoomRecord | null;
-  /** T3: the background work W1 started in the job window, from its transcripts (backgroundWorkOf); null elsewhere. */
-  w1Background?: string[] | null;
+  /** The background work each member (by role: W1, V, W2) started in T3 in the job window, from its transcripts (backgroundWorkOf); null when not read. */
+  background?: Record<string, BackgroundTask[]> | null;
 }
 
-/** A closed job's record, measure and instance-room.json; on T3, W1's background work from its transcripts. */
+/** A closed job's record, measure and instance-room.json, and each member's background work from its transcripts. */
 export function loadVerdictJob(dir: string, measure: JobMeasure): VerdictJob {
   const job = JSON.parse(readFileSync(join(dir, "job.json"), "utf8")) as JobRecord;
   const path = join(dir, "instance-room.json");
-  const w1 = job.seats.find((s) => s.role === "W1");
   const window = job.times.postedAt && job.times.closeAt ? ([Date.parse(job.times.postedAt), Date.parse(job.times.closeAt)] as const) : null;
   return {
     job,
     measure,
     room: existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as RoomRecord) : null,
-    w1Background: job.task === "T3" && w1 && window && !job.dry ? backgroundWorkOf(dir, w1.threadId, window[0], window[1]) : null,
+    background: window && !job.dry ? Object.fromEntries(job.seats.filter((s) => s.role !== "C").map((s) => [s.role, backgroundWorkOf(dir, s.threadId, window[0], window[1])])) : null,
   };
 }
+
+/** A piece of background work a member started in T3: when, and when T3's harness reported it ended (null: never). */
+export interface BackgroundTask {
+  id: string;
+  what: string;
+  startedAt: number;
+  endedAt: number | null;
+  status: string | null;
+}
+
+const clock = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+const describeTask = (t: BackgroundTask) => `${t.what} ${clock(t.startedAt)}–${t.endedAt === null ? "no end recorded" : `${clock(t.endedAt)} ${t.status}`}`;
 
 function jsonlUnder(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -53,21 +64,25 @@ function jsonlUnder(dir: string): string[] {
 /**
  * The background work a thread started in T3 between `from` and `to`, from T3's side of the evidence: its Claude
  * sessions (the job's copy of T3's state rows) and their transcripts with their subagents' (the job's copies). A Bash
- * call with run_in_background, a Monitor, or a subagent (Agent or Task) with run_in_background; once per tool call.
+ * call with run_in_background, a Monitor, or a subagent (Agent or Task) with run_in_background; once per tool call. Its
+ * end is the first task-notification that names the tool call with a final status (completed, failed, killed, …).
  */
-export function backgroundWorkOf(dir: string, threadId: string, from: number, to: number): string[] {
+export function backgroundWorkOf(dir: string, threadId: string, from: number, to: number): BackgroundTask[] {
   const projectsDir = join(dir, "transcripts");
   const stateDb = join(dir, "t3", "state-subset.sqlite");
   if (!existsSync(stateDb)) return [];
   const sessions = new TranscriptTokens({ stateDb, projectsDir, ratesPath: join(dir, "no-rates") }).sessions(threadId);
   const projects = existsSync(projectsDir) ? readdirSync(projectsDir).sort() : [];
-  const seen = new Map<string, { at: number; text: string }>();
+  const tasks = new Map<string, BackgroundTask>();
+  const ends = new Map<string, { at: number; status: string }>();
   for (const session of sessions) {
     for (const project of projects) {
       const own = join(projectsDir, project, `${session}.jsonl`);
       for (const file of [...(existsSync(own) ? [own] : []), ...jsonlUnder(join(projectsDir, project, session))]) {
         for (const line of readFileSync(file, "utf8").split("\n")) {
-          if (!line.includes('"tool_use"')) continue;
+          const isUse = line.includes('"tool_use"');
+          const isEnd = line.includes("<task-notification>");
+          if (!isUse && !isEnd) continue;
           let row: { timestamp?: unknown; message?: { content?: unknown } };
           try {
             row = JSON.parse(line) as typeof row;
@@ -75,22 +90,33 @@ export function backgroundWorkOf(dir: string, threadId: string, from: number, to
             continue;
           }
           const at = Date.parse(String(row.timestamp));
-          if (Number.isNaN(at) || at < from || at > to || !Array.isArray(row.message?.content)) continue;
+          if (Number.isNaN(at)) continue;
+          if (isEnd) {
+            for (const match of line.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>[\s\S]*?<status>([a-z_]+)<\/status>/g)) {
+              const [id, status] = [match[1] as string, match[2] as string];
+              if (status === "running" || status === "pending") continue;
+              const seen = ends.get(id);
+              if (!seen || at < seen.at) ends.set(id, { at, status });
+            }
+          }
+          if (!isUse || at < from || at > to || !Array.isArray(row.message?.content)) continue;
           for (const block of row.message.content as Array<{ type?: unknown; id?: unknown; name?: unknown; input?: Record<string, unknown> }>) {
-            if (block.type !== "tool_use" || typeof block.id !== "string" || seen.has(block.id)) continue;
+            if (block.type !== "tool_use" || typeof block.id !== "string" || tasks.has(block.id)) continue;
             const background = block.input?.run_in_background === true;
             const what =
               block.name === "Bash" && background ? `background Bash "${String(block.input?.command ?? "").slice(0, 60)}"`
               : block.name === "Monitor" ? "Monitor"
               : (block.name === "Agent" || block.name === "Task") && background ? `background subagent "${String(block.input?.description ?? "").slice(0, 60)}"`
               : null;
-            if (what) seen.set(block.id, { at, text: `${what} at ${new Date(at).toISOString().slice(11, 19)}` });
+            if (what) tasks.set(block.id, { id: block.id, what, startedAt: at, endedAt: null, status: null });
           }
         }
       }
     }
   }
-  return [...seen.values()].sort((a, b) => a.at - b.at).map((b) => b.text);
+  return [...tasks.values()]
+    .map((t) => ({ ...t, endedAt: ends.get(t.id)?.at ?? null, status: ends.get(t.id)?.status ?? null }))
+    .sort((a, b) => a.startedAt - b.startedAt);
 }
 
 const median = (values: number[]): number | null => {
@@ -289,7 +315,7 @@ export interface BehaviourCheck {
 /** The plan's behaviour checks (Z1), in its order. */
 export const BEHAVIOUR_CHECKS: Array<{ id: string; title: string }> = [
   { id: "plainFinal", title: "a plain final answered its request (every request of the job closed, at least one by a run's final)" },
-  { id: "backgroundHeld", title: "T3 background work held the request until it ended (T3; n/a where W1's transcripts show no background work)" },
+  { id: "backgroundHeld", title: "T3 background work held the request until it ended (any member, any task; on T3 also W1's slow-check log; n/a where no transcript shows background work)" },
   { id: "earlyReview", title: "an early review was not skipped (T2, §1 case 7)" },
   { id: "consigliereHeld", title: "the review exchange held the Consigliere (T2, §1 case 2: a review under a worker's request)" },
   { id: "subagentClean", title: "subagent use left no stuck state (T1; n/a where no subagent ran)" },
@@ -304,7 +330,7 @@ export const BEHAVIOUR_CHECKS: Array<{ id: string; title: string }> = [
  * prompt. A failure is a defect for the runtime unless its classification (by hand, from the board and transcript)
  * finds an agent cause.
  */
-export function behaviourChecks({ job, measure, room, w1Background }: VerdictJob): BehaviourCheck[] {
+export function behaviourChecks({ job, measure, room, background }: VerdictJob): BehaviourCheck[] {
   const posts = room?.posts ?? [];
   const runs = room?.runs ?? [];
   const roleOfSeat = new Map((room?.seats ?? []).map((s) => [s.seatId, job.seats.find((j) => j.participantId === s.participantId)?.role ?? "?"] as const));
@@ -339,29 +365,48 @@ export function behaviourChecks({ job, measure, room, w1Background }: VerdictJob
   const byFinal = how.get("answered by final") ?? 0;
   add("plainFinal", open.length === 0 && byFinal > 0 ? "pass" : "FAIL", `${requests.length} requests: ${[...how].map(([k, n]) => `${n} ${k}`).join(", ")}${open.length ? `; open at the close: ${open.join(", ")}` : ""}`);
 
-  // 2. T3: when W1 started background work in T3 (its transcripts say so, not the runtime), each of W1's requests closed
-  // only once the slow-check had ended (the copy at its answer: no run still going); which hold kept it open, if any.
-  if (job.task !== "T3") add("backgroundHeld", "n/a", "not T3");
-  else if (!w1Background || w1Background.length === 0) add("backgroundHeld", "n/a", `W1 started no background work in T3 (no background Bash, Monitor or background subagent in its transcripts${w1Background ? "" : "; none read"})`);
+  // 2. Background work (every task; T3 is where it is expected). A member's background work in T3 (its transcripts say
+  // so, not the runtime) started in a run that carried one of its requests must have ended, by T3's own record, before
+  // that request was answered; on T3, W1's requests also only once the slow-check had ended (the copy at its answer: the
+  // last run finished; anything else, a missing log included, is not ended). Which hold kept each open, if any.
+  const tasksOf = (r: string) => background?.[r] ?? [];
+  const members = ["W1", "V", "W2"].filter((r) => tasksOf(r).length > 0);
+  if (members.length === 0) add("backgroundHeld", "n/a", `no member started background work in T3 (no background Bash, Monitor or background subagent in the members' transcripts${background ? "" : "; none read"})`);
   else {
-    const w1 = requests.filter((q) => role(q.request?.owner ?? "") === "W1");
-    const ofW1 = (p: EnginePost) => role(p.author) === "W1";
-    const runtimeHolds = [...new Set(inJob.filter((p) => ofW1(p) && p.output?.activityId?.startsWith("bg:")).map((p) => `${p.output?.activityId} settled by ${describe(p)}`))];
-    const memberMarks = inJob.filter((p) => ofW1(p) && ((p.kind === "progress" && p.progress?.working) || p.output?.activityId?.startsWith("work:")));
-    const pending = inJob.filter((p) => ofW1(p) && p.output?.claims.some((c) => c.outcome === "pending_activity" && w1.some((q) => q.id === c.requestId)));
-    const results = w1.map((q) => {
-      const answer = answerPost(q);
-      const log = snapshotOf(answer)?.check.parts.slowCheckLog;
-      const ended = log !== undefined && !/had not finished|no run started/.test(log.detail ?? "");
-      return { q, ok: answer !== undefined && ended, text: `#${q.number} answered by ${describe(answer)}: ${answer === undefined ? "never answered" : log ? `${ended ? "the slow-check had ended" : "the slow-check had not ended"} at the answer (${log.detail ?? ""})` : "no copy of the answer"}` };
-    });
-    const holds = [
-      runtimeHolds.length ? `runtime hold ${runtimeHolds.join(", ")}` : "",
-      memberMarks.length ? `member's working mark ${memberMarks.map((p) => (p.output?.activityId ? `${p.output.activityId} via ${describe(p)}` : describe(p))).join(", ")}` : "",
-      pending.length ? `pending_activity claims ${pending.map(describe).join(", ")}` : "",
-    ].filter(Boolean);
-    const note = runtimeHolds.length > 0 ? "runtime hold" : memberMarks.length > 0 ? "member's mark only" : "no hold";
-    add("backgroundHeld", results.length > 0 && results.every((r) => r.ok) ? "pass" : "FAIL", `background work in T3: ${w1Background.join(", ")}; holds: ${holds.join("; ") || "none"}; ${results.map((r) => r.text).join("; ") || "W1 had no request"}`, note);
+    const answerAt = (p: EnginePost | undefined) => (p ? (p.at ? Date.parse(p.at) : snapshotOf(p) ? Date.parse((snapshotOf(p) as Snapshot).at) : p.after ? Date.parse(p.after) : null) : null);
+    const judged: Array<{ ok: boolean; text: string }> = [];
+    const holds: string[] = [];
+    let runtimeHeld = false;
+    let memberHeld = false;
+    for (const r of members) {
+      const own = requests.filter((q) => role(q.request?.owner ?? "") === r);
+      const mine = (p: EnginePost) => role(p.author) === r;
+      const bg = [...new Set(inJob.filter((p) => mine(p) && p.output?.activityId?.startsWith("bg:")).map((p) => `${p.output?.activityId} settled by ${describe(p)}`))];
+      const marks = inJob.filter((p) => mine(p) && ((p.kind === "progress" && p.progress?.working) || p.output?.activityId?.startsWith("work:")));
+      const pending = inJob.filter((p) => mine(p) && p.output?.claims.some((c) => c.outcome === "pending_activity" && own.some((q) => q.id === c.requestId)));
+      runtimeHeld ||= bg.length > 0;
+      memberHeld ||= marks.length > 0;
+      const held = [bg.length ? `runtime hold ${bg.join(", ")}` : "", marks.length ? `member's working mark ${marks.map((p) => (p.output?.activityId ? `${p.output.activityId} via ${describe(p)}` : describe(p))).join(", ")}` : "", pending.length ? `pending_activity claims ${pending.map(describe).join(", ")}` : ""].filter(Boolean);
+      holds.push(`@${r}: ${tasksOf(r).map(describeTask).join(", ")}; holds: ${held.join("; ") || "none"}`);
+      for (const q of own) {
+        const carriers = runs.filter((run) => role(run.seatId ?? "") === r && run.startedAt && ((run.requestIds ?? []).includes(q.id) || (run.inputs ?? []).includes(q.seq)));
+        const started = tasksOf(r).filter((t) => carriers.some((run) => t.startedAt >= Date.parse(run.startedAt as string) && t.startedAt <= (run.endedAt ? Date.parse(run.endedAt) : Number.POSITIVE_INFINITY)));
+        const slowCheck = r === "W1" && job.task === "T3";
+        if (started.length === 0 && !slowCheck) continue;
+        const answer = answerPost(q);
+        const at = answerAt(answer);
+        const unended = started.filter((t) => t.endedAt === null || at === null || at < t.endedAt);
+        const log = slowCheck ? snapshotOf(answer)?.check.parts.slowCheckLog : undefined;
+        const logEnded = !slowCheck || (log !== undefined && (log.pass || /^the last run \(pid [^)]*\) failed$/.test(log.detail ?? "")));
+        const parts = [
+          started.length ? `${started.length - unended.length} of ${started.length} background task${started.length === 1 ? "" : "s"} started in its runs had ended` : "",
+          slowCheck ? `the slow-check ${logEnded ? "had ended" : "had not ended"} (${log ? log.detail : "no copy of the answer"})` : "",
+        ].filter(Boolean);
+        judged.push({ ok: answer !== undefined && unended.length === 0 && logEnded, text: `@${r}'s #${q.number} answered by ${describe(answer)}${at === null ? "" : ` at ${clock(at)}`}: ${answer === undefined ? "never answered" : parts.join("; ")}` });
+      }
+    }
+    if (judged.length === 0) add("backgroundHeld", "n/a", `background work outside the runs that carried a request: ${holds.join(" | ")}`);
+    else add("backgroundHeld", judged.every((j) => j.ok) ? "pass" : "FAIL", `${holds.join(" | ")}; ${judged.map((j) => j.text).join("; ")}`, runtimeHeld ? "runtime hold" : memberHeld ? "member's mark only" : "no hold");
   }
 
   // Review requests: owned by V, and the request each one holds (its parent when a worker asked; itself when the Consigliere did).

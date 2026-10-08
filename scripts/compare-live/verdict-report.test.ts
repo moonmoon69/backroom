@@ -204,41 +204,71 @@ describe("behaviour checks on the new side", () => {
     assert.equal(outcome(behaviourChecks({ job: jobRecord("T2", "new"), measure: measureOf("T2", "new"), room }), "consigliereHeld"), "n/a");
   });
 
-  // W1's request #12: held (pending_activity at #18, closed by a continuation settling `activity` at #22), or closed at #18.
-  const t3 = (logDetail: string, hold: "bg" | "work" | null, background: string[] = ["background Bash \"npm run slow-check\" at 00:01:00"]) => {
+  // W1's request #12, carried by run w1-1 (00:01–00:02), where W1 starts the slow-check in the background at 00:01:30.
+  // Held: #18 is pending_activity and a later post (#22 at 00:06) closes it, settling a bg: (runtime) or work: (member) activity.
+  const at = (post: EnginePost, time: string) => ({ ...post, at: `2026-01-01T${time}Z` }) as EnginePost;
+  const task = (startedAt: string, endedAt: string | null, id = "bg1") => ({ id, what: 'background Bash "npm run slow-check"', startedAt: Date.parse(`2026-01-01T${startedAt}Z`), endedAt: endedAt ? Date.parse(`2026-01-01T${endedAt}Z`) : null, status: endedAt ? "completed" : null });
+  const t3 = (logDetail: string, hold: "bg" | "work" | null, background: Record<string, ReturnType<typeof task>[]> = { W1: [task("00:01:30", "00:05:00")] }) => {
     const posts = [
       request(10, "prompt", SEATS.C, null, 24),
       request(12, "a", SEATS.W1, "prompt", hold ? 22 : 18),
-      output(18, SEATS.W1, [["a", hold ? "pending_activity" : "answered"]]),
-      ...(hold ? [output(22, SEATS.W1, [["a", "answered"]], hold === "bg" ? "continuation" : "answer", null, `${hold}:w1-run`)] : []),
+      at(output(18, SEATS.W1, [["a", hold ? "pending_activity" : "answered"]], "final", "w1-1"), "00:02:00"),
+      ...(hold ? [at(output(22, SEATS.W1, [["a", "answered"]], hold === "bg" ? "continuation" : "answer", null, `${hold}:w1-1`), "00:06:00")] : []),
       output(24, SEATS.C, [["prompt", "answered"]]),
     ];
+    const runs = [{ id: "w1-1", seatId: SEATS.W1, reservedSeq: 13, inputs: [12], requestIds: ["a"], startedAt: "2026-01-01T00:01:00Z", endedAt: "2026-01-01T00:02:00Z" }];
     const snapshots = [{ kind: "answer", alias: "W1", postId: hold ? "out-22" : "out-18", at: "2026-01-01T00:10:00Z", dir: "", check: { pass: false, parts: { catalog: { pass: true }, slowCheckLog: { pass: logDetail.includes("passed"), detail: logDetail } } } }] as unknown as Snapshot[];
-    return { job: jobRecord("T3", "new", { snapshots }), measure: measureOf("T3", "new"), room: engineRoom(posts, []), w1Background: background } satisfies VerdictJob;
+    return { job: jobRecord("T3", "new", { snapshots }), measure: measureOf("T3", "new"), room: engineRoom(posts, runs), background } satisfies VerdictJob;
   };
   const RUNNING = "a run (pid 7) had not finished up to 2026-01-01T00:10:00Z";
+  const PASSED = "the last run (pid 7) passed";
+  const check = (job: VerdictJob) => behaviourChecks(job).find((c) => c.id === "backgroundHeld");
 
-  test("T3: n/a only when W1's transcripts show no background work; otherwise the request must stay open until the slow-check ended", () => {
-    const held = behaviourChecks(t3("the last run (pid 7) passed", "bg")).find((c) => c.id === "backgroundHeld");
+  test("background work: n/a only when no member's transcripts show any; a runtime hold that closed after the end passes", () => {
+    const held = check(t3(PASSED, "bg"));
     assert.equal(held?.outcome, "pass");
     assert.equal(held?.note, "runtime hold");
-    assert.match(held?.evidence ?? "", /runtime hold bg:w1-run settled by #22 \(continuation\)/);
-    // Ended, even with a failing last run: the hold did its part (the early-answer check judges the result).
-    assert.equal(outcome(behaviourChecks(t3("the last run (pid 7) failed", "bg")), "backgroundHeld"), "pass");
-    assert.equal(outcome(behaviourChecks(t3(RUNNING, "bg")), "backgroundHeld"), "FAIL");
-    // The defect the check exists for: background work ran, the runtime held nothing, the final closed the request mid-run.
-    const unheld = behaviourChecks(t3(RUNNING, null)).find((c) => c.id === "backgroundHeld");
-    assert.equal(unheld?.outcome, "FAIL");
-    assert.match(unheld?.evidence ?? "", /holds: none/);
-    // No background work in the transcripts: n/a, whatever the runtime recorded.
-    assert.equal(outcome(behaviourChecks(t3("the last run (pid 7) passed", null, [])), "backgroundHeld"), "n/a");
+    assert.match(held?.evidence ?? "", /runtime hold bg:w1-1 settled by #22 \(continuation\)/);
+    assert.match(held?.evidence ?? "", /1 of 1 background task started in its runs had ended/);
+    // Ended with a failing last run: the hold did its part (the early-answer check judges the result).
+    assert.equal(check(t3("the last run (pid 7) failed", "bg"))?.outcome, "pass");
+    assert.equal(check(t3(PASSED, null, {}))?.outcome, "n/a");
+    assert.equal(check(t3(PASSED, null, { W1: [] }))?.outcome, "n/a");
   });
 
-  test("T3: a request held only by the member's own working mark is reported as that", () => {
-    const check = behaviourChecks(t3("the last run (pid 7) passed", "work")).find((c) => c.id === "backgroundHeld");
-    assert.equal(check?.outcome, "pass");
-    assert.equal(check?.note, "member's mark only");
-    assert.match(check?.evidence ?? "", /member's working mark work:w1-run via #22 \(answer\)/);
+  test("background work: fails closed: a run still going, no log at all, no end recorded, or a final that closed the request mid-run", () => {
+    assert.equal(check(t3(RUNNING, "bg"))?.outcome, "FAIL");
+    assert.equal(check(t3("no .slow-check.log in the folder", "bg"))?.outcome, "FAIL");
+    assert.equal(check(t3(PASSED, "bg", { W1: [task("00:01:30", null)] }))?.outcome, "FAIL");
+    // The defect the check exists for: background work ran, the runtime held nothing, the final closed the request at 00:02.
+    const unheld = check(t3(PASSED, null));
+    assert.equal(unheld?.outcome, "FAIL");
+    assert.equal(unheld?.note, "no hold");
+    assert.match(unheld?.evidence ?? "", /holds: none/);
+    assert.match(unheld?.evidence ?? "", /0 of 1 background task started in its runs had ended/);
+  });
+
+  test("background work: a request held only by the member's own working mark is reported as that", () => {
+    const marked = check(t3(PASSED, "work"));
+    assert.equal(marked?.outcome, "pass");
+    assert.equal(marked?.note, "member's mark only");
+    assert.match(marked?.evidence ?? "", /member's working mark work:w1-1 via #22 \(answer\)/);
+  });
+
+  test("background work: every member is judged (V's review closed while its own slow-check ran fails); work outside a carrying run is not", () => {
+    const job = t3(PASSED, "bg", { W1: [task("00:01:30", "00:05:00")], V: [task("00:03:10", "00:07:00", "bgv")] });
+    const room = job.room as RoomRecord;
+    room.posts = [...(room.posts ?? []), request(14, "r", SEATS.V, "a", 16), at(output(16, SEATS.V, [["r", "answered"]], "final", "v-1"), "00:04:00")];
+    room.runs = [...(room.runs ?? []), { id: "v-1", seatId: SEATS.V, reservedSeq: 15, inputs: [14], requestIds: ["r"], startedAt: "2026-01-01T00:03:00Z", endedAt: "2026-01-01T00:04:00Z" }];
+    const v = check(job);
+    assert.equal(v?.outcome, "FAIL");
+    assert.match(v?.evidence ?? "", /@V's #14 answered by #16 \(final\) at 00:04:00: 0 of 1 background task/);
+    // T4 (no slow-check rule): W2's background work in a run that carried its request, answered after it ended, passes.
+    const t4 = { ...job, job: jobRecord("T4", "new", { snapshots: [] }), background: { V: [task("00:03:10", "00:03:50", "bgv")] } };
+    assert.equal(check(t4)?.outcome, "pass");
+    // Background work started in no run that carried a request: n/a, listed.
+    const outside = { ...t4, background: { V: [task("00:08:00", "00:09:00", "late")] } };
+    assert.equal(check(outside)?.outcome, "n/a");
   });
 
   test("an early member post fails only when it closed a request; an open request or a pending activity at the close fails", () => {
@@ -273,7 +303,7 @@ describe("W1's background work, from T3's side of the evidence", () => {
   const scratch = join(import.meta.dirname, `.scratch-verdict-${process.pid}`);
   after(() => rmSync(scratch, { recursive: true, force: true }));
 
-  test("background Bash, Monitor and background subagents in the window, the session's own transcript and its subagents'", () => {
+  test("background Bash, Monitor and background subagents in the window, with the end T3's harness recorded for each (first final status)", () => {
     mkdirSync(join(scratch, "t3"), { recursive: true });
     const db = new DatabaseSync(join(scratch, "t3", "state-subset.sqlite"));
     db.exec("CREATE TABLE orchestration_v2_projection_provider_threads (thread_id TEXT, driver TEXT, payload_json TEXT)");
@@ -292,14 +322,21 @@ describe("W1's background work, from T3's side of the evidence", () => {
         use("2026-01-01T00:02:00Z", "bg", "Bash", { command: "npm run slow-check", run_in_background: true }),
         use("2026-01-01T00:03:00Z", "mon", "Monitor", { command: "tail -f .slow-check.log" }),
         "not json",
+        JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: "2026-01-01T00:05:00Z", content: "<task-notification>\n<task-id>x</task-id>\n<tool-use-id>bg</tool-use-id>\n<status>completed</status>\n</task-notification>" }),
+        JSON.stringify({ type: "user", timestamp: "2026-01-01T00:05:01Z", message: { role: "user", content: "<task-notification>\n<tool-use-id>bg</tool-use-id>\n<status>completed</status>\n</task-notification>" } }),
+        JSON.stringify({ type: "user", timestamp: "2026-01-01T00:04:00Z", message: { role: "user", content: "<task-notification>\n<tool-use-id>mon</tool-use-id>\n<status>running</status>\n</task-notification>" } }),
       ].join("\n"),
     );
-    writeFileSync(join(project, "sess-w1", "subagents", "agent-1.jsonl"), use("2026-01-01T00:04:00Z", "sub", "Agent", { description: "watch the check", run_in_background: true }));
+    writeFileSync(
+      join(project, "sess-w1", "subagents", "agent-1.jsonl"),
+      [use("2026-01-01T00:04:00Z", "sub", "Agent", { description: "watch the check", run_in_background: true }), JSON.stringify({ timestamp: "2026-01-01T00:06:00Z", message: { content: "<task-notification><tool-use-id>sub</tool-use-id><status>killed</status></task-notification>" } })].join("\n"),
+    );
     writeFileSync(join(project, "sess-v.jsonl"), use("2026-01-01T00:02:30Z", "other", "Bash", { command: "sleep 1", run_in_background: true }));
-    assert.deepEqual(backgroundWorkOf(scratch, "t-w1", Date.parse("2026-01-01T00:01:00Z"), Date.parse("2026-01-01T00:10:00Z")), [
-      'background Bash "npm run slow-check" at 00:02:00',
-      "Monitor at 00:03:00",
-      'background subagent "watch the check" at 00:04:00',
+    const t = (time: string) => Date.parse(`2026-01-01T${time}Z`);
+    assert.deepEqual(backgroundWorkOf(scratch, "t-w1", t("00:01:00"), t("00:10:00")), [
+      { id: "bg", what: 'background Bash "npm run slow-check"', startedAt: t("00:02:00"), endedAt: t("00:05:00"), status: "completed" },
+      { id: "mon", what: "Monitor", startedAt: t("00:03:00"), endedAt: null, status: null },
+      { id: "sub", what: 'background subagent "watch the check"', startedAt: t("00:04:00"), endedAt: t("00:06:00"), status: "killed" },
     ]);
   });
 });
