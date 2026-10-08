@@ -7,11 +7,15 @@
  * instance), and everything measure.ts reads copied into the job's evidence folder. Before each job the campaign's
  * measured spend is added up, and no job starts once it has reached the cap.
  *
+ * The old side is driven by LegacyInstance, the new side (ROOMS_ENGINE=1) by EngineInstance (instance.ts); everything
+ * else here is the same for both.
+ *
  *   node scripts/compare-live/run.ts --campaign r0 --side old --jobs T1:1,T2:1,T3:1,T4:1 [--cap 100]
- *   node scripts/compare-live/run.ts --dry          the plumbing on two ROOMS_ADAPTER=fake instances (4 tasks each)
+ *   node scripts/compare-live/run.ts --dry          the plumbing on two ROOMS_ADAPTER=fake instances (4 tasks each),
+ *                                                   the new one running ROOMS_ENGINE=1
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -26,6 +30,7 @@ import {
   FIXTURE_TAG,
   INSTANCES,
   NO_REPORT_CAP_MS,
+  NO_T3_REPORT,
   QUIET_MS,
   capCheck,
   jobThreads,
@@ -37,7 +42,7 @@ import {
   type Snapshot,
 } from "./campaign.ts";
 import { MEMBER_PARTS, checkTask, type CheckInput } from "./checkers.ts";
-import { LegacyInstance, type BoardPost } from "./instance.ts";
+import { EngineInstance, HttpError, LegacyInstance, type BoardPost, type InstanceDriver, type InstanceThreadView } from "./instance.ts";
 import { measureJob, type ThreadRecord } from "./measure.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB, copyTranscripts, exportStateSubset, liveT3 } from "./t3.ts";
 import { TASKS, TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
@@ -89,7 +94,7 @@ interface JobOptions {
   side: Side;
   task: TaskId;
   run: number;
-  instance: LegacyInstance;
+  instance: InstanceDriver;
   worktree: string;
   /** The live T3 (paid jobs); null in the dry run, whose T3 is the fake inside each instance. */
   t3: HttpT3Adapter | null;
@@ -190,7 +195,7 @@ class Job {
     const consigliere = await instance.ensurePreset(CREW.consigliere.name, CREW.consigliere.modelSelection, CREW.runtimeMode);
     const member = await instance.ensurePreset(CREW.member.name, CREW.member.modelSelection, CREW.runtimeMode);
     await instance.setConsiglierePreset(consigliere);
-    this.record.projectId = await instance.createProject(this.record.folder, `tally-${this.record.jobId}`);
+    this.record.projectId = await this.createProject();
     this.record.times.seatingStart = iso();
     const room = await instance.createRoom(this.record.projectId, `tally ${this.record.jobId}`);
     this.record.roomId = room.roomId;
@@ -204,10 +209,14 @@ class Job {
     this.record.times.seatingEnd = iso();
     this.note(`seated ${this.record.seats.map((s) => `@${s.alias}`).join(", ")}`);
 
-    // The prompt, as the user.
+    // The prompt, as the user (on the new side with the message's client ID, recorded first).
     for (const post of await instance.posts(room.roomId)) this.seen.add(post.id);
+    const clientMessageId = randomUUID();
+    if (instance.runtime === "engine") this.record.message = { clientMessageId, requestIds: [] };
     this.record.times.postedAt = iso();
-    await instance.postAsUser(room.roomId, spec.prompt);
+    this.save();
+    const posted = await instance.postAsUser(room.roomId, spec.prompt, clientMessageId);
+    if (this.record.message) this.record.message.requestIds = posted.requestIds;
     this.save();
     this.note("prompt posted");
 
@@ -215,6 +224,10 @@ class Job {
     await Promise.all(this.checks);
     await this.finish();
     return this.record;
+  }
+
+  private createProject(): Promise<string> {
+    return createJobProject(this.options.instance, this.record.folder, `tally-${this.record.jobId}`, (text) => this.note(text));
   }
 
   /** Seat briefings answered, every seat idle in T3, nothing pending on the instance. */
@@ -275,7 +288,17 @@ class Job {
     let lastOverlapSample = 0;
     for (;;) {
       const now = Date.now();
-      const posts = await instance.posts(roomId);
+      // A read that fails (the instance or T3 busy) is tried again on the next pass; while it fails nothing is quiet.
+      let posts: BoardPost[];
+      try {
+        posts = await instance.posts(roomId);
+      } catch (error) {
+        quietSince = null;
+        if (this.record.report) appendFileSync(join(this.dir, "quiet.jsonl"), `${JSON.stringify({ at: iso(now), quiet: false, quietForMs: 0, error: `board: ${(error as Error).message}` })}\n`);
+        if (this.closeOnCaps(now, postedMs)) return;
+        await sleep(2000);
+        continue;
+      }
       for (const post of posts) {
         if (this.seen.has(post.id) || Date.parse(post.at) < postedMs) continue;
         this.seen.add(post.id);
@@ -283,11 +306,13 @@ class Job {
         if (post.fromConsigliere) {
           const isReport = dry ? dry.isReport(post, posts) : hasJobDoneLine(post.text);
           if (isReport && !this.record.report) {
-            this.record.report = { postId: post.id, text: post.text };
+            this.record.report = { postId: post.id, text: post.text, ...(post.via ? { via: post.via } : {}) };
             this.record.times.reportAt = post.at;
             this.record.times.reportObservedAt = iso();
             this.snapshot("report", consigliere.alias, post);
-            this.note(`JOB-DONE report #${post.number}`);
+            this.note(`JOB-DONE report #${post.number}${post.via ? ` (${post.via})` : ""}`);
+            // A report through `rooms-board answer` or `note` is no T3 message: measure.ts finds none, and the job fails its check.
+            if (post.via && NO_T3_REPORT.has(post.via)) this.note(`the report came through rooms-board ${post.via}: no T3 message carries it, so it has no T3 time and the job fails the accuracy check`);
           }
         } else {
           this.snapshot("answer", post.from, post);
@@ -297,7 +322,17 @@ class Job {
       if (dry) await dry.step(posts);
 
       // T3: the job's threads, and every other thread that is running (the overlap), from one read of the shell.
-      const shells = this.options.t3 ? await this.options.t3.listThreads() : undefined;
+      let shells: T3ThreadShell[] | undefined;
+      try {
+        shells = this.options.t3 ? await this.options.t3.listThreads() : undefined;
+      } catch (error) {
+        quietSince = null;
+        if (this.record.report) appendFileSync(join(this.dir, "quiet.jsonl"), `${JSON.stringify({ at: iso(now), quiet: false, quietForMs: 0, error: `T3 threads: ${(error as Error).message}` })}\n`);
+        if (this.closeOnCaps(now, postedMs)) return;
+        this.save();
+        await sleep(2000);
+        continue;
+      }
       const jobThreadIds = new Set(this.record.seats.map((s) => s.threadId));
       if (shells && now - lastOverlapSample >= 10_000) {
         lastOverlapSample = now;
@@ -309,33 +344,41 @@ class Job {
         this.record.overlap.threads = [...overlap].sort();
       }
       if (this.record.report) {
-        const threads = await this.threadStates(shells);
-        const pending = await instance.pendingWork(roomId);
-        const quiet = pending.length === 0 && Object.values(threads).every((t) => !t.active && !t.request && t.background === 0);
+        // One sample: T3 for every job thread, then the instance, each read fresh; a read that fails is not quiet.
+        let sample: Record<string, unknown>;
+        let quiet = false;
+        try {
+          const threads = await this.threadStates(shells);
+          const read = await instance.quiet(roomId);
+          quiet = read.pending.length === 0 && Object.values(threads).every((t) => !t.active && !t.request && t.background === 0);
+          sample = { pending: read.pending, ...(read.head === null ? {} : { head: read.head }), ...(read.detail ? { instance: read.detail } : {}), threads };
+        } catch (error) {
+          sample = { error: (error as Error).message };
+        }
         if (!quiet) quietSince = null;
         else quietSince ??= now;
-        appendFileSync(join(this.dir, "quiet.jsonl"), `${JSON.stringify({ at: iso(now), quiet, quietForMs: quietSince === null ? 0 : now - quietSince, pending, threads })}\n`);
+        appendFileSync(join(this.dir, "quiet.jsonl"), `${JSON.stringify({ at: iso(now), quiet, quietForMs: quietSince === null ? 0 : now - quietSince, ...sample })}\n`);
         if (quietSince !== null && now - quietSince >= this.options.quietMs) {
           this.record.close = "quiet";
           this.record.times.quietSince = iso(quietSince);
           this.record.times.closeAt = iso(now);
           return;
         }
-        if (now - Date.parse(this.record.times.reportAt as string) >= AFTER_REPORT_CAP_MS) {
-          this.record.close = "did not quiesce";
-          this.record.times.closeAt = iso(now);
-          this.note("not quiet 30 minutes after the report: closed as did not quiesce");
-          return;
-        }
-      } else if (now - postedMs >= NO_REPORT_CAP_MS) {
-        this.record.close = "no report";
-        this.record.times.closeAt = iso(now);
-        this.note("no JOB-DONE report in 60 minutes: closed");
-        return;
       }
+      if (this.closeOnCaps(now, postedMs)) return;
       this.save();
       await sleep(2000);
     }
+  }
+
+  /** The caps (capClose): 30 minutes after the report ("did not quiesce"), or 60 after the post without one ("no report"). */
+  private closeOnCaps(now: number, postedMs: number): boolean {
+    const close = capClose(this.record, now, postedMs);
+    if (close === null) return false;
+    this.record.close = close;
+    this.record.times.closeAt = iso(now);
+    this.note(close === "did not quiesce" ? "not quiet 30 minutes after the report: closed as did not quiesce" : "no JOB-DONE report in 60 minutes: closed");
+    return true;
   }
 
   /** Copy the job folder now (no node_modules; the final copy keeps .git) and run the task's checker on the copy. */
@@ -344,13 +387,26 @@ class Job {
     const dir = join(this.dir, "snapshots", `${String(this.record.snapshots.length + 1).padStart(2, "0")}-${kind}${alias ? `-${alias}` : ""}`);
     cpSync(this.record.folder, dir, { recursive: true, preserveTimestamps: true, filter: (source) => !/\/node_modules(\/|$)/.test(source) && (kind === "final" || !/\/\.git(\/|$)/.test(source)) });
     const task = this.options.task;
-    const entry: Snapshot = { kind, alias, postId: post?.id ?? null, at: post?.at ?? observedAt, observedAt, dir, check: { pass: false, parts: {} } };
+    const entry: Snapshot = {
+      kind, alias, postId: post?.id ?? null, at: post?.at ?? observedAt, observedAt, dir, check: { pass: false, parts: {} },
+      ...(post?.clock ? { clock: post.clock } : {}), ...(post?.via ? { via: post.via } : {}), ...(post?.claims ? { claims: post.claims } : {}),
+    };
     if (kind === "answer") entry.ownParts = ownPartsFor(task, this.record.seats.find((s) => s.alias === alias)?.role ?? null);
     this.record.snapshots.push(entry);
-    // The report's moment is T3's (its final message), not the board's, which lags it by a runtime-dependent delay.
-    const moment = kind === "report" ? this.t3ReportTime().then((at) => at ?? post?.at ?? null) : Promise.resolve(kind === "final" ? (this.record.times.t3ReportAt ?? this.record.times.reportAt) : (post?.at ?? null));
+    // The report's moment is T3's (its final message), not the board's, which lags it by a runtime-dependent delay. When
+    // T3 cannot be read the old side takes its board's time; the new side takes its post's own T3 time, and a report no
+    // T3 message carries (`rooms-board answer`) has none: its check fails instead of taking a time from another clock.
+    const ownClock = (p: Pick<BoardPost, "at" | "clock"> | null | undefined) => (!p ? null : this.options.instance.runtime === "legacy" || this.options.dry || p.clock === "t3" ? p.at : null);
+    const reportCopy = this.record.snapshots.find((s) => s.kind === "report");
+    const moment =
+      kind === "report" ? this.t3ReportTime().then((at) => at ?? ownClock(post))
+      : kind === "final" ? Promise.resolve(this.record.times.t3ReportAt ?? ownClock(reportCopy))
+      : Promise.resolve(post?.at ?? null);
     this.checks.push(
-      moment.then((at) => checkTask(task, checkInputFor(task, kind, dir, post === null ? null : { text: post.text, at: at ?? post.at }, this.record.report?.text ?? null, at))).then(
+      moment.then((at) => {
+        if (at === null && (kind === "report" || (kind === "final" && this.record.report))) return { pass: false, parts: { reportTime: { pass: false, detail: "no T3 message carries the JOB-DONE report: no time to judge it at" } } };
+        return checkTask(task, checkInputFor(task, kind, dir, post === null ? null : { text: post.text, at: at ?? post.at }, this.record.report?.text ?? null, at));
+      }).then(
         (result) => {
           entry.check = result;
           if (entry.ownParts && entry.ownParts.length > 0) entry.ownPass = entry.ownParts.every((part) => result.parts[part]?.pass === true);
@@ -421,9 +477,7 @@ class Job {
     writeFileSync(join(evidence, "threads.json"), `${JSON.stringify(records, null, 2)}\n`);
     // The board and the instance's own run records (with the briefings it sent), for the briefing cross-check.
     const roomId = this.record.roomId as string;
-    const snapshot = await instance.snapshot(roomId);
-    const runs = await Promise.all(snapshot.runs.map((run) => instance.run(roomId, run.id)));
-    writeFileSync(join(this.dir, "instance-room.json"), `${JSON.stringify({ ...snapshot, runs }, null, 2)}\n`);
+    writeFileSync(join(this.dir, "instance-room.json"), `${JSON.stringify(await instance.roomRecord(roomId), null, 2)}\n`);
     // Everything the members changed, committed or not, against the tag.
     git(this.record.folder, "add", "--all", "--intent-to-add");
     writeFileSync(join(this.dir, "final.diff"), git(this.record.folder, "diff", FIXTURE_TAG));
@@ -464,7 +518,7 @@ export function threadRecord(detail: T3ThreadDetail, seat: Seat | null): ThreadR
     alias: seat?.alias ?? null,
     role: seat?.role ?? "child",
     source: "t3-http",
-    runs: detail.runs.map((r) => ({ id: r.id, requestedAt: r.requestedAt, startedAt: r.startedAt, completedAt: r.completedAt, status: r.status })),
+    runs: detail.runs.map((r) => ({ id: r.id, requestedAt: r.requestedAt, startedAt: r.startedAt, completedAt: r.completedAt, status: r.status, userMessageId: r.userMessageId })),
     messages: detail.messages.map((m) => ({ id: m.id, role: m.role, runId: m.runId, createdAt: m.createdAt, text: m.text })),
     subagents: detail.subagents.map((s) => ({ id: s.id, runId: s.runId, status: s.status, startedAt: s.startedAt, childThreadId: s.childThreadId })),
     partial: detail.partial,
@@ -472,14 +526,14 @@ export function threadRecord(detail: T3ThreadDetail, seat: Seat | null): ThreadR
 }
 
 /** The dry run's thread: the fake T3 inside the instance, as its /api/threads view shows it (each reply has its run). */
-function fakeThreadRecord(view: Awaited<ReturnType<LegacyInstance["thread"]>>, seat: Seat): ThreadRecord {
+function fakeThreadRecord(view: InstanceThreadView, seat: Seat): ThreadRecord {
   const runs: ThreadRecord["runs"] = [];
   const messages: ThreadRecord["messages"] = [];
   let prompt: { id: string; at: string; text: string } | null = null;
   for (const item of view.items) {
     if (item.kind === "user") prompt = { id: item.id, at: item.at, text: item.text };
     if (item.kind !== "reply" || !item.runId) continue;
-    runs.push({ id: item.runId, requestedAt: prompt?.at ?? item.at, startedAt: prompt?.at ?? item.at, completedAt: item.at, status: "completed" });
+    runs.push({ id: item.runId, requestedAt: prompt?.at ?? item.at, startedAt: prompt?.at ?? item.at, completedAt: item.at, status: "completed", userMessageId: prompt?.id ?? null });
     if (prompt) messages.push({ id: prompt.id, role: "user", runId: item.runId, createdAt: prompt.at, text: prompt.text });
     messages.push({ id: item.id, role: "assistant", runId: item.runId, createdAt: item.at, text: item.text });
     prompt = null;
@@ -494,11 +548,11 @@ function fakeThreadRecord(view: Awaited<ReturnType<LegacyInstance["thread"]>>, s
 class DryConsigliere {
   private key: string | null = null;
   private posted: string[] = [];
-  private readonly instance: LegacyInstance;
+  private readonly instance: InstanceDriver;
   private readonly consigliere: Seat;
   private readonly members: string[];
 
-  constructor(instance: LegacyInstance, consigliere: Seat, members: string[]) {
+  constructor(instance: InstanceDriver, consigliere: Seat, members: string[]) {
     this.instance = instance;
     this.consigliere = consigliere;
     this.members = members;
@@ -516,12 +570,13 @@ class DryConsigliere {
     }
   }
 
+  /** In board order (post numbers, which both runtimes give in append order): a fake can answer within one millisecond. */
   isReport(post: BoardPost, posts: BoardPost[]): boolean {
     if (this.posted.length === 0) return false;
     const answers = posts.filter((p) => p.isAnswer && !p.fromConsigliere && this.posted.includes(p.from));
     if (new Set(answers.map((a) => a.from)).size < this.posted.length) return false;
-    const last = answers.reduce((max, a) => (a.at > max ? a.at : max), "");
-    return post.at > last;
+    const order = (p: BoardPost) => p.number ?? Number.POSITIVE_INFINITY;
+    return answers.every((a) => order(post) > order(a));
   }
 }
 
@@ -591,6 +646,7 @@ async function main(): Promise<void> {
   if (values.dry) {
     const campaign = values.campaign ?? "dry";
     const quietMs = Number(values["quiet-ms"] ?? 20_000);
+    for (const side of ["old", "new"] as const) refuseTaintedCheckout(INSTANCES[side].worktree);
     const fakes = { old: startFake("old", 4491), new: startFake("new", 4492) };
     try {
       for (const side of ["old", "new"] as const) await waitForInstance(fakes[side].url);
@@ -598,7 +654,7 @@ async function main(): Promise<void> {
       await sleep(1000);
       for (const task of TASK_IDS) {
         for (const side of ["old", "new"] as const) {
-          const instance = new LegacyInstance(fakes[side].url, boardToken(fakes[side].dataDir));
+          const instance = driverFor(side, fakes[side].url, boardToken(fakes[side].dataDir));
           const job = new Job({ campaign, side, task, run: 1, instance, worktree: INSTANCES[side].worktree, t3: null, cap: Number.POSITIVE_INFINITY, quietMs, dry: true }, 0);
           await runOrAbort(job);
         }
@@ -615,9 +671,8 @@ async function main(): Promise<void> {
   const cap = campaignCap(campaign, values.cap === undefined ? null : Number(values.cap), values["user-ok"] ?? null);
   const quietMs = Number(values["quiet-ms"] ?? QUIET_MS);
   const instanceInfo = INSTANCES[side];
-  // The hidden checkers and reference solutions must not sit beside the board command the members run.
-  if (existsSync(join(instanceInfo.worktree, "scripts", "compare-live"))) throw new Error(`${instanceInfo.worktree} contains scripts/compare-live (the checkers and reference solutions): delete it in that checkout first`);
-  const instance = new LegacyInstance(instanceInfo.url, boardToken(join(instanceInfo.worktree, "data")));
+  refuseTaintedCheckout(instanceInfo.worktree);
+  const instance = driverFor(side, instanceInfo.url, boardToken(join(instanceInfo.worktree, "data")));
   const t3 = liveT3(join(instanceInfo.worktree, "data"));
   for (const spec of values.jobs.split(",")) {
     const [task, run] = spec.split(":") as [TaskId, string];
@@ -633,6 +688,53 @@ async function main(): Promise<void> {
     const job = new Job({ campaign, side, task, run: Number(run), instance, worktree: instanceInfo.worktree, t3, cap, quietMs, dry: false }, spent);
     await runOrAbort(job);
   }
+}
+
+/**
+ * Whether a job closes on a cap now. The 30 minutes after the report count from T3's time of the report message on
+ * both sides (read when the board shows it), the board's time only when T3's is not known (the dry run, a failed read):
+ * the board lags T3 by a runtime-dependent delay (old side 2 to 58 s), which would give one side less time to go quiet.
+ */
+export function capClose(record: Pick<JobRecord, "report" | "times">, now: number, postedMs: number): "did not quiesce" | "no report" | null {
+  if (record.report) {
+    const from = record.times.t3ReportAt ?? record.times.reportAt;
+    return from !== null && now - Date.parse(from) >= AFTER_REPORT_CAP_MS ? "did not quiesce" : null;
+  }
+  return now - postedMs >= NO_REPORT_CAP_MS ? "no report" : null;
+}
+
+/**
+ * A job's throwaway T3 project. T3 can take the project and still answer the command with a failure (a timeout under
+ * load: twice in R0, once in R1, each time T3 had the project seconds later); the instance then answers 422 or 5xx. The
+ * folder is fresh and the title the job's own, so T3's project for both is the job's: it is taken, with a note.
+ */
+export async function createJobProject(instance: Pick<InstanceDriver, "createProject" | "findProject">, folder: string, title: string, note: (text: string) => void, waitMs = 5000): Promise<string> {
+  try {
+    return await instance.createProject(folder, title);
+  } catch (error) {
+    if (!(error instanceof HttpError) || (error.status !== 422 && error.status < 500)) throw error;
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      const found = await instance.findProject(folder, title).catch(() => null);
+      if (found) {
+        note(`project.create answered ${error.status} but T3 has ${title} for the folder (${found}): taken`);
+        return found;
+      }
+      await sleep(waitMs);
+    }
+    throw error;
+  }
+}
+
+/** The driver of a side: the old runtime's API, or the engine's (ROOMS_ENGINE=1). */
+export const driverFor = (side: Side, url: string, token: string | null, fetcher?: typeof fetch): InstanceDriver =>
+  side === "new" ? new EngineInstance(url, token, fetcher) : new LegacyInstance(url, token, fetcher);
+
+/**
+ * The hidden checkers and reference solutions must not sit beside the board command the members run: an instance's
+ * checkout that contains scripts/compare-live is refused (paid jobs and the dry run alike).
+ */
+export function refuseTaintedCheckout(worktree: string): void {
+  if (existsSync(join(worktree, "scripts", "compare-live"))) throw new Error(`${worktree} contains scripts/compare-live (the checkers and reference solutions): delete it in that checkout first`);
 }
 
 export const promptSha256 = (task: TaskId) => createHash("sha256").update(TASKS[task].prompt).digest("hex");

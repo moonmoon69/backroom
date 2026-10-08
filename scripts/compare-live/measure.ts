@@ -22,7 +22,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
+import { NO_T3_REPORT, campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
@@ -37,7 +37,8 @@ export interface ThreadRecord {
   alias: string | null;
   role: string;
   source: "t3-http" | "fake-instance";
-  runs: Array<{ id: string; requestedAt: string; startedAt: string | null; completedAt: string | null; status: string }>;
+  /** userMessageId: the message T3 started the run with (absent in R0's evidence, which did not keep it). */
+  runs: Array<{ id: string; requestedAt: string; startedAt: string | null; completedAt: string | null; status: string; userMessageId?: string | null }>;
   messages: Array<{ id: string; role: string; runId: string | null; createdAt: string; text: string }>;
   subagents: Array<{ id: string; runId: string | null; status: string; startedAt: string | null; childThreadId: string | null }>;
   partial: boolean;
@@ -89,6 +90,8 @@ export interface JobMeasure {
   tokensUntilReport: Tokens | null;
   tokensAfterReport: Tokens | null;
   briefing: { turns: number; bytes: number; crossCheck: { compared: number; equal: number; missing: number } | null };
+  /** New side: what the journal held at the close (information); null on the old side. */
+  engineAtClose?: { head: number | null; unread: number; unresolvedRuns: number; openRequests: number[]; pendingActivities: string[] } | null;
   seats: SeatMeasure[];
 }
 
@@ -270,6 +273,7 @@ export function measureJob(dir: string, options: { liveStateDb?: string | null }
     tokensUntilReport: sum(seats.map((s) => s.tokensUntilReport)),
     tokensAfterReport: sum(seats.map((s) => s.tokensAfterReport)),
     briefing: { turns: seats.reduce((n, s) => n + s.briefingBytes.length, 0), bytes: seats.reduce((n, s) => n + s.briefingBytes.reduce((a, b) => a + b, 0), 0), crossCheck: briefingCrossCheck(dir, records, posted, close) },
+    engineAtClose: engineAtClose(dir),
     seats,
   };
 }
@@ -300,28 +304,60 @@ function overlapFromStateDb(job: JobRecord, stateDb: string | null): string[] | 
 }
 
 /**
- * The instance's record of what it sent in the window (old side: runs.briefing) against the message T3 received, text
- * for text. `missing`: runs whose message T3's detail does not have.
+ * The instance's record of what it sent in the window against the message T3 received, byte for byte. Old side:
+ * runs.briefing against the message with the run's messageId. New side: each host run's frozen briefing (the read API's
+ * EngineRunDetail.briefing, what its sending froze) against the message T3 started the run's T3 run with (the T3 run's
+ * userMessageId), in the window by that T3 run's requestedAt, as turns are counted. `missing`: runs whose message T3's
+ * detail does not have.
  */
 function briefingCrossCheck(dir: string, records: ThreadRecord[], posted: number, close: number): { compared: number; equal: number; missing: number } | null {
   const path = join(dir, "instance-room.json");
   if (!existsSync(path)) return null;
-  const room = JSON.parse(readFileSync(path, "utf8")) as { runs?: Array<{ messageId?: string; briefing?: string; createdAt?: string }> };
+  const room = JSON.parse(readFileSync(path, "utf8")) as { engine?: boolean; runs?: Array<{ messageId?: string; briefing?: string | null; createdAt?: string; t3RunId?: string | null }> };
   const messages = new Map(records.flatMap((r) => r.messages.filter((m) => m.role === "user").map((m) => [m.id, m.text] as const)));
+  const t3Runs = new Map(records.flatMap((r) => r.runs.map((run) => [run.id, run] as const)));
   let compared = 0;
   let equal = 0;
   let missing = 0;
   for (const run of room.runs ?? []) {
-    if (typeof run.briefing !== "string" || run.briefing === "" || !run.createdAt || !inWindow(run.createdAt, posted, close)) continue;
-    const received = run.messageId ? messages.get(run.messageId) : undefined;
+    if (typeof run.briefing !== "string" || run.briefing === "") continue;
+    let messageId: string | null | undefined;
+    if (room.engine === true) {
+      // A host run T3 never recorded has no T3 run: it was not a turn, and nothing was received.
+      const t3Run = run.t3RunId ? t3Runs.get(run.t3RunId) : undefined;
+      if (!run.t3RunId || !t3Run || !inWindow(t3Run.requestedAt, posted, close)) continue;
+      messageId = t3Run.userMessageId;
+    } else {
+      if (!run.createdAt || !inWindow(run.createdAt, posted, close)) continue;
+      messageId = run.messageId;
+    }
+    const received = messageId ? messages.get(messageId) : undefined;
     if (received === undefined) {
       missing += 1;
       continue;
     }
     compared += 1;
-    if (received === run.briefing) equal += 1;
+    if (Buffer.from(received, "utf8").equals(Buffer.from(run.briefing, "utf8"))) equal += 1;
   }
   return { compared, equal, missing };
+}
+
+/**
+ * The new side's journal at the close, from the instance's record (information for Z1's behaviour checks: no seat may
+ * end with an unresolved run or a pending activity). Null on the old side.
+ */
+function engineAtClose(dir: string): NonNullable<JobMeasure["engineAtClose"]> | null {
+  const path = join(dir, "instance-room.json");
+  if (!existsSync(path)) return null;
+  const room = JSON.parse(readFileSync(path, "utf8")) as { engine?: boolean; counts?: Record<string, number>; seats?: Array<{ alias: string | null; activities: Array<{ id: string; memberHeld: boolean }> }>; requests?: Array<{ number: number; owner: string }> };
+  if (room.engine !== true || !room.counts) return null;
+  return {
+    head: (room as { head?: number }).head ?? null,
+    unread: room.counts.unread ?? 0,
+    unresolvedRuns: room.counts.unresolvedRuns ?? 0,
+    openRequests: (room.requests ?? []).map((q) => q.number),
+    pendingActivities: (room.seats ?? []).flatMap((s) => s.activities.map((a) => `${a.id}@${s.alias ?? "?"}${a.memberHeld ? ":held" : ""}`)),
+  };
 }
 
 /** Whether a file is the same in two copies (null when either copy lacks it). */
@@ -348,12 +384,16 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   const posted = job.times.postedAt as string;
   const close = job.times.closeAt as string;
   if (job.dry) {
-    // A fake T3 has no state database or transcripts: the turn count is checked against the instance's own runs.
-    const room = JSON.parse(readFileSync(join(dir, "instance-room.json"), "utf8")) as { runs: Array<{ threadId: string; t3RunId: string | null; createdAt: string }> };
+    // A fake T3 has no state database or transcripts: the turn count is checked against the instance's own runs (new
+    // side: the journal's host runs with the T3 run each was matched to, timed by T3's start as the instance read it).
+    const room = JSON.parse(readFileSync(join(dir, "instance-room.json"), "utf8")) as { engine?: boolean; runs: Array<{ threadId: string; t3RunId: string | null; createdAt?: string; startedAt?: string | null }> };
     for (const seat of measured.seats) {
-      const recount = new Set(room.runs.filter((r) => r.threadId === seat.threadId && r.t3RunId && r.createdAt >= posted && r.createdAt <= close).map((r) => r.t3RunId)).size;
+      const at = (r: (typeof room.runs)[number]) => (room.engine === true ? r.startedAt : r.createdAt) ?? null;
+      const recount = new Set(room.runs.filter((r) => r.threadId === seat.threadId && r.t3RunId && at(r) !== null && (at(r) as string) >= posted && (at(r) as string) <= close).map((r) => r.t3RunId)).size;
       if (recount !== seat.turns) out.push({ job: name, what: `turns @${seat.alias}`, measured: seat.turns, recounted: recount });
     }
+    const cross = measured.briefing.crossCheck;
+    if (room.engine === true && cross && (cross.equal !== cross.compared || cross.missing > 0 || (measured.metrics.turns ?? 0) > 0 && cross.compared === 0)) out.push({ job: name, what: "briefings sent and received differ (or none compared)", measured: cross, recounted: null });
     return out;
   }
   // A message id counted once (with its largest output) must not hide copies whose input or cache figures differ.
@@ -364,8 +404,12 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   if ((boardReportAt === null) !== (t3ReportAt === null) || (boardReportAt && t3ReportAt && Math.abs(Date.parse(boardReportAt) - Date.parse(t3ReportAt)) > 60_000)) {
     out.push({ job: name, what: "the JOB-DONE report on the board and in T3 differ", measured: t3ReportAt, recounted: boardReportAt });
   }
+  // A report given through `rooms-board answer` or `note` (new side) is no T3 message: it has no T3 time, and the job fails here.
+  if (job.report?.via && NO_T3_REPORT.has(job.report.via)) out.push({ job: name, what: `the JOB-DONE report came through rooms-board ${job.report.via}: no T3 message carries it`, measured: job.report.postId, recounted: null });
   const cross = measured.briefing.crossCheck;
   if (cross && (cross.equal !== cross.compared || cross.missing > 0)) out.push({ job: name, what: "briefings sent and received differ", measured: cross, recounted: null });
+  // A cross-check that compared nothing on a job with turns checks nothing.
+  if (cross && cross.compared === 0 && (measured.metrics.turns ?? 0) > 0) out.push({ job: name, what: "the briefing cross-check compared no turn", measured: cross, recounted: measured.metrics.turns });
   const records = JSON.parse(readFileSync(sources.threads, "utf8")) as ThreadRecord[];
   for (const record of records) {
     if (record.partial) out.push({ job: name, what: `T3's detail of ${record.threadId} is partial`, measured: true, recounted: false });
