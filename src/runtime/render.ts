@@ -61,6 +61,7 @@ export async function brief(source: BriefingSource, budgetChars: number, input: 
     at: new Date().toISOString(),
     budgetChars,
     seatBriefing: source.seatBriefing?.(roomId, seatId, envelope) ?? false,
+    orchestrator: projection.orchestrator === seatId,
   });
   return { text: briefing.text, images: briefing.images, held: briefing.held };
 }

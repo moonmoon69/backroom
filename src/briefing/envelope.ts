@@ -132,6 +132,8 @@ export interface EnvelopeBriefingInput extends StandingInput {
   budgetChars: number;
   /** The request that seats a member: its body is the seat facts already, so the standing part leaves them out. */
   seatBriefing?: boolean;
+  /** The seat is the room's orchestrator: with no request open, its reply is an update to the user (H5). */
+  orchestrator?: boolean;
 }
 
 export type RenderForm = "full" | "condensed" | "pointer";
@@ -335,7 +337,10 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
   slots.push("== Your assignment ==");
   const listed = openList.slice(0, OPEN_LISTED).map((request) => `${ref(request.id)} (asked by ${directory.name(request.returnTo)})`);
   const more = openList.length > OPEN_LISTED ? `, and ${openList.length - OPEN_LISTED} more below` : "";
-  slots.push(openList.length > 0 ? `Your open requests: ${listed.join(", ")}${more}.` : "You have no open requests: nothing here asks you for an answer.");
+  const none = input.orchestrator
+    ? "No request is open for you: your reply reaches the user as an update; decide the next step."
+    : "You have no open requests: nothing here asks you for an answer.";
+  slots.push(openList.length > 0 ? `Your open requests: ${listed.join(", ")}${more}.` : none);
   slots.push(...openSlots, ...assignmentSlots);
   if (openList.length > 0 || assignmentSlots.length > 0) slots.push("This assignment is addressed to you. Perform only the part addressed to you.");
 

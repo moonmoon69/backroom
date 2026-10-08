@@ -53,6 +53,7 @@ test("job 14 replayed: plain finals answer both requests; C is woken once per me
   assert.equal(room.state(v), "answered");
   assert.ok(room.running("C"));
   assert.match(room.prompt("C"), /\[T3 status of @V: idle\]\n\nNothing to review yet/);
+  assert.match(room.prompt("C"), /== Your assignment ==\nNo request is open for you: your reply reaches the user as an update; decide the next step\./);
 
   // 09:13:54, W: the first slow-check run is in the background. A plain final: it answers #24.
   room.fake.background(room.threadOf("W"), ["slow-check-1"]);

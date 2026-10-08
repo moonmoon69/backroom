@@ -4,6 +4,9 @@
  * sends it with the run's stable command and message IDs, follows the T3 run, and imports what the thread did. Its
  * rules, one sentence each:
  * - A final answers the open requests its run was given.
+ * - A final that a correction overtook (it landed during the turn) answers nothing, and the next turn answers.
+ * - A turn that ends without a reply is an error notice to its requesters, who can retry it.
+ * - A reseat's checkpoint run answers the checkpoint only.
  * - A member's posts carry its T3 status at the top: a turn running, and the background tasks and subagents T3 lists.
  * - A turn that answers nothing (one the member started itself, one typed in T3, one another agent's message started)
  *   is a follow-up post on the member's request, and wakes the orchestrator.
@@ -13,6 +16,10 @@
  * - A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
  *   What a stopped turn said is on the board and wakes nobody.
  * - A run T3 never takes fails visibly, with one notice, after its bounds.
+ * - The user's /steer goes into the member's running turn: it is offered when T3 runs the turn, confirmed once T3 shows it
+ *   in that turn, sent again with its own IDs until `unrecordedMs`, then left to the next turn. A steer T3 ran as a turn
+ *   of its own is followed as that seat's run when nothing else came in since; otherwise its reply is a follow-up and an
+ *   ordinary run carries what it carried. (Four sentences: whether to keep or simplify it is the user's to decide.)
  *
  * The journal in the engine store is the only record and the only thing that wakes anyone. The host keeps no work
  * state of its own: everything it needs after a restart is read back from the journal and from T3, by ID. What it
@@ -979,7 +986,7 @@ export class EngineHost {
 
   /**
    * The room's Stop for a seat (L4a): T3 interrupts the run active on its thread. A host run then ends as a failure with
-   * its notice (§6), which the user can retry; a turn the host did not start becomes a note when it ends (§3).
+   * its notice (§6), which the user can retry; a turn the host did not start becomes a follow-up when it ends.
    */
   async stopSeat(roomId: string, seatId: string): Promise<void> {
     const seat = this.project(roomId).seats.get(seatId);
