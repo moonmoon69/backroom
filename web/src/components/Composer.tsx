@@ -801,15 +801,20 @@ function PlanPreview({
   }
 
   if (!draft || draft.kind !== "task" || draft.assignments.length === 0) {
+    // A message refused whole (the note directive, N1) says only why.
+    const refused = draft?.unresolved.filter((u) => u.severity === "error") ?? [];
     return (
       <ol className="plan" aria-label="Plan">
-        <li className="plan-row plan-single">
-          <span className="plan-num mono">1</span>
-          <span className="plan-to plan-placeholder mono">who?</span>
-          <span className="plan-text plan-placeholder">{draft?.preamble ? truncate(draft.preamble, 120) : "start with @name to address someone"}</span>
-          <span />
-        </li>
-        {draft ? <IssueLine issues={draft.unresolved.filter((u) => u.severity === "error")} /> : null}
+        {refused.length > 0 ? (
+          <IssueLine issues={refused} />
+        ) : (
+          <li className="plan-row plan-single">
+            <span className="plan-num mono">1</span>
+            <span className="plan-to plan-placeholder mono">who?</span>
+            <span className="plan-text plan-placeholder">{draft?.preamble ? truncate(draft.preamble, 120) : "start with @name to address someone"}</span>
+            <span />
+          </li>
+        )}
       </ol>
     );
   }
@@ -1068,7 +1073,7 @@ interface Token {
 
 const REF = String.raw`(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)`;
 const HEAD_DIRECTIVE = new RegExp(String.raw`\/(?:hold|now)\b|\/after\b(?:\s*${REF}(?:\s*,\s*${REF})*)?`, "gi");
-const LEADING_COMMAND = /^\s*(\/(?:note|add|role|remove)\b)/i;
+const LEADING_COMMAND = /^\s*(\/(?:add|role|remove)\b)/i;
 
 /**
  * The visible text of the composer. The textarea above it has transparent text and a visible caret, so this
