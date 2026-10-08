@@ -343,6 +343,27 @@ class Browser {
   fill(pattern: RegExp, text: string): void {
     this.on("fill", this.uid(pattern), text);
   }
+  /**
+   * The composer's draft made exactly `text`, as a person makes it: the old draft selected and deleted with keys, then
+   * the new one typed. `fill` alone first empties a non-empty field from script (puppeteer's Locator.fill sets
+   * value = ''), which React does not see: a re-render in that moment (a room refetch) writes the old draft back, and
+   * the typing lands after it ("/hold write it laterAlso mention…", refused, so Enter sent nothing: the H4 reviewer's
+   * run, reproduced in backroom-handoff/Z2/probe-fill/).
+   */
+  compose(text: string): void {
+    const value = "() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? null";
+    this.click(/textbox "Message"/);
+    this.on("press", "Control+a");
+    this.on("press", "Backspace");
+    this.poll<string | null>("the composer to be empty", value, (v) => v === "");
+    this.fill(/textbox "Message"/, text);
+    this.poll<string | null>(`the composer to hold ${JSON.stringify(text)}`, value, (v) => v === text);
+  }
+  /** Enter in the composer, once its Send button is enabled for what it holds. */
+  send(): void {
+    this.poll<boolean>("Send to be enabled", "() => [...document.querySelectorAll('.composer-toolbar button.primary')].some((b) => !b.disabled)", (enabled) => enabled === true);
+    this.on("press", "Enter");
+  }
   /** Bring a post into view (the timeline follows the bottom). */
   show(number: number): void {
     this.on("eval", `() => { const el = document.querySelector('.timeline [data-number="${number}"]'); el?.scrollIntoView({ block: "center" }); return Boolean(el); }`);
@@ -856,7 +877,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     if (!ok()) fail(`plan rows for ${what}: ${JSON.stringify(pills())} ${JSON.stringify(titles())}`);
   };
   browser.click(/button "(Write a message|Continue your draft)"/);
-  browser.fill(/textbox "Message"/, "Thanks for the report.");
+  browser.compose("Thanks for the report.");
   pillReads("Thanks for the report.", "now", "an idle Consigliere");
   await service.fake("external-run", { threadId: room.thread.worker, text: "Looking at something in T3." });
   const notes = await room.message("Draft the release notes.");
@@ -867,13 +888,13 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     return run && worker?.externalActivity ? `@fable run ${run.id.slice(0, 8)} running; @worker in a turn typed in T3 (externalActivity=true)` : null;
   }, [], {
     extra: () => {
-      browser.fill(/textbox "Message"/, "@worker /compact");
+      browser.compose("@worker /compact");
       pillReads("T3 command", "next", "a T3 command to a member in a turn typed in T3");
       browser.screenshot("plan-row-next");
-      browser.fill(/textbox "Message"/, "Also mention the parser fix.");
+      browser.compose("Also mention the parser fix.");
       pillReads("Also mention the parser fix.", "now", "a busy Consigliere (into his running turn)", "running turn");
       log(`  page: plan rows "now" (idle), "next" (@worker /compact while @worker is in a turn), "now" into @fable's running turn (${titles()[0]})`);
-      browser.fill(/textbox "Message"/, "/hold write it later");
+      browser.compose("/hold write it later");
       browser.waitFor("/hold is gone");
       if (browser.eval<boolean>("() => [...document.querySelectorAll('.composer-toolbar button.primary')].every((b) => b.disabled)") !== true) fail("Send is not disabled for a /hold message");
       log("  page: /hold refused before sending, Send disabled");
@@ -886,8 +907,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   const rowSays = (body: string, words: string) =>
     browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.from-user')].some((row) => row.textContent.includes(${JSON.stringify(body)}) && row.textContent.includes(${JSON.stringify(words)}))`);
   const sent = (body: string) => async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === body);
-  browser.fill(/textbox "Message"/, "Also mention the parser fix.");
-  browser.on("press", "Enter");
+  browser.compose("Also mention the parser fix.");
+  browser.send();
   await check.state("a message steered into the running turn", (x) => {
     const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Also mention the parser fix.");
     const run = p && x.runs.find((r) => r.reservedSeq < p.seq && r.inputs.includes(p.seq));
@@ -902,8 +923,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   await room.finish("fable", "Release notes drafted, with the parser fix.");
   await room.settle("fable");
   browser.click(/button "(Write a message|Continue your draft)"/);
-  browser.fill(/textbox "Message"/, "Please also tag v1.2.");
-  browser.on("press", "Enter");
+  browser.compose("Please also tag v1.2.");
+  browser.send();
   await until("the message to the idle Consigliere", sent("Please also tag v1.2."));
   await check.state("a message to the idle Consigliere starts a turn of its own", (x) => {
     const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Please also tag v1.2.");
@@ -1110,8 +1131,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   // 1. The assignment: the user types it to the Consigliere in the composer; his turn runs on it.
   const assignment = "Get the date parser fixed and reviewed, then report.";
   browser.click(/button "(Write a message|Continue your draft)"/);
-  browser.fill(/textbox "Message"/, assignment);
-  browser.on("press", "Enter");
+  browser.compose(assignment);
+  browser.send();
   const ask = (await until("the user's message on the board", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === assignment))).request.id as string;
   // Sending closes the composer; Escape now would close the room.
   if (browser.eval<boolean>("() => Boolean(document.querySelector('.composer-overlay'))")) browser.on("press", "Escape");
