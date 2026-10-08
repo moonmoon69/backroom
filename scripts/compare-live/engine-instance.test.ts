@@ -375,7 +375,7 @@ function newSideJob(name: string, runs: Array<{ threadId: string; t3RunId: strin
   const threads = JSON.parse(readFileSync(join(dir, "t3", "threads.json"), "utf8")) as Array<{ runs: Array<{ id: string; userMessageId?: string | null }>; messages: Array<{ id: string; role: string; runId: string | null }> }>;
   for (const thread of threads) for (const run of thread.runs) run.userMessageId = thread.messages.find((m) => m.role === "user" && m.runId === run.id)?.id ?? null;
   writeFileSync(join(dir, "t3", "threads.json"), JSON.stringify(threads));
-  writeFileSync(join(dir, "instance-room.json"), JSON.stringify({ head: 20, counts: { unread: 0, unresolvedRuns: 0 }, seats: [], requests: [], runs: runs.map((run, index) => ({ id: `h${index}`, ...run })) }));
+  writeFileSync(join(dir, "instance-room.json"), JSON.stringify({ engine: true, head: 20, counts: { unread: 0, unresolvedRuns: 0 }, seats: [], requests: [], runs: runs.map((run, index) => ({ id: `h${index}`, ...run })) }));
   return dir;
 }
 

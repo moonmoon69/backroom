@@ -433,7 +433,8 @@ export class EngineInstance extends HttpInstance implements InstanceDriver {
       preamble: draft.preamble ?? "",
       clientMessageId,
       attachmentIds: [],
-      assignments: [{ recipients: only.recipients, instruction: only.instruction, schedule: { mode: "now" }, after: [], slashCommand: false, delivery: only.delivery === "steer" ? "steer" : "queue" }],
+      // No schedule or after: an engine from before Z4 takes the defaults ("now", none), and Z4's contract has neither.
+      assignments: [{ recipients: only.recipients, instruction: only.instruction, slashCommand: false, delivery: only.delivery === "steer" ? "steer" : "queue" }],
     };
     let result: { requestIds?: string[] } | null = null;
     for (let attempt = 1; ; attempt++) {
