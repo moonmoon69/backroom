@@ -803,7 +803,7 @@ export class EngineHost {
    * costs many times a warm one. The listed shell only rules seats out; the seat's own thread decides, as it is now.
    * The ID names that turn, so it is posted once: a restart finds it, and only another interval after the next turn
    * (the keep-alive's own included) makes another. A seat whose threads were read and given no keep-alive is looked at
- * again a minute on, or once the list shows another turn.
+   * again a minute on, or once the list shows another turn.
    */
   private async keepAlive(roomId: string, seatId: string, listed: T3ThreadShell, imported: boolean, load: Loader, stateOf: (seatId: string) => { load: Loader } | undefined): Promise<void> {
     const { intervalMs, on } = this.keepAliveFor(roomId, seatId);
