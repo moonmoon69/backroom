@@ -724,10 +724,21 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   await room.settle("worker");
   const pills = () => browser.eval<string[]>("() => [...document.querySelectorAll('.plan-pill')].map((pill) => pill.textContent.trim())");
   const titles = () => browser.eval<string[]>("() => [...document.querySelectorAll('.plan-pill')].map((pill) => pill.title)");
+  /**
+   * The plan row for what was just typed reads `expected` (and its title says `title`), polled on the pill itself: the
+   * page learns of a member's state on its next read of the room (a turn typed in T3 appends nothing to the journal,
+   * so only the room's timer brings it), and the words "now" and "next" also occur elsewhere on the page.
+   */
+  const pillReads = (typed: string, expected: string, what: string, title?: string) => {
+    browser.waitFor(typed);
+    const ok = () => JSON.stringify(pills()) === JSON.stringify([expected]) && (title === undefined || (titles()[0] ?? "").includes(title));
+    const end = Date.now() + 15_000;
+    while (!ok() && Date.now() < end) execFileSync("sleep", ["0.5"]);
+    if (!ok()) fail(`plan rows for ${what}: ${JSON.stringify(pills())} ${JSON.stringify(titles())}`);
+  };
   browser.click(/button "(Write a message|Continue your draft)"/);
   browser.fill(/textbox "Message"/, "Thanks for the report.");
-  browser.waitFor("now");
-  if (JSON.stringify(pills()) !== JSON.stringify(["now"])) fail(`plan rows for an idle Consigliere: ${JSON.stringify(pills())}`);
+  pillReads("Thanks for the report.", "now", "an idle Consigliere");
   await service.fake("external-run", { threadId: room.thread.worker, text: "Looking at something in T3." });
   const notes = await room.message("Draft the release notes.");
   await room.live("fable");
@@ -738,15 +749,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   }, [], {
     extra: () => {
       browser.fill(/textbox "Message"/, "@worker /compact");
-      browser.waitFor("next");
-      // The page learns of the worker's T3 turn on its next read of the room (a turn in T3 appends nothing): poll.
-      const end = Date.now() + 15_000;
-      while (JSON.stringify(pills()) !== JSON.stringify(["next"]) && Date.now() < end) execFileSync("sleep", ["0.5"]);
-      if (JSON.stringify(pills()) !== JSON.stringify(["next"])) fail(`plan rows for a T3 command to a busy member: ${JSON.stringify(pills())}`);
+      pillReads("T3 command", "next", "a T3 command to a member in a turn typed in T3");
       browser.screenshot("plan-row-next");
       browser.fill(/textbox "Message"/, "Also mention the parser fix.");
-      browser.waitFor("now");
-      if (JSON.stringify(pills()) !== JSON.stringify(["now"]) || !titles()[0]?.includes("running turn")) fail(`plan rows for a busy Consigliere: ${JSON.stringify(pills())} ${JSON.stringify(titles())}`);
+      pillReads("Also mention the parser fix.", "now", "a busy Consigliere (into his running turn)", "running turn");
       log(`  page: plan rows "now" (idle), "next" (@worker /compact while @worker is in a turn), "now" into @fable's running turn (${titles()[0]})`);
       browser.fill(/textbox "Message"/, "/hold write it later");
       browser.waitFor("/hold is gone");
