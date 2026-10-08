@@ -134,7 +134,7 @@ export function engineCheckpointInstruction(input: { consigliere: boolean; plan:
   return [
     `Reseat${input.by ? `, asked by @${input.by}` : ""}: a fresh seat of the same crew member takes over ${input.consigliere ? "as this room's Consigliere" : "your work"} from a clean context, and you leave the room once it has.`,
     "Stop at a commit boundary: finish or undo the edit in progress, commit what is done (or say exactly what is left uncommitted), and start nothing new.",
-    "Then write your checkpoint as your final reply. This turn's reply answers this request only: your other open requests stay open and go to the fresh seat, with every post for you that you have not seen yet. Do not run `rooms-board working` for it.",
+    "Then write your checkpoint as your final reply. This turn's reply answers this request only: your other open requests stay open and go to the fresh seat, with the posts for you that you have not been shown yet. Whatever else this briefing brings you is not acted on now: say in the checkpoint what it changes (the fresh seat is pointed at each such post by number). Do not run `rooms-board working` for this request.",
     "The checkpoint is the post the fresh seat reads first, so write it for a reader who has none of your context:",
     "- the decisions made and why;",
     "- the dead ends: what was tried and did not work, and why;",
@@ -149,13 +149,17 @@ export function engineCheckpointInstruction(input: { consigliere: boolean; plan:
 }
 
 /** The handover's body (the transfer event): the takeover, then the checkpoint in full. */
-export function engineTakeoverInstruction(input: { from: string; consigliere: boolean; plan: string | null; checkpointNumber: number | null; checkpoint: string }): string {
+export function engineTakeoverInstruction(input: { from: string; consigliere: boolean; plan: string | null; checkpointNumber: number | null; checkpoint: string; alsoRead?: string[] }): string {
   const post = input.checkpointNumber === null ? "its checkpoint" : `its checkpoint (post #${input.checkpointNumber})`;
   return [
     input.consigliere
       ? `You take over as this room's Consigliere from @${input.from}, who was reseated so the room carries on from a clean context, and has left it. The requests the user and the members sent him are yours now, and every post for him that he had not seen comes with this handover.`
       : `You take over @${input.from}'s work: @${input.from} was reseated so the work carries on from a clean context, and has left the room. Its open requests are yours now, with who asked each, and every post for it that it had not seen comes with this handover; answers to what it asked come to you.`,
     ...(input.plan ? [`What to carry on with: ${input.plan}`] : []),
+    ...(input.alsoRead?.length
+      ? [`@${input.from}'s checkpoint turn also brought these posts, which it read but did not act on; read each with \`rooms-board read <number>\`: ${input.alsoRead.join("; ")}.`]
+      : []),
+    "Your final reply answers every request handed over to you, so reply when the work is done; if it goes on past your turn, run `rooms-board working \"…\"` before you end it.",
     input.consigliere
       ? "Read the posts the checkpoint points at with `rooms-board read`, and what came after with `rooms-board index`, then carry on from the next step it names."
       : "Check it against `git log` and `git status`, read the posts it points at with `rooms-board read`, then carry on from the next step it names. You work in the same folder.",

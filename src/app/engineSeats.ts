@@ -19,6 +19,7 @@ import type { Repos } from "../db/repos.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import type { Participant, Room, SessionBinding } from "../domain/types.ts";
 import type { Activity, Projection } from "../engine/index.ts";
+import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import { SEAT_BRIEFING } from "../runtime/bindings.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import { threadFree } from "../runtime/t3.ts";
@@ -33,6 +34,11 @@ const TAKEOVER = "takeover:";
 const RESEAT_OFF = "reseat-off:";
 
 const now = (): string => new Date().toISOString();
+/** A seat still on the board: active, or in a turn a cancel is stopping. Only a retired seat has left. */
+const present = (p: Projection, seatId: string): boolean => {
+  const status = p.seats.get(seatId)?.status;
+  return status === "active" || status === "stopping";
+};
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export interface EngineSeatsDeps {
@@ -95,12 +101,17 @@ export class EngineSeats {
    */
   reconcile(): void {
     for (const room of this.repos.listRooms()) {
-      try {
-        for (const participant of this.repos.listActiveParticipants(room.id)) {
-          const binding = this.repos.currentBinding(participant.id);
-          if (!binding || this.reseatFor(room.id, participant.id, "fresh") || this.view(room.id).seats.has(binding.id)) continue;
+      // One member at a time: a member the board cannot seat (say, on a thread a member who left had) holds up no other.
+      for (const participant of this.repos.listActiveParticipants(room.id)) {
+        const binding = this.repos.currentBinding(participant.id);
+        if (!binding || this.reseatFor(room.id, participant.id, "fresh") || this.view(room.id).seats.has(binding.id)) continue;
+        try {
           this.host.seat(room.id, { actor: "$user", id: `seat:${binding.id}`, seatId: binding.id, threadId: binding.threadId });
+        } catch (error) {
+          this.log("member not seated on the board", { roomId: room.id, participantId: participant.id, error: message(error) });
         }
+      }
+      try {
         for (const record of readEngineReseats(this.repos, room.id)) {
           if (this.view(room.id).events.some((e) => e.id === `transfer:${record.requestId}`)) this.handOver(room.id, record);
         }
@@ -151,7 +162,7 @@ export class EngineSeats {
     const room = this.repos.getRoom(roomId);
     const consigliere = room?.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
     const p = this.view(roomId);
-    if (!consigliere || consigliere.retiredAt || this.seatIdOf(consigliere.id) === seatId || p.requests.has(id) || p.seats.get(seatId)?.status !== "active") return;
+    if (!consigliere || consigliere.retiredAt || this.seatIdOf(consigliere.id) === seatId || p.requests.has(id) || !present(p, seatId)) return;
     const body = kind === "seat" ? engineSeatInstruction(consigliere) : movedInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null);
     this.host.request(roomId, { actor: "$user", id, to: seatId, body });
   }
@@ -160,8 +171,10 @@ export class EngineSeats {
 
   /**
    * A member leaves the room (participant.retire from the page, `rooms-board retire` from the Consigliere: `by`). Refused,
-   * naming what is open, while its seat has a run or a turn in T3, owns an open request or has a pending activity. Then its seat is retired in the journal, the member and its thread in rooms.sqlite
-   * (with the Consigliere's mark when it was his), and its T3 thread goes as the thread setting says.
+   * naming what is open, while its seat has a run (one being stopped too) or a turn in T3, owns an open request, has a
+   * pending activity, or has an answer to its own question that has not reached it. Then its seat is retired in the
+   * journal, the member and its thread in rooms.sqlite (with the Consigliere's mark when it was his), and its T3 thread
+   * goes as the thread setting says.
    */
   async retire(input: { participantId: string; by?: string | null; thread: ThreadLifecycleAction | "keep" }): Promise<CommandResult> {
     const participant = this.member(input.participantId);
@@ -171,7 +184,7 @@ export class EngineSeats {
       throw new RoomError("reseat_pending", `@${participant.alias} is being reseated: it leaves the room when its fresh seat takes over.`, 409);
     }
     const binding = this.repos.currentBinding(participant.id);
-    if (binding && this.view(room.id).seats.get(binding.id)?.status === "active") {
+    if (binding && present(this.view(room.id), binding.id)) {
       this.refuseOpen(room.id, binding.id, participant.alias, "retired");
       const shell = await this.shell(binding.threadId);
       if (shell && !threadFree(shell)) {
@@ -297,7 +310,9 @@ export class EngineSeats {
     let record = start;
     const old = this.repos.getParticipant(record.participantId);
     const p = this.view(roomId);
-    if (!old || old.retiredAt || p.seats.get(record.seatId)?.status !== "active") return this.callOff(roomId, record, "it left the room", false);
+    if (!old || old.retiredAt || !present(p, record.seatId)) return this.callOff(roomId, record, "it left the room", false);
+    // A turn being stopped (a cancel) ends first; the reseat carries on after it.
+    if (p.seats.get(record.seatId)!.status === "stopping") return;
     if (record.stage === "checkpoint") {
       const q = p.requests.get(record.requestId);
       if (!q) return this.postCheckpoint(roomId, record);
@@ -314,6 +329,10 @@ export class EngineSeats {
       }
       record = { ...record, stage: "seated" };
       this.save(roomId, record);
+      // Making the fresh thread took a while: read the old one again, so a turn T3 started there meanwhile ends first.
+      const threadId = this.repos.getBinding(record.seatId)!.threadId;
+      const again = await this.deps.adapter.getThreadShell(threadId);
+      if (!again || !(await this.quiet(roomId, record, again, () => this.deps.adapter.getThreadDetail(threadId)))) return;
     } else if (!(await this.quiet(roomId, record, shell, detail))) return;
     this.handOver(roomId, record);
   }
@@ -353,6 +372,9 @@ export class EngineSeats {
       return;
     }
     const consigliere = room.consigliereId === old.id || p.orchestrator === record.seatId;
+    const asker = this.seatIdOf(record.by);
+    // The takeover is the asker's request: while his own turn is being stopped he cannot make one, so wait a tick.
+    if (!transferred && asker && asker !== record.seatId && p.seats.get(asker)?.status === "stopping") return;
     if (!transferred) {
       const answer = p.requests.get(record.requestId)?.answerId ?? null;
       const event = answer ? p.events.find((e) => e.id === answer) : undefined;
@@ -364,19 +386,23 @@ export class EngineSeats {
         oldSeatId: record.seatId,
         newSeatId: freshBinding.id,
         threadId: freshBinding.threadId,
-        body: engineTakeoverInstruction({ from: old.alias, consigliere, plan: record.plan, checkpointNumber: event?.seq ?? null, checkpoint }),
+        body: engineTakeoverInstruction({ from: old.alias, consigliere, plan: record.plan, checkpointNumber: event?.seq ?? null, checkpoint, alsoRead: this.checkpointCompanions(p, record) }),
         evidence: `lean: checkpoint ${this.number(p, record.requestId)} answered; T3 thread of @${old.alias} idle with no background work`,
       });
       p = this.view(roomId);
     }
-    const asker = this.seatIdOf(record.by);
     const takeoverId = `${TAKEOVER}${record.requestId}`;
     if (asker && asker !== record.seatId && p.seats.get(asker)?.status === "active" && !p.requests.has(takeoverId)) {
+      const handed = p.events.find((e) => e.id === transferId)?.data;
+      const numbers = handed?.kind === "transfer" ? handed.owned.map((id) => this.number(p, id)) : [];
       this.host.request(roomId, {
         actor: asker,
         id: takeoverId,
         to: freshBinding.id,
-        body: `@${fresh.alias} you take over from @${old.alias}: its open requests, its checkpoint and the posts it had not read are in the handover.${record.plan ? ` Carry on with: ${record.plan}` : ""} Your answer here tells me you have picked it up.`,
+        body: [
+          `@${fresh.alias} you take over from @${old.alias}: its open requests, its checkpoint and the posts it had not read are in the handover.${record.plan ? ` Carry on with: ${record.plan}` : ""}`,
+          `Your final reply answers ${numbers.length ? `the requests handed to you (${numbers.join(", ")}) and this one` : "this request"}, so reply when the work is done; if it goes on past this turn, run \`rooms-board working "…"\` before you end it.`,
+        ].join(" "),
       });
     }
     const thread = this.deps.transaction(() => {
@@ -408,9 +434,59 @@ export class EngineSeats {
     const alias = this.repos.getParticipant(record.participantId)?.alias ?? record.participantId;
     const text = `Reseat of @${alias} called off: ${reason}. Nothing was handed over: @${alias} keeps its seat and its work.`;
     const asker = this.seatIdOf(record.by);
-    if (wake && asker && asker !== record.seatId && p.seats.get(asker)?.status === "active") this.host.request(roomId, { actor: "$user", id, to: asker, body: text });
+    if (wake && asker && asker !== record.seatId && present(p, asker)) this.host.request(roomId, { actor: "$user", id, to: asker, body: text });
     else this.host.note(roomId, { actor: "$user", id, body: text, ...(p.requests.has(record.requestId) ? { requestIds: [record.requestId] } : {}) });
     this.deps.notify(roomId);
+  }
+
+  /**
+   * The service's check before it writes a member that attaches an existing T3 thread: the board never seats one thread
+   * twice, so a thread a member of this room's board had (one who left, or was reseated) is refused here, before
+   * anything is written.
+   */
+  refuseSeatedThread(roomId: string, threadId: string): void {
+    const seat = [...this.view(roomId).seats.values()].find((s) => s.threadId === threadId);
+    if (!seat) return;
+    const owner = this.repos.getBinding(seat.id);
+    const alias = owner ? this.repos.getParticipant(owner.participantId)?.alias ?? null : null;
+    throw new RoomError("thread_seated_before", `T3 thread ${threadId} was ${alias ? `@${alias}'s` : "a member's"} on this room's board, and the board never seats a thread twice: seat the member on a new thread.`, 409);
+  }
+
+  /**
+   * What the checkpoint turn brought besides the checkpoint: the old seat read it there but did not act on it, and it is
+   * not unread, so the transfer does not carry it. The handover names each by number, to read with `rooms-board read`.
+   */
+  private checkpointCompanions(p: Projection, record: EngineReseat): string[] {
+    const runs = [...p.runs.values()].filter((r) => r.seatId === record.seatId && inputTree(deliveredInputs(p, r.id)).some((i) => i.eventId === record.requestId));
+    const seen = new Set<string>([record.requestId]);
+    const lines: string[] = [];
+    for (const input of runs.flatMap((r) => inputTree(deliveredInputs(p, r.id)))) {
+      if (seen.has(input.eventId)) continue;
+      seen.add(input.eventId);
+      const event = p.events.find((e) => e.id === input.eventId);
+      const author = event && "author" in event.data ? this.nameOf(event.data.author) : "someone";
+      const about = input.requestIds.filter((id) => id !== input.eventId).map((id) => this.number(p, id)).join(", ");
+      const what = {
+        request: p.requests.get(input.eventId)?.state === "open" ? `a request from ${author}, handed over to you` : `a request from ${author}`,
+        correction: `a correction of ${about} from ${author}`,
+        result: `${author}'s answer to ${about}`,
+        progress: `progress from ${author} on ${about}`,
+        error: `an error notice about ${about}`,
+        attention: `a notice about ${about}`,
+        cancel: `the cancel of ${about}`,
+        retry: `a retry of ${about}`,
+        transfer: `a handover from ${author}`,
+      }[input.intent];
+      lines.push(`#${input.seq}: ${what}`);
+    }
+    return lines;
+  }
+
+  private nameOf(principal: string): string {
+    if (principal === "$user") return "the user";
+    const binding = this.repos.getBinding(principal);
+    const alias = binding ? this.repos.getParticipant(binding.participantId)?.alias : null;
+    return alias ? `@${alias}` : principal;
   }
 
   // ---------------- helpers ----------------
@@ -426,18 +502,22 @@ export class EngineSeats {
   }
 
   /**
-   * Refuse with every piece of open work the seat has, named: its run, its open requests, its pending activities. Posts
-   * it has not read yet do not hold it: with no open request of its own they are notices, cancels and answers to what it
-   * asked, and they stay on the board.
+   * Refuse with every piece of open work the seat has, named: its run (or the turn a cancel is stopping), its open
+   * requests, its pending activities, and answers to what it asked that have not reached it. Other posts it has not read
+   * (notices, cancels) do not hold it; they stay on the board.
    */
   private refuseOpen(roomId: string, seatId: string, alias: string, verb: string): void {
     const p = this.view(roomId);
     const seat = p.seats.get(seatId)!;
     const reasons: string[] = [];
-    if (seat.activeRunId) reasons.push(`it is in a turn (its run is ${p.runs.get(seat.activeRunId)?.phase ?? "open"})`);
+    if (seat.status === "stopping") reasons.push("its turn is being stopped (a cancel); try again once it has ended");
+    else if (seat.activeRunId) reasons.push(`it is in a turn (its run is ${p.runs.get(seat.activeRunId)?.phase ?? "open"})`);
     const owned = [...p.requests.values()].filter((r) => r.owner === seatId && r.state === "open");
     if (owned.length > 0) reasons.push(`it owns open request${owned.length > 1 ? "s" : ""} ${owned.map((r) => this.number(p, r.id)).join(", ")}: answer or cancel ${owned.length > 1 ? "them" : "it"} first`);
     for (const a of pendingActivities(p, seatId)) reasons.push(this.describeActivity(p, a));
+    // An answer to a question it asked that has not reached it yet would be lost on it: it is about to be woken.
+    const answers = unread(p, seatId).filter((i) => i.intent === "result");
+    if (answers.length > 0) reasons.push(`the answer${answers.length > 1 ? "s" : ""} ${answers.map((i) => `#${i.seq}`).join(", ")} to what it asked ${answers.length > 1 ? "have" : "has"} not reached it yet (it is about to be woken)`);
     if (reasons.length > 0) throw new RoomError("open_work", `@${alias} cannot be ${verb} now: ${reasons.join("; ")}.`, 409);
   }
 
@@ -489,7 +569,8 @@ export class EngineSeats {
   private activeSeat(participant: Participant): string {
     const seatId = this.seatIdOf(participant.id);
     const seat = seatId ? this.view(participant.roomId).seats.get(seatId) : undefined;
-    if (!seatId || seat?.status !== "active") throw new RoomError("no_seat", `@${participant.alias} has no seat on the board`, 409);
+    if (!seatId || !seat || seat.status === "retired") throw new RoomError("no_seat", `@${participant.alias} has no seat on the board`, 409);
+    if (seat.status === "stopping") throw new RoomError("seat_stopping", `@${participant.alias}'s turn is being stopped (a cancel); try again once it has ended.`, 409);
     return seatId;
   }
 

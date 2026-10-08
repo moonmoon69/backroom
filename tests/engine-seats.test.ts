@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createStack, type AppStack } from "../src/app/bootstrap.ts";
-import { ENGINE_BOARD_RULES, engineSeatFacts, seatFacts } from "../src/app/consigliere.ts";
+import { CONSIGLIERE_RULES_KEY, ENGINE_BOARD_RULES, ENGINE_DEFAULT_CONSIGLIERE_RULES, engineConsigliereRules, engineSeatFacts, seatFacts } from "../src/app/consigliere.ts";
 import { readEngineReseats } from "../src/app/reseat.ts";
 import { standingText } from "../src/briefing/assemble.ts";
 import { RoomError } from "../src/domain/errors.ts";
@@ -136,6 +136,11 @@ class Seats {
   /** The runs the engine reserved for a seat, oldest first. */
   runs(seatId: string): Run[] {
     return [...this.p.runs.values()].filter((r) => r.seatId === seatId);
+  }
+
+  /** T3 takes interrupts but does not stop the turn yet: a real turn takes a while to stop. */
+  slowInterrupts(): void {
+    this.fake.interruptRun = async () => {};
   }
 
   close(): void {
@@ -662,6 +667,200 @@ test("T3 away while the fresh seat is made, then a restart before the transfer: 
     assert.equal(h.s.repos.currentBinding(fresh.participantId)!.threadId, fresh.threadId, "the thread chosen before T3 was asked");
     assert.equal(h.fake.threads.has(fresh.threadId), true);
     assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 0);
+  } finally {
+    h.close();
+  }
+});
+
+// ---------------- review round 1 (#223) ----------------
+
+test("F1: a retire while the member's turn is being stopped is refused, names it, and leaves the seat on the board", async () => {
+  const h = await Seats.create();
+  try {
+    h.slowInterrupts();
+    const seatW = h.seat("W");
+    const a = h.request("C", "W", "Build A.");
+    await h.tick();
+    await h.host.cancel(h.roomId, { actor: h.seat("C"), id: "cancel-A", requestId: a });
+    assert.equal(h.p.seats.get(seatW)!.status, "stopping");
+    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, /@W cannot be retired now: its turn is being stopped \(a cancel\); try again once it has ended/);
+    assert.equal(h.s.repos.getParticipant(h.ids.W!)!.retiredAt, null, "nothing written in rooms.sqlite");
+    assert.equal(h.p.seats.get(seatW)!.status, "stopping", "nothing written in the journal");
+    // The turn ends; the member is told of the cancel; then it can be retired, and its thread is never sent anything again.
+    h.fake.completeRun(h.thread("W"), { text: "(stopped)", outcome: "interrupted" });
+    await h.acknowledge();
+    const threadW = h.thread("W");
+    await h.run({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" });
+    assert.equal(h.p.seats.get(seatW)!.status, "retired");
+    const wakes = h.fake.runsOf(threadW).length;
+    await h.tick(2);
+    assert.equal(h.fake.runsOf(threadW).length, wakes);
+  } finally {
+    h.close();
+  }
+});
+
+test("F2: a reseat waits while its member's turn is being stopped, then goes ahead; a reseat asked meanwhile is refused with that reason", async () => {
+  const h = await Seats.create();
+  try {
+    h.slowInterrupts();
+    const seatW = h.seat("W");
+    const a = h.request("C", "W", "Build A.");
+    await h.tick();
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
+    await h.host.cancel(h.roomId, { actor: h.seat("C"), id: "cancel-A", requestId: a });
+    assert.equal(h.p.seats.get(seatW)!.status, "stopping");
+    await h.tick(2);
+    assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 1, "still in progress");
+    assert.equal(h.p.events.some((e) => e.id.startsWith("reseat-off:")), false, "not called off");
+    await h.refused({ type: "room.consigliere.set", roomId: h.roomId, participantId: h.ids.W! }, /@W's turn is being stopped \(a cancel\); try again once it has ended/);
+    h.fake.completeRun(h.thread("W"), { text: "(stopped)", outcome: "interrupted" });
+    await h.tick();
+    assert.ok(h.running("W"), "the checkpoint turn");
+    h.complete("W", "CHECKPOINT: A was withdrawn; nothing in flight.");
+    await h.tick();
+    assert.equal(h.p.seats.get(seatW)!.status, "retired");
+    assert.equal(h.p.events.filter((e) => e.data.kind === "transfer").length, 1);
+  } finally {
+    h.close();
+  }
+});
+
+test("F3: attaching a thread this room's board had is refused before anything is written", async () => {
+  const h = await Seats.create();
+  try {
+    const threadV = h.thread("V");
+    await h.run({ type: "participant.retire", participantId: h.ids.V!, pendingTasks: "cancel", thread: "keep" });
+    const members = h.s.repos.listParticipants(h.roomId).length;
+    const events = h.p.events.length;
+    await h.refused({ type: "participant.create", roomId: h.roomId, alias: "V9", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "attach", threadId: threadV } }, /was @V's on this room's board, and the board never seats a thread twice/);
+    assert.equal(h.s.repos.listParticipants(h.roomId).length, members);
+    assert.equal(h.p.events.length, events);
+  } finally {
+    h.close();
+  }
+});
+
+test("F4: the handover names what the checkpoint turn brought besides the checkpoint, by number", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const a = h.request("C", "W", "Implement A.");
+    await h.tick();
+    const review = `review:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: review, to: h.seat("V"), body: "Please review A." });
+    h.complete("W", "A is written; waiting for the review.");
+    await h.tick();
+    const b = h.request("C", "W", "Meanwhile, B.");
+    await h.tick();
+    h.complete("V", "FINDING: A breaks on empty input.");
+    await h.tick();
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
+    h.complete("W", "B is done.");
+    await h.tick();
+    assert.match(h.prompt("W"), /FINDING: A breaks on empty input/, "the checkpoint turn brings the finding with the checkpoint");
+    assert.match(h.prompt("W"), /Whatever else this briefing brings you is not acted on now: say in the checkpoint what it changes/);
+    assert.ok(h.claims(b).some((c) => c.outcome === "answered"));
+    h.complete("W", "CHECKPOINT: A written; review asked.");
+    await h.tick(2);
+    const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
+    assert.ok(transfer.data.kind === "transfer");
+    assert.deepEqual(transfer.data.owned, [a]);
+    const answer = h.p.events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === review && c.outcome === "answered"))!;
+    const reviewNumber = h.p.events.find((e) => e.id === review)!.seq;
+    const line = `#${answer.seq}: @V's answer to #${reviewNumber}`;
+    assert.ok(transfer.data.body.includes(line), `the handover names ${line}`);
+    const fresh = h.s.repos.getBinding(transfer.data.newSeatId)!;
+    assert.ok(h.fake.promptOf(fresh.threadId, h.fake.runsOf(fresh.threadId)[0]!).includes(line), "and the fresh seat reads it");
+  } finally {
+    h.close();
+  }
+});
+
+test("F5: the handover and the takeover say the final reply answers the requests handed over", async () => {
+  const h = await Seats.create();
+  try {
+    const b = h.request("V", "W", "Look at B.");
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
+    await h.tick();
+    h.complete("W", "CHECKPOINT: B not started.");
+    await h.tick(2);
+    const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
+    assert.ok(transfer.data.kind === "transfer");
+    const fresh = h.s.repos.getBinding(transfer.data.newSeatId)!;
+    const prompt = h.fake.promptOf(fresh.threadId, h.fake.runsOf(fresh.threadId)[0]!);
+    const bNumber = h.p.events.find((e) => e.id === b)!.seq;
+    assert.match(prompt, /Your final reply answers every request handed over to you, so reply when the work is done; if it goes on past your turn, run `rooms-board working "…"` before you end it\./);
+    assert.ok(prompt.includes(`Your final reply answers the requests handed to you (#${bNumber}) and this one, so reply when the work is done`));
+    assert.equal(/picked it up/.test(prompt), false);
+    assert.match(prompt, new RegExp(`#${bNumber}: a request from @V, handed over to you`));
+  } finally {
+    h.close();
+  }
+});
+
+test("F6: the Consigliere's rules on the engine adjust running work with correct, and say the board carries no slash commands", async () => {
+  assert.equal(/\/steer|\/compact|several names for several jobs/.test(ENGINE_DEFAULT_CONSIGLIERE_RULES), false);
+  assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, /If it only adjusts running work, correct the request you posted: `rooms-board correct <number> "the adjustment"`/);
+  // The user's own wording may still name them: the mechanics, appended whatever the wording, say how it is on the board.
+  const custom = engineConsigliereRules("- If it only adjusts running work, post `@name /steer <the adjustment>`.");
+  assert.match(custom, /The board carries no slash commands to members \(`\/steer`, `\/compact` and the like are the user's\), whatever the wording above says\./);
+  const h = await Seats.create();
+  try {
+    h.s.repos.setKv(CONSIGLIERE_RULES_KEY, "- Be brief.");
+    h.request("$user", "C", "Plan it.");
+    await h.tick();
+    const prompt = h.prompt("C");
+    assert.match(prompt, /- Be brief\./);
+    for (const rule of ENGINE_BOARD_RULES) assert.ok(prompt.includes(rule), `missing: ${rule.slice(0, 60)}`);
+  } finally {
+    h.close();
+  }
+});
+
+test("F7: members are told their reply is their answer, not to post it again to whoever asked", () => {
+  assert.match(engineSeatFacts({ alias: "C" }), /Your reply is your answer: do not also post it to whoever asked\. A post to them during your turn is a question, and it holds your request open until they answer it\./);
+});
+
+test("M1: retire is refused while an answer to the member's own question has not reached it", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const q = `question:${seatW}`;
+    h.host.post(h.roomId, { actor: seatW, id: q, to: h.seat("V"), body: "Which node version?" });
+    await h.tick();
+    h.fake.startExternalRun(h.thread("W"), "typed in T3 meanwhile");
+    h.complete("V", "Node 24.");
+    await h.tick();
+    const answer = h.p.events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === q))!;
+    await h.refused({ type: "participant.retire", participantId: h.ids.W!, pendingTasks: "cancel", thread: "keep" }, new RegExp(`the answer #${answer.seq} to what it asked has not reached it yet`));
+  } finally {
+    h.close();
+  }
+});
+
+test("M2: a turn T3 starts on the old thread while the fresh member is made ends, and is imported, before the transfer", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const threadW = h.thread("W");
+    await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null });
+    await h.tick();
+    h.complete("W", "CHECKPOINT: idle.");
+    const launch = h.fake.launchThread.bind(h.fake);
+    h.fake.launchThread = async (input) => {
+      h.fake.startExternalRun(threadW, "one more thing, typed in T3");
+      return launch(input);
+    };
+    await h.tick();
+    assert.equal(readEngineReseats(h.s.repos, h.roomId)[0]!.stage, "seated");
+    assert.equal(h.p.seats.get(seatW)!.status, "active", "the transfer waits for that turn");
+    h.fake.launchThread = launch;
+    h.fake.completeRun(threadW, { text: "Done, in T3." });
+    await h.tick();
+    const reply = h.p.events.find((e) => e.data.kind === "note" && e.data.author === seatW && e.data.body === "Done, in T3.")!;
+    const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
+    assert.ok(reply && transfer && reply.seq < transfer.seq, "the turn is on the board before the handover");
   } finally {
     h.close();
   }

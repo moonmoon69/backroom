@@ -697,6 +697,7 @@ export class RoomService {
   ): Promise<CommandResult> {
     const room = this.requireRoom(roomId);
     this.assertAliasFree(room.id, spec.alias, null);
+    if (this.engineSeats && thread.mode === "attach") this.engineSeats.refuseSeatedThread(room.id, thread.threadId);
     const bound = await this.bindThread(room, spec, thread, ids);
     const participant: Participant = {
       id: ids?.participantId ?? randomUUID(),
