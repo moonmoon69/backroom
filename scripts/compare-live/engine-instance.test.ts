@@ -131,7 +131,7 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
       assert.equal(requests[0]!.body, TASKS.T1.prompt, "byte for byte");
       assert.ok((await i.driver.quiet(r.roomId)).pending.length > 0, "the Consigliere's turn is pending");
 
-      // His turn hands W1 a piece of work through the board and ends: his request stays open on it (pending_activity).
+      // His turn hands W1 a piece of work through the board and ends: since H5 that final answers the user's request.
       await until("his run", async () => i.fake.threads.get(r.c.threadId)?.shell.activeRunId);
       const key = await keyOf(i, r.c.threadId);
       await i.driver.board(["post", "@W1 find the imports of src/cli.ts"], key);
@@ -146,7 +146,7 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
         ["Handed out to @W1.", true, "final", "t3"],
         ["All found.\n\nJOB-DONE", true, "final", "t3"],
       ]);
-      assert.deepEqual(consigliere.map((p) => p.claims), [["pending_activity"], ["answered"]]);
+      assert.deepEqual(consigliere.map((p) => p.claims), [["answered"], []], "his hand-off answers the user; his report is an update");
       assert.equal(consigliere.filter((p) => hasJobDoneLine(p.text)).length, 1, "one report");
       const w1 = said(posts, "W1");
       assert.deepEqual(w1.map((p) => [p.fromConsigliere, p.via, p.claims]), [[false, "final", ["answered"]]]);
@@ -194,23 +194,22 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
     }
   });
 
-  test("a report through rooms-board answer is marked as such and has no T3 time", async () => {
+  test("since H5 rooms-board answer is gone: the board refuses it, and his next final is the report", async () => {
     const i = engineInstance("answer");
     try {
       const r = await seatedRoom(i);
       await finishSeating(i, r);
-      const { requestIds } = await i.driver.postAsUser(r.roomId, TASKS.T1.prompt, randomUUID());
+      await i.driver.postAsUser(r.roomId, TASKS.T1.prompt, randomUUID());
       await until("his run", async () => i.fake.threads.get(r.c.threadId)?.shell.activeRunId);
       const key = await keyOf(i, r.c.threadId);
       await i.driver.board(["post", "@W1 find the imports"], key);
       i.fake.completeRun(r.c.threadId, { text: "Handed out." });
-      const request = (await i.driver.snapshot(r.roomId)).posts.find((p) => p.request?.id === requestIds[0])!;
       await until("his final", async () => (await i.driver.posts(r.roomId)).some((p) => p.fromConsigliere && p.isAnswer));
-      await i.driver.board(["answer", `#${request.number}`, "Done.\n\nJOB-DONE"], key);
-      const report = await until("the answer", async () => (await i.driver.posts(r.roomId)).find((p) => p.fromConsigliere && p.isAnswer && hasJobDoneLine(p.text)));
-      assert.equal(report.via, "answer");
-      assert.equal(report.clock, "seen", "no T3 time: the runner's first sight of it");
+      await assert.rejects(i.driver.board(["answer", "Done.\n\nJOB-DONE"], key), /your final reply is your answer/);
       await complete(i, r.w1.threadId, "Found them.");
+      await complete(i, r.c.threadId, "Done.\n\nJOB-DONE");
+      const report = await until("the report", async () => (await i.driver.posts(r.roomId)).find((p) => p.fromConsigliere && p.isAnswer && hasJobDoneLine(p.text)));
+      assert.deepEqual([report.via, report.clock, report.claims], ["final", "t3", []]);
     } finally {
       i.close();
     }
@@ -342,7 +341,7 @@ describe("the new side's quiet rule and board", () => {
       post({ kind: "note", author: "s-w", body: "self-started", note: { source: "t3-turn", room: false, t3: null, afterAnswer: true }, at: "2026-10-08T10:02:00.000Z" }),
       post({ kind: "note", author: "s-w", body: "a note", note: { source: "post", room: false, t3: null, afterAnswer: false } }),
       post({ kind: "note", author: "s-c", body: "Done.\n\nJOB-DONE", note: { source: "post", room: false, t3: null, afterAnswer: true } }),
-      post({ kind: "progress", author: "s-w", body: "working", progress: { milestone: "working", working: true } }),
+      post({ kind: "progress", author: "s-w", body: "working", progress: { milestone: "working", working: true, t3: null } }),
       post({ kind: "request", author: "$user", body: "the prompt" }),
     ] }), () => "2026-10-08T11:00:00.000Z");
     assert.deepEqual(posts.map((p) => [p.from, p.isAnswer, p.fromConsigliere, p.via ?? null, p.clock, p.at]), [

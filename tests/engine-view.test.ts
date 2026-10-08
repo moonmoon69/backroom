@@ -1,7 +1,7 @@
 /**
  * L4c: the read API on the engine journal (src/server/engineView.ts; shapes in src/domain/engineView.ts).
  *
- * Gate (plan item L4c): the snapshot's counts equal the same counts taken from fold(journal) on the H1, S2 and S4 logs
+ * Gate (plan item L4c): the snapshot's counts equal the same counts taken from fold(journal) on the H1, S2 and S4 logs (as H5 runs them: members only answer)
  * (checked after every tick, and again after a restart and a rebuild); on a thread with two replies the per-reply
  * spend equals what the old route computes for the same timestamps. Also: times from T3 by one rule, spend once per
  * T3 run, news and seen by journal sequence, needs-you bounded, SSE on every append, desk startedByRoom, member status
@@ -99,149 +99,174 @@ const seqOf = (r: Room, predicate: (e: RoomEvent) => boolean): number => r.p.eve
 
 // ---------------- the gate's logs ----------------
 
-test("H1, the five-wake incident: snapshot counts equal fold counts at every step, after a restart and after a rebuild", async () => {
+test("H1, the five-wake incident as H5 runs it: snapshot counts equal fold counts at every step, after a restart and after a rebuild", async () => {
   room = await Room.create({ seats: ["C", "W", "X", "V"] });
   assertMatchesFold(room, "seated");
   const u = room.user("C", "Build the feature with review, then report.");
   assertMatchesFold(room, "user request");
   await step(room);
-  const a = room.post("C", "W", "A: implement slugify; have V review it.");
+  const a = room.post("C", "W", "A: implement slugify.");
   const b = room.post("C", "X", "B: add the --json flag.");
   room.complete("C", "Handed A to W and B to X.");
   await step(room);
-  room.post("W", "V", "Review slugify please.");
+  assert.equal(room.state(u), "answered", "nothing is held (H5): his hand-off answers the user");
   room.complete("X", "B done: --json added.");
-  room.complete("W", "Sent slugify for review.");
+  room.complete("W", "Slugify implemented.");
   await step(room);
-  room.host.correct(room.room, { actor: "C", id: "correct-A", requestId: a, body: "Also strip accents." });
-  assertMatchesFold(room, "correction");
-  room.complete("C", "B noted; waiting for A.");
+  assert.deepEqual([room.state(a), room.state(b), room.wakes("C")], ["answered", "answered", 2], "both replies wake him, in one turn");
+  // He routes the review: members do not post to each other.
+  const r1 = room.post("C", "V", "Review W's slugify.");
+  room.complete("C", "B noted; V reviews A.");
+  await step(room);
   room.complete("V", "Finding: unicode is not handled.");
   await step(room);
-  room.post("W", "V", "Fixed unicode and accents; review again.");
-  room.complete("W", "Fixed; re-review asked.");
+  assert.equal(room.wakes("C"), 3, "the finding wakes him");
+  const fix = room.post("C", "W", "Fix unicode per V's finding.");
+  room.complete("C", "Sent the finding to W.");
+  await step(room);
+  // He corrects the fix while W works on it: W's final for that turn is superseded, and its next turn answers.
+  room.host.correct(room.room, { actor: "C", id: "correct-fix", requestId: fix, body: "Also strip accents." });
+  assertMatchesFold(room, "correction");
+  room.complete("W", "Fixed unicode.");
+  await step(room);
+  assert.equal(room.state(fix), "open", "superseded by the correction");
+  assert.equal(room.wakes("C"), 3, "a superseded final wakes nobody");
+  room.complete("W", "Fixed unicode and accents.");
+  await step(room);
+  assert.deepEqual([room.state(fix), room.wakes("C")], ["answered", 4]);
+  const r2 = room.post("C", "V", "Review W's fix again.");
+  room.complete("C", "Re-review asked.");
   await step(room);
   room.complete("V", "PASS");
   await step(room);
-  assert.deepEqual(room.answer("W", "A done: slugify with unicode and accents, reviewed PASS.", [a]).map((c) => c.outcome), ["answered"]);
-  assertMatchesFold(room, "explicit answer");
-  room.complete("W", "Handoff: src/text.ts.");
-  await step(room);
-  room.complete("C", "Report: A and B done, A reviewed. JOB-DONE");
+  assert.equal(room.wakes("C"), 5, "the PASS wakes him");
+  room.complete("C", "Report: A and B done, A reviewed PASS. JOB-DONE");
   await step(room, 3);
-  // The log is H1's: three Consigliere wakes and nothing left over.
-  assert.equal(room.state(u), "answered");
-  assert.equal(room.state(b), "answered");
-  assert.equal(room.wakes("C"), 3);
+  // Five Consigliere wakes, each by work handed to him, and nothing left over.
+  for (const id of [u, a, b, r1, fix, r2]) assert.equal(room.state(id), "answered", id);
+  assert.equal(room.wakes("C"), 5);
   room.assertQuiet(["C", "W", "X", "V"]);
   const view = journalView({ p: room.p });
   assert.equal(view.posts.find((post) => post.request?.id === a)?.request?.state, "answered", "the open/answered marker");
   assert.equal(view.counts.openRequests, 0);
+  assert.equal(view.posts.filter((post) => post.request).every((post) => post.request!.parentId === null), true, "no post has a parent (H5)");
   assertStable(room);
 });
 
-test("S2, a worker–reviewer exchange with progress before the finish: snapshot counts equal fold counts at every step", async () => {
+test("S2, a worker–reviewer exchange routed by the Consigliere, with the worker's follow-up before the review's answer: snapshot counts equal fold counts at every step", async () => {
   room = await Room.create();
   const u = room.user("C", "Implement slugify with a review, then report.");
   await step(room);
-  const a = room.post("C", "W", "Implement slugify; have V review it.");
-  // The Consigliere follows A (§4), so W's progress reaches it before the finish.
-  room.host.follow(room.room, { actor: "C", id: "follow-a", requestId: a, enabled: true });
+  const a = room.post("C", "W", "Implement slugify.");
   room.complete("C", "Handed slugify to W.");
   await step(room);
-  const r = room.post("W", "V", "Review slugify please.");
-  room.working("W", "Implementation done; waiting for the review.");
-  room.complete("W", "Sent for review.");
+  // W answers with its tests still running in the background: A is answered and C woken, with W's status.
+  room.fake.background(room.threadOf("W"), ["tests"]);
+  room.complete("W", "Slugify implemented; the tests run in the background.");
   await step(room);
-  assert.equal(room.state(a), "open", "A is held: its review is open and W said it is working");
-  assert.equal(room.running("C"), true, "the follower is woken by the progress");
-  room.complete("C", "Noted W's progress.");
+  assert.equal(room.state(a), "answered");
+  assert.equal(room.running("C"), true, "the answer wakes him");
+  assert.match(room.prompt("C"), /still running: background task "background tests"/);
+  const r = room.post("C", "V", "Review W's slugify.");
+  room.complete("C", "Asked V for a review.");
+  await step(room);
+  assert.equal(room.running("V"), true);
+  // The tests end and W goes on by itself: its reply is a follow-up on A, which wakes C.
+  room.fake.background(room.threadOf("W"), []);
+  const continuation = room.fake.startSelfRun(room.threadOf("W"));
+  await step(room);
+  room.complete("W", "The tests pass.");
+  await step(room);
+  assert.equal(room.running("C"), true, "the follow-up wakes him");
+  room.complete("C", "Noted: W's tests pass.");
+  await step(room);
   room.complete("V", "PASS: slugify is right.");
   await step(room);
-  assert.equal(room.running("W"), true, "W is woken by the review");
-  // W answers as its working mark told it to. (This answer comes out superseded on the L1 host and the run's final
-  // answers A instead: reported as a finding to L1's owner. The log's shape and the counts do not depend on which.)
-  room.answer("W", "Slugify done and reviewed PASS.", [a]);
-  assertMatchesFold(room, "W's answer");
-  room.complete("W", "Handoff: src/text.ts.");
-  await step(room);
+  assert.equal(room.state(r), "answered");
   room.complete("C", "Report: slugify done and reviewed. JOB-DONE");
   await step(room, 3);
 
-  // The log has S2's shape: the review is a child of A; W's progress comes before V's answer, which comes before W's.
+  // The log has S2's shape: W's answer, then its follow-up on A, then V's answer to the review; nothing has a parent.
   const p = room.p;
-  assert.equal(p.requests.get(r)!.parentId, a);
-  const progress = seqOf(room, (e) => e.data.kind === "progress" && e.data.author === "W" && e.data.milestone === "working");
+  assert.equal(p.requests.get(r)!.parentId, null);
+  const answer = seqOf(room, (e) => e.data.kind === "output" && e.data.author === "W" && e.data.claims.some((c) => c.requestId === a && c.outcome === "answered"));
+  const progress = seqOf(room, (e) => e.data.kind === "progress" && e.data.author === "W" && e.data.milestone === "follow-up");
   const review = seqOf(room, (e) => e.data.kind === "output" && e.data.author === "V" && e.data.claims.some((c) => c.requestId === r && c.outcome === "answered"));
-  const finish = seqOf(room, (e) => e.data.kind === "output" && e.data.author === "W" && e.data.claims.some((c) => c.requestId === a && c.outcome === "answered"));
-  assert.ok(progress > 0 && progress < review && review < finish, `progress ${progress} < review ${review} < finish ${finish}`);
+  assert.ok(answer > 0 && answer < progress && progress < review, `answer ${answer} < follow-up ${progress} < review ${review}`);
   assert.equal(room.state(u), "answered");
-  assert.equal(room.wakes("C"), 3, "C: the user's request, W's progress (followed), A's answer");
+  assert.equal(room.wakes("C"), 4, "C: the user's request, W's answer, W's follow-up, V's answer");
   room.assertQuiet();
   const view = journalView({ p });
   const shown = view.posts.find((post) => post.seq === progress)!;
-  assert.deepEqual([shown.kind, shown.progress?.working, shown.to], ["progress", true, ["C"]], "the progress post, addressed to its follower");
+  assert.deepEqual([shown.kind, shown.progress, shown.to, shown.about.map((x) => x.requestId)], ["progress", { milestone: "follow-up", working: false, t3: { threadId: room.threadOf("W"), runId: continuation, messageId: null } }, ["C"], [a]], "the follow-up, addressed to the Consigliere");
+  assert.equal(shown.body, "[T3 status of @W: idle]\n\nThe tests pass.");
+  assert.equal(shown.turn, true, "a turn post: it stands for W's continuation");
   assertStable(room);
 });
 
-test("S4, a background result after the parent turn ended: snapshot counts equal fold counts at every step", async () => {
+test("S4, background results after the parent turn ended, by a continuation and by quiet: snapshot counts equal fold counts at every step", async () => {
   room = await Room.create();
   const u = room.user("C", "Find what src/cli.ts imports and run the slow check; then report.");
   await step(room);
   const a = room.post("C", "W", "Find which modules src/cli.ts imports, with a subagent.");
   room.complete("C", "Handed A to W.");
   await step(room);
-  // W's turn ends with its subagent still running: A is held by bg:<run> and nobody is woken.
+  // W's turn ends with its subagent still running: its final answers A all the same, naming the subagent (H5).
   room.fake.subagent(room.threadOf("W"), "sub-1", "running");
   room.complete("W", "A subagent is reading the imported files.");
   await step(room);
-  assert.equal(room.state(a), "open");
-  assert.equal(journalView({ p: room.p }).counts.working, 1, "W has background work");
-  // The subagent finishes after the turn: T3 starts W's continuation, whose final settles A (§2 i).
+  assert.equal(room.state(a), "answered");
+  assert.equal(journalView({ p: room.p }).counts.working, 0, "no background work is held on the board");
+  assert.equal(room.running("C"), true, "C is woken by A's answer");
+  assert.match(room.prompt("C"), /still running: subagent "subagent sub-1"/);
+  room.complete("C", "Waiting for W's subagent.");
+  await step(room);
+  // The subagent finishes after the turn: T3 starts W's continuation, whose reply is a follow-up on A.
   room.fake.subagent(room.threadOf("W"), "sub-1", "completed");
   room.fake.startSelfRun(room.threadOf("W"));
   await step(room);
   room.complete("W", "cli.ts imports args.ts and text.ts; text.ts is unused (src/cli.ts:3).");
   await step(room);
-  assert.equal(room.state(a), "answered");
-  assert.equal(room.running("C"), true, "C is woken by A's result");
-  const b = room.post("C", "W", "Run the slow check in the background and report when it passes.", u);
+  assert.equal(room.running("C"), true, "C is woken by the follow-up");
+  const b = room.post("C", "W", "Run the slow check in the background and report when it passes.");
   room.complete("C", "Waiting on the slow check.");
   await step(room);
-  // W says it is working on B and ends its turn; the check finishes later and W answers from its continuation (§2 ii).
-  room.working("W", "slow-check is running in the background.", [b]);
   room.fake.background(room.threadOf("W"), ["slow-check"]);
   room.complete("W", "slow-check started.");
   await step(room);
-  assert.equal(room.state(b), "open");
+  assert.equal(room.state(b), "answered");
+  room.complete("C", "Noted.");
+  await step(room);
+  // The check ends with no further turn: after 30 s of quiet, one follow-up says so, and wakes C.
   room.fake.background(room.threadOf("W"), []);
-  room.fake.startSelfRun(room.threadOf("W"));
   await step(room);
-  assert.deepEqual(room.answer("W", "slow-check passes.", [b]).map((c) => c.outcome), ["answered"]);
-  assertMatchesFold(room, "answer from the continuation");
-  room.complete("W", "Posted the slow-check result.");
+  assert.equal(room.p.events.some((e) => e.id.startsWith("quiet:")), false, "not before the quiet");
+  room.clock += 30_000;
   await step(room);
+  assert.equal(room.running("C"), true, "C is woken by the quiet follow-up");
   room.complete("C", "Report: imports found, slow-check passes. JOB-DONE");
   await step(room, 3);
 
-  // The log has S4's shape: each result lands after the turn that started the work had ended.
+  // The log has S4's shape: each follow-up lands after the turn that started the work had ended.
   const p = room.p;
-  const firstRun = [...p.runs.values()].find((run) => run.seatId === "W")!;
-  const ended = seqOf(room, (e) => e.data.kind === "run.ended" && e.data.runId === firstRun.id);
-  const settled = seqOf(room, (e) => e.data.kind === "output" && e.data.association.kind === "activity" && e.data.association.id === `bg:${firstRun.id}` && e.data.claims.some((c) => c.requestId === a && c.outcome === "answered"));
-  assert.ok(ended > 0 && settled > ended, `the subagent's result ${settled} after the turn's end ${ended}`);
-  const final = p.events.find((e) => e.data.kind === "output" && e.data.sourceKey === `final:${firstRun.id}`)!.data;
-  assert.equal(final.kind === "output" ? final.claims[0]?.outcome : null, "pending_activity");
-  const workAnswer = p.events.find((e) => e.data.kind === "output" && e.data.association.kind === "activity" && e.data.association.id.startsWith("work:") && e.data.claims.some((c) => c.requestId === b));
-  assert.ok(workAnswer, "B is answered through its work: activity");
+  const [firstRun, secondRun] = [...p.runs.values()].filter((run) => run.seatId === "W");
+  const ended = (runId: string) => seqOf(room, (e) => e.data.kind === "run.ended" && e.data.runId === runId);
+  const followUps = p.events.filter((e) => e.data.kind === "progress" && e.data.author === "W" && e.data.milestone === "follow-up");
+  assert.equal(followUps.length, 2);
+  const [continued, quiet] = followUps;
+  assert.ok(continued!.id.startsWith("t3run:") && continued!.seq > ended(firstRun!.id), `the continuation's follow-up ${continued!.seq} after the turn's end ${ended(firstRun!.id)}`);
+  assert.deepEqual(continued!.data.kind === "progress" && continued!.data.requestIds, [a]);
+  assert.ok(quiet!.id.startsWith("quiet:") && quiet!.seq > ended(secondRun!.id), `the quiet follow-up ${quiet!.seq} after the turn's end ${ended(secondRun!.id)}`);
+  assert.deepEqual(quiet!.data.kind === "progress" && [quiet!.data.requestIds, quiet!.data.body], [[b], '[T3 status of @W: idle]\n\n(background task "background slow-check" ended without a further turn.)']);
+  assert.deepEqual(p.activities.size, 0, "the host made no activity");
   assert.equal(room.state(u), "answered");
-  assert.equal(room.wakes("C"), 3, "C: the user's request, A's result, B's result");
+  assert.equal(room.wakes("C"), 5, "C: the user's request, A's answer, A's follow-up, B's answer, B's follow-up");
   room.assertQuiet();
-  // The continuation that ended after the answer is a note "after answer" (plan §5).
+  // The continuation's follow-up is a turn post with its T3 run; the quiet one stands for no turn.
   const view = journalView({ p });
-  const after = view.posts.filter((post) => post.note?.afterAnswer);
-  assert.equal(after.length, 1);
-  assert.equal(after[0]!.body, "Posted the slow-check result.");
+  const shown = followUps.map((e) => view.posts.find((post) => post.id === e.id)!);
+  assert.deepEqual(shown.map((post) => [post.progress?.milestone, post.progress?.t3 !== null, post.turn]), [["follow-up", true, true], ["follow-up", false, false]]);
+  assert.equal(view.posts.some((post) => post.note?.afterAnswer), false, "no note after an answer: a continuation is a follow-up");
   assertStable(room);
 });
 
@@ -271,8 +296,9 @@ test("times come from T3 by one rule: finals and turns at their T3 run's end, T3
   assert.equal(final.at, hostRun.completedAt, "a final at its T3 run's completedAt");
   const typed = view.posts.find((post) => post.note?.source === "t3-message")!;
   assert.equal(typed.at, thread.messages.find((m) => m.id === typed.note!.t3!.messageId)!.createdAt, "a T3 message at its createdAt");
-  const turn = view.posts.find((post) => post.note?.source === "t3-turn")!;
-  assert.equal(turn.at, thread.runs.find((run) => run.id === turn.note!.t3!.runId)!.completedAt, "a turn at its T3 run's completedAt");
+  // A turn the room did not start is a follow-up since H5, with its T3 run.
+  const turn = view.posts.find((post) => post.progress?.milestone === "follow-up" && post.progress.t3 !== null)!;
+  assert.equal(turn.at, thread.runs.find((run) => run.id === turn.progress!.t3!.runId)!.completedAt, "a turn at its T3 run's completedAt");
   const request = view.posts.find((post) => post.kind === "request")!;
   assert.equal(request.at, null, "the user's request has no T3 time");
   const run = view.runs[0]!;
@@ -379,36 +405,38 @@ test("a partial T3 read is not evidence that a message is gone: a later complete
 
 // ---------------- spend: once per T3 run ----------------
 
-test("spend is carried once per T3 run: an explicit answer and an idle settle on the same run carry none", async () => {
-  room = await Room.create({ host: { idleSettleMs: 10 } });
-  const a = room.user("W", "Answer early, then finish.");
+test("spend is carried once per T3 run: a continuation's follow-up carries its own run's, a quiet follow-up carries none", async () => {
+  room = await Room.create({ seats: ["W", "V"], orchestrator: null, host: { quietMs: 10 } });
+  const a = room.user("W", "Answer, then finish on your own.");
   const b = room.user("V", "Leave work in the background.");
   await room.tick();
-  assert.deepEqual(room.answer("W", "Early answer.", [a]).map((c) => c.outcome), ["answered"]);
-  room.complete("W", "And the final.");
+  room.complete("W", "The answer.");
   room.fake.background(room.threadOf("V"), ["watch"]);
   room.complete("V", "Started the watcher.");
   await room.tick(2);
-  room.fake.background(room.threadOf("V"), []);
+  assert.deepEqual([room.state(a), room.state(b)], ["answered", "answered"]);
+  // W goes on by itself: a follow-up of its own T3 run. V's watcher ends with no turn: a quiet follow-up, of none.
+  room.fake.startSelfRun(room.threadOf("W"));
   await room.tick();
+  room.complete("W", "And the rest.");
+  room.fake.background(room.threadOf("V"), []);
+  await room.tick(2);
   room.clock += 1000;
   await room.tick(2);
-  assert.equal(room.state(b), "answered", "settled on idle");
   const p = room.p;
-  const outputs = p.events.filter((e) => e.data.kind === "output");
-  assert.equal(outputs.length, 4, "W: the explicit answer and the final; V: the final and the idle settle");
+  const followUps = p.events.filter((e) => e.data.kind === "progress" && e.data.milestone === "follow-up");
+  assert.deepEqual(followUps.map((e) => [e.data.kind === "progress" && e.data.author, e.id.split(":")[0]]), [["W", "t3run"], ["V", "quiet"]]);
   const carriers = replyCarriers(p, () => "2026-10-08T00:00:00.000Z");
   const all = [...carriers.values()].flat();
-  assert.equal(all.length, 2, "one per T3 run");
-  assert.deepEqual(new Set(all.map((c) => c.t3RunId)).size, 2);
-  for (const carrier of all) {
-    const event = p.events.find((e) => e.id === carrier.eventId)!.data;
-    assert.ok(event.kind === "output" && event.sourceKey.startsWith("final:"), "the run's final carries it");
-  }
-  // News counts the same posts: one per turn, not the explicit answer beside its final nor the idle settle's repeat.
+  assert.equal(all.length, 3, "one per T3 run: W's two, V's one");
+  assert.deepEqual(new Set(all.map((c) => c.t3RunId)).size, 3);
+  const carrying = all.map((carrier) => p.events.find((e) => e.id === carrier.eventId)!);
+  assert.deepEqual(carrying.map((e) => (e.data.kind === "output" ? e.data.sourceKey.split(":")[0] : e.id.split(":")[0])).sort(), ["final", "final", "t3run"], "the runs' finals and the continuation's follow-up carry it");
+  assert.equal(all.some((c) => c.eventId === followUps[1]!.id), false, "the quiet follow-up carries none");
+  // News counts the same posts: one per turn, not the quiet follow-up.
   const view = journalView({ p });
   assert.deepEqual(view.posts.filter((post) => post.turn).map((post) => post.id).sort(), all.map((c) => c.eventId).sort());
-  assert.equal(newsOf(view, 0, null).unseen, 2);
+  assert.equal(newsOf(view, 0, null).unseen, 3);
 });
 
 /** A machine as ThreadCosts reads it: T3's V2 database and price table, and a Claude transcript folder. */
@@ -564,7 +592,7 @@ test("the room list and the overview: needs you = notices plus approvals, busy =
   const overview = await s.get<EngineOverview>("/api/overview");
   assert.equal(overview.rooms[0]!.needs, 1);
   const member = overview.rooms[0]!.members.find((m) => m.alias === "worker")!;
-  assert.equal(member.lastReply?.text, "Slugify done.");
+  assert.equal(member.lastReply?.text, "Slugify done.", "the reply's text, without the member's status line (H5)");
   assert.ok(member.lastReply?.at);
 });
 
@@ -627,7 +655,11 @@ test("in a room with a Consigliere a worker's failure is his, not the user's; on
   const after = journalView({ p: room.p });
   assert.equal(newsOf(after, 0, new Set(["C"])).unseen, 2, "his two replies; the worker's failure is not news to the user");
   assert.equal(newsOf(after, 0, null).unseen, 3);
-  assert.equal(room.state(u), "open", "a wake by a notice alone answers nothing (§1 case 3)");
+  // His hand-off answered the user (nothing is held, H5); his reply to a wake by a notice alone answers nothing (§1
+  // case 3): it is an update for the user.
+  assert.equal(room.state(u), "answered");
+  const replies = room.outputs().filter((o) => o.author === "C");
+  assert.deepEqual(replies.map((o) => [o.disposition.kind, o.claims.map((c) => c.outcome)]), [["answer", ["answered"]], ["yield", []]]);
 });
 
 test("the board: pages of posts, one post by its number, a seq range, and a run with the briefing T3 received", async (t) => {
@@ -788,12 +820,12 @@ test("a user message is one message: its requests share the message, with its im
     { id: sent.messageId, index: 0, steer: false, attachmentIds: [image] },
   ], "one message to two members: two requests, one message, its image");
   assert.deepEqual(snapshot.requests.map((q) => q.messageId), [sent.messageId, sent.messageId]);
-  // A member's own request comes from no user message.
+  // A request made on the board, not with a user message, comes from none. (Members post nothing since H5.)
   await s.tick();
-  s.engine.post(s.roomId, { actor: s.seats.worker!.seatId, id: "member-post", to: s.seats.reviewer!.seatId, body: "Second opinion?" });
+  const board = s.ask("reviewer", "Second opinion?");
   const steered = await s.say("@worker /steer also check the colours");
   const after = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
-  assert.equal(after.posts.find((post) => post.request?.id === "member-post")!.request!.message, null);
+  assert.equal(after.posts.find((post) => post.request?.id === board)!.request!.message, null);
   assert.deepEqual(after.posts.find((post) => post.request?.id === steered.requestIds[0])!.request!.message, { id: steered.messageId, index: 0, steer: true, attachmentIds: [] });
 });
 
@@ -827,7 +859,7 @@ function assertOneTurnPerT3Run(fake: FakeT3Adapter, p: ReturnType<EngineHost["vi
   assert.equal(carriers.length, turns.filter((turn) => turn.t3RunId !== null).length, "spend follows the turn posts");
 }
 
-test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered, adopted or imported as a note", async (t) => {
+test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered, adopted or imported as a follow-up", async (t) => {
   const fake = new SteerFake();
   const s = await engineStack(t, ["sol"], { fake });
   const thread = s.seats.sol!.threadId;
@@ -849,7 +881,7 @@ test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered
   fake.completeRun(thread, { text: "Tests added." });
   await s.tick(2);
   assertOneTurnPerT3Run(fake, view(), [thread]);
-  // More input came before T3 ran the steer: its reply is a note, and an ordinary run carries the rest.
+  // More input came before T3 ran the steer: its reply is a follow-up (H5), and an ordinary run carries the rest.
   await s.say("@sol third part");
   await s.tick();
   fake.beforeSteer = () => fake.completeRun(thread, { text: "Third part done." });
@@ -862,7 +894,7 @@ test("steer flows (L4a): one turn post and one spend carrier per T3 run, steered
   fake.completeRun(thread, { text: "Changelog done." });
   await s.tick(2);
   const p = view();
-  assert.ok(p.events.some((e) => e.data.kind === "note" && e.data.body.includes("Docs done.")), "the steer's own run came back as a note");
+  assert.ok(p.events.some((e) => e.data.kind === "progress" && e.data.milestone === "follow-up" && e.data.body.endsWith("Docs done.")), "the steer's own run came back as a follow-up");
   assertOneTurnPerT3Run(fake, p, [thread]);
   assert.equal(fake.threads.get(thread)!.runs.length, 6);
 });

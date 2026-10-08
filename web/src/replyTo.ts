@@ -8,8 +8,8 @@ import type { EngineClaim, EnginePost, EngineRunView } from "./types.ts";
  * - late: "late for #12: it was cancelled" (or handed to a fresh seat): nobody is woken by it;
  * - superseded: "#12 stays open: input it had not seen came in": its next turn answers it;
  * - pending activity: "#12 stays open: a review or background work is still running".
- * A reply that named no request ("yield": its requests are held open, or it had none) answers nothing and wakes
- * nobody; an update under held work is "update on #12"; a failed run's notice is "failed on #12".
+ * A reply that named no request ("yield": since H5 the Consigliere's replies after his first) is an "update": it
+ * answers nothing and wakes nobody; a follow-up on a request is "update on #12"; a failed run's notice is "failed on #12".
  */
 export interface ReplyContext {
   /** The post that made a request, when the page holds it. */
@@ -95,7 +95,7 @@ export function replyPieces(post: EnginePost, context: ReplyContext): ReplyPiece
     case "answer":
       return join(output.claims.map((claim) => claimPieces(claim, context)));
     case "yield":
-      return [{ text: "answers nothing" }];
+      return [{ text: "update" }];
     case "progress":
       return post.about.length > 0 ? [{ text: "update on " }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: "update" }];
     case "error":

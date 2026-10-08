@@ -1,16 +1,16 @@
 /**
- * rooms-board on the engine (stage 4/5 plan, item L3): the member CLI over the journal. A room of three seats (c, the
- * Consigliere; w, a worker; v, a reviewer) on the engine host and the T3 fake, seated in the journal. Wakes are counted
- * as T3 runs on each fake thread, as tests/runtime does. Gate bullets, in the plan's order:
+ * rooms-board on the engine (stage 4/5 plan, item L3; H5: members only answer): the member CLI over the journal. A room
+ * of three seats (c, the Consigliere; w, a worker; v, a reviewer) on the engine host and the T3 fake, seated in the
+ * journal. Wakes are counted as T3 runs on each fake thread, as tests/runtime does. Gate bullets, in the plan's order:
  *   1. each command appends exactly the expected events;
- *   2. a review posted mid-run is a child of the run's request, and the worker's final stays pending until it is answered;
+ *   2. a member's post mid-run is refused; its final answers at once and wakes the Consigliere, who relays the review;
  *   3. a member's own post never wakes itself;
  *   4. a key from another room is refused;
  *   5. index numbering is stable across restart and rebuild;
- *   6. follow makes working posts wake the follower;
+ *   6. a member's own continuation is a follow-up that wakes the Consigliere only;
  *   7. a 1 MiB + 1 B post is refused.
- * Then: answer prints the engine's outcome, retry and post --for refusals, board numbers in the host's texts, the seat
- * stub, the route hook, and the CLI's --file.
+ * Then: members only answer (post refused, answer/working/follow gone), a correction supersedes a final, retry
+ * refusals, board numbers in the host's texts, the seat stub, the route hook, and the CLI's --file.
  */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -28,11 +28,16 @@ import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import { EngineStore } from "../src/engine/index.ts";
 import type { EventData, Projection, RoomEvent } from "../src/engine/index.ts";
 import { loadConfig } from "../src/config.ts";
+import { MEMBERS_DO_NOT_POST } from "../src/runtime/index.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { RuntimeFake } from "./runtime/helpers.ts";
 
 const MiB = MAX_POST_BYTES;
 const REPO = join(import.meta.dirname, "..");
+/** A refusal's whole message, exactly. */
+const exactly = (text: string) => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+/** The refusal a member meets when it posts (H5), as the CLI prints it. */
+const MEMBERS = exactly(`rooms-board: ${MEMBERS_DO_NOT_POST}`);
 
 /** A member in rooms.sqlite with no seat on the board, as a crash between the two stores would leave it: L4b's
  *  participant.create seats every member it makes, so tests that need one write it directly. */
@@ -210,6 +215,16 @@ class Fixture {
   request(id: string) {
     return this.p().requests.get(id)!;
   }
+
+  /** The turns the host started for a member (engine runs), as opposed to T3 runs it did not start. */
+  hostRuns(alias: string): number {
+    return [...this.p().runs.values()].filter((r) => r.seatId === this.seat(alias)).length;
+  }
+
+  /** The output events a member authored that make a claim on the request. */
+  finalsOn(alias: string, requestId: string): RoomEvent[] {
+    return this.p().events.filter((e) => e.data.kind === "output" && e.data.author === this.seat(alias) && e.data.claims.some((cl) => cl.requestId === requestId));
+  }
 }
 
 const kinds = (events: RoomEvent[]) => events.map((e) => e.data.kind);
@@ -230,13 +245,6 @@ test("1. each command appends exactly the expected events, and reads append noth
   assert.deepEqual(events.map((e) => (e.data.kind === "request" ? e.data.request.owner : "")), [w, v]);
   const [bw, bv] = events.map((e) => (e.data.kind === "request" ? e.data.request.id : ""));
 
-  // follow and follow --off: one subscription event each.
-  events = await f.appended(() => f.cli("c", "follow", `#${f.num(a.request.id)}`));
-  assert.deepEqual(kinds(events), ["subscription"]);
-  assert.deepEqual([data(events, "subscription").enabled, data(events, "subscription").subscription], [true, { seatId: c, requestId: a.request.id, milestones: ["working"] }]);
-  events = await f.appended(() => f.cli("c", "follow", `${f.num(a.request.id)}`, "--off"));
-  assert.deepEqual([kinds(events), data(events, "subscription").enabled], [["subscription"], false]);
-
   // correct and cancel, by the requester; the owner of the cancelled request is idle, so nothing is interrupted.
   events = await f.appended(() => f.cli("c", "correct", `#${f.num(bw!)}`, "only the JSON fixtures"));
   assert.deepEqual(kinds(events), ["correction"]);
@@ -250,33 +258,27 @@ test("1. each command appends exactly the expected events, and reads append noth
     assert.deepEqual(kinds(await f.appended(() => f.cli("w", ...argv))), [], argv.join(" "));
   }
 
-  // In w's turn (A, B and the correction): working marks A and holds it with a work: activity. v is woken too, by the
-  // request and its cancel (the host reserves on any unread input); its turn answers nothing.
+  // In w's turn (A, B and the correction). v is woken too, by the request and its cancel (the host reserves on any
+  // unread input); its turn answers nothing.
   await f.tick();
   assert.ok(f.running("w"));
   f.complete("v", "nothing left to do");
-  events = await f.appended(() => f.cli("w", "working", `#${f.num(a.request.id)}`, "running the long suite"));
-  assert.deepEqual(kinds(events), ["activity.started", "progress"]);
-  assert.deepEqual([data(events, "activity.started").activity.requestIds, data(events, "progress").milestone, data(events, "progress").requestIds], [[a.request.id], "working", [a.request.id]]);
 
   // note: under the requests this turn works on; it addresses nobody.
   events = await f.appended(() => f.cli("w", "note", "halfway through the fixtures"));
   assert.deepEqual(kinds(events), ["note"]);
   assert.deepEqual([[...data(events, "note").requestIds].sort(), data(events, "note").recipients], [[a.request.id, bw!].sort(), []]);
 
-  // answer #B in the turn: one output that answers B.
-  events = await f.appended(() => f.cli("w", "answer", `#${f.num(bw!)}`, "fixtures checked"));
-  assert.deepEqual(kinds(events), ["output"]);
-  assert.deepEqual(data(events, "output").claims, [{ requestId: bw, outcome: "answered", returnTo: c }]);
-
-  // The turn ends; its final answers nothing (B is answered, A is held), then answer #A between turns settles the
-  // work: activity and answers A.
-  f.complete("w", "still on the parser");
-  await f.tick();
-  assert.equal(f.request(a.request.id).state, "open");
-  events = await f.appended(() => f.cli("w", "answer", `#${f.num(a.request.id)}`, "parser done"));
-  assert.deepEqual(kinds(events), ["activity.status", "output"]);
-  assert.deepEqual([data(events, "activity.status").status, data(events, "output").claims], ["done", [{ requestId: a.request.id, outcome: "answered", returnTo: c }]]);
+  // The turn ends: its final is one output that answers A and B (the correction is in the turn), back to c.
+  events = await f.appended(async () => {
+    f.complete("w", "parser built, JSON fixtures checked");
+    await f.tick();
+  });
+  const finals = events.filter((e) => e.data.kind === "output" && e.data.author === w);
+  assert.equal(finals.length, 1);
+  const claims = finals[0]!.data.kind === "output" ? [...finals[0]!.data.claims].sort((x, y) => x.requestId.localeCompare(y.requestId)) : [];
+  assert.deepEqual(claims, [{ requestId: a.request.id, outcome: "answered", returnTo: c }, { requestId: bw!, outcome: "answered", returnTo: c }].sort((x, y) => x.requestId.localeCompare(y.requestId)));
+  assert.deepEqual([f.request(a.request.id).state, f.request(bw!).state], ["answered", "answered"]);
 
   // cancel of the only request of a live turn: the cancel; the host sends T3 the interrupt (§6).
   const [e] = f.posted(await f.cli("c", "post", "@v profile the build"));
@@ -310,71 +312,62 @@ test("1. each command appends exactly the expected events, and reads append noth
   assert.deepEqual(data(events, "retry").recipients, [v]);
 });
 
-test("2. a review posted mid-run is a child of the run's request; the worker's final stays pending until it is answered, then the Consigliere is woken once", async (t) => {
+test("2. a member's post mid-run is refused and appends nothing; its final answers its request at once and wakes the Consigliere once, who relays the review", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
   assert.ok(f.running("w"));
 
-  const reply = await f.cli("w", "post", "@v review the parser diff");
-  const [r] = f.posted(reply);
-  assert.equal(f.request(r!).parentId, a, "the review is a child of the turn's request");
-  assert.match(reply, new RegExp(`under your #${f.num(a!)}`));
-  assert.match(reply, new RegExp(`#${f.num(a!)} stays open while #${f.num(r!)} is open`));
+  // The worker cannot ask for the review itself: members only answer.
+  await f.refused("w", ["post", "@v review the parser diff"], MEMBERS);
 
-  // An explicit answer while the review is open: the engine says pending_activity, and the CLI says so.
-  const early = await f.cli("w", "answer", "parser done, review asked");
-  assert.match(early, new RegExp(`#${f.num(a!)}: NOT answered; it stays open while #${f.num(r!)} to @v is open`));
-  assert.doesNotMatch(early, /: answered/);
-
-  f.complete("w", "parser done, waiting for the review");
-  await f.tick();
-  const finals = f.p().events.filter((e) => e.data.kind === "output" && e.data.claims.some((cl) => cl.requestId === a));
-  assert.deepEqual(finals.map((e) => (e.data.kind === "output" ? e.data.claims[0]!.outcome : "")), ["pending_activity", "pending_activity"]);
-  assert.equal(f.request(a!).state, "open");
-  assert.equal(f.wakes("c"), 0, "the Consigliere sleeps while the exchange is open");
-
-  // The reviewer answers; the worker is woken with it; its final then answers A, and the Consigliere is woken once.
-  await f.tick();
-  assert.ok(f.running("v"));
-  f.complete("v", "PASS");
-  await f.tick();
-  assert.equal(f.request(r!).state, "answered");
-  assert.equal(f.wakes("w"), 2);
-  assert.equal(f.wakes("c"), 0);
-  f.complete("w", "parser done and reviewed");
+  // Its final answers A: nothing holds it open, and the Consigliere is woken with it once.
+  f.complete("w", "parser done; it wants a review");
   await f.tick(2);
   assert.equal(f.request(a!).state, "answered");
-  assert.equal(f.wakes("c"), 1);
-  f.complete("c", "noted");
+  assert.deepEqual(f.finalsOn("w", a!).map((e) => (e.data.kind === "output" ? e.data.claims.map((cl) => cl.outcome) : [])), [["answered"]]);
+  assert.equal(f.wakes("c"), 1, "the worker's reply wakes the Consigliere");
+  assert.match(f.fake.promptOf(f.thread("c"), f.fake.runsOf(f.thread("c"))[0]!), /parser done; it wants a review/);
+
+  // The Consigliere relays the review, in his turn: a request of his own, under nothing.
+  const [r] = f.posted(await f.cli("c", "post", "@v review the parser diff"));
+  assert.deepEqual([f.request(r!).parentId, f.request(r!).returnTo], [null, f.seat("c")]);
+  f.complete("c", "review asked");
+  await f.tick(2);
+  assert.ok(f.running("v"));
+  f.complete("v", "PASS");
+  await f.tick(2);
+  assert.equal(f.request(r!).state, "answered");
+  assert.equal(f.wakes("c"), 2, "the reviewer's reply wakes the Consigliere");
+  f.complete("c", "parser done and reviewed");
   await f.tick(3);
-  assert.equal(f.wakes("c"), 1, "exactly once");
-  assert.deepEqual([f.wakes("w"), f.wakes("v")], [2, 1]);
+  assert.deepEqual([f.wakes("c"), f.wakes("w"), f.wakes("v")], [2, 1, 1], "each reply wakes the Consigliere exactly once; the worker is not woken again");
 });
 
-test("3. a member's own post never wakes itself: not a post, note, working, answer or follow of its own", async (t) => {
+test("3. a member's own post never wakes itself: not a note or a follow-up of its own", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  await f.refused("w", ["post", "@w remind me later"], /you cannot post to yourself/);
-  await f.refused("w", ["follow", `#${f.num(a!)}`], /is yours; your own working posts never wake you/);
-  const all = f.posted(await f.cli("w", "post", "@all look at the grammar"));
-  assert.deepEqual(all.map((id) => f.request(id).owner).sort(), [f.seat("c"), f.seat("v")].sort(), "@all is everyone else");
+  // A member cannot post at all, to itself or anyone; the Consigliere cannot post to himself.
+  await f.refused("w", ["post", "@w remind me later"], MEMBERS);
+  await f.refused("c", ["post", "@c remind me later"], /you cannot post to yourself/);
+  const all = f.posted(await f.cli("c", "post", "@all look at the grammar"));
+  assert.deepEqual(all.map((id) => f.request(id).owner).sort(), [f.seat("w"), f.seat("v")].sort(), "@all is everyone else");
   await f.cli("w", "note", "the grammar is ambiguous");
-  await f.cli("w", "working", "rewriting the grammar");
-  // Even a subscription to its own request (the engine allows one) does not address its own working posts to it.
-  f.stack.engine!.follow(f.roomId, { actor: f.seat("w"), id: "self-follow", requestId: a!, enabled: true });
-  const mark = await f.appended(() => f.cli("w", "working", `#${f.num(a!)}`, "still rewriting"));
-  assert.deepEqual(data(mark, "progress").recipients, []);
   f.complete("w", "grammar rewritten");
-  await f.tick(3);
+  await f.quiet();
+  // w's own continuation: a follow-up, which wakes the Consigliere, never w.
+  f.fake.startSelfRun(f.thread("w"));
+  await f.tick();
+  f.complete("w", "parser rebuilt on the new grammar");
+  await f.tick(2);
+  await f.quiet();
+  assert.ok(f.p().events.some((e) => e.data.kind === "progress" && e.data.author === f.seat("w") && e.data.milestone === "follow-up"), "the continuation is a follow-up");
   assert.deepEqual(f.p().events.filter((e) => "recipients" in e.data && (e.data.recipients as string[]).includes(f.seat("w")) && "author" in e.data && e.data.author === f.seat("w")), []);
-  assert.equal(f.wakes("w"), 1, "only the Consigliere's request woke it");
-  await f.cli("w", "answer", `#${f.num(a!)}`, "parser done");
-  await f.tick(3);
-  assert.equal(f.wakes("w"), 1);
+  assert.equal(f.hostRuns("w"), 2, "only the Consigliere's two requests woke it");
+  assert.equal(f.request(a!).state, "answered");
 });
 
 test("4. a key from another room is refused; the room comes from the key only, and nothing is appended in either journal", async (t) => {
@@ -389,9 +382,12 @@ test("4. a key from another room is refused; the room comes from the key only, a
 
   // z is not a member of room A: its alias with room A's key prefix is refused.
   await f.refused("z", ["index"], /is not the key of a member seated in a room/, f.key("z", f.roomId));
-  // w of room B acts in room B only: room A's #n does not exist there.
-  for (const argv of [["cancel", `#${n}`], ["answer", `#${n}`, "done"], ["correct", `#${n}`, "x"], ["follow", `#${n}`], ["read", String(n)], ["post", "--for", `#${n}`, "@z help"]]) {
+  // w and z of room B act in room B only: room A's #n does not exist there.
+  for (const argv of [["cancel", `#${n}`], ["correct", `#${n}`, "x"], ["note", `#${n}`, "x"], ["read", String(n)]]) {
     await f.refused("w", argv, /this room has no post/, f.key("w", other));
+  }
+  for (const argv of [["cancel", `#${n}`], ["correct", `#${n}`, "x"], ["retry", `#${n}`]]) {
+    await f.refused("z", argv, /this room has no post/, f.key("z", other));
   }
   // A forged key, a retired member's key, and a member with no seat in the journal.
   await f.refused("c", ["index"], /is not the key of a member/, "c.00000000");
@@ -407,17 +403,17 @@ test("5. index numbering is stable across restart and rebuild, and matches the n
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  const [r] = f.posted(await f.cli("w", "post", "@v review the parser"));
   await f.cli("w", "note", "fixtures pending");
-  f.complete("w", "built; review asked");
+  f.complete("w", "built; it wants a review");
   await f.tick(2);
-  f.complete("v", "PASS with one nit");
-  await f.tick(2);
+  const [r] = f.posted(await f.cli("c", "post", "@v review the parser"));
+  await f.quiet();
+  assert.equal(f.request(r!).state, "answered");
 
   const snapshot = async () => [await f.cli("c", "index"), await f.cli("c", "index", "--all"), await f.cli("c", "read", String(f.num(a!)), String(f.num(r!)))];
   const before = await snapshot();
-  assert.match(before[0]!, new RegExp(`#${f.num(a!)}  request  @c → @w`));
-  assert.match(before[0]!, new RegExp(`#${f.num(r!)}  request  @w → @v · under #${f.num(a!)} · answered by #\\d+`));
+  assert.match(before[0]!, new RegExp(`#${f.num(a!)}  request  @c → @w · answered by #\\d+`));
+  assert.match(before[0]!, new RegExp(`#${f.num(r!)}  request  @c → @v · answered by #\\d+`));
   // Briefings number posts the same way (L2's journalDirectory, as the host renders them).
   const directory = journalDirectory(f.p().events, { alias: () => null });
   assert.equal(directory.requestNumber(a!), f.num(a!));
@@ -433,34 +429,49 @@ test("5. index numbering is stable across restart and rebuild, and matches the n
   });
   assert.deepEqual(await snapshot(), before, "after a rebuild");
   // The numbers still name the same requests.
-  assert.match(await f.cli("w", "answer", `#${f.num(a!)}`, "parser done after review"), new RegExp(`#${f.num(a!)}: answered`));
+  await f.refused("c", ["cancel", `#${f.num(a!)}`], new RegExp(`#${f.num(a!)} is already answered`));
   // A record's number is not a post.
   const record = f.p().events.find((e) => e.data.kind === "run.phase")!;
   await f.refused("c", ["read", String(record.seq)], /this room has no post/);
 });
 
-test("6. follow makes working posts wake the follower, several in one run; --off stops it; others are not woken", async (t) => {
+test("6. a member's own continuation is a follow-up on the request its answer closed: it wakes the Consigliere only, with the member's T3 status, and the index lists it as one", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
-  const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
+  const [a] = f.posted(await f.cli("c", "post", "@w run the long suite in the background"));
   await f.tick();
-  await f.cli("c", "follow", `#${f.num(a!)}`);
-  const first = await f.cli("w", "working", "running the long suite");
-  assert.match(first, /It wakes @c, who follows it\./);
-  await f.cli("w", "working", `#${f.num(a!)}`, "suite half done");
-  f.complete("w", "suite running in the background");
+  f.fake.background(f.thread("w"), ["suite"]);
+  f.complete("w", "suite started");
   await f.tick(2);
-  assert.equal(f.wakes("c"), 1, "two working posts, one run");
-  assert.match(f.fake.promptOf(f.thread("c"), f.fake.runsOf(f.thread("c"))[0]!), /suite half done/);
+  // The final answers A at once; its status line says what T3 still runs.
+  assert.equal(f.request(a!).state, "answered");
+  const [answer] = f.finalsOn("w", a!);
+  assert.equal(answer!.data.kind === "output" && answer!.data.body, '[T3 status of @w: still running: background task "background suite"]\n\nsuite started');
+  assert.equal(f.wakes("c"), 1);
   f.complete("c", "ok");
-  await f.tick();
+  await f.tick(2);
 
-  await f.cli("c", "follow", `#${f.num(a!)}`, "--off");
-  assert.match(await f.cli("w", "working", `#${f.num(a!)}`, "three quarters"), /It wakes nobody\./);
+  // The suite ends and w goes on by itself: its reply is a follow-up on A, to the Consigliere.
+  f.fake.background(f.thread("w"), []);
+  f.fake.startSelfRun(f.thread("w"));
+  await f.tick();
+  f.complete("w", "the suite passed");
+  await f.tick(2);
+  const up = f.p().events.find((e) => e.data.kind === "progress" && e.data.milestone === "follow-up")!;
+  assert.ok(up, "a follow-up post");
+  assert.equal(up.data.kind === "progress" && up.data.body, "[T3 status of @w: idle]\n\nthe suite passed");
+  assert.deepEqual(up.data.kind === "progress" && [up.data.requestIds, up.data.recipients], [[a], [f.seat("c")]]);
+  assert.equal(f.wakes("c"), 2, "the follow-up wakes the Consigliere");
+  assert.match(f.fake.promptOf(f.thread("c"), f.fake.runsOf(f.thread("c"))[1]!), /the suite passed/);
+  f.complete("c", "good");
   await f.tick(3);
-  assert.equal(f.wakes("c"), 1, "no longer following");
-  assert.equal(f.wakes("v"), 0, "a non-follower is never woken");
-  assert.match(await f.cli("w", "answer", `#${f.num(a!)}`, "suite green"), /: answered\. @c is woken with it\./);
+  assert.deepEqual([f.wakes("c"), f.wakes("v"), f.hostRuns("w")], [2, 0, 1], "once; nobody else; the continuation is no host turn");
+
+  // The board shows it as a follow-up on A, by number, with the member named by alias.
+  const index = await f.cli("c", "index");
+  assert.match(index, new RegExp(`#${up.seq}  follow-up  @w → @c · on #${f.num(a!)} · `));
+  const shown = await f.cli("v", "read", String(up.seq));
+  assert.match(shown, new RegExp(`^\\[#${up.seq} follow-up · @w → @c · on #${f.num(a!)}\\]\n\\[T3 status of @w: idle\\]\n\nthe suite passed$`));
 });
 
 test("7. a post over 1 MiB (UTF-8 bytes) is refused on every text-bearing command; exactly 1 MiB is accepted", async (t) => {
@@ -478,34 +489,85 @@ test("7. a post over 1 MiB (UTF-8 bytes) is refused on every text-bearing comman
   await f.refused("c", ["correct", `#${f.num(a!)}`, big], /at most 1 MiB/);
   await f.refused("c", ["state", big], /at most 1 MiB/);
   await f.tick();
-  await f.refused("w", ["working", big], /at most 1 MiB/);
   await f.refused("w", ["note", big], /at most 1 MiB/);
-  await f.refused("w", ["answer", big], /at most 1 MiB/);
   f.complete("w", "failed", "error");
   await f.tick();
   await f.refused("c", ["retry", `#${f.num(a!)}`, big], /at most 1 MiB/);
 });
 
-test("answer prints the engine's outcome for each request: answered, superseded, and a closed request is refused, not replayed", async (t) => {
+test("H5: a member's post is refused with a plain sentence and appends nothing; answer, working and follow are gone, refused with a sentence; the Consigliere's post goes under nothing, in a turn too", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  const [c, w] = [f.seat("c"), f.seat("w")];
+  // The user asks the Consigliere; in his turn, his post is a request of his own, under nothing.
+  f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:plan", to: c, body: "get the parser built" });
+  await f.tick();
+  assert.ok(f.running("c"));
+  const events = await f.appended(() => f.cli("c", "post", "@w build the parser"));
+  assert.deepEqual(kinds(events), ["request"]);
+  const q = data(events, "request").request;
+  assert.deepEqual([q.owner, q.returnTo, q.parentId], [w, c, null]);
+  await f.tick();
+  assert.ok(f.running("w"));
+
+  // Members post nothing: in a turn (w) or not (v), to anyone, with --for or without; say is post.
+  for (const alias of ["w", "v"]) {
+    for (const argv of [["post", "@v review the parser"], ["say", "@c parser done"], ["post", "@all look at this"], ["post", "--for", `#${f.num(q.id)}`, "@v review it"]]) {
+      const refusal = await f.refused(alias, argv, MEMBERS);
+      assert.equal(refusal.status, 403);
+    }
+  }
+  // answer, working and follow are gone, for everyone: each is refused with why.
+  const gone: Array<[string, RegExp]> = [
+    ["answer", exactly("rooms-board: your final reply is your answer; there is nothing to run.")],
+    ["working", exactly("rooms-board: there is no working mark: your final reply is your answer, and the Consigliere reads your T3 status (what still runs in the background) at the top of it.")],
+    ["follow", exactly("rooms-board: nobody follows requests: every reply of a member, and each follow-up of it, wakes the Consigliere.")],
+  ];
+  for (const alias of ["w", "c"]) {
+    for (const [command, sentence] of gone) {
+      for (const argv of [[command], [command, `#${f.num(q.id)}`, "parser done"]]) {
+        const refusal = await f.refused(alias, argv, sentence);
+        assert.equal(refusal.status, 410);
+      }
+    }
+  }
+  // help lists none of them.
+  const help = await f.cli("w", "help");
+  assert.doesNotMatch(help, /^\s+(answer|working|follow)\b/m);
+  assert.doesNotMatch(help, /--for/);
+  assert.match(help, /^ {2}post "@name the job"/m);
+
+  // The worker's final is its answer.
+  f.complete("w", "parser built");
+  await f.tick();
+  assert.equal(f.request(q.id).state, "answered");
+});
+
+test("a correction during the turn supersedes its final: the request stays open and the next turn answers it", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  // A correction lands during the turn: w has not read it, so its answer is superseded and the request stays open.
+  // A correction lands during the turn: w has not read it, so its final is superseded and the request stays open.
   const correction = await f.appended(() => f.cli("c", "correct", `#${f.num(a!)}`, "use the new grammar"));
-  const superseded = await f.cli("w", "answer", "parser done");
-  assert.match(superseded, new RegExp(`#${f.num(a!)}: NOT answered; it stays open, because #${correction[0]!.seq} bears on it and you have not read it yet`));
-  assert.match(superseded, /your next turn brings it/);
-  assert.equal(f.request(a!).state, "open");
+  assert.deepEqual(kinds(correction), ["correction"]);
   f.complete("w", "parser done");
-  await f.tick(2);
+  await f.tick();
+  const [first] = f.finalsOn("w", a!);
+  assert.deepEqual(first!.data.kind === "output" && first!.data.claims.map((cl) => cl.outcome), ["superseded"]);
+  assert.equal(f.request(a!).state, "open");
+  assert.match(await f.cli("c", "index"), new RegExp(`#${first!.seq}  answer  @w → @c · #${f.num(a!)} still open \\(superseded\\)`));
+  await f.tick();
   assert.ok(f.running("w"), "the next turn brings the correction");
-  const answered = await f.cli("w", "answer", "parser done with the new grammar");
-  assert.match(answered, /^Recorded as #\d+\.\n#\d+: answered\. @c is woken with it\.$/);
+  assert.match(f.fake.promptOf(f.thread("w"), f.fake.runsOf(f.thread("w")).at(-1)!), /use the new grammar/);
+  f.complete("w", "parser done with the new grammar");
+  await f.tick();
+  assert.equal(f.request(a!).state, "answered");
+  assert.deepEqual(f.finalsOn("w", a!).map((e) => (e.data.kind === "output" ? e.data.claims.map((cl) => cl.outcome) : [])), [["superseded"], ["answered"]]);
   // A number with no text is not taken for the text.
-  await f.refused("w", ["answer", `#${f.num(a!)}`], /looks like a post number with no text after it/);
-  // A second identical answer is a new attempt (fresh command ID), refused because the request is closed.
-  await f.refused("w", ["answer", `#${f.num(a!)}`, "parser done with the new grammar"], new RegExp(`#${f.num(a!)} is already answered`));
+  await f.refused("w", ["note", `#${f.num(a!)}`], /looks like a post number with no text after it/);
+  // A closed request is not corrected: post a new one.
+  await f.refused("c", ["correct", `#${f.num(a!)}`, "and the printer"], new RegExp(`#${f.num(a!)} is answered; a closed request is not corrected`));
   // Two identical posts are two requests.
   const twice = [...f.posted(await f.cli("c", "post", "@v re-review please")), ...f.posted(await f.cli("c", "post", "@v re-review please"))];
   assert.equal(new Set(twice).size, 2);
@@ -517,93 +579,66 @@ test("the host's texts reach members with board numbers, never request IDs", asy
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   const [b] = f.posted(await f.cli("c", "post", "@w build the printer"));
   await f.tick();
-  const several = await f.refused("w", ["post", "@v review it"], new RegExp(`this turn works on #${f.num(a!)}, #${f.num(b!)}|This turn works on #${f.num(a!)}, #${f.num(b!)}`));
-  assert.doesNotMatch(several.message, /#board:|@[0-9a-f]{8}-/);
-  assert.match(several.message, /"@v …"/);
-  const working = await f.cli("w", "working", `#${f.num(a!)}`, "long suite");
-  assert.match(working, new RegExp(`#${f.num(a!)} stays open until you run rooms-board answer #${f.num(a!)}`));
-  assert.doesNotMatch(working, /#board:|@[0-9a-f]{8}-/);
-  await f.refused("v", ["answer", `#${f.num(a!)}`, "not mine"], new RegExp(`#${f.num(a!)} is not a request of yours`));
-  // post --for names one of the poster's own open requests.
-  const [r] = f.posted(await f.cli("w", "post", "--for", `#${f.num(b!)}`, "@v review the printer"));
-  assert.equal(f.request(r!).parentId, b);
-  await f.refused("c", ["post", "--for", `#${f.num(a!)}`, "@v help @w"], /is not your request: a post goes under a request you own/);
-  await f.refused("v", ["post", "--for", `#${f.num(b!)}`, "@w which printer?"], /is not your request/);
-  // Answering a post that is not a request names the request it is about.
-  const note = await f.appended(() => f.cli("w", "note", `#${f.num(a!)}`, "lexer first"));
-  await f.refused("w", ["answer", `#${note[0]!.seq}`, "done"], new RegExp(`#${note[0]!.seq} is a note on #${f.num(a!)}, not a request: name #${f.num(a!)}`));
+  const refusal = await f.refused("w", ["post", "@v review it"], MEMBERS);
+  assert.doesNotMatch(refusal.message, /#board:|@[0-9a-f]{8}-/);
+  // The host's note of a cancel held to the turn's end names the request and its owner: read shows #n and @alias.
+  const held = await f.appended(() => f.cli("c", "cancel", `#${f.num(a!)}`));
+  assert.deepEqual(kinds(held), ["note"]);
+  const shown = await f.cli("w", "read", String(held[0]!.seq));
+  assert.match(shown, new RegExp(`Cancel of #${f.num(a!)} requested; it applies when @w's current turn ends\\.`));
+  assert.doesNotMatch(shown, /#board:|@[0-9a-f]{8}-/);
+  // A post that is not a request names the request it is about.
+  const note = await f.appended(() => f.cli("w", "note", `#${f.num(b!)}`, "lexer first"));
+  await f.refused("c", ["correct", `#${note[0]!.seq}`, "printer first"], new RegExp(`#${note[0]!.seq} is a note on #${f.num(b!)}, not a request: name #${f.num(b!)}`));
+  // The member's answer: its status line names it by alias.
+  f.complete("w", "printer built");
+  await f.tick();
+  assert.deepEqual([f.request(a!).state, f.request(b!).state], ["cancelled", "answered"]);
+  const answer = f.finalsOn("w", b!)[0]!;
+  const read = await f.cli("c", "read", String(answer.seq));
+  assert.match(read, /^\[#\d+ answer · @w → @c · #\d+ answered\]\n\[T3 status of @w: idle\]\n\nprinter built$/);
+  assert.doesNotMatch(read, /#board:|@[0-9a-f]{8}-/);
   // An unknown or unseated recipient is refused before anything is written, even with a valid one first.
   await f.refused("c", ["post", "@v @nobody look"], /nobody called @nobody can take work in this room/);
   await f.refused("c", ["post", "look at this"], /start with @name/);
   await f.refused("c", ["post", "@w /compact"], /is a slash command/);
 });
 
-test("cancel and correct are the requester's only: the Consigliere cannot close or change work someone else waits on", async (t) => {
+test("cancel and correct are the requester's only: nobody else can close or change work someone else waits on", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
-  // The worker's review of its own request: the Consigliere did not ask it.
+  // The Consigliere's request: another member did not ask it.
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  const [r] = f.posted(await f.cli("w", "post", "@v review the parser diff"));
-  f.complete("w", "built; review asked");
-  await f.tick(2);
-  await f.refused("c", ["cancel", `#${f.num(r!)}`], /only @w, who asked #\d+, can cancel it; ask @w\./);
-  await f.refused("c", ["correct", `#${f.num(r!)}`, "skip the tests"], /only @w, who asked #\d+, can correct it/);
-  // The user's request to the Consigliere: only the user withdraws or changes it.
+  await f.refused("v", ["cancel", `#${f.num(a!)}`], /only @c, who asked #\d+, can cancel it; ask @c\./);
+  await f.refused("v", ["correct", `#${f.num(a!)}`, "skip the tests"], /only @c, who asked #\d+, can correct it/);
+  // The user's requests, to a member and to the Consigliere: only the user withdraws or changes them.
+  f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:docs", to: f.seat("w"), body: "write the docs" });
   f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:plan", to: f.seat("c"), body: "plan the release" });
-  await f.refused("c", ["cancel", `#${f.num("user:plan")}`], /only the user, who asked #\d+, can cancel it\.$/);
-  await f.refused("c", ["correct", `#${f.num("user:plan")}`, "never mind"], /only the user, who asked #\d+, can correct it\.$/);
-  // The requester's own cancel is unchanged: the worker withdraws its review.
-  assert.deepEqual(kinds(await f.appended(() => f.cli("w", "cancel", `#${f.num(r!)}`))).slice(0, 1), ["cancel"]);
-  assert.equal(f.request(a!).state, "open");
-});
-
-test("a post outside a host turn while background work holds several requests must say which one it is for", async (t) => {
-  const f = await Fixture.create();
-  t.after(() => f.close());
-  const [a] = f.posted(await f.cli("c", "post", "@w run job A in the background"));
-  await f.tick();
-  f.fake.background(f.thread("w"), ["job-a"]);
-  f.complete("w", "job A started");
-  await f.tick();
-  const [b] = f.posted(await f.cli("c", "post", "@w run job B in the background"));
-  await f.tick();
-  f.fake.background(f.thread("w"), ["job-a", "job-b"]);
-  f.complete("w", "job B started");
-  await f.tick();
-  f.fake.startSelfRun(f.thread("w"));
-  await f.tick();
-  // A continuation: no host run, two requests held by background work.
-  const refusal = await f.refused("w", ["post", "@v review jobs A and B"], new RegExp(`your work still going on holds #${f.num(a!)}, #${f.num(b!)}: say which one this post is for, post --for #n`));
-  assert.doesNotMatch(refusal.message, /#board:|\$user/);
-  const [r] = f.posted(await f.cli("w", "post", "--for", `#${f.num(a!)}`, "@v review job A"));
-  assert.equal(f.request(r!).parentId, a);
-  // The continuation ends with nothing left in the background: B is answered, A stays open while its review is open.
-  f.fake.background(f.thread("w"), []);
-  f.complete("w", "both jobs done; review of A asked");
-  await f.tick(2);
-  assert.deepEqual([f.request(a!).state, f.request(b!).state], ["open", "answered"]);
-
-  // With one held request the post goes under it, as before.
-  const g = await Fixture.create();
-  t.after(() => g.close());
-  const [one] = g.posted(await g.cli("c", "post", "@w run the job in the background"));
-  await g.tick();
-  g.fake.background(g.thread("w"), ["job"]);
-  g.complete("w", "job started");
-  await g.tick();
-  g.fake.startSelfRun(g.thread("w"));
-  await g.tick();
-  const [child] = g.posted(await g.cli("w", "post", "@v review the job"));
-  assert.equal(g.request(child!).parentId, one);
+  for (const id of ["user:docs", "user:plan"]) {
+    await f.refused("c", ["cancel", `#${f.num(id)}`], /only the user, who asked #\d+, can cancel it\.$/);
+    await f.refused("c", ["correct", `#${f.num(id)}`, "never mind"], /only the user, who asked #\d+, can correct it\.$/);
+  }
+  // The requester's own cancel is unchanged: the Consigliere withdraws his request.
+  assert.deepEqual(kinds(await f.appended(() => f.cli("c", "cancel", `#${f.num(a!)}`))).slice(0, 1), ["cancel"]);
+  assert.deepEqual([f.request(a!).state, f.request("user:docs").state, f.request("user:plan").state], ["cancelled", "open", "open"]);
 });
 
 test("no text a member reads names the user as someone to post to", async (t) => {
   const f = await Fixture.create({ orchestrator: null });
   t.after(() => f.close());
   f.stack.engine!.request(f.roomId, { actor: "$user", id: "user:job", to: f.seat("w"), body: "do the thing" });
-  const refusal = await f.refused("w", ["working", `#${f.num("user:job")}`, "still on it"], /use rooms-board note, which the user reads on the board/);
+  const refusal = await f.refused("w", ["post", "@v help me with it"], MEMBERS);
   assert.doesNotMatch(refusal.message, /\$user/);
+  // The user's request and the member's answer to it name "the user".
+  await f.tick();
+  f.complete("w", "done");
+  await f.tick();
+  const read = await f.cli("w", "read", String(f.num("user:job")));
+  assert.match(read, /^\[#\d+ request · the user → @w · answered by #\d+\]/);
+  const index = await f.cli("v", "index");
+  assert.match(index, /answer {2}@w → the user · #\d+ answered/);
+  for (const text of [read, index]) assert.doesNotMatch(text, /\$user/);
 });
 
 test("retry: the Consigliere's, once per failed turn, and never for a turn whose requests are all closed", async (t) => {
@@ -628,28 +663,7 @@ test("retry: the Consigliere's, once per failed turn, and never for a turn whose
   await f.refused("c", ["retry", `#${f.num(a!)}`], /nothing to redo/);
 });
 
-test("retry of a background job's failure is refused with a sentence, not as 'not a failed turn'", async (t) => {
-  const f = await Fixture.create();
-  t.after(() => f.close());
-  const [a] = f.posted(await f.cli("c", "post", "@w run the job in the background"));
-  await f.tick();
-  f.fake.background(f.thread("w"), ["job"]);
-  f.complete("w", "job started");
-  await f.tick();
-  const activity = [...f.p().activities.values()].find((x) => x.requestIds.includes(a!))!;
-  // No host path fails background work today; the engine's form of it is an error output on the activity.
-  const w = f.seat("w");
-  f.restart(() => {
-    const store = new EngineStore(join(f.dir, "board.sqlite"));
-    store.execute(f.roomId, { type: "output", actor: "$system", id: "bg-failed", author: w, sourceKey: "bg-failed", association: { kind: "activity", id: activity.id }, activityCompletion: "failed", body: "the job crashed", disposition: { kind: "error", requestIds: [a!] } });
-    store.close();
-  });
-  const notice = f.p().events.find((e) => e.data.kind === "notice" && e.data.intent === "error")!;
-  assert.equal(notice.data.kind === "notice" && notice.data.causeId, `activity:${activity.id}`);
-  await f.refused("c", ["retry", `#${notice.seq}`], /is the failure of background work, not of a turn; a background job is not retried: post the work again/);
-});
-
-test("a post made while the host is still sending the turn is a child of that turn's request", async (t) => {
+test("a note made while the host is still sending the turn goes under that turn's request", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
@@ -657,8 +671,11 @@ test("a post made while the host is still sending the turn is a child of that tu
   await f.tick();
   const run = f.p().runs.get(f.p().seats.get(f.seat("w"))!.activeRunId!)!;
   assert.equal(run.phase, "sending");
-  const [r] = f.posted(await f.cli("w", "post", "@v review it"));
-  assert.equal(f.request(r!).parentId, a);
+  const events = await f.appended(() => f.cli("w", "note", "starting on the lexer"));
+  const note = events.find((e) => e.data.kind === "note")!;
+  assert.deepEqual(note.data.kind === "note" && note.data.requestIds, [a]);
+  // The same in a member's post: refused, sending or not.
+  await f.refused("w", ["post", "@v review it"], MEMBERS);
 });
 
 test("seat, reseat and retire run the room commands L4b routes to the journal, the Consigliere's only; without L4b they say so", async (t) => {
@@ -720,6 +737,14 @@ test("the route hook: with the engine on, /api/board-tools is the journal's boar
   const refused = await call("c", ["post", "@c talk to myself"]);
   assert.equal(refused.status, 400);
   assert.match(((await refused.json()) as { message: string }).message, /you cannot post to yourself/);
+  // A member's post: 403 with the plain sentence; a command that is gone: 410 with why. Nothing is written.
+  const member = await call("w", ["post", "@v review it"]);
+  assert.equal(member.status, 403);
+  assert.match(((await member.json()) as { message: string }).message, MEMBERS);
+  const gone = await call("w", ["answer", "parser done"]);
+  assert.equal(gone.status, 410);
+  assert.match(((await gone.json()) as { message: string }).message, /^rooms-board: your final reply is your answer; there is nothing to run\.$/);
+  assert.equal(f.p().requests.size, 1);
 });
 
 test("the CLI: --file and stdin carry a text past the shell's argument limit; over 1 MiB it exits 1", async (t) => {

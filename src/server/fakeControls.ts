@@ -12,6 +12,7 @@
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
  *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
  *   POST /api/fake/question      { threadId }                  a question on the running run -> { requestId }
+ *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
  */
 import { Hono, type Context } from "hono";
 import type { FakeT3Adapter } from "../adapter/fake.ts";
@@ -47,5 +48,9 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
   controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));
   controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input)) })));
+  controls.post("/api/fake/background", run((input) => {
+    fake.setBackground(thread(input), Array.isArray(input.taskIds) ? input.taskIds.filter((id): id is string => typeof id === "string") : []);
+    return {};
+  }));
   return ((request: Request, ...rest: unknown[]) => (new URL(request.url).pathname.startsWith("/api/fake/") ? controls.fetch(request) : fetch(request, ...rest))) as F;
 }

@@ -1,30 +1,34 @@
 /**
- * The lean engine host (stage 4/5 plan, item L1). It runs the accepted engine core against T3: for each seat it
- * reserves a run when the seat has unread addressed input and its thread is free, renders the frozen envelope, sends
- * it with the run's stable command and message IDs, follows the T3 run, and imports its final with the "Lean
- * semantics" selection (§1). It registers and settles background work (§2), imports turns and messages that did not
- * come from the board as non-waking notes (§3), and neutralises the core's cancel interrupt (§6).
+ * The lean engine host (stage 4/5 plan, item L1; H5: members only answer). It runs the engine core against T3: for each
+ * seat it reserves a run when the seat has unread addressed input and its thread is free, renders the frozen envelope,
+ * sends it with the run's stable command and message IDs, follows the T3 run, and imports what the thread did. Its
+ * rules, one sentence each:
+ * - A final answers the open requests its run was given.
+ * - A member's posts carry its T3 status at the top: a turn running, and the background tasks and subagents T3 lists.
+ * - A turn that answers nothing (one the member started itself, one typed in T3, one another agent's message started)
+ *   is a follow-up post on the member's request, and wakes the orchestrator.
+ * - When background work a member's latest post named has ended with no further turn, one follow-up says so after
+ *   `quietMs` of quiet.
+ * - Only the orchestrator and the user post requests.
+ * - A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
+ *   What a stopped turn said is on the board and wakes nobody.
+ * - A run T3 never takes fails visibly, with one notice, after its bounds.
  *
  * The journal in the engine store is the only record and the only thing that wakes anyone. The host keeps no work
  * state of its own: everything it needs after a restart is read back from the journal and from T3, by ID. What it
- * holds in memory (send attempts, idle clocks) only bounds retries and timers.
- *
- * The host never computes blocking: it chooses which requests a final names, and the engine decides each outcome.
+ * holds in memory (send attempts, quiet clocks) only bounds retries and timers.
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
 import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
-import { backgroundTasks } from "../app/threadView.ts";
 import type { ModelSelection } from "../domain/types.ts";
-import { inputTree, unread } from "../engine/index.ts";
-import type { Activity, ClaimOutcome, Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
+import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
+import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { adoptableSteers, steerMessageIds, steerOffers, steerReceiptId, wantsSteer, type SteerOffer } from "./steer.ts";
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
-import {
-  DEFERRED_CANCEL, RELEASED, activityStartedSeq, committed, deferredCancels, finalTargets, frozenDispatch, isPending,
-  lastAnswered, latestAnswer, memberHeld, newestCarrier, openOwned, pendingActivities, releasedFor, runRecords, stoppingCancel, type Dispatch,
-} from "./work.ts";
+import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
+import { DEFERRED_CANCEL, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
 const SYSTEM = "$system";
 const MiB = 1024 * 1024;
@@ -34,7 +38,7 @@ const STUCK_ATTEMPTS = 3;
 const STEER_NOTE = "This came into your running turn: take it into account in the work you are doing now, and cover it in your final reply for this turn.";
 
 /** Committed steps, for the crash method in tests/runtime: a hook that throws here stops the host as a crash would. */
-export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "steered" | "activity" | "output" | "ended" | "imported" | "released" | "settled";
+export type HostStep = "reserved" | "sending" | "sent" | "accepted" | "running" | "steered" | "output" | "ended" | "imported";
 
 export interface EngineHostOptions {
   store: EngineStore;
@@ -51,8 +55,8 @@ export interface EngineHostOptions {
   log?: (message: string, detail?: unknown) => void;
   /** Reservation budget (§7): 4 MiB. */
   maxBytes?: number;
-  /** §2 (iii): how long a thread stays idle with no background work before a `bg:` activity settles. */
-  idleSettleMs?: number;
+  /** How long a member's thread stays quiet, after background work its latest post named has ended, before one follow-up says so: 30 s. */
+  quietMs?: number;
   /** How long a sent message may stay unrecorded by T3 before its run fails visibly. */
   unrecordedMs?: number;
   /** How many times T3 may refuse a message before its run fails visibly (a passing refusal is retried). */
@@ -90,16 +94,17 @@ export class HostRefusal extends Error {
 }
 
 type Loader = (full?: boolean) => Promise<T3ThreadDetail | null>;
-interface Ending { outcome: "completed" | "stopped" | "failed"; text: string; error: string; background: string[]; evidence: string }
+interface Ending { outcome: "completed" | "stopped" | "failed"; text: string; error: string; status: MemberStatus | null; evidence: string }
+
+/** The refusal a member meets when it tries to post. */
+export const MEMBERS_DO_NOT_POST = "Only the Consigliere and the user post on the board. Put what you have to say in your final reply: it is your answer, and the Consigliere decides what happens next.";
+const QUIET = "quiet:";
 
 function unique(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-function claimsOf(receipt: CommitReceipt): ClaimOutcome[] {
-  return receipt.events.flatMap((e) => (e.data.kind === "output" ? e.data.claims : []));
 }
 function shellKey(shell: T3ThreadShell): string {
   return JSON.stringify([shell.latestRunId, shell.status, shell.latestUserMessageAt, shell.latestRunCompletedAt, shell.pendingBackgroundTasks.length]);
@@ -113,7 +118,7 @@ export class EngineHost {
   private readonly budgetChars: number;
   private readonly options: EngineHostOptions;
   private readonly maxBytes: number;
-  private readonly idleSettleMs: number;
+  private readonly quietMs: number;
   private readonly unrecordedMs: number;
   private readonly refusalLimit: number;
   private readonly stuckMs: number;
@@ -130,8 +135,8 @@ export class EngineHost {
   private readonly stuck = new Map<string, { since: number; attempts: number }>();
   /** Host runs whose cancel's interrupt T3 has taken (or refused); T3 keeps one receipt per command ID, so a restart may send it once more. */
   private readonly interrupted = new Set<string>();
-  /** Per `bg:` activity: since when its thread has been idle with nothing in the background (§2 iii). */
-  private readonly idleSince = new Map<string, number>();
+  /** Per seat: since when its thread has been quiet after background work its latest post named ended, and that post's follow-up ID. */
+  private readonly quietSince = new Map<string, { id: string; at: number }>();
   /** Per seat: the thread state whose turns and messages are all imported (§3), so an unchanged thread is not reread. */
   private readonly seen = new Map<string, string>();
   /**
@@ -151,7 +156,7 @@ export class EngineHost {
     this.source = options.briefing;
     this.budgetChars = options.budgetChars ?? 60_000;
     this.maxBytes = options.maxBytes ?? 4 * MiB;
-    this.idleSettleMs = options.idleSettleMs ?? 30_000;
+    this.quietMs = options.quietMs ?? 30_000;
     this.unrecordedMs = options.unrecordedMs ?? 5 * 60_000;
     this.refusalLimit = options.refusals ?? 3;
     this.stuckMs = options.stuckMs ?? 2 * 60_000;
@@ -228,10 +233,10 @@ export class EngineHost {
 
   /**
    * One room, in three passes over its seats, so what one seat's import writes is dispatched in the same tick: follow
-   * live runs and import what happened on each thread; settle idle background work; then reserve and send.
+   * live runs and import what happened on each thread; post the follow-ups of background work that ended quietly; then
+   * reserve and send.
    */
   private async stepRoom(roomId: string, shells: Map<string, T3ThreadShell>): Promise<void> {
-    this.sweepActivities(roomId);
     const seats = [...this.project(roomId).seats.values()].filter((s) => s.status !== "retired");
     const states = new Map<string, { shell: T3ThreadShell | null; load: Loader; current: () => T3ThreadShell | null; imported: boolean }>();
     for (const seat of seats) {
@@ -272,7 +277,7 @@ export class EngineHost {
     });
     await each(async (seatId, state) => {
       const shell = state.current();
-      if (shell) await this.settleIdle(roomId, seatId, shell, state.load, state.imported);
+      if (shell) await this.quiet(roomId, seatId, shell, state.load, state.imported);
     });
     await each(async (seatId, state) => {
       const shell = state.current();
@@ -325,12 +330,12 @@ export class EngineHost {
     let run = this.project(roomId).runs.get(runId)!;
     const threadId = this.project(roomId).seats.get(seatId)!.threadId;
     if (run.phase === "prepared") {
-      // Sending is recorded before the message leaves, with the exact briefing, the standing record the thread will hold
-      // and the background work already listed (§2). The whole thread is read: compactions and rollbacks lose standing.
+      // Sending is recorded before the message leaves, with the exact briefing and the standing record the thread will
+      // hold. The whole thread is read: compactions and rollbacks lose standing.
       const detail = await load(true);
       const p = this.project(roomId);
       const briefed = await brief(this.source, this.budgetChars, { roomId, seatId, runId, envelope: run.envelope, projection: p, had: seatStanding(p, seatId, detail) });
-      const frozen: Dispatch = { dispatch: run.dispatchCommandId, bgBefore: detail ? backgroundTasks(detail).map((t) => t.taskId) : [], text: briefed.text, images: briefed.images, held: briefed.held };
+      const frozen: Dispatch = { dispatch: run.dispatchCommandId, text: briefed.text, images: briefed.images, held: briefed.held };
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:sending`, runId, phase: "sending", evidence: JSON.stringify(frozen) });
       this.step("sending", roomId, seatId, runId);
       run = this.project(roomId).runs.get(runId)!;
@@ -380,12 +385,11 @@ export class EngineHost {
     await this.sendInterrupts(roomId, runId, threadId, t3Run);
     this.confirmSteers(roomId, runId, t3Run.id, full);
     const end = runEnd(t3Run);
-    const before = new Set(frozenDispatch(this.project(roomId), runId)?.bgBefore ?? []);
     this.finish(roomId, runId, {
       outcome: end === "completed" ? "completed" : end === "interrupted" && this.interruptedByCancel(roomId, runId) ? "stopped" : "failed",
       text: final.message?.text.trim() ?? "",
       error: runError(full, t3Run),
-      background: backgroundTasks(full).map((t) => t.taskId).filter((id) => !before.has(id)),
+      status: memberStatus(full, t3Run.id),
       evidence: `t3run:${t3Run.id} ${t3Run.status}`,
     });
   }
@@ -458,12 +462,13 @@ export class EngineHost {
     if (run.phase === "prepared" || run.phase === "sending") {
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${runId}:uncertain`, runId, phase: "uncertain", evidence: reason });
     }
-    this.finish(roomId, runId, { outcome: "failed", text: "", error: reason, background: [], evidence: reason });
+    this.finish(roomId, runId, { outcome: "failed", text: "", error: reason, status: null, evidence: reason });
   }
 
   /**
    * Import a run's end. Synchronous from choosing what the final answers to recording it, so no member command or
-   * cancel can land in between: deferred cancels apply first, then §1 selects, then the output and the run's end.
+   * cancel can land in between: deferred cancels apply first, then §1 selects, then the output and the run's end. A
+   * final with nothing left to answer is a follow-up on the requests the run was given.
    */
   private finish(roomId: string, runId: string, end: Ending): void {
     const seatId = this.project(roomId).runs.get(runId)!.seatId;
@@ -473,23 +478,29 @@ export class EngineHost {
     const sourceKey = `final:${runId}`;
     if (!p.sourceKeys.has(sourceKey)) {
       const targets = finalTargets(p, run);
+      const head = this.statusHead(roomId, seatId, end.status);
       let disposition: Disposition;
       let body: string;
       if (end.outcome === "failed" || end.outcome === "stopped" && targets.length > 0) {
         disposition = { kind: "error", requestIds: targets };
-        body = end.text ? `${end.error}\n\n${end.text}` : end.error;
+        body = head + (end.text ? `${end.error}\n\n${end.text}` : end.error);
+      } else if (end.text && targets.length > 0 && end.outcome === "completed") {
+        disposition = { kind: "answer", requestIds: targets };
+        body = head + end.text;
+      } else if (end.text && end.outcome === "stopped") {
+        // A cancel stopped the turn: its words so far are on the board, and nobody is woken by them.
+        disposition = { kind: "yield" };
+        body = head + end.text;
       } else if (end.text) {
-        disposition = targets.length > 0 && end.outcome === "completed" ? { kind: "answer", requestIds: targets } : { kind: "yield" };
-        body = end.text;
-        if (disposition.kind === "answer" && end.background.length > 0 && !p.activities.has(`bg:${runId}`)) {
-          // §2: T3 still lists background work at turn end, so the requests stay open until it ends.
-          this.exec(roomId, { type: "activity_start", actor: SYSTEM, id: `activity:bg:${runId}`, activityId: `bg:${runId}`, runId, requestIds: targets, status: "pending" });
-          this.step("activity", roomId, seatId, runId);
-        }
+        // The run was given a cancel, a notice, or a request that closed meanwhile.
+        const given = this.given(p, run);
+        disposition = given.length > 0 ? { kind: "progress", requestIds: given, milestone: FOLLOW_UP } : { kind: "yield" };
+        body = head + end.text;
+        this.subscribeOrchestrator(roomId, seatId, given);
       } else if (targets.length > 0) {
         // A turn that ended without a reply is never an empty answer: its requesters get one error notice and can retry.
         disposition = { kind: "error", requestIds: targets };
-        body = `${this.named(roomId, seatId)}'s turn ended without a reply.`;
+        body = `${head}${this.named(roomId, seatId)}'s turn ended without a reply.`;
       } else {
         disposition = { kind: "silent" };
         body = "";
@@ -508,7 +519,16 @@ export class EngineHost {
     this.refused.delete(runId);
     this.stuck.delete(runId);
     this.interrupted.delete(runId);
-    this.sweepActivities(roomId);
+  }
+
+  /** A member's status line and a blank line, for the top of its post; nothing for the orchestrator's, or with no T3 run. */
+  private statusHead(roomId: string, seatId: string, status: MemberStatus | null): string {
+    return status && seatId !== this.project(roomId).orchestrator ? `${statusLine(this.source.alias?.(roomId, seatId) ?? seatId, status)}\n\n` : "";
+  }
+
+  /** The requests of the seat's that a run was given, whatever their state now. */
+  private given(p: Projection, run: Run): string[] {
+    return unique(inputTree(deliveredInputs(p, run.id)).flatMap((i) => i.requestIds)).filter((id) => p.requests.get(id)?.owner === run.seatId);
   }
 
   // ---------------- §6 cancel ----------------
@@ -549,28 +569,15 @@ export class EngineHost {
         this.log("deferred cancel not applied", { requestId: d.requestId, error: message(error) });
       }
     }
-    this.sweepActivities(roomId);
-  }
-
-  /** §2: an activity whose requests are all cancelled fails (transfer refuses pending activities); all closed, it is done. */
-  private sweepActivities(roomId: string): void {
-    const p = this.project(roomId);
-    for (const a of p.activities.values()) {
-      if (a.status !== "pending" && a.status !== "uncertain") continue;
-      const states = a.requestIds.map((id) => p.requests.get(id)?.state);
-      if (states.some((s) => s === "open")) continue;
-      const cancelled = states.every((s) => s === "cancelled");
-      this.exec(roomId, { type: "activity_status", actor: SYSTEM, id: `activity-closed:${a.id}`, activityId: a.id, status: cancelled ? "failed" : "done", evidence: cancelled ? "lean: every request of the activity was cancelled" : "lean: every request of the activity is closed" });
-    }
   }
 
   // ---------------- §2 and §3: turns the host did not start ----------------
 
   /**
    * Import what happened on the thread outside host runs, each once by its T3 ID: messages typed in T3 or sent by other
-   * agents (notes), turns typed in T3 or started by another agent (their replies are notes by the seat), and the
-   * member's own continuations (§2: settle, progress, or a note). Only T3 runs after the seat's first host run count;
-   * earlier ones are the thread's history. Returns whether everything is imported, which R3 waits for.
+   * agents are notes, and the reply of every such turn (typed in T3, started by another agent's message, or started by
+   * the member itself) is a follow-up. Only T3 runs after the seat's first host run count; earlier ones are the
+   * thread's history. Returns whether everything is imported, which R3 waits for.
    */
   private async importThread(roomId: string, seatId: string, shell: T3ThreadShell, load: Loader): Promise<boolean> {
     let p = this.project(roomId);
@@ -635,16 +642,14 @@ export class EngineHost {
       const text = final.message?.text.trim() ?? "";
       const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
       try {
-        const origin = runOrigin(detail, t3Run, hostMessages);
-        if (origin === "self") this.continuation(roomId, seatId, id, shown, end === "completed" && text.length > 0, detail, t3Run.ordinal);
-        else if (origin === "host") {
+        const status = memberStatus(detail, t3Run.id);
+        if (runOrigin(detail, t3Run, hostMessages) === "host") {
           const failed = hostRuns.find((r) => r.dispatchMessageId === t3Run.userMessageId);
-          if (failed) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, requestIds: finalTargets(p, failed) });
-          // A steer T3 ran as a turn of its own: the reserve pass adopts it, or, once that window has closed, its reply is a note.
+          if (failed) this.followUp(roomId, seatId, id, `(T3 ran a message after Backroom had recorded it as failed) ${shown}`, status, this.given(p, failed));
+          // A steer T3 ran as a turn of its own: the reserve pass adopts it, or, once that window has closed, its reply is a follow-up.
           else if (adoptable.has(t3Run.userMessageId)) continue;
-          else this.steerNote(roomId, seatId, id, t3Run.userMessageId, shown);
-        }
-        else if (shown) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: shown });
+          else this.steerNote(roomId, seatId, id, t3Run.userMessageId, shown, status);
+        } else this.followUp(roomId, seatId, id, shown, status);
       } catch (error) {
         this.log("turn import waits", { id, error: message(error) });
         done = false;
@@ -663,103 +668,63 @@ export class EngineHost {
   }
 
   /**
-   * §2 (i): the member's own continuation ended. With no pending activity it is a self-started turn: a non-waking note.
-   * Otherwise its final settles the seat's `bg:` activities that are not member-held, but only when it has a reply and
-   * T3 lists no background work any more; each requester is woken once. In every other case the final is non-waking
-   * progress under the latest pending activity ("after"), and nothing settles.
+   * A seat's turn that answers nothing is a follow-up post on the requests it follows up on (the ones named, else those
+   * its latest answer closed), and wakes the orchestrator; a member's carries its status. With no request to put it on,
+   * it is a note.
    */
-  private continuation(roomId: string, seatId: string, id: string, text: string, replied: boolean, detail: T3ThreadDetail, ordinal: number): void {
+  private followUp(roomId: string, seatId: string, id: string, text: string, status: MemberStatus | null, requestIds?: readonly string[]): void {
     const p = this.project(roomId);
-    const pending = pendingActivities(p, seatId);
-    // Activities this import released before a crash (H1): their outputs are written whatever T3 lists now.
-    const resumed = releasedFor(p, seatId, (key) => key === id || key.startsWith(`${id}:`)).map((r) => r.activity);
-    const ready = replied && backgroundTasks(detail).length === 0 ? pending.filter((a) => a.id.startsWith("bg:") && !memberHeld(p, a)) : [];
-    const settle = [...new Map([...ready, ...resumed].map((a) => [a.id, a])).values()].sort((a, b) => a.id.localeCompare(b.id));
-    if (settle.length > 0) {
-      // The run's own key goes on the last output, so the import counts as done only once every activity is settled;
-      // after a crash between them, the ones still pending or released are settled on the next look.
-      settle.forEach((a, index) => {
-        // Judged by what T3 ran before this continuation: a host run it queued behind it was not seen in it.
-        this.settleActivity(roomId, seatId, a, index === settle.length - 1 ? id : `${id}:${a.id}`, text, ordinal);
-        this.step("settled", roomId, seatId, a.runId);
-      });
+    if (!text || p.events.some((e) => e.id === id)) return;
+    const ids = unique(requestIds?.length ? requestIds : followedRequests(p, seatId));
+    const body = `${this.statusHead(roomId, seatId, status)}${text}`;
+    if (ids.length === 0) {
+      this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body });
       return;
     }
-    if (pending.length === 0) {
-      // A self-started turn: a note under the seat's latest answer, so its requester's next briefing has it (§5).
-      if (text) this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: text, requestIds: lastAnswered(p, seatId) });
-      return;
-    }
-    if (!text) return;
-    const latest = [...pending].sort((a, b) => activityStartedSeq(p, b.id) - activityStartedSeq(p, a.id))[0]!;
-    this.exec(roomId, { type: "output", actor: SYSTEM, id, author: seatId, sourceKey: id, association: { kind: "activity", id: latest.id }, body: text, disposition: { kind: "progress", requestIds: openOwned(p, latest.requestIds, seatId) } });
+    this.subscribeOrchestrator(roomId, seatId, ids);
+    this.exec(roomId, { type: "post", actor: seatId, id, intent: "progress", body, requestIds: ids, milestone: FOLLOW_UP });
   }
 
-  /** §2 (iii): a `bg:` activity nobody holds settles once the thread has been idle with nothing in the background. */
-  private async settleIdle(roomId: string, seatId: string, shell: T3ThreadShell, load: Loader, imported: boolean): Promise<void> {
-    const before = this.project(roomId);
-    // Activities an idle settle released before a crash (H1): their outputs are written now.
-    for (const { activity, sourceKey } of releasedFor(before, seatId, (key) => key.startsWith("idle:"))) {
-      this.settleActivity(roomId, seatId, activity, sourceKey, this.idleBody(this.project(roomId), seatId, activity));
-      this.step("settled", roomId, seatId, activity.runId);
-    }
-    const candidates = pendingActivities(before, seatId).filter((a) => a.id.startsWith("bg:") && !memberHeld(before, a));
-    if (candidates.length === 0) return;
-    const detail = imported && !before.seats.get(seatId)!.activeRunId && threadFree(shell) ? await load() : null;
-    const quiet = detail !== null && backgroundTasks(detail).length === 0;
-    for (const candidate of candidates) {
-      // Read the journal again after the await: a cancel, an answer or a `working` mark may have landed meanwhile.
-      const p = this.project(roomId);
-      const a = p.activities.get(candidate.id)!;
-      if (!quiet || !isPending(a) || memberHeld(p, a) || p.seats.get(seatId)!.activeRunId) {
-        this.idleSince.delete(a.id);
-        continue;
-      }
-      const since = this.idleSince.get(a.id) ?? this.now();
-      this.idleSince.set(a.id, since);
-      if (this.now() - since < this.idleSettleMs) continue;
-      this.settleActivity(roomId, seatId, a, `idle:${a.id}`, this.idleBody(p, seatId, a));
-      this.idleSince.delete(a.id);
-      this.step("settled", roomId, seatId, a.runId);
+  /** The orchestrator follows the requests a member's follow-up goes on, so that the follow-up wakes it. */
+  private subscribeOrchestrator(roomId: string, seatId: string, ids: readonly string[]): void {
+    const p = this.project(roomId);
+    const o = p.orchestrator;
+    if (!o || o === seatId || p.seats.get(o)?.status !== "active") return;
+    for (const id of ids) {
+      if (p.subscriptions.some((x) => x.seatId === o && x.requestId === id && x.milestones.includes(FOLLOW_UP))) continue;
+      this.exec(roomId, { type: "subscribe", actor: o, id: `${FOLLOW_UP}:${id}`, requestId: id, milestones: [FOLLOW_UP], enabled: true });
     }
   }
 
   /**
-   * An idle settle's text: the seat's newest answer attempt on the requests, not only the final of the run that started
-   * the work: a later run may have answered after a review (K1) while the work was still listed.
+   * Background work a member's latest post named that T3 no longer lists, with no turn since: once the thread has been
+   * quiet for `quietMs`, one follow-up says it ended, or the orchestrator would never learn of it.
    */
-  private idleBody(p: Projection, seatId: string, a: Activity): string {
-    return `(background work ended without a further turn)\n\n${latestAnswer(p, seatId, a.requestIds)}`;
-  }
-
-  /**
-   * Settle an activity (§2 i and iii) and answer the requests it holds that are still open, judged by what the member has
-   * seen (H1). The engine judges an output by its association's watermark; tied to the activity, that is the watermark of
-   * the run that registered it. When a later run carried the requests (it delivered a correction, a review's answer),
-   * that one would count as unseen and the answer would come out superseded, with nothing left to deliver it again. So
-   * then the activity is released by its own status first (the engine counts a pending activity as open work), and the
-   * output is tied to that later run. The release names the output's key: after a crash between the two, the caller
-   * finds it with `releasedFor` and writes the output. When no carrier's watermark is later than the activity's, the
-   * activity's own output settles it, as before. Watermarks are compared, not runs: a confirmed steer raises a run's
-   * watermark after its activity was registered.
-   */
-  private settleActivity(roomId: string, seatId: string, a: Activity, sourceKey: string, body: string, beforeOrdinal?: number): void {
+  private async quiet(roomId: string, seatId: string, shell: T3ThreadShell, load: Loader, imported: boolean): Promise<void> {
     const p = this.project(roomId);
-    const open = openOwned(p, a.requestIds, seatId);
-    const disposition: Disposition = open.length ? { kind: "answer", requestIds: open } : { kind: "yield" };
-    const carrier = open.length ? newestCarrier(p, seatId, open, beforeOrdinal === undefined ? {} : { beforeOrdinal }) : null;
-    if (isPending(a) && (!carrier || carrier.through <= a.through)) {
-      this.exec(roomId, { type: "output", actor: SYSTEM, id: sourceKey, author: seatId, sourceKey, association: { kind: "activity", id: a.id }, activityCompletion: "done", body, disposition });
+    const latest = seatId === p.orchestrator ? null : latestStatusPost(p, seatId);
+    if (!latest || latest.running.length === 0 || !imported || p.seats.get(seatId)!.activeRunId || !threadFree(shell)) {
+      this.quietSince.delete(seatId);
       return;
     }
-    if (isPending(a)) this.release(roomId, seatId, a, sourceKey);
-    this.exec(roomId, { type: "output", actor: SYSTEM, id: sourceKey, author: seatId, sourceKey, association: { kind: "run", id: (carrier ?? p.runs.get(a.runId)!).id }, body, disposition });
-  }
-
-  /** H1: an activity ends on its own, before an output tied to a later run answers what it held (see settleActivity). */
-  private release(roomId: string, seatId: string, a: Activity, sourceKey: string): void {
-    this.exec(roomId, { type: "activity_status", actor: SYSTEM, id: `release:${a.id}`, activityId: a.id, status: "done", evidence: `${RELEASED}${sourceKey}` });
-    this.step("released", roomId, seatId, a.runId);
+    const detail = await load();
+    if (!detail) return;
+    const now = memberStatus(detail, null);
+    const ended = latest.running.filter((label) => !now.running.includes(label));
+    const id = `${QUIET}${latest.eventId}`;
+    if (ended.length === 0 || now.turnRunning) {
+      this.quietSince.delete(seatId);
+      return;
+    }
+    const since = this.quietSince.get(seatId);
+    if (since?.id !== id) {
+      this.quietSince.set(seatId, { id, at: this.now() });
+      return;
+    }
+    if (this.now() - since.at < this.quietMs) return;
+    this.followUp(roomId, seatId, id, `(${ended.join(", ")} ended without a further turn.)`, now, latest.requestIds);
+    this.quietSince.delete(seatId);
+    this.step("imported", roomId, seatId);
   }
 
   // ---------------- /steer (L4a; src/runtime/steer.ts) ----------------
@@ -887,16 +852,15 @@ export class EngineHost {
         const end = runEnd(t3Run);
         const text = final.message?.text.trim() ?? "";
         const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
-        this.steerNote(roomId, seatId, `t3run:${p.seats.get(seatId)!.threadId}:${t3Run.id}`, steer.messageId, shown);
+        this.steerNote(roomId, seatId, `t3run:${p.seats.get(seatId)!.threadId}:${t3Run.id}`, steer.messageId, shown, memberStatus(detail, t3Run.id));
         return false;
       }
       const id = randomUUID();
       const receipt = this.exec(roomId, { type: "reserve", actor: SYSTEM, id: `reserve:${id}`, seatId, runId: id, dispatchCommandId: steer.commandId, dispatchMessageId: steer.messageId, maxBytes: this.maxBytes });
       if (receipt.outcome !== "appended") return true;
       this.step("reserved", roomId, seatId, id);
-      // What T3 was sent is the steered message itself, already in its run: that is what this run froze. The turn is
-      // under way, so no background list from before it exists: whatever T3 lists when it ends holds its requests (§2).
-      const frozen: Dispatch = { dispatch: steer.commandId, bgBefore: [], text: m.text, images: [], held: seatStanding(this.project(roomId), seatId, detail) };
+      // What T3 was sent is the steered message itself, already in its run: that is what this run froze.
+      const frozen: Dispatch = { dispatch: steer.commandId, text: m.text, images: [], held: seatStanding(this.project(roomId), seatId, detail) };
       this.exec(roomId, { type: "phase", actor: SYSTEM, id: `phase:${id}:sending`, runId: id, phase: "sending", evidence: JSON.stringify(frozen) });
       this.step("sending", roomId, seatId, id);
       await this.advance(roomId, seatId, id, load);
@@ -905,13 +869,12 @@ export class EngineHost {
     return false;
   }
 
-  /** The reply of a turn T3 ran for a steer that could not be adopted: a note under the requests the steer carried. */
-  private steerNote(roomId: string, seatId: string, id: string, messageId: string, shown: string): void {
+  /** The reply of a turn T3 ran for a steer that could not be adopted: a follow-up on the requests the steer carried. */
+  private steerNote(roomId: string, seatId: string, id: string, messageId: string, shown: string, status: MemberStatus): void {
     const p = this.project(roomId);
-    if (committed(p, seatId, id) || p.events.some((e) => e.id === id) || !shown) return;
     const offer = steerOffers(p, seatId).find((s) => s.messageId === messageId);
     const carried = offer ? openOwned(p, inputTree(offer.receipt.envelope.inputs).flatMap((i) => i.requestIds), seatId) : [];
-    this.exec(roomId, { type: "post", actor: seatId, id, intent: "note", body: `(T3 ran a steered message as a turn of its own) ${shown}`, ...(carried.length ? { requestIds: unique(carried) } : {}) });
+    this.followUp(roomId, seatId, id, `(T3 ran a steered message as a turn of its own) ${shown}`, status, carried);
   }
 
   // ---------------- the API members and the user act through (L3, L4a, L4b call these) ----------------
@@ -920,7 +883,7 @@ export class EngineHost {
   currentWork(roomId: string, seatId: string): { runId: string; requestIds: string[] } | null {
     const p = this.project(roomId);
     const run = this.liveRun(p, seatId);
-    return run ? { runId: run.id, requestIds: this.turnRequests(p, run) } : null;
+    return run ? { runId: run.id, requestIds: finalTargets(p, run) } : null;
   }
 
   seat(roomId: string, input: { actor: string; id: string; seatId: string; threadId: string; orchestrator?: boolean }): CommitReceipt {
@@ -949,25 +912,15 @@ export class EngineHost {
     return this.member(roomId, { type: "transfer", actor: input.actor, id: input.id, oldSeatId: input.oldSeatId, newSeatId: input.newSeatId, threadId: input.threadId, owned, awaited, body: input.body, evidence: input.evidence });
   }
 
-  /** A request, as given: the user's message path and a member's post with its parent already chosen. */
-  request(roomId: string, input: { actor: string; id: string; to: string; body: string; parentId?: string }): CommitReceipt {
-    return this.member(roomId, { type: "request", actor: input.actor, id: input.id, to: input.to, body: input.body, ...(input.parentId ? { parentId: input.parentId } : {}) });
+  /** A request: the user's message path, and the orchestrator's `rooms-board post`. Members do not post (H5). */
+  request(roomId: string, input: { actor: string; id: string; to: string; body: string }): CommitReceipt {
+    if (input.actor !== "$user" && input.actor !== this.project(roomId).orchestrator) throw new HostRefusal(MEMBERS_DO_NOT_POST);
+    return this.member(roomId, { type: "request", actor: input.actor, id: input.id, to: input.to, body: input.body });
   }
 
-  /**
-   * `rooms-board post "@x …"`: a request. Made during a turn it is a child of the request that turn works on, which
-   * keeps that request open while the review it asks for is open; with several, the member names one (`--for #n`).
-   */
-  post(roomId: string, input: { actor: string; id: string; to: string; body: string; forRequest?: string }): CommitReceipt {
-    const p = this.project(roomId);
-    let parentId = input.forRequest;
-    if (!parentId && input.actor !== "$user" && !committed(p, input.actor, input.id)) {
-      const run = this.liveRun(p, input.actor);
-      const work = run ? this.turnRequests(p, run) : unique(pendingActivities(p, input.actor).flatMap((a) => openOwned(p, a.requestIds, input.actor)));
-      if (work.length === 1) parentId = work[0];
-      else if (work.length > 1 && run) throw new HostRefusal(`This turn works on ${work.map((id) => `#${id}`).join(", ")}: say which one this post is for, rooms-board post --for #n "@${input.to} …".`);
-    }
-    return this.request(roomId, { actor: input.actor, id: input.id, to: input.to, body: input.body, ...(parentId ? { parentId } : {}) });
+  /** `rooms-board post "@x …"`: a request, under nothing. */
+  post(roomId: string, input: { actor: string; id: string; to: string; body: string }): CommitReceipt {
+    return this.request(roomId, input);
   }
 
   /**
@@ -978,115 +931,12 @@ export class EngineHost {
     return this.member(roomId, { type: "post", actor: input.actor, id: input.id, intent: "note", body: input.body, ...(input.requestIds ? { requestIds: input.requestIds } : {}), ...(input.milestone ? { milestone: input.milestone } : {}) });
   }
 
-  /** `rooms-board follow #n [--off]` (§4): the follower is woken by each `working` post on the request. */
-  follow(roomId: string, input: { actor: string; id: string; requestId: string; enabled: boolean }): CommitReceipt {
-    return this.member(roomId, { type: "subscribe", actor: input.actor, id: input.id, requestId: input.requestId, milestones: ["working"], enabled: input.enabled });
-  }
-
   correct(roomId: string, input: { actor: string; id: string; requestId: string; body: string }): CommitReceipt {
     return this.member(roomId, { type: "correct", actor: input.actor, id: input.id, requestId: input.requestId, body: input.body });
   }
 
   retry(roomId: string, input: { actor: string; id: string; runId: string; body: string }): CommitReceipt {
     return this.member(roomId, { type: "retry", actor: input.actor, id: input.id, runId: input.runId, body: input.body });
-  }
-
-  /**
-   * `rooms-board working [#n …] "…"` (§2). In a host run, for requests that run works on: a `work:` activity holds them
-   * until the member answers. In a continuation, for requests a pending activity covers: the mark makes it member-held.
-   * Anywhere else it is refused. The activity is registered before the mark, so a crash between them still holds.
-   */
-  working(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[] }): { requestIds: string[]; message: string } {
-    const p = this.project(roomId);
-    const seatId = input.actor;
-    const run = this.liveRun(p, seatId);
-    const pending = pendingActivities(p, seatId);
-    const covered = new Set(pending.flatMap((a) => openOwned(p, a.requestIds, seatId)));
-    const turn = run ? this.turnRequests(p, run) : [];
-    const ids = input.requestIds ? unique(input.requestIds) : run ? turn : this.onlyCandidate(p, [...covered], "working");
-    if (!committed(p, seatId, input.id)) {
-      if (ids.length === 0) throw new HostRefusal("No open request of yours is in this turn or held by your background work. To send a later result, use rooms-board post @<requester>.");
-      for (const id of ids) {
-        const q = p.requests.get(id);
-        if (!q || q.owner !== seatId || q.state !== "open" || (!turn.includes(id) && !covered.has(id))) {
-          throw new HostRefusal(`#${id} is not an open request of yours in this turn${q ? `; to send a later result, use rooms-board post @${q.returnTo}` : ""}.`);
-        }
-      }
-      const fresh = run ? ids.filter((id) => turn.includes(id) && !pending.some((a) => a.runId === run.id && a.id.startsWith("work:") && a.requestIds.includes(id))) : [];
-      if (run && fresh.length > 0) {
-        const taken = [...p.activities.keys()].filter((k) => k === `work:${run.id}` || k.startsWith(`work:${run.id}:`)).length;
-        this.member(roomId, { type: "activity_start", actor: seatId, id: `${input.id}:work`, activityId: taken ? `work:${run.id}:${taken + 1}` : `work:${run.id}`, runId: run.id, requestIds: fresh, status: "pending" });
-      }
-    }
-    this.member(roomId, { type: "post", actor: seatId, id: input.id, intent: "progress", body: input.body, requestIds: ids, milestone: "working" });
-    const names = ids.map((id) => `#${id}`).join(" ");
-    return { requestIds: ids, message: `${names} stays open until you run rooms-board answer ${names} "…"; your final replies will not close it.` };
-  }
-
-  /**
-   * `rooms-board answer [#n …] "…"` (§2 ii). It settles the activity covering the requests and answers them; with no
-   * activity it is associated with the run carrying them (the live one, or the latest that did). The engine decides
-   * each outcome, and the caller must read it: an answer can come out pending_activity, superseded or late.
-   *
-   * H1: the answer is judged by the newest run that carried the requests and that T3 started, since that is what the
-   * member has seen (with none, the newest T3 has taken). When that run's watermark is later than a covering activity's
-   * (a later run delivered the review's answer or a correction, or a steer brought it into this one), the activities are
-   * released first and one output tied to that run answers them all; an output tied to an activity would be judged by
-   * its older watermark and come out superseded by what the member just read. A blocked answer still releases the
-   * hold, as it always did: the member's next reply answers the request (L3 says so).
-   */
-  answer(roomId: string, input: { actor: string; id: string; body: string; requestIds?: string[] }): { claims: ClaimOutcome[] } {
-    const p = this.project(roomId);
-    const seatId = input.actor;
-    if (committed(p, seatId, input.id)) {
-      // A replay of an answer already made: report the outcomes it had.
-      const mine = (key: string) => {
-        const [actor, id] = JSON.parse(key) as [string, string];
-        return actor === seatId && (id === input.id || id.startsWith(`${input.id}:`));
-      };
-      return { claims: p.events.filter((e) => mine(e.commandKey)).flatMap((e) => (e.data.kind === "output" ? e.data.claims : [])) };
-    }
-    const sourceKey = (key: string) => `answer:${seatId}:${key}`;
-    const run = this.liveRun(p, seatId);
-    // Activities this answer released before a crash, its output not written yet: they still cover what it names.
-    const released = releasedFor(p, seatId, (key) => key === sourceKey(input.id)).map((r) => r.activity);
-    const pending = [...pendingActivities(p, seatId), ...released];
-    const ids = input.requestIds ? unique(input.requestIds) : run ? this.turnRequests(p, run) : this.onlyCandidate(p, unique(pending.flatMap((a) => openOwned(p, a.requestIds, seatId))), "answer");
-    if (ids.length === 0) throw new HostRefusal('Nothing to answer here: name the request, rooms-board answer #n "…".');
-    for (const id of ids) {
-      const q = p.requests.get(id);
-      if (!q || q.owner !== seatId) throw new HostRefusal(`#${id} is not a request of yours.`);
-      if (q.state !== "open") throw new HostRefusal(`#${id} is already ${q.state}.`);
-    }
-    const activities = pending.filter((a) => a.requestIds.some((id) => ids.includes(id)));
-    for (const a of activities) {
-      const others = openOwned(p, a.requestIds, seatId).filter((id) => !ids.includes(id));
-      if (others.length) throw new HostRefusal(`${ids.map((id) => `#${id}`).join(" ")} share background work with ${others.map((id) => `#${id}`).join(" ")}: answer them together, rooms-board answer ${[...ids, ...others].map((id) => `#${id}`).join(" ")} "…".`);
-    }
-    const carrierOf = (of: readonly string[]) => newestCarrier(p, seatId, of) ?? newestCarrier(p, seatId, of, { accepted: true });
-    const carrier = carrierOf(ids);
-    if (!carrier) {
-      const lost = ids.filter((id) => !carrierOf([id]));
-      throw new HostRefusal(`${(lost.length ? lost : ids).map((id) => `#${id}`).join(" ")} did not reach you in one turn: answer each separately.`);
-    }
-    if (activities.some((a) => a.through < carrier.through || !isPending(a))) {
-      for (const a of activities) if (isPending(a)) this.release(roomId, seatId, a, sourceKey(input.id));
-      return { claims: claimsOf(this.member(roomId, { type: "output", actor: seatId, id: input.id, author: seatId, sourceKey: sourceKey(input.id), association: { kind: "run", id: carrier.id }, body: input.body, disposition: { kind: "answer", requestIds: ids } })) };
-    }
-    // No carrier's watermark is later than a covering activity's: each one's own output settles it, as before H1.
-    const rest = ids.filter((id) => !activities.some((a) => a.requestIds.includes(id)));
-    const claims: ClaimOutcome[] = [];
-    let index = 0;
-    const next = () => (index++ === 0 ? input.id : `${input.id}:${index}`);
-    for (const a of activities) {
-      const key = next();
-      claims.push(...claimsOf(this.member(roomId, { type: "output", actor: seatId, id: key, author: seatId, sourceKey: sourceKey(key), association: { kind: "activity", id: a.id }, activityCompletion: "done", body: input.body, disposition: { kind: "answer", requestIds: openOwned(p, a.requestIds, seatId) } })));
-    }
-    if (rest.length) {
-      const key = next();
-      claims.push(...claimsOf(this.member(roomId, { type: "output", actor: seatId, id: key, author: seatId, sourceKey: sourceKey(key), association: { kind: "run", id: carrier.id }, body: input.body, disposition: { kind: "answer", requestIds: rest } })));
-    }
-    return { claims };
   }
 
   /**
@@ -1105,7 +955,7 @@ export class EngineHost {
     const owner = p.seats.get(q.owner);
     const run = owner?.activeRunId ? p.runs.get(owner.activeRunId)! : null;
     if (run && run.phase !== "rejected" && q.state === "open" && !committed(p, input.actor, input.id)) {
-      const turn = this.turnRequests(p, run);
+      const turn = finalTargets(p, run);
       if (!(turn.length === 1 && turn[0] === q.id)) {
         this.member(roomId, { type: "post", actor: input.actor, id: noteId, intent: "note", body: `Cancel of #${q.id} requested; it applies when @${q.owner}'s current turn ends.` });
         return { applied: false, deferred: true };
@@ -1113,7 +963,6 @@ export class EngineHost {
     }
     const receipt = this.member(roomId, { type: "cancel", actor: input.actor, id: input.id, requestId: q.id });
     const applied = receipt.events.some((e) => e.data.kind === "cancel" && e.data.applied);
-    this.sweepActivities(roomId);
     if (run && owner) {
       // The cancel is recorded; sending the interrupt is best effort here, and the tick sends it otherwise.
       try {
@@ -1142,26 +991,6 @@ export class EngineHost {
   }
 
   // ---------------- helpers ----------------
-
-  /**
-   * Outside a host run the member's turn can be about any of its jobs, and the host cannot tell which: with no #n, a
-   * command acts only when one request is a candidate, and otherwise names them so the member says which (as post --for).
-   */
-  private onlyCandidate(p: Projection, candidates: string[], command: "answer" | "working"): string[] {
-    if (candidates.length <= 1) return candidates;
-    const named = candidates.map((id) => {
-      const q = p.requests.get(id)!;
-      const head = q.body.replace(/\s+/g, " ").trim();
-      return `#${id} (from ${q.returnTo === "$user" ? "the user" : `@${q.returnTo}`}: "${head.length > 60 ? `${head.slice(0, 60)}…` : head}")`;
-    });
-    throw new HostRefusal(`Several of your requests are still open with work going on: ${named.join(", ")}. Say which this is about: rooms-board ${command} #n "…".`);
-  }
-
-  /** The requests a live run works on now: §1's targets plus those it marked working (posts during the turn go under them). */
-  private turnRequests(p: Projection, run: Run): string[] {
-    const held = [...p.activities.values()].filter((a) => a.runId === run.id && a.id.startsWith("work:")).flatMap((a) => openOwned(p, a.requestIds, run.seatId));
-    return unique([...finalTargets(p, run), ...held]);
-  }
 
   private liveRun(p: Projection, seatId: string): Run | null {
     const id = p.seats.get(seatId)?.activeRunId;

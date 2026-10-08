@@ -1,8 +1,8 @@
 /**
  * The host's side of L2's envelope briefing (backroom-handoff/L2/interface.md, "What the host owns"): it attaches exactly
  * the images the briefing returns, keeps each seat's standing record (the standing part once per seat, again after a
- * compaction or when the run that carried it never reached the agent), and journals a member's note after its answer
- * with the answered request's ID, so it reaches the requester's next briefing.
+ * compaction or when the run that carried it never reached the agent), and journals the reply of a member's turn after
+ * its answer as a follow-up with the answered request's ID (H5), so it reaches the requester's next briefing at once.
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -96,7 +96,7 @@ test("standing: a run that never reached the agent does not count; the next brie
   assert.match(room.prompt("W"), STANDING);
 });
 
-test("a member's note after its answer carries the answered request, so it reaches the requester's next briefing", async () => {
+test("a member's follow-up after its answer carries the answered request, so it wakes the requester with it in the briefing", async () => {
   room = await Room.create();
   const a = ask(room, "C", "W", "Run the tests.");
   await room.tick();
@@ -108,10 +108,10 @@ test("a member's note after its answer carries the answered request, so it reach
   await room.tick();
   room.complete("W", "After my answer: the slow check passed on CI too.");
   await room.tick();
-  const note = room.p.events.find((e) => e.data.kind === "note")!;
-  assert.deepEqual((note.data as { requestIds: string[] }).requestIds, [a]);
-  assert.equal(room.wakes("C"), 1, "the note wakes nobody");
-  room.user("C", "Anything new?");
-  await room.tick();
-  assert.match(room.prompt("C"), /== Also on the board about your requests \(not addressed to you\) ==\n\[#\d+ note from @W on #\d+\]\nAfter my answer: the slow check passed on CI too\./);
+  const follow = room.p.events.find((e) => e.data.kind === "progress" && e.data.author === "W")!;
+  assert.deepEqual((follow.data as { requestIds: string[]; milestone: string }).requestIds, [a]);
+  assert.equal((follow.data as { milestone: string }).milestone, "follow-up");
+  // H5: the follow-up wakes the requester (here the orchestrator), once.
+  assert.equal(room.wakes("C"), 2);
+  assert.match(room.prompt("C"), /== Posts for you since your last briefing \(#\d+\) ==\n\[#\d+ follow-up from @W on #\d+\]\n\[T3 status of @W: idle\]\n\nAfter my answer: the slow check passed on CI too\./);
 });

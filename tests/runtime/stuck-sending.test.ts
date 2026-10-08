@@ -93,6 +93,11 @@ test("a retry after a reused T3 run ID waits for the turn T3 was given, then run
   room.complete("W", "Second job done, unfollowed.");
   await room.until(() => room.wakes("W") === 2);
   assert.match(room.prompt("W"), /Second job/, "the retry carries the original content");
+  // H5: what T3 ran unfollowed is a follow-up on the request, and wakes the orchestrator once.
+  await room.until(() => room.running("C"));
+  assert.equal(room.wakes("C"), 2, "C: the notice, then the follow-up");
+  assert.match(room.prompt("C"), /\(T3 ran a message after Backroom had recorded it as failed\) Second job done, unfollowed\./);
+  room.complete("C", "Ok.");
   const retried = runsOf(room, "W")[2]!;
   assert.equal(retried.providerRunId, `run:thread:${room.threadOf("W")}:ordinal:2`, "T3's next ID is free");
   room.complete("W", "Second job done.");
@@ -122,10 +127,11 @@ test("a retry that lands on a reused ID again fails again with its own one notic
   room.complete("W", "Third job done.");
   await room.until(() => room.state(third) === "answered");
   assert.equal(room.notices().length, 2);
-  // What T3 ran unfollowed is a note under the request, turn 1's too though its number is the seat's first host run's
-  // (review r1, F2: a run on a host message is never the thread's history).
-  const notes = room.p.events.flatMap((e) => (e.data.kind === "note" ? [e.data] : []));
-  assert.deepEqual(notes.map((n) => [n.body, n.requestIds]), [1, 2].map((n) => [`(T3 ran a message after Backroom had recorded it as failed) Turn ${n} done, unfollowed.`, [third]]));
+  // What T3 ran unfollowed is a follow-up on the request (H5), turn 1's too though its number is the seat's first host
+  // run's (review r1, F2: a run on a host message is never the thread's history).
+  assert.deepEqual(room.p.events.filter((e) => e.data.kind === "note"), []);
+  const follow = room.p.events.flatMap((e) => (e.data.kind === "progress" ? [e.data] : []));
+  assert.deepEqual(follow.map((n) => [n.body, n.requestIds, n.milestone]), [1, 2].map((n) => [`[T3 status of @W: idle]\n\n(T3 ran a message after Backroom had recorded it as failed) Turn ${n} done, unfollowed.`, [third], "follow-up"]));
   assert.equal(refusals(room), 0);
   assert.equal(room.logs.filter((l) => l.message === "seat step failed").length, 0);
 });

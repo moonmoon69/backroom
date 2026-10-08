@@ -46,7 +46,7 @@ test("R1-F1 guard: a passing send outage within the bound does not fail the run"
   await room.until(() => room.state(a) === "answered");
 });
 
-test("R1-F2: the reply of the turn T3 ran under a reused ID is a note under the request, not dropped as thread history", async () => {
+test("R1-F2: the reply of the turn T3 ran under a reused ID is a follow-up on the request (H5), not dropped as thread history", async () => {
   room = await Room.create({ seats: ["W"], orchestrator: null });
   const first = room.user("W", "First job.");
   await room.until(() => room.running("W"));
@@ -59,12 +59,13 @@ test("R1-F2: the reply of the turn T3 ran under a reused ID is a note under the 
   assert.ok(room.running("W"), "T3 runs the message it took");
   room.complete("W", "Second job done in T3 anyway.");
   await room.tick(3);
-  const notes = room.p.events.flatMap((e) => (e.data.kind === "note" ? [e.data] : []));
-  assert.deepEqual(notes.map((n) => [n.body, n.requestIds]), [["(T3 ran a message after Backroom had recorded it as failed) Second job done in T3 anyway.", [second]]]);
+  assert.deepEqual(room.p.events.filter((e) => e.data.kind === "note"), []);
+  const follow = room.p.events.flatMap((e) => (e.data.kind === "progress" ? [e.data] : []));
+  assert.deepEqual(follow.map((n) => [n.body, n.requestIds, n.milestone]), [["[T3 status of @W: idle]\n\n(T3 ran a message after Backroom had recorded it as failed) Second job done in T3 anyway.", [second], "follow-up"]]);
   assert.equal(room.state(second), "open");
   assert.equal(room.notices().length, 1);
   // Imported once: a restart does not import it again.
   room.restart();
   await room.tick(3);
-  assert.equal(room.p.events.filter((e) => e.data.kind === "note").length, 1);
+  assert.equal(room.p.events.filter((e) => e.data.kind === "progress").length, 1);
 });

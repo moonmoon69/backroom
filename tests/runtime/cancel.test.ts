@@ -1,7 +1,8 @@
 /**
  * "Lean semantics" §6: cancel; the core records it and the host sends T3 the interrupt (no control on the journal since
- * L6). And the reviewer's hunts 1 and 3: a cancel must never interrupt a turn that works on other requests too (a
- * review lost), and must never turn into a late-output notice that wakes the Consigliere for nothing.
+ * L6). And the reviewer's hunts 1 and 3: a cancel must never interrupt a turn that works on other requests too (an
+ * answer lost), and must never turn into a late-output notice. Since H5 a member's reply that answers nothing (to a
+ * cancel, or after one) is a follow-up on its request and wakes the Consigliere.
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -28,9 +29,10 @@ async function wOnA(r: Room): Promise<{ u: string; a: string }> {
   return { u, a };
 }
 
-test("§6: cancelling a run's only request interrupts it, once; the parent can still be answered", async () => {
+test("§6: cancelling a run's only request interrupts it, once; the stopped turn wakes nobody; W's reply to the cancel is a follow-up that wakes C once", async () => {
   room = await Room.create();
   const { u, a } = await wOnA(room);
+  assert.equal(room.state(u), "answered", "C's hand-off answered U: nothing is held since H5");
   const cWakes = room.wakes("C");
   const result = await room.cancel("C", a);
   assert.deepEqual(result, { applied: true, deferred: false });
@@ -38,21 +40,29 @@ test("§6: cancelling a run's only request interrupts it, once; the parent can s
   assert.equal(interrupts(room).length, 1);
   await room.tick();
   assert.deepEqual(room.notices(), [], "an interrupt the host sent for a cancel is not a failure");
+  // The stopped turn answers nothing (A is cancelled) and is no failure: what it wrote is on the board and wakes nobody,
+  // since C stopped it itself.
   const final = room.outputs().find((o) => o.author === "W")!;
-  assert.ok(final.disposition.kind === "yield" || final.disposition.kind === "silent");
+  assert.deepEqual([final.disposition, final.recipients], [{ kind: "yield" }, []]);
   assert.equal(room.p.seats.get("W")!.status, "active");
-  assert.equal(room.wakes("C"), cWakes, "the Consigliere is not woken by the interrupted turn");
-  // W is told of the cancel once; its reply answers nothing.
+  assert.equal(room.wakes("C"), cWakes, "the stopped turn does not wake C");
+  // W is told of the cancel once; its reply answers nothing: a follow-up on A, which wakes C once.
   assert.equal(room.running("W"), true);
   assert.match(room.prompt("W"), /Request cancelled/);
   room.complete("W", "Stopped.");
   await room.tick(2);
-  assert.equal(room.wakes("C"), cWakes);
-  assert.deepEqual(room.answer("C", "Cancelled the fix; nothing changed.", [u]).map((c) => c.outcome), ["answered"]);
+  const reply = room.outputs().filter((o) => o.author === "W").at(-1)!;
+  assert.deepEqual(reply.disposition, { kind: "progress", requestIds: [a], milestone: "follow-up" });
+  assert.equal(reply.body, "[T3 status of @W: idle]\n\nStopped.");
+  assert.equal(room.wakes("C"), cWakes + 1, "C is woken once, by W's reply to the cancel");
+  room.complete("C", "Cancelled the fix; nothing changed.");
+  await room.tick(2);
+  assert.equal(room.wakes("C"), cWakes + 1);
+  assert.equal(room.answeredClaims(u).length, 1);
   room.assertQuiet();
 });
 
-test("hunt 1: cancelling one of several requests in a run defers to the turn's end; nothing is interrupted and its review is not lost", async () => {
+test("hunt 1: cancelling one of several requests in a run defers to the turn's end; nothing is interrupted and B's answer is not lost", async () => {
   room = await Room.create();
   const a = room.host.request(room.room, { actor: "C", id: "A", to: "W", body: "A: fix dates.ts." }).events[0]!.id;
   const b = room.host.request(room.room, { actor: "C", id: "B", to: "W", body: "B: fix text.ts." }).events[0]!.id;
@@ -63,32 +73,31 @@ test("hunt 1: cancelling one of several requests in a run defers to the turn's e
   assert.equal(room.state(a), "open", "applies when the turn ends");
   assert.equal(room.running("W"), true, "B's work is not interrupted");
   assert.ok(room.p.events.some((e) => e.data.kind === "note" && /Cancel of #A requested; it applies when @W's current turn ends/.test(e.data.body)));
-  // W's own posts still go through: the review it asks for B.
-  const r = room.post("W", "V", "Review my fix to text.ts.", b);
-  assert.equal(room.p.requests.get(r)!.parentId, b);
+  // W's own notes still go through: the seat is not left stopping while it works on B.
   room.host.note(room.room, { actor: "W", id: room.id("note"), body: "Dropping A as asked." });
-  room.complete("W", "B fixed; sent for review. A dropped.");
+  room.complete("W", "B fixed. A dropped.");
   await room.tick();
   assert.equal(room.state(a), "cancelled");
-  assert.equal(room.state(b), "open", "B waits for its review");
+  assert.equal(room.state(b), "answered", "the turn's final answers B (nothing holds it since H5)");
+  assert.deepEqual(room.outputs().filter((o) => o.author === "W").at(-1)!.disposition, { kind: "answer", requestIds: [b] });
   assert.deepEqual(interrupts(room), [], "the cancel applied as the turn ended interrupts nothing");
   assert.deepEqual(room.notices(), [], "no late-output notice");
   assert.ok(room.outputs().every((o) => o.claims.every((c) => c.outcome !== "late")));
-  assert.equal(room.wakes("C"), 0);
-  assert.equal(room.running("V"), true, "the review went out");
+  assert.equal(room.wakes("C"), 1, "C is woken once, by B's answer");
+  room.complete("C", "Ok.");
   // The cancel, applied as the turn ended, reaches W once in its next run (§4: a cancel wakes its owner).
   assert.match(room.prompt("W"), /\[#\d+ cancel from @C: #\d+ is withdrawn\]\nRequest cancelled/);
   room.complete("W", "Noted: A is dropped.");
-  await room.tick();
-  assert.equal(room.state(b), "open", "the cancel notice answers nothing");
-  room.complete("V", "PASS");
-  await room.tick();
-  assert.match(room.prompt("W"), /PASS/);
-  room.complete("W", "B is done and reviewed.");
   await room.tick(2);
-  assert.equal(room.state(b), "answered");
-  assert.equal(room.wakes("C"), 1, "C is woken once, by B's answer");
-  assert.equal(room.wakes("W"), 3);
+  // H5: W's reply to the cancel answers nothing: a follow-up on A, which wakes C once more.
+  assert.deepEqual(room.outputs().filter((o) => o.author === "W").at(-1)!.disposition, { kind: "progress", requestIds: [a], milestone: "follow-up" });
+  assert.equal(room.wakes("C"), 2, "C is woken by B's answer and by W's follow-up, once each");
+  room.complete("C", "Ok.");
+  await room.tick(2);
+  assert.equal(room.answeredClaims(b).length, 1);
+  assert.equal(room.wakes("W"), 2);
+  assert.equal(room.wakes("C"), 2);
+  room.assertQuiet();
 });
 
 test("a cancel of the only request while the run is still being sent interrupts it once T3 has it", async () => {
@@ -154,7 +163,7 @@ test("'cancel that, do this instead': a steer sent while T3 is still ending the 
   assert.match(room.prompt("W"), /fix text\.ts/);
 });
 
-test("hunt 3: a cancel landing while the host reads the finished run never yields a late-output notice", async () => {
+test("hunt 3: a cancel landing while the host reads the finished run never yields a late-output notice; the reply is a follow-up", async () => {
   room = await Room.create();
   const { a } = await wOnA(room);
   const cWakes = room.wakes("C");
@@ -171,7 +180,11 @@ test("hunt 3: a cancel landing while the host reads the finished run never yield
   assert.equal(room.state(a), "cancelled");
   assert.ok(room.outputs().every((o) => o.claims.every((c) => c.outcome !== "late")), "no late claim");
   assert.deepEqual(room.notices().filter((n) => n.intent === "attention"), [], "no attention notice");
-  assert.equal(room.wakes("C"), cWakes, "the Consigliere is not woken");
+  // H5: W's final answers nothing now that A is cancelled; it is a follow-up on A and wakes C once, as a reply.
+  const reply = room.outputs().find((o) => o.author === "W")!;
+  assert.deepEqual(reply.disposition, { kind: "progress", requestIds: [a], milestone: "follow-up" });
+  assert.equal(room.wakes("C"), cWakes + 1, "the Consigliere is woken once, by W's reply");
+  assert.match(room.prompt("C"), /A is done/);
 });
 
 test("a cancel after the final is recorded is simply not applied, and wakes nobody", async () => {

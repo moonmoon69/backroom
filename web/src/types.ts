@@ -147,10 +147,10 @@ export interface EnginePost extends EngineTime {
     message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
   };
   output?: {
-    /** answer: names requests (claims say what each came to); yield: answers nothing; progress: an update under held work; error: a failed run. */
+    /** answer: names requests (claims say what each came to); yield: an update that answers nothing; progress: a follow-up on a request; error: a failed run. */
     disposition: "answer" | "yield" | "progress" | "error";
     claims: EngineClaim[];
-    /** final: a run's last message; answer: `rooms-board answer`; continuation: a turn the member started itself; idle: background work ended without a further turn. */
+    /** final: a run's last message; before H5 also answer (`rooms-board answer`), continuation and idle (background settles). */
     source: "final" | "answer" | "continuation" | "idle" | "other";
     runId: string | null;
     activityId: string | null;
@@ -166,7 +166,8 @@ export interface EnginePost extends EngineTime {
     /** Under a request its author had already answered (a self-started turn after the answer). */
     afterAnswer: boolean;
   };
-  progress?: { milestone: string | null; working: boolean };
+  /** `follow-up`: a member's turn that answered nothing, or background work that ended quietly (H5); `t3`: the T3 turn it came from. */
+  progress?: { milestone: string | null; working: boolean; t3: EngineT3Ref | null };
   notice?: EngineNoticeState;
   cancel?: { applied: boolean };
   retry?: { runId: string };
@@ -240,7 +241,7 @@ export interface EngineActivityView {
   runId: string;
   requestIds: string[];
   status: "pending" | "uncertain" | "done" | "failed";
-  /** Held by the member: it ends only with `rooms-board answer` (or a cancel). */
+  /** Held by the member (`work:`). Since H5 the host registers no activities; only journals from before it hold them. */
   memberHeld: boolean;
   /** "working since …": exact (`at`) for `bg:`, a lower bound (`after`) for `work:`. */
   since: EngineTime;

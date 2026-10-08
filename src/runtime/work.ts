@@ -1,19 +1,19 @@
 /**
- * What a run is working on, read from the journal ("Lean semantics" §1 and §2 of the stage 4/5 plan). Pure functions
- * over a projection: no I/O, no clock. The host uses them to choose which requests a final answers; the engine still
- * decides every outcome (answered, pending_activity, superseded, late).
+ * What a run works on, read from the journal (stage 4/5 plan, "Lean semantics" §1, as H5 left it: members only answer).
+ * Pure functions over a projection: no I/O, no clock. The host uses them to choose which requests a final answers; the
+ * engine still decides every outcome.
  */
 import type { SeatStanding } from "../briefing/envelope.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { Activity, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 
-/** Inputs that bear on a request: the request itself, a correction, a retry or transfer, or the answer to a child. */
-const TARGETING = new Set(["request", "correction", "retry", "transfer", "result"]);
+/** Inputs that give a seat a request to answer: the request itself, a correction, a retry or a handover. */
+const TARGETING = new Set(["request", "correction", "retry", "transfer"]);
 
 /**
- * From a request ID, the first request up the parent chain that the seat owns, if it is still open. A result on
- * someone else's request (a review the seat asked) reaches the seat's request above it; a request of the seat's own
- * that is closed (answered explicitly, cancelled) contributes nothing, and the walk does not go past it.
+ * From a request ID, the first request up the parent chain that the seat owns, if it is still open. Since H5 no post
+ * has a parent (only the orchestrator and the user post, and nothing goes under another request), so this is the
+ * request itself when the seat owns it and it is open.
  */
 export function ownedTarget(p: Projection, requestId: string, seatId: string): Request | null {
   let q = p.requests.get(requestId);
@@ -36,21 +36,7 @@ export function reservedSeq(p: Projection, runId: string): number {
   return eventSeq(p, (e) => e.data.kind === "run.prepared" && e.data.run.id === runId) ?? 0;
 }
 
-/** Requests the seat marked with `rooms-board working` after `afterSeq`. */
-export function workingMarks(p: Projection, seatId: string, afterSeq: number): Set<string> {
-  const ids = new Set<string>();
-  for (const e of p.events) {
-    if (e.seq <= afterSeq || e.data.kind !== "progress" || e.data.author !== seatId || e.data.milestone !== "working") continue;
-    for (const id of e.data.requestIds) ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * §1: the requests this run's final answers. Each delivered request, correction, retry, transfer or result walks up to
- * the first request the seat owns and counts if that one is open. Requests the member answered explicitly, or that
- * were cancelled, are closed and so contribute nothing; those it marked `working` during the run are left out.
- */
+/** §1: a final answers the open requests its run was given: requests, corrections, retries and handovers. */
 export function finalTargets(p: Projection, run: Run): string[] {
   const targets = new Set<string>();
   for (const input of inputTree(deliveredInputs(p, run.id))) {
@@ -60,9 +46,8 @@ export function finalTargets(p: Projection, run: Run): string[] {
       if (q) targets.add(q.id);
     }
   }
-  const marked = workingMarks(p, run.seatId, reservedSeq(p, run.id));
   const allowed = allowedIds(p, run);
-  const selected = [...targets].filter((id) => !marked.has(id) && allowed.has(id));
+  const selected = [...targets].filter((id) => allowed.has(id));
   // A reseat's checkpoint run answers the checkpoint only: the seat's other requests stay open for the fresh seat (L4b).
   const checkpoints = selected.filter((id) => id.startsWith(RESEAT_CHECKPOINT) && p.requests.get(id)?.returnTo === "$user");
   return checkpoints.length > 0 ? checkpoints : selected;
@@ -71,26 +56,9 @@ export function finalTargets(p: Projection, run: Run): string[] {
 /** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
 export const RESEAT_CHECKPOINT = "reseat:";
 
-export function isPending(a: Activity): boolean {
-  return a.status === "pending" || a.status === "uncertain";
-}
-
+/** The seat's background work on the journal. The host registers none since H5; the core keeps the commands. */
 export function pendingActivities(p: Projection, seatId: string): Activity[] {
-  return [...p.activities.values()].filter((a) => a.seatId === seatId && isPending(a));
-}
-
-export function activityStartedSeq(p: Projection, activityId: string): number {
-  return eventSeq(p, (e) => e.data.kind === "activity.started" && e.data.activity.id === activityId) ?? 0;
-}
-
-/**
- * §2: an activity the member holds itself. Every `work:` activity is; a `bg:` one becomes so once any of its requests
- * gets a `working` mark after it was registered. Read from the journal's progress events, stored nowhere else.
- */
-export function memberHeld(p: Projection, a: Activity): boolean {
-  if (a.id.startsWith("work:")) return true;
-  const marks = workingMarks(p, a.seatId, activityStartedSeq(p, a.id));
-  return a.requestIds.some((id) => marks.has(id));
+  return [...p.activities.values()].filter((a) => a.seatId === seatId && (a.status === "pending" || a.status === "uncertain"));
 }
 
 export function openOwned(p: Projection, ids: readonly string[], seatId: string): string[] {
@@ -101,65 +69,11 @@ export function openOwned(p: Projection, ids: readonly string[], seatId: string)
 }
 
 /**
- * The seat's newest run that carried every one of these requests and that T3 took and started: its watermark is what
- * the member has seen when it answers them, so an answer is judged by it (H1). A review or correction that run
- * delivered is seen; only what came after its watermark counts as unseen (K1). A run counts once it has an accepted
- * record and is running or ended: a run whose send T3 refused or never recorded was never seen, and one T3 queued
- * behind the member's own continuation (the R3 race) is not seen by that continuation. `beforeOrdinal` keeps only runs
- * T3 ran before the one given (the continuation being imported). With `accepted`, a run T3 has taken but not yet been
- * seen starting counts too: the fallback when no started run carried the requests.
+ * What a run's `sending` phase froze before the message left: the dispatch command, the exact text and images T3 is
+ * sent (on every resend too), and the standing record the seat's thread holds once T3 has it (L2's ledger, read back
+ * from the journal).
  */
-export function newestCarrier(p: Projection, seatId: string, ids: readonly string[], options: { beforeOrdinal?: number; accepted?: boolean } = {}): Run | null {
-  const records = runRecords(p);
-  const before = options.beforeOrdinal ?? Infinity;
-  let newest: Run | null = null;
-  for (const run of p.runs.values()) {
-    const t3 = records.get(run.id)?.t3;
-    const started = run.phase === "running" || run.phase === "terminal" || (options.accepted === true && run.phase === "accepted");
-    if (run.seatId !== seatId || !t3 || t3.ordinal >= before || !started) continue;
-    const allowed = allowedIds(p, run);
-    if (!ids.every((id) => allowed.has(id))) continue;
-    if (!newest || records.get(run.id)!.reservedSeq > records.get(newest.id)!.reservedSeq) newest = run;
-  }
-  return newest;
-}
-
-/** The evidence of an activity the host released for an output tied to a later run (H1); the output's key follows. */
-export const RELEASED = "lean: released for ";
-
-/**
- * Activities released for an output that is not written yet (a crash came between the two commits), with that output's
- * key, for the keys `mine` selects. The caller that released them writes the output on its next attempt.
- */
-export function releasedFor(p: Projection, seatId: string, mine: (sourceKey: string) => boolean): Array<{ activity: Activity; sourceKey: string }> {
-  const out: Array<{ activity: Activity; sourceKey: string }> = [];
-  for (const e of p.events) {
-    if (e.data.kind !== "activity.status" || !e.data.evidence.startsWith(RELEASED)) continue;
-    const sourceKey = e.data.evidence.slice(RELEASED.length);
-    const activity = p.activities.get(e.data.activityId);
-    if (activity?.seatId === seatId && mine(sourceKey) && !p.sourceKeys.has(sourceKey)) out.push({ activity, sourceKey });
-  }
-  return out;
-}
-
-/**
- * The seat's newest answer attempt on any of these requests, whatever its outcome: a later run's final after a
- * superseded one wins over the final of the run that started the background work. Re-used when that work ends quietly.
- */
-export function latestAnswer(p: Projection, seatId: string, requestIds: readonly string[]): string {
-  for (let i = p.events.length - 1; i >= 0; i--) {
-    const d = p.events[i]!.data;
-    if (d.kind === "output" && d.author === seatId && d.body.length > 0 && d.claims.some((c) => requestIds.includes(c.requestId))) return d.body;
-  }
-  return "";
-}
-
-/**
- * What a run's `sending` phase froze before the message left: the dispatch command, the background tasks T3 already
- * listed (so only work this run started holds its requests, §2), the exact text and images T3 is sent (on every resend
- * too), and the standing record the seat's thread holds once T3 has it (L2's ledger, read back from the journal).
- */
-export interface Dispatch { dispatch: string; bgBefore: string[]; text: string; images: Array<{ eventId: string; names: string[] }>; held: SeatStanding | null }
+export interface Dispatch { dispatch: string; text: string; images: Array<{ eventId: string; names: string[] }>; held: SeatStanding | null }
 
 export function frozenDispatch(p: Projection, runId: string): Dispatch | null {
   for (const e of p.events) {
@@ -185,15 +99,20 @@ export function runRecords(p: Projection): Map<string, { reservedSeq: number; se
   return records;
 }
 
-/** The requests the seat's latest answer closed: a later self-started turn's note goes under them ("after answer", §5). */
-export function lastAnswered(p: Projection, seatId: string): string[] {
+/**
+ * The requests a seat's turn that answers nothing follows up on: those its latest answer closed, else those its latest
+ * output named, whatever the outcome.
+ */
+export function followedRequests(p: Projection, seatId: string): string[] {
+  let named: string[] = [];
   for (let i = p.events.length - 1; i >= 0; i--) {
     const d = p.events[i]!.data;
-    if (d.kind !== "output" || d.author !== seatId) continue;
-    const ids = d.claims.filter((c) => c.outcome === "answered").map((c) => c.requestId);
-    if (ids.length) return ids;
+    if (d.kind !== "output" || d.author !== seatId || d.claims.length === 0) continue;
+    const answered = d.claims.filter((c) => c.outcome === "answered").map((c) => c.requestId);
+    if (answered.length) return answered;
+    if (named.length === 0) named = d.claims.map((c) => c.requestId);
   }
-  return [];
+  return named;
 }
 
 /** A cancel recorded to apply when its owner's current turn ends (§6, co-batched): which request and the cancel's ID. */

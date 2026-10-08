@@ -1042,11 +1042,51 @@ function Note({ post }: { post: EnginePost }) {
   );
 }
 
+/**
+ * A follow-up (H5): a member's turn that answered nothing (one it started itself, or one typed in T3), or background work
+ * that ended without a further turn. Its status line is at the top; it wakes the Consigliere.
+ */
+function FollowUp({ post }: { post: EnginePost }) {
+  const { nameOf, seatOf, colorOf } = useRoom();
+  const nav = useNavProps(post);
+  const participant = seatOf(post.author).participant;
+  const t3 = post.progress?.t3 ?? null;
+  return (
+    <div className="chat-row from-agent is-note is-follow-up" style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} data-number={post.number} data-seq={post.seq} {...nav}>
+      <div className="chat-stack">
+        <div className="chat-head">
+          {participant ? <Monogram participant={participant} size="xs" title={participant.alias} /> : null}
+          <span className="speaker mono identity">{nameOf(post.author).replace(/^@/, "")}</span>
+          <span className="tag mono" title={t3 ? "A turn the room did not start (the agent continued on its own, or a turn typed in T3)" : "Background work that ended without a further turn"}>
+            {t3 ? <><Glyph name="again" text="↻" /> follow-up</> : "follow-up"}
+          </span>
+          {post.about.length > 0 ? (
+            <span className="mono muted">
+              on {<Refs numbers={post.about.map((r) => r.number)} />}
+            </span>
+          ) : null}
+          {post.to.length > 0 ? <span className="mono muted">→ {post.to.map(nameOf).join(", ")}</span> : null}
+          <Stamp post={post} />
+        </div>
+        <div className="bubble bubble-agent bubble-agent-note">
+          {post.body ? <Markdown text={post.body} /> : null}
+          {t3?.runId ? <TurnInT3 t3={t3} /> : null}
+          <div className="reply-foot">
+            <CopyTextButton text={post.body} label="Copy" />
+            <ReplySpend post={post} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** A progress post: "@W working on #12: …". Wakes nobody unless someone follows the request. */
 function Progress({ post }: { post: EnginePost }) {
   const { nameOf } = useRoom();
   const line = firstLine(post.body);
   const nav = useNavProps(post);
+  if (post.progress?.milestone === "follow-up") return <FollowUp post={post} />;
   return (
     <div {...nav} className="chat-status mono progress-line" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}${post.to.length > 0 ? ` · followed by ${post.to.map(nameOf).join(", ")}` : ""}`}>
       <span className="post-number">#{post.number}</span>

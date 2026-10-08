@@ -478,7 +478,7 @@ test("Sending while someone is working: when the turn has ended by the time T3 h
   assert.equal(r.events().filter((e) => e.data.kind === "note").length, 0, "neither the message nor its reply is imported as a note");
 });
 
-test("Sending while someone is working: a run T3 started for a steer is not adopted when more input came since; its reply is a note and one ordinary run carries everything", async (t) => {
+test("Sending while someone is working: a run T3 started for a steer is not adopted when more input came since; its reply is a follow-up and one ordinary run carries everything", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
@@ -491,8 +491,10 @@ test("Sending while someone is working: a run T3 started for a steer is not adop
   assert.equal(r.runs("sol").length, 2, "waits for T3's run of the steer");
   r.complete("sol", "Tests added.");
   await r.tick();
-  const note = r.events().find((e) => e.data.kind === "note")!;
-  assert.ok(note.data.kind === "note" && note.data.body.includes("Tests added.") && note.data.requestIds.includes(steer.requestIds[0]!));
+  // Its reply answers nothing: a follow-up on what the steer carried, with the member's T3 status at the top (H5).
+  const reply = r.events().find((e) => e.data.kind === "progress" && e.data.milestone === "follow-up")!;
+  assert.ok(reply.data.kind === "progress" && reply.data.body.startsWith("[T3 status of @sol: ") && reply.data.body.includes("Tests added.") && reply.data.requestIds.includes(steer.requestIds[0]!));
+  assert.equal(r.events().filter((e) => e.data.kind === "note").length, 0);
   assert.equal(r.runs("sol").length, 3, "an ordinary run");
   assert.match(r.prompt("sol", 2), /also add tests[\s\S]*update the changelog/);
   r.complete("sol", "Both done.");
@@ -592,11 +594,11 @@ test("Sending while someone is working: a steer T3 never records is waited for u
 
 // ---------------- T3 slash commands ----------------
 
-test("T3 slash commands: sent to the member's thread exactly as typed, with no briefing, and recorded once as a note", async (t) => {
+test("T3 slash commands: sent to the member's thread exactly as typed, with no briefing, and recorded once as a note; its reply is a follow-up", async (t) => {
   const r = await engineRoom(["sol", "grok"]);
   t.after(() => r.close());
   // A first host run, so the thread's later turns are imported (§3).
-  await r.say("@sol build it");
+  const build = await r.say("@sol build it");
   await r.tick();
   r.complete("sol", "Built.");
   await r.tick();
@@ -608,9 +610,13 @@ test("T3 slash commands: sent to the member's thread exactly as typed, with no b
   r.complete("sol", "Context compacted.");
   await r.tick();
   const notes = r.events().filter((e) => e.data.kind === "note");
-  assert.deepEqual(notes.map((e) => e.id), [created.noteIds[0], notes[1]?.id], "the command once, then its reply");
+  assert.deepEqual(notes.map((e) => e.id), [created.noteIds[0]], "the command once");
   assert.ok(notes[0]!.data.kind === "note" && notes[0]!.data.author === "$user" && notes[0]!.data.body.endsWith("/compact focus on the parser"));
-  assert.ok(notes[1]!.data.kind === "note" && notes[1]!.data.author === r.seat("sol") && notes[1]!.data.body === "Context compacted.");
+  // Its reply answers nothing: a follow-up on the request sol's latest answer closed (H5), once.
+  const replies = r.events().filter((e) => e.data.kind === "progress");
+  assert.equal(replies.length, 1);
+  assert.ok(replies[0]!.data.kind === "progress" && replies[0]!.data.author === r.seat("sol") && replies[0]!.data.milestone === "follow-up" && replies[0]!.data.body === "[T3 status of @sol: idle]\n\nContext compacted.");
+  assert.deepEqual(replies[0]!.data.kind === "progress" && replies[0]!.data.requestIds, build.requestIds);
 });
 
 test("T3 slash commands: in a room with one member, /compact needs no @name", async (t) => {

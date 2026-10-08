@@ -279,16 +279,19 @@ function seatsOf(snapshot: EngineRoomSnapshot): { alias: Map<string, string>; co
 }
 
 /**
- * The journal's posts as the board the runner watches. What a member said is every output (a run's final, an explicit
- * `rooms-board answer`, a continuation, an idle settle; whatever it came to) and every note a T3 turn the room did not
- * start was imported as: the old side's every turn-end reply, so T2's "V reviewed before the report" and the report
- * rule read the same on both sides. A post's time is T3's exact time when it has one, else when the runner first saw it.
+ * The journal's posts as the board the runner watches. What a member said is every output (a run's final, and before
+ * H5 an explicit `rooms-board answer`, a continuation, an idle settle; whatever it came to) and every note or follow-up
+ * a T3 turn the room did not start was imported as: the old side's every turn-end reply, so T2's "V reviewed before the
+ * report" and the report rule read the same on both sides. A post's time is T3's exact time when it has one, else when
+ * the runner first saw it.
  */
 export function engineBoardPosts(snapshot: EngineRoomSnapshot, firstSeen: (post: EnginePost) => string): BoardPost[] {
   const { alias, consigliere } = seatsOf(snapshot);
   return snapshot.posts.map((post) => {
     const bySeat = !post.author.startsWith("$");
     const turnNote = post.kind === "note" && post.note?.source === "t3-turn";
+    // Since H5 the reply of a turn the room did not start is a follow-up post (progress, milestone follow-up), with its T3 turn.
+    const followUp = post.kind === "progress" && post.progress?.milestone === "follow-up" && post.progress.t3 !== null;
     // His own `rooms-board note`: a report there is seen (and fails for lack of a T3 message), not missed.
     const consigliereNote = post.kind === "note" && post.note?.source === "post" && consigliere.has(post.author);
     return {
@@ -298,8 +301,8 @@ export function engineBoardPosts(snapshot: EngineRoomSnapshot, firstSeen: (post:
       clock: post.at ? ("t3" as const) : ("seen" as const),
       from: post.author === "$user" ? "user" : bySeat ? (alias.get(post.author) ?? post.author) : post.author.replace(/^\$/, ""),
       fromConsigliere: bySeat && consigliere.has(post.author),
-      isAnswer: bySeat && (post.kind === "output" || turnNote || consigliereNote),
-      ...(post.kind === "output" ? { via: post.output?.source ?? "other", claims: (post.output?.claims ?? []).map((c) => c.outcome) } : turnNote ? { via: "t3-turn", claims: [] } : consigliereNote ? { via: "note", claims: [] } : {}),
+      isAnswer: bySeat && (post.kind === "output" || turnNote || followUp || consigliereNote),
+      ...(post.kind === "output" ? { via: post.output?.source ?? "other", claims: (post.output?.claims ?? []).map((c) => c.outcome) } : turnNote || followUp ? { via: "t3-turn", claims: [] } : consigliereNote ? { via: "note", claims: [] } : {}),
       text: post.body,
     };
   });

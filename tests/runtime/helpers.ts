@@ -241,19 +241,11 @@ export class Room {
     return id;
   }
 
-  /** A member posts during its turn (L3's `rooms-board post`); returns the request ID. */
-  post(actor: string, to: string, body: string, forRequest?: string): string {
+  /** The orchestrator posts (L3's `rooms-board post`; members cannot since H5); returns the request ID. */
+  post(actor: string, to: string, body: string): string {
     const id = this.id(`post-${actor}`);
-    this.host.post(this.room, { actor, id, to, body, ...(forRequest ? { forRequest } : {}) });
+    this.host.post(this.room, { actor, id, to, body });
     return id;
-  }
-
-  answer(actor: string, body: string, requestIds?: string[]): ClaimOutcome[] {
-    return this.host.answer(this.room, { actor, id: this.id(`answer-${actor}`), body, ...(requestIds ? { requestIds } : {}) }).claims;
-  }
-
-  working(actor: string, body: string, requestIds?: string[]) {
-    return this.host.working(this.room, { actor, id: this.id(`working-${actor}`), body, ...(requestIds ? { requestIds } : {}) });
   }
 
   cancel(actor: string, requestId: string) {

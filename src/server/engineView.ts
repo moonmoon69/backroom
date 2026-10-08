@@ -30,7 +30,8 @@ import { RoomError } from "../domain/errors.ts";
 import type { Participant, Room } from "../domain/types.ts";
 import { deliveredInputs, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
-import { finalTargets, memberHeld } from "../runtime/index.ts";
+import { finalTargets } from "../runtime/index.ts";
+import { withoutStatusLine } from "../runtime/status.ts";
 import { frozenDispatch } from "../runtime/work.ts";
 import type { ThreadCosts } from "../usage/threadCosts.ts";
 
@@ -223,8 +224,8 @@ export function postKind(event: RoomEvent): EnginePostKind | null {
 
 /**
  * The posts that stand for a turn (EnginePost.turn), each with its thread and T3 run: a run's final (its T3 run, or
- * none when T3 never recorded it), and the note or continuation output a T3 turn the room did not start was imported
- * as (its own `t3run:` key; a settle's sibling outputs are not). One post per T3 run: the first wins.
+ * none when T3 never recorded it), and the follow-up or note a T3 turn the room did not start was imported as (its own
+ * `t3run:` key). One post per T3 run: the first wins.
  */
 export function turnPosts(p: Projection): Map<string, { threadId: string; t3RunId: string | null }> {
   const threads = [...new Set([...p.seats.values()].map((s) => s.threadId))].sort((a, b) => b.length - a.length);
@@ -239,7 +240,7 @@ export function turnPosts(p: Projection): Map<string, { threadId: string; t3RunI
       const run = p.runs.get(d.association.id);
       const threadId = run ? p.seats.get(run.seatId)?.threadId : undefined;
       if (threadId) turn = { threadId, t3RunId: t3.get(d.association.id) ?? null };
-    } else if (d.kind === "output" || d.kind === "note") {
+    } else if (d.kind === "output" || d.kind === "note" || d.kind === "progress") {
       const key = t3RunKey(commandOf(event).id, threads);
       if (key?.own) turn = { threadId: key.threadId, t3RunId: key.runId };
     }
@@ -374,11 +375,14 @@ export function journalView(input: ViewInput): JournalView {
         };
         break;
       }
-      case "progress":
+      case "progress": {
         post.body = d.body;
         post.about = d.requestIds.map(ref);
-        post.progress = { milestone: d.milestone, working: d.milestone === "working" };
+        const { id } = commandOf(event);
+        const turn = id.startsWith("t3run:") ? t3RunKey(id, threads) : null;
+        post.progress = { milestone: d.milestone, working: d.milestone === "working", t3: turn ? { threadId: turn.threadId, runId: turn.runId, messageId: null } : null };
         break;
+      }
       case "output": {
         post.body = d.body;
         const named = "requestIds" in d.disposition ? d.disposition.requestIds : [];
@@ -440,7 +444,7 @@ export function journalView(input: ViewInput): JournalView {
     const seq = activityStart.get(a.id);
     return {
       id: a.id, kind: a.id.startsWith("bg:") ? "bg" : a.id.startsWith("work:") ? "work" : "other", seatId: a.seatId, runId: a.runId,
-      requestIds: [...a.requestIds], status: a.status, memberHeld: memberHeld(p, a), since: seq === undefined ? { at: null, after: null } : timeOf(seq),
+      requestIds: [...a.requestIds], status: a.status, memberHeld: a.id.startsWith("work:"), since: seq === undefined ? { at: null, after: null } : timeOf(seq),
     };
   };
   const activities = pending.map(activityView);
@@ -957,7 +961,7 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
             return {
               id: participant.id, alias: participant.alias, modelSelection: participant.modelSelection, presetId: participant.presetId,
               consigliere: room.consigliereId === participant.id, status, live, doing,
-              lastReply: reply ? { at: reply.at, after: reply.after, text: reply.body.slice(0, 400) } : null,
+              lastReply: reply ? { at: reply.at, after: reply.after, text: withoutStatusLine(reply.body).slice(0, 400) } : null,
             };
           }),
         );

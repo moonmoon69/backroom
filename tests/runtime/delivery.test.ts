@@ -1,7 +1,7 @@
 /**
  * Sending and failing: a passing T3 error never starves a seat and a lasting one fails visibly (the reviewer's hunt 2);
  * a turn with no message is never an empty answer (hunt 3); one failure notice to the asker and the orchestrator with
- * no self-wake; followers (§4); an image reaching T3 with the message.
+ * no self-wake; an image reaching T3 with the message. Only the orchestrator and the user ask since H5.
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -80,7 +80,7 @@ test("hunt 2: an outage keeps the run sending and it goes out when T3 is back", 
 
 test("hunt 3: a turn that ends with no message is never an empty answer; its requester gets one error notice", async () => {
   room = await Room.create();
-  const a = ask(room, "V", "W", "Fix dates.ts.");
+  const a = room.user("W", "Fix dates.ts.");
   await room.tick();
   room.fake.completeRun(room.threadOf("W"), { text: "" });
   await room.tick();
@@ -89,44 +89,42 @@ test("hunt 3: a turn that ends with no message is never an empty answer; its req
   const notices = room.notices();
   assert.equal(notices.length, 1);
   assert.match(notices[0]!.body, /@W's turn ended without a reply/);
-  assert.deepEqual([...notices[0]!.recipients].sort(), ["C", "V"]);
+  assert.deepEqual([...notices[0]!.recipients].sort(), ["$user", "C"]);
   const run = [...room.p.runs.values()].find((r) => r.seatId === "W")!;
   assert.notEqual(room.p.runs.get(run.id)!.failure, null, "it can be retried");
 });
 
 test("hunt 3: a notice-only turn with no message is silent and wakes nobody", async () => {
   room = await Room.create();
-  ask(room, "C", "W", "Ask V to review.");
+  // Only the orchestrator asks members since H5, so the error notice of W's failed turn goes to C alone.
+  ask(room, "C", "W", "Fix dates.ts.");
   await room.tick();
-  room.post("W", "V", "Review please.");
-  room.complete("W", "Asked V.");
+  room.complete("W", "crashed", { outcome: "error" });
   await room.tick();
-  room.complete("V", "crashed", { outcome: "error" });
-  await room.tick();
-  assert.equal(room.running("W"), true, "W is woken by the error notice");
+  assert.equal(room.running("C"), true, "C is woken by the error notice");
   const cWakes = room.wakes("C");
-  room.fake.completeRun(room.threadOf("W"), { text: "" });
+  room.fake.completeRun(room.threadOf("C"), { text: "" });
   await room.tick(2);
-  const last = room.outputs().filter((o) => o.author === "W").pop()!;
+  const last = room.outputs().filter((o) => o.author === "C").pop()!;
   assert.deepEqual(last.disposition, { kind: "silent" });
   assert.equal(room.notices().length, 1, "no second notice");
   assert.equal(room.wakes("C"), cWakes);
+  assert.deepEqual([room.wakes("W"), room.wakes("V")], [1, 0], "nobody else is woken");
 });
 
 test("a failed run: one error notice to the asker and the orchestrator, none to itself; an orchestrator failing does not wake itself", async () => {
   room = await Room.create();
-  ask(room, "V", "W", "Fix dates.ts.");
+  room.user("W", "Fix dates.ts.");
   await room.tick();
   room.complete("W", "provider error: overloaded", { outcome: "error" });
   await room.tick();
   const first = room.notices();
   assert.equal(first.length, 1);
-  assert.deepEqual([...first[0]!.recipients].sort(), ["C", "V"]);
+  assert.deepEqual([...first[0]!.recipients].sort(), ["$user", "C"]);
   assert.match(first[0]!.body, /overloaded/);
   await room.tick(2);
   assert.equal(room.wakes("W"), 1, "no self-wake");
   room.complete("C", "Noted.");
-  room.complete("V", "Noted.");
   await room.tick();
   room.user("C", "Plan the release.");
   await room.tick();
@@ -147,28 +145,6 @@ test("a run stopped in T3 by someone is a failure with its notice", async () => 
   assert.equal(room.state(a), "open");
   assert.equal(room.notices().length, 1);
   assert.match(room.notices()[0]!.body, /stopped in T3/);
-});
-
-test("§4: a follower is woken by working posts, together in one run; a non-follower is not", async () => {
-  room = await Room.create({ seats: ["C", "W", "V", "X"] });
-  const a = ask(room, "C", "W", "Watch CI.");
-  ask(room, "X", "W", "Unrelated: what time is it?");
-  room.host.follow(room.room, { actor: "C", id: "follow-1", requestId: a, enabled: true });
-  await room.tick();
-  room.working("W", "CI started.", [a]);
-  room.working("W", "CI half way.", [a]);
-  room.complete("W", "Watching CI; it is 10:00.");
-  await room.tick();
-  assert.equal(room.wakes("C"), 1, "the follower is woken once for both working posts");
-  assert.match(room.prompt("C"), /CI started[\s\S]*CI half way/);
-  room.complete("C", "ok");
-  await room.tick();
-  assert.equal(room.wakes("X"), 1, "X is woken by its own answer only");
-  room.host.follow(room.room, { actor: "C", id: "follow-2", requestId: a, enabled: false });
-  room.answer("W", "CI is green.", [a]);
-  await room.tick();
-  assert.equal(room.wakes("C"), 2, "the answer wakes the requester");
-  assert.equal(room.wakes("V"), 0, "a non-follower is never woken");
 });
 
 test("an image attachment reaches T3 with the message", async () => {
@@ -196,7 +172,7 @@ test("the text T3 receives is frozen with the run before it is sent, and a resen
   assert.equal(room.prompt("W"), frozen.text);
 });
 
-test("a message T3 records only after its run failed as never recorded: its late reply is a note, and wakes nobody", async () => {
+test("a message T3 records only after its run failed as never recorded: its late reply is a follow-up on the request, and wakes the orchestrator", async () => {
   room = await Room.create({ host: { unrecordedMs: 1_000 } });
   room.user("W", "First.");
   await room.tick();
@@ -205,7 +181,7 @@ test("a message T3 records only after its run failed as never recorded: its late
   // T3 takes the next message and records nothing, for longer than the bound.
   const original = room.fake.sendMessage.bind(room.fake);
   const swallowed: SendMessageInput[] = [];
-  room.fake.sendMessage = async (input) => void swallowed.push(input);
+  room.fake.sendMessage = async (input) => (input.threadId === room.threadOf("W") ? void swallowed.push(input) : original(input));
   const b = room.user("W", "Second.");
   await room.tick();
   room.clock += 2_000;
@@ -214,14 +190,27 @@ test("a message T3 records only after its run failed as never recorded: its late
   const wRuns = [...room.p.runs.values()].filter((r) => r.seatId === "W");
   assert.equal(wRuns.length, 2);
   assert.ok(wRuns.every((r) => r.phase === "terminal"));
+  // The orchestrator is told of the failure once.
+  await room.tick();
+  assert.equal(room.wakes("C"), 1);
+  room.complete("C", "Noted.");
+  await room.tick();
   // Then T3 records it after all, and runs it.
   room.fake.sendMessage = original;
   await original(swallowed[0]!);
+  const t3Run = room.fake.runsOf(room.threadOf("W")).at(-1)!;
   room.complete("W", "Second done, late.");
   await room.tick(2);
-  const late = room.p.events.filter((e) => e.data.kind === "note").map((e) => (e.data as { body: string }).body);
-  assert.deepEqual(late, ["(T3 ran a message after Backroom had recorded it as failed) Second done, late."]);
-  assert.equal(room.state(b), "open", "a note answers nothing; the failure notice already offered a retry");
+  assert.deepEqual(room.p.events.filter((e) => e.data.kind === "note"), [], "no note");
+  const late = room.p.events.flatMap((e) => (e.data.kind === "progress" && e.data.author === "W" ? [{ id: e.id, ...e.data }] : []));
+  assert.deepEqual(late.map((e) => e.id), [`t3run:${room.threadOf("W")}:${t3Run.id}`]);
+  const d = late[0]!;
+  assert.deepEqual([d.requestIds, d.milestone], [[b], "follow-up"], "a follow-up on the request the failed run was given");
+  assert.equal(d.body, "[T3 status of @W: idle]\n\n(T3 ran a message after Backroom had recorded it as failed) Second done, late.");
+  assert.equal(room.state(b), "open", "a follow-up answers nothing; the failure notice already offered a retry");
+  assert.equal(room.wakes("C"), 2, "the follow-up wakes the orchestrator, once");
+  assert.match(room.prompt("C"), /Second done, late/);
+  assert.equal(room.wakes("W"), 2, "and not W");
 });
 
 test("the T3 run a host run is matched to is its typed providerRunId, from the acceptance on, and survives a restart", async () => {

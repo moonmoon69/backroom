@@ -71,9 +71,9 @@ export type EnginePostKind =
   | "cancel"
   /** Wakes nobody: the user's /note, a member's `rooms-board note`, messages and turns from T3 (plan §3). */
   | "note"
-  /** Wakes nobody unless followed: `rooms-board working` and other progress posts. */
+  /** A follow-up (H5): a member's turn that answered nothing, or background work that ended; it wakes the orchestrator. */
   | "progress"
-  /** What a member said: a run's final, an explicit `rooms-board answer`, background work's result (plan §1, §2). */
+  /** What a member said: a run's final (journals from before H5 also hold explicit answers and background settles). */
   | "output"
   /** Something went wrong: a failed run (error), an undeliverable post or a late answer (attention). */
   | "notice"
@@ -136,10 +136,10 @@ export interface EnginePost extends EngineTime {
     message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
   };
   output?: {
-    /** answer: it names requests (see `claims` for what each came to); yield: it answers nothing; progress: an update under held work; error: a failed run. */
+    /** answer: it names requests (see `claims` for what each came to); yield: an update that answers nothing; progress: a follow-up on a request; error: a failed run. */
     disposition: "answer" | "yield" | "progress" | "error";
     claims: EngineClaim[];
-    /** final: a host run's last message; answer: `rooms-board answer`; continuation: a turn the member started itself; idle: background work ended without a further turn. */
+    /** final: a host run's last message; before H5 also answer (`rooms-board answer`), continuation and idle (background settles). */
     source: "final" | "answer" | "continuation" | "idle" | "other";
     runId: string | null;
     activityId: string | null;
@@ -156,7 +156,8 @@ export interface EnginePost extends EngineTime {
     /** Under a request its author had already answered (a self-started turn after the answer, plan §5). */
     afterAnswer: boolean;
   };
-  progress?: { milestone: string | null; working: boolean };
+  /** `follow-up`: a member's turn that answered nothing, or background work that ended quietly (H5); `t3`: the T3 turn it came from. */
+  progress?: { milestone: string | null; working: boolean; t3: EngineT3Ref | null };
   notice?: EngineNoticeState;
   cancel?: { applied: boolean };
   retry?: { runId: string };
@@ -244,7 +245,7 @@ export interface EngineActivityView {
   runId: string;
   requestIds: string[];
   status: "pending" | "uncertain" | "done" | "failed";
-  /** Held by the member: it ends only with `rooms-board answer` (or a cancel), never on its own. */
+  /** Held by the member (`work:`). Since H5 the host registers no activities; only journals from before it hold them. */
   memberHeld: boolean;
   /** "working since …": when it was registered, by the EngineTime rule (exact for `bg:`, a lower bound for `work:`). */
   since: EngineTime;

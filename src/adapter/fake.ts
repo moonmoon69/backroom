@@ -650,6 +650,13 @@ export class FakeT3Adapter implements T3Adapter {
     return id;
   }
 
+  /** Test control: what T3 lists in the thread's background after its turn (commands the provider left running). */
+  setBackground(threadId: string, taskIds: string[]): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error("unknown thread");
+    thread.shell.pendingBackgroundTasks = taskIds.map((taskId) => ({ taskId, kind: "command" as const, description: `background ${taskId}`, childThreadId: null }));
+  }
+
   /** Test control: a run the agent starts itself (a background task finished): T3 writes its notice, not a person. */
   startSelfRun(threadId: string): string {
     const thread = this.threads.get(threadId);

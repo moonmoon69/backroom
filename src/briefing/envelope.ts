@@ -31,6 +31,8 @@ export interface EnvelopeDirectory {
   attachments(eventId: string): readonly string[];
   /** A handover's split, as the transfer event says: the requests it made the new seat's, and those whose answers now come to it. */
   handover?(eventId: string): { owned: readonly string[]; awaited: readonly string[] } | null;
+  /** A progress post's milestone (`follow-up` since H5), so the briefing names it. */
+  milestone?(eventId: string): string | null;
 }
 
 /** A principal as briefings name it, given a seat's alias. */
@@ -62,6 +64,10 @@ export function journalDirectory(
     handover: (eventId) => {
       const data = byId.get(eventId)?.data;
       return data?.kind === "transfer" ? { owned: data.owned, awaited: data.awaited } : null;
+    },
+    milestone: (eventId) => {
+      const data = byId.get(eventId)?.data;
+      return data?.kind === "progress" ? data.milestone : data?.kind === "output" && data.disposition.kind === "progress" ? (data.disposition.milestone ?? null) : null;
     },
   };
 }
@@ -250,7 +256,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       case "result":
         return `answer from ${by} to your request${item.requestIds.length > 1 ? "s" : ""} ${refs(item.requestIds)}`;
       case "progress":
-        return `progress from ${by}${on(item.requestIds)}`;
+        return `${directory.milestone?.(item.eventId) === "follow-up" ? "follow-up" : "progress"} from ${by}${on(item.requestIds)}`;
       case "error":
       case "attention":
         return `${item.intent} notice from ${by}${on(item.requestIds)}`;

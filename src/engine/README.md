@@ -2,8 +2,8 @@
 
 The board's journal and the rules over it. Each room has one append-only event log; requests, answers, runs, cursors,
 background work and subscriptions are folds of that log, never stored work of their own. The host in `src/runtime`
-drives T3 from it (`ROOMS_ENGINE=1`), members act on it through `rooms-board` (L3) and the user through the message
-API (L4a); the read API (`src/server/engineView.ts`) reads it. This is the core as carved in L6 of the stage 4/5 plan
+drives T3 from it (`ROOMS_ENGINE=1`), the orchestrator posts on it through `rooms-board` (L3; members only read it and
+answer in their final replies, H5) and the user through the message API (L4a); the read API (`src/server/engineView.ts`) reads it. This is the core as carved in L6 of the stage 4/5 plan
 ("Lean semantics"): 18 commands, 21 event kinds, nothing about provider evidence. Approvals, questions and Stop are not
 on the journal: they stay on the native-requests path (`native_requests`, the service's respond calls, `interruptRun`).
 
@@ -42,7 +42,7 @@ folders.
 | `correct` | the requester, orchestrator or user | `correction` of an open request; it becomes the request's version |
 | `cancel` | the requester, orchestrator or user | `cancel`; applied only to an open request. A run T3 rejected for the owner ends with it. Stopping a live turn is the host's: it sends T3 the interrupt (§6) |
 | `post` | a seat or the user | `note` (wakes nobody) or `progress` (wakes only followers of its milestone), under requests the author owns |
-| `subscribe` | a seat | `subscription` to a request's milestones (`rooms-board follow`), or its removal |
+| `subscribe` | a seat | `subscription` to a request's milestones, or its removal (since H5 the host subscribes the orchestrator to a member's request, so the member's follow-ups wake it) |
 | `reserve` | `$system` | `run.prepared`: an idle active seat's unread input up to `maxBytes` (or `delivery.blocked`, once per input) |
 | `phase` | `$system` | `run.phase`: prepared → sending → accepted → running, with uncertain and rejected; `providerRunId` (the T3 run) once T3 has taken it, never changed, never shared by two runs |
 | `sync` | `$system` or the run's seat | `sync.offered`: the input that arrived since, for a live run (a steer), with its digest |

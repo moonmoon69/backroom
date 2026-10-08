@@ -444,7 +444,7 @@ export class EngineSeats {
         to: freshBinding.id,
         body: [
           `@${fresh.alias} you take over from @${old.alias}: its open requests, its checkpoint and the posts it had not read are in the handover.${record.plan ? ` Carry on with: ${record.plan}` : ""}`,
-          `Your final reply answers ${numbers.length ? `the requests handed to you (${numbers.join(", ")}) and this one` : "this request"}, so reply when the work is done; if it goes on past this turn, run \`rooms-board working "…"\` before you end it.`,
+          `Your final reply answers ${numbers.length ? `the requests handed to you (${numbers.join(", ")}) and this one` : "this request"}.`,
         ].join(" "),
       });
     }

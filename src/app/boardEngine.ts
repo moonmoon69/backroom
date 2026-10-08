@@ -1,7 +1,8 @@
 /**
- * The board for agents on the engine (stage 4/5 plan, item L3): what bin/rooms-board runs when ROOMS_ENGINE=1. The
- * journal is the board. A post is a request, one per recipient; an answer is an output whose outcome the engine
- * decides; `working`, `note` and `follow` are the lean semantics' marks (§2, §4); every read comes from the journal.
+ * The board for agents on the engine (stage 4/5 plan, item L3; H5: members only answer): what bin/rooms-board runs when
+ * ROOMS_ENGINE=1. The journal is the board. Members read it; their final replies are their answers, so they run nothing
+ * else. The Consigliere posts the work (a request per recipient), corrects, cancels and retries it; every read comes
+ * from the journal.
  *
  * Every command goes through the host's member API (src/runtime/host.ts), which keeps the semantics; this file parses
  * the command line, resolves names and numbers, refuses what the engine would refuse in words a member can act on, and
@@ -18,8 +19,8 @@ import { roomForKey } from "../browser/catalog.ts";
 import { roomStateSection } from "../briefing/assemble.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
-import { HostRefusal, type EngineHost } from "../runtime/index.ts";
-import { finalTargets, lastAnswered, openOwned, ownedTarget, pendingActivities } from "../runtime/work.ts";
+import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, type EngineHost } from "../runtime/index.ts";
+import { followedRequests } from "../runtime/work.ts";
 import { BOARD_PAGE_CHARS, Board, BoardError, threadOutcome, type BoardDeps, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
 import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
@@ -67,35 +68,40 @@ export function boardFor(engine: EngineHost | null, deps: BoardDeps, seats?: Eng
   });
 }
 
-const HELP = `rooms-board: this room's board: read it, post work on it, answer, seat the user's saved crew. Always pass --as <your key>.
-A post's number (#n) is the same in your briefings, here and on the page. Quote each text as one argument; for a text
-longer than a shell allows (128 KiB), pass --file <path>, or --file - to read it from stdin. A text is at most 1 MiB.
+const HELP = `rooms-board: this room's board. Always pass --as <your key>.
+A post's number (#n) is the same in your briefings, here and on the page. A member's final reply is its answer: members
+read the board and run nothing else. Quote each text as one argument; for a text longer than a shell allows (128 KiB),
+pass --file <path>, or --file - to read it from stdin. A text is at most 1 MiB.
 
-  post "@name the job"            a request to that member; "@a @b the job" makes one request each, "@all" one for every
-                                  other member. You are woken with each answer when it lands. Posted during your turn,
-                                  it belongs to the request you are working on, which stays open until it is answered;
-                                  if you work on several, say which: post --for #n "@name …".
-  answer [#n …] "<text>"          answers your request #n now (with no #n: the request this turn works on). Prints what
-                                  the board made of it per request: answered, or still open and why.
-  working [#n …] "<text>"         says you keep working on #n after this turn: your replies will not close it until you
-                                  run answer #n. It wakes nobody unless the requester follows #n.
-  note [#n …] "<text>"            a note that wakes nobody. It goes under #n (yours), else under the request this turn
-                                  works on, else under the one you answered last: its requester reads it next time.
-  correct #n "<text>"             corrects your request #n: its owner gets the correction with its next turn.
-  cancel #n                       withdraws your request #n.
-  follow #n [--off]               you are woken by each working post on #n (or no longer).
-  retry #n                        the Consigliere's: runs a failed turn again; #n is its error notice or its request.
-  index [--after <n>] [--all]     the room's posts: number, kind, sender, receiver, state, size. --all adds the
-                                  board's own records (runs, activities), which have numbers but are not posts.
+Anyone:
   read <n>... [--page <p>]        the exact text of those posts; one over ${BOARD_PAGE_CHARS.toLocaleString("en-US")} characters is printed in pages.
+  index [--after <n>] [--all]     the room's posts: number, kind, sender, receiver, state, size. --all adds the
+                                  board's own records (runs, subscriptions), which have numbers but are not posts.
   members                         the room's members: model, what each is doing now, its requests, its thread.
-  crew                            the user's saved crew, by name, with model.
-  seat <saved crew name>          seats that saved crew member in this room (the Consigliere's, in a room with one).
-  reseat <alias> ["<plan>"]       the Consigliere's: asks that member for a checkpoint, then a fresh seat takes over.
-  retire <alias>                  the Consigliere's: that member leaves the room; refused while it has work open.
   rules                           your standing sections, as your first briefing gave them.
-  state ["<text>"]                prints the room state; with a text, the Consigliere replaces it (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters).
-  help                            this list.`;
+  state                           prints the room state.
+  note [#n …] "<text>"            a note that wakes nobody, under #n (yours) or the request you answered last.
+  help                            this list.
+
+The Consigliere's (the user posts from the page):
+  post "@name the job"            a request to that member; "@a @b the job" makes one request each, "@all" one for every
+                                  other member. The member's reply wakes you, with its T3 status at the top, and so does
+                                  each follow-up of it (a turn it started itself, background work that ended).
+  correct #n "<text>"             corrects your request #n: its owner gets the correction with its next turn.
+  cancel #n                       withdraws your open request #n.
+  retry #n                        runs a failed turn again; #n is its error notice or its request.
+  state "<text>"                  replaces the room state (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters).
+  crew                            the user's saved crew, by name, with model.
+  seat <saved crew name>          seats that saved crew member in this room.
+  reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
+  retire <alias>                  that member leaves the room; refused while it has work open.`;
+
+/** Commands members had before H5, and why they are gone: a final reply is the answer. */
+const GONE: Record<string, string> = {
+  answer: "your final reply is your answer; there is nothing to run.",
+  working: "there is no working mark: your final reply is your answer, and the Consigliere reads your T3 status (what still runs in the background) at the top of it.",
+  follow: "nobody follows requests: every reply of a member, and each follow-up of it, wakes the Consigliere.",
+};
 
 interface Caller {
   room: Room;
@@ -121,11 +127,6 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/** The start of a text, to quote it back in a hint. */
-function excerpt(text: string): string {
-  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
-}
-
 function bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
@@ -149,17 +150,15 @@ export class BoardEngine {
       case "say":
         return this.post(c, args);
       case "answer":
-        return this.answer(c, args);
       case "working":
-        return this.working(c, args);
+      case "follow":
+        throw new BoardError(`rooms-board: ${GONE[command]}`, 410);
       case "note":
         return this.note(c, args);
       case "correct":
         return this.correct(c, args);
       case "cancel":
         return this.cancel(c, args);
-      case "follow":
-        return this.follow(c, args);
       case "retry":
         return this.retry(c, args);
       case "index":
@@ -342,13 +341,9 @@ export class BoardEngine {
 
   // ---------------- writing ----------------
 
-  /**
-   * `post "@x …"`: one request per recipient, with the whole text as its body. During a turn it is a child of the
-   * request the turn works on (host.post), which keeps that request open until it is answered; `--for #n` names one of
-   * the poster's own open requests. Every recipient is checked before anything is written.
-   */
+  /** `post "@x …"`: one request per recipient, with the whole text as its body; the Consigliere's (members answer). */
   private async post(c: Caller, args: string[]): Promise<string> {
-    const forText = flag(args, "--for");
+    if (this.orchestrator(c) !== c.seatId) throw new BoardError(`rooms-board: ${MEMBERS_DO_NOT_POST}`, 403);
     const text = args.join(" ").trim();
     if (!text) throw new BoardError('rooms-board: post needs the text, as one quoted argument: post "@opus write the plan".');
     this.size(text);
@@ -358,58 +353,26 @@ export class BoardEngine {
       names.push(m[1]!.toLowerCase());
       rest = rest.slice(m[0].length);
     }
-    const o = this.orchestrator(c);
-    if (names.length === 0) {
-      throw new BoardError(`rooms-board: a post is work for members: start with @name${o && o !== c.seatId ? ` (the Consigliere is ${this.name(o)})` : ""}. A note that wakes nobody is: note "<text>".`);
-    }
+    if (names.length === 0) throw new BoardError('rooms-board: a post is work for members: start with @name. A note that wakes nobody is: note "<text>".');
     if (!rest.trim()) throw new BoardError("rooms-board: the post names members but says nothing for them to do.");
     if (/^\/[a-z][\w-]*(\s|$)/i.test(rest)) {
       throw new BoardError(`rooms-board: "${rest.split(/\s/)[0]}" is a slash command; members cannot send those through the board. Post the work in words.`);
     }
     const recipients = this.recipients(c, names);
-    const p = this.view(c.room.id);
-    let forRequest: string | undefined;
-    if (forText !== undefined) {
-      const q = this.request(p, forText);
-      if (q.owner !== c.seatId) throw new BoardError(`rooms-board: --for #${this.number(p, q.id)} is not your request: a post goes under a request you own (${this.name(q.owner)} owns it).`);
-      if (q.state !== "open") throw new BoardError(`rooms-board: --for ${this.label(p, q.id)} is ${q.state}; post without --for, or cite it in the text.`);
-      forRequest = q.id;
-    } else {
-      const run = await this.settled(c);
-      const now = this.view(c.room.id);
-      if (run?.phase === "sending") {
-        // T3 has the message but the host has not seen it start: the turn's requests are the run's own (§1).
-        const targets = finalTargets(now, run);
-        if (targets.length === 1) forRequest = targets[0];
-        else if (targets.length > 1) throw new BoardError(`rooms-board: this turn works on ${this.labels(p, targets)}: say which one this post is for, post --for #n "${excerpt(text)}".`);
-      } else if (!run || !["accepted", "running", "uncertain"].includes(run.phase)) {
-        // Outside a host turn (a continuation of background work), the host puts the post under the one request that
-        // work holds; with several it cannot tell which, and a post under none would let them close while it is open.
-        const held = [...new Set(pendingActivities(now, c.seatId).flatMap((a) => openOwned(now, a.requestIds, c.seatId)))];
-        if (held.length > 1) throw new BoardError(`rooms-board: your work still going on holds ${this.labels(now, held)}: say which one this post is for, post --for #n "${excerpt(text)}".`);
-      }
-    }
     const made: string[] = [];
     const base = this.commandId();
     await this.act(c, () => {
       recipients.forEach((to, index) => {
         const id = recipients.length === 1 ? base : `${base}:${index + 1}`;
-        this.host.post(c.room.id, { actor: c.seatId, id, to, body: text, ...(forRequest ? { forRequest } : {}) });
+        this.host.post(c.room.id, { actor: c.seatId, id, to, body: text });
         made.push(id);
       });
     });
     const after = this.view(c.room.id);
-    const lines = made.map((id) => {
-      const q = after.requests.get(id)!;
-      return `Posted #${this.number(after, id)} → ${this.name(q.owner)}${q.parentId ? ` (under your ${this.label(after, q.parentId)})` : ""}.`;
-    });
-    const parent = after.requests.get(made[0]!)?.parentId ?? null;
-    lines.push(
-      parent
-        ? `${this.label(after, parent)} stays open while ${this.labels(after, made)} ${made.length === 1 ? "is" : "are"} open: a reply of yours before the answer lands does not close it. You are woken with each answer; your reply then answers ${this.label(after, parent)}.`
-        : "You are woken with each answer when it lands.",
-    );
-    return lines.join("\n");
+    return [
+      ...made.map((id) => `Posted #${this.number(after, id)} → ${this.name(after.requests.get(id)!.owner)}.`),
+      "Each reply wakes you, with the member's T3 status at the top, and so does each follow-up of it.",
+    ].join("\n");
   }
 
   /** Recipients by alias: active members of this room with a seat in its journal; `@all` is every other one. */
@@ -439,81 +402,9 @@ export class BoardEngine {
     return out;
   }
 
-  /** `answer [#n …] "…"`: the engine's outcome per request, as it is; only "answered" closes one. */
-  private async answer(c: Caller, args: string[]): Promise<string> {
-    const { requests, text } = this.refsAndText(c, args);
-    if (!text) throw new BoardError('rooms-board: answer needs the text: answer #n "…".');
-    this.size(text);
-    await this.settled(c);
-    const id = this.commandId();
-    const { claims } = await this.act(c, () => this.host.answer(c.room.id, { actor: c.seatId, id, body: text, ...(requests.length ? { requestIds: requests.map((q) => q.id) } : {}) }));
-    const p = this.view(c.room.id);
-    const posts = this.appended(p, c.seatId, id).filter((e) => e.data.kind === "output").map((e) => `#${e.seq}`);
-    return [posts.length ? `Recorded as ${posts.join(", ")}.` : "Recorded.", ...this.claimLines(c, p, claims)].join("\n");
-  }
-
-  private claimLines(c: Caller, p: Projection, claims: readonly ClaimOutcome[]): string[] {
-    if (claims.length === 0) return ["It answers no request."];
-    return claims.map((claim) => {
-      const n = this.label(p, claim.requestId);
-      const to = this.name(claim.returnTo);
-      switch (claim.outcome) {
-        case "answered":
-          return `${n}: answered. ${claim.returnTo === "$user" ? "The user has it" : `${to} is woken with it`}.`;
-        case "pending_activity":
-          return `${n}: NOT answered; it stays open while ${this.holding(p, claim.requestId)}. This answer is kept on the board but does not close it: when that ends you are woken, and your reply then answers ${n}.`;
-        case "superseded":
-          return `${n}: NOT answered; it stays open, because ${this.unseen(p, c.seatId, claim.requestId)} bears on it and you have not read it yet. This answer is kept on the board but does not close it: your next turn brings it, and your reply then answers ${n}.`;
-        case "already_answered":
-          return `${n}: was already answered; this changed nothing.`;
-        case "late":
-          return `${n}: was cancelled or handed over; this answer is kept on the board but answers nothing.`;
-      }
-    });
-  }
-
-  /** Why a request stays open: its open children (a review it asked for) and the background work holding it. */
-  private holding(p: Projection, requestId: string): string {
-    const children = [...p.requests.values()].filter((q) => q.parentId === requestId && q.state === "open");
-    const why = children.map((q) => `${this.label(p, q.id)} to ${this.name(q.owner)} is open`);
-    for (const a of [...p.activities.values()].filter((x) => (x.status === "pending" || x.status === "uncertain") && x.requestIds.includes(requestId))) {
-      why.push(a.id.startsWith("work:") ? "you said you are still working on it (answer it with rooms-board answer)" : "background work on your thread is still running");
-    }
-    return why.length ? why.join(" and ") : "work under it is still open";
-  }
-
-  /** What the seat has not read that bears on a request: a correction to it, or an answer under it. */
-  private unseen(p: Projection, seatId: string, requestId: string): string {
-    const cursor = p.seats.get(seatId)?.cursor ?? 0;
-    const found = p.events.filter((e) => {
-      if (e.seq <= cursor) return false;
-      const d = e.data;
-      if (d.kind === "correction" && d.requestId === requestId) return true;
-      return d.kind === "output" && d.claims.some((cl) => cl.outcome === "answered" && cl.returnTo === seatId && ownedTarget(p, cl.requestId, seatId)?.id === requestId);
-    });
-    return found.length ? found.map((e) => `#${e.seq}`).join(", ") : "a later post";
-  }
-
-  /** `working [#n …] "…"` (§2): the request stays open until `answer`. */
-  private async working(c: Caller, args: string[]): Promise<string> {
-    const { requests, text } = this.refsAndText(c, args);
-    if (!text) throw new BoardError('rooms-board: working needs a line on what you are doing: working "running the full suite".');
-    this.size(text);
-    await this.settled(c);
-    const id = this.commandId();
-    const result = await this.act(c, () => this.host.working(c.room.id, { actor: c.seatId, id, body: text, ...(requests.length ? { requestIds: requests.map((q) => q.id) } : {}) }));
-    const p = this.view(c.room.id);
-    const progress = this.appended(p, c.seatId, id).find((e) => e.data.kind === "progress");
-    const followers = progress?.data.kind === "progress" ? progress.data.recipients : [];
-    return [
-      `Recorded as #${progress?.seq ?? "?"}. ${this.words(p, result.message)}`,
-      followers.length ? `It wakes ${followers.map((f) => this.name(f)).join(", ")}, who follow${followers.length === 1 ? "s" : ""} it.` : "It wakes nobody.",
-    ].join("\n");
-  }
-
   /**
    * `note [#n …] "…"`: wakes nobody. It carries a request so it reaches that request's requester at its next briefing
-   * (L2's related context): the ones named, else the ones this turn works on, else the ones the seat answered last.
+   * (L2's related context): the ones named, else the ones this turn works on, else the ones the seat followed up last.
    */
   private async note(c: Caller, args: string[]): Promise<string> {
     const { requests, text } = this.refsAndText(c, args);
@@ -525,7 +416,7 @@ export class BoardEngine {
     }
     await this.settled(c);
     const work = this.host.currentWork(c.room.id, c.seatId)?.requestIds ?? [];
-    const ids = requests.length ? requests.map((q) => q.id) : work.length ? work : lastAnswered(p, c.seatId);
+    const ids = requests.length ? requests.map((q) => q.id) : work.length ? work : followedRequests(p, c.seatId);
     const id = this.commandId();
     await this.act(c, () => this.host.note(c.room.id, { actor: c.seatId, id, body: text, ...(ids.length ? { requestIds: ids } : {}) }));
     const after = this.view(c.room.id);
@@ -573,20 +464,6 @@ export class BoardEngine {
     if (result.deferred) return `${this.label(p, q.id)} is cancelled when ${owner}'s current turn ends, since that turn works on other requests. Nobody is woken now.`;
     if (result.applied) return `${this.label(p, q.id)} is cancelled. ${owner} is told${this.view(c.room.id).seats.get(q.owner)?.activeRunId ? ", and its turn on it is stopped" : ""}.`;
     return `${this.label(p, q.id)} had already closed; nothing changed.`;
-  }
-
-  /** `follow #n [--off]` (§4): each `working` post on the request wakes the follower. */
-  private async follow(c: Caller, args: string[]): Promise<string> {
-    const off = args.includes("--off");
-    const rest = args.filter((a) => a !== "--off");
-    if (rest.length !== 1) throw new BoardError("rooms-board: follow needs one request: follow #n, or follow #n --off.");
-    const p = this.view(c.room.id);
-    const q = this.request(p, rest[0]!);
-    if (q.owner === c.seatId) throw new BoardError(`rooms-board: ${this.label(p, q.id)} is yours; your own working posts never wake you.`);
-    await this.act(c, () => this.host.follow(c.room.id, { actor: c.seatId, id: this.commandId(), requestId: q.id, enabled: !off }));
-    return off
-      ? `You no longer follow ${this.label(p, q.id)}: its working posts wake nobody.`
-      : `You follow ${this.label(p, q.id)}: each working post ${this.name(q.owner)} makes on it wakes you (several arrive together). Stop with: follow ${this.label(p, q.id)} --off.`;
   }
 
   /**
@@ -760,7 +637,7 @@ export class BoardEngine {
     return [`Members of "${c.room.title}":`, ...lines, ...(p.orchestrator ? [] : ["This room has no Consigliere."])].join("\n");
   }
 
-  /** What a seat is doing now, from the journal: a turn, its own work, background work, input about to start a turn. */
+  /** What a seat is doing now, from the journal: a turn, or input about to start one. */
   private doing(c: Caller, p: Projection, seatId: string): string {
     const seat = p.seats.get(seatId)!;
     const run = seat.activeRunId ? p.runs.get(seat.activeRunId) : undefined;
@@ -768,12 +645,6 @@ export class BoardEngine {
     if (run) {
       const work = this.host.currentWork(c.room.id, seatId)?.requestIds ?? [];
       return work.length ? `working on ${this.labels(p, work)}` : "in a turn";
-    }
-    const held = pendingActivities(p, seatId);
-    if (held.length) {
-      const own = held.filter((a) => a.id.startsWith("work:")).flatMap((a) => a.requestIds);
-      const bg = held.filter((a) => !a.id.startsWith("work:")).flatMap((a) => a.requestIds);
-      return [own.length ? `still working on ${this.labels(p, own)}` : "", bg.length ? `background work on ${this.labels(p, bg)}` : ""].filter(Boolean).join(", ");
     }
     const unread = this.host.unread(c.room.id, seatId);
     return unread ? `${plural(unread, "unread post")}, starts when its thread is free` : "ready";
@@ -903,7 +774,7 @@ function describe(e: RoomEvent): { kind: string } {
   const d = e.data;
   switch (d.kind) {
     case "progress":
-      return { kind: d.milestone === "working" ? "working" : "progress" };
+      return { kind: d.milestone === FOLLOW_UP ? "follow-up" : d.milestone === "working" ? "working" : "progress" };
     case "output":
       return { kind: { answer: "answer", progress: "after", error: "failed", yield: "reply", silent: "silent" }[d.disposition.kind] };
     case "notice":

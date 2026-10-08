@@ -67,7 +67,7 @@ test("a reply that named no request, an update and a failure say so; how it came
     output: { disposition, claims, source, runId: null, activityId: null, t3: null, afterAnswer: false },
   });
   const posts = [request("A", 12, "$user")];
-  assert.equal(replyText(replyPieces(output("yield", "final"), context(posts))), "answers nothing");
+  assert.equal(replyText(replyPieces(output("yield", "final"), context(posts))), "update");
   assert.equal(replyText(replyPieces(output("progress", "continuation"), context(posts))), "update on #12");
   assert.equal(replyText(replyPieces(output("error", "final"), context(posts))), "failed on #12");
   assert.equal(replyText(replyPieces(output("answer", "answer", [claim("A", 12, "answered"), claim("A", 12, "late")]), context(posts))), "answers #12 from you · late for #12: it was handed to a fresh seat");

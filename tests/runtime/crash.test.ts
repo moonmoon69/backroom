@@ -6,34 +6,51 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { inputFor, inputTree } from "../../src/engine/index.ts";
+import { deliveredInputs, inputFor, inputTree } from "../../src/engine/index.ts";
 import type { HostStep } from "../../src/runtime/index.ts";
 import { Room } from "./helpers.ts";
 
 let room: Room;
 afterEach(() => room?.close());
 
-/** C hands A to W; W leaves a subagent running; its continuation settles A; C reports. Touches every host step. */
-async function scenario(r: Room): Promise<{ u: string; a: string }> {
+/** Every run has ended. */
+function allEnded(r: Room): boolean {
+  return [...r.p.runs.values()].every((x) => x.phase === "terminal");
+}
+
+/**
+ * C hands A to W, which answers U (H5: nothing is held); the user steers W's running turn; W's final answers A and the
+ * steer with a subagent still running, and wakes C; the subagent ends and W's own continuation is a follow-up on both,
+ * which wakes C again; C reports. Touches every host step.
+ */
+async function scenario(r: Room): Promise<{ u: string; a: string; steer: string }> {
   const W = r.threadOf("W");
   const u = r.user("C", "Find the unused imports with a subagent, then report.");
   await r.until(() => r.running("C"));
   const a = r.post("C", "W", "A: find the unused imports, with a subagent.");
   r.complete("C", "Handed to W.");
   await r.until(() => r.running("W"));
+  const steer = r.host.request(r.room, { actor: "$user", id: "steer:1", to: "W", body: "Also look at the tests folder." }).events[0]!.id;
+  await r.until(() => [...r.p.runs.values()].some((x) => x.seatId === "W" && x.receipts.some((c) => c.confirmed)));
   r.fake.subagent(W, "sub-1", "running");
   r.complete("W", "A subagent is reading the files.");
-  await r.until(() => [...r.p.runs.values()].every((x) => x.phase === "terminal"));
+  await r.until(() => r.state(a) === "answered" && r.running("C"));
+  r.complete("C", "W's subagent is still reading.");
+  await r.until(() => allEnded(r) && !r.running("W"));
   r.fake.subagent(W, "sub-1", "completed");
   r.fake.startSelfRun(W);
   await r.tick();
   r.complete("W", "Unused: src/text.ts.");
-  await r.until(() => r.state(a) === "answered");
   await r.until(() => r.running("C"));
   r.complete("C", "Report: src/text.ts is unused. JOB-DONE");
-  await r.until(() => r.state(u) === "answered");
+  await r.until(() => allEnded(r) && !r.running("C"));
   await r.tick(3);
-  return { u, a };
+  return { u, a, steer };
+}
+
+/** W's follow-ups: its continuation, once, on what its answer closed (A and the steer). */
+function followUps(r: Room) {
+  return r.p.events.flatMap((e) => (e.data.kind === "progress" && e.data.author === "W" ? [{ id: e.id, ...e.data }] : []));
 }
 
 function assertCrashInvariants(r: Room): void {
@@ -43,42 +60,58 @@ function assertCrashInvariants(r: Room): void {
   for (const run of p.runs.values()) {
     assert.ok(t3Runs.filter((x) => x.userMessageId === run.dispatchMessageId).length <= 1, `run ${run.id} started more than one T3 run`);
   }
-  // 2. No delivered input is lost: every addressed input reached its seat in some run, and nothing is left unread.
+  // 2. No delivered input is lost: every addressed input reached its seat in some run (its envelope, or a steer T3
+  // confirmed in it), and nothing is left unread.
   for (const seat of p.seats.values()) {
-    const delivered = new Set([...p.runs.values()].filter((x) => x.seatId === seat.id).flatMap((x) => inputTree(x.envelope.inputs).map((i) => i.eventId)));
+    const delivered = new Set([...p.runs.values()].filter((x) => x.seatId === seat.id).flatMap((x) => inputTree(deliveredInputs(p, x.id)).map((i) => i.eventId)));
     for (const e of p.events) {
       if (inputFor(e, seat.id)) assert.ok(delivered.has(e.id), `${e.data.kind} ${e.id} never reached ${seat.id}`);
     }
     assert.deepEqual(r.unread(seat.id), []);
   }
-  // 3. Every run ends; nothing is left pending.
+  // 3. Every run ends; nothing is left pending; T3 runs nothing.
   assert.deepEqual(r.unresolvedRuns(), []);
   assert.deepEqual(r.pendingActivities(), []);
+  for (const seat of p.seats.values()) assert.equal(r.running(seat.id), false, `${seat.id} still running in T3`);
 }
+
+/** What the scenario must end with, crash or not. */
+function assertOutcome(r: Room, ids: { u: string; a: string; steer: string }): void {
+  assert.equal(r.answeredClaims(ids.a).length, 1, "A answered exactly once");
+  assert.equal(r.answeredClaims(ids.u).length, 1, "U answered exactly once, by C's hand-off");
+  assert.equal(r.answeredClaims(ids.steer).length, 1, "the steer answered exactly once, by W's final");
+  const answer = r.outputs().find((o) => o.claims.some((c) => c.requestId === ids.a && c.outcome === "answered"))!;
+  assert.equal(answer.body, '[T3 status of @W: still running: subagent "subagent sub-1"]\n\nA subagent is reading the files.');
+  const follow = followUps(r);
+  assert.equal(follow.length, 1, "one follow-up for W's continuation");
+  assert.deepEqual([[...follow[0]!.requestIds].sort(), follow[0]!.milestone], [[ids.a, ids.steer].sort(), "follow-up"], "on the requests W's answer closed");
+  assert.match(follow[0]!.id, /^t3run:/);
+  assert.equal(follow[0]!.body, "[T3 status of @W: idle]\n\nUnused: src/text.ts.");
+  // C wakes for U, for W's answer to A, and for W's follow-up: each member reply wakes it, once.
+  assert.equal(r.wakes("C"), 3, "the Consigliere woke for U, A's answer and W's follow-up only");
+  assert.equal(r.wakes("W"), 2, "W: its run on A, and its own continuation");
+}
+
+const STEPS: HostStep[] = ["reserved", "sending", "sent", "accepted", "running", "steered", "output", "ended", "imported"];
 
 test("without a crash the scenario passes every step once", async () => {
   room = await Room.create();
-  const { u, a } = await scenario(room);
-  for (const step of ["reserved", "sending", "sent", "accepted", "running", "activity", "output", "ended", "settled"] as HostStep[]) {
-    assert.ok(room.steps.includes(step), `step ${step} not reached`);
-  }
-  assert.equal(room.answeredClaims(a).length, 1);
-  assert.equal(room.answeredClaims(u).length, 1);
+  const ids = await scenario(room);
+  for (const step of STEPS) assert.ok(room.steps.includes(step), `step ${step} not reached`);
+  assertOutcome(room, ids);
   assertCrashInvariants(room);
 });
 
-const STEPS: HostStep[] = ["reserved", "sending", "sent", "accepted", "running", "activity", "output", "ended", "settled"];
 for (const seat of ["W", "C"]) {
   for (const step of STEPS) {
-    if (seat === "C" && (step === "activity" || step === "settled")) continue;
+    // The steer and the continuation's import are W's only.
+    if (seat === "C" && (step === "steered" || step === "imported")) continue;
     test(`a crash after ${step} on ${seat}: one T3 run per dispatch, no input lost, every run ends`, async () => {
       room = await Room.create();
       room.crashOnce(step, seat);
-      const { u, a } = await scenario(room);
+      const ids = await scenario(room);
       assert.deepEqual(room.crashes, [`${step}:${seat}`], "the crash happened");
-      assert.equal(room.answeredClaims(a).length, 1, "A answered exactly once");
-      assert.equal(room.answeredClaims(u).length, 1);
-      assert.equal(room.wakes("C"), 2, "the Consigliere woke for U and for A's answer only");
+      assertOutcome(room, ids);
       assertCrashInvariants(room);
     });
   }
