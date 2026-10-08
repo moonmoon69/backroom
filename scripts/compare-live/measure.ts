@@ -22,7 +22,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { NO_T3_REPORT, campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
+import { NO_T3_REPORT, campaignDir, jobThreads, leakPattern, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
 import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE, judgeSlowCheckLogIn } from "./checkers.ts";
@@ -451,7 +451,7 @@ export function verifyJob(dir: string, measured: JobMeasure): Difference[] {
   }
   // No member may have read the harness, the evidence, the fixture repo or another job's folder.
   const own = job.jobId;
-  const leak = new RegExp(`scripts/compare-live|backroom-handoff|backroom-compare/fixture|backroom-compare/(?:dry/)?jobs/(?!${own}\\b)[0-9a-f]{6}`);
+  const leak = leakPattern(own);
   for (const file of jsonlFiles(sources.transcripts)) {
     const hit = leak.exec(readFileSync(file, "utf8"));
     if (hit) out.push({ job: name, what: `a transcript mentions ${hit[0]}`, measured: file, recounted: null });

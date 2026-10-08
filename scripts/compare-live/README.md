@@ -207,8 +207,10 @@ board #842) can instead be decided on: the decision goes into `<campaign>/decide
 one entry per difference, naming the job folder, the difference's text, its file relative to the job folder, the exact
 lines it rests on (line number and an excerpt each line must hold), the classification and the decision by post number.
 The accuracy check is unchanged and keeps reporting it (report.md, report.json, the exit code). `--verdict` goes ahead
-only when every difference is a listed one and every listed one holds (its job closed, its lines in its file, and a
-difference it covers), and prints them in `verdict.md` under "Decided exceptions to the accuracy check".
+only when every difference is a listed one and every listed one holds (its job closed, its lines in its file, every
+line of that file the leak guard matches among its listed lines, and a difference it covers), and prints them in
+`verdict.md` under "Decided exceptions to the accuracy check". Its exit status still carries the reported difference
+(1), whatever the verdict: the verdict is `verdict.md`'s heading line.
 `--register-gate` takes no exception.
 
 ## Recomputing one job by hand

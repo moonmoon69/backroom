@@ -49,6 +49,12 @@ export const CREW: { consigliere: { name: string; modelSelection: ModelSelection
  */
 export const NO_T3_REPORT: ReadonlySet<string> = new Set(["answer", "note"]);
 
+/**
+ * The accuracy check's leak guard (measure.ts verifyJob), shared with the decided exceptions (exceptions.ts): a job's
+ * transcript must not mention the harness, the evidence, the fixture repo or another job's folder.
+ */
+export const leakPattern = (ownJobId: string): RegExp => new RegExp(`scripts/compare-live|backroom-handoff|backroom-compare/fixture|backroom-compare/(?:dry/)?jobs/(?!${ownJobId}\\b)[0-9a-f]{6}`);
+
 /** The quiet the job window closes on, the cap after the report, and the cap without one. */
 export const QUIET_MS = 180_000;
 export const AFTER_REPORT_CAP_MS = 30 * 60_000;

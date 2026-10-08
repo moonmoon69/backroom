@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { leakPattern, type JobRecord } from "./campaign.ts";
 
 export const EXCEPTIONS_FILE = "decided-exceptions.json";
 
@@ -71,6 +72,13 @@ export function applyDecidedExceptions(differences: CheckDifference[], exception
     const fileLines = readFileSync(file, "utf8").split("\n");
     const wrong = e.lines.filter((l) => !Number.isInteger(l?.line) || typeof l?.text !== "string" || l.text === "" || !(fileLines[l.line - 1] ?? "").includes(l.text));
     if (wrong.length > 0) return problems.push(`${label}: line${wrong.length === 1 ? "" : "s"} ${wrong.map((l) => l?.line).join(", ")} of ${e.transcript} do not hold the quoted text`), false;
+    // The guard reports a file once, at its first match: every line of the file it matches must be a listed one, so a
+    // later mention in the same file cannot pass under the decision.
+    const job = JSON.parse(readFileSync(join(dir, "job.json"), "utf8")) as JobRecord;
+    const leak = leakPattern(job.jobId);
+    const listed = new Set(e.lines.map((l) => l.line));
+    const unlisted = fileLines.flatMap((text, i) => (leak.test(text) && !listed.has(i + 1) ? [i + 1] : []));
+    if (unlisted.length > 0) return problems.push(`${label}: ${e.transcript} has unlisted line${unlisted.length === 1 ? "" : "s"} the leak guard matches: ${unlisted.join(", ")}`), false;
     return true;
   });
   const covers = (e: DecidedException, d: CheckDifference) => d.job === e.job && d.what === e.what && d.measured === join(dirOf(e.job) as string, e.transcript);
@@ -102,6 +110,8 @@ export function decidedExceptionsSection(decided: Decided, total: number): strin
     "## Decided exceptions to the accuracy check",
     "",
     `The accuracy check found ${total} difference${total === 1 ? "" : "s"}, listed under "Accuracy differences" in the report below. ${decided.excepted.length === total ? (total === 1 ? "It is" : "All are") : `${decided.excepted.length} are`} decided exception${decided.excepted.length === 1 ? "" : "s"} (\`${EXCEPTIONS_FILE}\` in the campaign folder): the job${decided.excepted.length === 1 ? " is" : "s are"} measured and gated like every other, and the difference stays reported.`,
+    "",
+    "`measure.ts --verdict` exits 1 while any difference is reported, a decided one included, whatever the verdict: the verdict is this file's heading line.",
   ];
   for (const { difference, exception } of decided.excepted) {
     lines.push(

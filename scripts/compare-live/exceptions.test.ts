@@ -16,7 +16,9 @@ const FILE = "transcripts/-tally/4c806eab.jsonl";
 const LINE_51 = "node --no-warnings=ExperimentalWarning scripts/compare-live/run.ts --campaign c1 --side old --jobs T3:2";
 const dir = join(SCRATCH, "jobs", JOB);
 mkdirSync(join(dir, "transcripts", "-tally"), { recursive: true });
-writeFileSync(join(dir, FILE), [...Array.from({ length: 50 }, (_, i) => `{"line":${i + 1}}`), `{"tool_result":"... ${LINE_51} ..."}`, `{"line":52}`].join("\n"));
+const lines = [...Array.from({ length: 50 }, (_, i) => `{"line":${i + 1}}`), `{"tool_result":"... ${LINE_51} ..."}`, `{"line":52}`];
+writeFileSync(join(dir, FILE), lines.join("\n"));
+writeFileSync(join(dir, "job.json"), JSON.stringify({ jobId: "c3013f" }));
 const dirOf = (job: string) => (job === JOB ? dir : undefined);
 
 const leak: CheckDifference = { job: JOB, what: "a transcript mentions scripts/compare-live", measured: join(dir, FILE), recounted: null };
@@ -77,6 +79,18 @@ describe("decided exceptions", () => {
     assert.match(verdictRefusal([], stale) ?? "", /covers no difference the accuracy check found/);
   });
 
+  test("a later line the leak guard matches in the same file is not covered: the verdict is refused", () => {
+    for (const later of ["cat /home/moonmoon69/Projects/backroom-wt/c1/scripts/compare-live/checkers/dates.test.ts", "ls backroom-compare/jobs/aaaaaa/tally", "backroom-handoff/compare-live/c1/runner.log"]) {
+      writeFileSync(join(dir, FILE), [...lines, `{"tool_use":"${later}"}`].join("\n"));
+      const decided = applyDecidedExceptions([leak], [exception()], dirOf);
+      assert.deepEqual(decided.excepted, [], later);
+      assert.match(verdictRefusal([leak], decided) ?? "", /has unlisted line the leak guard matches: 53/);
+    }
+    writeFileSync(join(dir, FILE), [...lines, `{"tool_use":"ls backroom-compare/jobs/c3013f/tally"}`].join("\n"));
+    assert.equal(applyDecidedExceptions([leak], [exception()], dirOf).excepted.length, 1, "the job's own folder is not a leak");
+    writeFileSync(join(dir, FILE), lines.join("\n"));
+  });
+
   test("the campaign's file is read as listed", () => {
     const campaign = join(SCRATCH, "campaign");
     mkdirSync(campaign, { recursive: true });
@@ -95,6 +109,7 @@ describe("decided exceptions", () => {
     assert.ok(text.includes(`\`${FILE}\``));
     assert.ok(text.includes(`    ${LINE_51}`));
     assert.match(text, /\*\*Classification:\*\* exposure, not access/);
+    assert.match(text, /`measure\.ts --verdict` exits 1 while any difference is reported, a decided one included, whatever the verdict: the verdict is this file's heading line\./);
     assert.match(text, /\*\*Decision:\*\* #845 \(task625\), the Consigliere/);
     assert.ok(text.includes(`old-T3-2-c3013f a transcript mentions scripts/compare-live: measured ${JSON.stringify(join(dir, FILE))}, recounted null`));
     assert.deepEqual(decidedExceptionsSection(applyDecidedExceptions([leak], [], dirOf), 1), [], "no section without an exception");
