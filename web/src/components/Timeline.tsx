@@ -12,7 +12,7 @@ import {
 import { api } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
-import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunView, type Participant, type ThreadCost } from "../types.ts";
+import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
 import { Glyph } from "./icons.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
 import { FileBaseContext } from "./filePreviewContext.ts";
@@ -87,11 +87,12 @@ const useBoard = (): Board => {
 /**
  * The user's conversation with the room's Consigliere, as a view of the board: what the user posted (to him, as every
  * message in his room goes), his replies and turns to the user, and the notices that need the user. His answers to
- * members, and what the members say to each other, are on the board.
+ * members, what the members say to each other, and what the user typed in T3 on another member's thread (or sent
+ * there as a T3 command) are on the board.
  */
-function consigliereChat(posts: EnginePost[], his: ReadonlySet<string>): EnginePost[] {
+function consigliereChat(posts: EnginePost[], his: ReadonlySet<string>, hisThreads: ReadonlySet<string>): EnginePost[] {
   return posts.filter((post) => {
-    if (post.author === "$user") return true;
+    if (post.author === "$user") return !post.note?.t3 || hisThreads.has(post.note.t3.threadId);
     if (his.has(post.author)) {
       if (post.kind === "note") return true;
       if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user") === true;
@@ -133,6 +134,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const consigliereId = snapshot.room.consigliereId;
   // His seats: every binding he has had (a reseat gives him a new one).
   const his = useMemo(() => new Set(snapshot.bindings.filter((b) => b.participantId === consigliereId).map((b) => b.id)), [snapshot.bindings, consigliereId]);
+  const hisThreads = useMemo(() => new Set(snapshot.bindings.filter((b) => b.participantId === consigliereId).map((b) => b.threadId)), [snapshot.bindings, consigliereId]);
 
   // Older pages of the board, read on demand ("load older posts"); the snapshot holds the newest.
   const [older, setOlder] = useState<{ roomId: string; posts: EnginePost[]; earlier: boolean } | null>(null);
@@ -156,7 +158,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
       .finally(() => setLoadingOlder(false));
   };
 
-  const posts = useMemo(() => (chat ? consigliereChat(allPosts, his) : allPosts), [chat, allPosts, his]);
+  const posts = useMemo(() => (chat ? consigliereChat(allPosts, his, hisThreads) : allPosts), [chat, allPosts, his, hisThreads]);
 
   // Read aloud, when the room's menu says so: each new reply, and each new approval or question, named by who it is from.
   const [autoRead] = useAutoRead(`room:${snapshot.room.id}`);
@@ -369,7 +371,12 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
                 ),
               )}
               {liveTurns.map(({ participant, desk: participantDesk }) => (
-                <LiveTurnBubble key={participantDesk.runningRun?.runId ?? participant.id} participant={participant} desk={participantDesk} />
+                <LiveTurnBubble
+                  key={participantDesk.runningRun?.runId ?? participant.id}
+                  participant={participant}
+                  desk={participantDesk}
+                  promptOnBoard={allPosts.some((post) => post.author === "$user" && post.note?.source === "t3-message" && post.note.t3?.threadId === participantDesk.threadId && participantDesk.runningRun?.prompt != null && post.body.trim().startsWith(participantDesk.runningRun.prompt.trim()))}
+                />
               ))}
               {liveRuns.map((run) => (
                 <LiveRunBubble key={run.id} run={run} />
@@ -418,8 +425,12 @@ function PostRow({ post, chat }: { post: EnginePost; chat: boolean }) {
 function Stamp({ post }: { post: EnginePost }) {
   return (
     <span className="time mono" title={`post #${post.number} · ${whenTitle(post)}`}>
-      <span className="post-number">#{post.number}</span>
-      {post.at ? <> · {time(post.at)}</> : null}
+      {/* The chat hides the number (styles.css), and its separator with it. */}
+      <span className="post-number">
+        #{post.number}
+        {post.at ? " · " : ""}
+      </span>
+      {post.at ? time(post.at) : null}
     </span>
   );
 }
@@ -645,6 +656,7 @@ function Reply({ post }: { post: EnginePost }) {
         </div>
         <div className="bubble bubble-agent">
           <FileBaseContext.Provider value={null}>{post.body ? <Markdown text={post.body} /> : <span className="muted">No text.</span>}</FileBaseContext.Provider>
+          {output.t3?.runId ? <TurnInT3 t3={output.t3} /> : null}
           <div className="reply-foot">
             <CopyTextButton text={post.body} label="Copy reply" />
             {post.body ? <SpeakButton id={post.id} text={post.body} lead={nameOf(post.author).replace(/^@/, "")} /> : null}
@@ -653,6 +665,52 @@ function Reply({ post }: { post: EnginePost }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The T3 turn behind a reply, as T3 shows it: the member's messages before its final one and the files it changed. The
+ * board keeps only the final; this reads the rest from T3 when opened (T3's recent window of the thread).
+ */
+function TurnInT3({ t3 }: { t3: EngineT3Ref }) {
+  const [turn, setTurn] = useState<Extract<ThreadItem, { kind: "reply" }> | "loading" | "gone" | null>(null);
+  const load = () => {
+    if (turn !== null) return;
+    setTurn("loading");
+    api
+      .thread(t3.threadId)
+      .then((view) => setTurn(view.items.find((item): item is Extract<ThreadItem, { kind: "reply" }> => item.kind === "reply" && item.runId === t3.runId) ?? "gone"))
+      .catch(() => setTurn("gone"));
+  };
+  return (
+    <details className="reply-progress" onToggle={(event) => (event.currentTarget.open ? load() : undefined)}>
+      <summary className="mono">turn in T3</summary>
+      {turn === "loading" || turn === null ? (
+        <p className="muted mono">reading T3…</p>
+      ) : turn === "gone" ? (
+        <p className="muted">T3 no longer shows this turn in the thread's recent window.</p>
+      ) : (
+        <>
+          {turn.progress.length > 0 ? (
+            <ol>
+              {turn.progress.map((note, index) => (
+                <li key={index}>
+                  <span className="time mono">{time(note.at)}</span>
+                  <Markdown text={note.text} className="md-small" />
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="muted">No messages before its final one.</p>
+          )}
+          {turn.files ? (
+            <p className="mono muted">
+              {turn.files.count} file{turn.files.count === 1 ? "" : "s"} changed <span className="add">+{turn.files.additions}</span> <span className="del">−{turn.files.deletions}</span>
+            </p>
+          ) : null}
+        </>
+      )}
+    </details>
   );
 }
 
@@ -735,6 +793,7 @@ function Note({ post }: { post: EnginePost }) {
         </div>
         <div className="bubble bubble-agent bubble-agent-note">
           {post.body ? <Markdown text={post.body} /> : null}
+          {note.t3?.runId ? <TurnInT3 t3={note.t3} /> : null}
           <div className="reply-foot">
             <CopyTextButton text={post.body} label="Copy" />
             <ReplySpend post={post} />
@@ -993,14 +1052,15 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
  * A turn on a member's thread the room did not start (typed in T3, or the agent woke itself), still running: its
  * prompt, and the turn live. When it ends the service imports it as notes and this goes away.
  */
-function LiveTurnBubble({ participant, desk }: { participant: Participant; desk: Desk }) {
+function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Participant; desk: Desk; promptOnBoard: boolean }) {
   const { snapshot, colorOf, runCommand } = useRoom();
   const running = desk.runningRun!;
   const requests = snapshot.nativeRequests.filter((request) => request.participantId === participant.id);
   const speaker = <span className="speaker mono identity">{participant.alias}</span>;
   return (
     <>
-      {running.prompt ? (
+      {/* The prompt, until the service imports it as the user's note (it does while the turn still runs). */}
+      {running.prompt && !promptOnBoard ? (
         <div className="chat-row from-user">
           <div className="chat-stack">
             <div className="chat-head">

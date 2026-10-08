@@ -143,7 +143,18 @@ class Service {
   }
 
   async call<T = any>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${this.base}${path}`, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const init = { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) };
+    let response: Response;
+    try {
+      response = await fetch(`${this.base}${path}`, init);
+    } catch (error) {
+      // A kept-alive connection the service closed while this script sat in a long browser step: the request never
+      // reached it, so it is sent once more on a fresh connection. Anything else is a real failure.
+      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+      if (!/UND_ERR_SOCKET|ECONNRESET|other side closed/.test(`${cause?.code ?? ""} ${cause?.message ?? ""}`)) throw new Error(`${method} ${path}: ${(error as Error).message} (${cause?.code ?? cause?.message ?? "no cause"})`);
+      log(`  (${method} ${path}: the kept-alive connection was closed; sent again)`);
+      response = await fetch(`${this.base}${path}`, init);
+    }
     const text = await response.text();
     const json = text ? JSON.parse(text) : null;
     if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text.slice(0, 300)}`);
@@ -362,10 +373,10 @@ class Room {
     });
   }
   /** End what T3 runs on the member's thread now (the script holds every run), and wait for the host to import it. */
-  async finish(alias: Alias, text: string, outcome: "completed" | "error" | "interrupted" = "completed"): Promise<void> {
+  async finish(alias: Alias, text: string, extra: { outcome?: "completed" | "error" | "interrupted"; progress?: string[]; files?: unknown[] } = {}): Promise<void> {
     const before = await this.snapshot();
     const runId = before.seats.find((x) => x.seatId === this.seat[alias])?.activeRunId ?? null;
-    await until(`T3 to run @${alias}'s turn`, () => this.service.fake("complete", { threadId: this.thread[alias], text, outcome }).then(() => true), 20_000, 300);
+    await until(`T3 to run @${alias}'s turn`, () => this.service.fake("complete", { threadId: this.thread[alias], text, ...extra }).then(() => true), 20_000, 300);
     if (runId) await until(`@${alias}'s run to end`, async () => (await this.snapshot()).runs.find((r) => r.id === runId)?.phase === "terminal");
   }
   /** Wait until the member is idle with nothing unread; a wake the script did not plan for is ended and logged. */
@@ -418,7 +429,7 @@ class Checks {
    * One state: the snapshot has it (polled until `api` returns a description of the fields that show it), then the page
    * shows it (`wait-for` each text), the console is clean, and a screenshot is kept.
    */
-  async state(name: string, api: (s: Snapshot) => string | null | false, page: string[], options: { show?: number; extra?: () => void } = {}): Promise<Snapshot> {
+  async state(name: string, api: (s: Snapshot) => string | null | false, page: string[], options: { show?: number; focus?: (s: Snapshot) => number | undefined; extra?: () => void } = {}): Promise<Snapshot> {
     log(`CHECK ${name}`);
     let described = "";
     const snap = await until(`the snapshot to show: ${name}`, async () => {
@@ -429,11 +440,12 @@ class Checks {
       return s;
     });
     log(`  api: ${described}`);
-    if (options.show !== undefined) this.browser.show(options.show);
+    const show = options.show ?? options.focus?.(snap);
+    if (show !== undefined) this.browser.show(show);
     for (const text of page) this.browser.waitFor(text);
     options.extra?.();
     this.browser.consoleClean();
-    if (options.show !== undefined) this.browser.show(options.show);
+    if (show !== undefined) this.browser.show(show);
     this.browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
     this.passed.push(name);
     log(`PASS ${name}`);
@@ -516,7 +528,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   browser.consoleClean();
 
   // 6. The review passes; the worker's next final answers its request; the Consigliere reports.
-  await room.finish("reviewer", "PASS: the fix is right and the tests cover leap years.");
+  await room.finish("reviewer", "PASS: the fix is right and the tests cover leap years.", {
+    progress: ["Reading the diff of src/dates.ts.", "Ran the date tests: 48 passed."],
+    files: [{ path: "tests/dates.test.ts", kind: "modified", additions: 6, deletions: 1 }],
+  });
   await room.live("worker");
   await room.finish("worker", "Fixed and reviewed: PASS from @reviewer.");
   await room.live("fable");
@@ -533,6 +548,15 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   const answeredBy = room.post(s, ask).request.answer.number as number;
   browser.show(U);
   browser.waitFor(`answered · #${answeredBy}`);
+  // The turn behind the review's answer, as T3 shows it: its earlier messages and the files it changed.
+  const reviewAnswer = claimOf(s, review, "answered");
+  browser.show(reviewAnswer.number);
+  browser.on("eval", `() => { const d = document.querySelector('.timeline [data-number="${reviewAnswer.number}"] details.reply-progress'); if (d) d.open = true; return Boolean(d); }`);
+  browser.waitFor("Ran the date tests: 48 passed.");
+  browser.waitFor("1 file changed");
+  browser.consoleClean();
+  browser.screenshot("the-turn-in-t3-behind-a-reply");
+  log("  page: the review's reply opens to its turn in T3 (earlier messages, files changed)");
 
   // 7. The reviewer's agent goes on by itself after its answer (a self-started turn): a note marked "after answer".
   await service.fake("self-run", { threadId: room.thread.reviewer });
@@ -540,7 +564,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   await check.state("'after answer' on a note from a self-started turn", (x) => {
     const note = x.posts.find((p) => p.kind === "note" && p.author === seat.reviewer && p.note.source === "t3-turn" && p.note.afterAnswer);
     return note ? `#${note.number} note by @reviewer source=t3-turn afterAnswer=true about #${note.about.map((r: any) => r.number).join(", #")}` : null;
-  }, ["after answer", "continued on its own", "One more thing: the fix also needs a test for 1900-02-29."]);
+  }, ["after answer", "continued on its own", "One more thing: the fix also needs a test for 1900-02-29."], {
+    focus: (x) => x.posts.find((p) => p.kind === "note" && p.author === seat.reviewer && p.note.afterAnswer)?.number,
+  });
 
   // 8. A turn the user stops fails: the notice needs the user, with Retry; Retry is clicked on the page.
   await room.settle("fable");
@@ -550,13 +576,13 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   s = await check.state("a failed turn that needs you, with Retry and Dismiss", (x) => {
     const notice = x.needsYou.find((p) => p.notice.retryRunId && p.about.some((r: any) => r.requestId === changelog));
     return notice && x.counts.needsYou >= 1 ? `needsYou #${notice.number} intent=${notice.notice.intent} retryRunId=${notice.notice.retryRunId.slice(0, 8)}; counts.needsYou=${x.counts.needsYou}` : null;
-  }, ["Needs you ·", "Retry", "Dismiss"]);
+  }, ["Needs you ·", "Retry", "Dismiss"], { focus: (x) => x.needsYou.find((p) => p.about.some((r: any) => r.requestId === changelog))?.number });
   browser.click(/button "Retry"/);
   await check.state("Retry: the run sent again", (x) => {
     const retried = x.posts.find((p) => p.kind === "notice" && p.notice.retried && p.about.some((r: any) => r.requestId === changelog));
     const retry = x.posts.find((p) => p.kind === "retry");
     return retried && retry && !x.needsYou.some((p) => p.id === retried.id) ? `notice #${retried.number} retried=true, retry post #${retry.number}, needsYou no longer lists it` : null;
-  }, ["retried a failed turn"]);
+  }, ["retried a failed turn"], { focus: (x) => x.posts.find((p) => p.kind === "retry")?.number });
   await room.live("fable");
   await room.finish("fable", "Changelog updated.");
 
@@ -619,7 +645,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   await check.state("a late output", (x) => {
     const late = claimOf(x, flag, "late");
     return late ? `#${late.number} by @worker claims #${F}: late (the request was cancelled)` : null;
-  }, [`late for #${F}: it was cancelled`]);
+  }, [`late for #${F}: it was cancelled`], { focus: (x) => claimOf(x, flag, "late")?.number });
   // The late answer's attention notice wakes the Consigliere once, and the cancel told the worker.
   await room.settle("fable");
   await room.settle("worker");
@@ -640,7 +666,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     const reviewer = x.seats.find((w) => w.seatId === seat.reviewer);
     const post = x.posts.find((p) => p.kind === "blocked" && p.blocked.seatId === seat.reviewer);
     return reviewer?.blocked && x.blocked.length >= 1 && post ? `seat.blocked #${reviewer.blocked.number} requiredBytes=${reviewer.blocked.requiredBytes}; blocked post #${post.number}; snapshot.blocked=${x.blocked.length}` : null;
-  }, ["blocked delivery", "cannot reach @reviewer"]);
+  }, ["blocked delivery", "cannot reach @reviewer"], { focus: (x) => x.posts.find((p) => p.kind === "blocked")?.number });
 
   // 14. The turn typed in T3 ends: imported as notes; the waiting post is then delivered and answered.
   await room.finish("reviewer", "Build is green.");
@@ -648,7 +674,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     const prompt = x.posts.find((p) => p.kind === "note" && p.author === "$user" && p.note.source !== "post" && p.body.includes("Quick check from T3"));
     const reply = x.posts.find((p) => p.kind === "note" && p.author === seat.reviewer && p.note.source === "t3-turn" && p.body.includes("Build is green."));
     return prompt && reply ? `#${prompt.number} note by the user (${prompt.note.source}), #${reply.number} note by @reviewer (t3-turn)` : null;
-  }, ["Build is green."]);
+  }, ["Build is green."], { focus: (x) => x.posts.find((p) => p.kind === "note" && p.body.includes("Build is green."))?.number });
   await room.live("reviewer");
   await room.finish("reviewer", "The changelog wording is fine.");
   await until("the reviewer's answer", async () => room.post(await room.snapshot(), wording).request.state === "answered");
@@ -689,7 +715,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
       log("  page: /hold refused before sending, Send disabled");
     },
   });
-  browser.fill(/textbox "Message"/, "");
+  // Leave no draft behind: select all and delete, as the user would.
+  browser.on("press", "Control+a");
+  browser.on("press", "Backspace");
+  if (browser.eval<string>("() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? ''") !== "") fail("the composer kept a draft");
   browser.on("press", "Escape");
   await room.finish("fable", "Release notes drafted.");
   await room.finish("worker", "Done looking.");
@@ -703,7 +732,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     extra: () => {
       const leaked = browser.eval<boolean>(`() => Boolean(document.querySelector('.timeline [data-number="${R}"], .timeline [data-number="${V}"]'))`);
       if (leaked) fail("the chat shows requests between members");
-      log("  page: no member-to-member request in the chat");
+      const typedElsewhere = browser.eval<boolean>("() => document.querySelector('.timeline').textContent.includes('Quick check from T3')");
+      if (typedElsewhere) fail("the chat shows what was typed in T3 on another member's thread");
+      log("  page: no member-to-member request, nothing typed on another member's thread, in the chat");
     },
   });
 

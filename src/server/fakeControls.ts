@@ -6,7 +6,8 @@
  * fake adapter, which never talks to a real T3; with the real adapter nothing is mounted.
  *
  *   POST /api/fake/hold          { threadId, hold }            runs on the thread are not finished automatically
- *   POST /api/fake/complete      { threadId, text, outcome? }  end the thread's running run ("completed" | "error" | "interrupted")
+ *   POST /api/fake/complete      { threadId, text, outcome?, progress?, files? }   end the thread's running run
+ *                                outcome "completed" | "error" | "interrupted"; progress: messages before the final one
  *   POST /api/fake/self-run      { threadId }                  a turn the agent starts itself -> { runId }
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
  *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
@@ -38,7 +39,9 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   }));
   controls.post("/api/fake/complete", run((input) => {
     const outcome = input.outcome === "error" || input.outcome === "interrupted" ? input.outcome : "completed";
-    fake.completeRun(thread(input), { text: typeof input.text === "string" ? input.text : "Done.", outcome });
+    const progress = Array.isArray(input.progress) ? input.progress.filter((p): p is string => typeof p === "string") : [];
+    const files = Array.isArray(input.files) ? (input.files as Array<{ path: string; kind: string; additions: number; deletions: number }>) : [];
+    fake.completeRun(thread(input), { text: typeof input.text === "string" ? input.text : "Done.", outcome, progress, files });
     return {};
   }));
   controls.post("/api/fake/self-run", run((input) => ({ runId: fake.startSelfRun(thread(input)) })));
