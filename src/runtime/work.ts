@@ -95,6 +95,41 @@ export function openOwned(p: Projection, ids: readonly string[], seatId: string)
 }
 
 /**
+ * The seat's newest run T3 took that carried every one of these requests: the live run when it does. Its watermark is
+ * what the member has seen when it answers them, so an answer is judged by it (H1): a review or correction a later
+ * run delivered is seen, and only what came after that run's watermark counts as unseen (K1).
+ */
+export function newestCarrier(p: Projection, seatId: string, ids: readonly string[]): Run | null {
+  const records = runRecords(p);
+  let newest: Run | null = null;
+  for (const run of p.runs.values()) {
+    if (run.seatId !== seatId || run.phase === "prepared" || run.phase === "sending" || run.phase === "rejected") continue;
+    const allowed = allowedIds(p, run);
+    if (!ids.every((id) => allowed.has(id))) continue;
+    if (!newest || records.get(run.id)!.reservedSeq > records.get(newest.id)!.reservedSeq) newest = run;
+  }
+  return newest;
+}
+
+/** The evidence of an activity the host released for an output tied to a later run (H1); the output's key follows. */
+export const RELEASED = "lean: released for ";
+
+/**
+ * Activities released for an output that is not written yet (a crash came between the two commits), with that output's
+ * key, for the keys `mine` selects. The caller that released them writes the output on its next attempt.
+ */
+export function releasedFor(p: Projection, seatId: string, mine: (sourceKey: string) => boolean): Array<{ activity: Activity; sourceKey: string }> {
+  const out: Array<{ activity: Activity; sourceKey: string }> = [];
+  for (const e of p.events) {
+    if (e.data.kind !== "activity.status" || !e.data.evidence.startsWith(RELEASED)) continue;
+    const sourceKey = e.data.evidence.slice(RELEASED.length);
+    const activity = p.activities.get(e.data.activityId);
+    if (activity?.seatId === seatId && mine(sourceKey) && !p.sourceKeys.has(sourceKey)) out.push({ activity, sourceKey });
+  }
+  return out;
+}
+
+/**
  * The seat's newest answer attempt on any of these requests, whatever its outcome: a later run's final after a
  * superseded one wins over the final of the run that started the background work. Re-used when that work ends quietly.
  */
