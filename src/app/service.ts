@@ -139,7 +139,8 @@ export class RoomService {
     this.notify = notify;
     this.direct = new DirectThreads(repos, adapter);
     const limit = options.threadActionTimeoutMs;
-    this.threadActionTimeoutMs = limit !== undefined && Number.isFinite(limit) && limit > 0 ? limit : THREAD_ACTION_TIMEOUT_MS;
+    // Node fires a timer longer than 2^31-1 ms (about 24.8 days) after 1 ms: a huge limit is held at that.
+    this.threadActionTimeoutMs = limit !== undefined && Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2 ** 31 - 1) : THREAD_ACTION_TIMEOUT_MS;
     this.log = options.log ?? (() => {});
   }
 

@@ -131,6 +131,18 @@ for (const engine of [false, true]) {
   });
 }
 
+test("a limit beyond what a timer can hold is held at its maximum: a T3 that answers is done, not timed out at once", async (t) => {
+  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1", "sol2", "claude"], { threadActionTimeoutMs: 1e10 });
+  t.after(() => stack.close());
+  const original = stack.fake.setThreadLifecycle.bind(stack.fake);
+  stack.fake.setThreadLifecycle = async (input) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await original(input);
+  };
+  const result = (await stack.run({ type: "room.delete", roomId: stack.roomId, threads: { [stack.participants.sol1!]: "settle" } })) as { threads: Array<{ alias: string; result: string }> };
+  assert.deepEqual(result.threads.find((r) => r.alias === "sol1")?.result, "done");
+});
+
 test("two deletes of the same room at once: one deletes it and sends each action once, the other finds no room", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
