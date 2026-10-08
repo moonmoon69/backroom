@@ -24,7 +24,7 @@ import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { campaignDir, jobThreads, listJobs, type JobRecord, type Snapshot } from "./campaign.ts";
 import { GATE_RULES, METRICS, chooseNK, spread, verdict, type Gate, type GateRun, type Metric } from "./gate.ts";
-import { RATES, STATE_DB } from "./t3.ts";
+import { CLAUDE_PROJECTS, RATES, STATE_DB } from "./t3.ts";
 import { FIXTURE_TEMPLATE } from "./checkers.ts";
 import { TASK_IDS, hasJobDoneLine, type TaskId } from "./tasks.ts";
 import { TranscriptTokens, type Tokens } from "./tokens.ts";
@@ -433,7 +433,7 @@ const fmt = (metric: Metric | string, value: number | null): string => {
   return String(value);
 };
 
-function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecord[], differences: Difference[] | null): string {
+function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecord[], differences: Difference[] | null, aborted: Array<{ job: JobRecord; spentUsd: number }> = []): string {
   const lines: string[] = [];
   lines.push(`# Comparison campaign ${campaign}`, "", `Measured ${new Date().toISOString()} by scripts/compare-live/measure.ts from the evidence in ${campaignDir(campaign)}/jobs.`, "");
   if (differences) lines.push(`Accuracy check (\`--verify\`: rawsum.mjs for tokens, sqlite3 for turns): ${differences.length === 0 ? "**passed**, no difference" : `**${differences.length} differences**`}.`, "");
@@ -491,6 +491,11 @@ function reportMarkdown(campaign: string, measures: JobMeasure[], jobs: JobRecor
       );
     }
   }
+  if (aborted.length > 0) {
+    lines.push("", "## Jobs that did not close (not measured; their spend counts against the cap)", "", "| job | side | task | run | status | spent | why |", "|---|---|---|---|---|---|---|");
+    for (const { job, spentUsd } of aborted) lines.push(`| ${job.jobId} | ${job.side} | ${job.task} | ${job.run} | ${job.status} | $${spentUsd.toFixed(2)} | ${(job.notes.at(-1) ?? "").split("\n")[0]} |`);
+    lines.push("", `Campaign spend, every job: $${(measures.reduce((n, m) => n + m.spend.totalUsd, 0) + aborted.reduce((n, a) => n + a.spentUsd, 0)).toFixed(2)}.`);
+  }
   lines.push("", "## Throwaway T3 projects and rooms", "", "Delete after the campaign, with the user's OK.", "", "| job | side | T3 project | folder | room |", "|---|---|---|---|---|");
   for (const job of jobs) lines.push(`| ${job.jobId} | ${job.side} | ${job.projectId ?? "–"} | ${job.folder} | ${job.roomId ?? "–"} on ${job.instance.url} |`);
   if (differences && differences.length > 0) {
@@ -510,7 +515,12 @@ async function main(): Promise<void> {
   const differences = values.verify ? jobs.flatMap(({ dir }, index) => verifyJob(dir, measures[index] as JobMeasure)) : null;
   const out = campaignDir(campaign);
   writeFileSync(join(out, "report.json"), `${JSON.stringify({ measuredAt: new Date().toISOString(), measures, differences }, null, 2)}\n`);
-  writeFileSync(join(out, "report.md"), reportMarkdown(campaign, measures, jobs.map((j) => j.job), differences));
+  // Jobs that did not close (aborted: an error stopped them) are not measured; they are listed with what they spent.
+  const live = new TranscriptTokens({ stateDb: STATE_DB, projectsDir: CLAUDE_PROJECTS, ratesPath: RATES });
+  const aborted = listJobs(campaign)
+    .filter(({ job }) => job.status !== "closed")
+    .map(({ job }) => ({ job, spentUsd: live.between(jobThreads(job), Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY).costUsd }));
+  writeFileSync(join(out, "report.md"), reportMarkdown(campaign, measures, listJobs(campaign).map((j) => j.job), differences, aborted));
   console.log(`${measures.length} jobs measured; ${join(out, "report.md")}`);
 
   if (values["register-gate"]) {
@@ -519,7 +529,7 @@ async function main(): Promise<void> {
     if (measures.some((m) => m.side === "new")) throw new Error("the gate is registered before any new-side job");
     const old = measures.filter((m) => m.side === "old" && !m.dry);
     const short = TASK_IDS.filter((task) => old.filter((m) => m.task === task).length !== 2);
-    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status !== "closed")) throw new Error(`R0 needs exactly 2 closed old jobs per task and no unclosed job (short: ${short.join(", ") || "none"})`);
+    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status === "running")) throw new Error(`R0 needs exactly 2 closed old jobs per task and no job still running (short: ${short.join(", ") || "none"})`);
     const bySpread = spread(old.map(gateRun));
     const { N, K, wideTasks } = chooseNK(bySpread);
     const spend = old.map((m) => m.spend.totalUsd);
@@ -550,7 +560,7 @@ async function main(): Promise<void> {
     const gate = JSON.parse(readFileSync(join(import.meta.dirname, "gate.json"), "utf8")) as Gate;
     const runs = measures.filter((m) => !m.dry);
     const short = TASK_IDS.flatMap((task) => (["old", "new"] as const).filter((side) => runs.filter((m) => m.task === task && m.side === side).length !== gate.N).map((side) => `${task} ${side}`));
-    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status !== "closed")) throw new Error(`the verdict needs N = ${gate.N} closed jobs per task and side and no unclosed job (short: ${short.join(", ") || "none"})`);
+    if (short.length > 0 || listJobs(campaign).some(({ job }) => job.status === "running")) throw new Error(`the verdict needs N = ${gate.N} closed jobs per task and side and no job still running (short: ${short.join(", ") || "none"})`);
     const result = verdict(gate, runs.map(gateRun));
     const lines = [`# Z1 verdict: ${result.verdict}`, "", `chance-pass ${(result.chance.chancePass * 100).toFixed(2)}% (target ${gate.chancePassTarget * 100}%), chance-G3-fail ${(result.chance.chanceG3Fail * 100).toFixed(2)}%, over ${result.chance.labellings} labellings; N = ${gate.N}, K = ${gate.K}.`, "", `G1 ${result.evaluation.g1}, G2 ${result.evaluation.g2}, G3 ${result.evaluation.g3}.`, "", "| task | correct old/new | premature old/new | " + METRICS.join(" | ") + " | material |", "|---|---|---|" + METRICS.map(() => "---|").join("") + "---|"];
     for (const [task, row] of Object.entries(result.evaluation.perTask)) lines.push(`| ${task} | ${row.correct.old}/${row.correct.new} | ${row.premature.old}/${row.premature.new} | ${METRICS.map((m) => row.cells[m]).join(" | ")} | ${row.material.join(", ") || "none"} |`);
