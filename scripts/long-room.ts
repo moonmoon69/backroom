@@ -47,7 +47,7 @@ function seat(store: EngineStore, room: string): void {
   for (const id of SEATS) store.execute(room, { type: "seat", actor: "$user", id: `seat:${id}`, seatId: id, threadId: `${room}:thread:${id}`, orchestrator: id === "C" });
 }
 
-/** `count` notes of exactly 1,024 bytes by C, as `rooms-board note` posts them; the time of each append. */
+/** `count` notes of exactly 1,024 bytes by C, journal notes that wake nobody; the time of each append. */
 function notes(store: EngineStore, room: string, count: number): number[] {
   const times: number[] = [];
   for (let i = 0; i < count; i++) {
