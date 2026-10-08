@@ -13,11 +13,13 @@
  *   node scripts/compare-live/run.ts --campaign r0 --side old --jobs T1:1,T2:1,T3:1,T4:1 [--cap 100]
  *   node scripts/compare-live/run.ts --dry          the plumbing on two ROOMS_ADAPTER=fake instances (4 tasks each),
  *                                                   the new one running ROOMS_ENGINE=1
+ *   node scripts/compare-live/run.ts --finish <job folder> --decision "<where it was decided>"
+ *                                                   the evidence of a job aborted after its close, completed later
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { isRunActive, type T3ThreadDetail, type T3ThreadShell } from "../../src/adapter/types.ts";
 import type { HttpT3Adapter } from "../../src/adapter/http.ts";
@@ -110,8 +112,14 @@ class Job {
   private readonly seen = new Set<string>();
   private readonly checks: Array<Promise<void>> = [];
 
-  constructor(options: JobOptions, spentBefore: number) {
+  constructor(options: JobOptions, spentBefore: number, resume?: { dir: string; record: JobRecord }) {
     this.options = options;
+    if (resume) {
+      // --finish: a job already recorded, taken up where it stopped.
+      this.dir = resume.dir;
+      this.record = resume.record;
+      return;
+    }
     const jobId = randomBytes(3).toString("hex");
     this.dir = join(jobsDir(options.campaign), `${options.side}-${options.task}-${options.run}-${jobId}`);
     const fixtureCommit = git(FIXTURE_REPO, "rev-parse", `${FIXTURE_TAG}^{commit}`);
@@ -447,10 +455,33 @@ class Job {
 
   /** Evidence: the final copy and its check, T3's threads and rows, the transcripts, the board, the instance's runs. */
   private async finish(): Promise<void> {
-    const { instance, t3 } = this.options;
     this.snapshot("final", "", null);
     await Promise.all(this.checks);
     this.record.t3.end = await this.versions();
+    await this.evidence();
+  }
+
+  /**
+   * --finish: a job whose window closed (its outcome and final copy recorded) and that was aborted while its evidence
+   * was being copied (T3 unreachable), completed from the same sources, which still hold it, on the decision named.
+   * Its window, close and outcome stay as recorded; what proves nothing changed after the close (the folder against the
+   * final copy, T3's runs on the job threads, the transcripts' last entries) goes to late-evidence.json and the notes.
+   */
+  async completeEvidence(decision: string): Promise<LateEvidence> {
+    const refusal = finishRefusal(this.record, this.dir);
+    if (refusal) throw new Error(`--finish refused: ${refusal}`);
+    const startedAt = iso();
+    this.note(`evidence completed after the abort by run.ts --finish (${decision}); the window, close and outcome stay as recorded`);
+    await this.evidence();
+    const proof = { ...lateEvidenceProof(this.dir, this.record), decision, completedAt: startedAt };
+    writeFileSync(join(this.dir, "late-evidence.json"), `${JSON.stringify(proof, null, 2)}\n`);
+    this.note(`late evidence: ${proof.summary}`);
+    return proof;
+  }
+
+  /** Everything measure.ts reads, copied at the close; then the job is closed and measured. */
+  private async evidence(): Promise<void> {
+    const { instance, t3 } = this.options;
     const evidence = join(this.dir, "t3");
     mkdirSync(evidence, { recursive: true });
     const seatIds = new Set(this.record.seats.map((s) => s.threadId));
@@ -487,6 +518,74 @@ class Job {
     writeFileSync(join(this.dir, "measure.json"), `${JSON.stringify(measured, null, 2)}\n`);
     this.note(`closed (${this.record.close}); report ${this.record.times.reportAt ?? "none"}; spend $${measured.spend.totalUsd.toFixed(2)}`);
   }
+}
+
+/** Why --finish will not take up a job: only a paid job aborted after its close, with its final copy and no evidence yet. */
+export function finishRefusal(record: JobRecord, dir: string): string | null {
+  if (record.dry) return "a dry job";
+  if (record.status !== "aborted") return `the job is ${record.status}, not aborted`;
+  if (record.close === null || !record.times.closeAt) return "the job was aborted before its window closed: it has no outcome to keep";
+  if (!record.snapshots.some((s) => s.kind === "final")) return "the job has no final copy";
+  if (existsSync(join(dir, "measure.json")) || existsSync(join(dir, "instance-room.json"))) return "the job's evidence is there already";
+  return null;
+}
+
+export interface LateEvidence {
+  closeAt: string;
+  /** The job folder now, against the final copy taken at the close (node_modules and .git left out of both). */
+  folder: { files: number; differ: string[]; newestFileTime: string | null };
+  /** T3's runs on the job threads (threads.json): none may have been requested after the close. */
+  runs: { count: number; requestedAfterClose: number; lastRequestedAt: string | null; lastCompletedAt: string | null };
+  /** The copied transcripts: the newest entry of any, and how many entries are after the close. */
+  transcripts: { files: number; newestEntry: string | null; entriesAfterClose: number };
+  unchanged: boolean;
+  summary: string;
+}
+
+function filesUnder(root: string, at = root): string[] {
+  if (!existsSync(at)) return [];
+  return readdirSync(at)
+    .filter((name) => name !== "node_modules" && name !== ".git")
+    .flatMap((name) => (statSync(join(at, name)).isDirectory() ? filesUnder(root, join(at, name)) : [relative(root, join(at, name))]))
+    .sort();
+}
+
+/** What proves a job's sources did not change between its close and evidence copied later (--finish). */
+export function lateEvidenceProof(dir: string, record: JobRecord): LateEvidence {
+  const closeAt = record.times.closeAt as string;
+  const close = Date.parse(closeAt);
+  const final = record.snapshots.find((s) => s.kind === "final")?.dir ?? "";
+  const now = filesUnder(record.folder);
+  const then = filesUnder(final);
+  const differ = [...new Set([...now, ...then])].filter((file) => !now.includes(file) || !then.includes(file) || !readFileSync(join(record.folder, file)).equals(readFileSync(join(final, file)))).sort();
+  const times = now.map((file) => statSync(join(record.folder, file)).mtimeMs);
+  const records = existsSync(join(dir, "t3", "threads.json")) ? (JSON.parse(readFileSync(join(dir, "t3", "threads.json"), "utf8")) as ThreadRecord[]) : [];
+  const runs = records.flatMap((r) => r.runs);
+  const latest = (values: Array<string | null>) => values.filter((v): v is string => v !== null).sort().at(-1) ?? null;
+  let entries = 0;
+  let after = 0;
+  let newest: string | null = null;
+  const transcripts = filesUnder(join(dir, "transcripts")).filter((file) => file.endsWith(".jsonl"));
+  for (const file of transcripts) {
+    for (const line of readFileSync(join(dir, "transcripts", file), "utf8").split("\n")) {
+      const stamp = /"timestamp":"([^"]+)"/.exec(line)?.[1];
+      if (!stamp || Number.isNaN(Date.parse(stamp))) continue;
+      entries += 1;
+      if (Date.parse(stamp) > close) after += 1;
+      if (newest === null || stamp > newest) newest = stamp;
+    }
+  }
+  const requestedAfterClose = runs.filter((r) => Date.parse(r.requestedAt) > close).length;
+  const newestFileTime = times.length ? new Date(Math.max(...times)).toISOString() : null;
+  const unchanged = differ.length === 0 && then.length > 0 && times.every((t) => t <= close) && requestedAfterClose === 0 && after === 0;
+  return {
+    closeAt,
+    folder: { files: now.length, differ, newestFileTime },
+    runs: { count: runs.length, requestedAfterClose, lastRequestedAt: latest(runs.map((r) => r.requestedAt)), lastCompletedAt: latest(runs.map((r) => r.completedAt)) },
+    transcripts: { files: transcripts.length, newestEntry: newest, entriesAfterClose: after },
+    unchanged,
+    summary: `${unchanged ? "nothing changed after the close" : "CHANGED after the close"}: folder ${now.length} files, ${differ.length} differing from the final copy, newest file ${newestFileTime}; T3 runs ${runs.length}, ${requestedAfterClose} requested after the close, last requested ${latest(runs.map((r) => r.requestedAt))}; transcripts ${transcripts.length} files (${entries} entries), newest entry ${newest}, ${after} after the close (${closeAt})`,
+  };
 }
 
 /**
@@ -641,8 +740,21 @@ async function main(): Promise<void> {
       dry: { type: "boolean", default: false },
       "quiet-ms": { type: "string" },
       "user-ok": { type: "string" },
+      finish: { type: "string" },
+      decision: { type: "string" },
     },
   });
+  if (values.finish) {
+    if (!values.decision) throw new Error('--finish needs --decision "<where it was decided>"');
+    const dir = resolve(values.finish);
+    const record = JSON.parse(readFileSync(join(dir, "job.json"), "utf8")) as JobRecord;
+    const info = INSTANCES[record.side];
+    refuseTaintedCheckout(info.worktree);
+    const options = { campaign: record.campaign, side: record.side, task: record.task, run: record.run, instance: driverFor(record.side, info.url, boardToken(join(info.worktree, "data"))), worktree: info.worktree, t3: liveT3(join(info.worktree, "data")), cap: record.spend.cap, quietMs: QUIET_MS, dry: false };
+    const proof = await new Job(options, record.spend.campaignBefore, { dir, record }).completeEvidence(values.decision);
+    log(`${record.side} ${record.task}#${record.run}: ${proof.summary}`);
+    return;
+  }
   if (values.dry) {
     const campaign = values.campaign ?? "dry";
     const quietMs = Number(values["quiet-ms"] ?? 20_000);
