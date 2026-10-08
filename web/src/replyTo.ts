@@ -50,8 +50,9 @@ export function claimPieces(claim: EngineClaim, context: ReplyContext): ReplyPie
     case "already_answered":
       return [ref(claim.number), { text: " was answered already" }];
     case "late": {
-      const handed = context.requestPost(claim.requestId)?.request?.state !== "cancelled";
-      return [{ text: "late for " }, ref(claim.number), { text: handed ? ": it was handed to a fresh seat" : ": it was cancelled" }];
+      // Why, when the page holds the request: cancelled, or handed to a fresh seat by a reseat. Otherwise no reason.
+      const state = context.requestPost(claim.requestId)?.request?.state;
+      return [{ text: "late for " }, ref(claim.number), ...(state === undefined ? [] : [{ text: state === "cancelled" ? ": it was cancelled" : ": it was handed to a fresh seat" }])];
     }
     case "superseded":
       return [ref(claim.number), { text: " stays open: input it had not seen came in" }];

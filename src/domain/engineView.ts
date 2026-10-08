@@ -168,7 +168,7 @@ export interface EngineNoticeState {
   intent: "error" | "attention";
   /** The failed run, when the notice is about one. */
   runId: string | null;
-  /** The run the user can retry from here: failed, not retried, its seat not retired. */
+  /** The run the user can retry from here: failed, not retried, its seat not retired, and one of its requests still open. */
   retryRunId: string | null;
   retried: boolean;
   dismissed: boolean;

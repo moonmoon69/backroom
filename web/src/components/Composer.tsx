@@ -374,10 +374,10 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   };
 
   /**
-   * The message's own ID (message.create's clientMessageId): kept while the same text is sent again (a send that
-   * failed on the way, a second click), so the service records it once; a new text gets a new one.
+   * The message's own ID (message.create's clientMessageId): kept while the same message (text and images) is sent
+   * again (a send that failed on the way, a second click), so the service records it once; another message gets a new one.
    */
-  const messageId = useRef<{ text: string; id: string } | null>(null);
+  const messageId = useRef<{ key: string; id: string } | null>(null);
 
   const submit = async () => {
     if (!draft || submitting || !evaluate(draft, readyIds.length, uploading, attachedCount).ready) return;
@@ -398,7 +398,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
                     roomId,
                     sourceText: text,
                     preamble: draft.preamble,
-                    clientMessageId: (messageId.current = messageId.current?.text === text ? messageId.current : { text, id: newMessageId() }).id,
+                    clientMessageId: (messageId.current = messageId.current?.key === JSON.stringify([text, readyIds]) ? messageId.current : { key: JSON.stringify([text, readyIds]), id: newMessageId() }).id,
                     attachmentIds: readyIds,
                     assignments: draft.assignments.map((a) => ({
                       recipients: a.recipients,
@@ -1011,7 +1011,7 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
   const title = next
     ? `${who} ${busy.length === 1 ? "is" : "are"} working; this starts when the current turn ends`
     : steering && busy.length > 0
-      ? `Sent into ${who}'s running turn now: one reply answers both`
+      ? `Sent to ${who} now, mid-turn. Cursor, Grok and OpenCode take it into the running turn (one reply answers both); Claude answers it in its own turn right after.`
       : steering
         ? "/steer: if the recipient is mid-turn when this is sent, it goes into that turn"
         : "Starts right away";
@@ -1049,7 +1049,7 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
               Wait for the turn to end <span className="muted mono">remove /steer</span>
             </button>
           ) : (
-            <button type="button" role="menuitem" onClick={() => choose("steer")} title="Adds /steer: the agent reads it mid-turn; one reply answers both">
+            <button type="button" role="menuitem" onClick={() => choose("steer")} title="Adds /steer: sent now, mid-turn. Cursor, Grok and OpenCode take it into the running turn; Claude answers it in its own turn right after">
               Send into the running turn <span className="muted mono">/steer</span>
             </button>
           )}

@@ -39,6 +39,8 @@ test("each outcome the engine gives a claim gets its own words, with the request
   assert.equal(words(claim("A", 12, "already_answered")), "#12 was answered already");
   assert.equal(words(claim("X", 20, "late")), "late for #20: it was cancelled");
   assert.equal(words(claim("T", 21, "late")), "late for #21: it was handed to a fresh seat");
+  // A late claim on a request the page does not hold: no reason given rather than a guessed one.
+  assert.equal(words(claim("Q", 30, "late")), "late for #30");
   assert.equal(words(claim("A", 12, "superseded")), "#12 stays open: input it had not seen came in");
   assert.equal(words(claim("A", 12, "pending_activity")), "#12 stays open: a review or background work is still running");
   // Backroom's briefing to a member, made in the user's name: its acknowledgement does not say "from you".

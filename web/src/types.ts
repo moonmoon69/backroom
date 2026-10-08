@@ -177,7 +177,7 @@ export interface EnginePost extends EngineTime {
 export interface EngineNoticeState {
   intent: "error" | "attention";
   runId: string | null;
-  /** The run the user can retry from here (failed, not retried, its seat not retired). */
+  /** The run the user can retry from here (failed, not retried, its seat not retired, one of its requests still open). */
   retryRunId: string | null;
   retried: boolean;
   dismissed: boolean;

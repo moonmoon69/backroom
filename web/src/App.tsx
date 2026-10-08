@@ -47,6 +47,8 @@ export function App() {
   const [selection, setSelection] = useState<Selection | null>(storedSelection);
   const selectedRoomId = selection?.kind === "room" ? selection.id : null;
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  /** The service runs the old runtime (no ROOMS_ENGINE=1): its rooms come in shapes this page does not read. */
+  const [oldRuntimeRoom, setOldRuntimeRoom] = useState(false);
   // T3's projects and threads, for the overview. Kept at the last good reading while T3 does not answer.
   const [projects, setProjects] = useState<T3Project[] | null>(null);
   const [threads, setThreads] = useState<T3ThreadShell[]>([]);
@@ -95,7 +97,10 @@ export function App() {
   }, [report]);
 
   const loadRooms = useCallback(() => {
-    api.rooms().then(setRooms).catch(report);
+    api
+      .rooms()
+      .then((list) => (list.every((room) => "counts" in room) ? setRooms(list) : setOldRuntimeRoom(true)))
+      .catch(report);
   }, [report]);
 
   // Presets change only from this UI (or another tab of it), so they are read at the start and after a change.
@@ -136,7 +141,14 @@ export function App() {
     }
     api
       .room(selectedRoomId)
-      .then(setSnapshot)
+      .then((next) => {
+        // A service without ROOMS_ENGINE=1 serves the old shape, which nothing here reads (see oldRuntimeRoom).
+        if ((next as { engine?: unknown }).engine === true) setSnapshot(next);
+        else {
+          setSnapshot(null);
+          setOldRuntimeRoom(true);
+        }
+      })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 404) {
           setSelection(null);
@@ -446,6 +458,17 @@ export function App() {
       <ProvidersSection />
     </Dialog>
   ) : null;
+
+  // Until the old runtime is removed (Z4) a service may run without ROOMS_ENGINE=1. Its rooms come in the old shapes,
+  // which this page does not read: say so plainly instead of failing on them.
+  if (oldRuntimeRoom) {
+    return (
+      <div className="old-runtime" role="alert">
+        <h1>Backroom</h1>
+        <p>This page needs Backroom's engine runtime. Restart the service with ROOMS_ENGINE=1, then reload.</p>
+      </div>
+    );
+  }
 
   // The overview: one page of every project, room, thread, crew member and browser; what is opened from it covers the
   // page.

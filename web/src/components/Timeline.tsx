@@ -12,8 +12,9 @@ import {
 import { api, attachmentUrl } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { backroomNotice, replyPieces, replyText, sourceWords, type ReplyContext, type ReplyPiece } from "../replyTo.ts";
+import { consigliereChat, consigliereSeats } from "../chat.ts";
 import { sinceWords } from "../engineTime.ts";
-import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
+import { isActiveParticipant, type Desk, type EngineActivityView, type EnginePost, type EngineRunDetail, type EngineRunView, type EngineT3Ref, type Participant, type ThreadCost, type ThreadItem } from "../types.ts";
 import { Glyph } from "./icons.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
 import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
@@ -85,32 +86,6 @@ const useBoard = (): Board => {
   return value;
 };
 
-/**
- * The user's conversation with the room's Consigliere, as a view of the board: what the user posted (to him, as every
- * message in his room goes), his replies and turns to the user, and the notices that need the user. His answers to
- * members, what the members say to each other, and what the user typed in T3 on another member's thread (or sent
- * there as a T3 command) are on the board.
- */
-function consigliereChat(posts: EnginePost[], his: ReadonlySet<string>, hisThreads: ReadonlySet<string>): EnginePost[] {
-  const hisRequests = new Set(posts.flatMap((post) => (post.request && his.has(post.request.owner) ? [post.request.id] : [])));
-  return posts.filter((post) => {
-    if (post.author === "$user") {
-      // His requests (not Backroom's briefings to the members), notes to the room or typed on his thread, and the
-      // user's corrections, cancels and retries of his work.
-      if (post.kind === "request") return his.has(post.request!.owner) && !backroomNotice(post);
-      if (post.kind === "note") return !post.note?.t3 || hisThreads.has(post.note.t3.threadId);
-      return post.about.some((ref) => hisRequests.has(ref.requestId));
-    }
-    if (his.has(post.author)) {
-      if (post.kind === "note") return true;
-      if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user") === true;
-      return false;
-    }
-    if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
-    return false;
-  });
-}
-
 /** Lets a row stop the timeline from following the bottom (expanding a long reply must not jump the view). */
 const ScrollControl = createContext<{ release: () => void }>({ release: () => {} });
 
@@ -140,9 +115,6 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const { snapshot, desk, nameOf } = useRoom();
   const chat = view === "chat";
   const consigliereId = snapshot.room.consigliereId;
-  // His seats: every binding he has had (a reseat gives him a new one).
-  const his = useMemo(() => new Set(snapshot.bindings.filter((b) => b.participantId === consigliereId).map((b) => b.id)), [snapshot.bindings, consigliereId]);
-  const hisThreads = useMemo(() => new Set(snapshot.bindings.filter((b) => b.participantId === consigliereId).map((b) => b.threadId)), [snapshot.bindings, consigliereId]);
 
   // Older pages of the board, read on demand ("load older posts"); the snapshot holds the newest.
   const [older, setOlder] = useState<{ roomId: string; posts: EnginePost[]; earlier: boolean } | null>(null);
@@ -166,7 +138,9 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
       .finally(() => setLoadingOlder(false));
   };
 
-  const posts = useMemo(() => (chat ? consigliereChat(allPosts, his, hisThreads) : allPosts), [chat, allPosts, his, hisThreads]);
+  // His seats and threads, across reseats (a reseat seats a fresh member; the transfer posts link them).
+  const his = useMemo(() => consigliereSeats(snapshot, allPosts), [snapshot, allPosts]);
+  const posts = useMemo(() => (chat ? consigliereChat(allPosts, his) : allPosts), [chat, allPosts, his]);
 
   // Read aloud, when the room's menu says so: each new reply, and each new approval or question, named by who it is from.
   const [autoRead] = useAutoRead(`room:${snapshot.room.id}`);
@@ -259,7 +233,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
 
   // Runs that have not ended: each builds up as its member's bubble at the bottom. In the chat, only his.
   const liveRuns = useMemo(
-    () => snapshot.runs.filter((run) => run.phase !== "terminal" && (!chat || his.has(run.seatId))),
+    () => snapshot.runs.filter((run) => run.phase !== "terminal" && (!chat || his.seats.has(run.seatId))),
     [snapshot.runs, chat, his],
   );
   // Turns typed directly in T3 (or started by the agent itself) still running: live at the bottom until imported.
@@ -553,7 +527,7 @@ function UserMessage({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
             </span>
           ) : null}
           {message?.steer ? (
-            <span className="tag mono" title="Sent into the member's running turn (/steer): one reply answers both">
+            <span className="tag mono" title="Sent while the member was mid-turn (/steer): Cursor, Grok and OpenCode take it into that turn; Claude answers it in its own turn right after">
               into the turn
             </span>
           ) : null}
@@ -757,6 +731,7 @@ function Reply({ post }: { post: EnginePost }) {
         </div>
         <div className="bubble bubble-agent">
           <FileBaseContext.Provider value={null}>{post.body ? <Markdown text={post.body} /> : <span className="muted">No text.</span>}</FileBaseContext.Provider>
+          {output.runId ? <SentToT3 runId={output.runId} /> : null}
           {output.t3?.runId ? <TurnInT3 t3={output.t3} /> : null}
           <div className="reply-foot">
             <CopyTextButton text={post.body} label="Copy reply" />
@@ -766,6 +741,41 @@ function Reply({ post }: { post: EnginePost }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * What the member was sent for this turn: the exact briefing Backroom gave T3 (frozen when it was sent; a resend sends
+ * the same), and the images that went with it. Read when opened (GET …/runs/:runId).
+ */
+function SentToT3({ runId }: { runId: string }) {
+  const { snapshot } = useRoom();
+  const [detail, setDetail] = useState<EngineRunDetail | "loading" | "gone" | null>(null);
+  const load = () => {
+    if (detail !== null && detail !== "gone") return;
+    setDetail("loading");
+    api
+      .run(snapshot.room.id, runId)
+      .then(setDetail)
+      .catch(() => setDetail("gone"));
+  };
+  const images = detail !== null && typeof detail === "object" ? detail.images.flatMap((entry) => entry.names) : [];
+  return (
+    <details className="reply-progress sent-to-t3" onToggle={(event) => (event.currentTarget.open ? load() : undefined)}>
+      <summary className="mono">sent to T3</summary>
+      {detail === null || detail === "loading" ? (
+        <p className="muted mono">reading…</p>
+      ) : detail === "gone" ? (
+        <p className="muted">Backroom no longer has this turn.</p>
+      ) : detail.briefing === null ? (
+        <p className="muted">Not sent yet.</p>
+      ) : (
+        <>
+          <pre className="briefing-text">{detail.briefing}</pre>
+          {images.length > 0 ? <p className="mono muted">with {images.length} image{images.length === 1 ? "" : "s"}: {images.join(", ")}</p> : null}
+        </>
+      )}
+    </details>
   );
 }
 
@@ -784,7 +794,7 @@ function TurnInT3({ t3 }: { t3: EngineT3Ref }) {
       .catch(() => setTurn("gone"));
   };
   return (
-    <details className="reply-progress" onToggle={(event) => (event.currentTarget.open ? load() : undefined)}>
+    <details className="reply-progress turn-in-t3" onToggle={(event) => (event.currentTarget.open ? load() : undefined)}>
       <summary className="mono">turn in T3</summary>
       {turn === "loading" || turn === null ? (
         <p className="muted mono">reading T3…</p>
@@ -1145,6 +1155,7 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
           <FileBaseContext.Provider value={participantDesk?.worktreePath ?? null}>
             <LiveFeed items={items} placeholder={run.phase === "prepared" || run.phase === "sending" ? "Sending to T3…" : uncertain ? "Waiting to hear from T3…" : "Thinking…"} className="live-feed-chat" />
           </FileBaseContext.Provider>
+          {run.phase !== "prepared" ? <SentToT3 runId={run.id} /> : null}
         </div>
       </div>
     </div>

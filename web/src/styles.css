@@ -7214,10 +7214,6 @@ button.work-chip:hover,
 }
 
 
-.sheet-chat .post-number {
-  display: none;
-}
-
 /* Everything typed in the chat goes to the Consigliere; the member chips are the board's. */
 .sheet-chat .mention-chips {
   display: none;
@@ -7919,4 +7915,26 @@ span.reply-to {
 .plan-pill:disabled {
   cursor: default;
   opacity: 1;
+}
+
+/* The exact briefing a turn was sent, opened from its reply or its live run. */
+.briefing-text {
+  max-height: 420px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+/* A service still on the old runtime (without ROOMS_ENGINE=1): this page does not read its shapes. */
+.old-runtime {
+  max-width: 560px;
+  margin: 15vh auto;
+  padding: 0 20px;
+  color: var(--fg-muted);
 }

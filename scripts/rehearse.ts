@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -302,6 +303,9 @@ class Room {
     this.service = service;
     this.o = o;
   }
+  get dataDir(): string {
+    return this.o.data;
+  }
 
   async create(): Promise<void> {
     const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
@@ -571,12 +575,20 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   // The turn behind the review's answer, as T3 shows it: its earlier messages and the files it changed.
   const reviewAnswer = claimOf(s, review, "answered");
   browser.show(reviewAnswer.number);
-  browser.on("eval", `() => { const d = document.querySelector('.timeline [data-number="${reviewAnswer.number}"] details.reply-progress'); if (d) d.open = true; return Boolean(d); }`);
+  browser.on("eval", `() => { const d = document.querySelector('.timeline [data-number="${reviewAnswer.number}"] details.turn-in-t3'); if (d) d.open = true; return Boolean(d); }`);
   browser.waitFor("Ran the date tests: 48 passed.");
   browser.waitFor("1 file changed");
   browser.consoleClean();
   browser.screenshot("the-turn-in-t3-behind-a-reply");
   log("  page: the review's reply opens to its turn in T3 (earlier messages, files changed)");
+  // What the Consigliere was sent for the turn that reported: the exact briefing T3 received.
+  const report = claimOf(s, ask, "answered");
+  browser.show(report.number);
+  browser.on("eval", `() => { const d = document.querySelector('.timeline [data-number="${report.number}"] details.sent-to-t3'); if (d) d.open = true; return Boolean(d); }`);
+  browser.waitFor("[Backroom briefing for @fable");
+  browser.consoleClean();
+  browser.screenshot("what-a-turn-was-sent");
+  log("  page: the report opens to the briefing its turn was sent");
 
   // 7. The reviewer's agent goes on by itself after its answer (a self-started turn): a note marked "after answer".
   await service.fake("self-run", { threadId: room.thread.reviewer });
@@ -648,6 +660,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   }, ["working since", "wiring the --strict flag through the CLI"], {
     show: F,
     extra: () => {
+      // On the request's own row, not only the status bar's chip.
+      const row = browser.eval<boolean>(`() => Boolean(document.querySelector('.timeline [data-number="${F}"]')?.textContent.includes('working since'))`);
+      if (row !== true) fail(`#${F}'s row on the board does not say 'working since'`);
+      log(`  page: #${F}'s own row says working since`);
       browser.click(/button "Members \(/);
       browser.waitFor(`on #${F}`);
       const member = browser.eval<boolean>(`() => [...document.querySelectorAll('.participant-chip')].some((chip) => chip.textContent.includes('worker') && chip.textContent.includes('working since') && chip.textContent.includes('on #${F}'))`);
@@ -799,6 +815,17 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     },
   });
   check.passed.push(...two.passed);
+
+  // Nothing of the old runtime's queue was written (Z2 gates on it): no tasks, no task revisions, no old runs.
+  const db = new DatabaseSync(join(room.dataDir, "rooms.sqlite"), { readOnly: true });
+  try {
+    const count = (table: string) => (db.prepare(`select count(*) as n from ${table}`).get() as { n: number }).n;
+    const old = { tasks: count("tasks"), task_revisions: count("task_revisions"), runs: count("runs") };
+    if (old.tasks + old.task_revisions + old.runs !== 0) fail(`the old runtime's tables are not empty: ${JSON.stringify(old)}`);
+    log(`rooms.sqlite: tasks ${old.tasks}, task_revisions ${old.task_revisions}, runs ${old.runs}`);
+  } finally {
+    db.close();
+  }
   return check.passed;
 }
 

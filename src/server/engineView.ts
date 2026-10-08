@@ -404,9 +404,11 @@ export function journalView(input: ViewInput): JournalView {
         post.about = d.requestIds.map(ref);
         const run = p.runs.get(d.causeId) ?? null;
         const wasRetried = run !== null && retried.has(run.id);
-        const retryable = run !== null && !wasRetried && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
-        const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
+        // Every request the failed run was on is closed (answered or cancelled since): sending it again would do work
+        // nobody asks for any more, so it is neither retried from here nor waiting on you.
         const settled = d.requestIds.length > 0 && d.requestIds.every((r) => p.requests.get(r)?.state !== "open");
+        const retryable = run !== null && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
+        const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
         const isDismissed = event.seq <= marks.through || dismissed.has(event.id);
         post.notice = {
           intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed,
