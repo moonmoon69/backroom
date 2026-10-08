@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type CommandResult, type Room, type RoomCommand, type RoomListItem, type RoomSnapshot, type ThreadLifecycleChoice } from "../types.ts";
+import { roomDeletedToast } from "../roomDeleted.ts";
 import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
@@ -206,20 +207,8 @@ function DeleteRoomDialog({ room, onCommand, onClose }: { room: RoomRef; onComma
     setBusy(false);
     if (!result) return;
     if (result.type === "room.deleted" && "threads" in result) {
-      const threads = (result as Extract<CommandResult, { type: "room.deleted" }>).threads;
-      const done = threads.filter((t) => t.result === "done").map((t) => `@${t.alias} ${t.action === "delete" ? "deleted" : `${t.action}d`}`);
-      const failed = threads.filter((t) => t.result === "failed").map((t) => `@${t.alias}: ${t.detail ?? "failed"}`);
-      const late = threads.filter((t) => t.result === "timeout").map((t) => `@${t.alias} ${t.action}`);
-      toast(
-        [
-          `Deleted "${room.title}".`,
-          done.length > 0 ? `Threads: ${done.join(", ")}.` : late.length > 0 ? "" : "Threads kept in T3.",
-          late.length > 0 ? `Sent to T3, not confirmed in time (may still go through): ${late.join(", ")}.` : "",
-          failed.length > 0 ? `Not changed in T3: ${failed.join("; ")}.` : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
+      const { message, kind } = roomDeletedToast(room.title, (result as Extract<CommandResult, { type: "room.deleted" }>).threads);
+      toast(message, kind);
     }
     onClose();
   };
