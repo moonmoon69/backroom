@@ -83,3 +83,22 @@ test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice
   const posts = [briefing, failed, recovery, asked, before];
   assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, before.id]);
 });
+
+test("B1: the Consigliere's own failed turn on your message is in the chat (the status bar's notice); his replies to Backroom's requests too; his failure that needs nobody is not", () => {
+  const snapshot = {
+    room: { consigliereId: "PC" },
+    bindings: [{ id: "C", participantId: "PC", generation: 1, threadId: "tC", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null }],
+    seats: [seat("C", "tC", { orchestrator: true })],
+  } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
+  const notice = (to: string[], needsYou: boolean, dismissed = false) =>
+    post({ kind: "notice", author: "C", to, notice: { intent: "error", runId: "r", retryRunId: "r", retried: false, dismissed, needsYou } });
+  const asked = request("u1", "$user", "C", { state: "open" });
+  const failed = notice(["$user"], true);
+  const dismissed = notice(["$user"], false, true);
+  const recovery = notice([], false);
+  const checkpoint = request("reseat:cp", "$system", "C", { state: "answered" });
+  const hisCheckpoint = reply("C", "reseat:cp", "$system");
+  const posts = [asked, failed, dismissed, recovery, checkpoint, hisCheckpoint];
+  assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, failed.id, dismissed.id, hisCheckpoint.id]);
+});
+

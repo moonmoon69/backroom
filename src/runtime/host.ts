@@ -12,7 +12,7 @@
  *   is a follow-up post on the member's request, and wakes the orchestrator.
  * - When background work a member's latest post named has ended with no further turn, one follow-up says so after
  *   `quietMs` of quiet.
- * - Only the orchestrator, the user and Backroom (a seat's briefing) post requests.
+ * - Only the orchestrator, the user and Backroom (a seat's briefing, a reseat's checkpoint or call-off) post requests.
  * - A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
  *   What a stopped turn said is on the board and wakes nobody.
  * - A run T3 never takes fails visibly, with one notice, after its bounds.
@@ -1044,7 +1044,7 @@ export class EngineHost {
     return this.member(roomId, { type: "transfer", actor: input.actor, id: input.id, oldSeatId: input.oldSeatId, newSeatId: input.newSeatId, threadId: input.threadId, owned, awaited, body: input.body, evidence: input.evidence });
   }
 
-  /** A request: the user's message path, the orchestrator's `rooms-board post`, and Backroom's seat briefings. Members do not post (H5). */
+  /** A request: the user's message path, the orchestrator's `rooms-board post`, and Backroom's own (src/app/engineSeats.ts). Members do not post (H5). */
   request(roomId: string, input: { actor: string; id: string; to: string; body: string }): CommitReceipt {
     if (input.actor !== "$user" && input.actor !== SYSTEM && input.actor !== this.project(roomId).orchestrator) throw new HostRefusal(MEMBERS_DO_NOT_POST);
     return this.member(roomId, { type: "request", actor: input.actor, id: input.id, to: input.to, body: input.body });

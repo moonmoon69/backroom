@@ -18,7 +18,7 @@ export interface ReplyContext {
   nameOf: (principal: string) => string;
 }
 
-/** Backroom's own requests (L4b), by what their IDs say they are: its briefings are its own, the reseat's in the user's name. */
+/** Backroom's own requests (L4b), by what their IDs say they are (the handover, `takeover:`, is the Consigliere's). */
 const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
   ["seat-briefing:", "seat briefing"],
   ["moved:", "new Consigliere notice"],
@@ -28,10 +28,10 @@ const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
 ];
 
 /**
- * A request Backroom made, not something the user wrote. Its own (`$system`): the standing facts a member of a room
- * with a Consigliere is given when seated, the notice that the Consigliere changed (journals from before B1 hold these
- * in the user's name). In the user's name: a reseat's checkpoint, handover and call-off. Every request the user writes
- * comes from a message (`request.message`); one of the user's without it is Backroom's, whatever its ID.
+ * A request Backroom made, not something the user wrote: its own (`$system`): the standing facts a member of a room
+ * with a Consigliere is given when seated, the notice that the Consigliere changed, a reseat's checkpoint and call-off
+ * (journals from before B1 hold these in the user's name). Every request the user writes comes from a message
+ * (`request.message`); one of the user's without it is Backroom's, whatever its ID.
  */
 export function backroomNotice(post: Pick<EnginePost, "author" | "request">): string | null {
   if ((post.author !== "$user" && post.author !== "$system") || !post.request) return null;
@@ -41,12 +41,12 @@ export function backroomNotice(post: Pick<EnginePost, "author" | "request">): st
 }
 
 /**
- * Backroom's briefing of a member, as the service counts it (src/runtime/bindings.ts): its own request, or one from
- * before B1 in the user's name (a seat briefing, the line naming a new Consigliere). It is nobody's work: removing the
- * member cancels it.
+ * Backroom's own request to a member, as the service counts it (src/runtime/bindings.ts): one it asked (`$system`), or
+ * one from before B1 in the user's name (a seat briefing, the line naming a new Consigliere, a reseat's checkpoint or
+ * call-off). It is nobody's work: removing the member cancels it.
  */
-export function backroomBriefing(q: Pick<EngineRequestView, "id" | "returnTo">): boolean {
-  return q.returnTo === "$system" || (q.returnTo === "$user" && (q.id.startsWith("seat-briefing:") || q.id.startsWith("moved:")));
+export function backroomRequest(q: Pick<EngineRequestView, "id" | "returnTo">): boolean {
+  return q.returnTo === "$system" || (q.returnTo === "$user" && ["seat-briefing:", "moved:", "reseat:", "reseat-off:"].some((prefix) => q.id.startsWith(prefix)));
 }
 
 /** A note Backroom wrote in the user's name (a reseat called off): the user's own notes come from T3, or are notes to the room from before N1. */

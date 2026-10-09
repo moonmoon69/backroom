@@ -151,7 +151,7 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       break;
     }
     case "request": {
-      // Backroom ($system) asks a seat for itself (a seat briefing): under nothing, and its answer wakes nobody.
+      // Backroom ($system) asks a seat for itself (a seat briefing, a reseat's checkpoint): under nothing, and its answer wakes nobody.
       if (command.actor === "$system") requireThat(command.to !== "$user" && !command.parentId, "Backroom asks a seat, under nothing");
       else actor();
       if (command.to !== "$user") seat(command.to);

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backroomBriefing, backroomNote, backroomNotice, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
+import { backroomNote, backroomNotice, backroomRequest, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
 import type { EngineClaim, EnginePost } from "../web/src/types.ts";
 import { journalView } from "../src/server/engineView.ts";
 import { Room } from "./runtime/helpers.ts";
@@ -112,13 +112,15 @@ test("what Backroom wrote in the user's name is Backroom's: any request without 
   assert.equal(backroomNotice(request("seat-briefing:W:seated", 11, "$system")), "seat briefing");
   assert.equal(backroomNotice(request("moved:W:y", 12, "$system")), "new Consigliere notice");
   assert.equal(backroomNotice(request("something-new:def", 13, "$system")), "Backroom's request");
-  // What removing a member cancels with it (the Remove dialog does not count it as open work): Backroom's briefings.
-  assert.equal(backroomBriefing({ id: "seat-briefing:W:seated", returnTo: "$system" }), true);
-  assert.equal(backroomBriefing({ id: "seat-briefing:W:seated", returnTo: "$user" }), true, "a journal from before B1");
-  assert.equal(backroomBriefing({ id: "moved:W:x", returnTo: "$user" }), true);
-  assert.equal(backroomBriefing({ id: "reseat:abc", returnTo: "$user" }), false, "a reseat's checkpoint is not a briefing");
-  assert.equal(backroomBriefing({ id: "msg:m1:0:W", returnTo: "$user" }), false, "the user's own request");
-  assert.equal(backroomBriefing({ id: "board:abc", returnTo: "C" }), false);
+  assert.equal(backroomNotice(request("reseat:def", 14, "$system")), "reseat checkpoint");
+  assert.equal(backroomNotice(request("reseat-off:def", 15, "$system")), "reseat called off");
+  // What removing a member cancels with it (the Remove dialog does not count it as open work): Backroom's requests.
+  assert.equal(backroomRequest({ id: "seat-briefing:W:seated", returnTo: "$system" }), true);
+  assert.equal(backroomRequest({ id: "reseat:abc", returnTo: "$system" }), true);
+  for (const id of ["seat-briefing:W:seated", "moved:W:x", "reseat:abc", "reseat-off:abc"]) assert.equal(backroomRequest({ id, returnTo: "$user" }), true, `${id}: a journal from before B1`);
+  assert.equal(backroomRequest({ id: "takeover:abc", returnTo: "C" }), false, "the handover is the Consigliere's");
+  assert.equal(backroomRequest({ id: "msg:m1:0:W", returnTo: "$user" }), false, "the user's own request");
+  assert.equal(backroomRequest({ id: "board:abc", returnTo: "C" }), false);
 
   const note = (source: "post" | "t3-message", room: boolean, author = "$user") =>
     ({ kind: "note" as const, author, note: { source, room, t3: null, afterAnswer: false } });

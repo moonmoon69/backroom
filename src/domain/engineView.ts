@@ -180,7 +180,7 @@ export interface EngineNoticeState {
   /**
    * It waits on the user: addressed to the user (or to nobody), after the room's notice mark, not dismissed, not
    * retried, and its requests (if it names any) not all closed. In a room with a Consigliere a worker's failure goes to
-   * him, not the user, so only his own needs you; a failed seat briefing (Backroom's request) is his too. A run that
+   * him, not the user, so only his own needs you; a failed request of Backroom's (a seat briefing, a reseat's checkpoint) is his too. A run that
    * carried nothing anyone asked of it (a cancel, notices, a keep-alive) and failed needs nobody: its notice, to nobody,
    * stays on the board.
    */

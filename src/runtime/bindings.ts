@@ -16,19 +16,22 @@ import type { Repos } from "../db/repos.ts";
 import type { Participant, Room } from "../domain/types.ts";
 import { roomWorkspaces } from "../git/workspaces.ts";
 import type { BriefingSource } from "./render.ts";
+import { RESEAT_CHECKPOINT } from "./work.ts";
 
 /** The ID prefix of a request that seats a member: its body is the standing facts already (L4b, src/app/engineSeats.ts). */
 export const SEAT_BRIEFING = "seat-briefing:";
 /** The ID prefix of the request that tells a member who the Consigliere is now (src/app/engineSeats.ts). */
 export const MOVED = "moved:";
+/** The ID prefix of the request that tells the asker a reseat was called off (src/app/engineSeats.ts). */
+export const RESEAT_OFF = "reseat-off:";
 
 /**
- * Backroom's briefing of a member: its seat facts, or the line naming a new Consigliere. Backroom asks it (`$system`);
- * journals from before B1 hold it as the user's request, known by its ID. It is nobody's work: the Consigliere may
- * cancel it, and a member leaving the room takes its open one with it.
+ * Backroom's own request to a member: its seat briefing, the line naming a new Consigliere, a reseat's checkpoint, or
+ * the call-off of a reseat. Backroom asks it (`$system`); journals from before B1 hold it as the user's request, known by
+ * its ID. It is nobody's work: the Consigliere may cancel it, and a member leaving the room takes its open one with it.
  */
-export function backroomBriefing(q: { id: string; returnTo: string }): boolean {
-  return q.returnTo === "$system" || (q.returnTo === "$user" && (q.id.startsWith(SEAT_BRIEFING) || q.id.startsWith(MOVED)));
+export function backroomRequest(q: { id: string; returnTo: string }): boolean {
+  return q.returnTo === "$system" || (q.returnTo === "$user" && [SEAT_BRIEFING, MOVED, RESEAT_CHECKPOINT, RESEAT_OFF].some((prefix) => q.id.startsWith(prefix)));
 }
 
 /** The room browsers, as the server has them: starting the room's default for a briefing, and whether others run. */

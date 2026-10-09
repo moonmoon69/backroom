@@ -14,12 +14,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createStack } from "../src/app/bootstrap.ts";
+import { readEngineReseats } from "../src/app/reseat.ts";
 import { agentKey } from "../src/browser/catalog.ts";
 import { loadConfig } from "../src/config.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { EngineOverview, EnginePost, EngineRoomListItem, EngineRoomSnapshot } from "../src/domain/engineView.ts";
 import type { Projection } from "../src/engine/index.ts";
 import { createHttpApp } from "../src/server/http.ts";
+import { consigliereChat, consigliereSeats } from "../web/src/chat.ts";
+import type { RoomSnapshot } from "../web/src/types.ts";
 import { RuntimeFake } from "./runtime/helpers.ts";
 
 async function stack(t: TestContext) {
@@ -120,7 +123,7 @@ test("B1: a seat's briefing is Backroom's: its failure goes to the Consigliere a
   assert.match((await h.board("C", "read", String(n))).text, new RegExp(`^\\[#${n} request · Backroom → @Grok · open\\]`));
   const refused = await h.board("W", "cancel", `#${n}`);
   assert.equal(refused.status, 403);
-  assert.match(refused.text, /Backroom's briefing of @Grok: only this room's Consigliere \(@C\) can cancel it/);
+  assert.match(refused.text, /Backroom's request to @Grok: only this room's Consigliere \(@C\) can cancel it/);
   const cancelled = await h.board("C", "cancel", `#${n}`);
   assert.equal(cancelled.status, 200, cancelled.text);
   assert.equal(h.p().requests.get(briefing)!.state, "cancelled");
@@ -200,7 +203,7 @@ test("B1: the user's case replayed (a journal from before B1): the briefing in t
   // takes it with Grok.
   const n = h.number(legacy);
   assert.match((await h.board("C", "read", String(n))).text, new RegExp(`^\\[#${n} request · Backroom \\(in the user's name\\) → @Grok · open\\]`));
-  assert.match((await h.board("W", "cancel", `#${n}`)).text, /Backroom's briefing of @Grok: only this room's Consigliere \(@C\) can cancel it/);
+  assert.match((await h.board("W", "cancel", `#${n}`)).text, /Backroom's request to @Grok: only this room's Consigliere \(@C\) can cancel it/);
   assert.equal(h.p().requests.get(legacy)!.state, "open");
   const retired = await h.board("C", "retire", "Grok");
   assert.equal(retired.status, 200, retired.text);
@@ -236,3 +239,101 @@ test("B1: a member's failed turn that does need the user is still one notice: on
   const after = (await h.snapshot()).posts.find((post) => post.id === failed.id)!;
   assert.deepEqual([after.notice!.dismissed, after.notice!.retryRunId !== null], [true, true]);
 });
+
+const NOTHING = { posts: [], count: 0, list: 0, tile: 0 };
+
+test("B1: a reseat's checkpoint and its call-off are Backroom's: a failed checkpoint is the Consigliere's, he cancels it and the reseat is called off; the call-off request wakes him and its answer goes to nobody", async (t) => {
+  const h = await stack(t);
+  for (const alias of ["C", "W", "V"]) await h.add(alias);
+  await h.run({ type: "room.consigliere.set", roomId: h.roomId, participantId: h.ids.C! });
+  await h.settle();
+
+  // W's thread fails the checkpoint: the Consigliere's notice, nothing for the user.
+  const asked = await h.board("C", "reseat", "W");
+  assert.equal(asked.status, 200, asked.text);
+  const checkpoint = [...h.p().requests.values()].find((q) => q.id.startsWith("reseat:") && q.owner === h.seat("W"))!;
+  assert.deepEqual([checkpoint.returnTo, (await h.snapshot()).posts.find((post) => post.request?.id === checkpoint.id)!.author], ["$system", "$system"]);
+  await h.tick();
+  h.complete("W", "Cursor Agent SDK open failed.", "error");
+  await h.tick();
+  const failed = await h.noticeOf("W");
+  assert.deepEqual([failed.to, failed.notice!.needsYou], [[h.seat("C")], false], "the Consigliere's notice, not the user's");
+  assert.deepEqual(await h.needs(), NOTHING);
+  await h.settle();
+  // On the board it is Backroom's; another member cannot cancel it, the Consigliere can, and the reseat is called off.
+  const n = h.number(checkpoint.id);
+  assert.match((await h.board("C", "read", String(n))).text, new RegExp(`^\\[#${n} request · Backroom → @W · open\\]`));
+  const refused = await h.board("V", "cancel", `#${n}`);
+  assert.equal(refused.status, 403);
+  assert.match(refused.text, /#\d+ is Backroom's request to @W: only this room's Consigliere \(@C\) can cancel it/);
+  assert.equal((await h.board("C", "cancel", `#${n}`)).status, 200);
+  await h.settle();
+  assert.equal(readEngineReseats(h.s.repos, h.roomId).length, 0, "called off");
+  const off = h.p().events.find((e) => e.id === `reseat-off:${checkpoint.id}`)!;
+  assert.match(off.data.kind === "note" ? off.data.body : "", /Reseat of @W called off: its checkpoint request #\d+ was cancelled/);
+  assert.equal(h.p().seats.get(h.seat("W"))!.status, "active", "W keeps its seat");
+  assert.deepEqual(await h.needs(), NOTHING);
+
+  // V answers its checkpoint (to nobody), then T3 cannot make the fresh thread: the call-off is Backroom's request to
+  // the Consigliere, which wakes him; his answer goes to nobody.
+  assert.equal((await h.board("C", "reseat", "V")).status, 200);
+  const cp = [...h.p().requests.values()].find((q) => q.id.startsWith("reseat:") && q.owner === h.seat("V"))!;
+  await h.tick();
+  const cWakes = h.wakes("C");
+  h.fake.launchThread = async () => {
+    throw new Error("disk full (simulated)");
+  };
+  h.complete("V", "CHECKPOINT: nothing open.");
+  await h.tick(2);
+  const answer = h.p().events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === cp.id))!;
+  assert.deepEqual(answer.data.kind === "output" ? [answer.data.claims[0]!.outcome, answer.data.recipients] : null, ["answered", []], "the checkpoint's answer wakes nobody");
+  const callOff = h.p().requests.get(`reseat-off:${cp.id}`)!;
+  assert.deepEqual([callOff.owner, callOff.returnTo], [h.seat("C"), "$system"]);
+  assert.match(callOff.body, /Reseat of @V called off: the fresh seat could not be made/);
+  await h.tick();
+  assert.equal(h.wakes("C"), cWakes + 1, "it wakes him");
+  h.complete("C", "Noted: V keeps its seat.");
+  await h.tick();
+  const reply = h.p().events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === callOff.id))!;
+  assert.deepEqual(reply.data.kind === "output" ? reply.data.recipients : null, [], "his answer goes to nobody");
+  assert.deepEqual(await h.needs(), NOTHING);
+});
+
+test("B1: a reseat's requests in the user's name (a journal from before B1) are Backroom's too: the board says so and the Consigliere may cancel them", async (t) => {
+  const h = await stack(t);
+  for (const alias of ["C", "W"]) await h.add(alias);
+  await h.run({ type: "room.consigliere.set", roomId: h.roomId, participantId: h.ids.C! });
+  await h.settle();
+  h.s.engine.request(h.roomId, { actor: "$user", id: "reseat:before-b1", to: h.seat("W"), body: "Write your checkpoint." });
+  h.s.engine.request(h.roomId, { actor: "$user", id: "reseat-off:before-b1", to: h.seat("C"), body: "Reseat of @W called off." });
+  for (const id of ["reseat:before-b1", "reseat-off:before-b1"]) {
+    const n = h.number(id);
+    assert.match((await h.board("C", "read", String(n))).text, new RegExp(`^\\[#${n} request · Backroom \\(in the user's name\\) → @`));
+  }
+  assert.equal((await h.board("C", "cancel", `#${h.number("reseat:before-b1")}`)).status, 200);
+  assert.equal(h.p().requests.get("reseat:before-b1")!.state, "cancelled");
+});
+
+test("B1: the Consigliere's own failed turn on a user message is one notice: in the chat as in the status bar, and one Dismiss clears it everywhere", async (t) => {
+  const h = await stack(t);
+  for (const alias of ["C", "W"]) await h.add(alias);
+  await h.run({ type: "room.consigliere.set", roomId: h.roomId, participantId: h.ids.C! });
+  await h.settle();
+  h.s.engine.request(h.roomId, { actor: "$user", id: "msg", to: h.seat("C"), body: "Plan the release." });
+  await h.tick();
+  h.complete("C", "provider error: the model is overloaded", "error");
+  await h.tick();
+  const failed = await h.noticeOf("C");
+  assert.deepEqual([failed.to, failed.notice!.needsYou, failed.notice!.retryRunId !== null], [["$user"], true, true]);
+  const chat = async () => {
+    const snap = (await h.snapshot()) as unknown as RoomSnapshot;
+    return consigliereChat(snap.posts, consigliereSeats(snap, snap.posts));
+  };
+  assert.ok((await chat()).some((post) => post.id === failed.id), "his failure's notice is in the chat, with Retry and Dismiss");
+  assert.deepEqual(await h.needs(), { posts: [failed.number], count: 1, list: 1, tile: 1 }, "one notice");
+  assert.equal((await h.dismiss([failed.id])).status, 200);
+  assert.deepEqual(await h.needs(), NOTHING, "one Dismiss clears the bar, the count, the room list and the tile");
+  const after = (await chat()).find((post) => post.id === failed.id);
+  assert.deepEqual([after?.notice?.dismissed, after?.notice?.retryRunId !== null], [true, true], "still in the chat, dismissed, Retry still there");
+});
+

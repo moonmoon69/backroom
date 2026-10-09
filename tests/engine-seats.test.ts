@@ -302,7 +302,7 @@ test("reseat carries every unread input and every owned request exactly once, an
     const reseat = (await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: "finish A" })) as { eventId: string };
     const checkpoint = reseat.eventId;
     assert.match(checkpoint, /^reseat:/);
-    assert.deepEqual([h.p.requests.get(checkpoint)!.owner, h.p.requests.get(checkpoint)!.returnTo], [seatW, "$user"]);
+    assert.deepEqual([h.p.requests.get(checkpoint)!.owner, h.p.requests.get(checkpoint)!.returnTo], [seatW, "$system"], "Backroom's request (B1)");
     await h.refused({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null }, /being reseated already/);
     h.host.correct(h.roomId, { actor: h.seat("C"), id: "fix-A", requestId: a, body: "Use the new API." });
     h.complete("W", "A is written in src/a.ts.");
