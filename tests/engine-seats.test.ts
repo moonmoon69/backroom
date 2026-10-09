@@ -765,6 +765,43 @@ test("F6: the Consigliere's rules on the engine adjust running work with correct
   }
 });
 
+test("R3 review speed: the engine's briefing for the Consigliere carries the seven review-speed rules and the two reworded ones, word for word", async () => {
+  const freshSeat = "A fresh seat for every review: each gate that needs a reviewer gets a newly seated one, who also checks the fixes it asked for and is retired when the gate is passed. The member who did the work never reviews it.";
+  const route = "You route reviews: members never post to each other. When the work is ready, send the reviewer the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.";
+  const speed = [
+    "Seat the reviewer when you seat the writer: it sends you what it will check while the writer builds, and you pass that to the writer.",
+    "Before a writer reports its work ready, it reviews its own diff with a subagent or a review workflow and fixes what that finds.",
+    "Anything that changes or describes behaviour gets a fresh reviewer; wording that changes and describes no behaviour gets your own read and the automated gate.",
+    "After two review rounds, rule on the open technical points yourself and bring the user only product questions.",
+    "Keep one revision in review at a time: the writer sends the next only after the reviewer's verdict on the last.",
+    "Every reviewer finding becomes a test in the deliverable before its gate passes.",
+  ];
+  const reseatSelf = "Reseat yourself the same way when your own context nears compaction, at a quiet moment, after writing the room state.";
+  const lines = [freshSeat, route, ...speed, reseatSelf];
+
+  // Each is a whole line of the default rules, once.
+  for (const line of lines) assert.equal(ENGINE_DEFAULT_CONSIGLIERE_RULES.split("\n").filter((l) => l === `- ${line}`).length, 1, `once: ${line.slice(0, 50)}`);
+  // The six sit with the review rules, in this order, after the one that routes reviews; the seventh follows the rule it says "the same way" of.
+  assert.ok(ENGINE_DEFAULT_CONSIGLIERE_RULES.includes([freshSeat, route, ...speed].map((l) => `- ${l}`).join("\n") + "\n- Scope is yours:"));
+  assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, new RegExp(`\\n- Reseat long work before the harness compacts it[^\\n]*\\n- ${reseatSelf}\\n- Keep the room state current`));
+  // The old wording of the two reworded rules is gone.
+  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /each gate gets a newly seated reviewer|When the work is ready, seat the reviewer/);
+
+  // The briefing the engine sends a Consigliere carries all nine.
+  const h = await Seats.create();
+  try {
+    h.request("$user", "C", "Plan it.");
+    await h.tick();
+    const prompt = h.prompt("C");
+    for (const line of lines) assert.ok(prompt.includes(`- ${line}\n`), `missing: ${line.slice(0, 50)}`);
+  } finally {
+    h.close();
+  }
+  // What the user saved replaces them, as it replaces every default rule.
+  const custom = engineConsigliereRules("- Be brief.");
+  for (const line of lines) assert.equal(custom.includes(line), false);
+});
+
 test("F7: members are told their reply is their answer, and that they post nothing (H5)", () => {
   const facts = engineSeatFacts({ alias: "C" });
   assert.match(facts, /Your final reply at the end of a turn is your answer\./);
