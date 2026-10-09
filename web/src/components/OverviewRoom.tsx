@@ -19,6 +19,12 @@ import { byKey, focusItem, focusWhen, itemOf, laneAt, listTarget, navItems, navK
 const PANES = ["board", "people", "browser", "git"] as const;
 type Pane = (typeof PANES)[number];
 
+/**
+ * The ring's landing as a room opens: the item it put the ring on (by key), whether the room's desk had been read when
+ * it began or has been since, and how to stop it.
+ */
+type Opening = { roomId: string; deskSeen: boolean; landed: string | null; cancel: () => void };
+
 /** How many posts the sheet draws at first; "earlier" above them draws the next window. */
 const CHAT_WINDOW = 40;
 const BOARD_WINDOW = 60;
@@ -120,7 +126,8 @@ export function OverviewRoom({
   // a running turn's live feed comes with the desk, and its bubble can push the newest post out of the board's view.
   // Whether it shows is judged with the board at its bottom, where it opens and stays. Focused without scrolling, so
   // the board stays at its bottom and keeps following the turn. Typing anywhere still opens the composer; a ring
-  // already moved into the room (a key pressed while it opened) stays where it is.
+  // already moved into the room (a key pressed while it opened) stays where it is. A desk read slower than the wait
+  // lands the ring once more when it comes, if the ring is still where the landing put it.
   const deskRead = desk !== null || deskError !== null;
   const [waited, setWaited] = useState(false);
   useEffect(() => {
@@ -128,33 +135,52 @@ export function OverviewRoom({
     return () => clearTimeout(timer);
   }, [snapshot.room.id]);
   // The landing under way, kept outside the effect: its next run (the wait ending) must not cancel it.
-  const opening = useRef<{ roomId: string; cancel: () => void } | null>(null);
+  const opening = useRef<Opening | null>(null);
   useEffect(() => () => opening.current?.cancel(), []);
-  useEffect(() => {
-    const roomId = snapshot.room.id;
-    if (opening.current?.roomId === roomId || (!deskRead && !waited)) return;
-    opening.current?.cancel();
+  /** Land the ring, tried each frame. A ring in the room stays, unless it is on the item this landing put it on before. */
+  const land = (record: Opening): (() => void) => {
     const since = performance.now();
-    const cancel = focusWhen(() => {
+    const ours = record.landed;
+    return focusWhen(() => {
       const root = sheet.current;
       const active = document.activeElement;
       // Already in the room: focusing it again moves nothing.
-      if (root && active instanceof HTMLElement && root.contains(active)) return active;
+      if (root && active instanceof HTMLElement && root.contains(active) && (ours === null || active.dataset.navKey !== ours)) return active;
       const all = lanesRef.current();
       const chips = all.find((lane) => lane.name === "status")?.items ?? [];
       const newest = all.find((lane) => lane.name === "posts")?.items.at(-1) ?? null;
       const live = [...(root?.querySelectorAll<HTMLElement>(".timeline .live-turn") ?? [])];
       // A row's own box is drawn while its contents are skipped: the check is on what is in it (for up to a second).
       if (performance.now() - since < 1000 && live.some((row) => row.firstElementChild?.checkVisibility({ contentVisibilityAuto: true }) === false)) return null;
-      return openLanding({
+      const chosen = openLanding({
         needs: chips.find((item) => item.closest(".work-needs")) ?? null,
         newest,
         newestInView: newest !== null && showsAtBottom(newest),
         running: chips.find((item) => item.dataset.navKey?.startsWith("chip:run:")) ?? null,
         strip: all.find((lane) => lane.name === "strip")?.items[0] ?? null,
       });
+      record.landed = chosen?.dataset.navKey ?? null;
+      return chosen;
     }, 2000, false);
-    opening.current = { roomId, cancel };
+  };
+  useEffect(() => {
+    const roomId = snapshot.room.id;
+    const current = opening.current?.roomId === roomId ? opening.current : null;
+    if (current) {
+      // The desk came after the landing stopped waiting for it: land again, unless a key has moved the ring since.
+      if (!deskRead || current.deskSeen) return;
+      current.deskSeen = true;
+      const active = document.activeElement;
+      if (current.landed !== null && !(active instanceof HTMLElement && active.dataset.navKey === current.landed)) return;
+      current.cancel();
+      current.cancel = land(current);
+      return;
+    }
+    if (!deskRead && !waited) return;
+    opening.current?.cancel();
+    const record: Opening = { roomId, deskSeen: deskRead, landed: null, cancel: () => undefined };
+    record.cancel = land(record);
+    opening.current = record;
   }, [snapshot.room.id, deskRead, waited]);
 
   // The panel closed with the focus in it (Backspace, its ×): the focus goes back to the conversation, on the item it

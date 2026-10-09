@@ -28,7 +28,8 @@
  * along the header (Enter on the Board tab shows the board, on Members opens the panel with the ring in it) and along
  * the status chips; Home and End go to the first and last post from every lane. A room opened while a turn runs puts
  * the ring on something in view (the newest post if it shows, else the running turn's chip) without moving the board,
- * which stays at its bottom and follows the turn (its live bubble made tall with a style, as the fake streams no feed).
+ * which stays at its bottom and follows the turn (its live bubble made tall with a style, as the fake streams no feed);
+ * with the room's desk read held back past the landing's wait, the ring lands again when it comes, unless a key moved it.
  *
  * The overview's grid (K1-3): its stops are the tiles (every room, thread, crew member and browser of the API has one,
  * and a room's members are read on its tile, not visited) and the buttons of its rows (the header, each section's +).
@@ -163,7 +164,7 @@ const FOCUS = `() => {
 
 /**
  * The open room's board: how far it is from its bottom, its newest post (its key, how much of it shows in the board's
- * view, its height) and its live bubble's height.
+ * view, its height), its live bubble's height, and whether a live feed is drawn (it comes with the room's desk read).
  */
 const BOARD = `() => {
   const t = document.querySelector('.ov-drawer[data-view="room"] .timeline');
@@ -179,6 +180,7 @@ const BOARD = `() => {
     height: r ? Math.round(r.height) : 0,
     bubble: bubble ? Math.round(bubble.getBoundingClientRect().height) : 0,
     view: Math.round(v.height),
+    feed: Boolean(t.querySelector('.live-feed:not(.live-empty)')),
   };
 }`;
 
@@ -699,7 +701,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const clicked = focus();
   if (clicked.drawers[0]!.label !== `Room ${apiRoomTitle}`) fail(`the click opened ${clicked.drawers[0]!.label}, the API's room is ${apiRoomTitle}`);
   log(`api: room ${R.slice(0, 8)} "${apiRoomTitle}"; page: the drawer data-id ${R.slice(0, 8)}, no member's layer`);
-  // The room opens on its newest post (K1-4), the API's newest in the chat, with no ring after a click.
+  // The room opens on its newest post (K1-4), the API's newest in the chat.
   const clickedNewest = (await room.snapshot()).posts.at(-1);
   await expect(`the focus on the newest post #${clickedNewest.number}`, (f) => f.key === `post:${clickedNewest.seq}`);
   await state("a click on a member's line opens the room's conversation", new RegExp(`^#${clickedNewest.number} · `));
@@ -1303,7 +1305,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const s5 = await room.snapshot();
   const turns = (s5.runs as Array<{ id: string; phase: string }>).filter((r) => r.phase !== "terminal");
   if (turns.length !== 1 || turns[0]!.phase !== "running" || `chip:run:${turns[0]!.id}` !== chipKey || s5.nativeRequests.length > 0 || s5.needsYou.length > 0) fail(`the API should show @fable's one running turn and nothing that needs the user: ${JSON.stringify({ runs: turns, asking: s5.nativeRequests.length, needsYou: s5.needsYou.length })}`);
-  const board = () => browser.eval<{ distance: number; newest: string | null; shown: number; height: number; bubble: number; view: number } | null>(BOARD);
+  const board = () => browser.eval<{ distance: number; newest: string | null; shown: number; height: number; bubble: number; view: number; feed: boolean } | null>(BOARD);
   await goTo(`room:${R}`);
   press("Enter");
   await expect(`Enter: the room opens while @fable's turn runs, the ring on the newest post #${openPost.number} (it shows)`, (f) => inRoom(f) && f.key === `post:${openPost.seq}` && f.ring, 10_000);
@@ -1329,6 +1331,57 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("the ring stays on the chip", (f) => f.key === chipKey && f.ring);
   await state("a room opened while a turn runs: the ring on something in view, the board at its bottom and following", chipWhere);
   browser.eval<boolean>(`() => { document.getElementById('rehearse-tall-bubble')?.remove(); return true; }`);
+  press("Backspace");
+  await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+
+  // ---------------- 5d. a room whose desk read comes late: the ring lands again when it comes ----------------
+
+  // The room's desk read (a running turn's live feed comes with it) slower than the landing waits for it (1.5 s): the
+  // page's desk fetch held back, and the live bubble made tall only once its feed is drawn, as a real feed grows it. The
+  // room is opened after another one, so its desk is read afresh. At first the bubble is small and the newest post shows,
+  // so the ring lands on it; when the desk comes the bubble grows over the post, and the ring lands again, on the
+  // running turn's chip. A key pressed before the desk comes keeps the ring where the key put it.
+  const holdDesk = (ms: number) =>
+    browser.eval<boolean>(`() => { if (!window.__rehearseFetch) { const real = window.fetch.bind(window); window.__rehearseFetch = real; window.fetch = (input, init) => { const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url; const hold = window.__rehearseDeskHold; return hold && /\\/desk(\\?|$)/.test(url) ? new Promise((done) => setTimeout(done, hold)).then(() => real(input, init)) : real(input, init); }; } window.__rehearseDeskHold = ${ms}; if (!document.getElementById('rehearse-feed-bubble')) document.head.insertAdjacentHTML('beforeend', '<style id="rehearse-feed-bubble">.bubble-live:has(.live-feed:not(.live-empty)) { min-height: 75vh }</style>'); return true; }`);
+  /** Another room opened and closed, so this room's desk is read afresh when it opens next. */
+  const deskAfresh = async () => {
+    await goTo(`room:${third.roomId}`);
+    press("Enter");
+    await expect("Enter: the third room open (another room's desk read)", (f) => f.drawers.some((d) => d.view === "room" && d.id === third.roomId && !d.inert));
+    press("Backspace");
+    await expect("Backspace: back on its card", (f) => f.drawers.length === 0 && f.key === `room:${third.roomId}`);
+  };
+  await deskAfresh();
+  holdDesk(4000);
+  await goTo(`room:${R}`);
+  press("Enter");
+  await expect(`Enter, the desk held back 4 s: the ring on the newest post #${openPost.number} (the bubble small, no feed yet)`, (f) => inRoom(f) && f.key === `post:${openPost.seq}`, 3500);
+  const early = board() ?? fail("the page draws no open room's board");
+  if (early.feed || early.shown < Math.min(early.height, 48)) fail(`before the desk comes the feed should not be drawn and the newest post should show: ${JSON.stringify(early)}`);
+  log(`  page: before the desk, the bubble ${early.bubble}px, no feed; the newest post shows ${early.shown}px of ${early.height}`);
+  await expect("the desk comes late: the ring lands again, on the running turn's chip", (f) => f.key === chipKey && f.chip && f.ring, 10_000);
+  const late = board() ?? fail("the page draws no open room's board");
+  if (!late.feed || late.shown >= Math.min(late.height, 48) || late.distance > 2) fail(`after the desk the feed should be drawn, the newest post out of view and the board at its bottom: ${JSON.stringify(late)}`);
+  log(`  page: after the desk, the feed drawn, the bubble ${late.bubble}px of a ${late.view}px board; the newest post shows ${Math.max(0, late.shown)}px of ${late.height}; the board ${late.distance}px from its bottom`);
+  await state("a room whose desk read comes late: the ring lands again when it comes, on the running turn's chip", chipWhere);
+  press("Backspace");
+  await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  // A key first: ↑ before the desk comes (held back 6 s this time) moves the ring to the post above, and the desk
+  // coming later leaves it there.
+  await deskAfresh();
+  holdDesk(6000);
+  await goTo(`room:${R}`);
+  press("Enter");
+  await expect(`Enter, the desk held back 6 s: the ring on the newest post #${openPost.number}`, (f) => inRoom(f) && f.key === `post:${openPost.seq}`, 4000);
+  press("ArrowUp");
+  const keyed = await expect("↑ before the desk comes: the post above", (f) => f.key?.startsWith("post:") === true && f.key !== `post:${openPost.seq}` && f.ring);
+  if (board()?.feed) fail("the desk came before ↑ was pressed: the key was not first");
+  await until("the desk to come, the feed drawn", () => (board()?.feed ? true : null), 12_000, 200);
+  await sleep(1000);
+  await expect("the desk came: the ring stays on the post the key put it on", (f) => f.key === keyed.key && f.ring);
+  await state("a key pressed before a late desk read keeps the ring where it put it", await postWhere(keyed.key));
+  holdDesk(0);
+  browser.eval<boolean>(`() => { document.getElementById('rehearse-feed-bubble')?.remove(); return true; }`);
   press("Backspace");
   await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
 
