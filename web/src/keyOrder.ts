@@ -1,8 +1,8 @@
 /**
  * The page's keys without the page (keys.ts does the DOM side): the table of every key by the place it works in, which
  * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, where each
- * arrow goes on the overview's grid, on items boxed as the overview draws them, and a room's lanes with where each arrow
- * goes in them.
+ * arrow goes on the overview's grid, on items boxed as the overview draws them, a room's lanes with where each arrow
+ * goes in them, and the order of the buttons in an item's action strip.
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
@@ -27,6 +27,8 @@ export interface KeyEntry {
   more?: string;
   /** Left off the key bar (Tab where it is not the way on): `?` and README only. */
   bar?: false;
+  /** The bar says the name of the button the ring is on instead ("Enter Correct…"), cut to BAR_NAME characters. */
+  named?: true;
   /** Only while this holds: it goes before an entry for the same key without it, which is the rest of the time. */
   when?: KeyWhen;
   unless?: KeyWhen;
@@ -53,6 +55,7 @@ export type PlaceId =
   | "room-state"
   | "room-chip"
   | "room-post"
+  | "room-actions"
   | "room-strip"
   | "room-member"
   | "room-pane"
@@ -192,12 +195,24 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       },
       {
         id: "room-post",
-        on: "a post",
+        on: "a post, or a turn running (its live bubble)",
         within: "room",
         entries: [
-          { keys: ["↑", "↓"], does: "previous or next post", more: "past the first, the earlier posts load, then the status chips, the room state and the header; past the last, the composer's strip" },
+          { keys: ["↑", "↓"], does: "previous or next post", more: "past the first, the earlier posts load, then the status chips, the room state and the header; past the newest, the turns running now, then the composer's strip" },
           { keys: ["Home", "End"], does: "first or last post" },
-          { keys: ["Enter"], does: "its detail" },
+          { keys: ["Enter"], does: "its actions", more: "in a row under it, the ring on the first: every button the post has, then Detail, its detail" },
+        ],
+      },
+      {
+        id: "room-actions",
+        on: "a post's actions",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "previous or next post", more: "the actions close" },
+          { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on" },
+          { keys: ["Esc", "Backspace"], does: "close", more: "the ring back on the post" },
+          { keys: ["Home", "End"], does: "first or last post" },
         ],
       },
       {
@@ -371,9 +386,10 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "a correction",
         within: "everywhere",
         entries: [
-          { keys: ["Enter"], does: "new line" },
+          { keys: ["Enter"], does: "send it", more: "back to Correct…" },
+          { keys: ["Shift+Enter"], does: "new line" },
           { keys: ["Tab"], does: "on to Send correction" },
-          { keys: ["Esc"], does: "close it, back to Correct…" },
+          { keys: ["Esc"], does: "close it, back to Correct…", more: "the post's actions' Correct… when they are open" },
         ],
       },
       { id: "field", on: "another text field", within: "everywhere", entries: [{ keys: ["Esc"], does: "leave the field", more: "the ring goes to the item it is in" }] },
@@ -450,6 +466,15 @@ export function barEntries(id: PlaceId, now: Iterable<KeyWhen> = []): KeyEntry[]
     }
   }
   return shown.sort((a, b) => rank(a) - rank(b));
+}
+
+/** The longest a button's name gets on the bar (a file chip, a link): longer ones are cut with an ellipsis. */
+export const BAR_NAME = 18;
+
+/** What the bar says an entry does: its words, or for a named one the name of the button the ring is on. */
+export function barDoes(entry: KeyEntry, name?: string | null): string {
+  if (!entry.named || !name) return entry.does;
+  return name.length > BAR_NAME ? `${name.slice(0, BAR_NAME - 1)}…` : name;
 }
 
 /** An entry as `?` and README say it: its effect, capitalised, with what more there is to it and when it holds. */
@@ -541,6 +566,11 @@ export interface Lane<T> {
   items: T[];
   /** Where the ring lands coming into the lane from above or below (the item last visited there, else the lane's own). */
   landing: T;
+  /**
+   * The posts lane: its newest post, where End goes, when the turns running now (their live bubbles, items after the
+   * posts) follow it. Without it End goes to the lane's last item.
+   */
+  newest?: T;
 }
 
 /** Where the ring is in the lanes: on an item, or on something of a lane between its items (before the item `before`). */
@@ -554,16 +584,16 @@ const ACROSS = new Set<Lane<unknown>["name"]>(["header", "status"]);
 
 /**
  * Where a key moves in a room's lanes from `at` (null: from nothing in particular, the room itself). ↑ ↓ go post to post
- * in the posts lane and lane to lane elsewhere, landing on the next lane's landing; past the first post, with earlier
- * posts to draw (`earlier`), they are drawn first. From something of a lane that is no item, they go to the lane's
+ * in the posts lane (past the newest post, on to the turns running now) and lane to lane elsewhere, landing on the next
+ * lane's landing; past the first post, with earlier posts to draw (`earlier`), they are drawn first. From something of a lane that is no item, they go to the lane's
  * landing when an item of the lane is on that side of it (in the posts, the post above or below), else on to the next
  * lane. ← → go along the header and the status chips, stopping at the ends, and are the room's anywhere else (null).
- * Home and End go to the first and the last post.
+ * Home and End go to the first and the newest post.
  */
 export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, earlier = false): LaneMove<T> {
   const postsAt = lanes.findIndex((lane) => lane.name === "posts");
   const posts = postsAt >= 0 ? lanes[postsAt]!.items : [];
-  if (key === "first" || key === "last") return posts.length > 0 ? { to: key === "first" ? posts[0]! : posts.at(-1)! } : "stay";
+  if (key === "first" || key === "last") return posts.length > 0 ? { to: key === "first" ? posts[0]! : (lanes[postsAt]!.newest ?? posts.at(-1)!) } : "stay";
   if (key === "left" || key === "right") {
     if (!at || !("item" in at) || !ACROSS.has(lanes[at.lane]!.name)) return null;
     const next = lanes[at.lane]!.items[at.item + (key === "right" ? 1 : -1)];
@@ -608,4 +638,62 @@ export interface OpenChoices<T> {
  */
 export function openLanding<T>(choices: OpenChoices<T>): T | null {
   return choices.needs ?? (choices.newestInView ? choices.newest : null) ?? choices.running ?? choices.strip;
+}
+
+/**
+ * The kinds of button an item's action strip holds, in the order it shows them (the design's section 4, K1-Fable): a
+ * request's Correct… and Cancel (a message to several members has a pair for each request, in turn), a failed turn's
+ * Retry and Dismiss, a running turn's Stop and the choices of what it asks you; then Copy, Read aloud, each #ref, each
+ * file chip, each image, "turn in T3", "sent to T3"; then what else a mouse finds on the item (a link, a code block's
+ * Copy, a folded text, a live feed's earlier part, anything more); and Detail, the post's detail, last.
+ */
+export const ACTION_KINDS = ["correct", "cancel", "retry", "dismiss", "stop", "choice", "copy", "speak", "ref", "file", "image", "turn", "sent", "link", "code", "text", "more", "other", "detail"] as const;
+export type ActionKind = (typeof ACTION_KINDS)[number];
+
+/** Where a kind stands in the strip: Cancel with Correct…, so each request's pair stays together. */
+const actionRank = (kind: ActionKind): number => ACTION_KINDS.indexOf(kind === "cancel" ? "correct" : kind);
+
+/** An item's buttons in the strip's order: by kind (ACTION_KINDS), and as the item draws them within a kind. */
+export function stripOrder<T extends { kind: ActionKind }>(controls: readonly T[]): T[] {
+  return controls
+    .map((control, index) => ({ control, index }))
+    .sort((a, b) => actionRank(a.control.kind) - actionRank(b.control.kind) || a.index - b.index)
+    .map(({ control }) => control);
+}
+
+/**
+ * Where ← or → goes in a strip from button `at`, given which buttons can be pressed: the nearest one that can on that
+ * side; null at the end (the ring stays) or from outside the strip.
+ */
+export function stripStep(enabled: readonly boolean[], at: number, key: "left" | "right"): number | null {
+  if (at < 0 || at >= enabled.length) return null;
+  const step = key === "right" ? 1 : -1;
+  for (let next = at + step; next >= 0 && next < enabled.length; next += step) if (enabled[next]) return next;
+  return null;
+}
+
+/**
+ * A strip's image button: "Image" on it, named with the image's alt text ("Image: the parser's diagram"), as the post's
+ * own button is ("Open image: …"), so a screen reader and the bar's Enter say which image it is.
+ */
+export function imageAction(alt: string | null | undefined): { label: string; name: string } {
+  const said = (alt ?? "").replace(/\s+/g, " ").trim();
+  return { label: "Image", name: said ? `Image: ${said}` : "Image" };
+}
+
+/**
+ * A strip's repeated labels, numbered in order ("Image 1", "Image 2"). A name that begins with its label takes the
+ * number after the label ("Image 1: a diagram"); any other takes it at its end.
+ */
+export function numberRepeats<T extends { label: string; name: string }>(controls: readonly T[]): T[] {
+  const times = new Map<string, number>();
+  for (const control of controls) times.set(control.label, (times.get(control.label) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return controls.map((control) => {
+    if ((times.get(control.label) ?? 0) < 2) return control;
+    const n = (seen.get(control.label) ?? 0) + 1;
+    seen.set(control.label, n);
+    const label = `${control.label} ${n}`;
+    return { ...control, label, name: control.name.startsWith(control.label) ? `${label}${control.name.slice(control.label.length)}` : `${control.name} ${n}` };
+  });
 }
