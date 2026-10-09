@@ -19,7 +19,8 @@
  *
  * The data folder is ROOMS_DATA_DIR (data/ by default), as for the service; the service's URL is read from its
  * browser-api.json. Idle means: no old task or run that has not ended, no approval or question waiting, no reseat in
- * progress, no journal yet (data/board.sqlite), and no active member's thread in a turn in T3. Old work in flight has
+ * progress, no conversation with the Consigliere still being started, no journal yet (data/board.sqlite), and no active
+ * member's thread in a turn in T3. Old work in flight has
  * no successor on the engine, so it would be dropped. `--as <alias>.<room>` is the caller's own agent key: its running
  * turn is excused, since it is the one running the cutover (the restart drops its old task). The copies are SQLite
  * online backups, consistent while the service writes; only the databases are copied, never data/browsers, whose
@@ -157,6 +158,16 @@ export function openWork(db: DatabaseSync, self: Self | null): IdleReport {
   }
   for (const k of db.prepare("SELECT key FROM kv WHERE key LIKE 'reseat:%' OR key LIKE 'engine.reseat:%'").all() as Array<{ key: string }>) {
     report.open.push(`a reseat is in progress (${k.key})`);
+  }
+  // A conversation the user started with the Consigliere whose first message has not reached him yet.
+  for (const k of db.prepare("SELECT key, value FROM kv WHERE key LIKE 'consigliere.start:%'").all() as Array<{ key: string; value: string }>) {
+    let attempt: { roomId?: string; delivered?: boolean } | null = null;
+    try {
+      attempt = JSON.parse(k.value) as { roomId?: string; delivered?: boolean };
+    } catch {
+      // Not an attempt.
+    }
+    if (attempt && attempt.delivered === false) report.open.push(`${title.get(attempt.roomId ?? "") ?? "a new room"}: the user's first message to its Consigliere is not delivered yet (${k.key})`);
   }
   return report;
 }

@@ -77,7 +77,7 @@ const writeDb = (dir: string, sql: string, ...params: Array<string | number>) =>
   db.close();
 };
 
-test("the idle check lists old work in flight, waiting approvals and reseats, and excuses only the caller's running turn", async () => {
+test("the idle check lists old work in flight, waiting approvals, reseats and an undelivered Consigliere start, and excuses only the caller's running turn", async () => {
   const f = await fixture();
   try {
     f.asOldDataFolder();
@@ -92,6 +92,8 @@ test("the idle check lists old work in flight, waiting approvals and reseats, an
     writeDb(f.dir, "INSERT INTO runs VALUES ('r1', 't1', 'succeeded')");
     writeDb(f.dir, "INSERT INTO native_requests (participant_id, thread_id, request_id, kind, payload_json, created_at) VALUES (?, 'th', 'q1', 'approval', '{}', 'now')", f.member("sol2"));
     writeDb(f.dir, "INSERT INTO kv VALUES (?, '[]')", `engine.reseat:${f.roomId}`);
+    writeDb(f.dir, "INSERT INTO kv VALUES ('consigliere.start:r1', ?)", JSON.stringify({ roomId: f.roomId, participantId: "p", threadId: "t", threadCommandId: "c", seated: true, delivered: false }));
+    writeDb(f.dir, "INSERT INTO kv VALUES ('consigliere.start:r2', ?)", JSON.stringify({ roomId: f.roomId, participantId: "p", threadId: "t", threadCommandId: "c", seated: true, delivered: true }));
 
     const anyone = await check({ dataDir: f.dir, as: null, threads: null });
     assert.equal(anyone.idle, false);
@@ -102,11 +104,12 @@ test("the idle check lists old work in flight, waiting approvals and reseats, an
       "payments: run r3 of task #3 for @boss is running",
       "payments: @sol2 waits for an answer to approval q1",
       `a reseat is in progress (engine.reseat:${f.roomId})`,
+      "payments: the user's first message to its Consigliere is not delivered yet (consigliere.start:r1)",
     ]);
 
     const asBoss = await check({ dataDir: f.dir, as: f.key("boss"), threads: null });
     assert.deepEqual(asBoss.excused, ["payments: task #3 for @boss is running", "payments: run r3 of task #3 for @boss is running"]);
-    assert.equal(asBoss.open.length, 3);
+    assert.equal(asBoss.open.length, 4);
 
     // The caller's own work that waits (a wake queued for him) is not his running turn: it would be dropped.
     writeDb(f.dir, "INSERT INTO tasks VALUES ('t4', ?, 4, 1, ?, 'queued')", f.roomId, f.member("boss"));
