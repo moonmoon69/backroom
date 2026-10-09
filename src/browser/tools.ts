@@ -8,7 +8,7 @@
  *   one at a time, so an agent's calls wait only for its own. An engine unused for ENGINE_IDLE_MS closes.
  * - Every tab an agent opens gets a window of its own. Chrome draws only the tab in front of each window; the engine
  *   emulates a focused page on every tab, so a tab behind another still runs, holds the focus and shows focus rings,
- *   but its timers run about once a second and a screenshot of it can hang. In a window of its own, an agent's tab is
+ *   but its scrolling and animations lag and a screenshot of it can hang. In a window of its own, an agent's tab is
  *   always in front.
  * - Tabs have one number per running browser, the same for every agent (engines number pages each in their own
  *   order; Chrome's tab id, from the engine's get_tab_id, ties them together). A tab belongs to the agent that opened
@@ -386,14 +386,28 @@ export class BrowserTools {
       agent = { engine: this.deps.engine?.(status.cdpUrl) ?? new Engine(status.cdpUrl), pages: new Map(), tabs: new Map(), calls: 0, idle: null };
       shared.engines.set(as, agent);
       this.deps.log?.("browser engine started", { browser: browser.name, as });
+      // Its idle clock runs from the start: a command that fails before its first call (an open Chrome refused) leaves it unused.
+      this.idleClose(shared, as, agent);
     }
     return { shared, agent };
   }
 
+  /** Close an agent's engine once it has had no call for engineIdleMs; the agent's next call starts another. */
+  private idleClose(shared: SharedBrowser, as: string, agent: AgentEngine): void {
+    if (agent.idle) clearTimeout(agent.idle);
+    agent.idle = setTimeout(() => {
+      if (agent.calls > 0 || shared.engines.get(as) !== agent) return;
+      shared.engines.delete(as);
+      agent.engine.close();
+      this.deps.log?.("browser engine closed after no use", { as });
+    }, this.deps.engineIdleMs ?? ENGINE_IDLE_MS);
+    agent.idle.unref?.();
+  }
+
   /**
-   * One call on an agent's engine. An engine with no call for engineIdleMs closes, and so does one whose call timed
-   * out (the engine is still stuck on it, and would hold every later call of the agent); the agent's next call starts
-   * another.
+   * One call on an agent's engine. An engine with no call for engineIdleMs closes (idleClose), and so does one whose
+   * call timed out (the engine is still stuck on it, and would hold every later call of the agent); the agent's next
+   * call starts another.
    */
   private async call(shared: SharedBrowser, as: string, agent: AgentEngine, tool: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
     agent.calls += 1;
@@ -410,15 +424,7 @@ export class BrowserTools {
       throw error;
     } finally {
       agent.calls -= 1;
-      if (agent.calls === 0) {
-        agent.idle = setTimeout(() => {
-          if (agent.calls > 0 || shared.engines.get(as) !== agent) return;
-          shared.engines.delete(as);
-          agent.engine.close();
-          this.deps.log?.("browser engine closed after no use", { as });
-        }, this.deps.engineIdleMs ?? ENGINE_IDLE_MS);
-        agent.idle.unref?.();
-      }
+      if (agent.calls === 0) this.idleClose(shared, as, agent);
     }
   }
 

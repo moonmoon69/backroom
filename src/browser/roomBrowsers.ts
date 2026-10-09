@@ -616,11 +616,12 @@ export class RoomBrowsers {
         continue;
       }
       if (await this.refreshTabs(instance)) this.changed(instance.browserId);
-      const idle = Date.now() - Date.parse(instance.lastActivityAt) > idleMs;
-      if (idleMs > 0 && idle && !(await this.busy(instance.browserId))) {
-        this.log("browser idle; stopping", { browserId: instance.browserId });
-        await this.stop(instance.browserId);
-      }
+      const idle = () => Date.now() - Date.parse(instance.lastActivityAt) > idleMs;
+      if (idleMs <= 0 || !idle() || (await this.busy(instance.browserId))) continue;
+      // The busy check takes a while (it may ask T3): a command, a tab change or a stop meanwhile keeps the browser.
+      if (!idle() || this.instances.get(instance.browserId) !== instance || instance.state !== "running") continue;
+      this.log("browser idle; stopping", { browserId: instance.browserId });
+      await this.stop(instance.browserId);
     }
   }
 

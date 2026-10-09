@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
@@ -413,6 +413,22 @@ test("an engine whose call timed out is closed; the agent's next call gets a fre
   tools.closeAll();
 });
 
+test("an engine started for an open that fails before its first call still closes after no use", async () => {
+  const chrome = fakeChrome();
+  const record = { id: "shared", name: "shared", description: "", createdAt: "", updatedAt: "" };
+  const refusing = async (url: string, method: string, params: Record<string, unknown>) => {
+    if (method === "Target.createTarget") throw new BrowserToolError("Target.createTarget: refused", 502);
+    return chrome.cdp(url, method, params);
+  };
+  const tools = new BrowserTools({ browsers: chrome.manager as never, findBrowser: () => record, accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }), engine: chrome.engine as never, cdp: refusing, engineIdleMs: 50 });
+  await assert.rejects(tools.run(["shared", "open", "http://127.0.0.1:4461/"], { as: "worker.aaaaaaaa", force: false }), /refused/);
+  assert.equal(chrome.engines.length, 1, "the open started the agent's engine");
+  assert.equal(chrome.calls.length, 0, "and never called it");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(chrome.engines[0]?.closed, true, "closed after no use");
+  tools.closeAll();
+});
+
 test("a tab that does not load is closed again and belongs to nobody", async () => {
   const chrome = fakeChrome();
   const record = { id: "shared", name: "shared", description: "", createdAt: "", updatedAt: "" };
@@ -432,6 +448,57 @@ test("a tab that does not load is closed again and belongs to nobody", async () 
   await assert.rejects(tools.run(["shared", "open", "http://127.0.0.1:1/"], { as: "worker.aaaaaaaa", force: false }), (error: BrowserToolError) => error.status === 422 && /ERR_CONNECTION_REFUSED/.test(error.message));
   assert.deepEqual([...chrome.tabs.keys()], ["TAB-USER"], "the new tab is closed");
   tools.closeAll();
+});
+
+test("the idle stop looks again after its busy check: a command meanwhile keeps the browser", async (t) => {
+  // A browser left by an earlier run of the service, adopted: a process group standing in for Chrome, and a DevTools
+  // address that answers /json/version and /json/list. No Chrome needed.
+  const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
+  const chrome = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+  const devtools = createServer((req, res) => res.end(req.url === "/json/list" ? "[]" : JSON.stringify({ Browser: "Stand-in" })));
+  await new Promise<void>((resolve) => devtools.listen(0, "127.0.0.1", resolve));
+  const cdp = (devtools.address() as AddressInfo).port;
+  mkdirSync(join(dataDir, "browsers", "kept"), { recursive: true });
+  writeFileSync(join(dataDir, "browsers", "kept", "state.json"), JSON.stringify({ mode: "headless", ports: { cdp, vnc: 0, web: 0, display: 0 }, password: null, groups: [chrome.pid], startedAt: new Date().toISOString() }));
+  let commandsMeanwhile = true;
+  let asked = 0;
+  // Idle after 300 ms, checked every 100 ms. While commandsMeanwhile, an agent's command arrives during each check,
+  // which itself says nothing is in flight (a caller whose room has no work).
+  const browsers = new RoomBrowsers({
+    dataDir,
+    mode: "headless",
+    idleMinutes: 0.005,
+    pollMs: 100,
+    isBusy: async (browserId) => {
+      asked += 1;
+      if (commandsMeanwhile) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        browsers.touch(browserId);
+      }
+      return false;
+    },
+  });
+  t.after(async () => {
+    await browsers.stopAll();
+    devtools.close();
+    try {
+      process.kill(-(chrome.pid as number), "SIGKILL");
+    } catch {
+      // stopped by the test
+    }
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  browsers.start();
+  const after = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const end = Date.now() + 5000;
+  while (browsers.status("kept").state !== "running" && Date.now() < end) await after(20);
+  assert.equal(browsers.status("kept").state, "running", "adopted");
+  while (asked < 3 && Date.now() < end) await after(20);
+  assert.ok(asked >= 3, `checked ${asked} times`);
+  assert.equal(browsers.status("kept").state, "running", "every check saw a command come in");
+  commandsMeanwhile = false;
+  while (browsers.status("kept").state !== "stopped" && Date.now() < end) await after(20);
+  assert.equal(browsers.status("kept").state, "stopped", "stopped once nothing came in");
 });
 
 test("the tool endpoint needs the token from browser-api.json", async (t) => {
