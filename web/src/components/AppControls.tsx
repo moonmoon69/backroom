@@ -127,7 +127,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             aria-checked={agentsFile}
             title={
               agentsFile
-                ? "When a room is created in a project with no instructions for agents yet, Backroom writes the default ones into its folder, once per project (README: The agents file), and in a git repository asks whether to commit them. Click to turn it off."
+                ? "When a room is created in a project with no instructions for agents yet, Backroom writes the default ones into its folder, once per project, kept out of git, with a git hook that copies them into new worktrees (README: The agents file). Click to turn it off."
                 : "Backroom writes no agents file into projects. Click to have new rooms write the default one where a project has no instructions for agents yet."
             }
             onClick={pick(async () => {

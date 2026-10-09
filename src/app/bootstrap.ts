@@ -81,7 +81,7 @@ export function createStack(input: {
    * one (src/app/agentsFile.ts; the user's switch is Settings → Agents file). The server says yes; tests only when they
    * say so, so they write in no folder of the machine.
    */
-  agentsFile?: boolean | Pick<AgentsFilesOptions, "onlyUnder" | "questionsCacheMs">;
+  agentsFile?: boolean | Pick<AgentsFilesOptions, "onlyUnder">;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);

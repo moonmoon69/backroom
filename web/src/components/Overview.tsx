@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type Mous
 import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
-import { AgentsFileDialog } from "./AgentsFileDialog.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { PlusIcon, StarMark } from "./icons.tsx";
@@ -12,11 +11,12 @@ import { describeStatus } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
-import type { AgentsFileQuestion, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { AgentsFileWritten, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import { useToast } from "./Toast.tsx";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
-import { byKey, focusItem, focusWhen, itemOf, keyOf, navKey, overviewItems } from "../keys.ts";
+import { byKey, focusItem, itemOf, keyOf, navKey, overviewItems } from "../keys.ts";
 import { gridStart, gridTarget, type Span } from "../keyOrder.ts";
 
 /** How old something is, in a word: "now", "3m", "2h", "4d". */
@@ -64,8 +64,6 @@ export function Overview({
   onCommand,
   onT3Changed,
   onBrowsersChanged,
-  agentsFiles,
-  onAgentsFilesChanged,
   controls,
   active,
   returnTo,
@@ -86,9 +84,6 @@ export function Overview({
   /** Re-read projects from T3 (after one was added). */
   onT3Changed: () => void;
   onBrowsersChanged: () => void;
-  /** The commit questions still open: the agents file Backroom wrote in a project's folder (src/app/agentsFile.ts). */
-  agentsFiles: AgentsFileQuestion[];
-  onAgentsFilesChanged: () => void;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
   /** Nothing covers the page (no room, thread or browser open over it): the arrows are the page's. */
@@ -97,9 +92,7 @@ export function Overview({
   returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
-  // The commit question for a project's agents file: asked as its room is created (the room opens once it is answered),
-  // and from the project's heading until it is answered.
-  const [asking, setAsking] = useState<{ question: AgentsFileQuestion; then: string | null } | null>(null);
+  const { toast } = useToast();
   const { presets } = usePresets();
   const consigliereSetting = useConsigliereSetting();
   const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
@@ -283,27 +276,11 @@ export function Overview({
         {groups.map(({ project, tiles: projectTiles }) => {
           const known = project.id !== "unknown";
           return (
-            <section key={project.id} className="ov-project" aria-label={project.title} data-project-id={project.id}>
+            <section key={project.id} className="ov-project" aria-label={project.title}>
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
                 <span className="spacer" />
-                {agentsFiles
-                  .filter((question) => question.projectId === project.id)
-                  .map((question) => (
-                    <button
-                      key={question.folder}
-                      type="button"
-                      className="small ov-project-ask"
-                      aria-label={`Commit the agents file? (${project.title})`}
-                      title={`Backroom wrote ${question.files.join(" and ")} here; members working in a new worktree read ${question.files.length > 1 ? "them" : "it"} once committed`}
-                      onClick={() => setAsking({ question, then: null })}
-                      data-nav="ov"
-                      data-nav-key={`head:agents:${project.id}`}
-                    >
-                      Commit the agents file?
-                    </button>
-                  ))}
                 {known ? (
                   <button
                     type="button"
@@ -352,9 +329,9 @@ export function Overview({
             const result = await onCommand({ type: "room.create", projectId, title });
             if (result && "roomId" in result && result.roomId) {
               setDialog(null);
-              // Backroom wrote the agents file in the project's folder just now: asked first, then the room opens.
-              if (result.type === "room.created" && result.agentsFile) setAsking({ question: result.agentsFile, then: result.roomId });
-              else onOpenRoom(result.roomId as string);
+              onOpenRoom(result.roomId as string);
+              // Backroom wrote the default agents file in the project's folder just now: said once.
+              if (result.type === "room.created" && result.agentsFile) toast(agentsFileNote(result.agentsFile), agentsFileTone(result.agentsFile));
             }
           }}
         />
@@ -374,33 +351,34 @@ export function Overview({
         />
       ) : null}
       {dialog?.kind === "arrange" && projects ? <ArrangeDialog rooms={rooms} projects={projects} runCommand={onCommand} onClose={() => setDialog(null)} /> : null}
-      {asking ? (
-        <AgentsFileDialog
-          key={asking.question.projectId}
-          question={agentsFiles.find((question) => question.projectId === asking.question.projectId) ?? asking.question}
-          projectTitle={projects?.find((project) => project.id === asking.question.projectId)?.title ?? "this project"}
-          onClose={() => {
-            // Esc or ×: the question closes and nothing else happens (the keyboard's rule); the new room's tile has the focus.
-            setAsking(null);
-            const roomId = asking.then;
-            if (roomId) focusWhen(() => byKey(document, `room:${roomId}`));
-          }}
-          onAnswered={() => {
-            setAsking(null);
-            onAgentsFilesChanged();
-            if (asking.then) onOpenRoom(asking.then);
-            else {
-              // Asked from the heading, whose button goes with the answer: the focus goes to the project's +.
-              const projectId = asking.question.projectId;
-              focusWhen(() => byKey(document, `head:room:${projectId}`));
-            }
-          }}
-          onChanged={onAgentsFilesChanged}
-        />
-      ) : null}
     </div>
   );
 }
+
+/** What creating a room wrote in its project's folder, in one sentence (src/app/agentsFile.ts; README, The agents file). */
+function agentsFileNote(written: AgentsFileWritten): string {
+  const files = written.written.join(" and ");
+  const them = written.written.length > 1 ? "them" : "it";
+  if (written.hook === null) return `Backroom wrote ${files} in ${written.folder} for the agents working there.`;
+  const kept = written.excluded ? "kept out of git (.git/info/exclude)" : "not kept out of git: the exclude file could not be written (the service log says why)";
+  const copied =
+    written.hook === "installed" || written.hook === "ours"
+      ? `a git hook copies ${them} into each new worktree`
+      : written.hook === "own-hook"
+        ? `the repository has a post-checkout hook of its own: add Backroom's copy line to it to have ${them} in new worktrees (README, The agents file)`
+        : written.hook === "hooks-path"
+          ? `the repository sets core.hooksPath: add Backroom's copy line to its post-checkout hook to have ${them} in new worktrees (README, The agents file)`
+          : written.hook === "not-main"
+            ? `the project is not its repository's main checkout, so no hook copies ${them} into new worktrees`
+            : written.hook === "no-exclude"
+              ? `so no hook copies ${them} into new worktrees`
+              : `the hook that copies ${them} into new worktrees could not be installed (the service log says why)`;
+  return `Backroom wrote ${files} in ${written.folder}, ${kept}; ${copied}.`;
+}
+
+/** The note's kind: done, something for the user to add by hand, or something that failed. */
+const agentsFileTone = (written: AgentsFileWritten): "success" | "info" | "error" =>
+  written.hook === "failed" || written.hook === "no-exclude" ? "error" : written.hook === "own-hook" || written.hook === "hooks-path" || written.hook === "not-main" ? "info" : "success";
 
 /** Stack each column independently, keeping the arranged/ranked order in both the DOM and across columns. */
 function ProjectTiles({ children }: { children: ReactNode }) {

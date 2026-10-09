@@ -24,7 +24,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (message: string, kind: Toast["kind"] = "error") => {
       const id = ++counter.current;
       setToasts((list) => [...list, { id, kind, message }]);
-      setTimeout(() => dismiss(id), kind === "error" ? 8000 : 4000);
+      // A long message stays long enough to be read (60 ms a character), however short its kind's time.
+      setTimeout(() => dismiss(id), Math.max(kind === "error" ? 8000 : 4000, message.length * 60));
     },
     [dismiss],
   );

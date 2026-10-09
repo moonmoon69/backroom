@@ -12,7 +12,7 @@ import type { RoomCommand, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
-import { AGENTS_FILE_SETTING_KEY, type AgentsFileQuestion, type AgentsFiles } from "./agentsFile.ts";
+import { AGENTS_FILE_SETTING_KEY, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
 import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
@@ -34,8 +34,8 @@ import {
 } from "../domain/types.ts";
 
 export type CommandResult =
-  /** agentsFile: Backroom wrote the default agents file in the project's folder just now, and asks whether to commit it. */
-  | { type: "room.created"; roomId: string; agentsFile?: AgentsFileQuestion }
+  /** agentsFile: Backroom wrote the default agents file in the project's folder just now (the page says so). */
+  | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
@@ -66,8 +66,6 @@ export type CommandResult =
   | { type: "browser.created"; browserId: string }
   | { type: "browser.updated"; browserId: string }
   | { type: "browser.deleted"; browserId: string }
-  /** commit: the commit Backroom made; null for "leave", or when nothing it wrote was left uncommitted. */
-  | { type: "project.agentsFile.answered"; projectId: string; answer: "commit" | "leave"; commit: string | null }
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
@@ -106,8 +104,8 @@ export function orderProjects<T extends { id: string }>(repos: Repos, projects: 
 export const THREAD_ACTION_TIMEOUT_MS = 5000;
 
 /**
- * How long creating a room waits for the agents file to be written and its question read (src/app/agentsFile.ts).
- * Past it the room is answered without the question, which the project's heading on the overview shows once it is read.
+ * How long creating a room waits for the agents file to be written (src/app/agentsFile.ts). Past it the room is
+ * answered without saying what was written; the writing goes on.
  */
 export const AGENTS_FILE_WAIT_MS = 5000;
 
@@ -263,11 +261,6 @@ export class RoomService {
         if (command.enabled) this.repos.deleteKv(AGENTS_FILE_SETTING_KEY);
         else this.repos.setKv(AGENTS_FILE_SETTING_KEY, "off");
         return { type: "settings.updated" };
-      case "project.agentsFile.answer": {
-        if (!this.agentsFiles) throw new RoomError("no_question", "This Backroom writes no agents files", 404);
-        const record = await this.agentsFiles.answer(command.projectId, command.commit);
-        return { type: "project.agentsFile.answered", projectId: record.projectId, answer: record.answer ?? (command.commit ? "commit" : "leave"), commit: record.commit };
-      }
       case "room.delete":
         return this.deleteRoom(command);
       case "participant.create":
@@ -401,9 +394,12 @@ export class RoomService {
   private async createRoom(command: Extract<RoomCommand, { type: "room.create" }>): Promise<CommandResult> {
     let environmentId: string | null = null;
     let project: { id: string; workspaceRoot: string } | null = null;
+    // T3's other projects: an agents file is never written in a folder that holds one of them (src/app/agentsFile.ts).
+    let others: Array<{ workspaceRoot: string }> = [];
     try {
       const projects = await this.adapter.listProjects();
       project = projects.find((candidate) => candidate.id === command.projectId) ?? null;
+      others = projects.filter((candidate) => candidate.id !== command.projectId);
       if (!project) {
         throw new RoomError("unknown_project", `T3 project ${command.projectId} was not found on the connected server`);
       }
@@ -429,9 +425,9 @@ export class RoomService {
     this.notify(room.id);
     // Before anyone is seated: a member seated in the project folder reads it from its first turn. A failure here is
     // logged and never fails the room, and the room waits for it a few seconds at most.
-    let agentsFile: AgentsFileQuestion | null = null;
+    let agentsFile: AgentsFileWritten | null = null;
     if (this.agentsFiles) {
-      const writing = this.agentsFiles.roomCreated(project).catch((error: unknown) => {
+      const writing = this.agentsFiles.roomCreated(project, others).catch((error: unknown) => {
         this.log(`the agents file for project ${project.id}`, error instanceof Error ? error.message : String(error));
         return null;
       });

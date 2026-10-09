@@ -26,8 +26,7 @@
  * and a room's members are read on its tile, not visited) and the buttons of its rows (the header, each section's +).
  * With four tiles on three columns the fourth sits under the first, so Down from that room's tile reaches the tile
  * below, then Crew's head, a crew member, Browsers' head and a browser, keeping to the column it began in; Up from the
- * first row reaches its section's + (or, with an agents-file question open on the demo project, that question's button
- * beside it) and then the header, which is the top, and from a page scrolled to its foot each stop
+ * first row reaches its section's + and then the header, which is the top, and from a page scrolled to its foot each stop
  * on the way up is brought into view below the sticky header, not under it (in both looks); Left and Right stop at a
  * row's ends. A crew
  * member is seated in a room by keys alone, from its Edit dialog's Seat in a room…, and the API shows the new member.
@@ -416,13 +415,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`  page: ${what} in sight below the header (its top at ${seen.top}px, the header's foot at ${seen.head}px; elementFromPoint at its middle: the stop)`);
   };
   /**
-   * The demo section's head stop that Up from its first row reaches: its +, or, when the project has an agents-file
-   * question open (A1; ROOMS_FAKE_PROJECT_DIR on a scratch repository), that question's button beside it, the nearer.
-   */
-  const sectionHead = (grid: Grid): { key: string; label: string } =>
-    grid.some((p) => p.element === "head:agents:project_demo") ? { key: "head:agents:project_demo", label: "Commit the agents file? (demo)" } : { key: "head:room:project_demo", label: "New room in demo" };
-  /**
-   * From the page scrolled to its foot (the ring on a browser there), up to the first row and onto its section's head:
+   * From the page scrolled to its foot (the ring on a browser there), up to the first row and onto its section's +:
    * each in sight below the header. Returns the first row's stop the way up came to, and the run's column.
    */
   const upFromTheFoot = async (foot: string, first: string): Promise<Span | undefined> => {
@@ -433,10 +426,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`  page: scrolled ${down.top} of ${down.more} px, the ring at the foot`);
     const column = await goTo(first);
     await inSight(first, `the first row's ${short(first)}`);
-    const head = sectionHead(await settledGrid());
     press("ArrowUp");
-    await expect(`Up from the first row: its section's head, ${head.label}`, (f) => f.key === head.key && f.label === head.label && f.ring);
-    await inSight(head.key, `the section's head (${head.label})`);
+    await expect("Up from the first row: its section's +, New room in demo", (f) => f.key === "head:room:project_demo" && f.label === "New room in demo" && f.ring);
+    await inSight("head:room:project_demo", "the section's + (New room in demo)");
     return column;
   };
   /** Where a key moves from a stop on the grid as it is now, as the page's function says (null: it stays). */
@@ -589,14 +581,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // its end; Home and End go to its ends.
   grid = await settledGrid();
   const firstRow = projectTiles.filter((p) => Math.abs(p.top - Math.min(...projectTiles.map((t) => t.top))) < 2).sort((a, b) => a.left - b.left);
-  const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !p.element.startsWith("head:room:") && !p.element.startsWith("head:agents:")).sort((a, b) => a.left - b.left);
+  const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !p.element.startsWith("head:room:")).sort((a, b) => a.left - b.left);
   // The page scrolled down first (the ring on the browser at the foot, where the run above ended): the way up brings each
   // stop into view below the sticky header (scroll-padding-top), the first row's tile and the + both in sight.
   const firstColumn = (await upFromTheFoot(browserTile.element, firstRow[0]!.element)) ?? firstRow[0]!;
-  const head = sectionHead(grid);
-  await keyBar(head.label);
-  const onHeader = predict(grid, head.key, "up", firstColumn);
-  if (!onHeader || !header.some((p) => p.element === onHeader)) fail(`Up from the section's head would go to ${onHeader}, not the header`);
+  await keyBar("New room in demo");
+  const onHeader = predict(grid, "head:room:project_demo", "up", firstColumn);
+  if (!onHeader || !header.some((p) => p.element === onHeader)) fail(`Up from the section's + would go to ${onHeader}, not the header`);
   press("ArrowUp");
   await expect(`Up: the page's header, ${short(onHeader)}`, (f) => f.key === onHeader && f.ring);
   press("ArrowUp");
@@ -1216,7 +1207,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const pixelFoot = grid.filter((p) => p.element.startsWith("browser:")).sort((a, b) => b.bottom - a.bottom)[0]!;
   const pixelFirst = grid.filter((p) => p.tile && /^(room|thread):/.test(p.element)).sort((a, b) => a.top - b.top || a.left - b.left)[0]!;
   await upFromTheFoot(pixelFoot.element, pixelFirst.element);
-  await state("pixel look: from the foot, Up brings the first row and its + into sight below the header", sectionHead(grid).label);
+  await state("pixel look: from the foot, Up brings the first row and its + into sight below the header", "New room in demo");
   await goTo(`preset:${sol.id}`);
   await expect("pixel look: the crew member's ring is drawn", (f) => f.ring);
   await state("pixel look: the overview's focus ring", "sol · crew member");

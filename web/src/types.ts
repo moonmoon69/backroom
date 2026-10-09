@@ -519,22 +519,16 @@ export interface T3Project {
   defaultModelSelection: ModelSelection | null;
 }
 
-/** The commit question for the agents file Backroom wrote in a project's folder (GET /api/agents-files). */
-export interface AgentsFileQuestion {
+/** What creating a room wrote in its project's folder (room.created's agentsFile; src/app/agentsFile.ts). */
+export interface AgentsFileWritten {
   projectId: string;
   folder: string;
-  /** The files Backroom wrote that are still uncommitted there (AGENTS.md, and CLAUDE.md when it wrote that too). */
-  files: string[];
-  /** Where the commit would go; null when the folder has a detached HEAD. */
-  branch: string | null;
-  /** Of those, the ones git ignores (.gitignore): never forced in, so they stay out of the commit. */
-  ignored: string[];
-  /** Why no commit can be made now (a detached HEAD, a merge in progress, every file ignored); null when one can. */
-  blocked: string | null;
-  /** AGENTS.md as it is now: Backroom's, or the project's own that CLAUDE.md imports. */
-  text: string;
-  /** Why the last attempt to commit failed. */
-  error: string | null;
+  /** AGENTS.md and CLAUDE.md, or CLAUDE.md alone. */
+  written: string[];
+  /** Kept out of git in the repository's .git/info/exclude. */
+  excluded: boolean;
+  /** The post-checkout hook that copies them into new worktrees; null outside git. */
+  hook: "installed" | "ours" | "own-hook" | "hooks-path" | "not-main" | "no-exclude" | "failed" | null;
 }
 
 /** Per-model option from T3's manifest (effort, contextWindow, fastMode, thinking, …). */
@@ -1218,8 +1212,6 @@ export type RoomCommand =
   | { type: "browser.delete"; browserId: string }
   | { type: "room.reorder"; roomIds: string[] }
   | { type: "project.reorder"; projectIds: string[] }
-  /** Commit the agents file Backroom wrote in the project's folder, or leave it uncommitted; remembered for the project. */
-  | { type: "project.agentsFile.answer"; projectId: string; commit: boolean }
   /** Settings → Agents file: whether Backroom writes the default agents file in a project's folder (on by default). */
   | { type: "agentsFile.enabled.set"; enabled: boolean }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
@@ -1277,9 +1269,8 @@ export type RoomCommand =
   | { type: "thread.lifecycle"; threadId: string; action: "settle" | "unsettle" | "archive" | "unarchive" | "delete" };
 
 export type CommandResult =
-  /** agentsFile: Backroom wrote the default agents file in the project's folder just now, and asks whether to commit it. */
-  | { type: "room.created"; roomId: string; agentsFile?: AgentsFileQuestion }
-  | { type: "project.agentsFile.answered"; projectId: string; answer: "commit" | "leave"; commit: string | null }
+  /** agentsFile: Backroom wrote the default agents file in the project's folder just now (the page says so). */
+  | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "settings.updated" }
   | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "room.updated"; roomId: string }

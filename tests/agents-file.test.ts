@@ -1,20 +1,21 @@
 /**
  * A1, the agents file (src/app/agentsFile.ts): creating a room in a project whose folder has no AGENTS.md writes the
- * default there (and a CLAUDE.md importing it when that is missing too), never over or into a file that is there;
- * Backroom writes once per project folder; in a git repository the user is asked once whether to commit it, and the
- * answer is remembered. Each project here is a folder this file makes (a git repository unless the test says
- * otherwise) and removes, added to the fake T3; nothing is pushed anywhere.
+ * default there (and a CLAUDE.md importing it when that is missing too), never over or into a file that is there, and
+ * never in a folder that holds others; Backroom writes once per project folder. In a git repository the files stay out
+ * of git (the repository's .git/info/exclude, never .gitignore; nothing is committed), and a post-checkout hook copies
+ * them into each new worktree. Each project here is a folder this file makes (a git repository unless the test says
+ * otherwise) and removes, added to the fake T3.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
-import { AgentsFiles, defaultAgentsText, projectChecks, type AgentsFileQuestion as ServerQuestion } from "../src/app/agentsFile.ts";
+import { AgentsFiles, COPY_LINE, EXCLUDE_END, EXCLUDE_START, HOOK_TEXT, defaultAgentsText, home as accountHome, projectChecks, withExcluded, type AgentsFileWritten as ServerWritten } from "../src/app/agentsFile.ts";
 import { createStack } from "../src/app/bootstrap.ts";
 import type { CommandResult as ServerResult } from "../src/app/service.ts";
 import { loadConfig } from "../src/config.ts";
@@ -22,17 +23,17 @@ import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
 
-// The web keeps hand copies of the question and the answer's result: `npm run typecheck` fails when they drift.
+// The web keeps hand copies of what a room's creation says it wrote, and of the setting's command: `npm run typecheck`
+// fails when they drift.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const same: Array<true> = [
-  true satisfies Same<Web.AgentsFileQuestion, ServerQuestion>,
-  true satisfies Same<Extract<Web.CommandResult, { type: "project.agentsFile.answered" }>, Extract<ServerResult, { type: "project.agentsFile.answered" }>>,
+  true satisfies Same<Web.AgentsFileWritten, ServerWritten>,
   true satisfies Same<Extract<Web.CommandResult, { type: "room.created" }>, Extract<ServerResult, { type: "room.created" }>>,
-  true satisfies Same<Extract<Web.RoomCommand, { type: "project.agentsFile.answer" }>, Extract<RoomCommandInput, { type: "project.agentsFile.answer" }>>,
+  true satisfies Same<Extract<Web.RoomCommand, { type: "agentsFile.enabled.set" }>, Extract<RoomCommandInput, { type: "agentsFile.enabled.set" }>>,
 ];
 
-// Backroom's git runs with the process's environment: an identity of the test's own, and none of the user's git config
-// (a signing key or a hooks path there would change what a commit does).
+// Backroom's git runs with the process's environment: an identity of the test's own for the test's commits, and none of
+// the user's git config (a hooks path there would change where hooks go).
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "backroom-agents-")));
 const emptyConfig = join(scratch, "gitconfig");
 writeFileSync(emptyConfig, "");
@@ -49,7 +50,16 @@ process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const read = (path: string) => readFileSync(path, "utf8");
 const commits = (dir: string) => git(dir, "log", "--oneline").trim().split("\n").length;
-const status = (dir: string) => git(dir, "status", "--porcelain").trimEnd().split("\n");
+const status = (dir: string) => git(dir, "status", "--porcelain", "--untracked-files=all").trimEnd().split("\n");
+const exclude = (repo: string) => read(join(repo, ".git", "info", "exclude"));
+/** The entries between Backroom's marker lines in the repository's exclude file. */
+const block = (repo: string) => {
+  const lines = exclude(repo).split("\n");
+  return lines.slice(lines.indexOf(EXCLUDE_START) + 1, lines.indexOf(EXCLUDE_END));
+};
+const hookOf = (repo: string) => join(repo, ".git", "hooks", "post-checkout");
+/** git as this machine has it, for a stand-in that hands most calls on. */
+const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 
 let folders = 0;
 /** A project folder: a git repository on main with one commit (package.json with scripts), unless `repo` is false. */
@@ -71,28 +81,26 @@ function folder(options: { repo?: boolean; files?: Record<string, string> } = {}
 
 function stackFor(t: TestContext, options: { agentsFile?: boolean; dbPath?: string; fake?: FakeT3Adapter } = {}) {
   const fake = options.fake ?? new FakeT3Adapter({ autoCompleteMs: null });
-  const stack = createStack({ dbPath: options.dbPath ?? ":memory:", adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, agentsFile: (options.agentsFile ?? true) && { questionsCacheMs: 0 } });
+  const stack = createStack({ dbPath: options.dbPath ?? ":memory:", adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, agentsFile: options.agentsFile ?? true });
   t.after(() => stack.close());
   const run = (command: RoomCommandInput) => stack.service.execute(parseCommand(command)) as Promise<any>;
-  let projects = 0;
   const project = (workspaceRoot: string) => {
-    const id = `project_${++projects}`;
-    fake.projects.push({ id, title: `p${projects}`, workspaceRoot, defaultModelSelection: null });
+    const id = `project_${fake.projects.length}`;
+    fake.projects.push({ id, title: `p${fake.projects.length}`, workspaceRoot, defaultModelSelection: null });
     return id;
   };
   const room = (projectId: string) => run({ type: "room.create", projectId, title: "work", consigliere: false });
-  const questions = () => stack.service.agentsFiles!.questions();
-  return { stack, fake, run, project, room, questions };
+  return { stack, fake, run, project, room };
 }
 
-test("the web's copies of the question, the answer and its result match the server's (checked by npm run typecheck)", () => {
-  assert.equal(same.length, 4);
+test("the web's copies of what a room's creation wrote, and of the setting's command, match the server's (checked by npm run typecheck)", () => {
+  assert.equal(same.length, 3);
 });
 
 // ---------------- what is written ----------------
 
-test("neither file: AGENTS.md with the project's checks, a CLAUDE.md importing it, and the question", async (t) => {
-  const { project, room, questions } = stackFor(t);
+test("neither file: AGENTS.md with the project's checks and a CLAUDE.md importing it, kept out of git, the worktree hook installed, nothing committed", async (t) => {
+  const { project, room } = stackFor(t);
   const dir = folder();
   const created = await room(project(dir));
 
@@ -102,48 +110,42 @@ test("neither file: AGENTS.md with the project's checks, a CLAUDE.md importing i
   assert.ok(agents.endsWith("\n") && !agents.includes("\r"), "LF line endings and a final newline");
   assert.doesNotMatch(agents, /\/home|\/tmp|127\.0\.0\.1|localhost|Backroom's rooms|Consigliere/, "nothing machine-specific, nothing about routing");
   assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n", "the bare import line, no copy");
-  assert.deepEqual(created.agentsFile, {
-    projectId: "project_1",
-    folder: dir,
-    files: ["AGENTS.md", "CLAUDE.md"],
-    branch: "main",
-    ignored: [],
-    blocked: null,
-    text: agents,
-    error: null,
-  });
-  assert.deepEqual(await questions(), [created.agentsFile], "the question stays open until it is answered");
-  assert.equal(commits(dir), 1, "nothing is committed, or staged, before the answer");
-  assert.deepEqual(status(dir), ["?? AGENTS.md", "?? CLAUDE.md"]);
+  assert.deepEqual(created.agentsFile, { projectId: "project_1", folder: dir, written: ["AGENTS.md", "CLAUDE.md"], excluded: true, hook: "installed" });
+
+  assert.deepEqual(block(dir), ["/AGENTS.md", "/CLAUDE.md"], "listed in the repository's own exclude file");
+  assert.deepEqual(status(dir), [""], "git sees nothing to add");
+  assert.equal(existsSync(join(dir, ".gitignore")), false, "no .gitignore written");
+  assert.equal(commits(dir), 1, "nothing committed");
+  assert.equal(read(hookOf(dir)), HOOK_TEXT);
+  assert.ok((statSync(hookOf(dir)).mode & 0o111) !== 0, "the hook runs");
 });
 
-test("AGENTS.md there, CLAUDE.md missing: the one-line CLAUDE.md alone, importing the project's own, in the same question", async (t) => {
-  const { project, room, run } = stackFor(t);
+test("AGENTS.md there, CLAUDE.md missing: the one-line CLAUDE.md alone, kept out of git", async (t) => {
+  const { project, room } = stackFor(t);
   const own = "# Our own habits\n";
   for (const files of [{ "AGENTS.md": own }, { "AGENTS.md": own, "AGENTS.override.md": "# Codex's\n" }]) {
     const dir = folder({ files });
-    const projectId = project(dir);
-    const created = await room(projectId);
+    const created = await room(project(dir));
     assert.equal(read(join(dir, "AGENTS.md")), own, "the project's AGENTS.md is untouched");
     assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n");
-    assert.deepEqual([created.agentsFile.files, created.agentsFile.text], [["CLAUDE.md"], own], JSON.stringify(files));
-    assert.deepEqual(status(dir), ["?? CLAUDE.md"]);
-    await run({ type: "project.agentsFile.answer", projectId, commit: true });
-    assert.deepEqual(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n"), ["CLAUDE.md"]);
+    assert.deepEqual([created.agentsFile.written, created.agentsFile.excluded, created.agentsFile.hook], [["CLAUDE.md"], true, "installed"], JSON.stringify(files));
+    assert.deepEqual(block(dir), ["/CLAUDE.md"]);
+    assert.deepEqual(status(dir), [""]);
   }
   // A link to the project's AGENTS.md elsewhere in it is a file the import reaches.
   const linked = folder({ files: { "docs/agents.md": own } });
   symlinkSync("docs/agents.md", join(linked, "AGENTS.md"));
-  assert.deepEqual((await room(project(linked))).agentsFile.files, ["CLAUDE.md"]);
+  assert.deepEqual((await room(project(linked))).agentsFile.written, ["CLAUDE.md"]);
 });
 
 test("AGENTS.md only in other capitals, as AGENTS.override.md, as a link to nowhere or deleted while tracked: nothing is written", async (t) => {
-  const { project, room, questions } = stackFor(t);
+  const { project, room } = stackFor(t);
   for (const files of [{ "agents.md": "# ours\n" }, { "Agents.md": "# ours\n" }, { "AGENTS.override.md": "# ours\n" }]) {
     const dir = folder({ files });
     assert.equal((await room(project(dir))).agentsFile, undefined, JSON.stringify(files));
     for (const [name, text] of Object.entries(files)) assert.equal(read(join(dir, name)), text, `${name} is untouched`);
     assert.deepEqual(status(dir), [""], `nothing new beside ${Object.keys(files).join(", ")}`);
+    assert.equal(existsSync(hookOf(dir)), false, "no hook");
   }
   const linked = folder();
   const outside = join(scratch, "outside", "target.md");
@@ -156,11 +158,10 @@ test("AGENTS.md only in other capitals, as AGENTS.override.md, as a link to nowh
   unlinkSync(join(deleted, "AGENTS.md"));
   assert.equal((await room(project(deleted))).agentsFile, undefined);
   assert.deepEqual(status(deleted), [" D AGENTS.md"]);
-  assert.deepEqual(await questions(), []);
 });
 
 test("CLAUDE.md there, in any form, with or without AGENTS.md: the project has its own instructions, and nothing is written", async (t) => {
-  const { project, room, questions } = stackFor(t);
+  const { project, room } = stackFor(t);
   const cases: Array<Record<string, string>> = [
     { "CLAUDE.md": "# Our Claude notes\n\nUse tabs.\n" },
     { "claude.md": "# ours\n" },
@@ -172,6 +173,7 @@ test("CLAUDE.md there, in any form, with or without AGENTS.md: the project has i
     assert.equal((await room(project(dir))).agentsFile, undefined, JSON.stringify(files));
     for (const [name, text] of Object.entries(files)) assert.equal(read(join(dir, name)), text, `${name} is untouched`);
     assert.deepEqual(status(dir), [""], `nothing new beside ${Object.keys(files).join(", ")}`);
+    assert.equal(exclude(dir).includes(EXCLUDE_START), false, "the exclude file untouched");
   }
   const linked = folder();
   symlinkSync(join(scratch, "outside", "claude.md"), join(linked, "CLAUDE.md"));
@@ -181,19 +183,16 @@ test("CLAUDE.md there, in any form, with or without AGENTS.md: the project has i
   unlinkSync(join(deleted, "CLAUDE.md"));
   assert.equal((await room(project(deleted))).agentsFile, undefined);
   assert.deepEqual(status(deleted), [" D CLAUDE.md"]);
-  assert.deepEqual(await questions(), []);
 });
 
-test("a folder that is not a git repository gets the files and no question; a folder not on this machine gets nothing", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
+test("a folder that is not a git repository gets the files, with nothing to keep out of git and no hook; a folder not on this machine gets nothing", async (t) => {
+  const { project, room } = stackFor(t);
   const dir = folder({ repo: false });
-  const projectId = project(dir);
-  const created = await room(projectId);
-  assert.equal(created.agentsFile, undefined, "nothing to commit, so nothing to ask");
+  const created = await room(project(dir));
+  assert.deepEqual(created.agentsFile, { projectId: "project_1", folder: dir, written: ["AGENTS.md", "CLAUDE.md"], excluded: false, hook: null });
   assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n");
   assert.match(read(join(dir, "AGENTS.md")), /`npm run lint`, `npm run test`/);
-  assert.deepEqual(await questions(), []);
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /wrote no agents file in this project's repository/);
+  assert.equal(existsSync(join(dir, ".git")), false, "no repository made");
 
   const elsewhere = join(scratch, "not-here");
   assert.equal((await room(project(elsewhere))).agentsFile, undefined);
@@ -219,14 +218,14 @@ test("a file that appears between the look and the write is kept byte for byte",
   for (const name of ["AGENTS.md", "CLAUDE.md"]) {
     const raced = folder();
     const files = new AgentsFiles(stack.repos, { beforeWrite: (at, file) => file === name && writeFileSync(join(at, name), theirs) });
-    const question = await files.roomCreated({ id: `p_race_${name}`, workspaceRoot: raced });
+    const written = await files.roomCreated({ id: `p_race_${name}`, workspaceRoot: raced });
     assert.equal(read(join(raced, name)), theirs, `${name} that appeared is kept`);
     if (name === "AGENTS.md") {
-      assert.equal(question, null, "nothing more is written, nothing asked");
+      assert.equal(written, null, "nothing more is written");
       assert.equal(existsSync(join(raced, "CLAUDE.md")), false);
-    } else assert.deepEqual(question?.files, ["AGENTS.md"]);
+    } else assert.deepEqual(written?.written, ["AGENTS.md"]);
   }
-  // The same beside the project's own AGENTS.md: a CLAUDE.md that appears is kept, and nothing is written or asked.
+  // The same beside the project's own AGENTS.md: a CLAUDE.md that appears is kept, and nothing is written.
   const own = folder({ files: { "AGENTS.md": "# ours\n" } });
   const files = new AgentsFiles(stack.repos, { beforeWrite: (at, file) => file === "CLAUDE.md" && writeFileSync(join(at, "CLAUDE.md"), theirs) });
   assert.equal(await files.roomCreated({ id: "p_race_own", workspaceRoot: own }), null);
@@ -238,6 +237,8 @@ test("a link to nowhere that appears before the write is never followed", async 
   for (const name of ["AGENTS.md", "CLAUDE.md"]) {
     const dir = folder();
     const outside = join(scratch, `outside-${folders}`, "target.md");
+    // The target's folder is there: a write that followed the link would create the target.
+    mkdirSync(dirname(outside), { recursive: true });
     const files = new AgentsFiles(stack.repos, { beforeWrite: (at, file) => file === name && symlinkSync(outside, join(at, name)) });
     await files.roomCreated({ id: `p_link_${name}`, workspaceRoot: dir });
     assert.equal(existsSync(outside), false, `${name}: the link's target is not created`);
@@ -268,8 +269,119 @@ test("a folder Backroom cannot write in, or with no git to run: nothing is writt
   assert.equal(stack.service.agentsFiles!.record(gitlessId), null);
 });
 
+test("git cannot say whether the folder is a repository (an ownership refusal): nothing is written, and the next room writes", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const dir = folder();
+  const projectId = project(dir);
+  // A git that refuses to look at this repository, as git does for one owned by another account.
+  const bin = join(scratch, `refusing-git-${++folders}`);
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = "--show-toplevel" ] && { echo "fatal: detected dubious ownership in repository at '${dir}'" >&2; exit 128; }; done\nexec ${realGit} "$@"\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  process.env.PATH = `${bin}:${path}`;
+  assert.equal((await room(projectId)).agentsFile, undefined);
+  assert.equal(existsSync(join(dir, "AGENTS.md")), false);
+  assert.equal(stack.service.agentsFiles!.record(projectId), null, "not recorded as outside git");
+  process.env.PATH = path;
+  assert.deepEqual((await room(projectId)).agentsFile.written, ["AGENTS.md", "CLAUDE.md"]);
+
+  // A worktree whose repository moved: git says "not a git repository: <gitdir>", which is no answer about the folder.
+  const orphan = join(scratch, `orphan-${++folders}`);
+  mkdirSync(orphan);
+  writeFileSync(join(orphan, ".git"), `gitdir: ${join(scratch, "moved-away", ".git", "worktrees", "x")}\n`);
+  const orphanId = project(orphan);
+  assert.equal((await room(orphanId)).agentsFile, undefined);
+  assert.equal(existsSync(join(orphan, "AGENTS.md")), false);
+  assert.equal(stack.service.agentsFiles!.record(orphanId), null);
+});
+
+test("a folder that holds other projects gets nothing: the reviewer's P1, the home folder and above, a repository directly below", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const nothing = (dir: string) => assert.deepEqual(["AGENTS.md", "CLAUDE.md"].filter((name) => existsSync(join(dir, name))), [], dir);
+
+  // P1: a folder outside git with one of T3's projects (a repository) below it.
+  const umbrella = join(scratch, `umbrella-${++folders}`);
+  mkdirSync(umbrella);
+  const child = join(umbrella, "child");
+  mkdirSync(child);
+  execFileSync("git", ["init", "-q", "-b", "main", child]);
+  project(child);
+  const umbrellaId = project(umbrella);
+  const created = await room(umbrellaId);
+  assert.equal(created.type, "room.created");
+  assert.equal(created.agentsFile, undefined);
+  nothing(umbrella);
+  nothing(child);
+  assert.equal(stack.service.agentsFiles!.record(umbrellaId), null);
+
+  // Another project below, not a repository, in a folder that is one: still nothing.
+  const repo = folder();
+  const inner = join(repo, "tools");
+  mkdirSync(inner);
+  project(inner);
+  assert.equal((await room(project(repo))).agentsFile, undefined);
+  nothing(repo);
+
+  // Outside git, a repository directly below it, though T3 lists no project there.
+  const holder = join(scratch, `holder-${++folders}`);
+  mkdirSync(join(holder, "lib"), { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", join(holder, "lib")]);
+  assert.equal((await room(project(holder))).agentsFile, undefined);
+  nothing(holder);
+
+  // The home folder and a folder above it (which holds nothing else, so only the home rule keeps it out).
+  const home = join(scratch, `above-${++folders}`, "home");
+  mkdirSync(join(home, "projects"), { recursive: true });
+  const kept = process.env.HOME;
+  t.after(() => {
+    if (kept === undefined) delete process.env.HOME;
+    else process.env.HOME = kept;
+  });
+  process.env.HOME = home;
+  // The folder above first: once the home folder is a project, the folder above would hold one anyway.
+  for (const dir of [dirname(home), home]) {
+    assert.equal((await room(project(dir))).agentsFile, undefined, dir);
+    nothing(dir);
+  }
+  // A project below the home folder is written in as ever.
+  const own = join(home, "projects", "own");
+  mkdirSync(own);
+  execFileSync("git", ["init", "-q", "-b", "main", own]);
+  assert.deepEqual((await room(project(own))).agentsFile.written, ["AGENTS.md", "CLAUDE.md"]);
+
+  // A project in a folder whose name starts with two dots is below its folder all the same.
+  const dotted = join(scratch, `dotted-${++folders}`);
+  mkdirSync(join(dotted, "..old"), { recursive: true });
+  project(join(dotted, "..old"));
+  assert.equal((await room(project(dotted))).agentsFile, undefined);
+  nothing(dotted);
+  // A repository one folder further down (clients/acme), outside git and listed nowhere.
+  const clients = join(scratch, `clients-${++folders}`);
+  mkdirSync(join(clients, "acme", "repo"), { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", join(clients, "acme", "repo")]);
+  // The outer folder first: once acme is a project, clients would hold one anyway.
+  assert.equal((await room(project(clients))).agentsFile, undefined, "one folder further down");
+  assert.equal((await room(project(join(clients, "acme")))).agentsFile, undefined, "directly below");
+  nothing(clients);
+});
+
+test("the home folder when HOME is empty or not absolute: the system's record of it", (t) => {
+  const kept = process.env.HOME;
+  t.after(() => {
+    if (kept === undefined) delete process.env.HOME;
+    else process.env.HOME = kept;
+  });
+  for (const value of ["", "relative/home"]) {
+    process.env.HOME = value;
+    assert.equal(accountHome(), realpathSync(userInfo().homedir), JSON.stringify(value));
+  }
+});
+
 test("instructions in a folder above the project, up to its repository's top, are the project's own: nothing is written", async (t) => {
-  const { project, room, questions } = stackFor(t);
+  const { project, room } = stackFor(t);
   for (const name of ["AGENTS.md", "CLAUDE.md", "AGENTS.override.md"]) {
     const repo = folder({ files: { [name]: "# the repository's\n", "packages/web/index.html": "<p>hi</p>\n" } });
     const web = join(repo, "packages", "web");
@@ -286,8 +398,7 @@ test("instructions in a folder above the project, up to its repository's top, ar
   writeFileSync(join(inner, "README.md"), "# inner\n");
   git(inner, "add", ".");
   git(inner, "commit", "-q", "-m", "first");
-  assert.deepEqual((await room(project(inner))).agentsFile.files, ["AGENTS.md", "CLAUDE.md"]);
-  assert.equal((await questions()).length, 1);
+  assert.deepEqual((await room(project(inner))).agentsFile.written, ["AGENTS.md", "CLAUDE.md"]);
 });
 
 test("a throwaway service writes only under its own folders; a project with no folder path makes its room all the same", async (t) => {
@@ -305,57 +416,43 @@ test("a throwaway service writes only under its own folders; a project with no f
   assert.equal(created.agentsFile, undefined);
 });
 
-test("a project folder git ignores as a whole: the files are written, and the question says nothing can be committed", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const repo = folder({ files: { ".gitignore": "web/\n", "web/index.html": "<p>hi</p>\n" } });
-  const projectId = project(join(repo, "web"));
-  const created = await room(projectId);
-  assert.deepEqual([created.agentsFile.files, created.agentsFile.ignored], [["AGENTS.md", "CLAUDE.md"], ["AGENTS.md", "CLAUDE.md"]]);
-  assert.match(created.agentsFile.blocked, /are ignored by git here/);
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /ignored by git here/);
-  assert.equal(commits(repo), 1);
-});
-
-test("a room created while a commit runs in its project does not wait for it", async (t) => {
-  const { project, room, run } = stackFor(t);
+test("Backroom writes once per project folder: a removed file stays removed, also across a restart and a project added again", async (t) => {
+  const data = join(scratch, `data-${++folders}`);
+  mkdirSync(data);
+  const dbPath = join(data, "rooms.sqlite");
+  const fake = new FakeT3Adapter({ autoCompleteMs: null });
+  const first = createStack({ dbPath, adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, agentsFile: true });
   const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const hook = join(dir, ".git", "hooks", "pre-commit");
-  writeFileSync(hook, "#!/bin/sh\nsleep 2\n");
-  chmodSync(hook, 0o755);
-  const committing = run({ type: "project.agentsFile.answer", projectId, commit: true });
-  await new Promise((done) => setTimeout(done, 200));
-  const started = Date.now();
-  assert.equal((await room(projectId)).agentsFile, undefined);
-  assert.ok(Date.now() - started < 1000, `the room took ${Date.now() - started} ms`);
-  assert.equal((await committing).answer, "commit");
-});
-
-test("Backroom writes once per project folder: a removed file stays removed, and nothing is asked again", async (t) => {
-  const { project, room } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  assert.ok((await room(projectId)).agentsFile);
-  assert.equal((await room(projectId)).agentsFile, undefined, "a second room while the question is open asks nothing");
+  fake.projects.push({ id: "p_kept", title: "kept", workspaceRoot: dir, defaultModelSelection: null });
+  const create = (stack: ReturnType<typeof createStack>, projectId: string) => stack.service.execute(parseCommand({ type: "room.create", projectId, title: "work", consigliere: false })) as Promise<any>;
+  assert.ok((await create(first, "p_kept")).agentsFile);
+  assert.equal((await create(first, "p_kept")).agentsFile, undefined, "a second room writes nothing");
   unlinkSync(join(dir, "AGENTS.md"));
   unlinkSync(join(dir, "CLAUDE.md"));
-  assert.equal((await room(projectId)).agentsFile, undefined);
+  first.close();
+
+  const second = stackFor(t, { dbPath, fake });
+  assert.equal((await second.room("p_kept")).agentsFile, undefined, "after a restart");
+  // The project removed from T3 and added again for the same folder: the record goes with it.
+  fake.projects.splice(fake.projects.findIndex((p) => p.id === "p_kept"), 1);
+  fake.projects.push({ id: "p_again", title: "again", workspaceRoot: dir, defaultModelSelection: null });
+  assert.equal((await second.room("p_again")).agentsFile, undefined);
+  assert.equal(second.stack.service.agentsFiles!.record("p_again")?.folder, dir);
   assert.equal(existsSync(join(dir, "AGENTS.md")), false);
   assert.equal(existsSync(join(dir, "CLAUDE.md")), false);
 });
 
-test("two rooms created at once write the files once and ask once", async (t) => {
+test("two rooms created at once write the files once", async (t) => {
   const { project, room } = stackFor(t);
   const dir = folder();
   const projectId = project(dir);
   const both = await Promise.all([room(projectId), room(projectId)]);
   assert.equal(both.filter((created) => created.agentsFile).length, 1);
-  assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n");
+  assert.deepEqual(block(dir), ["/AGENTS.md", "/CLAUDE.md"], "listed once");
 });
 
 test("consigliere.start creates its room the same way, and writes the same files", async (t) => {
-  const { project, run, questions } = stackFor(t);
+  const { project, run, stack } = stackFor(t);
   const dir = folder();
   const projectId = project(dir);
   const { presetId } = await run({ type: "preset.create", name: "astra", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
@@ -363,353 +460,249 @@ test("consigliere.start creates its room the same way, and writes the same files
   const started = await run({ type: "consigliere.start", projectId, text: "Plan the release", requestId: randomUUID() });
   assert.equal(started.type, "consigliere.started");
   assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n");
-  assert.deepEqual((await questions()).map((q) => [q.projectId, q.files]), [[projectId, ["AGENTS.md", "CLAUDE.md"]]]);
+  assert.deepEqual(stack.service.agentsFiles!.record(projectId)?.written, ["AGENTS.md", "CLAUDE.md"]);
 });
 
-test("Backroom's own repository has both files: a room in it writes nothing", async (t) => {
-  const { project, room, questions, stack } = stackFor(t);
+test("Backroom's own repository has both files, committed: a room in it writes nothing", async (t) => {
+  const { project, room, stack } = stackFor(t);
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   assert.equal(read(join(repo, "CLAUDE.md")), "@AGENTS.md\n");
   assert.ok(existsSync(join(repo, "AGENTS.md")));
+  assert.equal(git(repo, "ls-files", "--", "AGENTS.md", "CLAUDE.md").trim(), "AGENTS.md\nCLAUDE.md", "this project's own source");
   const projectId = project(repo);
   assert.equal((await room(projectId)).agentsFile, undefined);
   assert.equal(stack.service.agentsFiles!.record(projectId), null);
-  assert.deepEqual(await questions(), []);
 });
 
-// ---------------- the commit question ----------------
+// ---------------- kept out of git ----------------
 
-test("Commit: one commit of the files Backroom wrote; the user's staged and unstaged changes stay as they were", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const dir = folder({ files: { "src.txt": "one\n" } });
-  const projectId = project(dir);
-  await room(projectId);
-  // The user's own work in progress: a staged change, an unstaged change and an untracked file.
-  writeFileSync(join(dir, "package.json"), "{}\n");
-  git(dir, "add", "package.json");
-  writeFileSync(join(dir, "src.txt"), "two\n");
-  writeFileSync(join(dir, "notes.txt"), "mine\n");
-
-  const answered = await run({ type: "project.agentsFile.answer", projectId, commit: true });
-  assert.deepEqual([answered.type, answered.answer, answered.commit], ["project.agentsFile.answered", "commit", git(dir, "rev-parse", "HEAD").trim()]);
-  assert.deepEqual(git(dir, "diff", "--name-status", "HEAD~1", "HEAD").trim().split("\n"), ["A\tAGENTS.md", "A\tCLAUDE.md"], "the commit adds the two files and nothing else");
-  assert.equal(git(dir, "show", "HEAD:CLAUDE.md"), "@AGENTS.md\n");
-  assert.match(git(dir, "log", "-1", "--format=%s%n%an%n%b"), /^Add AGENTS\.md and CLAUDE\.md, written by Backroom\nTester\nAGENTS\.md: the habits/);
-  assert.doesNotMatch(git(dir, "log", "-1", "--format=%B"), /Co-authored-by/i);
-  assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD").trim(), "main", "on the branch checked out there");
-  assert.deepEqual(status(dir), ["M  package.json", " M src.txt", "?? notes.txt"], "staged still staged, unstaged still unstaged");
-
-  assert.deepEqual(await questions(), []);
-  const again = await run({ type: "project.agentsFile.answer", projectId, commit: false });
-  assert.deepEqual([again.answer, again.commit], ["commit", answered.commit], "the first answer is the one remembered");
-  assert.equal((await room(projectId)).agentsFile, undefined);
-  assert.equal(commits(dir), 2);
+test("the exclude file: Backroom's block added once, every other line kept; a project in a subfolder lists its own paths", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = folder({ files: { "web/index.html": "<p>hi</p>\n", "api/main.go": "package main\n" } });
+  const theirs = "# git ls-files --others --exclude-from=.git/info/exclude\n*.local\n";
+  writeFileSync(join(repo, ".git", "info", "exclude"), theirs);
+  assert.deepEqual((await room(project(join(repo, "web")))).agentsFile.written, ["AGENTS.md", "CLAUDE.md"]);
+  assert.deepEqual((await room(project(join(repo, "api")))).agentsFile.hook, "ours", "the hook there already is Backroom's");
+  assert.ok(exclude(repo).startsWith(theirs), "the repository's own lines first, as they were");
+  assert.deepEqual(block(repo), ["/web/AGENTS.md", "/web/CLAUDE.md", "/api/AGENTS.md", "/api/CLAUDE.md"]);
+  assert.equal(exclude(repo).split(EXCLUDE_START).length, 2, "one block");
+  assert.deepEqual(status(repo), [""]);
+  // The pure function: a block that is there takes what is missing, and nothing twice.
+  assert.equal(withExcluded(withExcluded("", ["/A"]), ["/A", "/B"]), `${EXCLUDE_START}\n/A\n/B\n${EXCLUDE_END}\n`);
+  // CRLF lines: the block is found all the same, and nothing is listed twice.
+  assert.equal(withExcluded(`*.local\r\n${EXCLUDE_START}\r\n/A\r\n${EXCLUDE_END}\r\n`, ["/A", "/B"]), `*.local\r\n${EXCLUDE_START}\r\n/A\r\n/B\n${EXCLUDE_END}\r\n`);
+  // A start marker whose end was removed: the end goes back before the first line that is no path.
+  assert.equal(withExcluded(`${EXCLUDE_START}\n/A\n*.log\n`, ["/A", "/B"]), `${EXCLUDE_START}\n/A\n/B\n${EXCLUDE_END}\n*.log\n`);
 });
 
-test("Commit never pushes: a repository with a remote keeps the remote's refs", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const dir = folder();
-  const remote = join(scratch, `remote-${folders}.git`);
-  execFileSync("git", ["init", "-q", "--bare", remote]);
-  git(dir, "remote", "add", "origin", remote);
-  git(dir, "push", "-q", "-u", "origin", "main");
-  const before = git(remote, "for-each-ref");
-  const projectId = project(dir);
-  await room(projectId);
-  await run({ type: "project.agentsFile.answer", projectId, commit: true });
-  assert.equal(git(remote, "for-each-ref"), before);
-  assert.match(git(dir, "status", "-sb").split("\n")[0]!, /\[ahead 1\]/);
+test("a repository without an info folder gets one; an exclude file that cannot be written leaves the files visible to git, and says so", async (t) => {
+  const { project, room } = stackFor(t);
+  const bare = folder();
+  rmSync(join(bare, ".git", "info"), { recursive: true, force: true });
+  const created = await room(project(bare));
+  assert.equal(created.agentsFile.excluded, true);
+  assert.deepEqual(block(bare), ["/AGENTS.md", "/CLAUDE.md"]);
+
+  const locked = folder();
+  chmodSync(join(locked, ".git", "info", "exclude"), 0o444);
+  t.after(() => chmodSync(join(locked, ".git", "info", "exclude"), 0o644));
+  const written = await room(project(locked));
+  assert.deepEqual([written.agentsFile.written, written.agentsFile.excluded, written.agentsFile.hook], [["AGENTS.md", "CLAUDE.md"], false, "no-exclude"]);
+  assert.deepEqual(status(locked), ["?? AGENTS.md", "?? CLAUDE.md"]);
+  assert.equal(existsSync(hookOf(locked)), false, "no hook: it would have no block to read");
 });
 
-test("the files as they are when the answer comes: changed is committed as changed, removed means nothing to commit", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const changed = folder();
-  const changedId = project(changed);
-  await room(changedId);
-  writeFileSync(join(changed, "AGENTS.md"), "# Edited before the answer\n");
-  await run({ type: "project.agentsFile.answer", projectId: changedId, commit: true });
-  assert.equal(git(changed, "show", "HEAD:AGENTS.md"), "# Edited before the answer\n");
-
-  const removed = folder();
-  const removedId = project(removed);
-  await room(removedId);
-  unlinkSync(join(removed, "AGENTS.md"));
-  unlinkSync(join(removed, "CLAUDE.md"));
-  const answered = await run({ type: "project.agentsFile.answer", projectId: removedId, commit: true });
-  assert.deepEqual([answered.answer, answered.commit], ["commit", null]);
-  assert.equal(commits(removed), 1, "no empty commit");
+test("a project whose place in its repository cannot be written in the exclude file as it is gets nothing", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = folder({ files: { "we[b]/index.html": "<p>hi</p>\n" } });
+  assert.equal((await room(project(join(repo, "we[b]")))).agentsFile, undefined);
+  assert.equal(existsSync(join(repo, "we[b]", "AGENTS.md")), false);
 });
 
-test("Leave uncommitted: the files stay untracked, and the answer is remembered", async (t) => {
-  const { project, room, run, stack, questions } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const answered = await run({ type: "project.agentsFile.answer", projectId, commit: false });
-  assert.deepEqual([answered.answer, answered.commit], ["leave", null]);
-  assert.deepEqual(status(dir), ["?? AGENTS.md", "?? CLAUDE.md"]);
-  assert.equal(commits(dir), 1);
-  assert.equal(new AgentsFiles(stack.repos).record(projectId)?.answer, "leave");
-  assert.deepEqual(await questions(), []);
-  assert.equal((await room(projectId)).agentsFile, undefined);
-});
+// ---------------- copied into new worktrees ----------------
 
-test("the question and its answer survive a restart; deleting the room leaves the question to the project", async (t) => {
-  const data = join(scratch, `data-${++folders}`);
-  mkdirSync(data);
-  const dbPath = join(data, "rooms.sqlite");
-  const dir = folder();
-  const fake = new FakeT3Adapter({ autoCompleteMs: null });
-  const open = () => createStack({ dbPath, adapter: fake, briefingBudgetChars: 60000, latestRelease: async () => null, agentsFile: true });
-  const first = open();
-  fake.projects.push({ id: "p_kept", title: "kept", workspaceRoot: dir, defaultModelSelection: null });
-  const created = (await first.service.execute(parseCommand({ type: "room.create", projectId: "p_kept", title: "work", consigliere: false }))) as { roomId: string };
-  await first.service.execute(parseCommand({ type: "room.delete", roomId: created.roomId }));
-  assert.deepEqual((await first.service.agentsFiles!.questions()).map((q) => q.projectId), ["p_kept"], "the question is the project's, not the room's");
-  first.close();
-
-  const second = open();
-  assert.deepEqual((await second.service.agentsFiles!.questions()).map((q) => q.projectId), ["p_kept"], "still open after a restart");
-  await second.service.execute(parseCommand({ type: "project.agentsFile.answer", projectId: "p_kept", commit: false }));
-  second.close();
-  const third = stackFor(t, { dbPath, fake });
-  assert.equal(third.stack.service.agentsFiles!.record("p_kept")?.answer, "leave");
-  assert.equal((await third.room("p_kept")).agentsFile, undefined);
-});
-
-test("a project removed from T3 and added again for the same folder takes over the record and its open question", async (t) => {
-  const { fake, project, room, run, questions } = stackFor(t);
-  const dir = folder();
-  const oldId = project(dir);
-  await room(oldId);
-  fake.projects.splice(fake.projects.findIndex((p) => p.id === oldId), 1);
-  unlinkSync(join(dir, "CLAUDE.md"));
-  const newId = project(dir);
-  assert.notEqual(newId, oldId);
-  assert.equal((await room(newId)).agentsFile, undefined, "nothing written again, nothing asked again");
-  assert.equal(existsSync(join(dir, "CLAUDE.md")), false);
-  assert.deepEqual((await questions()).map((q) => [q.projectId, q.files]), [[newId, ["AGENTS.md"]]]);
-  assert.equal((await run({ type: "project.agentsFile.answer", projectId: newId, commit: true })).answer, "commit");
-});
-
-test("no commit while git is mid-operation or on a detached HEAD: the question stays open and says why", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const answer = (projectId: string) => run({ type: "project.agentsFile.answer", projectId, commit: true });
-
-  const detached = folder();
-  const detachedId = project(detached);
-  await room(detachedId);
-  git(detached, "checkout", "-q", "--detach");
-  await assert.rejects(answer(detachedId), /has no branch checked out \(a detached HEAD\)/);
-
-  const merging = folder({ files: { "a.txt": "base\n" } });
-  const mergingId = project(merging);
-  await room(mergingId);
-  git(merging, "checkout", "-q", "-b", "other");
-  writeFileSync(join(merging, "a.txt"), "theirs\n");
-  git(merging, "commit", "-q", "-am", "theirs");
-  git(merging, "checkout", "-q", "main");
-  writeFileSync(join(merging, "a.txt"), "ours\n");
-  git(merging, "commit", "-q", "-am", "ours");
-  assert.throws(() => git(merging, "merge", "-q", "other"));
-  await assert.rejects(answer(mergingId), /A merge is in progress/);
-
-  const bisecting = folder();
-  const bisectingId = project(bisecting);
-  await room(bisectingId);
-  git(bisecting, "bisect", "start");
-  await assert.rejects(answer(bisectingId), /A bisect is in progress/);
-
-  /** A repository whose main and side branch change a.txt each their own way, with the files written in it. */
-  const diverged = async () => {
-    const dir = folder({ files: { "a.txt": "base\n" } });
-    const id = project(dir);
-    await room(id);
-    git(dir, "checkout", "-q", "-b", "side");
-    writeFileSync(join(dir, "a.txt"), "side\n");
-    git(dir, "commit", "-q", "-am", "side");
-    git(dir, "checkout", "-q", "main");
-    writeFileSync(join(dir, "a.txt"), "main\n");
-    git(dir, "commit", "-q", "-am", "main");
-    return { dir, id };
-  };
-  const rebasing = await diverged();
-  git(rebasing.dir, "checkout", "-q", "side");
-  assert.throws(() => git(rebasing.dir, "rebase", "main"));
-  await assert.rejects(answer(rebasing.id), /A rebase is in progress/);
-  const picking = await diverged();
-  assert.throws(() => git(picking.dir, "cherry-pick", "side"));
-  await assert.rejects(answer(picking.id), /A cherry-pick is in progress/);
-  const reverting = await diverged();
-  writeFileSync(join(reverting.dir, "a.txt"), "later\n");
-  git(reverting.dir, "commit", "-q", "-am", "later");
-  assert.throws(() => git(reverting.dir, "revert", "--no-edit", "HEAD~1"));
-  await assert.rejects(answer(reverting.id), /A revert is in progress/);
-  // Conflicts with no operation recorded: a stash put back over a change of its own.
-  const stashed = await diverged();
-  writeFileSync(join(stashed.dir, "a.txt"), "stashed\n");
-  git(stashed.dir, "stash", "-q");
-  writeFileSync(join(stashed.dir, "a.txt"), "other\n");
-  git(stashed.dir, "commit", "-q", "-am", "other");
-  assert.throws(() => git(stashed.dir, "stash", "pop", "-q"));
-  await assert.rejects(answer(stashed.id), /has files with merge conflicts/);
-
-  const open = await questions();
-  assert.deepEqual(
-    open.map((q) => [q.projectId, q.blocked !== null, q.error !== null]),
-    [detachedId, mergingId, bisectingId, rebasing.id, picking.id, reverting.id, stashed.id].map((id) => [id, true, true]),
-  );
-  assert.equal(open[0]!.branch, null);
-  assert.equal(commits(detached), 1);
-  assert.deepEqual(status(bisecting), ["?? AGENTS.md", "?? CLAUDE.md"], "nothing staged");
-});
-
-test("files git ignores are never forced in: the rest is committed, and with every file ignored nothing can be", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const some = folder({ files: { ".gitignore": "CLAUDE.md\n" } });
-  const someId = project(some);
-  const created = await room(someId);
-  assert.deepEqual([created.agentsFile.files, created.agentsFile.ignored, created.agentsFile.blocked], [["AGENTS.md", "CLAUDE.md"], ["CLAUDE.md"], null]);
-  await run({ type: "project.agentsFile.answer", projectId: someId, commit: true });
-  assert.deepEqual(git(some, "show", "--name-only", "--format=", "HEAD").trim().split("\n"), ["AGENTS.md"]);
-  assert.ok(existsSync(join(some, "CLAUDE.md")), "the ignored file stays in the folder, uncommitted");
-
-  const all = folder({ files: { ".gitignore": "*.md\n" } });
-  const allId = project(all);
-  await room(allId);
-  const [open] = await questions();
-  assert.match(open?.blocked ?? "", /AGENTS\.md and CLAUDE\.md are ignored by git here/);
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId: allId, commit: true }), /ignored by git here/);
-  assert.equal(commits(all), 1);
-  assert.equal((await run({ type: "project.agentsFile.answer", projectId: allId, commit: false })).answer, "leave");
-});
-
-test("git refuses: the files are unstaged again, the question keeps the reason, and a later answer commits", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const hook = join(dir, ".git", "hooks", "pre-commit");
-  writeFileSync(hook, "#!/bin/sh\necho 'lint failed' >&2\nexit 1\n");
-  chmodSync(hook, 0o755);
-
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /git could not commit on main: lint failed/);
-  assert.deepEqual(status(dir), ["?? AGENTS.md", "?? CLAUDE.md"], "unstaged again");
-  assert.equal((await questions())[0]?.error, "git could not commit on main: lint failed");
-
-  writeFileSync(join(dir, ".git", "index.lock"), "");
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /another git command is running in .* \(its index\.lock is there\): try again/);
-  unlinkSync(join(dir, ".git", "index.lock"));
-
-  // A draft of AGENTS.md the user staged, then edited again: a refused commit leaves both as they were.
-  writeFileSync(join(dir, "AGENTS.md"), "# draft\n");
-  git(dir, "add", "AGENTS.md");
-  writeFileSync(join(dir, "AGENTS.md"), "# final\n");
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /lint failed/);
-  assert.deepEqual(status(dir), ["AM AGENTS.md", "?? CLAUDE.md"]);
-  assert.equal(git(dir, "show", ":AGENTS.md"), "# draft\n", "the user's staged version is still staged");
-
-  unlinkSync(hook);
-  const answered = await run({ type: "project.agentsFile.answer", projectId, commit: true });
-  assert.equal(answered.answer, "commit");
-  assert.equal(git(dir, "show", "HEAD:AGENTS.md"), "# final\n", "the file as it is when the answer comes");
-  assert.deepEqual(await questions(), []);
-});
-
-test("a refused commit while something else moves HEAD is not taken for Backroom's", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const hook = join(dir, ".git", "hooks", "pre-commit");
-  writeFileSync(hook, '#!/bin/sh\nc=$(echo foreign | git commit-tree "$(git rev-parse HEAD^{tree})" -p HEAD)\ngit update-ref HEAD "$c"\nexit 1\n');
-  chmodSync(hook, 0o755);
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /git could not commit on main/);
-  assert.equal(git(dir, "log", "-1", "--format=%s").trim(), "foreign");
-  assert.deepEqual(status(dir), ["?? AGENTS.md", "?? CLAUDE.md"]);
-  assert.equal((await questions()).length, 1);
-});
-
-test("no identity configured: git invents none, and the question stays open with git's reason", async (t) => {
-  const { project, room, run, questions } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const kept = { ...process.env };
-  t.after(() => Object.assign(process.env, kept));
-  for (const name of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) delete process.env[name];
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /git could not commit on main: .*(identity|tell me who you are|user\.useConfigOnly)/i);
-  assert.equal(commits(dir), 1);
-  assert.deepEqual(status(dir), ["?? AGENTS.md", "?? CLAUDE.md"]);
-  assert.equal((await questions()).length, 1);
-});
-
-test("two Commit answers at once make one commit", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const [first, second] = await Promise.all([run({ type: "project.agentsFile.answer", projectId, commit: true }), run({ type: "project.agentsFile.answer", projectId, commit: true })]);
-  assert.equal(first.commit, second.commit);
-  assert.equal(commits(dir), 2);
-  // Commit and Leave from two pages at once: the first answer is the one, and the second is told it.
-  const other = folder();
-  const otherId = project(other);
-  await room(otherId);
-  const both = await Promise.all([run({ type: "project.agentsFile.answer", projectId: otherId, commit: true }), run({ type: "project.agentsFile.answer", projectId: otherId, commit: false })]);
-  assert.deepEqual(both.map((answered) => answered.answer), ["commit", "commit"]);
-  assert.equal(commits(other), 2);
-});
-
-test("git cannot read the folder when Commit is answered: nothing is recorded as committed, and the question comes back", async (t) => {
-  const { project, room, run, questions, stack } = stackFor(t);
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  writeFileSync(join(dir, ".git", "index"), "not an index");
-  await assert.rejects(run({ type: "project.agentsFile.answer", projectId, commit: true }), /git could not read .*: /);
-  assert.equal(stack.service.agentsFiles!.record(projectId)?.answer, null);
-  unlinkSync(join(dir, ".git", "index"));
-  git(dir, "reset", "-q");
-  assert.deepEqual((await questions()).map((q) => q.files), [["AGENTS.md", "CLAUDE.md"]]);
-});
-
-test("a repository with no commit yet: the files are written, asked about, and make its first commit", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const dir = join(scratch, `unborn-${++folders}`);
-  mkdirSync(dir);
-  execFileSync("git", ["init", "-q", "-b", "main", dir]);
-  const projectId = project(dir);
-  const created = await room(projectId);
-  assert.deepEqual([created.agentsFile.files, created.agentsFile.branch, created.agentsFile.blocked], [["AGENTS.md", "CLAUDE.md"], "main", null]);
-  await run({ type: "project.agentsFile.answer", projectId, commit: true });
-  assert.equal(commits(dir), 1);
-  assert.deepEqual(git(dir, "show", "--name-only", "--format=", "HEAD").trim().split("\n"), ["AGENTS.md", "CLAUDE.md"]);
-});
-
-
-test("a project folder inside a repository: its files are written and committed there", async (t) => {
-  const { project, room, run } = stackFor(t);
-  const repo = folder({ files: { "web/index.html": "<p>hi</p>\n" } });
-  const projectId = project(join(repo, "web"));
-  const created = await room(projectId);
-  assert.deepEqual(created.agentsFile.files, ["AGENTS.md", "CLAUDE.md"]);
-  assert.equal(existsSync(join(repo, "AGENTS.md")), false, "written in the project's folder, not the repository's top");
-  await run({ type: "project.agentsFile.answer", projectId, commit: true });
-  assert.deepEqual(git(repo, "show", "--name-only", "--format=", "HEAD").trim().split("\n"), ["web/AGENTS.md", "web/CLAUDE.md"]);
-});
-
-test("the files committed by hand, or removed, close the question", async (t) => {
-  const { project, room, questions } = stackFor(t);
+test("the hook: a worktree added gets the two files from the main checkout; a branch switch does nothing", async (t) => {
+  const { project, room } = stackFor(t);
   const dir = folder();
   await room(project(dir));
-  git(dir, "add", "AGENTS.md", "CLAUDE.md");
-  git(dir, "commit", "-q", "-m", "mine");
-  const other = folder();
-  await room(project(other));
-  unlinkSync(join(other, "AGENTS.md"));
-  unlinkSync(join(other, "CLAUDE.md"));
-  assert.deepEqual(await questions(), []);
+  const worktree = join(scratch, `worktree-${++folders}`);
+  git(dir, "worktree", "add", "-q", "-b", "feature", worktree);
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) assert.equal(read(join(worktree, name)), read(join(dir, name)), name);
+  assert.deepEqual(status(worktree), [""], "kept out of git there too (the exclude file is shared)");
+  assert.equal(commits(dir), 1);
+  // A branch switch (the previous HEAD is no zeros) copies nothing: a file removed in the worktree stays removed.
+  unlinkSync(join(worktree, "AGENTS.md"));
+  git(worktree, "checkout", "-q", "-b", "other");
+  assert.equal(existsSync(join(worktree, "AGENTS.md")), false);
+  git(dir, "checkout", "-q", "-b", "other-main");
+  git(dir, "checkout", "-q", "main");
+  assert.deepEqual(status(dir), [""]);
+});
+
+test("the hook copies a subfolder project's files, and never over a file or a link the new worktree has", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = folder({ files: { "web/index.html": "<p>hi</p>\n" } });
+  await room(project(join(repo, "web")));
+  // A branch where the project tracks an AGENTS.md of its own, and a CLAUDE.md that is a link.
+  git(repo, "checkout", "-q", "-b", "own");
+  const branchAgents = "# the branch's own\n";
+  rmSync(join(repo, "web", "AGENTS.md"));
+  rmSync(join(repo, "web", "CLAUDE.md"));
+  writeFileSync(join(repo, "web", "AGENTS.md"), branchAgents);
+  symlinkSync("AGENTS.md", join(repo, "web", "CLAUDE.md"));
+  git(repo, "add", "-f", "web/AGENTS.md", "web/CLAUDE.md");
+  git(repo, "commit", "-q", "-m", "own instructions");
+  git(repo, "checkout", "-q", "main");
+  // Back on main the tracked files are gone from the folder: Backroom's are put back as they were for this check.
+  writeFileSync(join(repo, "web", "AGENTS.md"), defaultAgentsText(["npm run lint", "npm run test"]));
+  writeFileSync(join(repo, "web", "CLAUDE.md"), "@AGENTS.md\n");
+
+  const plain = join(scratch, `worktree-${++folders}`);
+  git(repo, "worktree", "add", "-q", "-b", "plain", plain, "main");
+  assert.equal(read(join(plain, "web", "AGENTS.md")), read(join(repo, "web", "AGENTS.md")));
+  assert.equal(read(join(plain, "web", "CLAUDE.md")), "@AGENTS.md\n");
+
+  const kept = join(scratch, `worktree-${++folders}`);
+  git(repo, "worktree", "add", "-q", kept, "own");
+  assert.equal(read(join(kept, "web", "AGENTS.md")), branchAgents, "the branch's own AGENTS.md is not written over");
+  assert.ok(statSync(join(kept, "web", "CLAUDE.md")).isFile() && read(join(kept, "web", "CLAUDE.md")) === branchAgents, "the branch's CLAUDE.md link is not written over");
+});
+
+test("the hook with a CRLF exclude file, a subfolder named -web, and a worktree whose ref lacks the folder: copies what it can and never fails", async (t) => {
+  const { project, room } = stackFor(t);
+  const crlf = folder();
+  writeFileSync(join(crlf, ".git", "info", "exclude"), "# theirs\r\n*.local\r\n");
+  await room(project(crlf));
+  const crlfTree = join(scratch, `worktree-${++folders}`);
+  git(crlf, "worktree", "add", "-q", "-b", "crlf", crlfTree);
+  assert.equal(read(join(crlfTree, "CLAUDE.md")), "@AGENTS.md\n");
+
+  const dashed = folder({ files: { "-web/index.html": "<p>hi</p>\n" } });
+  await room(project(join(dashed, "-web")));
+  const dashedTree = join(scratch, `worktree-${++folders}`);
+  git(dashed, "worktree", "add", "-q", "-b", "dashed", dashedTree);
+  assert.equal(read(join(dashedTree, "-web", "CLAUDE.md")), "@AGENTS.md\n");
+
+  // web/ came in a later commit: a worktree of the first commit has no web/, and git worktree add still succeeds,
+  // with Backroom's hook and with the copy line at the end of a hook of the repository's own.
+  const late = folder();
+  mkdirSync(join(late, "web"));
+  writeFileSync(join(late, "web", "index.html"), "<p>hi</p>\n");
+  git(late, "add", ".");
+  git(late, "commit", "-q", "-m", "web");
+  await room(project(join(late, "web")));
+  const old = join(scratch, `worktree-${++folders}`);
+  execFileSync("git", ["-C", late, "worktree", "add", "-q", "-b", "old", old, "HEAD~1"], { encoding: "utf8" });
+  assert.equal(existsSync(join(old, "web")), false);
+  writeFileSync(hookOf(late), `#!/bin/sh\necho theirs >/dev/null\n${COPY_LINE}\n`, { mode: 0o755 });
+  const older = join(scratch, `worktree-${++folders}`);
+  const out = execFileSync("git", ["-C", late, "worktree", "add", "-q", "-b", "older", older, "HEAD~1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  assert.equal(out, "");
+  // And a second project in that repository finds the copy line there: Backroom's own, nothing more to add.
+  mkdirSync(join(late, "api"));
+  writeFileSync(join(late, "api", "main.go"), "package main\n");
+  git(late, "add", ".");
+  git(late, "commit", "-q", "-m", "api");
+  assert.equal((await room(project(join(late, "api")))).agentsFile.hook, "ours");
+});
+
+test("the hook never copies through a link to nowhere the new worktree has", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = folder();
+  await room(project(repo));
+  const target = join(scratch, `nowhere-${++folders}`, "CLAUDE.md");
+  mkdirSync(dirname(target));
+  git(repo, "checkout", "-q", "-b", "linked");
+  rmSync(join(repo, "CLAUDE.md"));
+  symlinkSync(target, join(repo, "CLAUDE.md"));
+  git(repo, "add", "-f", "CLAUDE.md");
+  git(repo, "commit", "-q", "-m", "a link");
+  git(repo, "checkout", "-q", "main");
+  writeFileSync(join(repo, "CLAUDE.md"), "@AGENTS.md\n");
+  const tree = join(scratch, `worktree-${++folders}`);
+  git(repo, "worktree", "add", "-q", tree, "linked");
+  assert.equal(existsSync(target), false, "the link's target is not created");
+  assert.equal(read(join(tree, "AGENTS.md")), read(join(repo, "AGENTS.md")));
+});
+
+test("a repository with a post-checkout hook of its own keeps it untouched; README's copy line added to it copies the files", async (t) => {
+  const { project, room } = stackFor(t);
+  const dir = folder();
+  const theirs = "#!/bin/sh\necho 'their own hook'\n";
+  writeFileSync(hookOf(dir), theirs, { mode: 0o755 });
+  const created = await room(project(dir));
+  assert.deepEqual([created.agentsFile.excluded, created.agentsFile.hook], [true, "own-hook"]);
+  assert.equal(read(hookOf(dir)), theirs, "byte for byte");
+  const without = join(scratch, `worktree-${++folders}`);
+  git(dir, "worktree", "add", "-q", "-b", "without", without);
+  assert.equal(existsSync(join(without, "AGENTS.md")), false, "nothing copied by a hook that is not Backroom's");
+
+  // The line README gives, added by hand.
+  writeFileSync(hookOf(dir), `${theirs}${COPY_LINE}\n`, { mode: 0o755 });
+  const withLine = join(scratch, `worktree-${++folders}`);
+  git(dir, "worktree", "add", "-q", "-b", "with-line", withLine);
+  assert.equal(read(join(withLine, "AGENTS.md")), read(join(dir, "AGENTS.md")));
+  assert.equal(read(join(withLine, "CLAUDE.md")), "@AGENTS.md\n");
+});
+
+test("a repository that sets core.hooksPath gets no hook; a hooks folder git refuses to write in gets none either", async (t) => {
+  const { project, room } = stackFor(t);
+  const dir = folder();
+  git(dir, "config", "core.hooksPath", ".githooks");
+  const created = await room(project(dir));
+  assert.deepEqual([created.agentsFile.excluded, created.agentsFile.hook], [true, "hooks-path"]);
+  assert.equal(existsSync(hookOf(dir)), false);
+  assert.equal(existsSync(join(dir, ".githooks")), false, "nothing made in the hooks path either");
+
+  // Set to nothing, which points git's hooks at the checkout itself: no post-checkout there either.
+  const empty = folder();
+  git(empty, "config", "core.hooksPath", "");
+  assert.equal((await room(project(empty))).agentsFile.hook, "hooks-path");
+  assert.equal(existsSync(join(empty, "post-checkout")), false);
+  assert.equal(existsSync(hookOf(empty)), false);
+
+  const locked = folder();
+  chmodSync(join(locked, ".git", "hooks"), 0o555);
+  t.after(() => chmodSync(join(locked, ".git", "hooks"), 0o755));
+  const failed = await room(project(locked));
+  assert.deepEqual([failed.agentsFile.written, failed.agentsFile.excluded, failed.agentsFile.hook], [["AGENTS.md", "CLAUDE.md"], true, "failed"]);
+
+  // No hooks folder at all: made, inside .git. A post-checkout that is a link to nowhere: the repository's own.
+  const noHooks = folder();
+  rmSync(join(noHooks, ".git", "hooks"), { recursive: true, force: true });
+  assert.equal((await room(project(noHooks))).agentsFile.hook, "installed");
+  assert.equal(read(hookOf(noHooks)), HOOK_TEXT);
+  const dangling = folder();
+  symlinkSync(join(scratch, "their-hooks", "post-checkout"), hookOf(dangling));
+  assert.equal((await room(project(dangling))).agentsFile.hook, "own-hook");
+  assert.equal(existsSync(join(scratch, "their-hooks")), false, "the link is left alone");
+});
+
+test("a project that is not its repository's main checkout (a linked worktree, a submodule) gets the files kept out of git, and no hook", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = folder();
+  const linked = join(scratch, `linked-${++folders}`);
+  git(repo, "worktree", "add", "-q", "-b", "linked", linked);
+  const created = await room(project(linked));
+  assert.deepEqual([created.agentsFile.written, created.agentsFile.excluded, created.agentsFile.hook], [["AGENTS.md", "CLAUDE.md"], true, "not-main"]);
+  assert.deepEqual(block(repo), ["/AGENTS.md", "/CLAUDE.md"], "the shared exclude file");
+  assert.deepEqual(status(linked), [""]);
+  assert.equal(existsSync(hookOf(repo)), false);
+
+  const sub = folder();
+  const superproject = folder();
+  execFileSync("git", ["-C", superproject, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub"], { stdio: "ignore" });
+  const created2 = await room(project(join(superproject, "sub")));
+  assert.deepEqual([created2.agentsFile.excluded, created2.agentsFile.hook], [true, "not-main"]);
+  assert.deepEqual(status(join(superproject, "sub")), [""], "kept out of git in the submodule's own exclude file");
+  assert.equal(existsSync(join(superproject, ".git", "modules", "sub", "hooks", "post-checkout")), false);
+});
+
+test("the hook's line is README's: one source, and README says what is written, where, and what never is", () => {
+  const readme = read(resolve(dirname(fileURLToPath(import.meta.url)), "..", "README.md"));
+  assert.ok(HOOK_TEXT.includes(`\n${COPY_LINE}\n`), "the installed hook runs the copy line");
+  assert.ok(readme.includes(COPY_LINE), "README gives the copy line as the hook has it");
+  for (const phrase of [".git/info/exclude", "post-checkout", "core.hooksPath", "never commits", "never edits `.gitignore`", "the home folder or one above it"]) assert.ok(readme.includes(phrase), phrase);
 });
 
 test("off: Settings → Agents file off writes nothing until it is on again; a stack without it never writes", async (t) => {
@@ -723,31 +716,16 @@ test("off: Settings → Agents file off writes nothing until it is on again; a s
   const projectId = project(dir);
   assert.equal((await room(projectId)).agentsFile, undefined);
   assert.equal(existsSync(join(dir, "AGENTS.md")), false);
+  assert.equal(existsSync(hookOf(dir)), false);
   assert.equal(stack.service.agentsFiles!.record(projectId), null, "nothing remembered: turned on again, the next room writes");
   await run({ type: "agentsFile.enabled.set", enabled: true });
   assert.equal(await setting(), true);
-  assert.deepEqual((await room(projectId)).agentsFile.files, ["AGENTS.md", "CLAUDE.md"]);
+  assert.deepEqual((await room(projectId)).agentsFile.written, ["AGENTS.md", "CLAUDE.md"]);
 
   const without = stackFor(t, { agentsFile: false });
   const other = folder();
-  const otherId = without.project(other);
-  assert.equal((await without.room(otherId)).agentsFile, undefined);
+  assert.equal((await without.room(without.project(other))).agentsFile, undefined);
   assert.equal(existsSync(join(other, "AGENTS.md")), false);
-  await assert.rejects(without.run({ type: "project.agentsFile.answer", projectId: otherId, commit: true }), /writes no agents files/);
-});
-
-test("the page's routes: the open questions, and the answer through /api/commands", async (t) => {
-  const { project, room, stack } = stackFor(t);
-  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: join(scratch, "data"), ROOMS_PORT: "0" }), "/nonexistent/dist");
-  const dir = folder();
-  const projectId = project(dir);
-  await room(projectId);
-  const questions = (await (await app.request("/api/agents-files")).json()) as Array<{ projectId: string; files: string[] }>;
-  assert.deepEqual(questions.map((q) => [q.projectId, q.files]), [[projectId, ["AGENTS.md", "CLAUDE.md"]]]);
-  const response = await app.request("/api/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "project.agentsFile.answer", projectId, commit: true }) });
-  assert.equal(response.status, 200);
-  assert.equal(((await response.json()) as { answer: string }).answer, "commit");
-  assert.deepEqual(await (await app.request("/api/agents-files")).json(), []);
 });
 
 test("the fake T3's demo project takes its folder from the caller; /tmp/demo by default", () => {

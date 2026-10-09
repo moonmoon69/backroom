@@ -310,10 +310,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   // ---- crew library ----
   app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
 
-  // The commit questions still open: per project, the agents file Backroom wrote and has not been told what to do with
-  // (src/app/agentsFile.ts). Answered with the command project.agentsFile.answer.
-  app.get("/api/agents-files", async (c) => c.json(stack.service.agentsFiles ? await stack.service.agentsFiles.questions() : []));
-
   // The room routes read the rooms' journal (src/server/engineView.ts, L4c).
   mountEngineView(app, stack, costs);
 

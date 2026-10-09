@@ -356,12 +356,6 @@ export const ProjectCreateCommand = z
   })
   .strict();
 
-/**
- * The user's answer to the commit question for the agents file Backroom wrote in a project's folder (src/app/agentsFile.ts):
- * commit the files it wrote, or leave them uncommitted. Remembered for the project.
- */
-export const ProjectAgentsFileCommand = z.object({ type: z.literal("project.agentsFile.answer"), projectId: nonEmpty, commit: z.boolean() }).strict();
-
 /** Settings → Agents file: whether a room created in a project without one writes the default agents file (on by default). */
 export const AgentsFileEnabledCommand = z.object({ type: z.literal("agentsFile.enabled.set"), enabled: z.boolean() }).strict();
 
@@ -463,7 +457,6 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,
   ProjectCreateCommand,
-  ProjectAgentsFileCommand,
   AgentsFileEnabledCommand,
   ThreadStartCommand,
   ThreadSendCommand,

@@ -26,7 +26,7 @@ import { useTheme } from "./theme.ts";
 import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
 import type { Selection } from "./selection.ts";
-import { isRunActive, type AgentsFileQuestion, type BrowserListItem, type CommandResult, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project, type T3ThreadShell } from "./types.ts";
+import { isRunActive, type BrowserListItem, type CommandResult, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project, type T3ThreadShell } from "./types.ts";
 
 const SELECTION_KEY = "backroom.selection";
 /** Where the selected room was kept before threads could be selected too. */
@@ -124,15 +124,6 @@ export function App() {
     );
   }, []);
 
-  // The commit questions for the agents files Backroom wrote (src/app/agentsFile.ts): polled with the room list.
-  const [agentsFiles, setAgentsFiles] = useState<AgentsFileQuestion[]>([]);
-  const loadAgentsFiles = useCallback(() => {
-    api.agentsFiles().then(
-      (next) => setAgentsFiles((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)),
-      () => undefined,
-    );
-  }, []);
-
   const loadT3 = useCallback(() => {
     Promise.all([api.projects(), api.allThreads()])
       .then(([projectList, threadList]) => {
@@ -167,7 +158,6 @@ export function App() {
     loadT3();
     loadBrowsers();
     loadPresets();
-    loadAgentsFiles();
     // The room list and thread list carry live activity (working, background, needs you) for the overview; the crew
     // comes along, so a look changed on another device shows here too; the connection status asks T3 itself, so it
     // stays slow.
@@ -176,14 +166,13 @@ export function App() {
       loadT3();
       loadBrowsers();
       loadPresets();
-      loadAgentsFiles();
     }, 8000);
     const status = setInterval(loadStatus, 30000);
     return () => {
       clearInterval(rooms);
       clearInterval(status);
     };
-  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets, loadAgentsFiles]);
+  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
 
   /** Open something in the drawer over the overview; the focus comes back to the item it was opened from. */
   const openInDrawer = useCallback((next: Selection) => {
@@ -372,9 +361,7 @@ export function App() {
         } else if (command.type.startsWith("room.")) {
           loadRooms();
           if (command.type === "room.browser") loadBrowsers();
-          if (command.type === "room.create") loadAgentsFiles();
-        } else if (command.type === "project.agentsFile.answer") loadAgentsFiles();
-        else if (command.type.startsWith("browser.")) loadBrowsers();
+        } else if (command.type.startsWith("browser.")) loadBrowsers();
         else if (command.type.startsWith("preset.")) loadPresets();
         else if (command.type === "project.create" || command.type === "project.reorder" || command.type.startsWith("thread.")) loadT3();
         else {
@@ -395,7 +382,7 @@ export function App() {
         return null;
       }
     },
-    [loadRooms, loadT3, loadBrowsers, loadPresets, loadAgentsFiles, onRoomChanged, report, toast, selectedRoomId],
+    [loadRooms, loadT3, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId],
   );
 
   const seatPreset = useCallback(
@@ -587,8 +574,6 @@ export function App() {
           onCommand={runCommand}
           onT3Changed={loadT3}
           onBrowsersChanged={loadBrowsers}
-          agentsFiles={agentsFiles}
-          onAgentsFilesChanged={loadAgentsFiles}
           active={!open}
           returnTo={returnTo}
         />

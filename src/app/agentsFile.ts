@@ -22,20 +22,32 @@
  * in the folder) and Backroom writes nothing. In a project folder below its repository's top, any of these files in a
  * folder between them (the top included) is the project's own instructions, which Codex and Claude read from there:
  * nothing is written. Files are created exclusively ("wx"): a file that appears meanwhile is kept as it is, and no
- * link is followed. A folder that is not on this machine, a path that is not absolute, and, when git cannot be run at
- * all, any folder, are left alone; no folder is ever created.
+ * link is followed. A folder that is not on this machine, a path that is not absolute, and a folder git cannot say is a
+ * repository or not (git missing, a timeout, an ownership refusal: tried again with the next room) are left alone; no
+ * folder is created in the project (git's own info and hooks folders, inside .git, are made when missing).
  *
- * Members work in git worktrees, and a new worktree holds only committed files, so in a git repository the user is
- * asked once per project whether to commit what Backroom wrote (committing is the suggested answer), and the answer is
- * remembered. The commit holds those files alone, on the branch checked out in the folder, with the user's configured
- * identity, hooks and signing; nothing is pushed. Backroom writes once per folder: a file the user removes afterwards
- * is not written again (it would come back with every new room). What it wrote and the answer are kept in the kv
- * table, one record per project folder, so a project removed from T3 and added again keeps its record.
+ * Claude Code and Cursor read these files from every folder above the one they work in, so a folder that holds others
+ * gets nothing: the home folder or one above it, a folder with another of T3's projects below it, and a folder outside
+ * git with a repository below it (directly or one folder further down). Written there, the file would reach every
+ * session in the folders below.
+ *
+ * In a git repository the files stay out of git, and nothing is committed (the user's #1119): Backroom lists them in
+ * the repository's own exclude file (`.git/info/exclude`, which its worktrees share; never the tracked .gitignore),
+ * between two marker lines. A new worktree holds only what is committed, so Backroom installs a small post-checkout
+ * hook in the repository's hooks folder (its worktrees share it) that, on `git worktree add`, copies the files listed
+ * there from the main checkout into the new worktree when they are missing there; it never writes over a file or a
+ * link. It installs the hook only when the repository has no post-checkout hook, core.hooksPath is unset and the project
+ * is the main checkout; otherwise it installs nothing, and README says how to add the copy line by hand (COPY_LINE, the
+ * hook's own line). What could not be written (the exclude entries, the hook) is said once and not tried again.
+ *
+ * Backroom writes once per folder: a file the user removes afterwards is not written again (it would come back with
+ * every new room). What it wrote is kept in the kv table, one record per project folder, so a project removed from T3
+ * and added again keeps its record.
  */
-import { lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Repos } from "../db/repos.ts";
-import { RoomError } from "../domain/errors.ts";
 import { canonicalPath, runGit } from "../git/reader.ts";
 
 export const AGENTS_FILE = "AGENTS.md";
@@ -52,14 +64,45 @@ const INSTRUCTION_FILES = [AGENTS_FILE, ...AGENTS_ALTERNATIVES, CLAUDE_FILE, ...
 /** Settings → Agents file: "off" when the user turned it off; on (absent) by default. */
 export const AGENTS_FILE_SETTING_KEY = "agentsFile.enabled";
 const KEY_PREFIX = "agentsFile:";
-/** A commit runs the user's hooks, which may take a while; reads keep the git reader's own limit. */
-const COMMIT_TIMEOUT_MS = 120_000;
-/** The open questions are read for every page's poll: one reading serves them all for this long. */
-const QUESTIONS_CACHE_MS = 2_000;
-/** AGENTS.md's text in the question is cut here; the file itself is whatever size it is. */
-const MAX_TEXT = 8_000;
 
-/** What Backroom wrote in a project's folder, and the user's answer to the commit question. */
+/** The marker lines around Backroom's entries in `.git/info/exclude`: the hook copies the paths between them. */
+export const EXCLUDE_START = "# >>> Backroom agents file: kept out of git, copied into new worktrees by the post-checkout hook";
+export const EXCLUDE_END = "# <<< Backroom agents file";
+
+/**
+ * The copy line, run by git as a post-checkout hook at the top of the checkout with the previous HEAD first: on `git
+ * worktree add` (a previous HEAD of zeros), every path after Backroom's start marker in the exclude file, up to the first
+ * line that is no path, is copied from the main checkout (the first in `git worktree list`) when it is missing here,
+ * never over a file or a link. Its status is always 0, so it never fails a `git worktree add` (a folder the new
+ * worktree lacks is skipped). README gives it to add by hand to a post-checkout hook of the repository's own.
+ */
+export const COPY_LINE =
+  `case "$1" in *[!0]*) ;; *) m=$(git worktree list --porcelain | sed -n '1s/^worktree //p'); ` +
+  `sed -n '/^# >>> Backroom agents file/,/^[^/]/s|^/||p' "$(git rev-parse --git-path info/exclude)" | tr -d '\\r' | ` +
+  `while IFS= read -r f; do [ -e "./$f" ] || [ -L "./$f" ] || [ ! -f "$m/$f" ] || cp -- "$m/$f" "./$f" 2>/dev/null || :; done ;; esac`;
+
+/** The marker that says a post-checkout hook is Backroom's own (installed already: nothing more to do). */
+export const HOOK_MARKER = "Installed by Backroom (A1)";
+export const HOOK_TEXT = `#!/bin/sh
+# ${HOOK_MARKER}. On git worktree add, copies into the new worktree the agents files the main checkout keeps out of
+# git: the paths in .git/info/exclude between Backroom's marker lines. Never over a file or a link that is there; other
+# checkouts (a branch switch) do nothing. Backroom's README, "The agents file", says more.
+${COPY_LINE}
+exit 0
+`;
+
+/** Characters a project's place in its repository may hold for its paths to be written in the exclude file as they are. */
+const PLAIN_PATH = /^[A-Za-z0-9._@+/ -]*$/;
+
+/**
+ * What happened to the worktree hook: installed now, Backroom's own (or its copy line) there already, or left out
+ * because the repository has a post-checkout hook of its own, sets core.hooksPath, has the project somewhere other than
+ * its main checkout (a linked worktree, a submodule: the hook copies from the main checkout, where nothing was
+ * written), could not take the exclude entries the hook reads, or could not take the hook.
+ */
+export type HookState = "installed" | "ours" | "own-hook" | "hooks-path" | "not-main" | "no-exclude" | "failed";
+
+/** What Backroom wrote in a project's folder. */
 export interface AgentsFileRecord {
   /** The T3 project it was written for; a project added again for the same folder takes the record over. */
   projectId: string;
@@ -68,32 +111,22 @@ export interface AgentsFileRecord {
   /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, or CLAUDE.md alone. */
   written: string[];
   writtenAt: string;
-  /** The folder was in a git repository: only then is there anything to commit, and a question. */
+  /** The folder was in a git repository. */
   repo: boolean;
-  answer: "commit" | "leave" | null;
-  answeredAt: string | null;
-  /** The commit Backroom made on the answer "commit"; null when there was nothing left to commit. */
-  commit: string | null;
-  /** Why the last attempt to commit failed; the question stays open. */
-  error: string | null;
+  /** The entries added to the repository's exclude file (`/web/AGENTS.md`); none outside git, or when that failed. */
+  excluded: string[];
+  /** The worktree hook; null outside git. */
+  hook: HookState | null;
 }
 
-/** The commit question for one project, as the page shows it. */
-export interface AgentsFileQuestion {
+/** What creating a room wrote, for the page to say so (room.created's agentsFile). */
+export interface AgentsFileWritten {
   projectId: string;
   folder: string;
-  /** The files Backroom wrote that are still uncommitted there, as they are now. */
-  files: string[];
-  /** The branch checked out in the folder, where the commit would go; null when none is (a detached HEAD). */
-  branch: string | null;
-  /** Of those, the ones git ignores (.gitignore): Backroom never forces them in, so they stay out of the commit. */
-  ignored: string[];
-  /** Why no commit can be made now (a detached HEAD, a merge in progress, every file ignored); null when one can. */
-  blocked: string | null;
-  /** AGENTS.md as it is now (cut at 8,000 characters): Backroom's, or the project's own that CLAUDE.md imports. */
-  text: string;
-  /** Why the last attempt to commit failed. */
-  error: string | null;
+  written: string[];
+  /** Kept out of git in `.git/info/exclude`: false outside git, or when the exclude file could not be written. */
+  excluded: boolean;
+  hook: HookState | null;
 }
 
 export interface AgentsFilesOptions {
@@ -103,8 +136,6 @@ export interface AgentsFilesOptions {
    * ROOMS_FAKE_PROJECT_DIR), so a real folder added to it as a project is never written in. Absent: any folder.
    */
   onlyUnder?: string[];
-  /** How long one reading of the open questions serves the pages' polls (QUESTIONS_CACHE_MS); tests read afresh. */
-  questionsCacheMs?: number;
   /** Tests only: runs between the look at the folder and each write, where another writer could get in. */
   beforeWrite?: (folder: string, file: string) => void;
 }
@@ -220,51 +251,87 @@ export function defaultAgentsText(checks: string[]): string {
   ].join("\n");
 }
 
-/** The commit's message, naming the files it holds. */
-function commitMessage(files: string[]): string {
-  const lines = files.map((file) =>
-    file === AGENTS_FILE ? "AGENTS.md: the habits every agent working here keeps, whoever assigned the work." : `${file}: one line importing AGENTS.md, so Claude Code reads it too.`,
-  );
-  return `Add ${files.join(" and ")}, written by Backroom\n\n${lines.join("\n")}\nCommitted at the user's answer, so that new worktrees have ${files.length > 1 ? "them" : "it"}.\n`;
-}
-
-/** A git operation in progress, by the file git keeps while it lasts. */
-const IN_PROGRESS: Array<[string, string]> = [
-  ["MERGE_HEAD", "A merge"],
-  ["rebase-merge", "A rebase"],
-  ["rebase-apply", "A rebase"],
-  ["CHERRY_PICK_HEAD", "A cherry-pick"],
-  ["REVERT_HEAD", "A revert"],
-  ["BISECT_LOG", "A bisect"],
-];
-
-/** What git says of the files Backroom wrote in a folder, and whether a commit can be made there now. */
-interface FolderState {
-  /** Untracked, added or changed: what a commit would hold, git's ignored ones aside. */
-  uncommitted: string[];
-  ignored: string[];
-  branch: string | null;
-  blocked: string | null;
-}
-
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** `path` strictly inside `folder` (a folder named `..old` in it is inside too). */
+const isInside = (path: string, folder: string): boolean => {
+  const rel = relative(folder, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+};
+
+/** The account's home folder; the system's record of it when HOME is empty or not absolute. */
+export const home = (): string => {
+  const fromEnv = homedir();
+  return canonicalPath(isAbsolute(fromEnv) ? fromEnv : userInfo().homedir);
+};
+
+/**
+ * Why a folder holds others and so gets no agents file, before git is asked: it is the home folder or one above it,
+ * or another of T3's projects is below it. Null when neither.
+ */
+function holdsOthers(folder: string, others: string[]): string | null {
+  const account = home();
+  if (folder === account || isInside(account, folder)) return "it is the home folder or a folder above it";
+  const below = others.find((other) => isInside(other, folder));
+  return below ? `another project's folder is below it (${below})` : null;
+}
+
+/**
+ * A repository below the folder, directly or one folder further down (`clients/acme`): a folder with a .git of its own.
+ * Hidden folders and node_modules are not looked into.
+ */
+function repositoryBelow(folder: string, depth = 2): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(folder);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (entry.startsWith(".") || entry === "node_modules" || !isDirectory(join(folder, entry))) continue;
+    if (exists(join(folder, entry, ".git"))) return entry;
+    const deeper = depth > 1 ? repositoryBelow(join(folder, entry), depth - 1) : null;
+    if (deeper) return `${entry}/${deeper}`;
+  }
+  return null;
+}
+
+/**
+ * The exclude file with Backroom's entries for `patterns` in it: added inside its marked block (made at the end when
+ * there is none, its end marker put back when it was removed), each once; every other line as it was, CRLF or not.
+ */
+export function withExcluded(text: string, patterns: string[]): string {
+  const lines = text.length > 0 ? text.replace(/\n$/, "").split("\n") : [];
+  const bare = lines.map((line) => line.replace(/\r$/, ""));
+  const start = bare.indexOf(EXCLUDE_START);
+  if (start >= 0) {
+    // The block runs to its end marker, or (when that was removed) to the first line that is no path, where the end
+    // marker goes back.
+    let end = start + 1;
+    while (end < bare.length && bare[end] !== EXCLUDE_END && bare[end]!.startsWith("/")) end += 1;
+    if (bare[end] !== EXCLUDE_END) lines.splice(end, 0, EXCLUDE_END);
+    const missing = patterns.filter((pattern) => !bare.slice(start + 1, end).includes(pattern));
+    lines.splice(end, 0, ...missing);
+  } else {
+    if (lines.length > 0 && lines.at(-1) !== "") lines.push("");
+    lines.push(EXCLUDE_START, ...patterns, EXCLUDE_END);
+  }
+  return `${lines.join("\n")}\n`;
+}
 
 export class AgentsFiles {
   private readonly repos: Repos;
   private readonly log: (message: string, detail?: unknown) => void;
   private readonly onlyUnder: string[] | null;
   private readonly beforeWrite: (folder: string, file: string) => void;
-  /** One thing at a time per folder: two rooms created at once, or a double click on Commit, do not race. */
+  /** One room at a time per folder: two rooms created at once write once. */
   private readonly queues = new Map<string, Promise<unknown>>();
-  private readonly questionsCacheMs: number;
-  private cached: { at: number; questions: Promise<AgentsFileQuestion[]> } | null = null;
 
   constructor(repos: Repos, options: AgentsFilesOptions = {}) {
     this.repos = repos;
     this.log = options.log ?? (() => {});
     this.onlyUnder = options.onlyUnder ? options.onlyUnder.map((root) => canonicalPath(root)) : null;
     this.beforeWrite = options.beforeWrite ?? (() => {});
-    this.questionsCacheMs = options.questionsCacheMs ?? QUESTIONS_CACHE_MS;
   }
 
   private records(): AgentsFileRecord[] {
@@ -277,10 +344,9 @@ export class AgentsFiles {
     });
   }
 
-  /** The record for a project, the one still waiting on an answer first: written for it, or for its folder under an earlier project. */
+  /** The record for a project: written for it, or for its folder under an earlier project. */
   record(projectId: string): AgentsFileRecord | null {
-    const mine = this.records().filter((record) => record.projectId === projectId);
-    return mine.find((record) => record.repo && record.answer === null) ?? mine[0] ?? null;
+    return this.records().find((record) => record.projectId === projectId) ?? null;
   }
 
   private recordAt(folder: string): AgentsFileRecord | null {
@@ -295,7 +361,6 @@ export class AgentsFiles {
 
   private save(record: AgentsFileRecord): void {
     this.repos.setKv(KEY_PREFIX + record.folder, JSON.stringify(record));
-    this.cached = null;
   }
 
   private serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -322,37 +387,58 @@ export class AgentsFiles {
 
   /**
    * A room was created in this project: write the default when the table above says so, the setting is on and Backroom
-   * has not written in its folder before. Answers the question to ask now, if this write raised one (a folder in a git
-   * repository). A folder written in before answers at once, without waiting on a commit in progress there.
+   * has not written in its folder before; in a git repository keep the files out of git and see to the worktree hook.
+   * `others` are T3's other projects (a folder holding one gets nothing). Answers what was written, or null.
    */
-  async roomCreated(project: { id: string; workspaceRoot: string }): Promise<AgentsFileQuestion | null> {
+  async roomCreated(project: { id: string; workspaceRoot: string }, others: ReadonlyArray<{ workspaceRoot: string }> = []): Promise<AgentsFileWritten | null> {
     // T3 gives absolute folders; anything else would be resolved against Backroom's own folder, which is never meant.
     if (typeof project.workspaceRoot !== "string" || !isAbsolute(project.workspaceRoot)) return null;
     const folder = canonicalPath(project.workspaceRoot);
     if (this.known(folder, project.id)) return null;
     if (this.repos.getKv(AGENTS_FILE_SETTING_KEY) === "off") return null;
-    if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || !relative(root, folder).startsWith(".."))) return null;
+    if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || isInside(folder, root))) return null;
+    const otherRoots = others.flatMap((other) => (typeof other.workspaceRoot === "string" && isAbsolute(other.workspaceRoot) ? [canonicalPath(other.workspaceRoot)] : []));
+    const holds = holdsOthers(folder, otherRoots);
+    if (holds) {
+      this.log(`no agents file written in ${folder}: ${holds}, and Claude and Cursor read it from every folder below`);
+      return null;
+    }
     return this.serial(folder, async () => {
       if (this.known(folder, project.id)) return null;
       if (!isDirectory(folder)) return null;
-      let top: string | null = null;
+      // The repository's top, the project's place in it, its exclude file and its hooks folder (both shared by its worktrees).
+      let git: { top: string; prefix: string; exclude: string; hooks: string; common: string } | null = null;
       try {
-        top = (await runGit(folder, ["rev-parse", "--show-toplevel"])).trim();
+        const [top = "", prefix = "", exclude = "", hooks = "", common = ""] = (
+          await runGit(folder, ["rev-parse", "--show-toplevel", "--show-prefix", "--git-path", "info/exclude", "--git-path", "hooks", "--git-common-dir"])
+        ).split("\n");
+        git = { top: top.trim(), prefix, exclude: resolve(folder, exclude), hooks: resolve(folder, hooks), common: resolve(folder, common.trim()) };
       } catch (error) {
-        // No git to run: whether the folder is a repository is unknown, and so is what a commit would need.
-        if (/ENOENT/.test(errorText(error))) {
-          this.log(`git could not be run; no agents file written in ${folder}`, errorText(error));
+        // Only git's own answer says the folder is no repository. Anything else (git missing, a timeout, an ownership
+        // refusal) leaves it unknown, and so where the files would be kept out of git: nothing is written, and the next
+        // room tries again.
+        // (git's "not a git repository: <gitdir>" is a .git that points nowhere, a worktree whose repository moved: unknown.)
+        if (!/not a git repository \(or any (of the parent directories|parent up to mount point)/i.test(errorText(error))) {
+          this.log(`git could not say whether ${folder} is a repository; no agents file written`, errorText(error));
+          return null;
+        }
+        const below = repositoryBelow(folder);
+        if (below) {
+          this.log(`no agents file written in ${folder}: the repository ${below} is directly below it, and Claude and Cursor read it from there`);
           return null;
         }
       }
-      const repo = top !== null;
+      if (git && !PLAIN_PATH.test(git.prefix)) {
+        this.log(`no agents file written in ${folder}: its place in the repository (${git.prefix}) cannot be written in the exclude file as it is`);
+        return null;
+      }
       const names = [AGENTS_FILE, CLAUDE_FILE, ...CLAUDE_ALTERNATIVES];
-      const tracked = repo ? new Set((await runGit(folder, ["ls-files", "-z", "--", ...names]).catch(() => "")).split("\0").filter(Boolean)) : new Set<string>();
+      const tracked = git ? new Set((await runGit(folder, ["ls-files", "-z", "--", ...names]).catch(() => "")).split("\0").filter(Boolean)) : new Set<string>();
       // A CLAUDE.md of the project's own: it has its own instructions, and nothing is written.
       if ([CLAUDE_FILE, ...CLAUDE_ALTERNATIVES].some((name) => present(folder, name) || tracked.has(name))) return null;
       // Instructions in a folder above, up to the repository's top: the project's own too (and an import here would miss them).
-      if (top) {
-        const root = canonicalPath(top);
+      if (git) {
+        const root = canonicalPath(git.top);
         for (let above = dirname(folder); above !== folder && !relative(root, above).startsWith(".."); above = dirname(above)) {
           if (INSTRUCTION_FILES.some((name) => present(above, name))) return null;
           if (above === root) break;
@@ -374,145 +460,66 @@ export class AgentsFiles {
         }
       }
       if (written.length === 0) return null;
-      const record: AgentsFileRecord = { projectId: project.id, folder, written, writtenAt: new Date().toISOString(), repo, answer: null, answeredAt: null, commit: null, error: null };
+      const excluded = git ? this.exclude(git.exclude, written.map((file) => `/${git.prefix}${file}`)) : [];
+      // The hook reads the exclude block: without it there is nothing to copy.
+      const hook = git ? (excluded.length > 0 ? await this.hook(folder, git) : "no-exclude") : null;
+      const record: AgentsFileRecord = { projectId: project.id, folder, written, writtenAt: new Date().toISOString(), repo: git !== null, excluded, hook };
       this.save(record);
-      this.log(`wrote ${written.join(" and ")} in ${folder}${repo ? "; the user is asked whether to commit them" : " (not a git repository: nothing to commit)"}`);
-      return repo ? this.question(record).catch(() => null) : null;
+      this.log(`wrote ${written.join(" and ")} in ${folder}${git ? `; kept out of git: ${excluded.length > 0 ? "yes" : "no"}; worktree hook: ${hook}` : " (not a git repository)"}`);
+      return { projectId: project.id, folder, written, excluded: excluded.length > 0, hook };
     });
   }
 
-  /** The state of the files Backroom wrote in the record's folder, read with five git calls; throws when git cannot read it. */
-  private async inspect(record: AgentsFileRecord): Promise<FolderState> {
-    const folder = record.folder;
-    const [status, ignoredOut, paths, head, unmerged] = await Promise.all([
-      runGit(folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...record.written]),
-      // A file git ignores, by a pattern or because a folder it is in is ignored (status shows only that folder then).
-      runGit(folder, ["check-ignore", "--", ...record.written], { okCodes: [0, 1] }),
-      runGit(folder, ["rev-parse", "--show-prefix", ...IN_PROGRESS.flatMap(([name]) => ["--git-path", name])]),
-      runGit(folder, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }),
-      runGit(folder, ["ls-files", "--unmerged"]),
-    ]);
-    const [prefix = "", ...gitPaths] = paths.split("\n");
-    // Porcelain paths are the repository's; a project folder inside a repository has a prefix ("web/").
-    const changed = new Set(
-      status
-        .split("\0")
-        .filter((entry) => entry.length > 3 && !entry.slice(0, 2).includes("D"))
-        .map((entry) => entry.slice(3))
-        .map((path) => (path.startsWith(prefix) ? path.slice(prefix.length) : path)),
-    );
-    const ignored = record.written.filter((file) => ignoredOut.split("\n").includes(file));
-    const uncommitted = record.written.filter((file) => changed.has(file) && !ignored.includes(file));
-    const branch = head.trim() || null;
-    let blocked: string | null = null;
-    if (uncommitted.length === 0 && ignored.length > 0) {
-      blocked = `${ignored.join(" and ")} ${ignored.length > 1 ? "are" : "is"} ignored by git here (.gitignore), and Backroom does not force ${ignored.length > 1 ? "them" : "it"} in: there is nothing to commit.`;
-    } else {
-      // An operation in progress first: a rebase also leaves HEAD detached, and its name says more.
-      const busy = IN_PROGRESS.find((_, index) => {
-        const path = gitPaths[index]?.trim();
-        return path ? exists(isAbsolute(path) ? path : join(folder, path)) : false;
-      });
-      if (busy) blocked = `${busy[1]} is in progress in ${folder}: finish or abort it first.`;
-      else if (!branch) blocked = `${folder} has no branch checked out (a detached HEAD): check one out first.`;
-      else if (unmerged.trim()) blocked = `${folder} has files with merge conflicts: resolve them first.`;
-    }
-    return { uncommitted, ignored, branch, blocked };
-  }
-
-  /** The question for a record still waiting on its answer; null when nothing it wrote is uncommitted any more. */
-  private async question(record: AgentsFileRecord): Promise<AgentsFileQuestion | null> {
-    if (!record.repo || record.answer !== null || !isDirectory(record.folder)) return null;
-    const state = await this.inspect(record);
-    const files = record.written.filter((file) => state.uncommitted.includes(file) || state.ignored.includes(file));
-    if (files.length === 0) return null;
-    let text = "";
+  /** Backroom's entries in the repository's exclude file; the ones it holds now, none when it could not be written. */
+  private exclude(file: string, patterns: string[]): string[] {
     try {
-      text = readFileSync(join(record.folder, AGENTS_FILE), "utf8");
-    } catch {
-      // removed since: the files list says what is left
+      let text = "";
+      try {
+        text = readFileSync(file, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        // git's own info folder, inside .git: made when a repository came without one.
+        mkdirSync(dirname(file), { recursive: true });
+      }
+      writeFileSync(file, withExcluded(text, patterns));
+      return patterns;
+    } catch (error) {
+      this.log(`could not keep ${patterns.join(" and ")} out of git in ${file}`, errorText(error));
+      return [];
     }
-    return {
-      projectId: record.projectId,
-      folder: record.folder,
-      files,
-      branch: state.branch,
-      ignored: state.ignored,
-      blocked: state.blocked,
-      text: text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n…` : text,
-      error: record.error,
-    };
   }
 
-  /**
-   * Every commit question still open, one per project. A folder git cannot read now is left out of this reading. One
-   * reading serves every page polling within two seconds.
-   */
-  async questions(): Promise<AgentsFileQuestion[]> {
-    if (!this.cached || Date.now() - this.cached.at >= this.questionsCacheMs) {
-      const open = this.records().filter((record) => record.repo && record.answer === null);
-      this.cached = { at: Date.now(), questions: Promise.all(open.map((record) => this.question(record).catch(() => null))).then((all) => all.filter((question): question is AgentsFileQuestion => question !== null)) };
+  /** The worktree hook: installed only where the repository has no post-checkout hook and sets no core.hooksPath. */
+  private async hook(folder: string, git: { top: string; hooks: string; common: string }): Promise<HookState> {
+    // core.hooksPath set to anything (an empty value included, which points git's hooks at the checkout itself).
+    const hooksPath = await runGit(folder, ["config", "--get", "core.hooksPath"]).then(
+      () => true,
+      () => false,
+    );
+    const common = canonicalPath(git.common);
+    const hooks = canonicalPath(git.hooks);
+    if (hooksPath || !isInside(hooks, common)) return "hooks-path";
+    // The hook copies from the main checkout: a project elsewhere (a linked worktree, a submodule) has nothing there.
+    const main = /^worktree (.*)$/m.exec(await runGit(folder, ["worktree", "list", "--porcelain"]).catch(() => ""))?.[1];
+    if (!main || canonicalPath(main) !== canonicalPath(git.top)) return "not-main";
+    const file = join(hooks, "post-checkout");
+    if (exists(file)) {
+      let text = "";
+      try {
+        text = readFileSync(file, "utf8");
+      } catch {
+        // a link to nowhere, or unreadable: the repository's own all the same
+      }
+      return text.includes(HOOK_MARKER) || text.includes(COPY_LINE) ? "ours" : "own-hook";
     }
-    return this.cached.questions;
-  }
-
-  /**
-   * The user's answer, remembered for the project. "commit" commits the files Backroom wrote as they are now, those
-   * still uncommitted and only those (whatever else is staged stays staged), on the branch checked out in the folder,
-   * with the user's configured git identity, hooks and signing; nothing is pushed. When no commit can be made (see
-   * inspect), git cannot read the folder, or git refuses, nothing is committed, the index is as it was, the reason
-   * stays with the question, and the question stays open.
-   */
-  answer(projectId: string, commit: boolean): Promise<AgentsFileRecord> {
-    const found = this.record(projectId);
-    if (!found || !found.repo) return Promise.reject(new RoomError("no_question", "Backroom wrote no agents file in this project's repository", 404));
-    return this.serial(found.folder, async () => {
-      const record = this.recordAt(found.folder) ?? found;
-      if (record.answer !== null) return record;
-      const answered = (next: Partial<AgentsFileRecord>): AgentsFileRecord => {
-        const done = { ...record, ...next, answeredAt: new Date().toISOString(), error: null };
-        this.save(done);
-        return done;
-      };
-      if (!commit) return answered({ answer: "leave" });
-      const failed = (message: string): never => {
-        this.save({ ...record, error: message });
-        throw new RoomError("commit_failed", message, 422);
-      };
-      // Removed with its folder: nothing left to commit.
-      if (!isDirectory(record.folder)) return answered({ answer: "commit", commit: null });
-      let state: FolderState;
-      try {
-        state = await this.inspect(record);
-      } catch (error) {
-        return failed(`git could not read ${record.folder}: ${errorText(error)}`);
-      }
-      if (state.blocked) failed(state.blocked);
-      // Committed by hand, or removed, before the answer: nothing left to commit, and no empty commit.
-      if (state.uncommitted.length === 0) return answered({ answer: "commit", commit: null });
-      const files = state.uncommitted;
-      const headOf = async () => (await runGit(record.folder, ["rev-parse", "-q", "--verify", "HEAD"], { okCodes: [0, 1] })).trim();
-      const before = await headOf();
-      const untracked = (await runGit(record.folder, ["ls-files", "-z", "--others", "--", ...files])).split("\0").filter(Boolean);
-      try {
-        // Only marked as to be added (intent-to-add): a version the user staged stays staged, and a refused commit leaves the index as it was.
-        if (untracked.length > 0) await runGit(record.folder, ["add", "--intent-to-add", "--", ...untracked]);
-        await runGit(record.folder, ["-c", "user.useConfigOnly=true", "commit", "--quiet", "-m", commitMessage(files), "--only", "--", ...files], { timeoutMs: COMMIT_TIMEOUT_MS });
-      } catch (error) {
-        // Cut off after the commit was made (a slow hook after it): it is made, when the new HEAD is that commit.
-        const after = await headOf().catch(() => before);
-        const subject = after && after !== before ? (await runGit(record.folder, ["log", "-1", "--format=%s", after]).catch(() => "")).trim() : "";
-        if (subject === commitMessage(files).split("\n")[0]) {
-          this.log(`committed ${files.join(" and ")} in ${record.folder} on ${state.branch} (${after.slice(0, 7)}), then git did not finish`, errorText(error));
-          return answered({ answer: "commit", commit: after });
-        }
-        if (untracked.length > 0) await runGit(record.folder, ["rm", "--cached", "--quiet", "--ignore-unmatch", "--", ...untracked]).catch(() => undefined);
-        const reason = errorText(error);
-        failed(reason.includes("index.lock") ? `another git command is running in ${record.folder} (its index.lock is there): try again when it has finished` : `git could not commit on ${state.branch}: ${reason}`);
-      }
-      const sha = await headOf();
-      this.log(`committed ${files.join(" and ")} in ${record.folder} on ${state.branch} (${sha.slice(0, 7)})`);
-      return answered({ answer: "commit", commit: sha });
-    });
+    try {
+      mkdirSync(hooks, { recursive: true });
+      writeFileSync(file, HOOK_TEXT, { flag: "wx", mode: 0o755 });
+      return "installed";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return "own-hook";
+      this.log(`could not install the worktree hook ${file}`, errorText(error));
+      return "failed";
+    }
   }
 }

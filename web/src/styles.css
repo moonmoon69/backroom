@@ -6847,39 +6847,6 @@ button.work-chip:hover,
   font-size: var(--text-xs);
 }
 
-/* The agents file Backroom wrote here waits on the user's answer (src/app/agentsFile.ts): violet, as a tile that needs you. */
-.ov-project-ask {
-  align-self: center;
-  flex: none;
-  font-weight: 400;
-  font-size: var(--text-xs);
-  white-space: nowrap;
-  border-color: var(--input);
-  color: var(--input);
-}
-
-.agents-file {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.agents-file p {
-  margin: 0;
-}
-
-.agents-file-text pre {
-  max-height: 16em;
-  overflow: auto;
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-2);
-  font-size: var(--text-sm);
-  white-space: pre-wrap;
-}
-
 /* =====================================================================================================
    Look → Overview: the sheet. A room opened from the page of cards. One header: back, the room's name, the
    two views as tabs (the Consigliere's chat, the board), the crew, the side panels. Under it the status bar,

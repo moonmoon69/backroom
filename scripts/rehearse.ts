@@ -34,9 +34,9 @@
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
  * `--step ui` ends with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
- * without one writes it and asks whether to commit it. ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the
- * demo project every step uses at a folder of the caller's (a scratch git repository, so the steps run where the
- * agents file is written too).
+ * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees.
+ * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
+ * caller's (a scratch git repository, so the steps run where the agents file is written too).
  *
  * `--step room` ends with B3's state, the Browser panel of a room that may use two browsers (see rehearseBrowserPanel).
  *
@@ -59,7 +59,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1328,7 +1328,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   });
   check.passed.push(...talked.passed);
 
-  // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it and asks.
+  // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   check.passed.push(...(await rehearseAgentsFile(service, browser, room)));
 
   membersOnlyAnswer(await room.snapshot());
@@ -1339,10 +1339,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
 /**
  * A1, the agents file (src/app/agentsFile.ts), on a scratch project: a git repository with one commit in this run's
  * own data folder (deleted with it by the next run), added to the fake T3. A room created from the overview's + writes
- * AGENTS.md and a CLAUDE.md importing it, and asks whether to commit them before the room opens; Esc answers nothing and
- * closes the question alone (the new room's tile has the focus, the project's heading keeps the question); from there
- * "Commit" makes one commit of those two files. Every page check is scoped to this project's section: with
- * ROOMS_FAKE_PROJECT_DIR set, the demo project has a question of its own.
+ * AGENTS.md and a CLAUDE.md importing it, keeps them out of git in the repository's .git/info/exclude, installs the
+ * post-checkout hook, opens at once and says so in a toast; a worktree added then holds the two files, copied by the hook.
  */
 async function rehearseAgentsFile(service: Service, browser: Browser, room: Room): Promise<string[]> {
   const passed: string[] = [];
@@ -1359,19 +1357,16 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
   const folder = join(room.dataDir, "agents-project");
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
-  const git = (...args: string[]) => execFileSync("git", ["-C", folder, ...args], { encoding: "utf8" });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   execFileSync("git", ["init", "-q", "-b", "main", folder]);
-  // The commit Backroom makes takes the folder's own identity, whatever this machine's git config says.
-  git("config", "user.name", "Rehearsal");
-  git("config", "user.email", "rehearsal@example.com");
-  git("config", "commit.gpgsign", "false");
-  git("add", ".");
-  git("commit", "-q", "-m", "First commit");
+  git(folder, "config", "user.name", "Rehearsal");
+  git(folder, "config", "user.email", "rehearsal@example.com");
+  git(folder, "config", "commit.gpgsign", "false");
+  git(folder, "add", ".");
+  git(folder, "commit", "-q", "-m", "First commit");
   const title = "agents-scratch";
-  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
-  const questions = () => service.call<Array<{ projectId: string; files: string[]; branch: string | null }>>("GET", "/api/agents-files");
+  await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
   const sheetTitle = "() => document.querySelector('.sheet-title h1')?.textContent ?? null";
-  const asks = `() => document.querySelector('.ov-project[data-project-id="${projectId}"] .ov-project-ask') !== null`;
 
   browser.click(/button "Back to the overview"/);
   browser.waitFor(title);
@@ -1385,58 +1380,42 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
   );
   browser.click(/button "Create room"/);
   await state(
-    "a room created in a project without AGENTS.md: Backroom writes it and asks whether to commit it",
+    "a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast",
     async () => {
-      const open = (await questions()).find((q) => q.projectId === projectId);
-      if (!open || !existsSync(join(folder, "AGENTS.md"))) return null;
-      if (JSON.stringify(open.files) !== JSON.stringify(["AGENTS.md", "CLAUDE.md"]) || open.branch !== "main") fail(`the question: ${JSON.stringify(open)}`);
+      if (!existsSync(join(folder, "AGENTS.md")) || !existsSync(join(folder, ".git", "hooks", "post-checkout"))) return null;
       if (readFileSync(join(folder, "CLAUDE.md"), "utf8") !== "@AGENTS.md\n") fail("CLAUDE.md is not the one line importing AGENTS.md");
       if (!readFileSync(join(folder, "AGENTS.md"), "utf8").includes("`npm run test`")) fail("AGENTS.md does not name the project's check");
-      const status = git("status", "--porcelain").trim();
-      if (status !== "?? AGENTS.md\n?? CLAUDE.md") fail(`before the answer, git status: ${JSON.stringify(status)}`);
-      return `AGENTS.md and CLAUDE.md written in ${folder}, untracked; the question is open (files ${open.files.join(", ")}, branch ${open.branch})`;
+      const exclude = readFileSync(join(folder, ".git", "info", "exclude"), "utf8");
+      if (!/^# >>> Backroom agents file.*\n\/AGENTS\.md\n\/CLAUDE\.md\n# <<< Backroom agents file$/m.test(exclude)) fail(`.git/info/exclude: ${JSON.stringify(exclude)}`);
+      const status = git(folder, "status", "--porcelain", "--untracked-files=all").trim();
+      if (status !== "") fail(`git status should show nothing, the files kept out of git: ${JSON.stringify(status)}`);
+      if (existsSync(join(folder, ".gitignore"))) fail("a .gitignore was written");
+      const hook = join(folder, ".git", "hooks", "post-checkout");
+      if (!readFileSync(hook, "utf8").includes("Installed by Backroom (A1)")) fail("the post-checkout hook is not Backroom's");
+      if ((statSync(hook).mode & 0o111) === 0) fail("the post-checkout hook cannot run");
+      if (git(folder, "log", "--oneline").trim().split("\n").length !== 1) fail("something was committed");
+      return `AGENTS.md and CLAUDE.md written in ${folder}; git status clean (both in .git/info/exclude's Backroom block); .git/hooks/post-checkout is Backroom's and runs; nothing committed`;
     },
-    ["Commit the agents file?", "Why commit it:", "Commit (suggested)"],
+    ["Backroom wrote AGENTS.md and CLAUDE.md"],
     () => {
-      if (browser.eval<string | null>(sheetTitle) !== null) fail("the room opened under the question");
-      log("  page: the question is asked before the room opens");
+      browser.poll<string | null>("the room to open at once, with no question", sheetTitle, (t) => t === title);
+      log("  page: the room opened at once, and the toast says what was written");
     },
   );
-
-  browser.on("press", "Escape");
-  const rooms = await service.call<Array<{ id: string; title: string; projectId: string }>>("GET", "/api/rooms");
-  const created = rooms.find((r) => r.projectId === projectId);
-  if (!created) fail(`no room in ${title} after Create room: ${JSON.stringify(rooms.map((r) => r.title))}`);
+  const worktree = join(room.dataDir, "agents-worktree");
+  git(folder, "worktree", "add", "-q", "-b", "feature", worktree);
   await state(
-    "Esc answers nothing: the question closes alone, the new room's tile has the focus, the heading keeps the question",
-    async () => ((await questions()).some((q) => q.projectId === projectId) && git("log", "--oneline").trim().split("\n").length === 1 ? "the question is still open; nothing committed" : null),
-    ["Commit the agents file?"],
-    () => {
-      browser.poll<string | null>("the focus on the new room's tile", "() => document.activeElement?.getAttribute('data-nav-key') ?? null", (key) => key === `room:${created.id}`);
-      if (browser.eval<string | null>(sheetTitle) !== null) fail("Esc opened the room");
-      browser.poll<boolean>(`${title}'s heading to ask`, asks, (shown) => shown);
-      log("  page: no room opened, the focus is on its tile, and the project's heading asks");
-    },
-  );
-
-  browser.click(new RegExp(`button "Commit the agents file\\? \\(${title}\\)"`));
-  browser.waitFor("Commit (suggested)");
-  browser.click(/button "Commit \(suggested\)"/);
-  await state(
-    "Commit: one commit of AGENTS.md and CLAUDE.md, and the question is gone",
+    "a worktree added to the project holds the two files, copied by the hook",
     async () => {
-      if ((await questions()).some((q) => q.projectId === projectId)) return null;
-      const files = git("show", "--name-only", "--format=", "HEAD").trim();
-      if (files !== "AGENTS.md\nCLAUDE.md") fail(`the commit's files: ${JSON.stringify(files)}`);
-      if (git("status", "--porcelain").trim() !== "") fail("files left uncommitted");
-      return `HEAD ${git("rev-parse", "--short", "HEAD").trim()} on ${git("rev-parse", "--abbrev-ref", "HEAD").trim()} holds ${files.replace("\n", " and ")}; nothing asked any more`;
+      for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+        if (!existsSync(join(worktree, name))) fail(`${name} is not in the new worktree`);
+        if (readFileSync(join(worktree, name), "utf8") !== readFileSync(join(folder, name), "utf8")) fail(`${name} in the worktree differs from the main checkout's`);
+      }
+      const status = git(worktree, "status", "--porcelain", "--untracked-files=all").trim();
+      if (status !== "") fail(`the worktree's git status: ${JSON.stringify(status)}`);
+      return `${worktree} holds AGENTS.md and CLAUDE.md as the main checkout has them; its git status is clean`;
     },
-    ["Committed AGENTS.md and CLAUDE.md on main"],
-    () => {
-      browser.poll<boolean>("the heading's question to go", asks, (shown) => !shown);
-      browser.poll<string | null>("the focus on the project's +", "() => document.activeElement?.getAttribute('data-nav-key') ?? null", (key) => key === `head:room:${projectId}`);
-      log("  page: the project's heading no longer asks, and its + has the focus");
-    },
+    [],
   );
   return passed;
 }
