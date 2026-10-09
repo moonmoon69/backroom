@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
+import type { NavProps } from "../keys.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import {
@@ -117,7 +118,8 @@ export function CrewPanel() {
  * The header's people button: a two-person icon and how many are seated, opening the People tab (where participants
  * are added, and each one's status and thread menu are). Hover lists who is doing what.
  */
-export function CrewButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+/** The header's Members button; `nav` makes it an item of the room's header lane (keys.ts). */
+export function CrewButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot, desk } = useRoom();
   const crew = snapshot.participants.filter(isActiveParticipant);
   const statuses = crew.map((p) => {
@@ -132,6 +134,7 @@ export function CrewButton({ active, onClick }: { active: boolean; onClick: () =
       aria-label={`Members (${crew.length})`}
       title={crew.length > 0 ? `Members\n${statuses.join("\n")}` : "Members: nobody seated yet"}
       onClick={onClick}
+      {...nav}
     >
       <PeopleIcon />
       <span className="panel-count mono">{crew.length}</span>

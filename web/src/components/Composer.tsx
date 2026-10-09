@@ -118,7 +118,8 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const [text, setText] = useDraft(roomKey(roomId));
   const textRef = useRef(text);
   textRef.current = text;
-  const overlay = useComposerOverlay(asOverlay, textarea, text);
+  // In a room the ring is placed as it opens (OverviewRoom), not on the strip.
+  const overlay = useComposerOverlay(asOverlay, textarea, text, false);
   // Its images are the draft's too: each is kept by its upload's id once uploaded, until sent or removed.
   const [attachments, setAttachments] = useState<PendingAttachment[]>(() => keptAttachments(roomId));
   const attachmentsRef = useRef<PendingAttachment[]>([]);
@@ -729,6 +730,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
     <>
       <ComposerStrip
         overlay={overlay}
+        lane
         to={stripTo}
         facts={stripFacts}
         draft={text}

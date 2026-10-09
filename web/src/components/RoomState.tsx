@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRoom } from "../context.tsx";
+import { navProps } from "../keys.ts";
 import { ageOf } from "./deskFormat.ts";
 import { ChevronIcon } from "./icons.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -14,7 +15,8 @@ const seenKey = (roomId: string) => `backroom.roomState.seen:${roomId}`;
  * The room state at the top of the room: the Consigliere's summary of where the room stands (rooms-board state), read
  * before the posts. Closed it is its first line, with who wrote it and when; open it is the whole text. Open or closed
  * is kept on this device; a state written since you last opened it here is marked new. A new state arrives with the
- * room's snapshot, so it shows without a reload.
+ * room's snapshot, so it shows without a reload. Written, it is a lane of the room's keys (keys.ts): its line is the one
+ * item, and Enter opens or folds it; "none yet" is no stop.
  */
 export function RoomStatePanel() {
   const { snapshot } = useRoom();
@@ -47,8 +49,8 @@ export function RoomStatePanel() {
   const fresh = Boolean(state.at) && (!seen || state.at > seen);
   const when = state.at ? new Date(state.at).toLocaleString() : "";
   return (
-    <section className={`room-state${open ? " open" : ""}`} aria-label="Room state">
-      <button type="button" className="room-state-head" aria-expanded={open} title={open ? "Close the room state" : `Open the room state. ${keeper} current with rooms-board state.`} onClick={toggle}>
+    <section className={`room-state${open ? " open" : ""}`} aria-label="Room state" data-nav-lane="state">
+      <button type="button" className="room-state-head" aria-expanded={open} title={open ? "Close the room state" : `Open the room state. ${keeper} current with rooms-board state.`} onClick={toggle} {...navProps("state", "state", `room state · ${state.line}`)}>
         <ChevronIcon dir={open ? "down" : "right"} small />
         <span className="room-state-label mono">Room state</span>
         {fresh ? <span className="pill pill-new">new</span> : null}

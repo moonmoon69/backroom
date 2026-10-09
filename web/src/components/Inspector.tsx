@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import type { NavProps } from "../keys.ts";
 import { useRoom } from "../context.tsx";
 import { AddParticipantButton, CrewPanel } from "./Crew.tsx";
 import { GitTab } from "./GitTab.tsx";
@@ -19,13 +20,14 @@ function useUncommitted(): { count: number; branch: string | null; folders: numb
 }
 
 /** The header's Git switch: the branch icon with the count of uncommitted files; hover says the branch. */
-export function GitButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+/** The header's Git button; `nav` makes it an item of the room's header lane (keys.ts). */
+export function GitButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const uncommitted = useUncommitted();
   const gitTitle = uncommitted
     ? `Git: ${uncommitted.count} uncommitted file${uncommitted.count === 1 ? "" : "s"}${uncommitted.branch ? ` on ${uncommitted.branch}` : uncommitted.folders > 1 ? ` across ${uncommitted.folders} folders` : ""}; commits, worktrees`
     : "Git: branches, commits, worktrees and uncommitted changes";
   return (
-    <button type="button" className={`small${active ? " active" : ""}`} aria-pressed={active} aria-label={gitTitle} title={gitTitle} onClick={onClick}>
+    <button type="button" className={`small${active ? " active" : ""}`} aria-pressed={active} aria-label={gitTitle} title={gitTitle} onClick={onClick} {...nav}>
       <BranchIcon />
       {uncommitted?.count ? <span className="panel-count mono">{uncommitted.count}</span> : null}
     </button>

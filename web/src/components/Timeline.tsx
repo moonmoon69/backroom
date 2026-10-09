@@ -362,7 +362,8 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   return (
     <BoardContext.Provider value={board}>
       <ScrollControl.Provider value={scrollControl}>
-        <div className="timeline-wrap">
+        {/* The posts lane of the room's keys (keys.ts): Up and Down post to post. */}
+        <div className="timeline-wrap" data-nav-lane="posts">
           <div
             className="timeline"
             ref={scroller}

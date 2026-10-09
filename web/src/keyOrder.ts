@@ -1,7 +1,8 @@
 /**
  * The page's keys without the page (keys.ts does the DOM side): the table of every key by the place it works in, which
- * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, and the
- * overview's reading order with where each arrow goes, on items placed as the overview draws them.
+ * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, the
+ * overview's reading order with where each arrow goes, on items placed as the overview draws them, and a room's lanes
+ * with where each arrow goes in them.
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
@@ -44,8 +45,14 @@ export type PlaceId =
   | "overview-other"
   | "overview-page"
   | "room"
+  | "room-header"
+  | "room-head-close"
+  | "room-head-tab"
+  | "room-head-panel"
+  | "room-head-options"
+  | "room-state"
+  | "room-chip"
   | "room-post"
-  | "room-tabs"
   | "room-strip"
   | "room-member"
   | "room-pane"
@@ -139,7 +146,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "anywhere in it",
         within: "everywhere",
         entries: [
-          { keys: ["←", "→"], does: "between the panes", more: "the board, Members, Browser and Git; → opens the side panel" },
+          { keys: ["←", "→"], does: "between the panes", more: "the board, Members, Browser and Git; → opens the side panel; along the header and the status chips they move along them instead" },
           { keys: ["Esc", "Backspace"], does: "close composer", when: "composer-open", more: "the draft kept" },
           { keys: ["Esc", "Backspace"], does: "fold the choices", when: "chip-open", more: "a status chip's" },
           { keys: ["Esc", "Backspace"], does: "close correction", when: "correcting", more: "Correct…'s box, its text kept" },
@@ -149,22 +156,48 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         ],
       },
       {
+        id: "room-header",
+        on: "the header (any of its buttons)",
+        within: "room",
+        entries: [
+          { keys: ["←", "→"], does: "along the header", more: "×, the chat and the board, Members, Browser, Git, the room's options; it stops at its ends" },
+          { keys: ["↓"], does: "the lane below", more: "the room state, the status chips or the posts, the first there is" },
+          { keys: ["Home", "End"], does: "first or last post" },
+        ],
+      },
+      { id: "room-head-close", on: "× in the header", within: "room-header", entries: [{ keys: ["Enter"], does: "back to the overview" }] },
+      { id: "room-head-tab", on: "a view's tab in the header", within: "room-header", entries: [{ keys: ["Enter"], does: "show this view", more: "the chat with the Consigliere, or the board" }] },
+      { id: "room-head-panel", on: "Members, Browser or Git in the header", within: "room-header", entries: [{ keys: ["Enter"], does: "open or fold its panel", more: "opened, the ring goes into it; Backspace there brings it back" }] },
+      { id: "room-head-options", on: "the room's options (⋯) in the header", within: "room-header", entries: [{ keys: ["Enter"], does: "its menu", more: "read new replies aloud, rename, delete" }] },
+      {
+        id: "room-state",
+        on: "the room state",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "the lane above or below" },
+          { keys: ["Home", "End"], does: "first or last post" },
+          { keys: ["Enter"], does: "open or fold it" },
+        ],
+      },
+      {
+        id: "room-chip",
+        on: "a status chip",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "the lane above or below" },
+          { keys: ["←", "→"], does: "between the chips", more: "those with choices; it stops at the ends" },
+          { keys: ["Home", "End"], does: "first or last post" },
+          { keys: ["Enter"], does: "its choices", more: "again to fold them" },
+        ],
+      },
+      {
         id: "room-post",
         on: "a post",
         within: "room",
         entries: [
-          { keys: ["↑", "↓"], does: "previous or next post", more: "past the first, the earlier posts load, then the view's tabs" },
+          { keys: ["↑", "↓"], does: "previous or next post", more: "past the first, the earlier posts load, then the status chips, the room state and the header; past the last, the composer's strip" },
           { keys: ["Home", "End"], does: "first or last post" },
           { keys: ["Enter"], does: "its detail" },
-        ],
-      },
-      {
-        id: "room-tabs",
-        on: "the view's tabs",
-        within: "room",
-        entries: [
-          { keys: ["←", "→"], does: "the chat or the board" },
-          { keys: ["↓"], does: "back to the posts" },
         ],
       },
       {
@@ -172,7 +205,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "the composer's strip",
         within: "room",
         entries: [
-          { keys: ["↑", "↓"], does: "to the posts" },
+          { keys: ["↑"], does: "the posts", more: "the post you were on, else the newest" },
+          { keys: ["Home", "End"], does: "first or last post" },
           { keys: ["Enter"], does: "write a message" },
         ],
       },
@@ -236,7 +270,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "another button",
         within: "room",
         entries: [
-          { keys: ["↑", "↓"], does: "to the posts" },
+          { keys: ["↑", "↓"], does: "the item above or below", more: "in its lane, else the lane above or below; outside the lanes, the posts" },
+          { keys: ["Home", "End"], does: "first or last post" },
           { keys: ["Enter"], does: "press it" },
         ],
       },
@@ -246,6 +281,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         within: "room",
         entries: [
           { keys: ["↑", "↓"], does: "to the posts" },
+          { keys: ["Home", "End"], does: "first or last post" },
           { keys: ["Enter"], does: "write a message" },
         ],
       },
@@ -467,4 +503,58 @@ export function readingTarget<T>(order: Placed<T>[], at: number, key: NavKey): P
   const candidates = order.filter((p) => p.section === here.section && p.column === next);
   candidates.sort((a, b) => Math.abs(a.middle - here.middle) - Math.abs(b.middle - here.middle) || a.top - b.top);
   return candidates[0] ?? null;
+}
+
+/**
+ * One of a room's lanes, as its conversation reads top to bottom: the header, the room state, the status chips, the
+ * posts and the composer's strip (keys.ts reads them off the page; a lane with no item is left out).
+ */
+export interface Lane<T> {
+  name: "header" | "state" | "status" | "posts" | "strip";
+  items: T[];
+  /** Where the ring lands coming into the lane from above or below (the item last visited there, else the lane's own). */
+  landing: T;
+}
+
+/** Where the ring is in the lanes: on an item, or on something of a lane between its items (before the item `before`). */
+export type LaneAt = { lane: number; item: number } | { lane: number; before: number };
+
+/** A lane move: to an item; on past the first post into the earlier ones (drawn first); nowhere (the key is taken); not a lane key (null). */
+export type LaneMove<T> = { to: T } | { earlier: true } | "stay" | null;
+
+/** The lanes ← → move along; elsewhere they are the room's (between the panes). */
+const ACROSS = new Set<Lane<unknown>["name"]>(["header", "status"]);
+
+/**
+ * Where a key moves in a room's lanes from `at` (null: from nothing in particular, the room itself). ↑ ↓ go post to post
+ * in the posts lane and lane to lane elsewhere, landing on the next lane's landing; past the first post, with earlier
+ * posts to draw (`earlier`), they are drawn first. From something of a lane that is no item, they go to the lane's item
+ * on that side of it (in the posts, the post above or below), else on to the next lane. ← → go along the header and the status chips, stopping at the ends,
+ * and are the room's anywhere else (null). Home and End go to the first and the last post.
+ */
+export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, earlier = false): LaneMove<T> {
+  const postsAt = lanes.findIndex((lane) => lane.name === "posts");
+  const posts = postsAt >= 0 ? lanes[postsAt]!.items : [];
+  if (key === "first" || key === "last") return posts.length > 0 ? { to: key === "first" ? posts[0]! : posts.at(-1)! } : "stay";
+  if (key === "left" || key === "right") {
+    if (!at || !("item" in at) || !ACROSS.has(lanes[at.lane]!.name)) return null;
+    const next = lanes[at.lane]!.items[at.item + (key === "right" ? 1 : -1)];
+    return next ? { to: next } : "stay";
+  }
+  const step = key === "down" ? 1 : -1;
+  if (!at) {
+    const lane = lanes[postsAt] ?? lanes.at(-1);
+    return lane ? { to: lane.landing } : "stay";
+  }
+  const lane = lanes[at.lane]!;
+  if (at.lane === postsAt) {
+    const next = "item" in at ? at.item + step : at.before + (step > 0 ? 0 : -1);
+    if (next >= 0 && next < posts.length) return { to: posts[next]! };
+    if (next < 0 && "item" in at && earlier) return { earlier: true };
+  } else if ("before" in at && (step > 0 ? at.before < lane.items.length : at.before > 0)) {
+    // Something of a lane after its items (a chip's open choices, the room state's text): Up is back to the lane's item.
+    return { to: lane.landing };
+  }
+  const beyond = lanes[at.lane + step];
+  return beyond ? { to: beyond.landing } : "stay";
 }

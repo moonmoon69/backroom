@@ -10,8 +10,10 @@
  * - The overview reads section by section (each project, its shelf, the crew, the browsers); inside a section column
  *   by column, as the cards are stacked, each column top to bottom. Up and Down follow that order through every card
  *   and member; Left and Right go to the column beside, to the item nearest in height.
- * - In a room, Up and Down go through the focused pane's items (the board's posts, the members), Left and Right between
- *   the panes: the board, then the side panel's Members, Browser and Git.
+ * - A room's conversation reads in lanes, top to bottom: its header, the room state, the status chips, the posts and the
+ *   composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to lane, post to post in the posts lane; Left and
+ *   Right go along the header and the status chips, and elsewhere between the panes: the board, then the side panel's
+ *   Members, Browser and Git, where Up and Down go through the members (or the pane's controls).
  * - Escape closes what is in front, one thing at a time (a menu, the composer, a status chip's choices, a Correct… box, a
  *   dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
  * - Backspace outside a text field goes back one step: what is in front first (as Escape), then a member's thread, the
@@ -22,7 +24,7 @@
  */
 
 import { useEffect, useRef, type RefObject } from "react";
-import { inReadingOrder, readingTarget, type KeyWhen, type NavKey, type PlaceId, type Placed } from "./keyOrder.ts";
+import { inReadingOrder, readingTarget, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Placed } from "./keyOrder.ts";
 
 const OWN_ARROW_ROLES = ["listbox", "option", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "radiogroup", "radio", "slider", "spinbutton", "combobox", "grid", "gridcell", "tree", "treeitem", "tablist", "tab", "scrollbar", "textbox", "searchbox"];
 
@@ -32,6 +34,8 @@ export function keepsArrows(element: Element | null): boolean {
   if (element.isContentEditable) return true;
   if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
   if (element instanceof HTMLInputElement && !["button", "submit", "reset", "checkbox", "image", "file", "color"].includes(element.type)) return true;
+  // An item of a room's lane (a view's tab among the header's buttons, a status chip) moves along its lane.
+  if (element.dataset.nav && element.closest("[data-nav-lane]")) return false;
   if (element.closest(OWN_ARROW_ROLES.map((role) => `[role="${role}"]`).join(", "))) return true;
   return Boolean(element.closest(".dialog, .menu, .popover, [data-own-keys]"));
 }
@@ -64,6 +68,10 @@ export function navKey(event: KeyboardEvent): NavKey | null {
 }
 
 const visible = (element: HTMLElement): boolean => element.getClientRects().length > 0 && !element.closest("[inert], [hidden]");
+
+/** What makes an element an item the arrows reach: its group, a key that survives a redraw, and its words for the key bar. */
+export const navProps = (group: string, key: string, where: string) => ({ "data-nav": group, "data-nav-key": key, "data-where": where });
+export type NavProps = ReturnType<typeof navProps>;
 
 /** The navigable items under a root, in document order. */
 export function navItems(root: ParentNode, group?: string): HTMLElement[] {
@@ -142,6 +150,33 @@ export function listTarget(items: HTMLElement[], current: HTMLElement | null, ke
   return null;
 }
 
+// ---- a room's lanes ----
+
+/** Shown and not hidden away (the composer's strip is kept in place, hidden, while the composer is open). */
+const shown = (element: HTMLElement): boolean => visible(element) && getComputedStyle(element).visibility !== "hidden";
+
+/**
+ * A room's lanes as drawn now, top to bottom (`data-nav-lane`, each holding its items), those with an item. `landing`
+ * says where the ring lands coming into a lane: given the lane and its items, the item, else the lane's own default.
+ */
+export function roomLanes(root: ParentNode, landing: (name: Lane<HTMLElement>["name"], items: HTMLElement[]) => HTMLElement | null): Array<Lane<HTMLElement> & { element: HTMLElement }> {
+  return [...root.querySelectorAll<HTMLElement>("[data-nav-lane]")].flatMap((element) => {
+    const name = element.dataset.navLane as Lane<HTMLElement>["name"];
+    const items = navItems(element).filter((item) => item.closest("[data-nav-lane]") === element && shown(item));
+    return items.length > 0 ? [{ name, element, items, landing: landing(name, items) ?? items[0]! }] : [];
+  });
+}
+
+/** Where `target` is in the lanes: on an item, or on something of a lane between its items; null outside the lanes. */
+export function laneAt(lanes: Array<Lane<HTMLElement> & { element: HTMLElement }>, target: Element | null): LaneAt | null {
+  const lane = lanes.findIndex((l) => target !== null && l.element.contains(target));
+  if (lane < 0) return null;
+  const { items } = lanes[lane]!;
+  const item = items.indexOf(itemOf(target)!);
+  if (item >= 0) return { lane, item };
+  return { lane, before: items.filter((element) => element.compareDocumentPosition(target!) & Node.DOCUMENT_POSITION_FOLLOWING).length };
+}
+
 // ---- where the ring is, for the key bar (KeyBar.tsx) ----
 
 /** The place the ring is on (keyOrder.ts, KEYS), what it is on in words, and what holds now that changes a key. */
@@ -157,6 +192,9 @@ const nameOf = (element: Element): string =>
 
 /** An item's words for the bar: what it says it is (`data-where`), else its name. */
 const whereOf = (item: HTMLElement): string => item.dataset.where ?? nameOf(item);
+
+/** A room header's items by their key. */
+const HEAD_PLACES: Record<string, PlaceId> = { "head:close": "room-head-close", "head:chat": "room-head-tab", "head:board": "room-head-tab", "head:people": "room-head-panel", "head:browser": "room-head-panel", "head:git": "room-head-panel", "head:menu": "room-head-options" };
 
 /** The overview's items by the kind their key starts with. */
 const OVERVIEW_PLACES: Record<string, PlaceId> = { room: "overview-room", thread: "overview-thread", member: "overview-member", preset: "overview-crew", browser: "overview-browser", shelf: "overview-shelf" };
@@ -207,8 +245,10 @@ export function keyPlace(): PlaceNow {
     if (control) return at("room-button", control);
     if (item?.dataset.nav === "post") return at("room-post", whereOf(item));
     if (item?.dataset.nav === "member") return at("room-member", whereOf(item));
-    // The first tab is the chat, the second the board.
-    if (active?.matches(".sheet-tabs [role='tab']")) return at("room-tabs", active.parentElement?.querySelector("[role='tab']")?.getAttribute("aria-selected") === "true" ? "the view's tabs: the chat" : "the view's tabs: the board");
+    // The lanes above the posts: the header's buttons, the room state, the status chips; each says its lane first.
+    if (item?.dataset.nav === "head" && HEAD_PLACES[item.dataset.navKey ?? ""]) return at(HEAD_PLACES[item.dataset.navKey!]!, whereOf(item));
+    if (item?.dataset.nav === "state") return at("room-state", whereOf(item));
+    if (item?.dataset.nav === "chip") return at("room-chip", whereOf(item));
     if (active?.matches(".composer-strip")) return at("room-strip", nameOf(active));
     // A side panel: the panel itself (reached with the arrows, or after a click on empty space), where Enter opens the
     // composer, or a button in it. The arrows in Members go to the members; in Browser and Git through its controls.

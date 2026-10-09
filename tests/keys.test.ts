@@ -1,12 +1,13 @@
 /**
  * The page's keys (web/src/keys.ts): the overview's reading order and where each arrow goes from an item, on layouts
- * as the overview draws them (tiles stacked per column); the key table (keyOrder.ts, KEYS) and what the key bar shows
- * from it on a place; README.md's Keyboard section drawn from the same table.
+ * as the overview draws them (tiles stacked per column); a room's lanes and where each arrow goes in them; the key table
+ * (keyOrder.ts, KEYS) and what the key bar shows from it on a place; README.md's Keyboard section drawn from the same
+ * table.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { barEntries, entryText, inReadingOrder, KEYS, keysMarkdown, placeById, readingTarget, type KeyWhen, type NavKey, type PlaceId, type Placed } from "../web/src/keyOrder.ts";
+import { barEntries, entryText, inReadingOrder, KEYS, keysMarkdown, laneTarget, placeById, readingTarget, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Placed } from "../web/src/keyOrder.ts";
 
 /** An item: its key, section, column (left edge) and top; 30 px tall. */
 const at = (key: string, section: number, column: number, top: number): Placed<string> => ({ element: key, section, column, top, middle: top + 15 });
@@ -69,6 +70,91 @@ test("with nothing focused, any arrow starts at the first item", () => {
   assert.equal(readingTarget([], -1, "down"), null);
 });
 
+/**
+ * A room's lanes as OverviewRoom reads them: the header (× and the two tabs, the chat open; Members), the room state, the
+ * status chips (an approval, a running turn), three posts (#1 to #3, the second last visited) and the composer's strip.
+ */
+const room: Lane<string>[] = [
+  { name: "header", items: ["close", "chat", "board", "people"], landing: "chat" },
+  { name: "state", items: ["state"], landing: "state" },
+  { name: "status", items: ["approval", "working"], landing: "approval" },
+  { name: "posts", items: ["#1", "#2", "#3"], landing: "#2" },
+  { name: "strip", items: ["strip"], landing: "strip" },
+];
+/** Where a key goes in `lanes` from an item (by name), or from between items (`{ lane, before }`), or from nothing. */
+const inRoom = (from: string | LaneAt | null, key: NavKey, earlier = false, lanes = room) => {
+  const at = typeof from === "string" ? lanes.map((lane, index) => ({ lane: index, item: lane.items.indexOf(from) })).find((p) => p.item >= 0)! : from;
+  const move = laneTarget(lanes, at, key, earlier);
+  return move === null || move === "stay" ? move : "to" in move ? move.to : "earlier";
+};
+
+test("a room reads in lanes: Up and Down lane to lane and post to post, past the first post the earlier ones, then the lanes above", () => {
+  // Up from the first post: the status chips, the room state, the header; at the top it stays.
+  assert.equal(inRoom("#1", "up"), "approval");
+  assert.equal(inRoom("approval", "up"), "state");
+  assert.equal(inRoom("working", "up"), "state");
+  assert.equal(inRoom("state", "up"), "chat");
+  assert.equal(inRoom("board", "up"), "stay");
+  // With earlier posts to draw, Up from the first post draws them first.
+  assert.equal(inRoom("#1", "up", true), "earlier");
+  assert.equal(inRoom("#2", "up", true), "#1");
+  // Down from the header lands on each lane's landing: the room state, the needs-you chip, the post last visited.
+  assert.equal(inRoom("people", "down"), "state");
+  assert.equal(inRoom("state", "down"), "approval");
+  assert.equal(inRoom("working", "down"), "#2");
+  assert.equal(inRoom("#3", "down"), "strip");
+  assert.equal(inRoom("strip", "down"), "stay");
+  // Up from the strip: back to the post last visited.
+  assert.equal(inRoom("strip", "up"), "#2");
+  // A lane with no item is not there: without a state or chips, Up from the first post reaches the header.
+  const bare = room.filter((lane) => lane.name !== "state" && lane.name !== "status");
+  assert.equal(inRoom("#1", "up", false, bare), "chat");
+  assert.equal(inRoom("chat", "down", false, bare), "#2");
+});
+
+test("Left and Right go along the header and the status chips and stop at their ends; elsewhere they are the room's", () => {
+  assert.equal(inRoom("chat", "right"), "board");
+  assert.equal(inRoom("board", "right"), "people");
+  assert.equal(inRoom("people", "right"), "stay");
+  assert.equal(inRoom("close", "left"), "stay");
+  assert.equal(inRoom("chat", "left"), "close");
+  assert.equal(inRoom("approval", "right"), "working");
+  assert.equal(inRoom("working", "right"), "stay");
+  // The room state, a post, the strip and nothing focused: between the panes (OverviewRoom), not the lanes'.
+  for (const from of ["state", "#2", "strip", null]) for (const key of ["left", "right"] as const) assert.equal(inRoom(from, key), null, `${from} ${key}`);
+  // Something of the status lane that is no item (a chip's choices): its arrows are the room's too.
+  assert.equal(inRoom({ lane: 2, before: 2 }, "right"), null);
+});
+
+test("Home and End go to the first and last post from every lane; from nothing, Up and Down go to the posts", () => {
+  for (const from of ["board", "state", "working", "#2", "strip", null]) {
+    assert.equal(inRoom(from, "first"), "#1");
+    assert.equal(inRoom(from, "last"), "#3");
+  }
+  assert.equal(inRoom(null, "up"), "#2");
+  assert.equal(inRoom(null, "down"), "#2");
+  // An empty board: Home and End stay; Up and Down from nothing go to the strip.
+  const empty = room.filter((lane) => lane.name !== "posts");
+  assert.equal(inRoom("strip", "first", false, empty), "stay");
+  assert.equal(inRoom(null, "down", false, empty), "strip");
+  assert.equal(inRoom("approval", "down", false, empty), "strip");
+});
+
+test("from something of a lane that is no item (the earlier posts' button, a chip's choices), Up and Down go to the item on that side, else the next lane", () => {
+  // The earlier posts' button, above the first post: Down to it, Up to the lane above (it is pressed with Enter).
+  assert.equal(inRoom({ lane: 3, before: 0 }, "down"), "#1");
+  assert.equal(inRoom({ lane: 3, before: 0 }, "up", true), "approval");
+  // Jump to latest, after the last post: Up to it, Down to the strip.
+  assert.equal(inRoom({ lane: 3, before: 3 }, "up"), "#3");
+  assert.equal(inRoom({ lane: 3, before: 3 }, "down"), "strip");
+  // A chip's open choices, after the chips: Up back to the chip (the lane's landing), Down to the posts.
+  assert.equal(inRoom({ lane: 2, before: 2 }, "up"), "approval");
+  assert.equal(inRoom({ lane: 2, before: 2 }, "down"), "#2");
+  // The room state's text, open under its line: Up to the line, Down on to the chips.
+  assert.equal(inRoom({ lane: 1, before: 1 }, "up"), "state");
+  assert.equal(inRoom({ lane: 1, before: 1 }, "down"), "approval");
+});
+
 /** The bar on a place, as it reads: each entry's keys, then what they do. */
 const bar = (place: PlaceId, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${entry.does}`);
 
@@ -87,7 +173,7 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
 test("with nothing focused, Enter is what it does there: a message in a room or a thread, nothing on the overview", () => {
   // The room's or thread's window itself (as it opens, after a click on empty space) or the page under it: Enter opens
   // the composer.
-  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   assert.deepEqual(bar("thread-itself"), ["Enter write a message", "Backspace back to the overview", "a–z start writing", "? all keys"]);
   // A button there is pressed.
   assert.ok(bar("room-other").includes("Enter press it"));
@@ -101,6 +187,26 @@ test("with nothing focused, Enter is what it does there: a message in a room or 
   // In a dialog's text field Enter is the field's (it sends the form or makes a line): the bar names no Enter there.
   assert.ok(bar("dialog").includes("Enter press it"));
   assert.ok(!bar("dialog", ["typing"]).some((line) => line.startsWith("Enter")));
+});
+
+test("each lane says its keys: the header's buttons by what Enter does on each, the room state, a status chip, the strip", () => {
+  const enter = (place: PlaceId) => bar(place).find((line) => line.startsWith("Enter "));
+  assert.equal(enter("room-head-close"), "Enter back to the overview");
+  assert.equal(enter("room-head-tab"), "Enter show this view");
+  assert.equal(enter("room-head-panel"), "Enter open or fold its panel");
+  assert.equal(enter("room-head-options"), "Enter its menu");
+  for (const place of ["room-head-close", "room-head-tab", "room-head-panel", "room-head-options"] as const) {
+    assert.ok(bar(place).includes("← → along the header"), place);
+    assert.ok(bar(place).includes("↓ the lane below"), place);
+    assert.ok(!bar(place).some((line) => line.startsWith("↑")), `${place}: nothing above the header`);
+  }
+  assert.deepEqual(bar("room-state"), ["↑ ↓ the lane above or below", "← → between the panes", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-chip"), ["↑ ↓ the lane above or below", "← → between the chips", "Enter its choices", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.ok(bar("room-chip", ["chip-open"]).includes("Esc Backspace fold the choices"));
+  assert.deepEqual(bar("room-strip"), ["↑ the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  // Home and End go to the posts from every lane of the conversation, and stay the side panel's own there.
+  for (const place of ["room-post", "room-state", "room-chip", "room-strip", "room-other", "room-itself"] as const) assert.ok(bar(place).includes("Home End first or last post"), place);
+  for (const place of ["room-pane", "room-pane-button", "room-members", "room-members-button"] as const) assert.ok(!bar(place).includes("Home End first or last post"), place);
 });
 
 test("a side panel itself writes a message with Enter; a button in it is pressed; the Members panel's arrows go to the members", () => {
@@ -118,8 +224,9 @@ test("a side panel itself writes a message with Enter; a button in it is pressed
 });
 
 test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {
-  // The tabs' own Left and Right, and their Down; Up does nothing there.
-  assert.deepEqual(bar("room-tabs"), ["↓ back to the posts", "← → the chat or the board", "Backspace back to the overview", "a–z start writing", "? all keys"]);
+  // A view's tab is in the header: Left and Right along it, Down to the lanes below, Enter shows its view; Up does
+  // nothing there.
+  assert.deepEqual(bar("room-head-tab"), ["↓ the lane below", "← → along the header", "Enter show this view", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // Esc closes what is in front and nothing else; Backspace closes the same first, then the panel, then the room.
   // Where the two keys do the same, they share one chip.
   assert.ok(bar("room-post", ["composer-open", "panel-open"]).includes("Esc Backspace close composer"));

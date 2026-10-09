@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
+import type { NavProps } from "../keys.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
@@ -152,7 +153,8 @@ export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boole
  * The room header's Browser switch, beside Members and Git: a globe, checked while the room's agents may
  * use browsers, with the open tab count while its default browser runs. Opens the side panel on the room's browser.
  */
-export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+/** The header's Browser button; `nav` makes it an item of the room's header lane (keys.ts). */
+export function RoomBrowserButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot } = useRoom();
   const info = snapshot.browser;
   const enabled = snapshot.room.browserEnabled;
@@ -161,7 +163,7 @@ export function RoomBrowserButton({ active, onClick }: { active: boolean; onClic
   const state = info ? `default "${info.browser.name}" ${BROWSER_STATE_LABEL[info.status.state]}${tabs > 0 ? `, ${tabs} tab${tabs === 1 ? "" : "s"}` : ""}` : "no browser yet";
   const title = `Browser: ${enabled ? "on" : "off"} for this room's agents · ${state}`;
   return (
-    <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick}>
+    <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick} {...nav}>
       <GlobeIcon checked={enabled} failed={info?.status.state === "error"} />
       {tabs > 0 ? <span className="panel-count mono">{tabs}</span> : null}
     </button>
