@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
-import { exchangePairingCredential, parsePairingUrl } from "../src/adapter/auth.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
+import { REQUESTED_SCOPES, exchangePairingCredential, missingScopeMessage, parsePairingUrl, sameT3Host } from "../src/adapter/auth.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
 
 interface Recorded {
   url: string;
@@ -41,7 +41,8 @@ function mockFetch(routes: Record<string, (recorded: Recorded) => { status: numb
 
 /**
  * An RPC socket that answers each request frame from a handler, as T3's WebSocket RPC does (Effect RPC, JSON frames).
- * A handler that returns a promise answers when it settles; `closed` counts the sockets closed.
+ * A handler that returns a promise answers when it settles; `closed` counts the sockets closed. A handler that throws
+ * is refused with its message, or with the error it carries as `rpcError`.
  */
 function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
   const frames: Array<{ tag: string; payload: any; url: string }> = [];
@@ -64,7 +65,7 @@ function mockSocket(handlers: Record<string, (payload: any) => unknown> = {}) {
       const frame = JSON.parse(data) as { id: string; tag: string; payload: unknown };
       frames.push({ tag: frame.tag, payload: frame.payload, url: this.url });
       const answer = (exit: unknown) => this.emit("message", { data: JSON.stringify({ _tag: "Exit", requestId: frame.id, exit }) });
-      const failure = (error: unknown) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] });
+      const failure = (error: unknown) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error: (error as { rpcError?: unknown }).rpcError ?? { _tag: "OrchestrationV2DispatchCommandError", message: (error as Error).message } }] });
       queueMicrotask(() => {
         let value: unknown;
         try {
@@ -513,9 +514,57 @@ test("pairing URL parsing and the RFC 8693 token exchange request", async () => 
   assert.equal(form.get("subject_token"), "abc123");
   assert.equal(form.get("subject_token_type"), "urn:t3:params:oauth:token-type:environment-bootstrap");
   assert.equal(form.get("requested_token_type"), "urn:ietf:params:oauth:token-type:access_token");
+  assert.equal(form.get("scope"), REQUESTED_SCOPES);
   assert.equal(auth.accessToken, "issued");
   assert.equal(auth.tokenType, "Bearer");
   assert.ok(auth.expiresAt && Date.parse(auth.expiresAt) > Date.now());
+});
+
+test("Backroom asks T3 for exactly the scopes its calls need, and nothing broader", () => {
+  // T3's RPC_REQUIRED_SCOPES (0.0.46): server.updateProvider providers:manage, server.updateServer environment:maintain,
+  // server.getUsageSummary diagnostics:read, filesystem.browse filesystem:read; every other call Backroom makes needs
+  // orchestration:read or orchestration:operate.
+  assert.equal(REQUESTED_SCOPES, "orchestration:read orchestration:operate providers:manage environment:maintain diagnostics:read filesystem:read");
+});
+
+test("a call T3 refuses for a permission Backroom's pairing lacks says, in one sentence, to pair again and how", async () => {
+  // T3's refusal as it answers it: requiredScope is the permission's legacy parent, requiredPermission the one missing.
+  const refusal = (permission: string, parent: string) => () => {
+    throw Object.assign(new Error("refused"), {
+      rpcError: { _tag: "EnvironmentAuthorizationError", message: `The authenticated token is missing required scope: ${permission}.`, requiredScope: parent, requiredPermission: permission },
+    });
+  };
+  const { fetchImpl } = mockFetch(base);
+  const { Socket } = mockSocket({
+    "server.updateServer": refusal("environment:maintain", "orchestration:operate"),
+    "server.updateProvider": refusal("providers:manage", "orchestration:operate"),
+    "filesystem.browse": refusal("filesystem:read", "orchestration:read"),
+    "orchestration.dispatchCommand": () => {
+      throw new Error("Run run:nope is not interruptible.");
+    },
+  });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  const sentence =
+    'Backroom\'s pairing with T3 does not allow this (it lacks the "environment:maintain" permission): run `t3 pair` on T3\'s machine and paste the link it prints into the T3 panel (the T3 button at the top of the overview) to pair again.';
+  assert.equal(missingScopeMessage("environment:maintain"), sentence);
+  const refused = await adapter.updateServer({ targetVersion: "0.0.47", continueRunningThreads: false }).catch((error: unknown) => error);
+  assert.ok(refused instanceof T3ScopeMissing && refused instanceof T3CommandRejected, String(refused));
+  assert.equal(refused.scope, "environment:maintain");
+  assert.equal(refused.message, sentence);
+  await assert.rejects(adapter.updateHarness({ instanceId: "claudeAgent", driver: "claudeAgent" }), (error: unknown) => error instanceof T3ScopeMissing && error.message === missingScopeMessage("providers:manage"));
+  await assert.rejects(adapter.browseFolders("/home/"), (error: unknown) => error instanceof T3ScopeMissing && error.scope === "filesystem:read");
+  // Any other refusal is passed on as T3 gave it.
+  await assert.rejects(adapter.interruptRun({ commandId: "c", threadId: "t", runId: "run:nope" }), (error: unknown) => error instanceof T3CommandRejected && !(error instanceof T3ScopeMissing));
+  adapter.close();
+});
+
+test("a pairing link may name T3 by another loopback name than Backroom's address for it", () => {
+  // `t3 pair` prints http://localhost:3773 while T3's runtime file says http://127.0.0.1:3773.
+  assert.ok(sameT3Host("http://127.0.0.1:3773", "http://localhost:3773/pair#token=x"));
+  assert.ok(sameT3Host("http://[::1]:3773", "http://localhost:3773"));
+  assert.ok(!sameT3Host("http://127.0.0.1:3773", "http://localhost:3774"), "another port is another server");
+  assert.ok(!sameT3Host("http://127.0.0.1:3773", "http://box.tailnet.ts.net:3773"));
+  assert.ok(sameT3Host("https://box.tailnet.ts.net", "https://box.tailnet.ts.net/pair#token=x"));
 });
 
 test("a T3 that accepts a request but never answers counts as unreachable after the time limit, not forever", async () => {

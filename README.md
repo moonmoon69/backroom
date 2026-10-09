@@ -145,6 +145,18 @@ npm run t3:pair -- "http://127.0.0.1:3773/pair?token=..."
 
 The link is exchanged for a bearer token, which is stored in `data/t3-auth.json` with owner-only permissions (0600). The token is never sent to the browser. The command prints only the scope and expiry.
 
+Backroom asks T3 for these permissions, and nothing broader:
+
+| Permission | What needs it |
+| --- | --- |
+| `orchestration:read`, `orchestration:operate` | reading projects and threads, sending messages, launching threads, adding projects |
+| `providers:manage` | a harness's **Update** |
+| `environment:maintain` | T3's **Update** |
+| `diagnostics:read` | today's usage in a member's usage card |
+| `filesystem:read` | the folder list in the New project dialog |
+
+T3 grants only the ones its pairing link holds and leaves out the rest without saying so. A link from `t3 pair` holds them all. When T3 refuses something for a permission the pairing lacks, Backroom says so where it happened and tells you to pair again. A pairing made before Backroom asked for a permission lacks it too, so pair again to get it.
+
 ### 3. Verify (optional but recommended)
 
 ```sh
@@ -791,6 +803,7 @@ Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot t
 | Status says "not paired", and the pairing panel mentions `desktop-managed-local` | The Desktop server on loopback does not issue pairing links. Turn on Settings → Connections → Network access in T3 Code, then create a link. |
 | Pairing returns HTTP 4xx | Links are one-time and expire within minutes. Create a fresh one. |
 | Status says "pair Backroom again" | The stored token expired or was revoked in T3 (Settings → Connections → clients). Pair again; work not yet sent is untouched. |
+| An update, the folder list or today's usage says "Backroom's pairing with T3 does not allow this" | The pairing lacks the permission it names (see [Connect to T3 Code](#connect-to-t3-code)). Run `t3 pair` on T3's machine and paste the link into the T3 panel. |
 | The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
 | A member's turn stays "sending" or "starting" and then fails with "provider failed to start" | The harness behind that member isn't signed in, or its CLI is missing. Fix it in T3, then press **Retry** on the failed turn's notice. |
 | A member shows "working on its own" | Its thread is in a turn the room did not start: it woke itself, another agent messaged it, or someone typed in T3 Code. What the room has for it waits for that turn to end. |

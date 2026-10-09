@@ -1,6 +1,8 @@
 /** Updates for T3 and its harnesses: shown with a count, and started only when the user asks for each one. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { missingScopeMessage } from "../src/adapter/auth.ts";
+import { T3ScopeMissing, type T3Adapter } from "../src/adapter/types.ts";
 import { compareVersions, releaseChannel } from "../src/app/t3Updates.ts";
 import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
@@ -108,4 +110,37 @@ test("a refused T3 update is shown as failed; npm being unreachable only hides T
   assert.equal(view.server.newer, false);
   assert.match(view.server.releaseError ?? "", /ENOTFOUND/);
   assert.equal(view.available, 1, "Claude's update is still offered");
+});
+
+test("an update or read T3 refuses for a permission Backroom's pairing lacks shows the sentence that says how to pair again", async (t) => {
+  const stack = await createTestStack(undefined, undefined, { latestRelease: async () => NEWEST });
+  t.after(() => stack.close());
+  const adapter: T3Adapter = stack.fake;
+  adapter.updateServer = async () => {
+    throw new T3ScopeMissing("environment:maintain", null);
+  };
+  adapter.updateHarness = async () => {
+    throw new T3ScopeMissing("providers:manage", null);
+  };
+  adapter.browseFolders = async () => {
+    throw new T3ScopeMissing("filesystem:read", null);
+  };
+  adapter.usageSummary = async () => {
+    throw new T3ScopeMissing("diagnostics:read", null);
+  };
+  await stack.updates.updateServer(NEWEST);
+  await stack.updates.updateHarness("claudeAgent");
+  await settle();
+  const view = await stack.updates.view();
+  assert.equal(view.server.job?.state, "failed");
+  assert.equal(view.server.job?.error, missingScopeMessage("environment:maintain"));
+  assert.equal(view.harnesses.find((h) => h.instanceId === "claudeAgent")?.error, missingScopeMessage("providers:manage"));
+
+  // Nothing here is written to the data folder.
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/nonexistent/rooms-test-scope", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  const folders = (await (await app.request("/api/t3/folders?path=%2Fhome%2F")).json()) as { unreadable: string | null };
+  assert.equal(folders.unreadable, missingScopeMessage("filesystem:read"));
+  const usage = await app.request("/api/t3/usage/today?tz=UTC");
+  assert.equal(usage.status, 403);
+  assert.deepEqual(await usage.json(), { error: "t3_scope_missing", message: missingScopeMessage("diagnostics:read") });
 });

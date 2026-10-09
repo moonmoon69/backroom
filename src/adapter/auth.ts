@@ -18,7 +18,24 @@ export interface StoredT3Auth {
 export const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 export const BOOTSTRAP_TOKEN_TYPE = "urn:t3:params:oauth:token-type:environment-bootstrap";
 export const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
-export const REQUESTED_SCOPES = "orchestration:read orchestration:operate";
+/**
+ * What Backroom asks T3 for when it pairs: each scope with the calls that need it (T3's RPC_REQUIRED_SCOPES). T3
+ * grants those of them its pairing link holds (`t3 pair` holds them all) and silently leaves out the rest.
+ */
+export const SCOPE_USES = {
+  "orchestration:read": "the shell and thread reads, server.getConfig, server.refreshProviders, server.reportClientActivity, vcs.listRefs",
+  "orchestration:operate": "orchestration.dispatchCommand, orchestration.launchThread, projects.mutate, assets.persistChatAttachments",
+  "providers:manage": "server.updateProvider (a harness's Update)",
+  "environment:maintain": "server.updateServer (T3's Update)",
+  "diagnostics:read": "server.getUsageSummary (today's usage)",
+  "filesystem:read": "filesystem.browse (the New project dialog's folders)",
+} as const;
+export const REQUESTED_SCOPES = Object.keys(SCOPE_USES).join(" ");
+
+/** The page's sentence when T3 refuses a call because Backroom's pairing lacks `scope`. */
+export function missingScopeMessage(scope: string): string {
+  return `Backroom's pairing with T3 does not allow this (it lacks the "${scope}" permission): run \`t3 pair\` on T3's machine and paste the link it prints into the T3 panel (the T3 button at the top of the overview) to pair again.`;
+}
 
 export function authStorePath(dataDir: string): string {
   return join(dataDir, "t3-auth.json");
@@ -47,6 +64,16 @@ export function parsePairingUrl(pairingUrl: string): { baseUrl: string; credenti
   const credential = url.searchParams.get("token") ?? url.hash.replace(/^#?token=/, "");
   if (!credential) throw new Error("pairing URL does not contain a token");
   return { baseUrl: `${url.protocol}//${url.host}`, credential };
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Whether two T3 addresses name the same server: the same host and port, the loopback names counting as one (`t3 pair` prints localhost). */
+export function sameT3Host(a: string, b: string): boolean {
+  const x = new URL(a);
+  const y = new URL(b);
+  if (x.host === y.host) return true;
+  return x.protocol === y.protocol && x.port === y.port && LOOPBACK_HOSTS.has(x.hostname) && LOOPBACK_HOSTS.has(y.hostname);
 }
 
 export async function exchangePairingCredential(

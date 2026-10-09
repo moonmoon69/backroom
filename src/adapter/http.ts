@@ -56,7 +56,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests } from "./types.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -156,6 +156,18 @@ export interface WebSocketLike {
 type RpcExit = { _tag: string; value?: unknown; cause?: unknown };
 
 /** What T3 says went wrong, from an RPC failure's cause (a list of failures, each with T3's error and its message). */
+/** The permission T3 says the token lacks when it refuses a call for it (its EnvironmentAuthorizationError), else null. */
+function missingPermission(cause: unknown): string | null {
+  for (const failure of Array.isArray(cause) ? cause : [cause]) {
+    const error = (failure as { error?: { _tag?: unknown; requiredPermission?: unknown; requiredScope?: unknown } } | null)?.error;
+    if (error?._tag !== "EnvironmentAuthorizationError") continue;
+    // requiredScope is the permission's legacy parent (orchestration:read for filesystem:read), kept for older clients.
+    const scope = error.requiredPermission ?? error.requiredScope;
+    if (typeof scope === "string" && scope.length > 0) return scope;
+  }
+  return null;
+}
+
 function rpcFailure(cause: unknown): string {
   const failures = Array.isArray(cause) ? cause : [cause];
   for (const failure of failures) {
@@ -238,7 +250,10 @@ class RpcConnection {
         clearTimeout(timer);
         if (exit instanceof Error) reject(new T3OutcomeUnknown(`T3 RPC ${tag}: ${exit.message} before T3 answered`));
         else if (exit._tag === "Success") resolve(exit.value as T);
-        else reject(new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+        else {
+          const scope = missingPermission(exit.cause);
+          reject(scope ? new T3ScopeMissing(scope, exit) : new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+        }
       });
       this.socket.send(JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] }));
     });
