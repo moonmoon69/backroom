@@ -1604,11 +1604,18 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
   const maybeBare = run.phase === "prepared" && numbers.length === 0 && requests.length === 0;
   const bubble = useRef<HTMLDivElement | null>(null);
   const [feedOffers, setFeedOffers] = useState(false);
+  const readFeed = maybeBare && items.length > 0;
   useEffect(() => {
     const element = bubble.current;
-    setFeedOffers(Boolean(maybeBare && items.length > 0 && element && offersControls(element)));
-  });
-  const bare = maybeBare && !feedOffers;
+    if (!readFeed || !element) return;
+    const read = () => setFeedOffers(offersControls(element));
+    read();
+    // What the feed draws changes inside it too (an image that fails to load is no button).
+    const observer = new MutationObserver(read);
+    observer.observe(element, { subtree: true, childList: true });
+    return () => observer.disconnect();
+  }, [readFeed]);
+  const bare = maybeBare && !(readFeed && feedOffers);
   return (
     <div ref={bubble} className={`chat-row from-agent live-turn${uncertain ? " live-uncertain" : ""}`} style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} aria-live="off" data-run={run.id} {...(bare ? {} : liveNav(`live:${run.id}`, where))}>
       <div className="chat-stack">
