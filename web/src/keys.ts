@@ -197,8 +197,15 @@ export function keyPlace(): PlaceNow {
     // The first tab is the chat, the second the board.
     if (active?.matches(".sheet-tabs [role='tab']")) return at("room-tabs", active.parentElement?.querySelector("[role='tab']")?.getAttribute("aria-selected") === "true" ? "the view's tabs: the chat" : "the view's tabs: the board");
     if (active?.matches(".composer-strip")) return at("room-strip", nameOf(active));
-    const pane = active?.closest<HTMLElement>("[data-nav-pane='browser'], [data-nav-pane='git']");
-    if (pane) return at("room-pane", pane === active ? `the ${nameOf(pane)} panel` : `${nameOf(active!)} · the ${pane.getAttribute("aria-label")} panel`);
+    // A side panel: the panel itself (reached with the arrows, or after a click on empty space), where Enter opens the
+    // composer, or a button in it. The arrows in Members go to the members; in Browser and Git through its controls.
+    const pane = active?.closest<HTMLElement>("[data-nav-pane='people'], [data-nav-pane='browser'], [data-nav-pane='git']");
+    if (pane) {
+      const members = pane.dataset.navPane === "people";
+      const panel = `the ${pane.getAttribute("aria-label")} panel`;
+      if (pane === active) return at(members ? "room-members" : "room-pane", panel);
+      return at(members ? "room-members-button" : "room-pane-button", `${nameOf(active!)} · ${panel}`);
+    }
     // Nothing in the room has the ring: the room's window itself (as it opens, after a click on empty space) or the page
     // (the focused button went away); Enter there opens the composer.
     return active && active !== layer ? at("room-other", nameOf(active)) : at("room-itself", title("Room"));

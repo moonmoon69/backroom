@@ -101,6 +101,19 @@ test("with nothing focused, Enter is what it does there: a message in a room or 
   assert.ok(!bar("dialog", ["typing"]).some((line) => line.startsWith("Enter")));
 });
 
+test("a side panel itself writes a message with Enter; a button in it is pressed; the Members panel's arrows go to the members", () => {
+  // Browser or Git itself (→ → from a post): ↑ ↓ into its controls, Enter opens the composer.
+  assert.deepEqual(bar("room-pane"), ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  assert.ok(bar("room-pane-button").includes("Enter press it"));
+  assert.ok(bar("room-pane-button").includes("↑ ↓ its buttons and fields, in order"));
+  // Members itself (after a click on empty space): ↑ ↓ to a member, Enter opens the composer.
+  assert.deepEqual(bar("room-members"), ["↑ ↓ to the members", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  // A button in Members' head (+ Add member, ×): pressed; its arrows go to the members too.
+  assert.ok(bar("room-members-button").includes("Enter press it"));
+  assert.ok(bar("room-members-button").includes("↑ ↓ to the members"));
+  for (const place of ["room-pane", "room-members", "room-members-button"] as const) assert.ok(!bar(place).includes("↑ ↓ to the posts"), place);
+});
+
 test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {
   // The tabs' own Left and Right, and their Down; Up does nothing there.
   assert.deepEqual(bar("room-tabs"), ["↓ back to the posts", "← → the chat or the board", "Esc back to the overview", "a–z start writing", "? all keys"]);

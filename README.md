@@ -740,7 +740,13 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | a member, in Members | `↑` `↓` | Previous or next member |
 |  | `Home` `End` | First or last member |
 |  | `Enter` | Its thread (over the room, read only; Esc comes back to the member) |
-| the Browser or Git panel | `↑` `↓` | Its buttons and fields, in order |
+| the Browser or Git panel itself | `↑` `↓` | Its buttons and fields |
+|  | `Enter` | Write a message |
+| a button in the Browser or Git panel | `↑` `↓` | Its buttons and fields, in order |
+|  | `Enter` | Press it |
+| the Members panel itself | `↑` `↓` | To the members |
+|  | `Enter` | Write a message |
+| a button in the Members panel's head | `↑` `↓` | To the members |
 |  | `Enter` | Press it |
 | a button on a post or a member | `↑` `↓` | Previous or next item (from the post or member it is on) |
 |  | `Enter` | Press it |

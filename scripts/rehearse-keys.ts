@@ -13,8 +13,9 @@
  * the ring is on as the API names it (a room's title, a post's number, a member's alias), reads the console (no
  * error-level line) and keeps a screenshot, the bar in it; every key on the bar is drawn whole and none is left out (at
  * this window the whole bar fits). One state draws every place's bar from the key table (keyOrder.ts) in the page, the
- * where-text at its widest, and checks each fits the window. Five states read the whole bar, every key with its words:
- * the overview with nothing focused, a room's tile, a post, the composer, and a room with nothing in it focused.
+ * where-text at its widest, and checks each fits the window. Six states read the whole bar, every key with its words:
+ * the overview with nothing focused, a room's tile, a post, the composer, a room with nothing in it focused, and the
+ * Browser panel itself holding the ring.
  *
  * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
@@ -752,6 +753,24 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await state("key bar: a room with nothing in it focused, Enter writes a message", apiRoom.room.title);
   press("Enter");
   await expect("Enter: the composer, in its field", (f) => f.tag === "TEXTAREA" && f.composerOpen);
+  press("Escape");
+  await expect("Esc: the composer closed, the focus on its strip", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
+
+  // A side panel itself holding the ring: → → from the strip reaches the Browser panel (it has no items, so the panel
+  // takes the ring). The bar says Enter writes a message, and it does.
+  press("ArrowRight");
+  await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+  press("ArrowRight");
+  await expect("Right: the Browser panel itself holds the ring", (f) => f.panel === "browser" && f.tag === "ASIDE" && f.label === "Browser" && f.inLayer === "room");
+  await barSays("the Browser panel itself", {
+    place: "room-pane",
+    where: "the Browser panel",
+    keys: ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing"],
+    end: "? all keys",
+  });
+  await state("key bar: the Browser panel itself, Enter writes a message", "the Browser panel");
+  press("Enter");
+  await expect("Enter: the composer, in its field", (f) => f.tag === "TEXTAREA" && f.composerOpen && f.panel === "browser");
   press("Escape");
   await expect("Esc: the composer closed, the focus on its strip", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
   press("Escape");

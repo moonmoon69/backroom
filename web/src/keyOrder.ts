@@ -46,6 +46,9 @@ export type PlaceId =
   | "room-strip"
   | "room-member"
   | "room-pane"
+  | "room-pane-button"
+  | "room-members"
+  | "room-members-button"
   | "room-button"
   | "room-other"
   | "room-itself"
@@ -178,10 +181,37 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       },
       {
         id: "room-pane",
-        on: "the Browser or Git panel",
+        on: "the Browser or Git panel itself",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "its buttons and fields" },
+          { keys: ["Enter"], does: "write a message" },
+        ],
+      },
+      {
+        id: "room-pane-button",
+        on: "a button in the Browser or Git panel",
         within: "room",
         entries: [
           { keys: ["↑", "↓"], does: "its buttons and fields, in order" },
+          { keys: ["Enter"], does: "press it" },
+        ],
+      },
+      {
+        id: "room-members",
+        on: "the Members panel itself",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "to the members" },
+          { keys: ["Enter"], does: "write a message" },
+        ],
+      },
+      {
+        id: "room-members-button",
+        on: "a button in the Members panel's head",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "to the members" },
           { keys: ["Enter"], does: "press it" },
         ],
       },
