@@ -139,6 +139,19 @@ export function Overview({
 
   // ---- the keys (keys.ts): the arrows move the focus over the page's rows of tiles and buttons ----
   const root = useRef<HTMLDivElement>(null);
+  // The header sticks at the top while the page scrolls under it: what the ring goes to is brought into view below it
+  // (scroll-padding-top in styles.css, from the header's height in either look, wrapped or not).
+  const head = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const element = root.current;
+    const header = head.current;
+    if (!element || !header) return;
+    const measure = () => element.style.setProperty("--overview-head", `${header.offsetHeight}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
   // The item last focused here, by key. A poll that redraws the page can move a card (to another tier, another project),
   // and the browser drops the focus of what it moves: the same item takes it back before the frame is painted.
   const remembered = useRef<string | null>(null);
@@ -232,7 +245,7 @@ export function Overview({
 
   return (
     <div className="overview" ref={root} inert={!active}>
-      <header className="overview-head">
+      <header className="overview-head" ref={head}>
         <span className="brand serif">
           <BrandMark />
           Backroom

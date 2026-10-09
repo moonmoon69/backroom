@@ -4,7 +4,7 @@
  * onto the room, picked in the Add member dialog, several at once if you like, or from its Edit dialog's Seat in a
  * room…) or used to start a thread on its own.
  */
-import { createContext, useContext, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { resolveLook, type Look } from "../../../src/domain/look.ts";
 import { LookPicker } from "./LookPicker.tsx";
 import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RoomListItem, RuntimeMode, T3Project } from "../types.ts";
@@ -181,8 +181,10 @@ export interface SeatChoices {
  * Seat in a room…: the rooms in a menu over the dialog; Enter on one seats the crew member there on a new thread with
  * their saved settings (the keyboard's version of dragging them onto a room's tile), and the dialog closes. Esc or
  * Backspace closes the menu, the focus back on the button; Tab closes it and goes on from the button, in the dialog.
+ * While it cannot seat them (`why`: the form has changes, or there are no rooms) it waits: still reached by Tab, it
+ * opens nothing, and the line that says why (`whyId`, shown in the dialog) is its description.
  */
-function SeatInRoom({ name, seat, why, onSeated }: { name: string; seat: SeatChoices; why: string | null; onSeated: () => void }) {
+function SeatInRoom({ name, seat, why, whyId, busy, onSeated }: { name: string; seat: SeatChoices; why: string | null; whyId: string; busy: boolean; onSeated: () => void }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -197,7 +199,17 @@ function SeatInRoom({ name, seat, why, onSeated }: { name: string; seat: SeatCho
   }, [open]);
   return (
     <>
-      <button ref={anchor} type="button" aria-haspopup="menu" aria-expanded={open} disabled={why !== null} title={why ?? `Seat ${name} in a room, on a new thread with their saved settings: the same as dragging them onto the room's tile`} onClick={() => setOpen((current) => !current)}>
+      <button
+        ref={anchor}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-disabled={why !== null || undefined}
+        aria-describedby={why !== null ? whyId : undefined}
+        disabled={busy}
+        title={why ?? `Seat ${name} in a room, on a new thread with their saved settings: the same as dragging them onto the room's tile`}
+        onClick={() => why === null && setOpen((current) => !current)}
+      >
         Seat in a room…
       </button>
       {open ? (
@@ -272,7 +284,8 @@ export function PresetDialog({
   const changed =
     preset !== null &&
     (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
-  const seatWhy = !seat || seat.rooms.length === 0 ? "There are no rooms yet" : changed ? "Save or cancel the changes first: they are seated with their saved settings" : null;
+  const seatWhy = !seat || seat.rooms.length === 0 ? "Seat in a room… waits: there are no rooms yet." : changed ? "Seat in a room… waits: save or cancel the changes first, as they are seated with their saved settings." : null;
+  const seatWhyId = useId();
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -338,6 +351,11 @@ export function PresetDialog({
             <span className="hint">How they are drawn in the pixel look, in every room. The pocket square is always their harness&rsquo;s colour.</span>
           </div>
         ) : null}
+        {preset && seat && seatWhy ? (
+          <p className="hint seat-why" id={seatWhyId}>
+            {seatWhy}
+          </p>
+        ) : null}
         <div className="dialog-actions">
           {preset ? (
             confirmDelete ? (
@@ -356,7 +374,7 @@ export function PresetDialog({
             )
           ) : null}
           <span className="spacer" />
-          {preset && seat ? <SeatInRoom name={preset.name} seat={seat} why={busy ? "Saving…" : seatWhy} onSeated={onClose} /> : null}
+          {preset && seat ? <SeatInRoom name={preset.name} seat={seat} why={seatWhy} whyId={seatWhyId} busy={busy} onSeated={onClose} /> : null}
           <button type="button" onClick={onClose}>
             Cancel
           </button>

@@ -26,7 +26,9 @@
  * and a room's members are read on its tile, not visited) and the buttons of its rows (the header, each section's +).
  * With four tiles on three columns the fourth sits under the first, so Down from that room's tile reaches the tile
  * below, then Crew's head, a crew member, Browsers' head and a browser, keeping to the column it began in; Up from the
- * first row reaches its section's + and then the header, which is the top; Left and Right stop at a row's ends. A crew
+ * first row reaches its section's + and then the header, which is the top, and from a page scrolled to its foot each stop
+ * on the way up is brought into view below the sticky header, not under it (in both looks); Left and Right stop at a
+ * row's ends. A crew
  * member is seated in a room by keys alone, from its Edit dialog's Seat in a room…, and the API shows the new member.
  * The mouse does the same (#499, #507): hovering a member's line on a tile hovers the tile, not the member, and the ring
  * and the key bar stay on the room; a click on it opens the room's conversation, not the member's thread.
@@ -399,6 +401,36 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       return same ? grid : null;
     }, 30_000, 100);
   };
+  /** How far the overview is scrolled, and how far it can be. */
+  const scrolled = () => browser.eval<{ top: number; more: number }>("() => { const o = document.querySelector('.overview'); return { top: Math.round(o.scrollTop), more: o.scrollHeight - o.clientHeight }; }");
+  /**
+   * The ring's stop in sight, not under the sticky header: its top below the header's foot, and the page's element at
+   * its middle (elementFromPoint) the stop itself or inside it.
+   */
+  const inSight = async (key: string, what: string): Promise<void> => {
+    const seen = browser.eval<{ hit: string; top: number; head: number }>(
+      `() => { const e = document.querySelector('[data-nav-key="${key}"]'); const r = e.getBoundingClientRect(); const at = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { hit: at === e || e.contains(at) ? 'itself' : (at ? at.tagName + '.' + at.className : 'nothing'), top: Math.round(r.top), head: Math.round(document.querySelector('.overview-head').getBoundingClientRect().bottom) }; }`,
+    );
+    if (seen.hit !== "itself" || seen.top < seen.head) fail(`${what} is under the header: its top at ${seen.top}px, the header's foot at ${seen.head}px, its middle shows ${seen.hit}`);
+    log(`  page: ${what} in sight below the header (its top at ${seen.top}px, the header's foot at ${seen.head}px; elementFromPoint at its middle: the stop)`);
+  };
+  /**
+   * From the page scrolled to its foot (the ring on a browser there), up to the first row and onto its section's +:
+   * each in sight below the header. Returns the first row's stop the way up came to, and the run's column.
+   */
+  const upFromTheFoot = async (foot: string, first: string): Promise<Span | undefined> => {
+    await goTo(foot);
+    const down = scrolled();
+    if (down.more <= 0) fail(`the overview does not scroll in this window (${JSON.stringify(down)}): the check needs a page taller than it`);
+    if (down.top <= 0) fail(`the ring on ${short(foot)} at the foot, yet the page is not scrolled (${JSON.stringify(down)})`);
+    log(`  page: scrolled ${down.top} of ${down.more} px, the ring at the foot`);
+    const column = await goTo(first);
+    await inSight(first, `the first row's ${short(first)}`);
+    press("ArrowUp");
+    await expect("Up from the first row: its section's +, New room in demo", (f) => f.key === "head:room:project_demo" && f.label === "New room in demo" && f.ring);
+    await inSight("head:room:project_demo", "the section's + (New room in demo)");
+    return column;
+  };
   /** Where a key moves from a stop on the grid as it is now, as the page's function says (null: it stays). */
   const predict = (grid: Grid, from: string, key: NavKey, column?: Span): string | null => gridTarget(grid, grid.findIndex((p) => p.element === from), key, column)?.element ?? null;
   /**
@@ -461,7 +493,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // so these are written to the journal as one from before N1 holds them, which the page still shows.
   room.journal(Array.from({ length: 62 }, (_, i) => ({ type: "post", actor: "$user", id: `note:long-board:${i + 1}`, intent: "note", body: `Note ${i + 1} on the long board`, milestone: ROOM_NOTE })));
   const second = await room.second("Second", ["alpha", "beta"]);
-  const third = await room.second("Third", ["solo"]);
+  // Third seats seven, so its tile is tall and the overview scrolls in the rehearsal's window (the ring brought into view
+  // under the sticky header is checked on the way up from the foot).
+  const third = await room.second("Third", ["solo", "ada", "bea", "cyd", "dee", "eli", "fay"]);
   const loose = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "A thread outside rooms: read the logs" });
   // Two crew members, for the grid's Crew row and a seat by keys (the throwaway's Browsers row has its "general").
   for (const name of ["sol", "astra"]) await service.command({ type: "preset.create", name, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
@@ -548,9 +582,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   grid = await settledGrid();
   const firstRow = projectTiles.filter((p) => Math.abs(p.top - Math.min(...projectTiles.map((t) => t.top))) < 2).sort((a, b) => a.left - b.left);
   const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !p.element.startsWith("head:room:")).sort((a, b) => a.left - b.left);
-  const firstColumn = (await goTo(firstRow[0]!.element)) ?? firstRow[0]!;
-  press("ArrowUp");
-  await expect("Up from the first row: its section's +, New room in demo", (f) => f.key === "head:room:project_demo" && f.label === "New room in demo" && f.ring);
+  // The page scrolled down first (the ring on the browser at the foot, where the run above ended): the way up brings each
+  // stop into view below the sticky header (scroll-padding-top), the first row's tile and the + both in sight.
+  const firstColumn = (await upFromTheFoot(browserTile.element, firstRow[0]!.element)) ?? firstRow[0]!;
   await keyBar("New room in demo");
   const onHeader = predict(grid, "head:room:project_demo", "up", firstColumn);
   if (!onHeader || !header.some((p) => p.element === onHeader)) fail(`Up from the section's + would go to ${onHeader}, not the header`);
@@ -1116,13 +1150,25 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await keyBar("sol · crew member");
   press("Enter");
   await expect("Enter on sol's tile: its Edit dialog, the focus in its name", (f) => f.dialog === "Edit sol" && f.inDialog && f.value === "sol");
-  const seatButton = "() => { const b = [...document.querySelectorAll('.dialog button')].find((e) => e.textContent.trim() === 'Seat in a room…'); return b ? { disabled: b.disabled, title: b.title } : null; }";
-  // They are seated with their saved settings: the button waits while the form says otherwise.
+  const seatButton =
+    "() => { const b = [...document.querySelectorAll('.dialog button')].find((e) => e.textContent.trim() === 'Seat in a room…'); const why = b && b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null; return b ? { waits: b.getAttribute('aria-disabled') === 'true', disabled: b.disabled, why: why && why.getClientRects().length > 0 ? why.textContent.trim() : null } : null; }";
+  type Seat = { waits: boolean; disabled: boolean; why: string | null } | null;
+  // They are seated with their saved settings: the button waits while the form says otherwise. A keyboard user still
+  // reaches it, and its reason is a line in the dialog, the button's description.
   press("End");
   press("x");
-  browser.poll<{ disabled: boolean; title: string } | null>("Seat in a room… to wait while the name is changed", seatButton, (b) => b?.disabled === true && b.title.startsWith("Save or cancel"));
+  const waiting = browser.poll<Seat>("Seat in a room… to wait while the name is changed, its reason in sight", seatButton, (b) => b?.waits === true && !b.disabled && (b.why ?? "").includes("save or cancel the changes first"));
+  log(`  page: Seat in a room… waits, its reason shown: "${waiting!.why}"`);
+  await tabTo("Shift+Tab reaches the waiting Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
+  announced(/^button$/, "Seat in a room…");
+  press("Enter");
+  await sleep(400);
+  await expect("Enter on it while it waits opens nothing; the dialog stays", (f) => !f.menu && f.dialog === "Edit sol" && f.label === "Seat in a room…");
+  await state("crew: Seat in a room… waits while the form has changes, reached by Tab, its reason in the dialog", "Edit sol");
+  await tabTo("Tab back to the name field", (f) => f.inDialog && f.tag === "INPUT" && f.value === "solx", "Tab", 8);
+  press("End");
   press("Backspace");
-  browser.poll<{ disabled: boolean; title: string } | null>("Seat in a room… to be back once the name is as saved", seatButton, (b) => b?.disabled === false);
+  browser.poll<Seat>("Seat in a room… to be back once the name is as saved, no reason shown", seatButton, (b) => b?.waits === false && b.why === null);
   await tabTo("Shift+Tab to Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
   press("Enter");
   await expect("Enter: the rooms in a menu over the dialog, the focus on the first", (f) => f.menu && f.role === "menuitem" && f.dialog === "Edit sol");
@@ -1157,6 +1203,11 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Enter");
   await expect("Enter: the menu closed, the focus back on Settings", (f) => !f.menu && f.label === "Settings");
   await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
+  grid = await settledGrid();
+  const pixelFoot = grid.filter((p) => p.element.startsWith("browser:")).sort((a, b) => b.bottom - a.bottom)[0]!;
+  const pixelFirst = grid.filter((p) => p.tile && /^(room|thread):/.test(p.element)).sort((a, b) => a.top - b.top || a.left - b.left)[0]!;
+  await upFromTheFoot(pixelFoot.element, pixelFirst.element);
+  await state("pixel look: from the foot, Up brings the first row and its + into sight below the header", "New room in demo");
   await goTo(`preset:${sol.id}`);
   await expect("pixel look: the crew member's ring is drawn", (f) => f.ring);
   await state("pixel look: the overview's focus ring", "sol · crew member");

@@ -181,6 +181,17 @@ button:hover:not(:disabled) {
   background: var(--bg-3);
 }
 
+/* A button that waits (aria-disabled): Tab still reaches it and reads why (its description); it looks disabled and
+   does nothing (Seat in a room…, presets.tsx). */
+button[aria-disabled="true"] {
+  opacity: 0.64;
+  cursor: not-allowed;
+}
+
+:root:not([data-skin="pixel"]) button[aria-disabled="true"]:hover {
+  background: var(--bg-1);
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -6358,6 +6369,8 @@ button.work-chip:hover,
   overflow: auto;
   display: flex;
   flex-direction: column;
+  /* What the ring goes to is brought into view below the sticky header, not under it (Overview.tsx measures it). */
+  scroll-padding-top: calc(var(--overview-head, 44px) + 12px);
 }
 
 .overview-head {
