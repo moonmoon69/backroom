@@ -12,7 +12,10 @@
  *   and member; Left and Right go to the column beside, to the item nearest in height.
  * - In a room, Up and Down go through the focused pane's items (the board's posts, the members), Left and Right between
  *   the panes: the board, then the side panel's Members, Browser and Git.
- * - Escape closes one thing at a time: a menu, a dialog, the composer, a member's thread, the room, in that order.
+ * - Escape closes what is in front, one thing at a time (a menu, the composer, a status chip's choices, a Correct… box, a
+ *   dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
+ * - Backspace outside a text field goes back one step: what is in front first (as Escape), then a member's thread, the
+ *   side panel, and the room to its card. In a text field it is the field's.
  *
  * The arrows keep their own meaning wherever they already have one: text fields, selects, lists and menus with their own
  * arrows, dialogs, and any key with a modifier (Alt+Left stays the browser's back).
@@ -37,11 +40,18 @@ export function keepsArrows(element: Element | null): boolean {
 export const isTextField = (element: Element | null): boolean =>
   element instanceof HTMLElement && (element.isContentEditable || element.matches("textarea, select, input:not([type=button], [type=submit], [type=reset], [type=checkbox], [type=radio], [type=image], [type=file], [type=color])"));
 
-/** Something open that takes Escape before the page does: a dialog, a menu, a popover, a suggestion list, the composer. */
-export const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay";
+/**
+ * Something open that takes Escape: a dialog, a menu, a popover, a suggestion list, the composer, a status chip's
+ * choices, a correction (Correct…'s box).
+ */
+const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay, .work-open, .req-correct";
 
-/** Whether such a thing is open where the keys reach it (not under an inert layer: the room's composer under a member's thread). */
-export const layerOpen = (): boolean => [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]"));
+/**
+ * Whether something is in front, for Escape and Backspace: such a thing open where the keys reach it, wherever the
+ * focus is (not under an inert layer: the room's composer under a member's thread).
+ */
+export const inFront = (target: Element | null): boolean =>
+  [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]")) || Boolean(target?.closest(".dialog, .menu"));
 
 /** The arrow keys and the two ends, without modifiers, outside anything that keeps them: a key the page's navigation takes. */
 export function navKey(event: KeyboardEvent): NavKey | null {
@@ -191,6 +201,9 @@ export function keyPlace(): PlaceNow {
   if (view === "member") return at("member-thread", `${layer!.getAttribute("aria-label") ?? "a member's thread"}, read only`);
   if (view === "room") {
     if (layer!.querySelector(".composer-overlay")) now.push("composer-open");
+    if (layer!.querySelector(".work-open")) now.push("chip-open");
+    if (layer!.querySelector(".req-correct")) now.push("correcting");
+    if (layer!.querySelector(".inspector")) now.push("panel-open");
     if (control) return at("room-button", control);
     if (item?.dataset.nav === "post") return at("room-post", whereOf(item));
     if (item?.dataset.nav === "member") return at("room-member", whereOf(item));

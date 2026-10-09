@@ -74,7 +74,9 @@ const bar = (place: PlaceId, now: KeyWhen[] = []): string[] => barEntries(place,
 
 test("the bar names the keys of a room's tile, a post and the composer by what they do there", () => {
   assert.deepEqual(bar("overview-room"), ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Enter open the room", "Home End first or last on the page", "? all keys"]);
-  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Esc back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  // Backspace has nothing to go back to on the overview: said in ? and README, not on the bar, which names what works.
+  assert.ok(!bar("overview-room").some((line) => line.startsWith("Backspace")));
+  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // In the field: no ? (it types), Backspace only while the field is empty.
   assert.deepEqual(bar("room-composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"]);
   assert.deepEqual(bar("room-composer", ["typing", "empty"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "Backspace close it", "@ mention a member", "/ a command"]);
@@ -85,8 +87,8 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
 test("with nothing focused, Enter is what it does there: a message in a room or a thread, nothing on the overview", () => {
   // The room's or thread's window itself (as it opens, after a click on empty space) or the page under it: Enter opens
   // the composer.
-  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
-  assert.deepEqual(bar("thread-itself"), ["Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("thread-itself"), ["Enter write a message", "Backspace back to the overview", "a–z start writing", "? all keys"]);
   // A button there is pressed.
   assert.ok(bar("room-other").includes("Enter press it"));
   assert.ok(bar("thread-other").includes("Enter press it"));
@@ -94,8 +96,8 @@ test("with nothing focused, Enter is what it does there: a message in a room or 
   assert.deepEqual(bar("overview-page"), ["↑ ↓ ← → to the tiles", "? all keys"]);
   assert.ok(bar("overview-other").includes("Enter press it"));
   // A browser's page: Enter only on a button.
-  assert.deepEqual(bar("browser-page"), ["Esc back to the overview", "? all keys"]);
-  assert.deepEqual(bar("browser-other"), ["Enter press it", "Esc back to the overview", "? all keys"]);
+  assert.deepEqual(bar("browser-page"), ["Backspace back to the overview", "? all keys"]);
+  assert.deepEqual(bar("browser-other"), ["Enter press it", "Backspace back to the overview", "? all keys"]);
   // In a dialog's text field Enter is the field's (it sends the form or makes a line): the bar names no Enter there.
   assert.ok(bar("dialog").includes("Enter press it"));
   assert.ok(!bar("dialog", ["typing"]).some((line) => line.startsWith("Enter")));
@@ -103,11 +105,12 @@ test("with nothing focused, Enter is what it does there: a message in a room or 
 
 test("a side panel itself writes a message with Enter; a button in it is pressed; the Members panel's arrows go to the members", () => {
   // Browser or Git itself (→ → from a post): ↑ ↓ into its controls, Enter opens the composer.
-  assert.deepEqual(bar("room-pane"), ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  // The ring on a panel means the panel is open: Backspace folds it.
+  assert.deepEqual(bar("room-pane", ["panel-open"]), ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing", "? all keys"]);
   assert.ok(bar("room-pane-button").includes("Enter press it"));
   assert.ok(bar("room-pane-button").includes("↑ ↓ its buttons and fields, in order"));
   // Members itself (after a click on empty space): ↑ ↓ to a member, Enter opens the composer.
-  assert.deepEqual(bar("room-members"), ["↑ ↓ to the members", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("room-members", ["panel-open"]), ["↑ ↓ to the members", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing", "? all keys"]);
   // A button in Members' head (+ Add member, ×): pressed; its arrows go to the members too.
   assert.ok(bar("room-members-button").includes("Enter press it"));
   assert.ok(bar("room-members-button").includes("↑ ↓ to the members"));
@@ -116,17 +119,25 @@ test("a side panel itself writes a message with Enter; a button in it is pressed
 
 test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {
   // The tabs' own Left and Right, and their Down; Up does nothing there.
-  assert.deepEqual(bar("room-tabs"), ["↓ back to the posts", "← → the chat or the board", "Esc back to the overview", "a–z start writing", "? all keys"]);
-  // Esc closes the open composer first.
-  assert.ok(bar("room-post", ["composer-open"]).includes("Esc close the composer"));
-  assert.ok(!bar("room-post", ["composer-open"]).includes("Esc back to the overview"));
+  assert.deepEqual(bar("room-tabs"), ["↓ back to the posts", "← → the chat or the board", "Backspace back to the overview", "a–z start writing", "? all keys"]);
+  // Esc closes what is in front and nothing else; Backspace closes the same first, then the panel, then the room.
+  // Where the two keys do the same, they share one chip.
+  assert.ok(bar("room-post", ["composer-open", "panel-open"]).includes("Esc Backspace close composer"));
+  assert.ok(bar("room-post", ["chip-open", "panel-open"]).includes("Esc Backspace fold the choices"));
+  // An open correction is in front wherever the focus is, after the composer and a chip's choices, before the panel.
+  assert.ok(bar("room-post", ["correcting", "panel-open"]).includes("Esc Backspace close correction"));
+  assert.ok(bar("room-post", ["correcting", "composer-open"]).includes("Esc Backspace close composer"));
+  assert.ok(bar("room-member", ["panel-open"]).includes("Backspace fold the side panel"));
+  assert.ok(!bar("room-member", ["panel-open"]).some((line) => line.startsWith("Esc ")), "Esc closes nothing with only the panel open");
   // ? closes the list it opened; Tab is on the bar only where it is the way on.
-  assert.deepEqual(bar("dialog", ["help"]), ["Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "? close the keys"]);
+  assert.deepEqual(bar("dialog", ["help"]), ["Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it", "? close the keys"]);
+  // In a dialog's text field Backspace deletes.
+  assert.ok(!bar("dialog", ["typing"]).some((line) => line.startsWith("Backspace")));
   assert.ok(!bar("dialog").some((line) => line.startsWith("?")), "? opens nothing over a dialog");
   assert.ok(!bar("menu").some((line) => line.startsWith("?")), "? opens nothing over a menu");
   assert.ok(!bar("overview-room").some((line) => line.startsWith("Tab")));
   // A member's thread is read only: no letters.
-  assert.deepEqual(bar("member-thread"), ["↑ ↓ scroll it", "Esc back to the room", "? all keys"]);
+  assert.deepEqual(bar("member-thread"), ["↑ ↓ scroll it", "Backspace back to the room", "? all keys"]);
 });
 
 test("every place but a dialog's and a menu's reaches Everywhere, each key once per place and moment, each worded", () => {

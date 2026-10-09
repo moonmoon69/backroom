@@ -715,9 +715,41 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
   const [correcting, setCorrecting] = useState(false);
   const [text, setText] = useState("");
   const correctButton = useRef<HTMLButtonElement>(null);
+  const block = useRef<HTMLDivElement>(null);
   const open = request.state === "open";
+  // The open correction is in front wherever the focus is (keys.ts). Esc with the focus in it (its field, Send,
+  // Correct…) closes it first and goes back to Correct…; with the focus elsewhere, once a menu, the composer or a status
+  // chip's choices in front of it have closed, and not under a dialog it is not in. The focus, if it was in it or
+  // nowhere, goes back to Correct….
+  useEffect(() => {
+    if (!correcting || !open) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      const root = block.current;
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || !root || root.closest("[inert]")) return;
+      const dialog = [...document.querySelectorAll(".dialog:not([inert])")].at(-1);
+      if (dialog && !dialog.contains(root)) return;
+      if ([...document.querySelectorAll(".menu, .composer-overlay, .work-open")].some((element) => !element.closest("[inert]"))) return;
+      event.preventDefault();
+      const now = document.activeElement;
+      if (!now || now === document.body || root.contains(now)) correctButton.current?.focus();
+      setCorrecting(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [correcting, open]);
   return (
-    <div className="req-block" data-number={post.number} data-seq={post.seq}>
+    <div
+      className="req-block"
+      ref={block}
+      data-number={post.number}
+      data-seq={post.seq}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !correcting || !open || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        setCorrecting(false);
+        correctButton.current?.focus();
+      }}
+    >
       <div className="req-foot">
         {owner ? <span className="mono muted">#{post.number} → {owner}</span> : null}
         <RequestMarker post={post} />
@@ -758,12 +790,6 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
             value={text}
             rows={2}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-              event.preventDefault();
-              setCorrecting(false);
-              correctButton.current?.focus();
-            }}
             placeholder={`What changes in #${post.number}`}
             aria-label={`Correction to #${post.number}`}
           />

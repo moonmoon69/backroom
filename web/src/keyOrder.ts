@@ -5,13 +5,16 @@
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
-export type KeyWhen = "typing" | "empty" | "composer-open" | "help";
+export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "panel-open" | "help";
 
 /** What the conditions are called in `?` and README. */
 const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
   typing: ["in a text field", "outside a text field"],
   empty: ["in an empty field", "with text in the field"],
+  correcting: ["while a correction is open", "while no correction is open"],
   "composer-open": ["while the composer is open", "while the composer is closed"],
+  "chip-open": ["while a status chip's choices are open", "while no chip's choices are open"],
+  "panel-open": ["while the side panel is open", "while the side panel is folded"],
   help: ["while this list is open", "while this list is closed"],
 };
 
@@ -107,11 +110,12 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["↑", "↓"], does: "previous or next, column by column", more: "section by section: each project, its settled and archived threads, the crew, the browsers" },
           { keys: ["←", "→"], does: "the column beside, at the same height" },
           { keys: ["Home", "End"], does: "first or last on the page" },
+          { keys: ["Backspace"], does: "nothing to go back to", more: "the overview is the top", bar: false },
         ],
       },
       { id: "overview-room", on: "a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "open the room" }] },
       { id: "overview-thread", on: "a thread's tile", within: "overview", entries: [{ keys: ["Enter"], does: "open the thread" }] },
-      { id: "overview-member", on: "a member on a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "its thread, over its room", more: "read only; Esc goes back to the room, then the overview" }] },
+      { id: "overview-member", on: "a member on a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "its thread, over its room", more: "read only; Backspace goes back to the room, folds the panel, then back to the overview" }] },
       { id: "overview-crew", on: "a crew member", within: "overview", entries: [{ keys: ["Enter"], does: "edit them" }] },
       { id: "overview-browser", on: "a browser", within: "overview", entries: [{ keys: ["Enter"], does: "open its page" }] },
       { id: "overview-shelf", on: "settled or archived threads", within: "overview", entries: [{ keys: ["Enter"], does: "show or hide them" }] },
@@ -136,8 +140,11 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         within: "everywhere",
         entries: [
           { keys: ["←", "→"], does: "between the panes", more: "the board, Members, Browser and Git; → opens the side panel" },
-          { keys: ["Esc"], does: "back to the overview", more: "the ring back on the room's tile" },
-          { keys: ["Esc"], does: "close the composer", when: "composer-open" },
+          { keys: ["Esc", "Backspace"], does: "close composer", when: "composer-open", more: "the draft kept" },
+          { keys: ["Esc", "Backspace"], does: "fold the choices", when: "chip-open", more: "a status chip's" },
+          { keys: ["Esc", "Backspace"], does: "close correction", when: "correcting", more: "Correct…'s box, its text kept" },
+          { keys: ["Backspace"], does: "fold the side panel", when: "panel-open", more: "the ring back on the conversation" },
+          { keys: ["Backspace"], does: "back to the overview", more: "the ring back on the room's tile; Esc never leaves a room" },
           { keys: ["a–z"], does: "start writing", more: "any key that types a character, space aside, opens the composer and goes in" },
         ],
       },
@@ -176,7 +183,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["↑", "↓"], does: "previous or next member" },
           { keys: ["Home", "End"], does: "first or last member" },
-          { keys: ["Enter"], does: "its thread", more: "over the room, read only; Esc comes back to the member" },
+          { keys: ["Enter"], does: "its thread", more: "over the room, read only; Backspace comes back to the member" },
         ],
       },
       {
@@ -248,7 +255,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         within: "everywhere",
         entries: [
           { keys: ["↑", "↓"], does: "scroll it" },
-          { keys: ["Esc"], does: "back to the room", more: "Members open, the ring on the member" },
+          { keys: ["Backspace"], does: "back to the room", more: "Members open, the ring on the member" },
         ],
       },
     ],
@@ -261,8 +268,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "anywhere in a thread",
         within: "everywhere",
         entries: [
-          { keys: ["Esc"], does: "back to the overview" },
-          { keys: ["Esc"], does: "close the composer", when: "composer-open" },
+          { keys: ["Esc", "Backspace"], does: "close composer", when: "composer-open", more: "the draft kept" },
+          { keys: ["Backspace"], does: "back to the overview" },
           { keys: ["a–z"], does: "start writing" },
         ],
       },
@@ -286,7 +293,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       },
       { id: "thread-other", on: "a button in a thread", within: "thread", entries: [{ keys: ["Enter"], does: "press it" }] },
       { id: "thread-itself", on: "nothing in a thread", within: "thread", entries: [{ keys: ["Enter"], does: "write a message" }] },
-      { id: "browser-page", on: "a browser's page", within: "everywhere", entries: [{ keys: ["Esc"], does: "back to the overview" }] },
+      { id: "browser-page", on: "a browser's page", within: "everywhere", entries: [{ keys: ["Backspace"], does: "back to the overview" }] },
       { id: "browser-other", on: "a button on it", within: "browser-page", entries: [{ keys: ["Enter"], does: "press it" }] },
     ],
   },
@@ -301,7 +308,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["Enter"], does: "send" },
           { keys: ["Shift+Enter"], does: "new line" },
           { keys: ["Esc"], does: "close it, the draft kept" },
-          { keys: ["Backspace"], does: "close it", when: "empty" },
+          { keys: ["Backspace"], does: "close it", when: "empty", more: "on a fresh press, not a held one's repeats" },
         ],
       },
       {
@@ -346,6 +353,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["Tab", "Shift+Tab"], does: "next or previous button or field", more: "round inside the dialog" },
           { keys: ["Enter"], does: "press it", unless: "typing" },
           { keys: ["Esc"], does: "close it", more: "the ring back where it was" },
+          { keys: ["Backspace"], does: "close it", unless: "typing" },
           { keys: ["?"], does: "close the keys", when: "help" },
         ],
       },
@@ -356,7 +364,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["↑", "↓"], does: "previous or next item" },
           { keys: ["Home", "End"], does: "first or last item" },
           { keys: ["Enter"], does: "choose it" },
-          { keys: ["Esc"], does: "close it" },
+          { keys: ["Esc", "Backspace"], does: "close it" },
           { keys: ["Tab"], does: "close it and go on" },
         ],
       },

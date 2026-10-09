@@ -21,7 +21,7 @@ import { OverviewRoom } from "./components/OverviewRoom.tsx";
 import { CloseIcon } from "./components/icons.tsx";
 import { KeyBar } from "./components/KeyBar.tsx";
 import { KeyHelp } from "./components/KeyHelp.tsx";
-import { byKey, focusWhen, isTextField, itemOf, keyOf, layerOpen, trackFocus } from "./keys.ts";
+import { byKey, focusWhen, inFront, isTextField, itemOf, keyOf, trackFocus } from "./keys.ts";
 import { useTheme } from "./theme.ts";
 import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
@@ -65,15 +65,16 @@ export function App() {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [theme, setTheme] = useTheme();
   // On the overview page the room last opened stays open but is not the one being looked at. The page opens on its
-  // cards; a room opened from there covers it, and Esc goes back.
+  // cards; a room opened from there covers it, and Backspace goes back.
   const [outside, setOutside] = useState(true);
-  // A member's thread, looked at over its room (Enter on a member, or its menu's Open thread); Esc goes back to the room.
+  // A member's thread, looked at over its room (Enter on a member, or its menu's Open thread); Backspace goes back to the
+  // room.
   const [memberThread, setMemberThread] = useState<{ roomId: string; participantId: string } | null>(null);
   // The overview item the focus goes back to when the drawer closes: where it was when the drawer opened.
   const [returnTo, setReturnTo] = useState<string | null>(null);
   const [keyHelp, setKeyHelp] = useState(false);
   const drawer = useRef<HTMLDivElement>(null);
-  // The browser's back goes back too: opening the drawer adds a history entry, and closing it (×, Esc) takes it away.
+  // The browser's back goes back too: opening the drawer adds a history entry, and closing it (×, Backspace) takes it away.
   const open = !outside && selection !== null;
   useEffect(() => {
     const marked = (history.state as { backroomDrawer?: boolean } | null)?.backroomDrawer === true;
@@ -194,7 +195,7 @@ export function App() {
     setRoomPanel("people");
     if (participantId) focusWhen(() => (drawer.current ? byKey(drawer.current, `member:${participantId}`) : null));
   }, [memberThread]);
-  // Whatever closes the drawer (Esc, ×, the browser's back) closes the member's thread on it too.
+  // Whatever closes the drawer (Backspace, ×, the browser's back) closes the member's thread on it too.
   useEffect(() => {
     if (!open) setMemberThread(null);
   }, [open]);
@@ -204,15 +205,37 @@ export function App() {
     if (open) drawer.current?.focus({ preventScroll: true });
   }, [open, selection]);
 
-  // ---- the keys (keys.ts): Esc closes one thing at a time; ? shows the keys ----
-  // Whether something that takes Esc itself (a menu, a dialog, the composer, a suggestion list) was open when the key
-  // went down: by the time the drawer's listener runs, that thing may have closed itself already.
+  // ---- the keys (keys.ts): Esc closes what is in front; Backspace goes back one step; ? shows the keys ----
+  // Whether something in front (keys.ts, inFront) was there when Esc went down: by the time the drawer's listener runs,
+  // that thing may have closed itself already.
   const escapeTaken = useRef(false);
+  // Backspace's steps once nothing is in front, as they stand now: a member's thread, the room's side panel, the drawer.
+  const back = useRef<() => boolean>(() => false);
+  back.current = () => {
+    if (!open) return false;
+    if (memberThread) closeMember();
+    else if (selection?.kind === "room" && roomPanel) setRoomPanel(null);
+    else setOutside(true);
+    return true;
+  };
   useEffect(() => {
     trackFocus();
+    // A Backspace held down in a text field (clearing a draft) stays the field's until it is let go: should the field go
+    // away under it, its repeats do not go on to leave the room. (The composer itself stays open under a held Backspace,
+    // composerOverlay.tsx.)
+    let heldInField = false;
     const onCapture = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (event.key === "Escape") escapeTaken.current = layerOpen() || Boolean(target?.closest(".dialog, .menu"));
+      if (event.key === "Escape") escapeTaken.current = inFront(target);
+      if (event.key === "Backspace" && !event.repeat) heldInField = isTextField(target);
+      // Backspace outside a text field is back. With something in front it is Esc, sent where the focus is, so whatever
+      // closes on Esc closes and the two keys agree; else one step out. In a text field it is the field's.
+      if (event.key === "Backspace" && !heldInField && !event.defaultPrevented && !event.isComposing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !isTextField(target)) {
+        if (inFront(target)) {
+          event.preventDefault();
+          (target ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+        } else if (back.current()) event.preventDefault();
+      }
       if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && !isTextField(target)) {
         const help = Boolean(document.querySelector(".key-help"));
         if (!help && target?.closest(".dialog, .menu")) return;
@@ -224,23 +247,20 @@ export function App() {
     window.addEventListener("keydown", onCapture, true);
     return () => window.removeEventListener("keydown", onCapture, true);
   }, []);
+  // Esc with nothing in front: a text field gives up the focus, to the post or member it is in, else the drawer. It
+  // closes nothing else: the room, a member's thread and the side panel are left with Backspace.
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || escapeTaken.current) return;
-      event.preventDefault();
       const target = event.target instanceof Element ? event.target : null;
-      // A text field gives up the focus first: to the post or member it is in, else the drawer.
-      if (isTextField(target)) {
-        (itemOf(target) ?? drawer.current)?.focus({ preventScroll: true });
-        return;
-      }
-      if (memberThread) closeMember();
-      else setOutside(true);
+      if (!isTextField(target)) return;
+      event.preventDefault();
+      (itemOf(target) ?? drawer.current)?.focus({ preventScroll: true });
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, memberThread, closeMember]);
+  }, [open]);
 
   useEffect(() => {
     if (selection) localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
@@ -445,13 +465,13 @@ export function App() {
 
   // A room, thread or browser opens over the page of cards, and this closes it.
   const overviewButton = (
-    <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the overview" title="Back to the overview (Esc)" onClick={() => setOutside(true)}>
+    <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the overview" title="Back to the overview (Backspace)" onClick={() => setOutside(true)}>
       <CloseIcon />
     </button>
   );
 
   const backToRoomButton = (
-    <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the room" title="Back to the room (Esc)" onClick={closeMember}>
+    <button type="button" className="small ghost icon-only overview-back" aria-label="Back to the room" title="Back to the room (Backspace)" onClick={closeMember}>
       <CloseIcon />
     </button>
   );
@@ -566,7 +586,7 @@ export function App() {
           returnTo={returnTo}
         />
         {open ? (
-          // The whole window; ×, Esc and the browser's back close it. A member's thread over it makes it inert.
+          // The whole window; ×, Backspace and the browser's back close it. A member's thread over it makes it inert.
           <div className="ov-layer" inert={memberThreadId !== null}>
             <div
               className="ov-drawer"
@@ -625,7 +645,7 @@ export function App() {
           </div>
         ) : null}
         {open && memberParticipant && memberThreadId ? (
-          // A member's thread over its room: the room stays as it was under it, and Esc or ← goes back to it.
+          // A member's thread over its room: the room stays as it was under it, and Backspace or its × goes back to it.
           <div className="ov-layer ov-layer-member">
             <div className="ov-drawer" role="dialog" aria-modal="true" aria-label={`@${memberParticipant.alias}'s thread`} data-view="member" data-id={memberThreadId}>
               <div className="main">

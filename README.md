@@ -286,7 +286,7 @@ The thread view reads T3's recent window of the thread each time it polls; older
 
 ## Writing messages
 
-**The composer opens when you want it.** Under a room's conversation (and a thread's) there is one thin line: who a message goes to (the Consigliere, or whoever the text addresses), how many requests are open and how many members have posts waiting for their next turn, and your unsent draft if there is one. Click it, press **Enter**, or just start typing anywhere outside a text field, and the composer opens over the lower middle of the conversation, in large type, with the text field focused: a dictation tool that types into the focused field works as it does anywhere. The conversation stays readable above it and scrolls with the mouse wheel, over the composer too. The field grows with the text and then scrolls inside. **Enter** sends and closes it; **Esc** closes it with the text kept, and so does **Backspace** in an empty field. When a room or thread opens, the line has the keyboard focus, so Enter is enough to start.
+**The composer opens when you want it.** Under a room's conversation (and a thread's) there is one thin line: who a message goes to (the Consigliere, or whoever the text addresses), how many requests are open and how many members have posts waiting for their next turn, and your unsent draft if there is one. Click it, press **Enter**, or just start typing anywhere outside a text field, and the composer opens over the lower middle of the conversation, in large type, with the text field focused: a dictation tool that types into the focused field works as it does anywhere. The conversation stays readable above it and scrolls with the mouse wheel, over the composer too. The field grows with the text and then scrolls inside. **Enter** sends and closes it; **Esc** closes it with the text kept, and so does a fresh press of **Backspace** in an empty field; holding Backspace to clear the text stops at the empty field and never closes the composer. When a room or thread opens, the line has the keyboard focus, so Enter is enough to start.
 
 **Unsent text and images are kept**, one draft per room or thread, in this browser, as you type and attach. Leaving the conversation, closing the composer or reloading the page keeps them, and the composer reopens with them and the cursor at the end of the text; sending clears the draft, as do deleting the text and removing the images. A **draft** mark on the overview's tile says where you left something, images alone included. A room's images are uploaded as you attach them, so its draft keeps only their ids (the room stores them until it is deleted, sent or not); a thread's are kept in this browser's IndexedDB until sent or removed.
 
@@ -296,7 +296,7 @@ The text you type is the whole instruction. The buttons around the composer only
 | --- | --- |
 | **Enter** | Send (however many lines the draft has) and close the composer; nothing when the field is empty. A message for someone mid-turn waits for that turn unless it says `/steer` (see [below](#sending-while-someone-is-working)) |
 | **Esc** | Close the composer, keeping the text (a menu in it closes first) |
-| **Backspace** in an empty field | Close the composer |
+| **Backspace** in an empty field | Close the composer (a fresh press; a held Backspace stops at the empty field) |
 | **Shift+Enter** | New line |
 | `@` | Mention autocomplete (members and `@all`) |
 | **Backspace** right after a mention (**Delete** right before one) | Removes the whole `@name` at once; ⌘/Ctrl+Z brings it back. Partly typed or unknown names delete letter by letter |
@@ -557,7 +557,7 @@ A line under the model says what runs beside the turn, as T3 lists it: "2 subage
 
 The menu has:
 
-- **Open thread:** the member's thread here, over the room, read-only (you talk to it from the room); × or Esc comes back to the room.
+- **Open thread:** the member's thread here, over the room, read-only (you talk to it from the room); × or Backspace comes back to the room.
 - **Open in T3:** thread and project ids.
 - **Thread details…:** branch, worktree, pull requests, plan, checkpoints and the tool log.
 - **Settings…:** alias, model, options and permission mode, in one dialog. Model and permission changes apply to the T3 thread itself.
@@ -686,15 +686,15 @@ Seated in a room, a crew member takes their name as the alias, numbered when the
 
 ## The overview
 
-Backroom opens on one page of everything: a section per project, its rooms as tiles, and in each tile the members with their state and what each is doing now (a turn's latest note, the tools running, the request it is on) or last said and how long ago: up to four lines for the Consigliere, who comes first, and one line for everyone else. A stripe down a tile's edge says the room needs you (violet) or is busy (blue). The project's loose threads are tiles too, as rooms of one, and its settled and archived threads fold open under them. Below the projects come your **Crew** and the shared **Browsers**. **+** beside a project's name opens a new room there, with the Consigliere seated; **+** in the header adds a project; **Arrange** sets the order of projects and rooms. Rooms are the one thing made here; threads on their own are started in T3 Code and show up as tiles. Click a tile and the room opens over the whole window as a sheet, its conversation in a readable column down the middle and its side panels beside it; the × in its header, Esc, or the browser's back closes it. The sheet has its own look: one header with the room's name, the two views as tabs (the Consigliere's name for your conversation with him, **Board · N** for every post), the crew's marks (click them for Members), the browser and git panels and the ⋯ menu; the status bar under it; then the view, then the composer (closed to one line until you want it, see [Writing messages](#writing-messages)), which goes the same way whichever view is showing. The chat reads like a conversation (your lines in a tinted box, his in a card across the column; in the pixel look yours are sunk into the window and his stand on a raised plate), the board like a ledger (every post numbered, members' turns as cards with a coloured edge). Both read down one centred column of up to 1,100px, with the composer as wide: your messages and the replies start at the same left edge, your boxes at most 70% of it, each reply in its bubble across the column with one line over it at the right: what it answers, the time, and the speaker's mark (in the chat with the Consigliere his mark alone, since every reply there is his; on the board the mark and then the name); tables and code use the whole column. A thread on its own reads the same way. A room without a Consigliere has only the board. A long room opens at its latest posts; **N earlier** at the top draws the next window above. A thread or a browser opens over the page the same way. The page reads the service every five seconds.
+Backroom opens on one page of everything: a section per project, its rooms as tiles, and in each tile the members with their state and what each is doing now (a turn's latest note, the tools running, the request it is on) or last said and how long ago: up to four lines for the Consigliere, who comes first, and one line for everyone else. A stripe down a tile's edge says the room needs you (violet) or is busy (blue). The project's loose threads are tiles too, as rooms of one, and its settled and archived threads fold open under them. Below the projects come your **Crew** and the shared **Browsers**. **+** beside a project's name opens a new room there, with the Consigliere seated; **+** in the header adds a project; **Arrange** sets the order of projects and rooms. Rooms are the one thing made here; threads on their own are started in T3 Code and show up as tiles. Click a tile and the room opens over the whole window as a sheet, its conversation in a readable column down the middle and its side panels beside it; the × in its header, Backspace, or the browser's back closes it. The sheet has its own look: one header with the room's name, the two views as tabs (the Consigliere's name for your conversation with him, **Board · N** for every post), the crew's marks (click them for Members), the browser and git panels and the ⋯ menu; the status bar under it; then the view, then the composer (closed to one line until you want it, see [Writing messages](#writing-messages)), which goes the same way whichever view is showing. The chat reads like a conversation (your lines in a tinted box, his in a card across the column; in the pixel look yours are sunk into the window and his stand on a raised plate), the board like a ledger (every post numbered, members' turns as cards with a coloured edge). Both read down one centred column of up to 1,100px, with the composer as wide: your messages and the replies start at the same left edge, your boxes at most 70% of it, each reply in its bubble across the column with one line over it at the right: what it answers, the time, and the speaker's mark (in the chat with the Consigliere his mark alone, since every reply there is his; on the board the mark and then the name); tables and code use the whole column. A thread on its own reads the same way. A room without a Consigliere has only the board. A long room opens at its latest posts; **N earlier** at the top draws the next window above. A thread or a browser opens over the page the same way. The page reads the service every five seconds.
 
 ## Keyboard
 
-The whole page works without a mouse. The arrows move a ring over the overview's tiles and members and, in a room, over its posts and members; Enter opens what the ring is on and Esc goes back out, one thing at a time: a menu, a dialog, the composer, a member's thread, then the room, and the focus lands where you were. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
+The whole page works without a mouse. The arrows move a ring over the overview's tiles and members and, in a room, over its posts and members; Enter opens what the ring is on. Esc closes what is in front and nothing else: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; it never closes the room, a member's thread or the side panel, so a reflex Esc never costs you your place. Backspace outside a text field goes back one step: what is in front first (as Esc), then a member's thread, then the side panel, then the room to its card; it is the only key that leaves a room, and the focus lands where you were. In a text field Backspace deletes as always; a fresh press in an empty composer closes the composer, and a held one stops at the empty field. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
 
-**The key bar** at the foot of the page (not on a phone) says what the ring is on, in words ("Improvement", "#33 · you to @opus, open", "writing a message"), then the keys that do something there, each named by what it does there and then: "Enter open the room" on a room's tile, "Esc back to the overview" in a room, "Esc close it, the draft kept" in the composer; "? all keys" stays at its right end. It changes as the ring moves. Every key on it is shown whole: in a narrow window those that do not fit are left out from the end of the line, the ones needed least first (Home and End come last), and "? all keys" stays. **?** shows every key by place (outside a text field). The bar, **?** and the tables below are drawn from one table (`web/src/keyOrder.ts`, `KEYS`), so the three say the same; after a change to it, `node scripts/keys-readme.ts` draws the tables below again.
+**The key bar** at the foot of the page (not on a phone) says what the ring is on, in words ("Improvement", "#33 · you to @opus, open", "writing a message"), then the keys that do something there, each named by what it does there and then: "Enter open the room" on a room's tile, "Backspace back to the overview" in a room, "Esc close it, the draft kept" in the composer; "? all keys" stays at its right end. It changes as the ring moves. Every key on it is shown whole: in a narrow window those that do not fit are left out from the end of the line, the ones needed least first (Home and End come last), and "? all keys" stays. **?** shows every key by place (outside a text field). The bar, **?** and the tables below are drawn from one table (`web/src/keyOrder.ts`, `KEYS`), so the three say the same; after a change to it, `node scripts/keys-readme.ts` draws the tables below again.
 
-The overview reads column by column, as its tiles are stacked: section by section (each project, its settled and archived threads, the crew, the browsers), and inside a section each column top to bottom before the next. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a member opens its room with that member's thread over it, read only (its messages, approvals and settings are the room's); Esc goes back to the room, with Members open and the ring on the member, and Esc again back to the overview. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
+The overview reads column by column, as its tiles are stacked: section by section (each project, its settled and archived threads, the crew, the browsers), and inside a section each column top to bottom before the next. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a member opens its room with that member's thread over it, read only (its messages, approvals and settings are the room's); Backspace goes back to the room, with Members open and the ring on the member, Backspace again folds the panel, and once more goes back to the overview. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
 
 The arrows keep their own meaning wherever they already have one: in text fields and selects, in the composer's suggestion lists, the model list, menus, dialogs and the Arrange dialog (Alt+↑ ↓), and with any modifier (Alt+← stays the browser's back).
 
@@ -712,9 +712,10 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | a tile or a member | `↑` `↓` | Previous or next, column by column (section by section: each project, its settled and archived threads, the crew, the browsers) |
 |  | `←` `→` | The column beside, at the same height |
 |  | `Home` `End` | First or last on the page |
+|  | `Backspace` | Nothing to go back to (the overview is the top) |
 | a room's tile | `Enter` | Open the room |
 | a thread's tile | `Enter` | Open the thread |
-| a member on a room's tile | `Enter` | Its thread, over its room (read only; Esc goes back to the room, then the overview) |
+| a member on a room's tile | `Enter` | Its thread, over its room (read only; Backspace goes back to the room, folds the panel, then back to the overview) |
 | a crew member | `Enter` | Edit them |
 | a browser | `Enter` | Open its page |
 | settled or archived threads | `Enter` | Show or hide them |
@@ -727,8 +728,11 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | On | Keys | What they do |
 |---|---|---|
 | anywhere in it | `←` `→` | Between the panes (the board, Members, Browser and Git; → opens the side panel) |
-|  | `Esc` | Back to the overview (the ring back on the room's tile) |
-|  | `Esc` | Close the composer (while the composer is open) |
+|  | `Esc` `Backspace` | Close composer (the draft kept; while the composer is open) |
+|  | `Esc` `Backspace` | Fold the choices (a status chip's; while a status chip's choices are open) |
+|  | `Esc` `Backspace` | Close correction (Correct…'s box, its text kept; while a correction is open) |
+|  | `Backspace` | Fold the side panel (the ring back on the conversation; while the side panel is open) |
+|  | `Backspace` | Back to the overview (the ring back on the room's tile; Esc never leaves a room) |
 |  | `a–z` | Start writing (any key that types a character, space aside, opens the composer and goes in) |
 | a post | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the view's tabs) |
 |  | `Home` `End` | First or last post |
@@ -739,7 +743,7 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `Enter` | Write a message |
 | a member, in Members | `↑` `↓` | Previous or next member |
 |  | `Home` `End` | First or last member |
-|  | `Enter` | Its thread (over the room, read only; Esc comes back to the member) |
+|  | `Enter` | Its thread (over the room, read only; Backspace comes back to the member) |
 | the Browser or Git panel itself | `↑` `↓` | Its buttons and fields |
 |  | `Enter` | Write a message |
 | a button in the Browser or Git panel | `↑` `↓` | Its buttons and fields, in order |
@@ -755,14 +759,14 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | nothing in it | `↑` `↓` | To the posts |
 |  | `Enter` | Write a message |
 | a member's thread | `↑` `↓` | Scroll it |
-|  | `Esc` | Back to the room (Members open, the ring on the member) |
+|  | `Backspace` | Back to the room (Members open, the ring on the member) |
 
 **A thread or a browser**
 
 | On | Keys | What they do |
 |---|---|---|
-| anywhere in a thread | `Esc` | Back to the overview |
-|  | `Esc` | Close the composer (while the composer is open) |
+| anywhere in a thread | `Esc` `Backspace` | Close composer (the draft kept; while the composer is open) |
+|  | `Backspace` | Back to the overview |
 |  | `a–z` | Start writing |
 | the composer's strip | `↑` | The conversation |
 |  | `Enter` | Write a message |
@@ -770,7 +774,7 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `Enter` | Write a message |
 | a button in a thread | `Enter` | Press it |
 | nothing in a thread | `Enter` | Write a message |
-| a browser's page | `Esc` | Back to the overview |
+| a browser's page | `Backspace` | Back to the overview |
 | a button on it | `Enter` | Press it |
 
 **Writing**
@@ -780,7 +784,7 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | the message | `Enter` | Send |
 |  | `Shift+Enter` | New line |
 |  | `Esc` | Close it, the draft kept |
-|  | `Backspace` | Close it (in an empty field) |
+|  | `Backspace` | Close it (on a fresh press, not a held one's repeats; in an empty field) |
 | the message, in a room | `@` | Mention a member |
 |  | `/` | A command |
 | the @ or / list | `↑` `↓` | Choose |
@@ -798,11 +802,12 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | a dialog | `Tab` `Shift+Tab` | Next or previous button or field (round inside the dialog) |
 |  | `Enter` | Press it (outside a text field) |
 |  | `Esc` | Close it (the ring back where it was) |
+|  | `Backspace` | Close it (outside a text field) |
 |  | `?` | Close the keys (while this list is open) |
 | a menu | `↑` `↓` | Previous or next item |
 |  | `Home` `End` | First or last item |
 |  | `Enter` | Choose it |
-|  | `Esc` | Close it |
+|  | `Esc` `Backspace` | Close it |
 |  | `Tab` | Close it and go on |
 | the model list | `↑` `↓` | The models |
 |  | `←` `→` | The providers (with the search empty) |

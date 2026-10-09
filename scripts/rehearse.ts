@@ -1158,7 +1158,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     },
   });
   if (browser.eval<string>("() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? ''") !== "") fail("the composer kept a draft");
-  // Sending closes the composer; Escape now would close the room.
+  // Sending closes the composer; Escape closes it should it still be open (it never leaves the room).
   if (browser.eval<boolean>("() => Boolean(document.querySelector('.composer-overlay'))")) browser.on("press", "Escape");
   await room.finish("fable", "Tagged v1.2.");
 
@@ -1367,7 +1367,7 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   browser.compose(assignment);
   browser.send();
   const ask = (await until("the user's message on the board", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === assignment))).request.id as string;
-  // Sending closes the composer; Escape now would close the room.
+  // Sending closes the composer; Escape closes it should it still be open (it never leaves the room).
   if (browser.eval<boolean>("() => Boolean(document.querySelector('.composer-overlay'))")) browser.on("press", "Escape");
   await room.live("fable");
   let s = await room.snapshot();

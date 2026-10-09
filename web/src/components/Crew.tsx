@@ -292,7 +292,7 @@ function ParticipantChip({
       {open ? (
         <Popover anchor={ref} menuRef={menuRef} className="menu-with-usage" role="menu" onClose={() => setOpen(false)}>
           <ThreadUsageCard participant={participant} desk={desk} cost={costs ? (costs.participants[participant.id] ?? null) : null} pricesFetchedAt={costs?.pricesFetchedAt ?? null} />
-          <button type="button" role="menuitem" onClick={() => pick("thread")} title="Its thread here, over the room (Esc comes back)">
+          <button type="button" role="menuitem" onClick={() => pick("thread")} title="Its thread here, over the room (Backspace comes back)">
             Open thread
           </button>
           <button type="button" role="menuitem" onClick={() => pick("open")}>

@@ -7,7 +7,8 @@ import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
  * goes to, what waits, and the draft if there is one. A click on the strip, Enter, or starting to type outside a text
  * field opens it over the lower middle of the conversation, in large text, with a real text field focused (dictation
  * tools type into it) and the caret after the draft. The conversation stays readable above it and scrolls with the
- * wheel, over the overlay too. Escape, or Backspace in an empty field, closes it; sending closes it. The draft stays.
+ * wheel, over the overlay too. Escape, or a fresh Backspace in an empty field, closes it; sending closes it. The draft
+ * stays. A Backspace held down to clear the text stops at the empty field: its repeats never close the composer.
  */
 export interface ComposerOverlay {
   /** Whether the composer is an overlay at all; when not, it is always open and none of this applies. */
@@ -20,7 +21,7 @@ export interface ComposerOverlay {
   reveal: () => void;
   /** Close to the strip; the strip takes the focus if the composer had it. */
   hide: () => void;
-  /** Escape, or Backspace in an empty field, closes. True when the key was used. */
+  /** Escape, or a fresh Backspace (not a held one's repeat) in an empty field, closes. True when the key was used. */
   fieldKey: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
   panel: RefObject<HTMLDivElement | null>;
   strip: RefObject<HTMLButtonElement | null>;
@@ -157,7 +158,7 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
       if (!enabled || event.nativeEvent.isComposing) return false;
       const plain = !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey;
-      if (event.key !== "Escape" && !(event.key === "Backspace" && plain && event.currentTarget.value === "")) return false;
+      if (event.key !== "Escape" && !(event.key === "Backspace" && plain && !event.repeat && event.currentTarget.value === "")) return false;
       // Escape here closes the composer, not the room around it.
       event.preventDefault();
       event.stopPropagation();
