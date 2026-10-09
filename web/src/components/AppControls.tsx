@@ -27,8 +27,9 @@ const LOOKS: Array<{ key: SkinChoice; label: string; hint: string; icon: ReactNo
 ];
 
 /**
- * App-wide controls in the overview's header: the T3 connection and the updates, then the settings. The Consigliere,
- * notifications, the voice, the theme and the look are set once in a while, so they share one settings menu.
+ * App-wide controls in the overview's header: the T3 connection and the updates, then the settings, each a button in the
+ * header's row of the keyboard's grid. The Consigliere, notifications, the voice, the theme and the look are set once
+ * in a while, so they share one settings menu.
  */
 export function AppControls({
   status,
@@ -92,6 +93,8 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
         aria-label="Settings"
         title="Settings: the Consigliere, notifications, voice, theme and look"
         onClick={() => setOpen((v) => !v)}
+        data-nav="ov"
+        data-nav-key="head:settings"
       >
         <SettingsIcon />
       </button>
