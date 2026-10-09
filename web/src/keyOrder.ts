@@ -671,3 +671,29 @@ export function stripStep(enabled: readonly boolean[], at: number, key: "left" |
   for (let next = at + step; next >= 0 && next < enabled.length; next += step) if (enabled[next]) return next;
   return null;
 }
+
+/**
+ * A strip's image button: "Image" on it, named with the image's alt text ("Image: the parser's diagram"), as the post's
+ * own button is ("Open image: …"), so a screen reader and the bar's Enter say which image it is.
+ */
+export function imageAction(alt: string | null | undefined): { label: string; name: string } {
+  const said = (alt ?? "").replace(/\s+/g, " ").trim();
+  return { label: "Image", name: said ? `Image: ${said}` : "Image" };
+}
+
+/**
+ * A strip's repeated labels, numbered in order ("Image 1", "Image 2"). A name that begins with its label takes the
+ * number after the label ("Image 1: a diagram"); any other takes it at its end.
+ */
+export function numberRepeats<T extends { label: string; name: string }>(controls: readonly T[]): T[] {
+  const times = new Map<string, number>();
+  for (const control of controls) times.set(control.label, (times.get(control.label) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return controls.map((control) => {
+    if ((times.get(control.label) ?? 0) < 2) return control;
+    const n = (seen.get(control.label) ?? 0) + 1;
+    seen.set(control.label, n);
+    const label = `${control.label} ${n}`;
+    return { ...control, label, name: control.name.startsWith(control.label) ? `${label}${control.name.slice(control.label.length)}` : `${control.name} ${n}` };
+  });
+}

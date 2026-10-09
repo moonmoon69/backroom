@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, gridStart, gridTarget, KEYS, keysMarkdown, laneTarget, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, numberRepeats, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
@@ -404,4 +404,26 @@ test("Left and Right in a strip go to the next button that can be pressed, and s
   assert.equal(stripStep([true, false, false], 0, "right"), null);
   // From outside the strip, nothing.
   assert.equal(stripStep(all, -1, "right"), null);
+});
+
+test("a strip's image button is named with the image's alt text, and the bar's Enter with it", () => {
+  // As the post's own button says it ("Open image: the parser's diagram"); no alt text, no more than Image.
+  assert.deepEqual(imageAction("the parser's diagram"), { label: "Image", name: "Image: the parser's diagram" });
+  assert.deepEqual(imageAction("  a\n diagram "), { label: "Image", name: "Image: a diagram" });
+  assert.deepEqual(imageAction(""), { label: "Image", name: "Image" });
+  assert.deepEqual(imageAction(undefined), { label: "Image", name: "Image" });
+  const room = placeById("room-actions").entries.find((entry) => entry.named)!;
+  assert.equal(barDoes(room, imageAction("a diagram").name), "Image: a diagram");
+  assert.equal(barDoes(room, imageAction("the parser's diagram").name), `${"Image: the parser's diagram".slice(0, BAR_NAME - 1)}…`);
+  // Two images: each numbered after its label, its alt text kept; other repeats as before.
+  const two = numberRepeats([{ label: "Copy", name: "Copy" }, { ...imageAction("a diagram") }, { ...imageAction("a photo") }, { label: "Copy code", name: "Copy code" }, { label: "Copy code", name: "Copy code" }, { label: "notes.md", name: "docs/notes.md" }, { label: "notes.md", name: "src/notes.md" }]);
+  assert.deepEqual(two, [
+    { label: "Copy", name: "Copy" },
+    { label: "Image 1", name: "Image 1: a diagram" },
+    { label: "Image 2", name: "Image 2: a photo" },
+    { label: "Copy code 1", name: "Copy code 1" },
+    { label: "Copy code 2", name: "Copy code 2" },
+    { label: "notes.md 1", name: "docs/notes.md 1" },
+    { label: "notes.md 2", name: "src/notes.md 2" },
+  ]);
 });

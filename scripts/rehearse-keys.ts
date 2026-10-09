@@ -78,6 +78,7 @@ type Alias = "fable" | "worker" | "reviewer";
 export interface KeysRoom {
   roomId: string;
   readonly participant: Record<Alias, string>;
+  readonly seat: Record<Alias, string>;
   readonly thread: Record<Alias, string>;
   /** The run's data folder (the throwaway service's): files the rehearsal needs live here, never in a temp folder. */
   readonly dataDir: string;
@@ -1834,6 +1835,154 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect(`Esc: the preview closed; its button gone with the turn, the ring on his reply #${tagReply.number}`, (f) => f.dialog === null && f.key === `post:${tagReply.seq}` && f.ring);
   await state("a preview opened from a running turn's actions: the turn ends meanwhile, its closing puts the ring on the reply", `#${tagReply.number} · @fable replied`);
   browser.eval<boolean>("() => { window.__rehearseFeed = null; return true; }");
+
+  // The ring is rescued only when the keys put it there (round 1's required change): after a click the page moves
+  // neither the board nor the focus, as on main. The board's scrollTop, read before and after. A running turn's control
+  // is clicked with the board at its bottom (a bubble out of view is left out of the page snapshot), by the last of its
+  // kind in the snapshot (the turn's comes after the posts'), and the click is checked to have landed in the turn.
+  const boardAt = () => browser.eval<{ top: number; distance: number }>("() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); return { top: Math.round(t.scrollTop), distance: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight) }; }");
+  const toBoardTop = async (): Promise<number> => {
+    browser.eval<boolean>("() => { document.querySelector('.ov-drawer[data-view=room] .timeline').scrollTop = 0; return true; }");
+    await sleep(800);
+    const at = boardAt();
+    // Far from its bottom: the newest post out of view, where a rescue would scroll to.
+    if (at.distance < 1000) fail(`the board scrolled to its top is only ${at.distance} px from its bottom: too short to show a move`);
+    log(`  page: the board scrolled to its top (scrollTop ${at.top}, ${at.distance} px from its bottom)`);
+    return at.top;
+  };
+  const lastUid = (pattern: RegExp, what: string): string => {
+    const line = browser.on("snapshot").split("\n").filter((l) => pattern.test(l)).at(-1);
+    const uid = line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+    return uid ?? fail(`the page snapshot has no ${what}`);
+  };
+  /** A click on a running turn's control, the board at its bottom first; it fails unless the press landed in the turn. */
+  const clickInTurn = async (run: string, pattern: RegExp, what: string): Promise<void> => {
+    browser.eval<boolean>(`() => {
+      const t = document.querySelector('.ov-drawer[data-view=room] .timeline');
+      t.scrollTop = t.scrollHeight;
+      window.__rehearseDown = null;
+      document.addEventListener('pointerdown', (event) => { window.__rehearseDown = event.target.closest('[data-run]')?.dataset.run ?? 'elsewhere'; }, { capture: true, once: true });
+      return true;
+    }`);
+    await sleep(500);
+    browser.on("click", lastUid(pattern, what));
+    const down = browser.eval<string | null>("() => window.__rehearseDown");
+    if (down !== run) fail(`the click on ${what} landed ${down === null ? "nowhere" : down === "elsewhere" ? "outside his turn" : `in turn ${down.slice(0, 8)}`}, not in his running turn ${run.slice(0, 8)}`);
+    log(`  page: a click on ${what}, in his running turn`);
+  };
+  const replyTo = async (ask: string): Promise<any> => {
+    const reply = (await room.snapshot()).posts.find((p: any) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === ask && c.outcome === "answered"));
+    return reply ?? fail(`the API has no reply answering request ${ask}`);
+  };
+  // The focus on nothing: FOCUS reads the page's body as no element (tag null).
+  const boardStays = async (what: string, top: number, run: string, reply: any): Promise<void> => {
+    browser.poll<boolean>("his turn gone and his reply drawn", `() => !document.querySelector('[data-run="${run}"]') && Boolean(document.querySelector('[data-nav-key="post:${reply.seq}"]'))`, (done) => done === true);
+    // The rescue runs after the draw, a dialog's after two frames: time for it to have moved the board.
+    await sleep(800);
+    const after = boardAt();
+    if (after.top !== top) fail(`${what}: the board moved from scrollTop ${top} to ${after.top} (${after.distance} px from its bottom)`);
+    await expect(`${what}: the focus not moved by the page (on nothing)`, (f) => f.tag === null && f.dialog === null);
+    log(`api: run ${run.slice(0, 8)} ended with the reply #${reply.number}; page: the board still at scrollTop ${after.top}, the focus on nothing`);
+  };
+
+  // A click in a running turn's bubble (its "sent to T3"), then the board scrolled to its top: the turn ends.
+  await room.settle("fable");
+  const clickAsk = await room.message("Check the parser once more.");
+  const clickRun = await room.live("fable");
+  browser.poll<boolean>("his running turn drawn, with what was sent to T3", `() => Boolean(document.querySelector('[data-nav-key="live:${clickRun.id}"] .sent-to-t3 summary'))`, (drawn) => drawn === true);
+  await clickInTurn(clickRun.id, /DisclosureTriangle "sent to T3"/, `"sent to T3" on his running turn`);
+  await expect(`a click on his turn's "sent to T3": the focus in his bubble, no ring drawn`, (f) => f.item === `live:${clickRun.id}` && f.tag === "SUMMARY" && !f.visible);
+  const clickTop = await toBoardTop();
+  await room.finish("fable", "The parser is fine.");
+  await boardStays("the turn ended after a click in its bubble", clickTop, clickRun.id, await replyTo(clickAsk));
+  await state("a click in a running turn's bubble: when the turn ends the page moves neither the board nor the focus", apiRoomTitle);
+
+  // A preview opened from a running turn, the turn ending while it is open, closed with a click: opened by the mouse
+  // from the feed's file chip, then by the keys from the turn's actions. The board, scrolled to its top under it, stays.
+  const previewClosedByClick = async (how: "mouse" | "keys"): Promise<void> => {
+    await room.settle("fable");
+    const ask = await room.message(how === "mouse" ? "Check the notes." : "Check the notes once more.");
+    const run = await room.live("fable");
+    browser.eval<boolean>(`() => { window.__rehearseFeed = { participant: '${room.participant.fable}', item: { kind: 'message', id: 'rehearse-feed', text: 'Checking \`notes/release.md\`.', streaming: false, at: new Date().toISOString() } }; return true; }`);
+    browser.poll<boolean>("his running turn drawn, its feed naming the file", `() => Boolean(document.querySelector('[data-nav-key="live:${run.id}"] .md-file'))`, (drawn) => drawn === true);
+    if (how === "mouse") {
+      await clickInTurn(run.id, /button "release\.md"/, "the file chip in his running turn's feed");
+    } else {
+      press("End");
+      await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+      press("ArrowDown");
+      await expect(`Down: his running turn (run ${run.id.slice(0, 8)})`, (f) => f.key === `live:${run.id}`);
+      press("Enter");
+      await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
+      press("ArrowRight");
+      press("ArrowRight");
+      await expect("Right ×2: the feed's file chip", (f) => f.action === "file:0");
+      press("Enter");
+    }
+    await expect(`${how === "mouse" ? "a click on the feed's file chip" : "Enter on it"}: its preview over the page`, (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
+    const top = await toBoardTop();
+    await room.finish("fable", "The notes are right.");
+    browser.poll<boolean>("the turn gone from the page under the preview", `() => !document.querySelector('[data-run="${run.id}"]')`, (gone) => gone === true);
+    browser.on("click", lastUid(/button "Close dialog"/, "the preview's Close"));
+    await boardStays(`the preview ${how === "mouse" ? "the mouse" : "the keys"} opened, closed with a click`, top, run.id, await replyTo(ask));
+    browser.eval<boolean>("() => { window.__rehearseFeed = null; return true; }");
+  };
+  await previewClosedByClick("mouse");
+  await previewClosedByClick("keys");
+  await state("a preview opened from a running turn, closed with a click once the turn ended: the page moves neither the board nor the focus", apiRoomTitle);
+
+  // A turn still being prepared (the engine's phase before it is sent to T3) has no Stop and no "sent to T3". On no
+  // request it has nothing to press: no stop, so the bar never offers Enter its actions on it; on a request it is one,
+  // and Enter opens its actions, what it works on. The fake T3 sends at once: the page's snapshot is given such a turn
+  // of @fable's, the API's turns all ended.
+  await room.settle("fable");
+  const ended = ((await room.snapshot()).runs as any[]).filter((r) => r.seatId === room.seat.fable && r.phase === "terminal").at(-1);
+  if (!ended) fail("the API has no ended turn of @fable's");
+  const prepared = { ...ended, id: "rehearse-prepared", phase: "prepared", t3RunId: null, requestIds: [], failure: null, output: null, startedAt: null, endedAt: null };
+  const givePrepared = (run: unknown) =>
+    browser.eval<boolean>(`() => {
+      if (!window.__rehearseRunsFetch) {
+        const real = window.fetch.bind(window);
+        window.__rehearseRunsFetch = real;
+        window.fetch = async (input, init) => {
+          const response = await real(input, init);
+          const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+          const run = window.__rehearseRun;
+          if (!run || url.pathname !== '/api/rooms/${R}' || !response.ok) return response;
+          const body = await response.clone().json();
+          body.runs = [...body.runs, run];
+          return new Response(JSON.stringify(body), { status: response.status, headers: response.headers });
+        };
+      }
+      window.__rehearseRun = ${JSON.stringify(run)};
+      return true;
+    }`);
+  givePrepared(prepared);
+  browser.poll<boolean>("the page to draw @fable's turn being prepared", `() => Boolean(document.querySelector('[data-run="rehearse-prepared"]'))`, (drawn) => drawn === true, 25_000);
+  if (((await room.snapshot()).runs as any[]).some((r) => r.seatId === room.seat.fable && r.phase !== "terminal")) fail("the API has a turn of @fable's that has not ended: the prepared one is to be the page's only");
+  press("End");
+  await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect("Down from the newest post: the composer's strip (the turn being prepared has nothing to press: no stop)", (f) => f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && f.strips === 0);
+  if (browser.eval<boolean>("() => document.querySelector('[data-run=\"rehearse-prepared\"]').hasAttribute('data-nav')")) fail("@fable's turn being prepared, on no request, is a stop with nothing to press");
+  log("api: no turn of @fable's runs; page: his turn being prepared drawn, no stop");
+  givePrepared({ ...prepared, requestIds: [clickAsk] });
+  const clickAsked = room.post(await room.snapshot(), clickAsk);
+  const preparedWhere = `@fable's turn · preparing on #${clickAsked.number}`;
+  browser.poll<boolean>("the turn being prepared a stop now it is on a request", `() => Boolean(document.querySelector('[data-nav-key="live:rehearse-prepared"]'))`, (stop) => stop === true, 25_000);
+  press("ArrowUp");
+  await expect("Up from the strip: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect("Down: his turn being prepared", (f) => f.key === "live:rehearse-prepared" && f.ring);
+  await barSays("his turn being prepared, on a request", { place: "room-post", where: preparedWhere, keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+  press("Enter");
+  await expect("Enter: its actions, on what it works on", (f) => f.strips === 1 && f.action === "ref:0");
+  names("his turn being prepared, on a request", [`show #${clickAsked.number}`]);
+  press("Escape");
+  await expect("Esc: the actions closed, the ring on his turn", (f) => f.strips === 0 && f.key === "live:rehearse-prepared");
+  await state("a turn being prepared: no stop with nothing to press; on a request Enter opens its actions", preparedWhere);
+  browser.eval<boolean>("() => { window.__rehearseRun = null; return true; }");
+  browser.poll<boolean>("the page's turn being prepared gone", `() => !document.querySelector('[data-run="rehearse-prepared"]')`, (gone) => gone === true, 25_000);
 
   // A turn typed in T3 (the worker's; the board draws it, the chat only the Consigliere's): no stop while it asks
   // nothing (it has no Stop here, nothing to do); with a question it is one, and its actions are the question's choices.

@@ -29,8 +29,8 @@ import { speakableSummary, useAutoRead } from "../speech.ts";
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
-import { stripOrder, type ActionKind } from "../keyOrder.ts";
-import { isTextField } from "../keys.ts";
+import { imageAction, numberRepeats, stripOrder, type ActionKind } from "../keyOrder.ts";
+import { isTextField, lastInputWasKey } from "../keys.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -165,6 +165,17 @@ const CONTROLS = "button, a[href], summary, input:not([type='hidden']), select, 
 const textOf = (element: Element): string => (element.textContent ?? "").replace(/\s+/g, " ").trim();
 const cut = (text: string, most = 40): string => (text.length > most ? `${text.slice(0, most - 1)}…` : text);
 
+/** An item's controls as they are drawn (a folded text's are not), but not its strip's own nor a correction box's. */
+function* drawnControls(item: HTMLElement): Generator<HTMLElement> {
+  for (const element of item.querySelectorAll<HTMLElement>(CONTROLS)) if (!element.closest(".action-strip, .req-correct") && element.getClientRects().length > 0) yield element;
+}
+
+/** Whether an item has anything its strip would offer (it stops at the first). */
+function offersControls(item: HTMLElement): boolean {
+  for (const element of drawnControls(item)) if (describe(element, 0)) return true;
+  return false;
+}
+
 /** What a control of an item is in its strip, by what it is on the page; null for none of it. */
 function describe(element: HTMLElement, requests: number): Omit<Control, "element" | "disabled"> | null {
   const text = textOf(element);
@@ -199,7 +210,8 @@ function describe(element: HTMLElement, requests: number): Omit<Control, "elemen
     const name = textOf(element.querySelector(".md-file-name") ?? element);
     return { kind: "file", label: cut(name), name, title };
   }
-  if (element.matches(".image-preview-trigger, .md-img")) return { kind: "image", label: "Image", name: "Image", title: element.getAttribute("aria-label") ?? title };
+  // Named with its alt text: Markdown's (its title when it has none), else the image's own (an attached image's).
+  if (element.matches(".image-preview-trigger, .md-img")) return { kind: "image", ...imageAction(element.dataset.alt ?? element.querySelector("img")?.getAttribute("alt")), title: element.getAttribute("aria-label") ?? title };
   if (element.tagName === "SUMMARY" && element.closest(".turn-in-t3")) return { kind: "turn", label: text, name: text, title, expanded };
   if (element.tagName === "SUMMARY" && element.closest(".sent-to-t3")) return { kind: "sent", label: text, name: text, title, expanded };
   if (element.matches(".md-copy")) return { kind: "code", label: "Copy code", name: "Copy code", title };
@@ -213,26 +225,16 @@ function describe(element: HTMLElement, requests: number): Omit<Control, "elemen
 /**
  * The controls a mouse finds on an item now, in its strip's order (keyOrder.ts, stripOrder): those drawn (a folded
  * text's are not, until it opens), not the strip's own nor what a button opened in place (a correction's box).
- * Repeated labels are numbered ("Image 1", "Image 2").
+ * Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
  */
-function itemControls(item: HTMLElement, strip: HTMLElement): Control[] {
+function itemControls(item: HTMLElement): Control[] {
   const requests = item.querySelectorAll(".req-block").length;
   const found: Control[] = [];
-  for (const element of item.querySelectorAll<HTMLElement>(CONTROLS)) {
-    if (strip.contains(element) || element.closest(".req-correct") || element.getClientRects().length === 0) continue;
+  for (const element of drawnControls(item)) {
     const described = describe(element, requests);
     if (described) found.push({ element, disabled: element.matches(":disabled"), ...described });
   }
-  const ordered = stripOrder(found);
-  const times = new Map<string, number>();
-  for (const control of ordered) times.set(control.label, (times.get(control.label) ?? 0) + 1);
-  const seen = new Map<string, number>();
-  return ordered.map((control) => {
-    if ((times.get(control.label) ?? 0) < 2) return control;
-    const n = (seen.get(control.label) ?? 0) + 1;
-    seen.set(control.label, n);
-    return { ...control, label: `${control.label} ${n}`, name: `${control.name} ${n}` };
-  });
+  return numberRepeats(stripOrder(found));
 }
 
 const sameControls = (a: Control[], b: Control[]): boolean =>
@@ -268,7 +270,7 @@ function OpenActions({ where, detail }: { where: string; detail?: number | undef
     item.current = owner;
     if (!strip || !owner) return;
     const read = () => {
-      const next = itemControls(owner, strip);
+      const next = itemControls(owner);
       setControls((last) => (last && sameControls(last, next) ? last : next));
     };
     read();
@@ -574,13 +576,17 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   // Watching for a dialog to close whose opener went with its item (a preview a turn's strip opened, the turn ended).
   const orphan = useRef<MutationObserver | null>(null);
   useEffect(() => () => orphan.current?.disconnect(), []);
+  // Only a ring the keys put there is put back (keys.ts, lastInputWasKey): after a click the page moves neither the
+  // focus nor the board.
   const toNewest = () => {
+    if (!lastInputWasKey()) return;
     const newest = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-nav="post"]') ?? [])].at(-1);
     newest?.focus({ preventScroll: true });
     newest?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
   // The item gone (a turn ended or stopped, or asks nothing more) with the ring on it or in its strip: the strip is
-  // closed, and the ring goes to the newest post (the turn's reply, when it has one) rather than nowhere.
+  // closed, and the ring goes to the newest post (the turn's reply, when it has one) rather than nowhere. Not after a
+  // click (a mouse in a running turn's bubble, or a preview's closing): the focus is left where the page leaves it.
   useLayoutEffect(() => {
     const root = scroller.current;
     if (!root || (strip === null && onLive.current === null)) return;
@@ -589,7 +595,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     if (strip !== null && !keys.has(strip)) setStrip(null);
     if (onLive.current !== null && !keys.has(onLive.current)) onLive.current = null;
     // In a dialog its strip opened (dialogs are at the body): once the last one closes, the ring has nowhere to go back
-    // to; if it is nowhere then, the newest post takes it.
+    // to; if it is nowhere then and a key closed it, the newest post takes it.
     const now = document.activeElement;
     if (now?.closest(".dialog-backdrop")) {
       orphan.current?.disconnect();
@@ -1591,8 +1597,21 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
   const uncertain = run.phase === "uncertain";
   const label = requests.length > 0 ? "needs you" : PHASE_WORDS[run.phase];
   const where = `@${alias}'s turn · ${label}${numbers.length > 0 ? ` on ${numbers.map((n) => `#${n}`).join(", ")}` : ""}`;
+  // A stop only while it has something to press, read as its strip reads it: a turn still being prepared, on no
+  // request, has nothing yet, and on a stop the bar says Enter opens its actions.
+  const bubble = useRef<HTMLDivElement | null>(null);
+  const [bare, setBare] = useState(false);
+  useLayoutEffect(() => {
+    const element = bubble.current;
+    if (!element) return;
+    const read = () => setBare(!offersControls(element));
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ["open", "hidden", "disabled", "class"] });
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className={`chat-row from-agent live-turn${uncertain ? " live-uncertain" : ""}`} style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} aria-live="off" data-run={run.id} {...liveNav(`live:${run.id}`, where)}>
+    <div ref={bubble} className={`chat-row from-agent live-turn${uncertain ? " live-uncertain" : ""}`} style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} aria-live="off" data-run={run.id} {...(bare ? {} : liveNav(`live:${run.id}`, where))}>
       <div className="chat-stack">
         <div className="chat-head">
           {participant ? <Monogram participant={participant} size="xs" title={alias} /> : null}

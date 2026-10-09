@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { highlightCode } from "../highlight.ts";
+import { keyPressed } from "../keys.ts";
 import type { FilePreviewResponse } from "../types.ts";
 import { CopyTextButton } from "./CopyText.tsx";
 import { Dialog } from "./Dialog.tsx";
@@ -144,7 +145,10 @@ function HtmlView({ content, name, onClose }: { content: string; name: string; o
   closeRef.current = onClose;
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.data === HTML_CLOSE_MESSAGE && frame.current && event.source === frame.current.contentWindow) closeRef.current();
+      if (event.data === HTML_CLOSE_MESSAGE && frame.current && event.source === frame.current.contentWindow) {
+        keyPressed();
+        closeRef.current();
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

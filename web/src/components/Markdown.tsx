@@ -132,12 +132,12 @@ function Image({ node: _node, src, alt, title, ...props }: MdProps<"img">) {
   }
   const image = <img {...props} src={resolved} alt={alt ?? ""} loading="lazy" onError={() => setBroken(true)} />;
   if (openImage) return (
-    <button type="button" className="md-img image-preview-trigger" aria-label={`Open image: ${alt || title || "picture"}`} aria-haspopup="dialog" title={title ?? (typeof src === "string" ? src : undefined)} onClick={() => openImage({ src: resolved, alt: alt ?? "", title })}>
+    <button type="button" className="md-img image-preview-trigger" aria-label={`Open image: ${alt || title || "picture"}`} data-alt={alt || title || ""} aria-haspopup="dialog" title={title ?? (typeof src === "string" ? src : undefined)} onClick={() => openImage({ src: resolved, alt: alt ?? "", title })}>
       {image}
     </button>
   );
   return (
-    <a className="md-img" href={resolved} target="_blank" rel="noopener noreferrer" title={title ?? (typeof src === "string" ? src : undefined)}>
+    <a className="md-img" href={resolved} data-alt={alt || title || ""} target="_blank" rel="noopener noreferrer" title={title ?? (typeof src === "string" ? src : undefined)}>
       {image}
     </a>
   );

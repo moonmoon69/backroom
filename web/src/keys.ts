@@ -305,6 +305,19 @@ export function keyPlace(): PlaceNow {
 
 let lastOutside: HTMLElement | null = null;
 let tracking = false;
+let keyLast = false;
+
+/**
+ * Whether the last input was a key rather than a pointer, as :focus-visible has it (a text field shows that ring after
+ * a click too, so the field's own :focus-visible does not tell). A ring is put back only when the keys put it there:
+ * after a click the page moves neither the focus nor the board.
+ */
+export const lastInputWasKey = (): boolean => keyLast;
+
+/** A key pressed where the page does not hear it: Esc or Backspace in an HTML preview's frame, which posts it. */
+export function keyPressed(): void {
+  keyLast = true;
+}
 
 /**
  * Remembers the last element focused outside dialogs and menus, so a dialog opened from a menu item (gone by the time the
@@ -313,6 +326,14 @@ let tracking = false;
 export function trackFocus(): void {
   if (tracking) return;
   tracking = true;
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!event.altKey && !event.ctrlKey && !event.metaKey && !["Shift", "Control", "Alt", "Meta"].includes(event.key)) keyLast = true;
+    },
+    true,
+  );
+  document.addEventListener("pointerdown", () => (keyLast = false), true);
   document.addEventListener("focusin", (event) => {
     const target = event.target instanceof HTMLElement ? event.target : null;
     if (target && !target.closest(".dialog, .dialog-backdrop, [role='menu'], .menu, .popover")) lastOutside = target;
