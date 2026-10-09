@@ -433,6 +433,40 @@
   border-radius: 0;
 }
 
+/* A browser's state word (the room's Browser panel, a browser's page): as the overview's states, its colour after a 6px
+   square, filled while the browser runs or has failed and hollow otherwise. The plain look colours the word alone; in
+   this one the palette's green is close to the text's ink, so the square says running by colour too. */
+[data-skin="pixel"] .browser-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--px-muted);
+}
+
+[data-skin="pixel"] .browser-state::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  box-shadow: inset 0 0 0 var(--u) currentColor;
+}
+
+[data-skin="pixel"] .browser-state.is-running {
+  color: var(--px-st-new);
+}
+
+[data-skin="pixel"] .browser-state.is-starting {
+  color: var(--px-st-busy);
+}
+
+[data-skin="pixel"] .browser-state.is-error {
+  color: var(--px-st-failed);
+}
+
+[data-skin="pixel"] .browser-state:is(.is-running, .is-error)::before {
+  background: currentColor;
+}
+
 /* The Consigliere's star: the badges' 5 × 5 glyph at 10px, in the action colour, centred on the name's line. */
 [data-skin="pixel"] .ov-alias {
   display: inline-flex;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
+import { copyWatchLinkName, powerName, powerText, WATCH_LINK_TEXT, watchLinkName, type PowerPhase } from "../browserLabels.ts";
 import { BROWSER_STATE_LABEL, roomBrowserSummary } from "../browserSummary.ts";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
@@ -47,18 +48,19 @@ export function useBrowserPower(browserId: string, onChanged: () => void): Brows
  * `name`, as one of several browsers in a panel, it says only "Start" or "Stop" and keeps the browser in its label.
  */
 export function BrowserPowerButton({ status, power, small, name }: { status: RoomBrowserStatus; power: BrowserPower; small?: boolean; name?: string }) {
-  const noun = name ? "" : " browser";
-  if (status.state === "running") {
+  const running = status.state === "running";
+  const phase: PowerPhase = running ? (power.busy ? "stopping" : "stop") : status.state === "starting" || power.busy ? "starting" : "start";
+  const label = name ? powerName(phase, name) : undefined;
+  if (running) {
     return (
-      <button type="button" className={small ? "small" : undefined} disabled={power.busy} aria-label={name ? `Stop ${name}` : undefined} onClick={power.stop}>
-        {power.busy ? "Stopping…" : `Stop${noun}`}
+      <button type="button" className={small ? "small" : undefined} disabled={power.busy} aria-label={label} onClick={power.stop}>
+        {powerText(phase, Boolean(name))}
       </button>
     );
   }
-  const starting = status.state === "starting" || power.busy;
   return (
-    <button type="button" className={small ? "small primary" : "primary"} disabled={starting || status.mode === null} aria-label={name ? `Start ${name}` : undefined} onClick={power.start}>
-      {starting ? "Starting…" : `Start${noun}`}
+    <button type="button" className={small ? "small primary" : "primary"} disabled={phase === "starting" || status.mode === null} aria-label={label} onClick={power.start}>
+      {powerText(phase, Boolean(name))}
     </button>
   );
 }
@@ -107,10 +109,10 @@ export function BrowserStatusPanel({
       {running && status.mode === "vnc" && link ? (
         <div className="browser-row">
           <span className="label">Watch</span>
-          <a href={link} target="_blank" rel="noreferrer noopener" aria-label={name ? `Open the screen of ${name}` : undefined}>
-            Open the browser screen
+          <a href={link} target="_blank" rel="noreferrer noopener" aria-label={name ? watchLinkName(name) : undefined}>
+            {WATCH_LINK_TEXT}
           </a>
-          <CopyButton text={link} label={name ? `Copy the watch link of ${name}` : "Copy watch link"} />
+          <CopyButton text={link} label={copyWatchLinkName(name)} />
           {compact ? null : <span className="hint">Mouse and keyboard work: close tabs, type a password. The link holds the viewer password.</span>}
         </div>
       ) : null}
