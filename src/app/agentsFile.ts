@@ -24,7 +24,8 @@
  * nothing is written. Files are created exclusively ("wx"): a file that appears meanwhile is kept as it is, and no
  * link is followed. A folder that is not on this machine, a path that is not absolute, and a folder git cannot say is a
  * repository or not (git missing, a timeout, an ownership refusal: tried again with the next room) are left alone; no
- * folder is created in the project (git's own info and hooks folders, inside .git, are made when missing).
+ * folder is created in the project's working tree (git's own info and hooks folders, inside .git, are made when
+ * missing).
  *
  * Claude Code and Cursor read these files from every folder above the one they work in, so a folder that holds others
  * gets nothing: the home folder or one above it, a folder with another of T3's projects below it, and a folder outside

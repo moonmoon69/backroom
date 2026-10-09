@@ -654,6 +654,13 @@ test("a repository that sets core.hooksPath gets no hook; a hooks folder git ref
   assert.equal(existsSync(hookOf(dir)), false);
   assert.equal(existsSync(join(dir, ".githooks")), false, "nothing made in the hooks path either");
 
+  // A hooks path inside .git, where the hooks folder's own place would still pass: refused by the setting itself.
+  const inside = folder();
+  git(inside, "config", "core.hooksPath", ".git/custom-hooks");
+  assert.equal((await room(project(inside))).agentsFile.hook, "hooks-path");
+  assert.equal(existsSync(join(inside, ".git", "custom-hooks")), false, "nothing made there");
+  assert.equal(existsSync(hookOf(inside)), false);
+
   // Set to nothing, which points git's hooks at the checkout itself: no post-checkout there either.
   const empty = folder();
   git(empty, "config", "core.hooksPath", "");
