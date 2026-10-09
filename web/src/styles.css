@@ -5342,6 +5342,11 @@ body.sorting * {
   stroke-linejoin: round;
 }
 
+/* The check sticks out to the right of the globe: the count beside it starts clear of it, not under it. */
+.room-browser-button .globe + .panel-count {
+  margin-left: 5px;
+}
+
 .globe-failed {
   right: -3px;
   top: -2px;

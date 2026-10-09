@@ -1359,7 +1359,17 @@ const BROWSER_CARDS = `() => [...document.querySelectorAll('.browser-panel .brow
 }))`;
 
 /** The room header's Browser button: what it says and the number beside the globe. */
-const BROWSER_BUTTON = `() => { const button = document.querySelector('.room-browser-button'); return { label: button?.getAttribute('aria-label') ?? null, count: button?.querySelector('.panel-count')?.textContent ?? null }; }`;
+const BROWSER_BUTTON = `() => {
+  const button = document.querySelector('.room-browser-button');
+  const badge = button?.querySelector('.globe-badge');
+  const count = button?.querySelector('.panel-count');
+  return {
+    label: button?.getAttribute('aria-label') ?? null,
+    count: count?.textContent ?? null,
+    covered: Boolean(badge && count && count.getBoundingClientRect().left < badge.getBoundingClientRect().right - 0.5),
+  };
+}`;
+type BrowserButtonRead = { label: string | null; count: string | null; covered: boolean };
 
 interface BrowserApi {
   id: string;
@@ -1420,7 +1430,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     return null;
   };
   /** The header's button against the API: a line per ticked browser, in the list's order, and the tabs of the running ones added up. */
-  const buttonMismatch = (read: { label: string | null; count: string | null }, api: BrowserApi[], want: { ticked: string[]; default: string }): string | null => {
+  const buttonMismatch = (read: BrowserButtonRead, api: BrowserApi[], want: { ticked: string[]; default: string }): string | null => {
     const shown = api.filter((b) => want.ticked.includes(b.name));
     const tabs = (b: BrowserApi) => (b.status.state === "running" ? b.status.tabs.length : 0);
     const line = (b: BrowserApi) => `${b.name}${b.name === want.default ? " (default)" : ""} ${b.status.state === "running" ? "running" : "off"}${tabs(b) > 0 ? `, ${tabs(b)} tab${tabs(b) === 1 ? "" : "s"}` : ""}`;
@@ -1428,6 +1438,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     const total = shown.reduce((n, b) => n + tabs(b), 0);
     if (read.label !== label) return `the Browser button says ${JSON.stringify(read.label)}, the API ${JSON.stringify(label)}`;
     if ((read.count ?? "0") !== String(total)) return `the Browser button counts ${read.count ?? "nothing"}, the API ${total}`;
+    if (read.covered) return "the Browser button's count sits under the globe's badge";
     return null;
   };
   /**
@@ -1440,7 +1451,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     for (;;) {
       const api = await listed();
       const cards = options.panel === false ? [] : browser.eval<BrowserCard[]>(BROWSER_CARDS);
-      const found = (options.panel === false ? null : mismatch(cards, api, want)) ?? buttonMismatch(browser.eval<{ label: string | null; count: string | null }>(BROWSER_BUTTON), api, want);
+      const found = (options.panel === false ? null : mismatch(cards, api, want)) ?? buttonMismatch(browser.eval<BrowserButtonRead>(BROWSER_BUTTON), api, want);
       if (found === null) return { cards, api };
       last = found;
       if (Date.now() > end) fail(`the Browser panel, ${what}: ${last}`);
