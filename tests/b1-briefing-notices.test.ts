@@ -196,7 +196,11 @@ test("B1: the user's case replayed (a journal from before B1): the briefing in t
   assert.equal((await h.dismiss([first.id])).status, 200);
   assert.deepEqual(await h.needs(), { posts: [], count: 0, list: 0, tile: 0 });
 
-  // The briefing in the user's name is Backroom's too: the Consigliere may cancel it, and retire takes it with Grok.
+  // The briefing in the user's name is Backroom's too: the board says so, the Consigliere may cancel it, and retire
+  // takes it with Grok.
+  const n = h.number(legacy);
+  assert.match((await h.board("C", "read", String(n))).text, new RegExp(`^\\[#${n} request · Backroom \\(in the user's name\\) → @Grok · open\\]`));
+  assert.match((await h.board("W", "cancel", `#${n}`)).text, /Backroom's briefing of @Grok: only this room's Consigliere \(@C\) can cancel it/);
   assert.equal(h.p().requests.get(legacy)!.state, "open");
   const retired = await h.board("C", "retire", "Grok");
   assert.equal(retired.status, 200, retired.text);

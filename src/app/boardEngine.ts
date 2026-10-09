@@ -507,13 +507,15 @@ export class BoardEngine {
   private parties(c: Caller, p: Projection, e: RoomEvent): { from: string; to: string; about: string } {
     const name = (x: Principal) => this.name(x);
     const names = (xs: readonly Principal[]) => xs.map(name).join(" ");
+    // A briefing journals from before B1 hold in the user's name is Backroom's, and so is the answer it got.
+    const asker = (requestId: string, principal: Principal) => (principal === "$user" && backroomBriefing({ id: requestId, returnTo: principal }) ? "Backroom (in the user's name)" : name(principal));
     const d = e.data;
     switch (d.kind) {
       case "request": {
         const q = p.requests.get(d.request.id);
         const answer = q?.answerId ? p.events.find((x) => x.id === q.answerId) : undefined;
         const state = q?.state === "answered" ? `answered${answer ? ` by #${answer.seq}` : ""}` : (q?.state ?? "open");
-        return { from: name(d.author), to: name(d.request.owner), about: [d.request.parentId ? `under ${this.label(p, d.request.parentId)}` : "", state].filter(Boolean).join(" · ") };
+        return { from: asker(d.request.id, d.author), to: name(d.request.owner), about: [d.request.parentId ? `under ${this.label(p, d.request.parentId)}` : "", state].filter(Boolean).join(" · ") };
       }
       case "correction":
         return { from: name(d.author), to: names(d.recipients), about: `on ${this.label(p, d.requestId)}` };
@@ -527,7 +529,7 @@ export class BoardEngine {
         const about = d.claims.length
           ? d.claims.map((cl) => `${this.label(p, cl.requestId)} ${CLAIM_WORDS[cl.outcome]}`).join(", ")
           : "requestIds" in disposition && disposition.requestIds.length ? `on ${this.labels(p, disposition.requestIds)}` : "";
-        const to = d.claims.length ? [...new Set(d.claims.map((cl) => cl.returnTo))].map(name).join(" ") : names(d.recipients);
+        const to = d.claims.length ? [...new Set(d.claims.map((cl) => asker(cl.requestId, cl.returnTo)))].join(" ") : names(d.recipients);
         return { from: name(d.author), to, about };
       }
       case "notice":
