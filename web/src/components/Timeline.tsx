@@ -272,18 +272,10 @@ function OpenActions({ where, detail }: { where: string; detail?: number | undef
       setControls((last) => (last && sameControls(last, next) ? last : next));
     };
     read();
-    // What changes on the item, and a choice's checked state, which React sets without an attribute (after its draw,
-    // on a choice or on typing an answer of your own).
+    // Whatever changes on the item (a choice's checked state too: React keeps a controlled input's attribute in step).
     const observer = new MutationObserver(read);
     observer.observe(owner, { subtree: true, childList: true, attributes: true, characterData: true });
-    const changed = () => requestAnimationFrame(read);
-    owner.addEventListener("change", changed);
-    owner.addEventListener("input", changed);
-    return () => {
-      observer.disconnect();
-      owner.removeEventListener("change", changed);
-      owner.removeEventListener("input", changed);
-    };
+    return () => observer.disconnect();
   }, []);
   // Nothing to offer (a running turn with no button yet, no Detail): no strip; the ring stays on the item.
   const empty = controls !== null && controls.length === 0 && detail === undefined;

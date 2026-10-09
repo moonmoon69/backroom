@@ -1848,6 +1848,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await room.settle("fable");
   press("Backspace");
   await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  // The room's tile ranks by what it asks (busy among them): the arrows go on once a poll shows it settled.
+  browser.poll<boolean>("the room's tile to show nothing busy", `() => !(document.querySelector('[data-nav-key="room:${R}"]')?.closest('[data-nav-card]')?.textContent ?? 'busy').includes('busy')`, (settled) => settled === true);
 
   // A running turn with an approval waiting (the second room's @alpha): its actions hold Stop, the approval's choices,
   // what it works on and sent to T3. Esc closes them; the approval still waits in the API.
