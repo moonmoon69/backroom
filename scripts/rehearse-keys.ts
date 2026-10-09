@@ -1841,12 +1841,17 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // is clicked with the board at its bottom (a bubble out of view is left out of the page snapshot), by the last of its
   // kind in the snapshot (the turn's comes after the posts'), and the click is checked to have landed in the turn.
   const boardAt = () => browser.eval<{ top: number; distance: number }>("() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); return { top: Math.round(t.scrollTop), distance: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight) }; }");
+  // The board to its top, the page told at once, as by the scroll event a user's scroll brings (else a room poll drawn
+  // before the browser's own event takes a board still kept at its bottom back there); then checked to stay at its top,
+  // far from its bottom (the newest post out of view, where a rescue would scroll to).
   const toBoardTop = async (): Promise<number> => {
-    browser.eval<boolean>("() => { document.querySelector('.ov-drawer[data-view=room] .timeline').scrollTop = 0; return true; }");
-    await sleep(800);
-    const at = boardAt();
-    // Far from its bottom: the newest post out of view, where a rescue would scroll to.
-    if (at.distance < 1000) fail(`the board scrolled to its top is only ${at.distance} px from its bottom: too short to show a move`);
+    let at = boardAt();
+    for (let attempt = 0; attempt < 3 && (attempt === 0 || at.top !== 0); attempt += 1) {
+      browser.eval<boolean>("() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); t.scrollTop = 0; t.dispatchEvent(new Event('scroll')); return true; }");
+      await sleep(800);
+      at = boardAt();
+    }
+    if (at.top !== 0 || at.distance < 1000) fail(`the board scrolled to its top is at scrollTop ${at.top}, ${at.distance} px from its bottom: it must stay at its top, far from its bottom, to show a move`);
     log(`  page: the board scrolled to its top (scrollTop ${at.top}, ${at.distance} px from its bottom)`);
     return at.top;
   };
