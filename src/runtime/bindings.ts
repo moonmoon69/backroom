@@ -29,6 +29,7 @@ export const RESEAT_OFF = "reseat-off:";
  * Backroom's own request to a member: its seat briefing, the line naming a new Consigliere, a reseat's checkpoint, or
  * the call-off of a reseat. Backroom asks it (`$system`); journals from before B1 hold it as the user's request, known by
  * its ID. It is nobody's work: the Consigliere may cancel it, and a member leaving the room takes its open one with it.
+ * The page has its own copy of the prefixes (backroomRequest in web/src/replyTo.ts): keep the two lists in step.
  */
 export function backroomRequest(q: { id: string; returnTo: string }): boolean {
   return q.returnTo === "$system" || (q.returnTo === "$user" && [SEAT_BRIEFING, MOVED, RESEAT_CHECKPOINT, RESEAT_OFF].some((prefix) => q.id.startsWith(prefix)));

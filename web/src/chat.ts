@@ -53,7 +53,9 @@ export function consigliereChat(posts: readonly EnginePost[], his: { seats: Read
       if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
       return false;
     }
-    if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
+    // A member's failure that needs the user or is addressed to the user, unless it is about Backroom's requests alone
+    // and reached the Consigliere (a briefing in the user's name from before B1): that one is his.
+    if (post.kind === "notice") return post.notice?.needsYou === true || (post.to.includes("$user") && post.notice?.backroom !== true);
     return false;
   });
 }

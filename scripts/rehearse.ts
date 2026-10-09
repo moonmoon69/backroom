@@ -42,11 +42,11 @@
  * message), the second review, PASS, his report (an update in the room's news); then a turn T3 fails and the user's
  * Retry from the page, a reseat, and a retire (refused first while the member has work); then B1's: a member seated
  * whose briefing fails (Backroom's request: the Consigliere's notice, nothing for the user) and whom he retires at once,
- * and the user's case (#438) on a journal from before B1, whose briefing in the user's name fails, then the Consigliere's
- * cancel wakes the member to fail again, adding no second "needs you"; one Dismiss in the chat clears the status bar and
- * the overview's tile, and he retires the member; a reseat's checkpoint the member fails (Backroom's request too: his
- * notice), which he cancels; and his own failed turn on the user's message, in the chat as in the status bar, dismissed
- * and then retried from the chat. The fake T3 keeps its threads
+ * and the user's case (#438) on a journal from before B1, whose briefing in the user's name fails (his, as it reached
+ * him), then the Consigliere's cancel wakes the member to fail again (needing nobody), and he retires the member; a
+ * reseat's checkpoint the member fails (Backroom's request too: his notice), which he cancels; and his own failed turn
+ * on the user's message, in the chat as in the status bar, dismissed there (the bar, the counts and the overview's tile
+ * clear) and then retried there. The fake T3 keeps its threads
  * in <data>/fake-t3.json (ROOMS_FAKE_STATE), so it comes back from the kill as real T3 would, since T3 is not
  * Backroom's process; the script reads that file as T3's own record of what it ran.
  */
@@ -1726,13 +1726,17 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
     return run;
   };
   const noticeOf = (x: Snapshot, runId: string) => x.posts.find((p) => p.kind === "notice" && p.notice.runId === runId);
-  /** The uid of a button in one post's row of the page (its lines up to the next post's), named `name`. */
-  const rowButton = (number: number, name: string): string => {
+  /** The uid of a button in one post's row of the page (its lines up to the next post's), named `name`, if it has one. */
+  const rowButtonUid = (number: number, name: string): string | undefined => {
     const rows = browser.on("snapshot").split("\n");
     const at = rows.findIndex((line) => line.includes(`"#${number}, `));
-    const next = at < 0 ? -1 : rows.findIndex((line, i) => i > at && /"#\d+, /.test(line));
-    const line = at < 0 ? undefined : rows.slice(at + 1, next < 0 ? undefined : next).find((l) => l.includes(`button "${name}"`));
-    const uid = line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+    if (at < 0) fail(`no row of #${number} on the page`);
+    const next = rows.findIndex((line, i) => i > at && /"#\d+, /.test(line));
+    const line = rows.slice(at + 1, next < 0 ? undefined : next).find((l) => l.includes(`button "${name}"`));
+    return line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+  };
+  const rowButton = (number: number, name: string): string => {
+    const uid = rowButtonUid(number, name);
     if (!uid) fail(`no ${name} in the row of #${number}`);
     return uid;
   };
@@ -1789,22 +1793,37 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   });
 
   // 17. The user's case (#438), on a journal from before B1, where a briefing was a request in the user's name: it
-  // fails (the user's notice, in the chat and the status bar); the Consigliere's request to the member fails (his);
-  // his cancel of it wakes the member, which fails once more on nothing anyone asked: that adds no second "needs you".
-  // One Dismiss in the chat clears the bar and the overview's tile; the Consigliere retires the member.
+  // fails, and as it reached the Consigliere it is his (not in the chat or the status bar; Retry stays on the board);
+  // his request to the member fails (his); his cancel of it wakes the member, which fails once more on the cancel
+  // alone: that needs nobody. Nothing of the member's reaches the user; the Consigliere retires the member.
   const grok = await seatNew("grok");
   await endTurn(grok, "Acknowledged.", "completed");
   const beforeB1 = `seat-briefing:${grok.seatId}:before-b1`;
   room.journal([{ type: "request", actor: "$user", id: beforeB1, to: grok.seatId, body: "You are seated in a room whose Consigliere is @fable (a briefing as journals from before B1 hold it: in the user's name)." }]);
   const grokFailed = await endTurn(grok, "Cursor Agent SDK open failed.", "error");
+  const firstNotice = await until("@grok's failure notice", async () => noticeOf(await room.snapshot(), grokFailed.id));
   browser.click(/tab "[^"]*fable/);
-  const first = await check.state("B1: a briefing in the user's name (before B1) fails: the user's notice, in the chat and the status bar", (x) => {
+  await check.state("B1: a briefing in the user's name (before B1) fails: it reached the Consigliere, so it is his: not in the chat or the status bar, Retry kept", (x) => {
     const notice = noticeOf(x, grokFailed.id);
-    return notice && notice.to.includes("$user") && notice.notice.needsYou && x.needsYou.length === 1 && x.needsYou[0].id === notice.id
-      ? `#${notice.number} to ${notice.to.join(", ")}, needsYou=true; the room's needsYou is it alone`
+    return notice && notice.to.includes("$user") && notice.to.includes(seat.fable) && notice.notice.backroom && !notice.notice.needsYou && notice.notice.retryRunId === grokFailed.id && x.needsYou.length === 0
+      ? `#${notice.number} to ${notice.to.join(", ")}, backroom=true, needsYou=false, Retry offered; the room's needsYou empty`
       : null;
-  }, ["Cursor Agent SDK open failed", "Needs you · 1", "Dismiss"], { focus: (x) => noticeOf(x, grokFailed.id)?.number });
-  const firstNotice = noticeOf(first, grokFailed.id)!;
+  }, [], {
+    extra: () => {
+      noNeedsInBar();
+      browser.poll<{ chat: string | null; row: boolean }>(
+        "the chat without the failure",
+        `() => { const log = document.querySelector('.timeline'); return { chat: log?.getAttribute('aria-label') ?? null, row: Boolean(log?.querySelector('[data-number="${firstNotice.number}"]')) }; }`,
+        (v) => v.chat === "Conversation with the Consigliere" && !v.row,
+      );
+      browser.click(/tab "Board/);
+      browser.waitFor("Cursor Agent SDK open failed");
+      browser.show(firstNotice.number);
+      rowButton(firstNotice.number, "Retry");
+      if (rowButtonUid(firstNotice.number, "Dismiss")) fail(`#${firstNotice.number} offers Dismiss: it does not wait on the user`);
+      log(`  page: no 'Needs you', not in the chat; on the board #${firstNotice.number} has Retry and no Dismiss`);
+    },
+  });
   await room.settle("fable");
   room.board("fable", "post", "@grok design K1, a keyboard-only Backroom");
   const k1 = (await posted(grok.seatId, "his request to @grok")).request.id;
@@ -1813,47 +1832,15 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   room.board("fable", "cancel", `#${room.post(await room.snapshot(), k1).number}`);
   const cancelWake = await endTurn(grok, "Cursor Agent SDK open failed.", "error");
   await room.settle("fable");
-  await check.state("B1: the cancel's wake fails too: a recovery failure that needs nobody; one failure needs the user", (x) => {
+  await check.state("B1: the cancel's wake fails too: a recovery failure that needs nobody; nothing of the member's needs the user", (x) => {
     const his = noticeOf(x, k1Failed.id);
     const recovery = noticeOf(x, cancelWake.id);
     const wake = x.runs.find((r) => r.id === cancelWake.id);
     const onlyCancel = wake?.inputs.every((seq: number) => x.posts.find((p) => p.seq === seq)?.kind === "cancel");
-    return his && his.to.length === 1 && his.to[0] === seat.fable && recovery && onlyCancel && recovery.to.length === 0 && !recovery.notice.needsYou && recovery.notice.retryRunId === null && x.needsYou.length === 1 && x.needsYou[0].id === firstNotice.id
-      ? `#${his.number} to @fable only; the cancel's wake ${cancelWake.id.slice(0, 8)} carried only the cancel and its #${recovery.number} ("${recovery.body.slice(0, 18)}…") is to nobody, needsYou=false, no Retry; needsYou is #${firstNotice.number} alone`
+    return his && his.to.length === 1 && his.to[0] === seat.fable && recovery && onlyCancel && recovery.to.length === 0 && !recovery.notice.needsYou && recovery.notice.retryRunId === null && x.needsYou.length === 0 && x.counts.needsYou === 0
+      ? `#${his.number} to @fable only; the cancel's wake ${cancelWake.id.slice(0, 8)} carried only the cancel and its #${recovery.number} ("${recovery.body.slice(0, 18)}…") is to nobody, needsYou=false, no Retry; needsYou empty`
       : null;
-  }, ["Needs you · 1"], {
-    extra: () => {
-      const inChat = browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .notice-line')].some((row) => /Recovery failure/.test(row.textContent ?? ''))`);
-      if (inChat) fail("the recovery failure is in the chat");
-      log("  page: the chat holds the one failure that needs you; the recovery failure is on the board only");
-    },
-  });
-  // The Dismiss of that notice's row in the chat (not another button of the same name, a toast's say).
-  browser.show(firstNotice.number);
-  browser.on("click", rowButton(firstNotice.number, "Dismiss"));
-  await check.state("B1: one Dismiss in the chat clears it everywhere: the status bar, the room's count, the overview's tile", (x) => {
-    const notice = x.posts.find((p) => p.id === firstNotice.id);
-    return notice?.notice.dismissed && x.needsYou.length === 0 && x.counts.needsYou === 0 ? `#${notice.number} dismissed; needsYou empty, counts.needsYou=0` : null;
-  }, ["dismissed"], {
-    show: firstNotice.number,
-    extra: () => {
-      noNeedsInBar();
-      log("  page: the status bar has no 'Needs you'");
-    },
-  });
-  const overview = await service.call<{ rooms: Array<{ id: string; needs: number }> }>("GET", "/api/overview");
-  const listed = await service.call<Array<{ id: string; counts: { needsYou: number } }>>("GET", "/api/rooms");
-  if (overview.rooms.find((r) => r.id === room.roomId)?.needs !== 0 || listed.find((r) => r.id === room.roomId)?.counts.needsYou !== 0) fail("the overview or the room list still counts a notice that needs you");
-  browser.click(/button "Back to the overview"/);
-  browser.poll<{ pill: string | null } | null>(
-    "the room's tile without a 'needs you' pill",
-    `() => { const card = [...document.querySelectorAll('article.ov-room')].find((c) => c.querySelector('.ov-room-title')?.textContent === ${JSON.stringify(room.title)}); return card ? { pill: card.querySelector('.pill-input')?.textContent ?? null } : null; }`,
-    (tile) => tile !== null && tile.pill === null,
-  );
-  browser.screenshot("b1-the-tile-after-one-dismiss");
-  log("  page: the overview's tile has no 'needs you'; GET /api/overview and /api/rooms count 0");
-  browser.openRoom(room.title);
-  browser.click(/tab "Board/);
+  }, ["Recovery failure"], { focus: (x) => noticeOf(x, cancelWake.id)?.number, extra: noNeedsInBar });
   room.board("fable", "retire", "grok");
   await check.state("B1: the Consigliere retires the member whose briefing (in the user's name) failed", (x) => {
     const left = x.seats.find((w) => w.seatId === grok.seatId);
@@ -1869,7 +1856,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   });
 
   // 18. B1: the Consigliere's own failed turn on the user's message is in the chat as well as in the status bar, one
-  // notice: one Dismiss in the chat clears it everywhere, and Retry there sends his turn again.
+  // notice: one Dismiss in the chat clears it everywhere (the bar, the room's count, the room list, the overview's tile),
+  // and Retry there sends his turn again.
   await room.settle("fable");
   browser.click(/tab "[^"]*fable/);
   const release = await room.message("Plan the v1.3 release.");
@@ -1891,13 +1879,29 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   browser.show(hisNotice.number);
   rowButton(hisNotice.number, "Retry");
   log(`  page: #${hisNotice.number} is in the chat with Retry and Dismiss`);
+  const tileNeeds = async () => ({
+    overview: (await service.call<{ rooms: Array<{ id: string; needs: number }> }>("GET", "/api/overview")).rooms.find((r) => r.id === room.roomId)?.needs,
+    list: (await service.call<Array<{ id: string; counts: { needsYou: number } }>>("GET", "/api/rooms")).find((r) => r.id === room.roomId)?.counts.needsYou,
+  });
+  const beforeDismiss = await tileNeeds();
+  if (beforeDismiss.overview !== 1 || beforeDismiss.list !== 1) fail(`the overview and the room list should count his failure once: ${JSON.stringify(beforeDismiss)}`);
   browser.on("click", rowButton(hisNotice.number, "Dismiss"));
   await check.state("B1: one Dismiss in the chat clears his failure from the status bar and the room's count", (x) => {
     const notice = x.posts.find((p) => p.id === hisNotice.id);
     return notice?.notice.dismissed && notice.notice.retryRunId === hisFailed.id && x.needsYou.length === 0 && x.counts.needsYou === 0 ? `#${notice.number} dismissed, Retry still offered; needsYou empty, counts.needsYou=0` : null;
   }, ["dismissed"], { show: hisNotice.number, extra: noNeedsInBar });
-  const overviewAfter = await service.call<{ rooms: Array<{ id: string; needs: number }> }>("GET", "/api/overview");
-  if (overviewAfter.rooms.find((r) => r.id === room.roomId)?.needs !== 0) fail("the overview still counts his failure as needing you");
+  const afterDismiss = await tileNeeds();
+  if (afterDismiss.overview !== 0 || afterDismiss.list !== 0) fail(`the overview or the room list still counts his failure: ${JSON.stringify(afterDismiss)}`);
+  browser.click(/button "Back to the overview"/);
+  browser.poll<{ pill: string | null } | null>(
+    "the room's tile without a 'needs you' pill",
+    `() => { const card = [...document.querySelectorAll('article.ov-room')].find((c) => c.querySelector('.ov-room-title')?.textContent === ${JSON.stringify(room.title)}); return card ? { pill: card.querySelector('.pill-input')?.textContent ?? null } : null; }`,
+    (tile) => tile !== null && tile.pill === null,
+  );
+  browser.screenshot("b1-the-tile-after-one-dismiss");
+  log("  page: the overview's tile has no 'needs you'; GET /api/overview and /api/rooms counted 1 before the Dismiss, 0 after");
+  browser.openRoom(room.title);
+  browser.click(/tab "[^"]*fable/);
   browser.show(hisNotice.number);
   browser.on("click", rowButton(hisNotice.number, "Retry"));
   const retried = await until("his retried turn", async () => {

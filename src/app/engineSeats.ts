@@ -206,9 +206,9 @@ export class EngineSeats {
    * A member leaves the room (participant.retire from the page, `rooms-board retire` from the Consigliere: `by`). Refused,
    * naming what is open, while its seat has a run (one being stopped too) or a turn in T3, owns an open request, has a
    * pending activity, or has an answer to its own question that has not reached it. A request of Backroom's it has not
-   * answered (a briefing its thread failed on, say) is nobody's work: it is cancelled in the same step. Then its seat is retired
-   * in the journal, the member and its thread in rooms.sqlite (with the Consigliere's mark when it was his), and its T3
-   * thread goes as the thread setting says.
+   * answered (a briefing its thread failed on, say) is nobody's work: it is cancelled in the same step. Then its seat is
+   * retired in the journal, the member and its thread in rooms.sqlite (with the Consigliere's mark when it was his), and
+   * its T3 thread goes as the thread setting says.
    */
   async retire(input: { participantId: string; by?: string | null; thread: ThreadLifecycleAction | "keep" }): Promise<CommandResult> {
     const participant = this.member(input.participantId);

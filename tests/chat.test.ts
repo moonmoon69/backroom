@@ -47,7 +47,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const calledOffAboutWorker = post({ kind: "note", author: "$user", about: [{ requestId: "r1", number: 1 }], note: { source: "post", room: false, t3: null, afterAnswer: false } });
   const roomNote = post({ kind: "note", author: "$user", note: { source: "post", room: true, t3: null, afterAnswer: false } });
   // H6: a keep-alive to him and his one-line reply to it are on the board, never in the chat; a note of his own is.
-  const keepAlive = post({ kind: "notice", author: "$system", to: ["B"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, needsYou: false } });
+  const keepAlive = post({ kind: "notice", author: "$system", to: ["B"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, backroom: false, needsYou: false } });
   const keepAliveReply = post({ kind: "note", author: "B", note: { source: "keep-alive", room: false, t3: null, afterAnswer: false } });
   const hisNote = post({ kind: "note", author: "B", note: { source: "post", room: false, t3: null, afterAnswer: false } });
   const posts = [before, hisOldReply, briefing, toWorker, workerReply, typedOnWorker, typedOnHisOldThread, checkpoint, calledOffAboutWorker, roomNote, handover, after, hisNewReply, keepAlive, keepAliveReply, hisNote];
@@ -63,7 +63,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   assert.deepEqual([...shortHis.seats], ["B"]);
 });
 
-test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice) and a recovery failure are not in the user's chat", () => {
+test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice, from before B1 too) and a recovery failure are not in the user's chat", () => {
   const snapshot = {
     room: { consigliereId: "PC" },
     bindings: [
@@ -72,16 +72,20 @@ test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice
     ],
     seats: [seat("C", "tC", { orchestrator: true }), seat("G", "tG")],
   } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
-  const notice = (to: string[], needsYou: boolean) =>
-    post({ kind: "notice", author: "G", to, notice: { intent: "error", runId: "r", retryRunId: null, retried: false, dismissed: false, needsYou } });
+  const notice = (to: string[], needsYou: boolean, backroom = false, dismissed = false) =>
+    post({ kind: "notice", author: "G", to, notice: { intent: "error", runId: "r", retryRunId: "r", retried: false, dismissed, backroom, needsYou } });
   const briefing = request("seat-briefing:G:seated", "$system", "G", { state: "open" });
-  const failed = notice(["C"], false);
+  const failed = notice(["C"], false, true);
   const recovery = notice([], false);
   const asked = request("u1", "$user", "C", { state: "open" });
-  // A briefing in the user's name (a journal from before B1) failed: that notice is the user's, so it is in the chat.
-  const before = notice(["$user", "C"], true);
-  const posts = [briefing, failed, recovery, asked, before];
-  assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, before.id]);
+  // A briefing in the user's name (a journal from before B1) failed: it reached him too, so that notice is his (the
+  // read API's `backroom`), not in the chat though it names the user.
+  const before = notice(["$user", "C"], false, true);
+  // A member's failure on a request of the user's (a room that had no Consigliere when it was asked), dismissed: still
+  // addressed to the user, so still in the chat.
+  const users = notice(["$user"], false, false, true);
+  const posts = [briefing, failed, recovery, asked, before, users];
+  assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, users.id]);
 });
 
 test("B1: the Consigliere's own failed turn on your message is in the chat (the status bar's notice); his replies to Backroom's requests too; his failure that needs nobody is not", () => {
@@ -91,7 +95,7 @@ test("B1: the Consigliere's own failed turn on your message is in the chat (the 
     seats: [seat("C", "tC", { orchestrator: true })],
   } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
   const notice = (to: string[], needsYou: boolean, dismissed = false) =>
-    post({ kind: "notice", author: "C", to, notice: { intent: "error", runId: "r", retryRunId: "r", retried: false, dismissed, needsYou } });
+    post({ kind: "notice", author: "C", to, notice: { intent: "error", runId: "r", retryRunId: "r", retried: false, dismissed, backroom: false, needsYou } });
   const asked = request("u1", "$user", "C", { state: "open" });
   const failed = notice(["$user"], true);
   const dismissed = notice(["$user"], false, true);

@@ -43,7 +43,8 @@ export function backroomNotice(post: Pick<EnginePost, "author" | "request">): st
 /**
  * Backroom's own request to a member, as the service counts it (src/runtime/bindings.ts): one it asked (`$system`), or
  * one from before B1 in the user's name (a seat briefing, the line naming a new Consigliere, a reseat's checkpoint or
- * call-off). It is nobody's work: removing the member cancels it.
+ * call-off). It is nobody's work: removing the member cancels it. The ID prefixes are the service's; keep the two lists
+ * in step (the page cannot import the service's code).
  */
 export function backroomRequest(q: Pick<EngineRequestView, "id" | "returnTo">): boolean {
   return q.returnTo === "$system" || (q.returnTo === "$user" && ["seat-briefing:", "moved:", "reseat:", "reseat-off:"].some((prefix) => q.id.startsWith(prefix)));
