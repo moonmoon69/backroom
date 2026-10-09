@@ -58,12 +58,35 @@ export function roomForKey(repos: Repos, key: string): Room | null {
   return repos.listRooms().find((room) => room.id.startsWith(prefix)) ?? null;
 }
 
+/** What browserBusy asks of the running service. */
+export interface BusyProbes {
+  /** A room has work in flight. */
+  roomBusy: (roomId: string) => boolean;
+  /** A thread outside rooms has work in flight: a run, or background work of its agent. */
+  threadBusy: (threadId: string) => Promise<boolean>;
+  /** The keys of the agents with a tab of their own open in the browser (BrowserTools.agentsWithTabs). */
+  agentsWithTabs: (browserId: string) => Promise<string[]>;
+}
+
 /**
- * Whether a browser is busy: a room that uses it as its default has work in flight (`roomBusy`). A busy browser is never
- * stopped for idleness (RoomBrowsers' isBusy).
+ * Whether a browser is busy, so never stopped for idleness (RoomBrowsers' isBusy): a room that uses it as its default
+ * has work in flight, or an agent whose room or thread has work in flight has a tab of its own open in it (any browser
+ * the room may use, #598). Not every browser a room may use: by default that is every browser, and none would ever
+ * stop while a room works.
  */
-export function browserBusy(repos: Repos, browserId: string, roomBusy: (roomId: string) => boolean): boolean {
-  return roomsUsingBrowser(repos, browserId).some((room) => roomBusy(room.id));
+export async function browserBusy(repos: Repos, browserId: string, probes: BusyProbes): Promise<boolean> {
+  if (roomsUsingBrowser(repos, browserId).some((room) => probes.roomBusy(room.id))) return true;
+  for (const key of await probes.agentsWithTabs(browserId)) {
+    if (key.startsWith("thread.")) {
+      const prefix = key.slice("thread.".length);
+      const record = prefix.length >= 8 ? repos.findThreadBrowsers(prefix) : null;
+      if (record && (await probes.threadBusy(record.threadId))) return true;
+      continue;
+    }
+    const room = roomForKey(repos, key);
+    if (room && probes.roomBusy(room.id)) return true;
+  }
+  return false;
 }
 
 /** Rooms with browsers on whose default is this browser. */
