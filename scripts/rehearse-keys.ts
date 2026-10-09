@@ -90,6 +90,10 @@ interface Focus {
   chip: boolean;
   /** A status chip's choices are open under the work bar. */
   chipOpen: boolean;
+  /** A correction (Correct…'s box) is open where the keys reach it. */
+  correctionOpen: boolean;
+  /** The focus is in a request's block: its Correct…, Cancel, or its open correction. */
+  inCorrection: boolean;
 }
 
 const FOCUS = `() => {
@@ -125,6 +129,8 @@ const FOCUS = `() => {
     dialogBody: (() => { const b = document.querySelector('.dialog .dialog-body'); return b ? { top: Math.round(b.scrollTop), more: b.scrollHeight - b.clientHeight } : null; })(),
     chip: Boolean(a && a.classList.contains('work-chip')),
     chipOpen: Boolean(document.querySelector('.work-open')),
+    correctionOpen: [...document.querySelectorAll('.req-correct')].some((e) => !e.closest('[inert]')),
+    inCorrection: Boolean(a && a.closest('.req-block')),
   };
 }`;
 
@@ -528,6 +534,25 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc: back on Correct…, the field closed", (f) => f.label === "Correct…" && f.expanded === "false" && f.drawers.some((d) => d.view === "room" && !d.inert));
   state("Correct… takes the focus; Esc goes back to it");
 
+  // An open correction is in front wherever the focus is: Esc closes it from outside it, and Backspace closes it first.
+  const inRoom = (f: Focus) => f.drawers.some((d) => d.view === "room" && !d.inert);
+  press("Enter");
+  await expect("Enter: the correction open again, its field focused", (f) => f.tag === "TEXTAREA" && f.label === `Correction to #${openPost.number}` && f.correctionOpen);
+  const away = await tabTo("Tab out of the correction, leaving it open", (f) => f.correctionOpen && !f.inCorrection && inRoom(f), "Tab", 6);
+  press("Escape");
+  await expect(`Esc from "${away.label.slice(0, 30)}": the correction closed, the room open, the focus where it was`, (f) => !f.correctionOpen && inRoom(f) && f.label === away.label && f.tag === away.tag);
+  await tabTo("Shift+Tab back to Correct…", (f) => f.label === "Correct…" && f.inCorrection, "Shift+Tab", 6);
+  press("Enter");
+  await expect("Enter: the correction once more", (f) => f.tag === "TEXTAREA" && f.correctionOpen);
+  await tabTo("Tab out of it again", (f) => f.correctionOpen && !f.inCorrection && inRoom(f), "Tab", 6);
+  press("Backspace");
+  await expect("Backspace from outside it closes the correction first: the room stays, the focus where it was", (f) => !f.correctionOpen && inRoom(f) && f.label === away.label && f.tag === away.tag);
+  const still = room.post(await room.snapshot(), open);
+  if (still.request?.state !== "open" || still.request?.corrections !== 0) fail(`#${openPost.number} changed in the API: ${JSON.stringify(still.request)}`);
+  log(`api: #${openPost.number} is still open with no correction sent`);
+  state("an open correction is in front wherever the focus is: Esc closes it, Backspace closes it first");
+  await tabTo("Shift+Tab back to Correct…", (f) => f.label === "Correct…" && f.inCorrection, "Shift+Tab", 6);
+
   // The same inside the post's detail: Esc in the correction closes the field, not the dialog (and its text with it).
   press("End");
   await expect(`End: #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
@@ -541,6 +566,11 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("what is typed goes into it", (f) => f.inDialog && f.value === "ab");
   press("Escape");
   await expect("Esc closes the field only: the detail stays, the focus on its Correct…", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && f.label === "Correct…");
+  press("Enter");
+  await expect("Enter: the correction in the detail open again", (f) => f.inDialog && f.tag === "TEXTAREA" && f.correctionOpen);
+  const elsewhere = await tabTo("Tab out of it, still in the detail", (f) => f.inDialog && f.correctionOpen && !f.inCorrection, "Tab", 6);
+  press("Escape");
+  await expect("Esc from elsewhere in the detail closes the correction, not the detail", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && !f.correctionOpen && f.label === elsewhere.label);
   press("Escape");
   await expect(`Esc again closes the detail, the focus back on #${openPost.number}`, (f) => f.dialog === null && f.key === `post:${openPost.seq}`);
   state("in a post's detail, Esc in a correction closes the field, not the detail");

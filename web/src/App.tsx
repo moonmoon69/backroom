@@ -219,8 +219,9 @@ export function App() {
   };
   useEffect(() => {
     trackFocus();
-    // A Backspace held down in a text field (clearing a draft) stays the field's until it is let go: its repeats do not
-    // go on to leave the room once the field is empty and the composer has closed.
+    // A Backspace held down in a text field (clearing a draft) stays the field's until it is let go: should the field go
+    // away under it, its repeats do not go on to leave the room. (The composer itself stays open under a held Backspace,
+    // composerOverlay.tsx.)
     let heldInField = false;
     const onCapture = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null;

@@ -82,13 +82,17 @@ export function OverviewRoom({
   const landingRef = useRef(landing);
   landingRef.current = landing;
   // The panel closed with the focus in it (Backspace, its ×): the focus goes back to the conversation, on the item it
-  // came from.
+  // came from, without moving the board. A key closed it when the ring shows there (:focus-visible follows the last
+  // input), and then the item is brought into view; after a click the board stays where it was.
   const hadPanel = useRef(panel);
   useEffect(() => {
     const had = hadPanel.current;
     hadPanel.current = panel;
     const now = document.activeElement;
-    if (had && !panel && (!now || now === document.body)) focusItem(landingRef.current("board"));
+    if (!had || panel || (now && now !== document.body)) return;
+    const item = landingRef.current("board");
+    item?.focus({ preventScroll: true });
+    if (item?.matches(":focus-visible")) item.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [panel]);
   useEffect(() => {
     const landing = (pane: Pane) => landingRef.current(pane);

@@ -151,7 +151,8 @@ function HtmlView({ content, name, onClose }: { content: string; name: string; o
   }, []);
 
   // Runs before supplied scripts, including ones that stop key propagation inside the document.
-  const document = `${htmlHead}<script>window.addEventListener("keydown",function(event){if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();parent.postMessage("${HTML_CLOSE_MESSAGE}","*");}},true);</script>${content}`;
+  // In the document Esc, and Backspace outside its text fields, close the preview, as they close any dialog.
+  const document = `${htmlHead}<script>window.addEventListener("keydown",function(event){var t=event.target;if(event.key==="Escape"||(event.key==="Backspace"&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))))){event.preventDefault();event.stopImmediatePropagation();parent.postMessage("${HTML_CLOSE_MESSAGE}","*");}},true);</script>${content}`;
   // Encode '<' so supplied </script> or other markup can never break out of the trusted envelope's script string.
   const encodedDocument = JSON.stringify(document).replace(/</g, "\\u003c");
   const srcDoc = `${htmlHead}<style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="HTML document"></iframe><script>(function(){const frame=document.querySelector("iframe");window.addEventListener("message",function(event){if(event.data==="${HTML_CLOSE_MESSAGE}"&&event.source===frame.contentWindow)parent.postMessage("${HTML_CLOSE_MESSAGE}","*");});frame.srcdoc=${encodedDocument};})();</script>`;

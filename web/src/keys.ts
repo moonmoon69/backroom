@@ -40,16 +40,18 @@ export function keepsArrows(element: Element | null): boolean {
 export const isTextField = (element: Element | null): boolean =>
   element instanceof HTMLElement && (element.isContentEditable || element.matches("textarea, select, input:not([type=button], [type=submit], [type=reset], [type=checkbox], [type=radio], [type=image], [type=file], [type=color])"));
 
-/** Something open that takes Escape: a dialog, a menu, a popover, a suggestion list, the composer, a status chip's choices. */
-const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay, .work-open";
+/**
+ * Something open that takes Escape: a dialog, a menu, a popover, a suggestion list, the composer, a status chip's
+ * choices, a correction (Correct…'s box).
+ */
+const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay, .work-open, .req-correct";
 
 /**
- * Whether something is in front, for Escape and Backspace: such a thing open where the keys reach it (not under an
- * inert layer: the room's composer under a member's thread), or a Correct… box the focus is in.
+ * Whether something is in front, for Escape and Backspace: such a thing open where the keys reach it, wherever the
+ * focus is (not under an inert layer: the room's composer under a member's thread).
  */
 export const inFront = (target: Element | null): boolean =>
-  [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]")) ||
-  Boolean(target?.closest(".dialog, .menu") || target?.closest(".req-block")?.querySelector(".req-correct"));
+  [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]")) || Boolean(target?.closest(".dialog, .menu"));
 
 /** The arrow keys and the two ends, without modifiers, outside anything that keeps them: a key the page's navigation takes. */
 export function navKey(event: KeyboardEvent): NavKey | null {
