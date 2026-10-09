@@ -13,8 +13,8 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { choosePorts, PortReservations, type Ports } from "./ports.ts";
 
 export type BrowserMode = "vnc" | "window" | "headless";
 
@@ -80,17 +80,19 @@ export interface RoomBrowserOptions {
    * ROOMS_BROWSER_SCOPE=0.
    */
   systemdScope?: boolean;
-  /** True while a room using the browser has work in flight; a busy browser is never stopped for idleness. */
-  isBusy?: (browserId: string) => boolean;
+  /**
+   * The folder this machine's Backrooms share to record which keeps which browser ports (ports.ts); null keeps to this
+   * Backroom's own (tests).
+   */
+  portsDir?: string | null;
+  /** Other Backrooms' data folders whose browsers' ports are recorded too: the user's, for a throwaway run from a worktree. */
+  knownDataDirs?: string[];
+  /** How often tabs and idleness are checked; default POLL_MS. */
+  pollMs?: number;
+  /** True while the browser is in use (see catalog.ts browserBusy); a busy browser is never stopped for idleness. */
+  isBusy?: (browserId: string) => boolean | Promise<boolean>;
   onChange?: (browserId: string) => void;
   log?: (message: string, detail?: unknown) => void;
-}
-
-interface Ports {
-  cdp: number;
-  vnc: number;
-  web: number;
-  display: number;
 }
 
 interface Instance {
@@ -133,6 +135,7 @@ export class RoomBrowsers {
   private readonly options: Required<Pick<RoomBrowserOptions, "dataDir" | "bindHost" | "noVncDir" | "idleMinutes">> & RoomBrowserOptions;
   private timer: NodeJS.Timeout | null = null;
   private cachedEnvironment: BrowserEnvironment | null = null;
+  private readonly reservations: PortReservations | null;
 
   constructor(options: RoomBrowserOptions) {
     this.options = {
@@ -141,6 +144,7 @@ export class RoomBrowsers {
       idleMinutes: 30,
       ...options,
     };
+    this.reservations = options.portsDir ? new PortReservations(options.portsDir) : null;
   }
 
   /** What this machine can run; computed once (installing programs needs a service restart to be noticed). */
@@ -169,10 +173,14 @@ export class RoomBrowsers {
     return this.cachedEnvironment;
   }
 
-  /** Adopt browsers left running by a previous run of the service, then watch tabs and idleness. */
+  /**
+   * Record the ports this Backroom's browsers keep (ports.ts), adopt browsers left running by a previous run of the
+   * service, then watch tabs and idleness.
+   */
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.poll(), POLL_MS);
+    this.recordSaved();
+    this.timer = setInterval(() => void this.poll(), this.options.pollMs ?? POLL_MS);
     void this.adopt();
   }
 
@@ -375,57 +383,42 @@ export class RoomBrowsers {
     return null;
   }
 
-  /** Stable per browser: reuse the saved ports when they are free, otherwise pick new ones and save them. */
+  /**
+   * Stable per browser: reuse the saved ports when they are free, otherwise pick new ones and save them. No port or
+   * display another Backroom's browsers keep (ports.ts).
+   */
   private async portsFor(browserId: string, mode: BrowserMode): Promise<Ports> {
     const dir = this.browserDir(browserId);
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, "ports.json");
-    const taken = new Set<number>([...this.instances.values()].flatMap((i) => [i.ports.cdp, i.ports.vnc, i.ports.web]));
-    const takenDisplays = new Set([...this.instances.values()].map((i) => i.ports.display));
-    let saved: Partial<Ports> = {};
-    try {
-      saved = JSON.parse(readFileSync(file, "utf8")) as Partial<Ports>;
-    } catch {
-      saved = {};
-    }
-    const pick = async (preferred: number | undefined, base: number, host: string): Promise<number> => {
-      // The saved port keeps the address agents were given; a browser that was just stopped may still hold it briefly.
-      if (preferred && !taken.has(preferred)) {
-        const deadline = Date.now() + 5000;
-        while (!(await portFree(preferred, host)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-        if (await portFree(preferred, host)) {
-          taken.add(preferred);
-          return preferred;
-        }
-      }
-      for (let port = base; port < base + 500; port += 1) {
-        if (!taken.has(port) && (await portFree(port, host))) {
-          taken.add(port);
-          return port;
-        }
-      }
-      throw new Error(`no free port near ${base}`);
-    };
-    const cdp = await pick(saved.cdp, 9300, "127.0.0.1");
-    const vnc = mode === "vnc" ? await pick(saved.vnc, 5950, "127.0.0.1") : saved.vnc ?? 0;
-    const web = mode === "vnc" ? await pick(saved.web, 6100, this.options.bindHost) : saved.web ?? 0;
-    let display = saved.display ?? 0;
-    if (mode === "vnc") {
-      const free = (n: number) => !takenDisplays.has(n) && !existsSync(`/tmp/.X11-unix/X${n}`) && !existsSync(`/tmp/.X${n}-lock`);
-      if (!display || !free(display)) {
-        display = 0;
-        for (let n = 100; n < 400; n += 1) {
-          if (free(n)) {
-            display = n;
-            break;
-          }
-        }
-        if (!display) throw new Error("no free X display");
+    this.recordSaved();
+    return choosePorts({
+      file: join(dir, "ports.json"),
+      mode,
+      bindHost: this.options.bindHost,
+      taken: new Set<number>([...this.instances.values()].flatMap((i) => [i.ports.cdp, i.ports.vnc, i.ports.web])),
+      takenDisplays: new Set([...this.instances.values()].map((i) => i.ports.display)),
+      reservations: this.reservations,
+      owner: resolve(this.options.dataDir, "browsers"),
+    });
+  }
+
+  private recorded = false;
+
+  /**
+   * Record, once, the ports and displays this Backroom's browsers saved, and those of the other data folders it knows
+   * (knownDataDirs), in the machine's shared folder. A port another Backroom keeps is logged; that browser gets another
+   * at its next start.
+   */
+  private recordSaved(): void {
+    if (this.recorded || !this.reservations) return;
+    this.recorded = true;
+    for (const dataDir of [this.options.dataDir, ...(this.options.knownDataDirs ?? [])]) {
+      try {
+        for (const conflict of this.reservations.reserveSaved(resolve(dataDir, "browsers"))) this.log("browser port kept by another Backroom", conflict);
+      } catch (error) {
+        this.log("browser ports could not be recorded", { dataDir, error: (error as Error).message });
       }
     }
-    const ports: Ports = { cdp, vnc, web, display };
-    writeFileSync(file, JSON.stringify(ports, null, 2));
-    return ports;
   }
 
   private async launch(instance: Instance, chromePath: string): Promise<void> {
@@ -624,10 +617,20 @@ export class RoomBrowsers {
       }
       if (await this.refreshTabs(instance)) this.changed(instance.browserId);
       const idle = Date.now() - Date.parse(instance.lastActivityAt) > idleMs;
-      if (idleMs > 0 && idle && !(this.options.isBusy?.(instance.browserId) ?? false)) {
+      if (idleMs > 0 && idle && !(await this.busy(instance.browserId))) {
         this.log("browser idle; stopping", { browserId: instance.browserId });
         await this.stop(instance.browserId);
       }
+    }
+  }
+
+  /** Whether the browser is in use; a question that fails counts as yes (it is not stopped on a guess). */
+  private async busy(browserId: string): Promise<boolean> {
+    try {
+      return (await this.options.isBusy?.(browserId)) ?? false;
+    } catch (error) {
+      this.log("browser busy check failed; not stopping it", { browserId, error: (error as Error).message });
+      return true;
     }
   }
 
@@ -647,14 +650,6 @@ function groupAlive(group: number): boolean {
   } catch {
     return false;
   }
-}
-
-function portFree(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once("error", () => resolve(false));
-    server.listen(port, host, () => server.close(() => resolve(true)));
-  });
 }
 
 /** Ask Chrome to quit through its DevTools port (Browser.close). True once it acknowledged or closed the connection. */

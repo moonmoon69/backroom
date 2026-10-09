@@ -294,6 +294,27 @@ export class BrowserTools {
     this.shared.clear();
   }
 
+  /**
+   * The keys of the agents with a tab of their own open in a running browser, for the idle stop. Tabs closed other
+   * than with rooms-browser (by the user, or by their page) are forgotten here; when Chrome does not answer, what is
+   * known counts.
+   */
+  async agentsWithTabs(browserId: string): Promise<string[]> {
+    const shared = this.shared.get(browserId);
+    if (!shared || shared.owners.size === 0) return [];
+    try {
+      const { targetInfos } = (await this.cdp(shared.cdpUrl, "Target.getTargets", { filter: [{ type: "tab" }] })) as { targetInfos?: Array<{ targetId: string }> };
+      const open = new Set((targetInfos ?? []).map((t) => t.targetId));
+      for (const number of [...shared.owners.keys()]) {
+        const tabId = shared.tabId(number);
+        if (tabId === undefined || !open.has(tabId)) shared.forget(number);
+      }
+    } catch {
+      // keep what is known
+    }
+    return [...new Set(shared.owners.values())];
+  }
+
   /** Run one rooms-browser command line (argv without the program name). Returns the text to print. */
   async run(argv: string[], caller: ToolCaller): Promise<string> {
     const [first, second, third, ...rest] = argv;

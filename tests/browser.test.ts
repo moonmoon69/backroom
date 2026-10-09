@@ -7,8 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { RoomBrowsers, type BrowserBriefing } from "../src/browser/roomBrowsers.ts";
+import { RoomBrowsers, type BrowserBriefing, type RoomBrowserOptions } from "../src/browser/roomBrowsers.ts";
 import { accessForKey, agentKey, reconcileBrowserCatalog, threadKey } from "../src/browser/catalog.ts";
+import { mainCheckoutData } from "../src/browser/ports.ts";
 import { BrowserTools, BrowserToolError, cdpCall } from "../src/browser/tools.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
@@ -364,6 +365,23 @@ test("two agents in one browser: each its own engine and windows, one tab number
   tools.closeAll();
 });
 
+test("the agents with a tab open in a browser, for the idle stop: a tab closed outside rooms-browser is forgotten", async () => {
+  const chrome = fakeChrome();
+  const record = { id: "shared", name: "shared", description: "", createdAt: "", updatedAt: "" };
+  const tools = new BrowserTools({ browsers: chrome.manager as never, findBrowser: () => record, accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }), engine: chrome.engine as never, cdp: chrome.cdp });
+  assert.deepEqual(await tools.agentsWithTabs("shared"), [], "nothing opened yet");
+  const a = { as: "worker.aaaaaaaa", force: false };
+  const tabA = /Opened tab (\d+)/.exec(await tools.run(["shared", "open", "http://127.0.0.1:4461/"], a))?.[1] as string;
+  await tools.run(["shared", "open", "http://127.0.0.1:4462/"], { as: "reviewer.aaaaaaaa", force: false });
+  assert.deepEqual((await tools.agentsWithTabs("shared")).sort(), ["reviewer.aaaaaaaa", "worker.aaaaaaaa"]);
+  // The user closes the reviewer's window.
+  chrome.tabs.delete([...chrome.tabs].find(([, t]) => t.url === "http://127.0.0.1:4462/")![0]);
+  assert.deepEqual(await tools.agentsWithTabs("shared"), ["worker.aaaaaaaa"]);
+  await tools.run(["shared", tabA, "close"], a);
+  assert.deepEqual(await tools.agentsWithTabs("shared"), []);
+  tools.closeAll();
+});
+
 test("an engine whose call timed out is closed; the agent's next call gets a fresh one and its tab is still its own", async () => {
   const chrome = fakeChrome();
   const record = { id: "shared", name: "shared", description: "", createdAt: "", updatedAt: "" };
@@ -451,10 +469,18 @@ test("ROOMS_BROWSER_MODE=off reports the browser as unavailable", () => {
   assert.match(status.error ?? "", /disabled/);
 });
 
+/**
+ * A headless Backroom for the tests that launch a real Chrome (ROOMS_TEST_CHROME=1). Its ports are recorded in a
+ * folder of its own, which also records the user's browsers (the main checkout's data folder), so a test never takes a
+ * port a stopped browser of the user's keeps (#598).
+ */
+const realBrowsers = (dataDir: string, options: Partial<Pick<RoomBrowserOptions, "systemdScope" | "idleMinutes" | "isBusy" | "pollMs">> = {}) =>
+  new RoomBrowsers({ dataDir, mode: "headless", portsDir: join(dataDir, "browser-ports"), knownDataDirs: [mainCheckoutData(process.cwd())].filter((d): d is string => d !== null), ...options });
+
 // Launches a real headless Chrome; opt in with ROOMS_TEST_CHROME=1.
 test("a real headless Chrome: start, attach, see tabs, stop, restart on the same port", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
-  const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
+  const browsers = realBrowsers(dataDir);
   t.after(async () => {
     await browsers.stopAll();
     rmSync(dataDir, { recursive: true, force: true });
@@ -474,7 +500,7 @@ test("a real headless Chrome: start, attach, see tabs, stop, restart on the same
 
 test("a real headless Chrome quits cleanly on stop: its tabs come back and its history is kept", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
-  const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
+  const browsers = realBrowsers(dataDir);
   const site = createServer((_req, res) => res.end("<title>kept tab</title><h1>kept</h1>"));
   await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(site.address() as AddressInfo).port}/kept`;
@@ -501,7 +527,7 @@ test("a real headless Chrome quits cleanly on stop: its tabs come back and its h
 
 test("under systemd, a real Chrome runs in its own scope, outside the service's cgroup", { skip: process.env.ROOMS_TEST_CHROME !== "1" || process.platform !== "linux" }, async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
-  const browsers = new RoomBrowsers({ dataDir, mode: "headless", systemdScope: true });
+  const browsers = realBrowsers(dataDir, { systemdScope: true });
   t.after(async () => {
     await browsers.stopAll();
     rmSync(dataDir, { recursive: true, force: true });
@@ -530,7 +556,7 @@ test("under systemd, a real Chrome runs in its own scope, outside the service's 
 
 test("rooms-browser against a real headless Chrome: own tabs, element uids, refusals, --force", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
-  const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
+  const browsers = realBrowsers(dataDir);
   const record = { id: "tools", name: "tools", description: "", createdAt: "", updatedAt: "" };
   const tools = new BrowserTools({ browsers, findBrowser: (name) => (name === "tools" ? record : null), accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }) });
   const site = createServer((_req, res) => res.end(`<title>form</title><h1>ready</h1><input aria-label="Name"><button onclick="document.querySelector('h1').textContent='hi '+document.querySelector('input').value">Greet</button>`));
@@ -563,7 +589,7 @@ test("rooms-browser against a real headless Chrome: own tabs, element uids, refu
 
 test("two agents at once in one real headless Chrome: a window each, focus rings in both, neither waits", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
-  const browsers = new RoomBrowsers({ dataDir, mode: "headless" });
+  const browsers = realBrowsers(dataDir);
   const record = { id: "pair", name: "pair", description: "", createdAt: "", updatedAt: "" };
   const tools = new BrowserTools({ browsers, findBrowser: (name) => (name === "pair" ? record : null), accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }) });
   const site = createServer((req, res) => res.end(`<title>${req.url}</title><style>button:focus-visible{outline:3px solid red}</style><button>one</button>`));
@@ -603,4 +629,37 @@ test("two agents at once in one real headless Chrome: a window each, focus rings
     assert.match(await tools.run(["pair", tab, "eval", "() => document.hasFocus() && document.activeElement.matches(':focus-visible') ? 'ring' : 'none'"], who), /ring/);
     assert.match(await tools.run(["pair", tab, "screenshot"], who), /Saved screenshot to .*\.png/);
   }
+});
+
+test("a real headless Chrome idle past its time is stopped only once nothing uses it; a busy check that fails counts as busy", { skip: process.env.ROOMS_TEST_CHROME !== "1" }, async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "rooms-browser-"));
+  let answer: "busy" | "fails" | "idle" = "busy";
+  const asked: string[] = [];
+  // Idle after 60 ms, checked every 300 ms.
+  const browsers = realBrowsers(dataDir, {
+    idleMinutes: 0.001,
+    pollMs: 300,
+    isBusy: async (browserId) => {
+      asked.push(browserId);
+      if (answer === "fails") throw new Error("T3 did not answer");
+      return answer === "busy";
+    },
+  });
+  t.after(async () => {
+    await browsers.stopAll();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  await browsers.ensure("idle");
+  browsers.start();
+  const after = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  await after(1000);
+  assert.ok(asked.length >= 2, `the poll asked (${asked.length} times)`);
+  assert.equal(browsers.status("idle").state, "running", "an agent's tab is in use");
+  answer = "fails";
+  await after(1000);
+  assert.equal(browsers.status("idle").state, "running", "not stopped on a failed question");
+  answer = "idle";
+  const end = Date.now() + 8000;
+  while (browsers.status("idle").state !== "stopped" && Date.now() < end) await after(100);
+  assert.equal(browsers.status("idle").state, "stopped");
 });
