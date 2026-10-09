@@ -232,6 +232,7 @@ function ParticipantChip({
       role="group"
       data-nav="member"
       data-nav-key={`member:${participant.id}`}
+      data-where={`@${participant.alias}${isConsigliere ? ", the Consigliere" : ""} · ${described.label}`}
       aria-label={`@${participant.alias}${isConsigliere ? ", the Consigliere" : ""}, ${described.label}${described.detail ? `, ${described.detail}` : ""}`}
       aria-description="Enter opens its thread"
       onKeyDown={(event) => {

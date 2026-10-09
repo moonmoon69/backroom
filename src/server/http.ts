@@ -11,9 +11,10 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
+import type { T3Credential } from "../app/t3Credential.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
-import { exchangePairingCredential, parsePairingUrl, readStoredAuth, writeStoredAuth } from "../adapter/auth.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3Unavailable, backgroundOf, runPrompt } from "../adapter/types.ts";
+import { exchangePairingCredential, parsePairingUrl, readStoredAuth, sameT3Host, writeStoredAuth } from "../adapter/auth.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, runPrompt } from "../adapter/types.ts";
 import type { T3ThreadDetail } from "../adapter/types.ts";
 import {
   backgroundTasks,
@@ -66,7 +67,7 @@ export interface BrowserToolsHttp {
   command: string;
 }
 
-export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, speech?: SpeechSynth | null): Hono {
+export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, speech?: SpeechSynth | null, t3Credential?: T3Credential | null): Hono {
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
   const costs = new ThreadCosts({
@@ -87,6 +88,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     if (error instanceof CommandValidationError) return c.json({ error: "invalid_command", message: error.message, issues: error.issues }, 400);
     if (error instanceof RoomError) return c.json({ error: error.code, message: error.message }, error.status as 400);
     if (error instanceof T3Unavailable) return c.json({ error: "t3_unavailable", message: error.message }, 503);
+    if (error instanceof T3ScopeMissing) return c.json({ error: "t3_scope_missing", message: error.message }, 403);
     console.error(error);
     return c.json({ error: "internal", message: (error as Error).message }, 500);
   });
@@ -130,6 +132,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         paired: stack.adapter.kind === "fake" ? true : Boolean(httpAdapter?.hasCredentials),
         pairedAt: stored?.pairedAt ?? null,
         tokenExpiresAt: stored?.expiresAt ?? null,
+        credential: t3Credential?.status() ?? null,
         environment,
         auth,
         error,
@@ -143,13 +146,14 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const body = (await c.req.json()) as { pairingUrl?: string };
     if (!body.pairingUrl) throw new RoomError("missing_pairing_url", "pairingUrl is required");
     const { baseUrl, credential } = parsePairingUrl(body.pairingUrl);
-    if (config.t3BaseUrl && new URL(config.t3BaseUrl).host !== new URL(baseUrl).host) {
+    if (config.t3BaseUrl && !sameT3Host(config.t3BaseUrl, baseUrl)) {
       // Allow pairing to a different host, but say so: the adapter is bound to the configured base URL.
       throw new RoomError("base_url_mismatch", `pairing URL host ${new URL(baseUrl).host} does not match configured T3 ${config.t3BaseUrl}; set T3_BASE_URL and restart`);
     }
     const auth = await exchangePairingCredential(baseUrl, credential);
     writeStoredAuth(config.dataDir, auth);
     httpAdapter.setAccessToken(auth.accessToken);
+    t3Credential?.paired();
     return c.json({ paired: true, scope: auth.scope, expiresAt: auth.expiresAt });
   });
 
@@ -212,7 +216,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     try {
       return c.json({ ...(await stack.adapter.browseFolders(path)), unreadable: null });
     } catch (error) {
-      if (error instanceof T3CommandRejected) return c.json({ parentPath: null, entries: [], unreadable: "T3 cannot read that folder on its machine." });
+      if (error instanceof T3CommandRejected) return c.json({ parentPath: null, entries: [], unreadable: error instanceof T3ScopeMissing ? error.message : "T3 cannot read that folder on its machine." });
       throw error;
     }
   });

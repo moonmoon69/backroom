@@ -1,6 +1,6 @@
 /**
- * Keyboard navigation of the page (the shortcuts are listed in one place: keyOrder.ts, KEYS, shown by `?` and in
- * README.md; the overview's reading order is there too, apart from the page, so it is tested on its own).
+ * Keyboard navigation of the page (the shortcuts are listed in one place: keyOrder.ts, KEYS, shown by the key bar and
+ * `?` and in README.md; the overview's reading order is there too, apart from the page, so it is tested on its own).
  *
  * The page moves real focus: every item the arrows reach is an element with `data-nav` (its group) and `data-nav-key`
  * (a key that survives a redraw: "room:<id>", "post:<seq>", …), focusable (a button, or tabindex -1 with a role and a
@@ -22,7 +22,7 @@
  */
 
 import { useEffect, useRef, type RefObject } from "react";
-import { inReadingOrder, readingTarget, type NavKey, type Placed } from "./keyOrder.ts";
+import { inReadingOrder, readingTarget, type KeyWhen, type NavKey, type PlaceId, type Placed } from "./keyOrder.ts";
 
 const OWN_ARROW_ROLES = ["listbox", "option", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "radiogroup", "radio", "slider", "spinbutton", "combobox", "grid", "gridcell", "tree", "treeitem", "tablist", "tab", "scrollbar", "textbox", "searchbox"];
 
@@ -140,6 +140,101 @@ export function listTarget(items: HTMLElement[], current: HTMLElement | null, ke
   if (key === "down") return items[at + 1] ?? null;
   if (key === "up") return items[at - 1] ?? null;
   return null;
+}
+
+// ---- where the ring is, for the key bar (KeyBar.tsx) ----
+
+/** The place the ring is on (keyOrder.ts, KEYS), what it is on in words, and what holds now that changes a key. */
+export interface PlaceNow {
+  place: PlaceId;
+  where: string;
+  now: KeyWhen[];
+}
+
+/** An element as it reads: its label, else its text, else its title. */
+const nameOf = (element: Element): string =>
+  (element.getAttribute("aria-label") ?? element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120) || (element.getAttribute("title") ?? "");
+
+/** An item's words for the bar: what it says it is (`data-where`), else its name. */
+const whereOf = (item: HTMLElement): string => item.dataset.where ?? nameOf(item);
+
+/** The overview's items by the kind their key starts with. */
+const OVERVIEW_PLACES: Record<string, PlaceId> = { room: "overview-room", thread: "overview-thread", member: "overview-member", preset: "overview-crew", browser: "overview-browser", shelf: "overview-shelf" };
+
+/** Where the ring is now, read off the page: the focused element, what it is in, and what is open around it. */
+export function keyPlace(): PlaceNow {
+  const focused = document.activeElement;
+  const active = focused instanceof HTMLElement && focused !== document.body && focused !== document.documentElement ? focused : null;
+  const now: KeyWhen[] = [];
+  if (document.querySelector(".key-help")) now.push("help");
+  if (active && isTextField(active)) {
+    now.push("typing");
+    if ("value" in active && active.value === "") now.push("empty");
+  }
+  const at = (place: PlaceId, where: string): PlaceNow => ({ place, where, now });
+
+  if (active?.closest(".model-menu")) return at("model-list", "choosing a model");
+  // A menu is named by the button that opened it ("Third options").
+  const menu = active?.closest<HTMLElement>("[role='menu'], .menu, .popover");
+  const opener = document.querySelector("[aria-haspopup][aria-expanded='true']");
+  if (menu) return at("menu", menu.getAttribute("aria-label") ?? (opener ? nameOf(opener) : "a menu"));
+  const dialog = active?.closest<HTMLElement>(".dialog") ?? (active ? null : [...document.querySelectorAll<HTMLElement>(".dialog:not([inert])")].at(-1));
+  if (dialog) return at("dialog", dialog.getAttribute("aria-label") ?? "a dialog");
+
+  if (active?.matches("textarea[aria-label='Message']")) {
+    const list = active.closest(".composer")?.querySelector(".mention-menu");
+    if (list) return at("suggestions", list.classList.contains("slash-menu") ? "choosing a command" : "choosing a member");
+    // A thread's composer has no @ or / lists.
+    return at(active.closest(".thread-composer") ? "composer" : "room-composer", "writing a message");
+  }
+  const correction = active?.getAttribute("aria-label")?.match(/^Correction to (#\d+)$/);
+  if (correction) return at("correction", `correcting ${correction[1]}`);
+
+  // What covers the overview: the drawer the focus is in, else the topmost one the keys reach.
+  const layer = active?.closest<HTMLElement>(".ov-drawer") ?? [...document.querySelectorAll<HTMLElement>(".ov-drawer")].filter((drawer) => !drawer.closest("[inert]")).at(-1) ?? null;
+  const title = (prefix: string) => (layer?.getAttribute("aria-label") ?? "").replace(prefix, "").trim();
+  if (layer && active && isTextField(active)) return at("field", nameOf(active) || "a text field");
+  const item = itemOf(active);
+  // A button inside an item (a post's Correct…, a member's menu) is a button, said with the item it is on.
+  const control = active && item && item !== active ? `${nameOf(active)} · ${whereOf(item)}` : null;
+  const view = layer?.dataset.view;
+  if (view === "member") return at("member-thread", `${layer!.getAttribute("aria-label") ?? "a member's thread"}, read only`);
+  if (view === "room") {
+    if (layer!.querySelector(".composer-overlay")) now.push("composer-open");
+    if (layer!.querySelector(".work-open")) now.push("chip-open");
+    if (layer!.querySelector(".req-correct")) now.push("correcting");
+    if (layer!.querySelector(".inspector")) now.push("panel-open");
+    if (control) return at("room-button", control);
+    if (item?.dataset.nav === "post") return at("room-post", whereOf(item));
+    if (item?.dataset.nav === "member") return at("room-member", whereOf(item));
+    // The first tab is the chat, the second the board.
+    if (active?.matches(".sheet-tabs [role='tab']")) return at("room-tabs", active.parentElement?.querySelector("[role='tab']")?.getAttribute("aria-selected") === "true" ? "the view's tabs: the chat" : "the view's tabs: the board");
+    if (active?.matches(".composer-strip")) return at("room-strip", nameOf(active));
+    // A side panel: the panel itself (reached with the arrows, or after a click on empty space), where Enter opens the
+    // composer, or a button in it. The arrows in Members go to the members; in Browser and Git through its controls.
+    const pane = active?.closest<HTMLElement>("[data-nav-pane='people'], [data-nav-pane='browser'], [data-nav-pane='git']");
+    if (pane) {
+      const members = pane.dataset.navPane === "people";
+      const panel = `the ${pane.getAttribute("aria-label")} panel`;
+      if (pane === active) return at(members ? "room-members" : "room-pane", panel);
+      return at(members ? "room-members-button" : "room-pane-button", `${nameOf(active!)} · ${panel}`);
+    }
+    // Nothing in the room has the ring: the room's window itself (as it opens, after a click on empty space) or the page
+    // (the focused button went away); Enter there opens the composer.
+    return active && active !== layer ? at("room-other", nameOf(active)) : at("room-itself", title("Room"));
+  }
+  if (view === "thread") {
+    if (layer!.querySelector(".composer-overlay")) now.push("composer-open");
+    if (active?.matches(".composer-strip")) return at("thread-strip", nameOf(active));
+    if (active?.matches("[role='log']")) return at("thread-log", title("Thread"));
+    return active && active !== layer ? at("thread-other", nameOf(active)) : at("thread-itself", title("Thread"));
+  }
+  if (view === "browser") return active && active !== layer ? at("browser-other", nameOf(active)) : at("browser-page", title("Browser"));
+
+  // The overview.
+  const kind = item && item === active ? (item.dataset.navKey ?? "").split(":")[0]! : "";
+  if (OVERVIEW_PLACES[kind]) return at(OVERVIEW_PLACES[kind]!, whereOf(item!));
+  return active ? at("overview-other", control ?? nameOf(active)) : at("overview-page", "the overview");
 }
 
 // ---- where focus was, for when what had it goes away ----

@@ -1,7 +1,7 @@
 /** Runtime configuration from environment variables and the local T3 runtime file. */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export interface Config {
   port: number;
@@ -11,6 +11,10 @@ export interface Config {
   t3BaseUrl: string | null;
   t3AccessToken: string | null;
   t3UserDataDir: string;
+  /** T3's home on this machine (T3CODE_HOME, else the folder above its userdata), where its service keeps its versions. */
+  t3Home: string;
+  /** T3's CLI that keeps Backroom's credential (src/app/t3Credential.ts): T3_CLI, "off" for none, else the version T3's service runs. */
+  t3Cli: string | null;
   /** The engine host's tick interval in milliseconds. */
   tickMs: number;
   /** The built UI the service serves. */
@@ -86,6 +90,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     t3BaseUrl: env.T3_BASE_URL ?? readT3RuntimeOrigin(t3UserDataDir),
     t3AccessToken: env.T3_ACCESS_TOKEN ?? null,
     t3UserDataDir,
+    t3Home: env.T3CODE_HOME ?? dirname(t3UserDataDir),
+    t3Cli: env.T3_CLI || null,
     tickMs: Number(env.ROOMS_TICK_MS ?? 1500),
     webDistDir: resolve(env.ROOMS_WEB_DIST ?? "web/dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),

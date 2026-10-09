@@ -10,11 +10,12 @@ import { persistFake } from "../adapter/fakeState.ts";
 import { HttpT3Adapter } from "../adapter/http.ts";
 import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
+import { T3Credential, localT3Cli } from "../app/t3Credential.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
 import { BrowserTools } from "../browser/tools.ts";
-import { loadConfig } from "../config.ts";
+import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
 import { KokoroSpeech } from "../speech/kokoro.ts";
 import { withFakeControls } from "./fakeControls.ts";
 import { createHttpApp } from "./http.ts";
@@ -26,6 +27,7 @@ const log = (message: string, detail?: unknown) => {
 };
 
 let adapter: T3Adapter;
+let credential: T3Credential | null = null;
 if (config.adapter === "fake") {
   const fake = new FakeT3Adapter({ autoCompleteMs: 4000 });
   // Kept in a file when asked, so its threads outlive a restart of the service as T3's do (scripts/rehearse.ts --step room).
@@ -35,12 +37,27 @@ if (config.adapter === "fake") {
 } else {
   const stored = readStoredAuth(config.dataDir);
   const baseUrl = config.t3BaseUrl ?? stored?.baseUrl ?? "http://127.0.0.1:3773";
-  adapter = new HttpT3Adapter({
+  const http = new HttpT3Adapter({
     baseUrl,
     accessToken: config.t3AccessToken ?? stored?.accessToken ?? null,
     userDataDir: config.t3UserDataDir,
+    onCredentialRejected: (token) => credential?.rejected(token),
   });
-  log(`T3 base URL ${baseUrl}; credentials ${config.t3AccessToken || stored ? "present" : "missing (pair from the UI)"}`);
+  adapter = http;
+  // A token given in T3_ACCESS_TOKEN is the user's to keep; otherwise Backroom keeps its own (src/app/t3Credential.ts).
+  if (!config.t3AccessToken) {
+    credential = new T3Credential({
+      dataDir: config.dataDir,
+      baseUrl,
+      localOrigin: readT3RuntimeOrigin(config.t3UserDataDir),
+      cli: localT3Cli(config.t3Home, config.t3Cli),
+      use: (token) => http.setAccessToken(token),
+      verify: (token) => http.accepts(token),
+      log,
+    });
+  }
+  const renewal = credential ? (credential.automatic ? "renewed by Backroom with T3's CLI" : "renewed by pairing again") : "from T3_ACCESS_TOKEN";
+  log(`T3 base URL ${baseUrl}; credentials ${config.t3AccessToken || stored ? "present" : "missing"}, ${renewal}`);
 }
 
 // Agents run bin/rooms-browser from their shell; it finds the service through data/browser-api.json (URL and a token
@@ -114,7 +131,8 @@ if (adapter instanceof FakeT3Adapter) {
 }
 // Backroom's voice: loaded when the UI first asks (the model is fetched once into data/models), off with ROOMS_SPEECH=off.
 const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
-const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech);
+const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech, credential);
+credential?.start();
 stack.engine.start(config.tickMs);
 
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
@@ -130,6 +148,7 @@ const server = serve({ fetch, port: config.port, hostname: "127.0.0.1" }, (info)
 const shutdown = () => {
   log("shutting down");
   server.close();
+  credential?.stop();
   browserTools?.closeAll();
   stack.close();
   process.exit(0);

@@ -124,28 +124,51 @@ The T3 address is found automatically from `~/.t3/userdata/server-runtime.json`,
 
 ## Connect to T3 Code
 
-Backroom is a third-party client of your T3 server, so it needs a credential. T3 hands out credentials through **one-time pairing links**.
+Backroom is a third-party client of your T3 server, so it needs a credential: a bearer token with the permissions listed below. It is stored in `data/t3-auth.json` with owner-only permissions (0600) and is never sent to the browser.
 
-### 1. Get a pairing link
+### 1. On T3's machine: nothing to do
 
+When Backroom runs on the machine where T3 runs as a service, it gets its own credential from T3's command line. It runs `t3 auth session issue` with exactly the permissions below, for 30 days, labeled "Backroom". Backroom uses the version of T3 that T3's service runs (`~/.t3/runtime/versions/<version>/t3`), or the binary named by `T3_CLI`. The service log says which way it keeps its credential: `credentials present, renewed by Backroom with T3's CLI`.
+
+### 2. Anywhere else: pair with a link
+
+When Backroom runs elsewhere, or T3 runs without its service (the desktop app, a dev checkout), T3 hands out credentials through **one-time pairing links**:
+
+- **Headless server** (`t3 serve` or the installed service): run `t3 pair` on T3's machine. Its links hold every permission Backroom asks for.
 - **Desktop app:** open **Settings → Connections** and turn on **Network access** (the app restarts). Then create a pairing link on the same screen. On loopback only, the Desktop server runs under the `desktop-managed-local` auth policy and offers no pairing links. That is why Network access is required.
-- **Headless server** (`t3 serve` or the installed service): run `t3 pair`.
 
-Treat pairing links like passwords. They expire within minutes and work only once.
-
-### 2. Pair
-
-Either paste the link into Backroom, or use the command line. While Backroom is unpaired, it shows the pairing panel in place of the rooms. Later you can reach it from the **T3** status button in the overview's header.
-
-From the command line:
+Treat pairing links like passwords. They expire within minutes and work only once. Paste the link into the pairing panel: Backroom shows it in place of the rooms while it has no credential, and the **T3** status button in the overview's header opens it later. Or use the command line, then restart the service:
 
 ```sh
 npm run t3:pair -- "http://127.0.0.1:3773/pair?token=..."
 ```
 
-The link is exchanged for a bearer token, which is stored in `data/t3-auth.json` with owner-only permissions (0600). The token is never sent to the browser. The command prints only the scope and expiry.
+The command prints only the scope and expiry, and names any permission the link did not hold.
 
-### 3. Verify (optional but recommended)
+### What Backroom asks for, and why
+
+| Permission | What needs it |
+| --- | --- |
+| `orchestration:read`, `orchestration:operate` | reading projects and threads, sending messages, launching threads, adding projects |
+| `providers:manage` | a harness's **Update** |
+| `environment:maintain` | T3's **Update** |
+| `diagnostics:read` | today's usage in a member's usage card |
+| `filesystem:read` | the folder list in the New project dialog |
+
+It asks for nothing broader: not T3's settings, terminals, previews, source control, file writes, or the management of other clients. T3 0.0.46-nightly.20261007 started checking the four below `orchestration:operate`. Before that, `orchestration:operate` covered the updates and `orchestration:read` covered the other two. So a credential from an older pairing lacks them.
+
+### How the credential is kept
+
+- **On T3's machine, Backroom renews it.** It checks at start and every hour. It gets a new credential when it has none, when it lacks a permission it asks for, when it has less than 7 days left, or when T3 no longer takes it (HTTP 401: a revoked, expired or reset session). A refusal for a missing permission (HTTP 403) is not a reason: a new credential with the same permissions would be refused too. Backroom checks that T3 takes the new credential, switches to it and revokes the session it replaced, so T3's client list keeps one "Backroom". Revoking Backroom in T3's client list does not lock it out from that machine: it issues itself a new session. To stop it, stop the service, or set `T3_CLI=off`.
+- **A renewal that fails** is tried again by itself 5 minutes later, and every 5 minutes after that until one succeeds. From the first failure, the **T3** status button says "renewal failed", and the T3 panel says why and how to pair by hand. Within 7 days of expiry the panel leads with the date.
+- **Elsewhere, renewing is yours.** T3 gives a paired client 30 days and offers it no way to renew. Its token exchange takes no longer lifetime and has no refresh token, and minting a new link over HTTP needs `access:write`, the permission to manage every client. From 7 days before expiry, the **T3** status button says "pair again soon", and the T3 panel says when the credential expires and how to pair again.
+- A token given in `T3_ACCESS_TOKEN` is used as it is and never renewed.
+
+### When T3 refuses for a missing permission
+
+Backroom says so where it happened: on the row in **Updates**, in the folder list, or in the usage card. The message names the permission: "Backroom's pairing with T3 does not allow this (it lacks the "environment:maintain" permission): run `t3 pair` on T3's machine and paste the link it prints into the T3 panel …". On T3's machine Backroom fixes this itself at its next check, within the hour or at a restart. Elsewhere, pair again with a link from `t3 pair`. If pairing again does not help, T3 wants a permission Backroom does not ask for yet, and Backroom itself needs updating.
+
+### Verify (optional but recommended)
 
 ```sh
 npm run t3:check                                   # read-only: server descriptor, auth policy, projects, models, threads
@@ -600,6 +623,7 @@ The **Updates** button in the overview's header shows how many updates you can s
 - **Harnesses** (Claude Code, Codex, Cursor, …): the installed version and the newest, as T3 checks them. **Update** asks T3 to run the harness's own updater (for Claude Code, `claude update`), the same one-click update T3 Code offers, and only when T3 would offer it. The row follows T3's progress and shows how it ended, with the updater's output when it failed. A harness T3 can't update (installed in a way T3 doesn't manage) shows its newer version and says to update it where it was installed; it isn't counted.
 - **T3:** the version the server runs, and the newest release on the same channel (nightly, preview or latest), which Backroom asks npm for at most once an hour. **Update** asks for a confirmation, because T3 installs the version and restarts, which every room and thread notices for a few seconds. When T3 can, turns that are running carry on after the restart; what Backroom has not sent yet waits and is sent once T3 is back. The row says when T3 answers on the new version. A T3 that can't update itself (a dev checkout, or a desktop app that has to do it) shows what to run instead.
 - **Check now** asks T3 to check its harnesses again and npm for T3's newest release. Otherwise the count is refreshed every 30 minutes.
+- **Permissions.** Since 0.0.46-nightly.20261007, T3 needs `environment:maintain` for its own update and `providers:manage` for a harness's update. Backroom asks for both (see [What Backroom asks for, and why](#what-backroom-asks-for-and-why)). If its credential lacks one, the row says so: "Backroom's pairing with T3 does not allow this (it lacks …)". On T3's machine, Backroom replaces its credential within the hour, or right away when you restart the service. Elsewhere, pair again with a link from `t3 pair`.
 
 ### Git (side panel)
 
@@ -666,7 +690,9 @@ Backroom opens on one page of everything: a section per project, its rooms as ti
 
 ## Keyboard
 
-The whole page works without a mouse. The arrows move a ring over the overview's cards and members and, in a room, over its posts and members; Enter opens what the ring is on. Esc closes what is in front and nothing else: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; it never closes the room, a member's thread or the side panel, so a reflex Esc never costs you your place. Backspace outside a text field goes back one step: what is in front first (as Esc), then a member's thread, then the side panel, then the room to its card; it is the only key that leaves a room, and the focus lands where you were. In a text field Backspace deletes as always; a fresh press in an empty composer closes the composer, and a held one stops at the empty field. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts). **?** shows these keys on the page (outside a text field).
+The whole page works without a mouse. The arrows move a ring over the overview's tiles and members and, in a room, over its posts and members; Enter opens what the ring is on. Esc closes what is in front and nothing else: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; it never closes the room, a member's thread or the side panel, so a reflex Esc never costs you your place. Backspace outside a text field goes back one step: what is in front first (as Esc), then a member's thread, then the side panel, then the room to its card; it is the only key that leaves a room, and the focus lands where you were. In a text field Backspace deletes as always; a fresh press in an empty composer closes the composer, and a held one stops at the empty field. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
+
+**The key bar** at the foot of the page (not on a phone) says what the ring is on, in words ("Improvement", "#33 · you to @opus, open", "writing a message"), then the keys that do something there, each named by what it does there and then: "Enter open the room" on a room's tile, "Backspace back to the overview" in a room, "Esc close it, the draft kept" in the composer; "? all keys" stays at its right end. It changes as the ring moves. Every key on it is shown whole: in a narrow window those that do not fit are left out from the end of the line, the ones needed least first (Home and End come last), and "? all keys" stays. **?** shows every key by place (outside a text field). The bar, **?** and the tables below are drawn from one table (`web/src/keyOrder.ts`, `KEYS`), so the three say the same; after a change to it, `node scripts/keys-readme.ts` draws the tables below again.
 
 The overview reads column by column, as its tiles are stacked: section by section (each project, its settled and archived threads, the crew, the browsers), and inside a section each column top to bottom before the next. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a member opens its room with that member's thread over it, read only (its messages, approvals and settings are the room's); Backspace goes back to the room, with Members open and the ring on the member, Backspace again folds the panel, and once more goes back to the overview. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
 
@@ -674,40 +700,122 @@ The arrows keep their own meaning wherever they already have one: in text fields
 
 **Everywhere**
 
-| Keys | What they do |
-|---|---|
-| `?` | Show these keys (outside a text field) |
-| `Tab` `Shift+Tab` | Every button, link and field, in order |
-| `Enter` | Open or press what has the focus |
-| `Esc` | Close what is in front: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; never the room, a member's thread or the side panel |
-| `Backspace` | Back one step, outside a text field: what is in front first, then a member's thread, the side panel, then the room to its card |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere | `?` | All keys (outside a text field) |
+|  | `Tab` `Shift+Tab` | Every button, link and field, in order |
 
 **Overview**
 
-| Keys | What they do |
-|---|---|
-| `↓` `↑` | Next or previous card or member: column by column, each top to bottom |
-| `→` `←` | The column beside, at the same height |
-| `Home` `End` | First or last item on the page |
-| `Enter` | Open the room or thread; on a member, its room with the member's thread over it |
+| On | Keys | What they do |
+|---|---|---|
+| a tile or a member | `↑` `↓` | Previous or next, column by column (section by section: each project, its settled and archived threads, the crew, the browsers) |
+|  | `←` `→` | The column beside, at the same height |
+|  | `Home` `End` | First or last on the page |
+|  | `Backspace` | Nothing to go back to (the overview is the top) |
+| a room's tile | `Enter` | Open the room |
+| a thread's tile | `Enter` | Open the thread |
+| a member on a room's tile | `Enter` | Its thread, over its room (read only; Backspace goes back to the room, folds the panel, then back to the overview) |
+| a crew member | `Enter` | Edit them |
+| a browser | `Enter` | Open its page |
+| settled or archived threads | `Enter` | Show or hide them |
+| a button | `↑` `↓` `←` `→` | To the tiles |
+|  | `Enter` | Press it |
+| nothing | `↑` `↓` `←` `→` | To the tiles |
 
 **In a room**
 
-| Keys | What they do |
-|---|---|
-| `↑` `↓` | Previous or next post (or member, in Members); past the top the earlier posts load, then the view's tabs, where ← → switch the chat and the board and ↓ comes back |
-| `←` `→` | Between the panes: the board, Members, Browser, Git (opening the panel) |
-| `Home` `End` | First or last item of the pane |
-| `Enter` | On a post, its detail; on a member, its thread; elsewhere, write a message |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere in it | `←` `→` | Between the panes (the board, Members, Browser and Git; → opens the side panel) |
+|  | `Esc` `Backspace` | Close composer (the draft kept; while the composer is open) |
+|  | `Esc` `Backspace` | Fold the choices (a status chip's; while a status chip's choices are open) |
+|  | `Esc` `Backspace` | Close correction (Correct…'s box, its text kept; while a correction is open) |
+|  | `Backspace` | Fold the side panel (the ring back on the conversation; while the side panel is open) |
+|  | `Backspace` | Back to the overview (the ring back on the room's tile; Esc never leaves a room) |
+|  | `a–z` | Start writing (any key that types a character, space aside, opens the composer and goes in) |
+| a post | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the view's tabs) |
+|  | `Home` `End` | First or last post |
+|  | `Enter` | Its detail |
+| the view's tabs | `←` `→` | The chat or the board |
+|  | `↓` | Back to the posts |
+| the composer's strip | `↑` `↓` | To the posts |
+|  | `Enter` | Write a message |
+| a member, in Members | `↑` `↓` | Previous or next member |
+|  | `Home` `End` | First or last member |
+|  | `Enter` | Its thread (over the room, read only; Backspace comes back to the member) |
+| the Browser or Git panel itself | `↑` `↓` | Its buttons and fields |
+|  | `Enter` | Write a message |
+| a button in the Browser or Git panel | `↑` `↓` | Its buttons and fields, in order |
+|  | `Enter` | Press it |
+| the Members panel itself | `↑` `↓` | To the members |
+|  | `Enter` | Write a message |
+| a button in the Members panel's head | `↑` `↓` | To the members |
+|  | `Enter` | Press it |
+| a button on a post or a member | `↑` `↓` | Previous or next item (from the post or member it is on) |
+|  | `Enter` | Press it |
+| another button | `↑` `↓` | To the posts |
+|  | `Enter` | Press it |
+| nothing in it | `↑` `↓` | To the posts |
+|  | `Enter` | Write a message |
+| a member's thread | `↑` `↓` | Scroll it |
+|  | `Backspace` | Back to the room (Members open, the ring on the member) |
 
-**Model list**
+**A thread or a browser**
 
-| Keys | What they do |
-|---|---|
-| `↑` `↓` | The models; ← → the providers (with the search empty) |
-| `Enter` | Choose the highlighted model |
-| `Shift+Enter` | Star or unstar it (favorites) |
-| `Alt+R` | Look for new models |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere in a thread | `Esc` `Backspace` | Close composer (the draft kept; while the composer is open) |
+|  | `Backspace` | Back to the overview |
+|  | `a–z` | Start writing |
+| the composer's strip | `↑` | The conversation |
+|  | `Enter` | Write a message |
+| the conversation | `↑` `↓` | Scroll it |
+|  | `Enter` | Write a message |
+| a button in a thread | `Enter` | Press it |
+| nothing in a thread | `Enter` | Write a message |
+| a browser's page | `Backspace` | Back to the overview |
+| a button on it | `Enter` | Press it |
+
+**Writing**
+
+| On | Keys | What they do |
+|---|---|---|
+| the message | `Enter` | Send |
+|  | `Shift+Enter` | New line |
+|  | `Esc` | Close it, the draft kept |
+|  | `Backspace` | Close it (on a fresh press, not a held one's repeats; in an empty field) |
+| the message, in a room | `@` | Mention a member |
+|  | `/` | A command |
+| the @ or / list | `↑` `↓` | Choose |
+|  | `Enter` `Tab` | Take it |
+|  | `Esc` | Close the list |
+| a correction | `Enter` | New line |
+|  | `Tab` | On to Send correction |
+|  | `Esc` | Close it, back to Correct… |
+| another text field | `Esc` | Leave the field (the ring goes to the item it is in) |
+
+**Dialogs and menus**
+
+| On | Keys | What they do |
+|---|---|---|
+| a dialog | `Tab` `Shift+Tab` | Next or previous button or field (round inside the dialog) |
+|  | `Enter` | Press it (outside a text field) |
+|  | `Esc` | Close it (the ring back where it was) |
+|  | `Backspace` | Close it (outside a text field) |
+|  | `?` | Close the keys (while this list is open) |
+| a menu | `↑` `↓` | Previous or next item |
+|  | `Home` `End` | First or last item |
+|  | `Enter` | Choose it |
+|  | `Esc` `Backspace` | Close it |
+|  | `Tab` | Close it and go on |
+| the model list | `↑` `↓` | The models |
+|  | `←` `→` | The providers (with the search empty) |
+|  | `Enter` | Choose it |
+|  | `Shift+Enter` | Star or unstar it (favorites) |
+|  | `Alt+1…9` | Pick by number (the first nine in the list; Ctrl or ⌘ with the digit too) |
+|  | `Alt+R` | Find new models (T3 looks for models it has not listed yet) |
+|  | `Esc` | Close the list |
 
 ## The pixel look
 
@@ -732,7 +840,9 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_DB_PATH` | `$ROOMS_DATA_DIR/rooms.sqlite` | Database file, if it should live elsewhere |
 | `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
 | `T3_BASE_URL` | from `~/.t3/userdata/server-runtime.json`, else the paired server, else `http://127.0.0.1:3773` | T3 server origin |
-| `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token |
+| `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token (used as it is, never renewed) |
+| `T3_CLI` | the T3 binary of T3's service (`~/.t3/runtime/versions/<active>/t3`) | T3's CLI Backroom keeps its credential with; `off` for none (then pair with a link) |
+| `T3CODE_HOME` | the folder above `T3_USERDATA_DIR` (`~/.t3`) | T3's home, where its service keeps its versions |
 | `T3_USERDATA_DIR` | `~/.t3/userdata` | Where to find T3's runtime file and local model catalog |
 | `ROOMS_TICK_MS` | `1500` | How often the engine host reads the members' threads and sends what is waiting |
 | `ROOMS_WEB_DIST` | `web/dist` | The built UI the service serves (a second instance can serve another build) |
@@ -791,7 +901,10 @@ Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot t
 | --- | --- |
 | Status says "not paired", and the pairing panel mentions `desktop-managed-local` | The Desktop server on loopback does not issue pairing links. Turn on Settings → Connections → Network access in T3 Code, then create a link. |
 | Pairing returns HTTP 4xx | Links are one-time and expire within minutes. Create a fresh one. |
-| Status says "pair Backroom again" | The stored token expired or was revoked in T3 (Settings → Connections → clients). Pair again; work not yet sent is untouched. |
+| Status says "pair Backroom again" | The stored token expired or was revoked in T3 (Settings → Connections → clients). On T3's machine, Backroom issues itself a new one within seconds. Elsewhere, pair again. Work not yet sent is untouched. |
+| An update, the folder list or today's usage says "Backroom's pairing with T3 does not allow this" | The credential lacks the permission it names (see [When T3 refuses for a missing permission](#when-t3-refuses-for-a-missing-permission)). On T3's machine, Backroom replaces it at its next hourly check, or right away when you restart the service. Elsewhere, run `t3 pair` on T3's machine and paste the link into the T3 panel. |
+| The T3 button says "pair again soon" | The credential expires within 7 days, and nothing will renew it: Backroom runs on another machine, or without T3's CLI. Pair again with a link from `t3 pair`. |
+| The T3 button says "renewal failed" | Backroom could not renew its credential with T3's CLI. The T3 panel says why. It tries again every 5 minutes; the credential it has keeps working until it expires or T3 refuses it. Fix the cause, or pair by hand with a link from `t3 pair`. |
 | The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
 | A member's turn stays "sending" or "starting" and then fails with "provider failed to start" | The harness behind that member isn't signed in, or its CLI is missing. Fix it in T3, then press **Retry** on the failed turn's notice. |
 | A member shows "working on its own" | Its thread is in a turn the room did not start: it woke itself, another agent messaged it, or someone typed in T3 Code. What the room has for it waits for that turn to end. |

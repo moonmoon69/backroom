@@ -140,11 +140,12 @@ export function UsageCard({ label, modelSelection, facts, cost, pricesFetchedAt 
   // Every 30s while open: T3 re-checks plan usage every minute while Backroom is in view (see T3Presence).
   const { providers } = useProviders(true, 30_000);
   const [usage, setUsage] = useState<UsageToday | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     usageToday()
       .then((value) => live && setUsage(value))
-      .catch(() => live && setUsage(null));
+      .catch((error: unknown) => live && setUsageError(error instanceof Error ? error.message : String(error)));
     return () => {
       live = false;
     };
@@ -223,7 +224,9 @@ export function UsageCard({ label, modelSelection, facts, cost, pricesFetchedAt 
 
       <section>
         <h4 className="mono">{model} today · all threads</h4>
-        {!usage ? (
+        {usageError ? (
+          <div className="usage-note status-error">{usageError}</div>
+        ) : !usage ? (
           <div className="usage-line muted">
             <span>Reading T3 usage…</span>
           </div>

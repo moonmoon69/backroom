@@ -6,6 +6,7 @@
  * All T3 identities are opaque strings.
  */
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../domain/types.ts";
+import { missingScopeMessage } from "./auth.ts";
 
 export const ORCHESTRATION_PROTOCOL_VERSION = 2;
 
@@ -507,6 +508,16 @@ export class T3CommandRejected extends Error {
     this.name = "T3CommandRejected";
     this.status = status;
     this.body = body;
+  }
+}
+
+/** T3 refused a call because Backroom's pairing lacks the permission it needs; the message says how to pair again. */
+export class T3ScopeMissing extends T3CommandRejected {
+  readonly scope: string;
+  constructor(scope: string, body: unknown) {
+    super(missingScopeMessage(scope), 403, body);
+    this.name = "T3ScopeMissing";
+    this.scope = scope;
   }
 }
 

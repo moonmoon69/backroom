@@ -93,31 +93,37 @@ const useBoard = (): Board => {
  */
 const InDetail = createContext(false);
 
-/** A post's one line for assistive technology: its number, who to whom, what it is, where it stands, how it starts. */
-function postLabel(post: EnginePost, nameOf: (principal: string) => string, owners?: string[]): string {
+/** What a post is, without its text: who to whom and where it stands ("you to @fable, open"), "fable replied". */
+function postWhat(post: EnginePost, nameOf: (principal: string) => string, owners?: string[]): string {
   const author = nameOf(post.author);
-  const text = firstLine(post.body);
-  const words = text.length > 140 ? `${text.slice(0, 139)}…` : text;
   const state = post.request ? `, ${post.request.state}` : "";
-  const what =
-    post.kind === "request"
-      ? `${author} to ${(owners ?? [nameOf(post.request!.owner)]).join(", ")}${state}`
-      : post.kind === "output"
-        ? `${author} replied`
-        : post.kind === "note"
-          ? `note from ${author}`
-          : post.kind === "notice"
-            ? post.notice?.intent === "error" ? "failed" : post.notice?.intent === "keep-alive" ? "keep-alive" : "attention"
-            : `${post.kind} by ${author}`;
-  return `#${post.number}, ${what}${words ? `: ${words}` : ""}`;
+  return post.kind === "request"
+    ? `${author} to ${(owners ?? [nameOf(post.request!.owner)]).join(", ")}${state}`
+    : post.kind === "output"
+      ? `${author} replied`
+      : post.kind === "note"
+        ? `note from ${author}`
+        : post.kind === "notice"
+          ? post.notice?.intent === "error" ? "failed" : post.notice?.intent === "keep-alive" ? "keep-alive" : "attention"
+          : `${post.kind} by ${author}`;
 }
 
-/** What makes a post's row an item the arrows reach (keys.ts): focusable, with a role and a name; Enter opens its detail. */
+/** A post's one line for assistive technology: its number, who to whom, what it is, where it stands, how it starts. */
+function postLabel(post: EnginePost, nameOf: (principal: string) => string, owners?: string[]): string {
+  const text = firstLine(post.body);
+  const words = text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  return `#${post.number}, ${postWhat(post, nameOf, owners)}${words ? `: ${words}` : ""}`;
+}
+
+/**
+ * What makes a post's row an item the arrows reach (keys.ts): focusable, with a role and a name; Enter opens its detail.
+ * The key bar names it by its number and what it is.
+ */
 function useNavProps(post: EnginePost, owners?: string[]) {
   const { nameOf } = useRoom();
   const inDetail = useContext(InDetail);
   if (inDetail) return {};
-  return { "data-nav": "post", "data-nav-key": `post:${post.seq}`, tabIndex: -1, role: "article", "aria-label": postLabel(post, nameOf, owners), "aria-description": "Enter opens its detail" };
+  return { "data-nav": "post", "data-nav-key": `post:${post.seq}`, "data-where": `#${post.number} · ${postWhat(post, nameOf, owners)}`, tabIndex: -1, role: "article", "aria-label": postLabel(post, nameOf, owners), "aria-description": "Enter opens its detail" };
 }
 
 /** Lets a row stop the timeline from following the bottom (expanding a long reply must not jump the view). */

@@ -429,7 +429,7 @@ function RoomCard({
   const news = room.news.unseen > 0 ? room.news : null;
   return (
     <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} data-nav-card>
-      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`}>
+      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`} data-where={room.title}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
         {busy > 0 ? <span className="pill pill-working">{busy} busy</span> : null}
@@ -466,6 +466,7 @@ function RoomCard({
                 tabIndex={-1}
                 data-nav="ov"
                 data-nav-key={`member:${room.id}:${member.id}`}
+                data-where={`@${member.alias} in ${room.title}`}
                 aria-label={`@${member.alias}${member.consigliere ? ", the Consigliere" : ""}, ${described.label}${line ? `: ${oneLine(line, 160)}` : ""}`}
                 aria-description="Enter opens its thread"
                 onKeyDown={open}
@@ -504,7 +505,7 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
   const when = working ? "" : age(thread.latestRunCompletedAt ?? thread.updatedAt);
   return (
     <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} data-nav-card>
-      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`} data-nav="ov" data-nav-key={`thread:${thread.id}`}>
+      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
         {/* Its turn finished (or failed) since you looked. */}

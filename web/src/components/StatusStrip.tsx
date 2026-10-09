@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "../api.ts";
 import { useToast } from "./Toast.tsx";
+import { connectionProblem } from "../t3Connection.ts";
 import type { StatusResponse } from "../types.ts";
 
 interface Props {
@@ -30,17 +31,18 @@ export function ConnectionChip({ status, onOpen }: { status: StatusResponse | nu
     );
   }
   const { adapter, t3 } = status;
-  const tone = t3.error ? "err" : t3.paired ? "ok" : "warn";
+  const warning = t3.credential?.warning ?? null;
+  const { tone, problem } = connectionProblem(t3);
   const detail = [
     `T3 ${hostOf(t3.baseUrl)}${t3.environment?.serverVersion ? ` · v${t3.environment.serverVersion}` : ""}`,
     `adapter: ${adapter}`,
     t3.paired ? "paired" : "not paired",
     t3.auth ? `policy: ${t3.auth.policy}` : null,
+    warning,
     t3.error ? `last error: ${t3.error}` : null,
   ]
     .filter(Boolean)
     .join("\n");
-  const problem = t3.error ? "error" : t3.paired ? null : "not paired";
   return (
     <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />
@@ -100,6 +102,16 @@ export function PairingPanel({ status, onPaired, embedded }: Props) {
               <dd>{status.t3.auth.policy}</dd>
             </>
           ) : null}
+          {status.t3.credential ? (
+            <>
+              <dt>Credential</dt>
+              <dd>
+                {status.t3.credential.renewal === "automatic" ? "Backroom renews it with T3's CLI" : "renewed by pairing again"}
+                {status.t3.credential.expiresAt ? <span className="muted"> · expires {new Date(status.t3.credential.expiresAt).toLocaleDateString()}</span> : null}
+                {status.t3.credential.warning ? <div className="status-error">{status.t3.credential.warning}</div> : null}
+              </dd>
+            </>
+          ) : null}
           {status.t3.error ? (
             <>
               <dt>Last error</dt>
@@ -112,8 +124,9 @@ export function PairingPanel({ status, onPaired, embedded }: Props) {
         </dl>
       ) : null}
       <p>
-        In T3 Code open <strong>Settings → Connections</strong>, enable <strong>Network access</strong>, create a
-        pairing link, and paste it here.
+        On T3's machine Backroom pairs itself with T3's CLI. Otherwise run <code>t3 pair</code> where T3 runs, or in
+        T3 Code open <strong>Settings → Connections</strong>, enable <strong>Network access</strong> and create a
+        pairing link, then paste the link here.
       </p>
       <p className="muted">
         A Desktop app bound to loopback only (policy <code>desktop-managed-local</code>) cannot issue pairing links
