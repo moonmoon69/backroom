@@ -128,6 +128,8 @@ const isWildcard = (host: string): boolean => host === "0.0.0.0" || host === "::
 
 export class RoomBrowsers {
   private readonly instances = new Map<string, Instance>();
+  /** Starts in flight, by browser id (see ensure). */
+  private readonly starts = new Map<string, Promise<RoomBrowserStatus>>();
   private readonly options: Required<Pick<RoomBrowserOptions, "dataDir" | "bindHost" | "noVncDir" | "idleMinutes">> & RoomBrowserOptions;
   private timer: NodeJS.Timeout | null = null;
   private cachedEnvironment: BrowserEnvironment | null = null;
@@ -210,8 +212,19 @@ export class RoomBrowsers {
     };
   }
 
-  /** Start the browser if needed and wait until agents can attach. */
+  /** Start the browser if needed and wait until agents can attach. Callers at the same moment share one start. */
   async ensure(browserId: string): Promise<RoomBrowserStatus> {
+    if (this.instances.get(browserId)?.state === "running") return this.status(browserId);
+    // A second Chrome on the same profile fails on its lock, and two agents' first calls often come together.
+    let start = this.starts.get(browserId);
+    if (!start) {
+      start = this.bringUp(browserId).finally(() => this.starts.delete(browserId));
+      this.starts.set(browserId, start);
+    }
+    return start;
+  }
+
+  private async bringUp(browserId: string): Promise<RoomBrowserStatus> {
     const existing = this.instances.get(browserId);
     if (existing?.state === "running") return this.status(browserId);
     if (existing?.starting) {
