@@ -43,6 +43,28 @@ export function parseArgs(argv: readonly string[]): Args {
   };
 }
 
+/**
+ * What a rehearsal writes in its data folder while its service runs ("service.pid"): the service's pid, its own pid and
+ * the port. The launcher stops a service left behind only if the record is its child's (so never another run's, whose
+ * folder a refused child shares), and a run refuses a folder whose service still runs.
+ */
+export interface ServiceRecord {
+  service: number;
+  owner: number;
+  port: number;
+}
+export function serviceRecord(text: string): ServiceRecord | null {
+  const m = /^(\d+) (\d+) (\d+)\s*$/.exec(text);
+  return m ? { service: Number(m[1]), owner: Number(m[2]), port: Number(m[3]) } : null;
+}
+export function recordText(record: ServiceRecord): string {
+  return `${record.service} ${record.owner} ${record.port}\n`;
+}
+/** Whether a record found after a launcher's child ended is that child's, for its port. */
+export function recordOf(record: ServiceRecord | null, child: number | undefined, port: number): record is ServiceRecord {
+  return record !== null && record.owner === child && record.port === port;
+}
+
 /** A port for a throwaway service: a whole number from 1024 to 65535. */
 export function portOf(text: string | undefined, fallback: number): number {
   const port = text === undefined ? fallback : Number(text);

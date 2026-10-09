@@ -71,8 +71,8 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
-import { forStep, functionSource, sectionNames, Selection, SelectionDone, stateNames } from "./rehearse-select.ts";
-import { parseArgs, portOf, stepPassed, tabGone } from "./rehearse-launch.ts";
+import { forSteps, functionSource, sectionNames, Selection, SelectionDone, stateNames } from "./rehearse-select.ts";
+import { parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -91,9 +91,11 @@ const HELP = `${USAGE}
   --browser <name>      the shared browser (default backroom-dev for one step)
   --data <dir>          the run's data (default data/rehearse-<step>-<port>; --step all: data/rehearse-all-<port>/<step>)
   --out <dir>           screenshots (default <data>/screens; --step all: <out>/<step>, and each step's log beside it)
-  --only <state>        check only this state (as often as wanted): its number from --list, a range (12-15), a
-                        /pattern/ or part of its name; what it depends on is set up first, its checks off, and the
-                        step stops after the last state named
+  --only <state>        check only this state (as often as wanted): its number from --list (under --step all, that
+                        number in each step), a range (12-15), a /pattern/ or part of its name; the run jumps to its
+                        section, sets up what the section reads, plays the states before it without screenshots or
+                        console reads, and stops after the last state named (ui 1-12 and room 1-14 need the whole
+                        story before them: --until is as quick for those)
   --until <state>       play the step, every check on, and stop after this state
   --list                print each step's states, numbered, and run nothing
   --keep                leave the service running at the end
@@ -199,6 +201,20 @@ async function until<T>(what: string, probe: () => Promise<T | null | undefined 
 
 // ---------------- the throwaway service ----------------
 
+/** The record of the service a rehearsal runs on a data folder (scripts/rehearse-launch.ts), if there is one. */
+function readRecord(data: string): ServiceRecord | null {
+  const file = join(data, "service.pid");
+  return existsSync(file) ? serviceRecord(readFileSync(file, "utf8")) : null;
+}
+/** Whether a process is a Backroom service still (not gone, nor its pid taken by another program since). */
+function isService(pid: number): boolean {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("src/server/index.ts");
+  } catch {
+    return false;
+  }
+}
+
 class Service {
   readonly base: string;
   private readonly o: Options;
@@ -213,6 +229,8 @@ class Service {
     if (!existsSync(join(repo, "web", "dist", "index.html"))) fail("web/dist is missing: run npm run build:web first");
     if (existsSync(this.o.data)) {
       if (!existsSync(join(this.o.data, ".rehearse"))) fail(`${this.o.data} exists and is not a rehearsal's data directory; pass another --data`);
+      const running = readRecord(this.o.data);
+      if (running && isService(running.service)) fail(`${this.o.data} is in use: another rehearsal's service (pid ${running.service}, port ${running.port}) runs on it; pass another --data`);
       rmSync(this.o.data, { recursive: true, force: true });
     }
     mkdirSync(this.o.data, { recursive: true });
@@ -233,8 +251,9 @@ class Service {
       detached: true,
     });
     this.child = child;
-    // For the launcher: what to stop if this script is ended before it stops the service itself.
-    writeFileSync(join(this.o.data, "service.pid"), `${child.pid}\n`);
+    // For the launcher: what to stop if this script is ended before it stops the service itself; and so another run
+    // does not take this folder while the service runs.
+    writeFileSync(join(this.o.data, "service.pid"), recordText({ service: child.pid!, owner: process.pid, port: this.o.port }));
     child.on("exit", (code, signal) => {
       if (this.child === child) log(`the service exited by itself (code ${code}, signal ${signal}): see ${join(this.o.data, "service.log")}`);
     });
@@ -251,6 +270,7 @@ class Service {
     const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
     await exited;
     clearTimeout(timer);
+    rmSync(join(this.o.data, "service.pid"), { force: true });
   }
 
   /** The service dies as in a crash (SIGKILL: no shutdown of any kind), and nothing answers on its port any more. */
@@ -2653,33 +2673,28 @@ function stepSections(step: Step): string[] {
 
 /**
  * What a step left behind when it was ended before it could clean up (killed, or stopped by a signal while a browser
- * call held it): its service, by the pid it wrote in its data folder (if that process is still a Backroom service, with
- * the browsers it started), and its tabs on its service's address in the shared browser.
+ * call held it): its service, by the record it wrote in its data folder, and its tabs on its service's address in the
+ * shared browser. Only a record of this child's for its port counts: a child refused at the start (its port taken, its
+ * folder in use) left nothing, and what it finds there is another run's. With --keep the service stays.
  */
-async function leftBehind(step: Step, data: string, port: number, browser: string, o: Options): Promise<string[]> {
+async function leftBehind(data: string, port: number, browser: string, child: number | undefined, o: Options): Promise<string[]> {
+  const record = readRecord(data);
+  if (!recordOf(record, child, port)) return [];
   const done: string[] = [];
   const base = `http://127.0.0.1:${port}`;
-  const pidFile = join(data, "service.pid");
-  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : NaN;
-  const alive = (p: number) => {
-    try {
-      return readFileSync(`/proc/${p}/cmdline`, "utf8").includes("src/server/index.ts");
-    } catch {
-      return false;
-    }
-  };
-  if (Number.isInteger(pid) && alive(pid)) {
+  if (!o.keep && isService(record.service)) {
     // Its real browsers (B3's) outlive the service by design: stopped through it first.
     const browsers = await fetch(`${base}/api/browsers`).then((r) => r.json() as Promise<Array<{ id: string; status: { state: string } }>>, () => []);
     for (const b of browsers.filter((x) => x.status.state !== "stopped")) await fetch(`${base}/api/browsers/${b.id}/stop`, { method: "POST" }).catch(() => undefined);
     try {
-      process.kill(-pid, "SIGTERM");
+      process.kill(-record.service, "SIGTERM");
     } catch {
-      process.kill(pid, "SIGTERM");
+      process.kill(record.service, "SIGTERM");
     }
-    for (let i = 0; i < 50 && alive(pid); i += 1) await sleep(200);
-    if (alive(pid)) process.kill(pid, "SIGKILL");
-    done.push(`its service (pid ${pid}) stopped`);
+    for (let i = 0; i < 50 && isService(record.service); i += 1) await sleep(200);
+    if (isService(record.service)) process.kill(record.service, "SIGKILL");
+    rmSync(join(data, "service.pid"), { force: true });
+    done.push(`its service (pid ${record.service}) stopped`);
   }
   let listing = "";
   try {
@@ -2688,7 +2703,7 @@ async function leftBehind(step: Step, data: string, port: number, browser: strin
     // rooms-browser unreachable: nothing more to do here
   }
   for (const m of listing.matchAll(/^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/gm)) {
-    if (!m[2]!.startsWith(base)) continue;
+    if (!m[2]!.startsWith(`${base}/`)) continue;
     try {
       execFileSync(o.cli, [browser, m[1]!, "close", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
       done.push(`its tab ${m[1]} closed`);
@@ -2709,8 +2724,25 @@ async function leftBehind(step: Step, data: string, port: number, browser: strin
  */
 async function runAll(o: Options): Promise<void> {
   if (o.keysBrowser === o.browser) fail(`keys needs a browser of its own: --keys-browser ${o.keysBrowser} is also --browser`);
+  let plan: Record<Step, { run: boolean; only: string[]; until: string | null }>;
+  try {
+    plan = forSteps({ ui: stepStates("ui"), room: stepStates("room"), keys: stepStates("keys") }, o.only, o.until);
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  // Refused before anything is written: ports already answering (the live service among them), or a launcher already
+  // running on this data folder (its logs would be overwritten).
+  for (const [i, step] of STEPS.entries()) {
+    const port = o.port + i;
+    if (plan[step].run && (await fetch(`http://127.0.0.1:${port}/api/status`).then(() => true, () => false))) fail(`${step}'s port ${port} answers already: pass another --port (the three steps take it and the next two)`);
+  }
+  const lock = join(o.data, "launcher.pid");
+  const holder = existsSync(lock) ? Number(readFileSync(lock, "utf8").trim()) : NaN;
+  if (Number.isInteger(holder) && holder !== process.pid && existsSync(`/proc/${holder}`) && readFileSync(`/proc/${holder}/cmdline`, "utf8").includes("rehearse.ts")) fail(`a launcher (pid ${holder}) runs on ${o.data}: pass another --data or --port`);
   const begun = Date.now();
   mkdirSync(o.data, { recursive: true });
+  writeFileSync(lock, `${process.pid}\n`);
+  process.on("exit", () => rmSync(lock, { force: true }));
   if (o.outGiven) mkdirSync(o.out, { recursive: true });
   const children = new Set<ChildProcess>();
   let stopping: string | null = null;
@@ -2727,7 +2759,7 @@ async function runAll(o: Options): Promise<void> {
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
   const runs = STEPS.map((step, i) => {
-    const { run: chosen, only, until } = forStep(stepStates(step), o.only, o.until);
+    const { run: chosen, only, until } = plan[step];
     const port = o.port + i;
     const browser = step === "keys" ? o.keysBrowser : o.browser;
     const data = join(o.data, step);
@@ -2750,27 +2782,29 @@ async function runAll(o: Options): Promise<void> {
     const child = spawn(process.execPath, args, { cwd: repo, stdio: ["ignore", fd, fd], detached: true });
     children.add(child);
     return new Promise<{ step: Step; ok: boolean }>((done) => {
-      let startError: Error | null = null;
-      child.on("error", (error) => {
-        startError = error;
-      });
-      child.on("close", async (code, signal) => {
+      let ended = false;
+      // Once, whichever comes: "close" (it ran and ended), or "error" alone (it could not start; "close" may not follow).
+      const end = async (code: number | null, signal: NodeJS.Signals | null, startError: Error | null) => {
+        if (ended) return;
+        ended = true;
         children.delete(child);
         const seconds = Math.round((Date.now() - begun) / 1000);
         const ok = stepPassed(code, signal, startError);
         const lines = existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n") : [];
-        const why = startError ? `could not start: ${(startError as Error).message}` : (lines.find((l) => l.startsWith("[rehearse] FAILED: "))?.slice("[rehearse] FAILED: ".length) ?? "see its log");
+        const why = startError ? `could not start: ${startError.message}` : (lines.find((l) => l.startsWith("[rehearse] FAILED: "))?.slice("[rehearse] FAILED: ".length) ?? "see its log");
         console.log(
           ok
             ? `${step}: PASS after ${seconds} s: ${lines.findLast((l) => /\] DONE: /.test(l))?.replace(/^.*\] DONE: /, "") ?? "done"} (log ${logFile})`
-            : `${step}: FAILED after ${seconds} s (${signal ? `ended by ${signal}` : `exit ${code}`}): ${why} (log ${logFile})`,
+            : `${step}: FAILED after ${seconds} s (${startError ? "not started" : signal ? `ended by ${signal}` : `exit ${code}`}): ${why} (log ${logFile})`,
         );
-        if (!ok && !o.keep) {
-          const cleaned = await leftBehind(step, data, port, browser, o);
+        if (!ok) {
+          const cleaned = await leftBehind(data, port, browser, child.pid, o);
           if (cleaned.length > 0) console.log(`${step}: cleaned up after it: ${cleaned.join(", ")}`);
         }
         done({ step, ok });
-      });
+      };
+      child.on("error", (error) => void end(null, null, error));
+      child.on("close", (code, signal) => void end(code, signal, null));
     });
   });
   const results = await Promise.all(runs);
@@ -2804,9 +2838,9 @@ async function main(): Promise<void> {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       stoppedBy = signal;
-      log(`${signal}: closing our tab and stopping the service`);
+      log(`${signal}: closing our tab${o.keep ? "; --keep: the service stays" : " and stopping the service"}`);
       browser.close();
-      void service.stop().finally(() => process.exit(1));
+      void (o.keep ? Promise.resolve() : service.stop()).finally(() => process.exit(1));
     });
   }
   try {

@@ -603,8 +603,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   };
 
   /** The page opened on the overview, once the API holds what it shows. */
-  const openPage = (): void => {
+  const openPage = (draft?: string): void => {
     browser.open();
+    if (draft !== undefined) {
+      // The draft section 4 leaves in the room's composer, which the full run keeps to its end (the browser's storage).
+      browser.eval<boolean>(`() => { localStorage.setItem(${JSON.stringify(`backroom.draft.room:${R}`)}, ${JSON.stringify(draft)}); return true; }`);
+      browser.on("reload");
+      log(`  page: reloaded with the room's draft ${JSON.stringify(draft)} kept, as the full run has it from section 4 on`);
+    }
     browser.waitFor("Rehearsal");
     browser.waitFor("Third");
     browser.waitFor("A thread outside rooms");
@@ -622,7 +628,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (how === "jump") {
       log(`JUMP to the section of "${first}": its setup`);
       await setup.replay?.();
-      openPage();
+      const drafted = selection.names.indexOf("the composer keeps its keys; Esc closes it first");
+      if (drafted < 0) fail("the state that leaves the composer's draft is gone: name it here again");
+      openPage(selection.names.indexOf(first) > drafted ? "w" : undefined);
       await setup.place?.();
     }
     return true;
@@ -1307,7 +1315,16 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
         await openRequest();
         apiRoom = s1 = await room.snapshot();
       },
-      place: () => enterRoom(`the ring on #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`),
+      // On the board, the ring on #openPost, as section 5 leaves it: Left comes back to the board.
+      place: async () => {
+        await toChatTab();
+        press("ArrowRight");
+        await expect("Right: the Board tab", (f) => f.key === "head:board" && f.ring);
+        press("Enter");
+        await expect("Enter: the board", (f) => f.key === "head:board" && f.view === "board");
+        press("End");
+        await expect(`End: #${openPost.number}, the newest post, on the board`, (f) => f.key === `post:${openPost.seq}` && f.view === "board" && f.ring);
+      },
     })
   ) {
     // ---------------- 4. the panes ----------------

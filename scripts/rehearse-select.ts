@@ -67,6 +67,18 @@ export function forStep(names: readonly string[], only: readonly string[], until
   return { run, only: mine, until: stop };
 }
 
+/**
+ * For --step all, every step's flags (forStep), once each --only and --until is found to name a state of some step:
+ * a name no step has is a mistake, not a step left out. (A number names that state in every step that has it.)
+ */
+export function forSteps<S extends string>(steps: Record<S, readonly string[]>, only: readonly string[], until: string | null): Record<S, { run: boolean; only: string[]; until: string | null }> {
+  const all = Object.values(steps) as Array<readonly string[]>;
+  for (const [flag, patterns] of [["--only", only], ["--until", until === null ? [] : [until]]] as const) {
+    for (const pattern of patterns) if (!all.some((names) => matching(names, pattern).length > 0)) throw new Error(`no state of any step matches ${flag} ${JSON.stringify(pattern)}; --list prints them`);
+  }
+  return Object.fromEntries(Object.entries(steps).map(([step, names]) => [step, forStep(names as readonly string[], only, until)])) as Record<S, { run: boolean; only: string[]; until: string | null }>;
+}
+
 /** Thrown after the last state the selection plays: the step ends there, passed. */
 export class SelectionDone extends Error {}
 

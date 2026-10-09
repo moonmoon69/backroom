@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { parseArgs, portOf, stepPassed, tabGone } from "../scripts/rehearse-launch.ts";
+import { parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone } from "../scripts/rehearse-launch.ts";
 
 describe("rehearsal command line and launcher (T2)", () => {
   it("reads the flags, --only as often as given", () => {
@@ -44,5 +44,17 @@ describe("rehearsal command line and launcher (T2)", () => {
     assert.equal(stepPassed(null, "SIGTERM"), false);
     assert.equal(stepPassed(null, null, new Error("spawn ENOENT")), false);
     assert.equal(stepPassed(0, null, new Error("spawn ENOENT")), false);
+  });
+
+  it("cleans up after a child only with the record that child wrote for its port", () => {
+    const record = serviceRecord(recordText({ service: 4100, owner: 4000, port: 4521 }));
+    assert.deepEqual(record, { service: 4100, owner: 4000, port: 4521 });
+    assert.equal(recordOf(record, 4000, 4521), true);
+    // A child refused at its start (port taken, folder in use) finds another run's record there.
+    assert.equal(recordOf(record, 4999, 4521), false);
+    assert.equal(recordOf(record, 4000, 4522), false);
+    assert.equal(recordOf(record, undefined, 4521), false);
+    assert.equal(recordOf(serviceRecord("4100\n"), 4000, 4521), false);
+    assert.equal(serviceRecord("not a record"), null);
   });
 });

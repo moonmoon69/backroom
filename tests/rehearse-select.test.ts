@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { forStep, functionSource, matching, sectionNames, Selection, SelectionDone, stateNames } from "../scripts/rehearse-select.ts";
+import { forStep, forSteps, functionSource, matching, sectionNames, Selection, SelectionDone, stateNames } from "../scripts/rehearse-select.ts";
 
 const names = ["the overview opens", "Esc closes a menu", "a post's detail", "Esc in a dialog", "the end"];
 
@@ -105,6 +105,15 @@ describe("rehearsal state selection (T2: --only, --until)", () => {
     assert.throws(() => new Selection(names, ["the end"], "1"), /stops before every state --only names/);
     assert.throws(() => new Selection(["a", "b", "a"]), /two states share the name "a"/);
     assert.throws(() => new Selection(names).enter("Esc closes a menu"), /out of step with the script: state 1 is "the overview opens" in the source, but the script runs "Esc closes a menu"/);
+  });
+
+  it("--step all refuses a name no step has, rather than leaving every step out", () => {
+    const steps = { ui: ["a turn fails", "Retry from the page"], keys: ["Esc closes a menu", "a post's actions"] };
+    assert.throws(() => forSteps(steps, ["zzzz"], null), /no state of any step matches --only "zzzz"/);
+    assert.throws(() => forSteps(steps, ["Retry", "typo"], null), /no state of any step matches --only "typo"/);
+    assert.throws(() => forSteps(steps, [], "zzzz"), /no state of any step matches --until "zzzz"/);
+    assert.deepEqual(forSteps(steps, ["Retry"], null), { ui: { run: true, only: ["Retry"], until: null }, keys: { run: false, only: [], until: null } });
+    assert.deepEqual(forSteps(steps, ["2"], null).keys, { run: true, only: ["2"], until: null });
   });
 
   it("reads the sections' first states from the source", () => {
