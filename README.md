@@ -666,7 +666,9 @@ Backroom opens on one page of everything: a section per project, its rooms as ti
 
 ## Keyboard
 
-The whole page works without a mouse. The arrows move a ring over the overview's cards and members and, in a room, over its posts and members; Enter opens what the ring is on and Esc goes back out, one thing at a time: a menu, a dialog, the composer, a member's thread, then the room, and the focus lands where you were. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts). **?** shows these keys on the page (outside a text field).
+The whole page works without a mouse. The arrows move a ring over the overview's tiles and members and, in a room, over its posts and members; Enter opens what the ring is on and Esc goes back out, one thing at a time: a menu, a dialog, the composer, a member's thread, then the room, and the focus lands where you were. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
+
+**The key bar** at the foot of the page (not on a phone) says what the ring is on, in words ("Improvement", "#33 · you to @opus, open", "writing a message"), then the keys that do something there, each named by what it does there and then: "Enter open the room" on a room's tile, "Esc back to the overview" in a room, "Esc close it, the draft kept" in the composer; "? all keys" stays at its right end. It changes as the ring moves. **?** shows every key by place (outside a text field). The bar, **?** and the tables below are drawn from one table (`web/src/keyOrder.ts`, `KEYS`), so the three say the same; after a change to it, `node scripts/keys-readme.ts` draws the tables below again.
 
 The overview reads column by column, as its tiles are stacked: section by section (each project, its settled and archived threads, the crew, the browsers), and inside a section each column top to bottom before the next. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a member opens its room with that member's thread over it, read only (its messages, approvals and settings are the room's); Esc goes back to the room, with Members open and the ring on the member, and Esc again back to the overview. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
 
@@ -674,39 +676,106 @@ The arrows keep their own meaning wherever they already have one: in text fields
 
 **Everywhere**
 
-| Keys | What they do |
-|---|---|
-| `?` | Show these keys (outside a text field) |
-| `Tab` `Shift+Tab` | Every button, link and field, in order |
-| `Enter` | Open or press what has the focus |
-| `Esc` | Close one thing: a menu, a dialog, the composer, a member's thread, then the room |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere | `?` | All keys (outside a text field) |
+|  | `Tab` `Shift+Tab` | Every button, link and field, in order |
 
 **Overview**
 
-| Keys | What they do |
-|---|---|
-| `↓` `↑` | Next or previous card or member: column by column, each top to bottom |
-| `→` `←` | The column beside, at the same height |
-| `Home` `End` | First or last item on the page |
-| `Enter` | Open the room or thread; on a member, its room with the member's thread over it |
+| On | Keys | What they do |
+|---|---|---|
+| a tile or a member | `↑` `↓` | Previous or next, column by column (section by section: each project, its settled and archived threads, the crew, the browsers) |
+|  | `←` `→` | The column beside, at the same height |
+|  | `Home` `End` | First or last on the page |
+| a room's tile | `Enter` | Open the room |
+| a thread's tile | `Enter` | Open the thread |
+| a member on a room's tile | `Enter` | Its thread, over its room (read only; Esc goes back to the room, then the overview) |
+| a crew member | `Enter` | Edit them |
+| a browser | `Enter` | Open its page |
+| settled or archived threads | `Enter` | Show or hide them |
+| a button, or nothing | `↑` `↓` `←` `→` | Back to the tiles |
+|  | `Enter` | Press it |
 
 **In a room**
 
-| Keys | What they do |
-|---|---|
-| `↑` `↓` | Previous or next post (or member, in Members); past the top the earlier posts load, then the view's tabs, where ← → switch the chat and the board and ↓ comes back |
-| `←` `→` | Between the panes: the board, Members, Browser, Git (opening the panel) |
-| `Home` `End` | First or last item of the pane |
-| `Enter` | On a post, its detail; on a member, its thread; elsewhere, write a message |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere in it | `←` `→` | Between the board, Members, Browser and Git (→ opens the side panel) |
+|  | `Esc` | Back to the overview (the ring back on the room's tile) |
+|  | `Esc` | Close the composer (while the composer is open) |
+|  | `a–z` | Start writing (any letter opens the composer and goes in) |
+| a post | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the view's tabs) |
+|  | `Home` `End` | First or last post |
+|  | `Enter` | Its detail |
+| the view's tabs | `←` `→` | The chat or the board |
+|  | `↓` | Back to the posts |
+| the composer's strip | `↑` `↓` | To the posts |
+|  | `Enter` | Write a message |
+| a member, in Members | `↑` `↓` | Previous or next member |
+|  | `Home` `End` | First or last member |
+|  | `Enter` | Its thread, over the room (read only; Esc comes back to the member) |
+| the Browser or Git panel | `↑` `↓` | Its buttons and fields, in order |
+|  | `Enter` | Press it |
+| a button on a post or a member | `↑` `↓` | Previous or next item (from the post or member it is on) |
+|  | `Enter` | Press it |
+| another button | `↑` `↓` | To the posts |
+|  | `Enter` | Press it |
+| a member's thread | `↑` `↓` | Scroll it |
+|  | `Esc` | Back to the room (Members open, the ring on the member) |
 
-**Model list**
+**A thread or a browser**
 
-| Keys | What they do |
-|---|---|
-| `↑` `↓` | The models; ← → the providers (with the search empty) |
-| `Enter` | Choose the highlighted model |
-| `Shift+Enter` | Star or unstar it (favorites) |
-| `Alt+R` | Look for new models |
+| On | Keys | What they do |
+|---|---|---|
+| anywhere in a thread | `Esc` | Back to the overview |
+|  | `Esc` | Close the composer (while the composer is open) |
+|  | `a–z` | Start writing |
+| the composer's strip | `↑` | The conversation |
+|  | `Enter` | Write a message |
+| the conversation | `↑` `↓` | Scroll it |
+|  | `Enter` | Write a message |
+| a button | `Enter` | Press it |
+| a browser's page | `Enter` | Press it |
+|  | `Esc` | Back to the overview |
+
+**Writing**
+
+| On | Keys | What they do |
+|---|---|---|
+| the message | `Enter` | Send |
+|  | `Shift+Enter` | New line |
+|  | `Esc` | Close it, the draft kept |
+|  | `Backspace` | Close it (in an empty field) |
+| the message, in a room | `@` | Mention a member |
+|  | `/` | A command |
+| the @ or / list | `↑` `↓` | Choose |
+|  | `Enter` `Tab` | Take it |
+|  | `Esc` | Close the list |
+| a correction | `Enter` | New line |
+|  | `Tab` | On to Send correction |
+|  | `Esc` | Close it, back to Correct… |
+| another text field | `Esc` | Leave the field (the ring goes to the item it is in) |
+
+**Dialogs and menus**
+
+| On | Keys | What they do |
+|---|---|---|
+| a dialog | `Tab` `Shift+Tab` | Next or previous button or field (round inside the dialog) |
+|  | `Enter` | Press it |
+|  | `Esc` | Close it (the ring back where it was) |
+|  | `?` | Close the keys (while this list is open) |
+| a menu | `↑` `↓` | Previous or next item |
+|  | `Home` `End` | First or last item |
+|  | `Enter` | Choose it |
+|  | `Esc` | Close it |
+|  | `Tab` | Close it and go on |
+| the model list | `↑` `↓` | The models |
+|  | `←` `→` | The providers (with the search empty) |
+|  | `Enter` | Choose it |
+|  | `Shift+Enter` | Star or unstar it (favorites) |
+|  | `Alt+R` | Look for new models |
+|  | `Esc` | Close the list |
 
 ## The pixel look
 

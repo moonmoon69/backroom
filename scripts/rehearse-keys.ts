@@ -9,7 +9,10 @@
  * (`:focus-visible` with an outline, the card's ring or the pixel brackets), that assistive technology gets it (the page
  * snapshot's `focused` line carries a role and a name), what is open (the drawer's `data-view`/`data-id`, a dialog, a
  * menu, the side panel) against what the API says it should be (the room's ID and title, the post's number and seq, the
- * member's thread). Every state then reads the console (no error-level line) and keeps a screenshot.
+ * member's thread). Every state then checks the key bar (K1-1, KeyBar.tsx): drawn at the foot of the window, naming what
+ * the ring is on as the API names it (a room's title, a post's number, a member's alias), reads the console (no
+ * error-level line) and keeps a screenshot, the bar in it. Three states read the whole bar, every key with its words:
+ * on a room's tile, on a post, in the composer.
  *
  * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
@@ -138,6 +141,34 @@ interface Placed {
   card: string | null;
 }
 
+/** The key bar as the window shows it: where it is, what it names, and each key with its words ("Enter open the room"). */
+interface Bar {
+  shown: boolean;
+  /** Its foot is the window's, its whole height inside it. */
+  foot: boolean;
+  place: string | null;
+  where: string;
+  keys: string[];
+  /** The key at its right end (`? all keys`), if there is one. */
+  end: string | null;
+}
+
+const BAR = `() => {
+  const b = document.querySelector('.key-bar');
+  if (!b) return { shown: false, foot: false, place: null, where: '', keys: [], end: null };
+  const r = b.getBoundingClientRect();
+  const chip = (k) => [...k.querySelectorAll('kbd')].map((x) => x.textContent).join(' ') + ' ' + k.querySelector('.key-bar-does').textContent;
+  const end = b.querySelector('.key-bar-end');
+  return {
+    shown: r.height > 0 && getComputedStyle(b).display !== 'none' && getComputedStyle(b).visibility !== 'hidden',
+    foot: Math.abs(r.bottom - innerHeight) < 1 && r.top >= 0,
+    place: b.dataset.place ?? null,
+    where: b.querySelector('.key-bar-where').textContent,
+    keys: [...b.querySelectorAll('.key-bar-keys .key-bar-key')].map(chip),
+    end: end ? chip(end) : null,
+  };
+}`;
+
 /** The reading order the overview's Up and Down must follow: section, then column, then top. */
 const readingOrder = (items: Placed[]): Placed[] => [...items].sort((a, b) => a.section - b.section || a.column - b.column || a.top - b.top);
 
@@ -179,11 +210,54 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (!role.test(gotRole!) || !nameOk) fail(`the focused element is announced as ${gotRole} "${gotName}", expected ${role} "${name}"`);
     log(`  announced: ${gotRole} "${gotName!.slice(0, 70)}"`);
   };
-  const state = (name: string) => {
+  /** The key bar, once it names `where` (a string is the whole name, a pattern its start); fails with what it shows. */
+  const keyBar = async (where: string | RegExp, ms = 6000): Promise<Bar> => {
+    let last: Bar | null = null;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      last = browser.eval<Bar>(BAR);
+      if (last.shown && last.foot && (typeof where === "string" ? last.where === where : where.test(last.where))) return last;
+      await sleep(150);
+    }
+    return fail(`expected the key bar at the foot of the window naming ${where}; it shows ${JSON.stringify(last)}`);
+  };
+  /** A state of the page: the key bar names what the ring is on (`where`), the console is clean, and a screenshot. */
+  const state = async (name: string, where: string | RegExp) => {
+    const bar = await keyBar(where);
+    log(`  key bar: "${bar.where}" · ${[...bar.keys, bar.end ?? "(no ?)"].join(" · ")}`);
     browser.consoleClean();
     browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
     passed.push(name);
     log(`PASS ${name}`);
+  };
+  /** The whole key bar, as the user reads it: what the ring is on, each key with its words, and the key at its end. */
+  const barSays = async (what: string, want: { place: string; where: string; keys: string[]; end: string | null }) => {
+    const bar = await keyBar(want.where);
+    const got = { place: bar.place, where: bar.where, keys: bar.keys, end: bar.end };
+    if (JSON.stringify(got) !== JSON.stringify(want)) fail(`the key bar on ${what} reads ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+    log(`  key bar on ${what}: "${bar.where}" · ${[...bar.keys, bar.end ?? "(no ?)"].join(" · ")}`);
+  };
+  /** What the bar calls an overview item, from the API: a room's title, "@alias in <room>", a thread's title, a browser's name. */
+  const overviewWhere = async (key: string): Promise<string> => {
+    const [kind, id, member] = key.split(":");
+    const view = await service.call<{ rooms: Array<{ id: string; title: string; members: Array<{ id: string; alias: string }> }>; threads: Array<{ id: string; title: string }> }>("GET", "/api/overview");
+    const apiRoom = view.rooms.find((r) => r.id === id);
+    if (kind === "room" && apiRoom) return apiRoom.title;
+    const alias = apiRoom?.members.find((m) => m.id === member)?.alias;
+    if (kind === "member" && apiRoom && alias) return `@${alias} in ${apiRoom.title}`;
+    const thread = view.threads.find((t) => t.id === id);
+    if (kind === "thread" && thread) return thread.title;
+    const browserItem = kind === "browser" ? (await service.call<Array<{ id: string; name: string }>>("GET", "/api/browsers")).find((b) => b.id === id) : undefined;
+    if (browserItem) return `${browserItem.name} · browser`;
+    const preset = kind === "preset" ? (await service.call<Array<{ id: string; name: string }>>("GET", "/api/presets")).find((p) => p.id === id) : undefined;
+    if (preset) return `${preset.name} · crew member`;
+    return fail(`the API has no ${short(key)} for the key bar to name`);
+  };
+  /** What the bar calls a post: its number from the API, then what it is ("#64 · note from you"). */
+  const postWhere = async (key: string | null): Promise<RegExp> => {
+    const post = (await room.snapshot()).posts.find((p: any) => `post:${p.seq}` === key);
+    if (!post) return fail(`the focused ${key} is not a post of the API's snapshot`);
+    return new RegExp(`^#${post.number} · \\S`);
   };
   /**
    * The composer opened by a letter and made to hold exactly that letter, by keys only (as rehearse.ts's compose()
@@ -296,7 +370,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
   press("End");
   await expect("End: the last item", (f) => f.key === order.at(-1)!.key);
-  state("overview: Up and Down follow the reading order, column by column");
+  await state("overview: Up and Down follow the reading order, column by column", await overviewWhere(order.at(-1)!.key));
 
   // Left and Right: the column beside, the item nearest in height.
   const rehearsalColumn = order.find((p) => p.key === `room:${R}`)!.column;
@@ -319,7 +393,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Left: ${short(target.key)}, in the column before at the same height`, (f) => f.key === target.key && f.ring);
   }
   announced(/^(listitem|button)$/, /\S/);
-  state("overview: Left and Right go to the column beside, at the same height");
+  await state("overview: Left and Right go to the column beside, at the same height", await overviewWhere(focus().key!));
 
   // ---------------- 2. the focus survives a poll that moves its card ----------------
 
@@ -341,7 +415,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }, 30_000, 500);
   log(`api: the second room needs you (counts.needsYou=${needs.counts.needsYou}); page: its card moved from tile ${before} to ${after.index}`);
   await expect("the moved card keeps the focus", (f) => f.key === `room:${second.roomId}` && f.visible);
-  state("overview: the focus stays on a card a poll moves");
+  await state("overview: the focus stays on a card a poll moves", "Second");
 
   // ---------------- 2b. a dialog and a menu from the overview: the focus comes back; Tab stays in a dialog ----------------
 
@@ -357,7 +431,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("an arrow in the dialog moves nothing behind it", (f) => f.dialog === "New room" && f.inDialog);
   press("Escape");
   await expect("Esc: the dialog closed, the focus back on its + button", (f) => f.dialog === null && f.label === "New room in demo" && f.ring);
-  state("overview: a dialog holds Tab and gives the focus back to its button");
+  await state("overview: a dialog holds Tab and gives the focus back to its button", "New room in demo");
 
   await goTo(`room:${third.roomId}`);
   press("Tab");
@@ -381,7 +455,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Enter on Rename…: its dialog, the focus in its field", (f) => f.dialog === "Rename room" && f.inDialog && f.value === "Third");
   press("Escape");
   await expect("Esc: the dialog closed, the focus back on the card's ⋯", (f) => f.dialog === null && !f.menu && f.label === "Third options" && f.ring);
-  state("overview: a card's menu takes the focus and gives it back through its dialog");
+  await state("overview: a card's menu takes the focus and gives it back through its dialog", "Third options");
 
   // ---------------- 3. into a room ----------------
 
@@ -392,7 +466,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const opened = focus();
   if (opened.drawers[0]!.label !== `Room ${apiRoom.room.title}`) fail(`the drawer is named ${opened.drawers[0]!.label}, the API's room is ${apiRoom.room.title}`);
   log(`api: room ${R.slice(0, 8)} "${apiRoom.room.title}"; page: drawer data-id ${R.slice(0, 8)}, named "${opened.drawers[0]!.label}"`);
-  state("Enter on a room card opens it, with the focus inside");
+  await state("Enter on a room card opens it, with the focus inside", "Write a message");
 
   // The chat: the newest post first, then up through it.
   const s1 = await room.snapshot();
@@ -407,7 +481,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect(`Up: #${notes.at(-2).number}`, (f) => f.key === `post:${notes.at(-2).seq}`);
   press("ArrowDown");
   await expect(`Down: #${notes.at(-1).number}`, (f) => f.key === `post:${notes.at(-1).seq}`);
-  state("in a room: Up and Down go through the chat's posts");
+  await state("in a room: Up and Down go through the chat's posts", `#${notes.at(-1).number} · note from you`);
+  await barSays(`#${notes.at(-1).number}`, {
+    place: "room-post",
+    where: `#${notes.at(-1).number} · note from you`,
+    keys: ["↑ ↓ previous or next post", "← → between the board, Members, Browser and Git", "Home End first or last post", "Enter its detail", "Esc back to the overview", "a–z start writing"],
+    end: "? all keys",
+  });
+  await state("key bar: a post's keys, each by what it does there", `#${notes.at(-1).number} · note from you`);
 
   // Past the top: the earlier posts load and the focus goes on to the post above.
   press("Home");
@@ -419,7 +500,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const abovePost = s1.posts.find((p: any) => p.seq === Number(above.key!.slice(5)));
   if (!abovePost) fail(`the focused post ${above.key} is not in the API's snapshot`);
   log(`api: the post above #${s1.posts.find((p: any) => p.seq === topSeq)?.number} is #${abovePost.number}; page: ${drawn} → ${above.posts} posts drawn`);
-  state("in a room: Up past the top draws the earlier posts");
+  await state("in a room: Up past the top draws the earlier posts", new RegExp(`^#${abovePost.number} · \\S`));
 
   // Up past the very top reaches the view's tabs; Right switches to the board; Down goes to its newest post.
   press("Home");
@@ -437,13 +518,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Up: #${post.number}, as the API orders the board`, (f) => f.key === `post:${post.seq}` && f.ring);
   }
   announced(/^article$/, new RegExp(`^#${s1.posts.at(-4).number}, `));
-  state("in a room: the board's posts in the API's order, from the tabs");
+  await state("in a room: the board's posts in the API's order, from the tabs", new RegExp(`^#${s1.posts.at(-4).number} · \\S`));
 
   // A post's detail, and back to the post.
   const detailPost = s1.posts.at(-4);
   press("Enter");
   await expect(`Enter: the detail of #${detailPost.number}`, (f) => f.dialog === `Post #${detailPost.number}` && f.label === "Close dialog");
-  state("Enter on a post opens its detail");
+  await state("Enter on a post opens its detail", `Post #${detailPost.number}`);
   press("Escape");
   await expect(`Esc: the detail closed, the focus back on #${detailPost.number}, the room still open`, (f) => f.dialog === null && f.key === `post:${detailPost.seq}` && f.drawers.some((d) => d.view === "room"));
   // The keys, with ?: Esc closes it and the focus is back.
@@ -456,20 +537,27 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("End");
     await expect("End scrolls it to its foot", (f) => (f.dialogBody?.top ?? 0) > 0);
   } else log(`  the help fits this window (${JSON.stringify(help.dialogBody)}): nothing to scroll`);
-  state("? shows the keys");
+  await state("? shows the keys", "Keyboard");
   press("Escape");
   await expect("Esc: the keys closed, the focus back on the post", (f) => !f.help && f.key === `post:${detailPost.seq}` && f.drawers.some((d) => d.view === "room"));
 
   // The composer: a key starts it; its own arrows; Esc closes it (not the room); Up comes back to the post.
   compose("w");
   await expect("a letter opens the composer, in its field", (f) => f.tag === "TEXTAREA");
+  await barSays("the composer", {
+    place: "room-composer",
+    where: "writing a message",
+    keys: ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"],
+    end: null,
+  });
+  await state("key bar: the composer's keys, and no ? in its field", "writing a message");
   press("ArrowUp");
   await expect("Up in the composer's field stays in the field", (f) => f.tag === "TEXTAREA");
   press("Escape");
   await expect("Esc closes the composer, not the room", (f) => f.label.includes("draft") && f.drawers.some((d) => d.view === "room"));
   press("ArrowUp");
   await expect("Up from the strip: back to the post", (f) => f.key === `post:${detailPost.seq}`);
-  state("the composer keeps its keys; Esc closes it first");
+  await state("the composer keeps its keys; Esc closes it first", new RegExp(`^#${detailPost.number} · \\S`));
 
   // Correct… on an open request (a message to him, made through the API; his turn on it is held open).
   const open = await room.message("Draft the release notes.");
@@ -486,7 +574,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("what is typed goes into the correction, not a new message", (f) => f.value === "xy" && !f.composerOpen);
   press("Escape");
   await expect("Esc: back on Correct…, the field closed", (f) => f.label === "Correct…" && f.expanded === "false" && f.drawers.some((d) => d.view === "room" && !d.inert));
-  state("Correct… takes the focus; Esc goes back to it");
+  await state("Correct… takes the focus; Esc goes back to it", new RegExp(`^Correct… · #${openPost.number} · you to @fable, `));
 
   // The same inside the post's detail: Esc in the correction closes the field, not the dialog (and its text with it).
   press("End");
@@ -503,7 +591,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc closes the field only: the detail stays, the focus on its Correct…", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && f.label === "Correct…");
   press("Escape");
   await expect(`Esc again closes the detail, the focus back on #${openPost.number}`, (f) => f.dialog === null && f.key === `post:${openPost.seq}`);
-  state("in a post's detail, Esc in a correction closes the field, not the detail");
+  await state("in a post's detail, Esc in a correction closes the field, not the detail", new RegExp(`^#${openPost.number} · you to @fable, `));
 
   // ---------------- 4. the panes ----------------
 
@@ -525,7 +613,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect(`Left: the board, back on #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
   press("ArrowRight");
   await expect(`Right: Members, on @${members[1]!.alias}`, (f) => f.key === `member:${members[1]!.id}`);
-  state("in a room: Left and Right between the board, Members, Browser and Git");
+  await state("in a room: Left and Right between the board, Members, Browser and Git", new RegExp(`^@${members[1]!.alias} · `));
 
   // Esc in a menu closes the menu only; the focus goes back to the member.
   press("Tab");
@@ -536,7 +624,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Down in the menu: its next item", (f) => f.menu && f.label === "Open in T3");
   press("Escape");
   await expect("Esc: the menu closed, the room still open, the focus on the member", (f) => !f.menu && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}`);
-  state("Esc closes a menu, not the room");
+  await state("Esc closes a menu, not the room", new RegExp(`^@${members[1]!.alias} · `));
 
   // A toast while a dialog is open is outside the inert page: read out (in the page snapshot), above the dialog.
   press("Tab");
@@ -558,7 +646,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   log(`  page: the toast "${toast.text}" is outside #root, not inert, and in the page snapshot while the dialog is open`);
   press("Escape");
   await expect(`Esc: the dialog closed, the focus back on @${members[1]!.alias}`, (f) => f.dialog === null && f.key === `member:${members[1]!.id}`);
-  state("a toast during a dialog is read out");
+  await state("a toast during a dialog is read out", new RegExp(`^@${members[1]!.alias} · `));
 
   // ---------------- 5. a member's thread, and back out ----------------
 
@@ -579,14 +667,21 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   );
   if (controls.menu + controls.browser + controls.settings + controls.composer > 0 || !controls.note.includes("read only")) fail(`the member's thread offers what T3 refuses for a seated thread: ${JSON.stringify(controls)}`);
   log(`  page: the member's thread has no thread menu, browser, settings or composer ("${controls.note}")`);
-  state("Enter on a member opens its thread");
+  await state("Enter on a member opens its thread", `@${members[1]!.alias}'s thread, read only`);
   press("Escape");
   await expect(`Esc: back in the room, the focus on @${members[1]!.alias}`, (f) => !f.drawers.some((d) => d.view === "member") && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}` && f.ring);
-  state("Esc from a member's thread goes back to the room");
+  await state("Esc from a member's thread goes back to the room", new RegExp(`^@${members[1]!.alias} · `));
   press("Escape");
   await expect("Esc: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
   announced(/^button$/, "Rehearsal");
-  state("Esc from the room goes back to its card on the overview");
+  await state("Esc from the room goes back to its card on the overview", apiRoom.room.title);
+  await barSays("the room's tile", {
+    place: "overview-room",
+    where: apiRoom.room.title,
+    keys: ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Home End first or last on the page", "Enter open the room"],
+    end: "? all keys",
+  });
+  await state("key bar: a room's tile, each key by what it does there", apiRoom.room.title);
 
   // From the overview: Enter on a member opens its thread over its room; Esc twice comes back to it.
   const reviewer = members[2]!;
@@ -595,12 +690,12 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   announced(/^listitem$/, `@${reviewer.alias}`);
   press("Enter");
   await expect(`Enter on @${reviewer.alias} on the overview: its thread over its room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
-  state("Enter on an overview member opens its thread over its room");
+  await state("Enter on an overview member opens its thread over its room", `@${reviewer.alias}'s thread, read only`);
   press("Escape");
   await expect(`Esc: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
   press("Escape");
   await expect(`Esc: the overview, the focus back on @${reviewer.alias}`, (f) => f.drawers.length === 0 && f.key === `member:${R}:${reviewer.id}` && f.ring);
-  state("Esc twice comes back to the overview member");
+  await state("Esc twice comes back to the overview member", await overviewWhere(`member:${R}:${reviewer.id}`));
 
   // A thread outside rooms, by keys: Enter on its card, Up from its composer's strip to the conversation, Esc back.
   await goTo(`thread:${loose.threadId}`);
@@ -610,7 +705,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Up from the strip: the conversation (its arrows scroll it)", (f) => f.role === "log" && f.label === "Thread" && f.inLayer === "thread");
   press("Escape");
   await expect("Esc: back on the thread's card", (f) => f.drawers.length === 0 && f.key === `thread:${loose.threadId}`);
-  state("a thread outside rooms: Enter, Up to its conversation, Esc");
+  await state("a thread outside rooms: Enter, Up to its conversation, Esc", await overviewWhere(`thread:${loose.threadId}`));
 
   // ---------------- 6. the pixel look draws its own ring ----------------
 
@@ -626,14 +721,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
   await goTo(`member:${R}:${reviewer.id}`);
   await expect("pixel look: the member's ring is drawn", (f) => f.ring);
-  state("pixel look: the overview's focus ring");
+  await state("pixel look: the overview's focus ring", await overviewWhere(`member:${R}:${reviewer.id}`));
   await goTo(`room:${R}`);
   await expect("pixel look: the room card's brackets are drawn", (f) => f.ring);
   press("Enter");
   await expect("pixel look: the room is open", (f) => f.inLayer === "room");
   press("ArrowUp");
-  await expect("pixel look: a post's ring is drawn", (f) => f.key?.startsWith("post:") === true && f.ring);
-  state("pixel look: the room's focus ring");
+  const pixelPost = await expect("pixel look: a post's ring is drawn", (f) => f.key?.startsWith("post:") === true && f.ring);
+  await state("pixel look: the room's focus ring", await postWhere(pixelPost.key));
   press("Escape");
   await expect("pixel look: Esc back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   return passed;

@@ -1,11 +1,12 @@
 /**
  * The page's keys (web/src/keys.ts): the overview's reading order and where each arrow goes from an item, on layouts
- * as the overview draws them (tiles stacked per column), and the shortcuts the page shows with ? listed in README.md.
+ * as the overview draws them (tiles stacked per column); the key table (keyOrder.ts, KEYS) and what the key bar shows
+ * from it on a place; README.md's Keyboard section drawn from the same table.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { inReadingOrder, KEYS, readingTarget, type NavKey, type Placed } from "../web/src/keyOrder.ts";
+import { barEntries, entryText, inReadingOrder, KEYS, keysMarkdown, placeById, readingTarget, type KeyWhen, type NavKey, type PlaceId, type Placed } from "../web/src/keyOrder.ts";
 
 /** An item: its key, section, column (left edge) and top; 30 px tall. */
 const at = (key: string, section: number, column: number, top: number): Placed<string> => ({ element: key, section, column, top, middle: top + 15 });
@@ -68,15 +69,59 @@ test("with nothing focused, any arrow starts at the first item", () => {
   assert.equal(readingTarget([], -1, "down"), null);
 });
 
-test("every shortcut ? shows is in README.md's Keyboard section", () => {
+/** The bar on a place, as it reads: each entry's keys, then what they do. */
+const bar = (place: PlaceId, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${entry.does}`);
+
+test("the bar names the keys of a room's tile, a post and the composer by what they do there", () => {
+  assert.deepEqual(bar("overview-room"), ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Home End first or last on the page", "Enter open the room", "? all keys"]);
+  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the board, Members, Browser and Git", "Home End first or last post", "Enter its detail", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  // In the field: no ? (it types), Backspace only while the field is empty.
+  assert.deepEqual(bar("room-composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"]);
+  assert.deepEqual(bar("room-composer", ["typing", "empty"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "Backspace close it", "@ mention a member", "/ a command"]);
+  // A thread's composer has no lists.
+  assert.deepEqual(bar("composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept"]);
+});
+
+test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {
+  // The tabs' own Left and Right, and their Down; Up does nothing there.
+  assert.deepEqual(bar("room-tabs"), ["↓ back to the posts", "← → the chat or the board", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  // Esc closes the open composer first.
+  assert.ok(bar("room-post", ["composer-open"]).includes("Esc close the composer"));
+  assert.ok(!bar("room-post", ["composer-open"]).includes("Esc back to the overview"));
+  // ? closes the list it opened; Tab is on the bar only where it is the way on.
+  assert.deepEqual(bar("dialog", ["help"]), ["Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "? close the keys"]);
+  assert.ok(!bar("dialog").some((line) => line.startsWith("?")), "? opens nothing over a dialog");
+  assert.ok(!bar("menu").some((line) => line.startsWith("?")), "? opens nothing over a menu");
+  assert.ok(!bar("overview-room").some((line) => line.startsWith("Tab")));
+  // A member's thread is read only: no letters.
+  assert.deepEqual(bar("member-thread"), ["↑ ↓ scroll it", "Esc back to the room", "? all keys"]);
+});
+
+test("every place but a dialog's and a menu's reaches Everywhere, each key once per place and moment, each worded", () => {
+  const places = KEYS.flatMap((area) => area.places);
+  assert.equal(new Set(places.map((place) => place.id)).size, places.length, "place ids are unique");
+  for (const place of places) {
+    const chain: string[] = [];
+    for (let at: typeof place | undefined = place; at; at = at.within ? placeById(at.within) : undefined) {
+      assert.ok(!chain.includes(at.id), `${place.id} is within itself`);
+      chain.push(at.id);
+    }
+    // Under a dialog or a menu the page is out of reach, ? included.
+    assert.equal(chain.at(-1), ["dialog", "menu", "model-list"].includes(place.id) ? place.id : "everywhere", `${place.id} reaches Everywhere`);
+    const keys = place.entries.flatMap((entry) => entry.keys.map((key) => `${key}:${entry.when ?? ""}:${entry.unless ?? ""}`));
+    assert.equal(new Set(keys).size, keys.length, `${place.id} lists a key twice for the same moment`);
+    // As the bar says it, in the middle of its line: lower case (`?` and README capitalise it).
+    for (const entry of place.entries) assert.match(entry.does, /^[a-z]/, `${place.id}: "${entry.does}"`);
+  }
+  assert.equal(entryText({ keys: ["?"], does: "all keys", unless: "typing" }), "All keys (outside a text field)");
+});
+
+test("README.md's Keyboard section is the key table, row for row", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const section = readme.slice(readme.indexOf("## Keyboard"), readme.indexOf("## The pixel look"));
   assert.ok(section.length > 0, "README.md has a Keyboard section");
-  for (const group of KEYS) {
-    assert.ok(section.includes(`**${group.where}**`), `README.md lists the keys of "${group.where}"`);
-    for (const entry of group.entries) {
-      const row = `| ${entry.keys.map((key) => `\`${key}\``).join(" ")} | ${entry.what} |`;
-      assert.ok(section.includes(row), `README.md has the row ${row}`);
-    }
-  }
+  const tables = keysMarkdown();
+  assert.ok(section.includes(tables), "README.md's Keyboard tables differ from KEYS: node scripts/keys-readme.ts draws them again");
+  const rows = (text: string) => text.split("\n").filter((line) => line.startsWith("|")).length;
+  assert.equal(rows(section), rows(tables), "README.md's Keyboard section has no table rows besides KEYS'");
 });

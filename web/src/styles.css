@@ -7899,7 +7899,7 @@ span.reply-to {
   opacity: 1;
 }
 
-/* The keys, shown by ? (KeyHelp.tsx). */
+/* The keys, shown by ? (KeyHelp.tsx): by area, each place with what each key does there. */
 .key-help section + section {
   margin-top: 14px;
 }
@@ -7910,34 +7910,123 @@ span.reply-to {
   color: var(--fg-muted);
 }
 
-.key-help dl {
-  display: grid;
-  gap: 6px;
-  margin: 0;
+.key-help table {
+  width: 100%;
+  border-collapse: collapse;
 }
 
-.key-help-row {
-  display: grid;
-  grid-template-columns: 9.5rem minmax(0, 1fr);
-  gap: 12px;
-  align-items: baseline;
+.key-help th,
+.key-help td {
+  padding: 3px 12px 3px 0;
+  text-align: left;
+  vertical-align: baseline;
 }
 
-.key-help dt {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+.key-help th {
+  width: 10rem;
+  font-weight: normal;
+  color: var(--fg-muted);
 }
 
-.key-help dd {
-  margin: 0;
+.key-help-place > * {
+  border-top: 1px solid var(--line);
 }
 
-.key-help kbd {
+.key-help td:last-child {
+  padding-right: 0;
+}
+
+.key-help-keys {
+  width: 9rem;
+}
+
+.key-help kbd,
+.key-bar kbd {
   padding: 1px 6px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--bg-2);
+}
+
+.key-help-keys kbd + kbd {
+  margin-left: 4px;
+}
+
+/* The key bar (KeyBar.tsx): one line at the foot of the page, which the page and the drawers make room for; not on a
+   phone. Dialogs dim the page above it, menus may draw over it, toasts sit above it. */
+:root {
+  --key-bar: 30px;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --key-bar: 0px;
+  }
+}
+
+#root {
+  height: calc(100% - var(--key-bar));
+}
+
+.ov-layer {
+  height: calc(var(--app-height, 100dvh) - var(--key-bar));
+}
+
+.dialog-backdrop {
+  bottom: var(--key-bar);
+}
+
+.toast-stack {
+  bottom: calc(14px + var(--key-bar));
+}
+
+.key-bar {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: var(--key-bar);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 20px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.key-bar-where {
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.key-bar-keys {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.key-bar-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.key-bar-does {
+  margin-left: 2px;
+}
+
+.key-bar kbd {
+  font-size: var(--text-xs);
+  line-height: 1.4;
 }
 
 .key-help .hint {

@@ -19,6 +19,7 @@ import { RoomContext, seatLookups, type RoomContextValue } from "./context.tsx";
 import { Overview } from "./components/Overview.tsx";
 import { OverviewRoom } from "./components/OverviewRoom.tsx";
 import { CloseIcon } from "./components/icons.tsx";
+import { KeyBar } from "./components/KeyBar.tsx";
 import { KeyHelp } from "./components/KeyHelp.tsx";
 import { byKey, focusWhen, isTextField, itemOf, keyOf, layerOpen, trackFocus } from "./keys.ts";
 import { useTheme } from "./theme.ts";
@@ -648,6 +649,7 @@ export function App() {
         ) : null}
         {keyHelp ? <KeyHelp onClose={() => setKeyHelp(false)} /> : null}
         {connectionDialog}
+        <KeyBar />
       </FilePreviewHost>
     </PresetsContext.Provider>
   );

@@ -53,6 +53,7 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
                 onClick={() => setEditing({ preset })}
                 data-nav="ov"
                 data-nav-key={`preset:${preset.id}`}
+                data-where={`${preset.name} · crew member`}
               >
                 <PresetIcon preset={preset} size={16} />
                 <span className="ov-shelf-name mono">{preset.name}</span>
@@ -168,7 +169,7 @@ export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { b
           const state = browser.status.state;
           return (
             <li key={browser.id} className="ov-shelf-item">
-              <button type="button" className="ov-shelf-tile" title={`${browser.name}${browser.description ? `\n${browser.description}` : ""}`} onClick={() => onOpen(browser.id)} data-nav="ov" data-nav-key={`browser:${browser.id}`}>
+              <button type="button" className="ov-shelf-tile" title={`${browser.name}${browser.description ? `\n${browser.description}` : ""}`} onClick={() => onOpen(browser.id)} data-nav="ov" data-nav-key={`browser:${browser.id}`} data-where={`${browser.name} · browser`}>
                 <span className={`thread-dot tone-${state === "running" ? "on" : state === "starting" ? "working" : state === "error" ? "error" : "idle"}`} aria-hidden="true" />
                 <span className="ov-shelf-name mono">{browser.name}</span>
                 <span className="ov-shelf-what">
@@ -205,7 +206,7 @@ export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T
   const shown = open === "settled" ? settled : open === "archived" ? archived : [];
   const toggle = (section: "settled" | "archived", count: number, title: string) =>
     count > 0 ? (
-      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)} data-nav="ov" data-nav-key={`shelf:${(settled[0] ?? archived[0])?.projectId}:${section}`}>
+      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)} data-nav="ov" data-nav-key={`shelf:${(settled[0] ?? archived[0])?.projectId}:${section}`} data-where={`${section === "settled" ? "Settled" : "Archived"} threads · ${count}`}>
         <ChevronIcon dir={open === section ? "down" : "right"} />
         {section === "settled" ? "Settled" : "Archived"} · {count}
       </button>
@@ -220,7 +221,7 @@ export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T
         <ul className="ov-threads">
           {shown.map((thread) => (
             <li key={thread.id}>
-              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.modelSelection.model}`} onClick={() => onOpen(thread.id)} data-nav="ov" data-nav-key={`thread:${thread.id}`}>
+              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.modelSelection.model}`} onClick={() => onOpen(thread.id)} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
                 <span className="ov-thread-title">{thread.title}</span>
                 {drafted(thread.id) ? (
                   <span className="pill pill-draft" title="You have an unsent message here">
