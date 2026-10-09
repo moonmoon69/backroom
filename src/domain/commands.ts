@@ -322,14 +322,6 @@ export const RunRetryCommand = z.object({ type: z.literal("run.retry"), roomId: 
 
 export const RunStopCommand = z.object({ type: z.literal("run.stop"), roomId: nonEmpty, participantId: nonEmpty }).strict();
 
-export const RoomNoteCreateCommand = z
-  .object({
-    type: z.literal("room.note.create"),
-    roomId: nonEmpty,
-    text: nonEmpty,
-  })
-  .strict();
-
 /** Drop a question the user will not answer (T3 dismisses it; the agent goes on, or its turn ends, without the answer). */
 export const NativeUserInputDismissCommand = z.object({ type: z.literal("native.userInput.dismiss"), participantId: nonEmpty, requestId: nonEmpty }).strict();
 
@@ -454,7 +446,6 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ConsigliereRetireThreadSetCommand,
   ConsigliereStartCommand,
   MessageCreateCommand,
-  RoomNoteCreateCommand,
   RequestCancelCommand,
   RequestCorrectCommand,
   RunRetryCommand,

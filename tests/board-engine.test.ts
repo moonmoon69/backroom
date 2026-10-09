@@ -267,11 +267,6 @@ test("1. each command appends exactly the expected events, and reads append noth
   assert.ok(f.running("w"));
   f.complete("v", "nothing left to do");
 
-  // note: under the requests this turn works on; it addresses nobody.
-  events = await f.appended(() => f.cli("w", "note", "halfway through the fixtures"));
-  assert.deepEqual(kinds(events), ["note"]);
-  assert.deepEqual([[...data(events, "note").requestIds].sort(), data(events, "note").recipients], [[a.request.id, bw!].sort(), []]);
-
   // The turn ends: its final is one output that answers A and B (the correction is in the turn), back to c.
   events = await f.appended(async () => {
     f.complete("w", "parser built, JSON fixtures checked");
@@ -348,7 +343,7 @@ test("2. a member's post mid-run is refused and appends nothing; its final answe
   assert.deepEqual([f.wakes("c"), f.wakes("w"), f.wakes("v")], [2, 1, 1], "each reply wakes the Consigliere exactly once; the worker is not woken again");
 });
 
-test("3. a member's own post never wakes itself: not a note or a follow-up of its own", async (t) => {
+test("3. a member's own post never wakes itself: not a follow-up of its own", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
@@ -358,7 +353,6 @@ test("3. a member's own post never wakes itself: not a note or a follow-up of it
   await f.refused("c", ["post", "@c remind me later"], /you cannot post to yourself/);
   const all = f.posted(await f.cli("c", "post", "@all look at the grammar"));
   assert.deepEqual(all.map((id) => f.request(id).owner).sort(), [f.seat("w"), f.seat("v")].sort(), "@all is everyone else");
-  await f.cli("w", "note", "the grammar is ambiguous");
   f.complete("w", "grammar rewritten");
   await f.quiet();
   // w's own continuation: a follow-up, which wakes the Consigliere, never w.
@@ -386,7 +380,7 @@ test("4. a key from another room is refused; the room comes from the key only, a
   // z is not a member of room A: its alias with room A's key prefix is refused.
   await f.refused("z", ["index"], /is not the key of a member seated in a room/, f.key("z", f.roomId));
   // w and z of room B act in room B only: room A's #n does not exist there.
-  for (const argv of [["cancel", `#${n}`], ["correct", `#${n}`, "x"], ["note", `#${n}`, "x"], ["read", String(n)]]) {
+  for (const argv of [["cancel", `#${n}`], ["correct", `#${n}`, "x"], ["read", String(n)]]) {
     await f.refused("w", argv, /this room has no post/, f.key("w", other));
   }
   for (const argv of [["cancel", `#${n}`], ["correct", `#${n}`, "x"], ["retry", `#${n}`]]) {
@@ -406,7 +400,6 @@ test("5. index numbering is stable across restart and rebuild, and matches the n
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  await f.cli("w", "note", "fixtures pending");
   f.complete("w", "built; it wants a review");
   await f.tick(2);
   const [r] = f.posted(await f.cli("c", "post", "@v review the parser"));
@@ -492,13 +485,12 @@ test("7. a post over 1 MiB (UTF-8 bytes) is refused on every text-bearing comman
   await f.refused("c", ["correct", `#${f.num(a!)}`, big], /at most 1 MiB/);
   await f.refused("c", ["state", big], /at most 1 MiB/);
   await f.tick();
-  await f.refused("w", ["note", big], /at most 1 MiB/);
   f.complete("w", "failed", "error");
   await f.tick();
   await f.refused("c", ["retry", `#${f.num(a!)}`, big], /at most 1 MiB/);
 });
 
-test("H5: a member's post is refused with a plain sentence and appends nothing; answer, working and follow are gone, refused with a sentence; the Consigliere's post goes under nothing, in a turn too", async (t) => {
+test("H5: a member's post is refused with a plain sentence and appends nothing; answer, working, follow and note (N1) are gone, refused with a sentence; the Consigliere's post goes under nothing, in a turn too", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [c, w] = [f.seat("c"), f.seat("w")];
@@ -520,11 +512,12 @@ test("H5: a member's post is refused with a plain sentence and appends nothing; 
       assert.equal(refusal.status, 403);
     }
   }
-  // answer, working and follow are gone, for everyone: each is refused with why.
+  // answer, working, follow and note are gone, for everyone: each is refused with why.
   const gone: Array<[string, RegExp]> = [
     ["answer", exactly("rooms-board: your final reply is your answer; there is nothing to run.")],
     ["working", exactly("rooms-board: there is no working mark: your final reply is your answer, and the Consigliere reads your T3 status (what still runs in the background) at the top of it.")],
     ["follow", exactly("rooms-board: nobody follows requests: every reply of a member, and each follow-up of it, wakes the Consigliere.")],
+    ["note", exactly("rooms-board: notes are gone: say it in your final reply.")],
   ];
   for (const alias of ["w", "c"]) {
     for (const [command, sentence] of gone) {
@@ -534,9 +527,12 @@ test("H5: a member's post is refused with a plain sentence and appends nothing; 
       }
     }
   }
-  // help lists none of them.
+  // help lists none of them, and no refusal points a member to a note.
   const help = await f.cli("w", "help");
-  assert.doesNotMatch(help, /^\s+(answer|working|follow)\b/m);
+  assert.doesNotMatch(help, /^\s+(answer|working|follow|note)\b/m);
+  for (const [alias, argv] of [["c", ["post", "look at this"]], ["c", ["post", "@c remind me later"]]] as const) {
+    assert.doesNotMatch((await f.refused(alias, [...argv], /rooms-board: /)).message, /note/);
+  }
   assert.doesNotMatch(help, /--for/);
   assert.match(help, /^ {2}post "@name the job"/m);
 
@@ -568,7 +564,7 @@ test("a correction during the turn supersedes its final: the request stays open 
   assert.equal(f.request(a!).state, "answered");
   assert.deepEqual(f.finalsOn("w", a!).map((e) => (e.data.kind === "output" ? e.data.claims.map((cl) => cl.outcome) : [])), [["superseded"], ["answered"]]);
   // A number with no text is not taken for the text.
-  await f.refused("w", ["note", `#${f.num(a!)}`], /looks like a post number with no text after it/);
+  await f.refused("c", ["correct", `#${f.num(a!)}`], /looks like a post number with no text after it/);
   // A closed request is not corrected: post a new one.
   await f.refused("c", ["correct", `#${f.num(a!)}`, "and the printer"], new RegExp(`#${f.num(a!)} is answered; a closed request is not corrected`));
   // Two identical posts are two requests.
@@ -590,8 +586,8 @@ test("the host's texts reach members with board numbers, never request IDs", asy
   const shown = await f.cli("w", "read", String(held[0]!.seq));
   assert.match(shown, new RegExp(`Cancel of #${f.num(a!)} requested; it applies when @w's current turn ends\\.`));
   assert.doesNotMatch(shown, /#board:|@[0-9a-f]{8}-/);
-  // A post that is not a request names the request it is about.
-  const note = await f.appended(() => f.cli("w", "note", `#${f.num(b!)}`, "lexer first"));
+  // A post that is not a request names the request it is about: Backroom's note of a reseat called off, say.
+  const note = await f.appended(async () => f.stack.engine!.note(f.roomId, { actor: "$user", id: "reseat-called-off", body: "lexer first", requestIds: [b!] }));
   await f.refused("c", ["correct", `#${note[0]!.seq}`, "printer first"], new RegExp(`#${note[0]!.seq} is a note on #${f.num(b!)}, not a request: name #${f.num(b!)}`));
   // The member's answer: its status line names it by alias.
   f.complete("w", "printer built");
@@ -705,21 +701,6 @@ test("retry: the Consigliere's, once per failed turn, and never for a turn whose
   const notices = f.p().events.filter((e) => e.data.kind === "notice" && e.data.intent === "error");
   await f.refused("c", ["retry", `#${notices.at(-1)!.seq}`], /nothing to redo/);
   await f.refused("c", ["retry", `#${f.num(a!)}`], /nothing to redo/);
-});
-
-test("a note made while the host is still sending the turn goes under that turn's request", async (t) => {
-  const f = await Fixture.create();
-  t.after(() => f.close());
-  const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
-  f.fake.unavailableSends = 1;
-  await f.tick();
-  const run = f.p().runs.get(f.p().seats.get(f.seat("w"))!.activeRunId!)!;
-  assert.equal(run.phase, "sending");
-  const events = await f.appended(() => f.cli("w", "note", "starting on the lexer"));
-  const note = events.find((e) => e.data.kind === "note")!;
-  assert.deepEqual(note.data.kind === "note" && note.data.requestIds, [a]);
-  // The same in a member's post: refused, sending or not.
-  await f.refused("w", ["post", "@v review it"], MEMBERS);
 });
 
 test("seat, reseat and retire run the room commands L4b routes to the journal, the Consigliere's only; a board without the seat lifecycle refuses them", async (t) => {

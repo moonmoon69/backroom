@@ -97,13 +97,13 @@ export function keepAliveOnly(envelope: Envelope): string | null {
   return [...inputs].sort((a, b) => a.seq - b.seq).pop()!.body;
 }
 
-/** The milestone that marks the user's room note (`/note`): shared context for every seat, about no request (L4a). */
+/** The milestone that marks the user's room note, which journals from before N1 hold: shared context for every seat, about no request (L4a). */
 export const ROOM_NOTE = "room";
 
 /**
  * Notes and non-waking progress in (envelope.base, envelope.contextThrough], written by others, on requests the seat
  * asked or owns as of the watermark: a member's turn after its answer, "still working" posts nobody follows. They wake
- * nobody; this is how they reach the requester's next briefing. The user's room notes reach every seat this way.
+ * nobody; this is how they reach the requester's next briefing. The user's room notes (journals from before N1) reach every seat this way.
  */
 export function relatedContext(events: readonly JournalEvent[], envelope: Envelope, seatId: string): ContextPost[] {
   const upTo = events.filter((event) => event.seq <= envelope.contextThrough);

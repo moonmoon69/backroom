@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AFTER_GONE, HOLD_GONE, parseExplicit, type Draft, type DraftAssignment } from "../src/parser/explicit.ts";
+import { AFTER_GONE, HOLD_GONE, NOTE_GONE, parseExplicit, type Draft, type DraftAssignment } from "../src/parser/explicit.ts";
 
 const participants = [
   { id: "p1", alias: "sol1" },
@@ -129,10 +129,14 @@ test("spoken alias at the start resolves the recipient", () => {
 });
 
 
-test("/note produces a room note", () => {
-  const draft = parseExplicit("/note For context, preserve the public API. No action needed.", participants);
-  assert.equal(draft.kind, "note");
-  assert.equal(draft.instruction, "For context, preserve the public API. No action needed.");
+test("the note directive is gone (N1): a message that starts with it is refused with one sentence; a T3 command that only begins like it is not", () => {
+  for (const text of ["/note For context, preserve the public API. No action needed.", "  /NOTE keep it", "/note"]) {
+    const draft = parseExplicit(text, participants);
+    assert.deepEqual([draft.kind, draft.assignments, draft.unresolved.map((u) => [u.severity, u.message])], ["task", [], [["error", NOTE_GONE]]], text);
+  }
+  for (const text of ["/notes-sync", "/note-taker go", "@sol1 review the release notes"]) {
+    assert.ok(!parseExplicit(text, participants).unresolved.some((u) => u.message === NOTE_GONE), text);
+  }
 });
 
 

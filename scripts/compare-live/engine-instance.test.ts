@@ -215,7 +215,7 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
     }
   });
 
-  test("a report through the Consigliere's own rooms-board note is seen, marked as such, with no T3 time", async () => {
+  test("a report in the Consigliere's own note (the board takes none since N1; a journal from before holds them) is seen, marked as such, with no T3 time", async () => {
     const i = engineInstance("note");
     try {
       const r = await seatedRoom(i);
@@ -226,7 +226,9 @@ describe("EngineInstance on a ROOMS_ENGINE=1 instance", () => {
       // He answers the user at once; later, the user's request closed, the board's way to the user is a note.
       i.fake.completeRun(r.c.threadId, { text: "Handing it out." });
       await until("his answer", async () => (await i.driver.posts(r.roomId)).some((p) => p.fromConsigliere && p.isAnswer));
-      await i.driver.board(["note", "All found.\n\nJOB-DONE"], key);
+      await assert.rejects(i.driver.board(["note", "All found.\n\nJOB-DONE"], key), /notes are gone/);
+      const seat = [...i.stack.engine!.view(r.roomId).seats.values()].find((s) => s.threadId === r.c.threadId)!;
+      i.stack.engine!.note(r.roomId, { actor: seat.id, id: "note:before-n1", body: "All found.\n\nJOB-DONE" });
       const report = await until("the note", async () => (await i.driver.posts(r.roomId)).find((p) => p.fromConsigliere && p.isAnswer && hasJobDoneLine(p.text)));
       assert.equal(report.via, "note");
       assert.equal(report.clock, "seen", "no T3 time: the runner's first sight of it");

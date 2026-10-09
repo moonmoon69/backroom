@@ -206,15 +206,6 @@ export const ImageIcon = () => (
   </Icon>
 );
 
-/** A note with a folded corner: a room note (shared context, no request). */
-export const NoteIcon = () => (
-  <Icon name="note">
-    <path d="M2.75 3.25c0-.55.45-1 1-1h8.5c.55 0 1 .45 1 1v6.5l-4 4h-5.5c-.55 0-1-.45-1-1z" />
-    <path d="M13.25 9.75h-3c-.55 0-1 .45-1 1v3" />
-    <path d="M5.25 5.5h5.5M5.25 8h3.5" />
-  </Icon>
-);
-
 export const MonitorIcon = () => (
   <Icon name="monitor">
     <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5" />

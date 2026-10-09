@@ -40,7 +40,7 @@ export function backroomNotice(post: Pick<EnginePost, "author" | "request">): st
   return post.request.message === null ? "Backroom's request" : null;
 }
 
-/** A note Backroom wrote in the user's name (a reseat called off): the user's own notes are /notes to the room, or come from T3. */
+/** A note Backroom wrote in the user's name (a reseat called off): the user's own notes come from T3, or are notes to the room from before N1. */
 export function backroomNote(post: Pick<EnginePost, "author" | "kind" | "note">): boolean {
   return post.author === "$user" && post.kind === "note" && post.note?.source === "post" && !post.note.room;
 }

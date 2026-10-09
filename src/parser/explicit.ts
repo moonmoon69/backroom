@@ -6,13 +6,12 @@
  *   @alice do this @bob do that                 -> two assignments
  *   @alice /steer also add tests                -> if alice is mid-turn, sent into that turn
  *   @all review the release notes               -> one assignment, every participant
- *   /note preserve the public API               -> room note
  *   Sol two, review the parser                  -> spoken alias at the start resolves to sol2
  *
  * Nothing waits on other work (decision D2). /after and /hold are refused wherever they are written, and so is a wait
  * the text implies, with the way out: "@alice fix it, then @bob deploy" ("then"), "@alice fix it. @bob check alice's
  * work" (naming an earlier recipient), "when @grok finishes, @fable check it" (a condition). /now on an assignment says
- * it goes now, which takes away the implied wait.
+ * it goes now, which takes away the implied wait. Room notes are gone (N1): a message that starts with /note is refused.
  *
  * In a room that has a Consigliere, every message is for him, whoever it names: he reads the @names as who the user
  * wants on it and hands the work out himself. It is sent into his turn when he is working, so it reaches him while he
@@ -82,13 +81,11 @@ export interface DraftAssignment {
 }
 
 export interface Draft {
-  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove";
+  kind: "task" | "empty" | "participant.add" | "participant.remove";
   /** For participant.add: the alias to seat (with T3's default model unless the dialog picks one). */
   add?: { alias: string };
   /** For participant.remove: the resolved participant. */
   participant?: { participantId: string; alias: string };
-  /** Note text (kind "note"). */
-  instruction: string;
   /** Kind "task" (a message): the assignments in message order. */
   assignments: DraftAssignment[];
   /** Kind "task": text before the first address. Not an assignment; everyone receives the whole message as context. */
@@ -143,7 +140,7 @@ export function parseExplicit(text: string, participants: ParticipantRef[], opti
   const sourceText = text;
   const trimmed = text.trim();
   const byAlias = new Map(participants.map((p) => [p.alias.toLowerCase(), p]));
-  const draft: Draft = { kind: "empty", instruction: "", assignments: [], preamble: "", mentions: [], sourceText, unresolved: [], consumed: [], hints: [] };
+  const draft: Draft = { kind: "empty", assignments: [], preamble: "", mentions: [], sourceText, unresolved: [], consumed: [], hints: [] };
   if (trimmed.length === 0) return draft;
 
   // /add <alias> — seat a new participant on a new T3 thread with T3's default model.
@@ -184,11 +181,10 @@ export function parseExplicit(text: string, participants: ParticipantRef[], opti
     return draft;
   }
 
-  if (/^\/note\b/i.test(trimmed)) {
-    draft.kind = "note";
-    draft.consumed.push("/note");
-    draft.instruction = trimmed.replace(/^\/note\b\s*/i, "");
-    if (draft.instruction.length === 0) draft.unresolved.push({ severity: "incomplete", field: "instruction", message: "note text is empty" });
+  // Room notes are gone (N1): a message that starts with /note is refused, not sent.
+  if (NOTE_DIRECTIVE.test(trimmed)) {
+    draft.kind = "task";
+    draft.unresolved.push({ severity: "error", field: "instruction", message: NOTE_GONE });
     return draft;
   }
 
@@ -258,6 +254,9 @@ function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: 
   }
 }
 
+/** The retired room note's directive at the start of a message (N1); a T3 command such as /notes-sync is not it. */
+export const NOTE_DIRECTIVE = /^\/note(?![\w:.-])/i;
+export const NOTE_GONE = "/note is gone: there are no room notes, so send it as a message.";
 export const AFTER_GONE = "/after is gone: Backroom no longer waits on other work. Send this once that work is done, or have the Consigliere sequence it.";
 export const HOLD_GONE = "/hold is gone: keep this as a draft and send it when it should start.";
 
@@ -732,7 +731,7 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
       }
     }
     // A directive is syntax only right after the @name; /after and /hold are refused wherever they are written, with no hint.
-    const directiveInside = /(?<!\S)\/(after|hold|now|steer|note)\b/i.exec(assignment.instruction);
+    const directiveInside = /(?<!\S)\/(after|hold|now|steer)\b/i.exec(assignment.instruction);
     if (directiveInside && !/^\/(?:after|hold)$/i.test(directiveInside[0])) {
       hints.push(`"${directiveInside[0]}" in the middle of a sentence is plain text; put it right after the @name.`);
     }

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTestStack, type TestStack } from "./helpers.ts";
-import { parseExplicit } from "../src/parser/explicit.ts";
+import { NOTE_GONE, parseExplicit } from "../src/parser/explicit.ts";
 
 const preset = async (stack: TestStack, name: string) =>
   ((await stack.run({ type: "preset.create", name, modelSelection: { instanceId: "codex", model: "gpt-6-sol" } })) as { presetId: string }).presetId;
@@ -59,7 +59,8 @@ test("in a room with a Consigliere every message is for him, as a steer, whoever
   }
   // A T3 slash command still goes to the member it names: a harness runs one only on its own thread.
   assert.deepEqual(parseExplicit("@bob /compact", members, { consigliereId: "a" }).assignments.map((a) => [a.recipients, a.slashCommand]), [[["b"], "compact"]]);
-  assert.equal(parseExplicit("/note keep the API", members, { consigliereId: "a" }).kind, "note");
+  // The note directive is gone (N1): refused, not sent to him as a slash command.
+  assert.deepEqual(parseExplicit("/note keep the API", members, { consigliereId: "a" }).unresolved.map((u) => u.message), [NOTE_GONE]);
   assert.deepEqual(parseExplicit("/compact", members, { consigliereId: "a" }).assignments.map((a) => [a.recipients, a.delivery, a.slashCommand]), [[["a"], "queue", "compact"]]);
 });
 

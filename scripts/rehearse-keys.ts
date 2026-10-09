@@ -2,7 +2,8 @@
  * The keyboard rehearsal (U1): `node scripts/rehearse.ts --step keys --as <rooms-browser key> [--port …] [--data …]`.
  *
  * rehearse.ts starts the throwaway service and seats the room (a Consigliere, a worker, a reviewer); this module adds
- * a second and a third room, a thread outside rooms and a long board through the API, then drives the page with
+ * a second and a third room and a thread outside rooms through the API, and a long board of room notes on the journal
+ * (src/briefing/envelope.ts's ROOM_NOTE, as journals from before N1 hold them), then drives the page with
  * `rooms-browser … press` and nothing else: never a click, a fill or a command that moves the user. Each state checks
  * the page and the API: which item has the focus (its `data-nav-key`, read with `eval`), that the browser draws its ring
  * (`:focus-visible` with an outline, the card's ring or the pixel brackets), that assistive technology gets it (the page
@@ -14,6 +15,7 @@
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
  * the first card's last member goes to the fourth card, not to the second as the page's own order would.
  */
+import { ROOM_NOTE } from "../src/briefing/envelope.ts";
 
 // The parts of rehearse.ts this step uses (its classes, by shape).
 export interface KeysService {
@@ -43,6 +45,8 @@ export interface KeysRoom {
   finish(alias: Alias, text: string): Promise<void>;
   settle(alias: Alias): Promise<void>;
   second(title: string, aliases: string[]): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<any> }>;
+  /** Appends engine commands to the room's journal through a second connection, as another process would. */
+  journal(commands: Array<Record<string, unknown>>): void;
 }
 export interface KeysTools {
   log: (line: string) => void;
@@ -242,8 +246,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await room.live("fable");
   await room.finish("fable", "Plan: the parser fix first, then the v1.2 tag, then the notes.");
   await room.settle("fable");
-  // A long board: more posts than the page draws at first (60 on the board, 40 in the chat).
-  for (let i = 1; i <= 62; i += 1) await service.command({ type: "room.note.create", roomId: R, text: `Note ${i} on the long board` });
+  // A long board: more posts than the page draws at first (60 on the board, 40 in the chat). Room notes are gone (N1),
+  // so these are written to the journal as one from before N1 holds them, which the page still shows.
+  room.journal(Array.from({ length: 62 }, (_, i) => ({ type: "post", actor: "$user", id: `note:long-board:${i + 1}`, intent: "note", body: `Note ${i + 1} on the long board`, milestone: ROOM_NOTE })));
   const second = await room.second("Second", ["alpha", "beta"]);
   const third = await room.second("Third", ["solo"]);
   const loose = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "A thread outside rooms: read the logs" });

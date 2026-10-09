@@ -159,7 +159,7 @@ export interface EnginePost extends EngineTime {
   note?: {
     /** post: the user or a member; t3-message: typed in T3 or sent by another agent; t3-turn: a turn the room did not start; deferred-cancel: a cancel that applies when the owner's turn ends; keep-alive: a seat's reply to a keep-alive. */
     source: "post" | "t3-message" | "t3-turn" | "deferred-cancel" | "keep-alive";
-    /** A /note to the whole room. */
+    /** The user's note to the whole room, which a journal from before N1 may hold. */
     room: boolean;
     t3: EngineT3Ref | null;
     /** Under a request its author had already answered (a self-started turn after the answer). */
@@ -1115,9 +1115,7 @@ export interface DraftAssignment {
 }
 
 export interface Draft {
-  kind: "task" | "note" | "empty" | "participant.add" | "participant.remove";
-  /** Note text (kind "note"). */
-  instruction: string;
+  kind: "task" | "empty" | "participant.add" | "participant.remove";
   /** Kind "task": the assignments in message order. */
   assignments: DraftAssignment[];
   /** Kind "task": text before the first address; everyone receives the whole message as context. */
@@ -1224,7 +1222,6 @@ export type RoomCommand =
       attachmentIds: string[];
       assignments: Array<{ recipients: string[]; instruction: string; slashCommand?: boolean; delivery?: "queue" | "steer" }>;
     }
-  | { type: "room.note.create"; roomId: string; text: string }
   /** The user's controls on the journal, by journal IDs: withdraw or amend a request of yours, retry a failed run, stop a member's turn. */
   | { type: "request.cancel"; roomId: string; requestId: string }
   | { type: "request.correct"; roomId: string; requestId: string; text: string }
@@ -1265,7 +1262,6 @@ export type CommandResult =
       thread?: { threadId: string; action: ThreadLifecycleChoice; result: "done" | "kept" | "failed" | "timeout"; detail?: string };
     }
   | { type: "requests.created"; messageId: string; requestIds: string[]; noteIds: string[] }
-  | { type: "note.created"; eventId: string }
   | { type: "request.updated"; requestId: string; applied: boolean }
   | { type: "run.retried"; runId: string; eventId: string }
   | { type: "run.stopped"; participantId: string }

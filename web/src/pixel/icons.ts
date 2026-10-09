@@ -25,7 +25,6 @@ export const PIXEL_ICONS: Record<string, readonly string[]> = {
   branch: [".X......", ".X...X..", ".X...X..", ".X..X...", ".X.X....", ".XX.....", "XXX.....", "........"],
   globe: ["..XXX...", ".X.X.X..", "XXXXXXX.", "X..X..X.", "XXXXXXX.", ".X.X.X..", "..XXX...", "........"],
   image: ["XXXXXXX.", "X.....X.", "X.X...X.", "X...X.X.", "X..XXXX.", "XXXXXXX.", "........", "........"],
-  note: ["XXXXX...", "X...XX..", "X.XX.XX.", "X.....X.", "X.XXX.X.", "XXXXXXX.", "........", "........"],
   monitor: ["XXXXXXX.", "X.....X.", "X.....X.", "X.....X.", "XXXXXXX.", "...X....", ".XXXXX..", "........"],
   grid: ["XXX.XXX.", "XXX.XXX.", "XXX.XXX.", "........", "XXX.XXX.", "XXX.XXX.", "XXX.XXX.", "........"],
   sun: ["...X....", ".X...X..", "..XXX...", "X.XXX.X.", "..XXX...", ".X...X..", "...X....", "........"],

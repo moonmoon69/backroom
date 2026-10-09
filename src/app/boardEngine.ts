@@ -20,7 +20,6 @@ import { roomStateSection } from "../briefing/assemble.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, type EngineHost } from "../runtime/index.ts";
-import { followedRequests } from "../runtime/work.ts";
 import { BOARD_PAGE_CHARS, BoardError, threadOutcome, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
 import { readKeepAlive, writeKeepAlive } from "./keepAlive.ts";
@@ -65,7 +64,6 @@ Anyone:
   rules                           your standing sections, as your first briefing gave them.
   state                           prints the room state.
   keepalive                       this room's keep-alives: the interval, and the seats they are on for.
-  note [#n …] "<text>"            a note that wakes nobody, under #n (yours) or the request you answered last.
   help                            this list.
 
 The Consigliere's (the user posts from the page):
@@ -84,11 +82,12 @@ The Consigliere's (the user posts from the page):
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
   retire <alias>                  that member leaves the room; refused while it has work open.`;
 
-/** Commands members had before H5, and why they are gone: a final reply is the answer. */
+/** Commands members had before H5 and N1, and why they are gone: a final reply is the answer. */
 const GONE: Record<string, string> = {
   answer: "your final reply is your answer; there is nothing to run.",
   working: "there is no working mark: your final reply is your answer, and the Consigliere reads your T3 status (what still runs in the background) at the top of it.",
   follow: "nobody follows requests: every reply of a member, and each follow-up of it, wakes the Consigliere.",
+  note: "notes are gone: say it in your final reply.",
 };
 
 interface Caller {
@@ -103,7 +102,7 @@ const ENGINE_WORDS: Record<string, string> = {
   "requester authorization required": "only whoever asked for that request can do that",
   "closed request needs a new request": "that request is closed; post a new request that cites it",
   "unrelated causal parent": "a post can only go under a request you own",
-  "own request cannot create a wake": "you cannot post to yourself; use note",
+  "own request cannot create a wake": "you cannot post to yourself",
   "unknown request": "there is no such request in this room",
   "unknown seat": "that member has no seat on this room's board",
 };
@@ -140,9 +139,8 @@ export class BoardEngine {
       case "answer":
       case "working":
       case "follow":
-        throw new BoardError(`rooms-board: ${GONE[command]}`, 410);
       case "note":
-        return this.note(c, args);
+        throw new BoardError(`rooms-board: ${GONE[command]}`, 410);
       case "correct":
         return this.correct(c, args);
       case "cancel":
@@ -239,7 +237,6 @@ export class BoardEngine {
   /** The host's texts name requests and seats by ID; members type post numbers and aliases, and cannot post to the user. */
   private words(p: Projection, text: string): string {
     const names = [
-      ["rooms-board post @$user", "rooms-board note, which the user reads on the board"] as const,
       ["@$user", "the user"] as const,
       ...[...p.requests.keys()].map((id) => [`#${id}`, this.label(p, id)] as const),
       ...[...p.seats.keys()].map((id) => [`@${id}`, `@${this.alias(id)}`] as const),
@@ -316,20 +313,6 @@ export class BoardEngine {
     });
   }
 
-  /**
-   * The seat's host run, once T3 has it. A run the host has sent but not yet recorded as accepted is the turn the
-   * member is in: the host is asked to look once, so the command sees it like any other turn.
-   */
-  private async settled(c: Caller): Promise<Run | null> {
-    const runOf = () => {
-      const p = this.view(c.room.id);
-      const id = p.seats.get(c.seatId)?.activeRunId;
-      return id ? (p.runs.get(id) ?? null) : null;
-    };
-    if (runOf()?.phase === "sending") await this.host.tick();
-    return runOf();
-  }
-
   // ---------------- writing ----------------
 
   /** `post "@x …"`: one request per recipient, with the whole text as its body; the Consigliere's (members answer). */
@@ -344,7 +327,7 @@ export class BoardEngine {
       names.push(m[1]!.toLowerCase());
       rest = rest.slice(m[0].length);
     }
-    if (names.length === 0) throw new BoardError('rooms-board: a post is work for members: start with @name. A note that wakes nobody is: note "<text>".');
+    if (names.length === 0) throw new BoardError("rooms-board: a post is work for members: start with @name.");
     if (!rest.trim()) throw new BoardError("rooms-board: the post names members but says nothing for them to do.");
     if (/^\/[a-z][\w-]*(\s|$)/i.test(rest)) {
       throw new BoardError(`rooms-board: "${rest.split(/\s/)[0]}" is a slash command; members cannot send those through the board. Post the work in words.`);
@@ -386,34 +369,11 @@ export class BoardEngine {
         const others = [...seats.keys()].filter((a) => seats.get(a) !== c.seatId).map((a) => `@${a}`);
         throw new BoardError(`rooms-board: nobody called @${name} can take work in this room${others.length ? `; members: ${others.join(", ")}` : ""}.`, 404);
       }
-      if (seatId === c.seatId) throw new BoardError("rooms-board: you cannot post to yourself. A note that wakes nobody is: note \"<text>\".");
+      if (seatId === c.seatId) throw new BoardError("rooms-board: you cannot post to yourself.");
       if (!out.includes(seatId)) out.push(seatId);
     }
     if (out.length === 0) throw new BoardError("rooms-board: nobody else is seated in this room.");
     return out;
-  }
-
-  /**
-   * `note [#n …] "…"`: wakes nobody. It carries a request so it reaches that request's requester at its next briefing
-   * (L2's related context): the ones named, else the ones this turn works on, else the ones the seat followed up last.
-   */
-  private async note(c: Caller, args: string[]): Promise<string> {
-    const { requests, text } = this.refsAndText(c, args);
-    if (!text) throw new BoardError('rooms-board: note needs the text: note "…".');
-    this.size(text);
-    const p = this.view(c.room.id);
-    for (const q of requests) {
-      if (q.owner !== c.seatId) throw new BoardError(`rooms-board: ${this.label(p, q.id)} is not your request: a note goes under a request you own. To tell its owner something, correct ${this.label(p, q.id)} or post to them.`);
-    }
-    await this.settled(c);
-    const work = this.host.currentWork(c.room.id, c.seatId)?.requestIds ?? [];
-    const ids = requests.length ? requests.map((q) => q.id) : work.length ? work : followedRequests(p, c.seatId);
-    const id = this.commandId();
-    await this.act(c, () => this.host.note(c.room.id, { actor: c.seatId, id, body: text, ...(ids.length ? { requestIds: ids } : {}) }));
-    const after = this.view(c.room.id);
-    const event = this.appended(after, c.seatId, id)[0];
-    const readers = [...new Set(ids.map((r) => after.requests.get(r)?.returnTo).filter((r): r is string => !!r && r !== c.seatId && r !== "$user"))];
-    return `Noted as #${event?.seq ?? "?"}${ids.length ? ` under ${this.labels(after, ids)}` : ""}. It wakes nobody${readers.length ? `; ${readers.map((r) => this.name(r)).join(", ")} read${readers.length === 1 ? "s" : ""} it with ${readers.length === 1 ? "its" : "their"} next briefing` : ""}.`;
   }
 
   /** `correct #n "…"`, for the requester: the owner gets it with its next turn. */
