@@ -71,7 +71,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
-import { forSteps, functionSource, sectionNames, Selection, SelectionDone, stateNames } from "./rehearse-select.ts";
+import { forSteps, sectionNames, Selection, SelectionDone, stateNames, stepSource } from "./rehearse-select.ts";
 import { parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -895,11 +895,14 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
    */
   const replayChain = async (options: { typedInT3?: boolean } = {}): Promise<void> => {
     if (ask !== undefined) return;
+    for (const alias of MEMBERS) await room.settle(alias);
+    // A jump into the worker's reseat (section 8) leaves his old seat retired: the chain goes to the fresh one.
+    if ((await room.snapshot()).seats.find((x) => x.seatId === seat.worker)?.status === "retired") await room.rebind("worker");
     const report = "Report: the date parser is fixed and reviewed (PASS).";
     ask = await room.message("Get the date parser fixed and reviewed, then report.");
     await room.live("fable");
     U = room.post(await room.snapshot(), ask).number as number;
-    room.board("fable", "post", "@worker fix the date parser in src/dates.ts");
+    room.board("fable", "post", `@${room.name.worker} fix the date parser in src/dates.ts`);
     R = (await posted(seat.worker, "his hand-off")).number;
     await room.finish("fable", "I asked @worker for the fix; I will report once it is reviewed.");
     await room.live("worker");
@@ -912,7 +915,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await room.finish("reviewer", "PASS: the fix is right and the tests cover leap years.");
     await room.live("fable");
     await room.finish("fable", report);
-    if (options.typedInT3) {
+    // Unless an earlier section (5) typed it already: one such turn, as in the full run.
+    if (options.typedInT3 && !(await room.snapshot()).posts.some((p) => p.kind === "note" && p.body.includes("Quick check from T3"))) {
       await service.fake("external-run", { threadId: room.thread.reviewer, text: "Quick check from T3: is the build green?" });
       await room.finish("reviewer", "Build is green.");
       await until("the turn typed in T3 on the board", async () => {
@@ -2658,17 +2662,11 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room, sele
 
 /** A step's states, in the order it plays them, from the scripts' source (scripts/rehearse-select.ts). */
 function stepStates(step: Step): string[] {
-  const source = readFileSync(join(repo, "scripts", "rehearse.ts"), "utf8");
-  if (step === "keys") return stateNames(readFileSync(join(repo, "scripts", "rehearse-keys.ts"), "utf8"));
-  const parts = step === "ui" ? ["rehearseUi", "rehearseAgentsFile"] : ["rehearseRoom", "rehearseBrowserPanel"];
-  return parts.flatMap((name) => stateNames(functionSource(source, name)));
+  return stepSource(step, (file) => readFileSync(join(repo, "scripts", file), "utf8")).flatMap(stateNames);
 }
 /** The first states of a step's sections, from the scripts' source as stepStates reads its states. */
 function stepSections(step: Step): string[] {
-  if (step === "keys") return sectionNames(readFileSync(join(repo, "scripts", "rehearse-keys.ts"), "utf8"));
-  const source = readFileSync(join(repo, "scripts", "rehearse.ts"), "utf8");
-  const parts = step === "ui" ? ["rehearseUi", "rehearseAgentsFile"] : ["rehearseRoom", "rehearseBrowserPanel"];
-  return parts.flatMap((name) => sectionNames(functionSource(source, name)));
+  return stepSource(step, (file) => readFileSync(join(repo, "scripts", file), "utf8")).flatMap(sectionNames);
 }
 
 /**

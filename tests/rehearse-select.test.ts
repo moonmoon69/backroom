@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { forStep, forSteps, functionSource, matching, sectionNames, Selection, SelectionDone, stateNames } from "../scripts/rehearse-select.ts";
+import { forStep, forSteps, functionSource, matching, misplacedSections, sectionNames, Selection, SelectionDone, stateNames, stepSource } from "../scripts/rehearse-select.ts";
 
 const names = ["the overview opens", "Esc closes a menu", "a post's detail", "Esc in a dialog", "the end"];
 
@@ -166,25 +166,24 @@ describe("rehearsal state selection (T2: --only, --until)", () => {
     assert.deepEqual(forStep(ui, ["Retry"], "fails"), { run: true, only: ["Retry"], until: "fails" });
   });
 
-  it("finds the rehearsal scripts' states, each named once", () => {
-    const rehearse = readFileSync(new URL("../scripts/rehearse.ts", import.meta.url), "utf8");
-    const steps = {
-      ui: [...stateNames(functionSource(rehearse, "rehearseUi")), ...stateNames(functionSource(rehearse, "rehearseAgentsFile"))],
-      room: [...stateNames(functionSource(rehearse, "rehearseRoom")), ...stateNames(functionSource(rehearse, "rehearseBrowserPanel"))],
-      keys: stateNames(readFileSync(new URL("../scripts/rehearse-keys.ts", import.meta.url), "utf8")),
-    };
-    for (const [step, list] of Object.entries(steps)) {
+  it("a section must begin right before the code of the state it names", () => {
+    const placed = 'if (await section("a")) {\n  press("x");\n  await state("a", w);\n  await state("b", w);\n}\nif (await section("c")) {\n  await state("c", w);\n}';
+    assert.deepEqual(misplacedSections(placed), []);
+    const early = 'if (await section("b")) {\n  await state("a", w);\n  await state("b", w);\n}';
+    assert.deepEqual(misplacedSections(early), ['section("b") is followed by state "a"']);
+    assert.deepEqual(misplacedSections('await state("a", w);\nif (await section("a")) {}'), ['section("a") is followed by state "(none)"']);
+  });
+
+  it("finds the rehearsal scripts' states, each named once, and their sections, each where it begins", () => {
+    const read = (file: string) => readFileSync(new URL(`../scripts/${file}`, import.meta.url), "utf8");
+    for (const step of ["ui", "room", "keys"] as const) {
+      const parts = stepSource(step, read);
+      const list = parts.flatMap(stateNames);
+      const firsts = parts.flatMap(sectionNames);
       assert.ok(list.length > 20, `${step}: ${list.length} states`);
-      assert.doesNotThrow(() => new Selection(list), step);
-    }
-    const sections = {
-      ui: [...sectionNames(functionSource(rehearse, "rehearseUi")), ...sectionNames(functionSource(rehearse, "rehearseAgentsFile"))],
-      room: [...sectionNames(functionSource(rehearse, "rehearseRoom")), ...sectionNames(functionSource(rehearse, "rehearseBrowserPanel"))],
-      keys: sectionNames(readFileSync(new URL("../scripts/rehearse-keys.ts", import.meta.url), "utf8")),
-    };
-    for (const [step, firsts] of Object.entries(sections)) {
       assert.ok(firsts.length > 5, `${step}: ${firsts.length} sections`);
-      assert.doesNotThrow(() => new Selection(steps[step as keyof typeof steps], [], null, firsts), `${step}'s sections`);
+      assert.doesNotThrow(() => new Selection(list, [], null, firsts), `${step}'s states and sections`);
+      assert.deepEqual(misplacedSections(parts.join("\n")), [], `${step}'s sections`);
     }
   });
 });

@@ -29,6 +29,32 @@ export function sectionNames(source: string): string[] {
   return [...source.matchAll(/(?<![\w.])section\(\s*("(?:[^"\\\n]|\\.)*")/g)].map((m) => JSON.parse(m[1]!) as string);
 }
 
+/**
+ * The sections of a piece of source whose call is not followed by the call of the state they name: a section begins
+ * right before its first state's code, so the next state called after `section("X")` is X.
+ */
+export function misplacedSections(source: string): string[] {
+  const states = [...source.matchAll(/(?<![\w.])(?:\w+\.)?(?:state|begin)\(\s*("(?:[^"\\\n]|\\.)*")/g)].map((m) => ({ at: m.index, name: JSON.parse(m[1]!) as string }));
+  return [...source.matchAll(/(?<![\w.])section\(\s*("(?:[^"\\\n]|\\.)*")/g)]
+    .map((m) => ({ name: JSON.parse(m[1]!) as string, next: states.find((x) => x.at > m.index)?.name }))
+    .filter((x) => x.next !== x.name)
+    .map((x) => `section(${JSON.stringify(x.name)}) is followed by state ${JSON.stringify(x.next ?? "(none)")}`);
+}
+
+/** Where each step's states are: a script, and the functions of it that play them, in order (none: the whole file). */
+export const STEP_SOURCES = {
+  ui: { file: "rehearse.ts", functions: ["rehearseUi", "rehearseAgentsFile"] },
+  room: { file: "rehearse.ts", functions: ["rehearseRoom", "rehearseBrowserPanel"] },
+  keys: { file: "rehearse-keys.ts", functions: [] },
+} as const;
+
+/** A step's source, its parts in the order the step plays them, read with `read` (a script's name → its text). */
+export function stepSource(step: keyof typeof STEP_SOURCES, read: (file: string) => string): string[] {
+  const { file, functions } = STEP_SOURCES[step];
+  const text = read(file);
+  return functions.length === 0 ? [text] : functions.map((name) => functionSource(text, name));
+}
+
 /** The text of a top-level function of a module's source, from its declaration to the next top-level declaration. */
 export function functionSource(source: string, name: string): string {
   const start = source.search(new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, "m"));
