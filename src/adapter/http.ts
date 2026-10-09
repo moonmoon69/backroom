@@ -57,6 +57,7 @@ import type {
   TurnImage,
 } from "./types.ts";
 import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -158,6 +159,17 @@ export interface WebSocketLike {
 type RpcExit = { _tag: string; value?: unknown; cause?: unknown };
 
 /** What T3 says went wrong, from an RPC failure's cause (a list of failures, each with T3's error and its message). */
+/** The permission an HTTP 403 from T3 names (its EnvironmentScopeRequiredError), else null. */
+function requiredScopeOf(text: string): string | null {
+  try {
+    const body = JSON.parse(text) as { requiredPermission?: unknown; requiredScope?: unknown };
+    const scope = body.requiredPermission ?? body.requiredScope;
+    return typeof scope === "string" && scope.length > 0 ? scope : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The permission T3 says the token lacks when it refuses a call for it (its EnvironmentAuthorizationError), else null. */
 function missingPermission(cause: unknown): string | null {
   for (const failure of Array.isArray(cause) ? cause : [cause]) {
@@ -516,9 +528,15 @@ export class HttpT3Adapter implements T3Adapter {
     } catch (error) {
       throw unanswered(error);
     }
-    if (response.status === 401 || response.status === 403) {
+    // T3 answers 401 for a token it does not take (bad, expired, revoked), 403 for a permission the token lacks
+    // (EnvironmentScopeRequiredError): a new token with the same scopes would be refused again, so only a 401 renews.
+    if (response.status === 401) {
       this.onCredentialRejected?.(headers.authorization ? headers.authorization.slice("Bearer ".length) : null);
-      throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); pair Backroom again`);
+      throw new T3Unavailable(`T3 rejected the credential (HTTP 401); pair Backroom again`);
+    }
+    if (response.status === 403) {
+      const scope = requiredScopeOf(text);
+      throw new T3Unavailable(scope ? missingScopeMessage(scope) : `T3 refused ${method} ${path} (HTTP 403): ${text.slice(0, 300)}`);
     }
     if (response.status >= 500) {
       throw new T3Unavailable(`T3 returned HTTP ${response.status}`);

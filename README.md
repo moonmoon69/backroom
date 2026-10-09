@@ -159,15 +159,16 @@ It asks for nothing broader: not T3's settings, terminals, previews, source cont
 
 ### How the credential is kept
 
-- **On T3's machine, Backroom renews it.** It checks at start and every hour. It gets a new credential when it has none, when it lacks a permission it asks for, when it has less than 7 days left, or when T3 refuses it (a revoked or reset session). It then checks that T3 takes the new one, switches to it and revokes the session it replaced, so T3's client list keeps one "Backroom". A renewal that fails is tried again 5 minutes later, and the T3 panel shows why. Revoking Backroom in T3's client list does not lock it out from that machine: it issues itself a new session. To stop it, stop the service, or set `T3_CLI=off`.
-- **Elsewhere, renewing is yours.** T3 gives a paired client 30 days and offers it no way to renew. Its token exchange takes no longer lifetime and has no refresh token, and minting a new link over HTTP needs `access:write`, the permission to manage every client. From 7 days before expiry, and also when a renewal on T3's machine keeps failing, the **T3** status button says "pair again soon", and the T3 panel says when the credential expires and how to pair again.
+- **On T3's machine, Backroom renews it.** It checks at start and every hour. It gets a new credential when it has none, when it lacks a permission it asks for, when it has less than 7 days left, or when T3 no longer takes it (HTTP 401: a revoked, expired or reset session). A refusal for a missing permission (HTTP 403) is not a reason: a new credential with the same permissions would be refused too. Backroom checks that T3 takes the new credential, switches to it and revokes the session it replaced, so T3's client list keeps one "Backroom". Revoking Backroom in T3's client list does not lock it out from that machine: it issues itself a new session. To stop it, stop the service, or set `T3_CLI=off`.
+- **A renewal that fails** is tried again by itself 5 minutes later, and every 5 minutes after that until one succeeds. From the first failure, the **T3** status button says "renewal failed", and the T3 panel says why and how to pair by hand. Within 7 days of expiry the panel leads with the date.
+- **Elsewhere, renewing is yours.** T3 gives a paired client 30 days and offers it no way to renew. Its token exchange takes no longer lifetime and has no refresh token, and minting a new link over HTTP needs `access:write`, the permission to manage every client. From 7 days before expiry, the **T3** status button says "pair again soon", and the T3 panel says when the credential expires and how to pair again.
 - A token given in `T3_ACCESS_TOKEN` is used as it is and never renewed.
 
 ### When T3 refuses for a missing permission
 
 Backroom says so where it happened: on the row in **Updates**, in the folder list, or in the usage card. The message names the permission: "Backroom's pairing with T3 does not allow this (it lacks the "environment:maintain" permission): run `t3 pair` on T3's machine and paste the link it prints into the T3 panel …". On T3's machine Backroom fixes this itself at its next check, within the hour or at a restart. Elsewhere, pair again with a link from `t3 pair`. If pairing again does not help, T3 wants a permission Backroom does not ask for yet, and Backroom itself needs updating.
 
-### 3. Verify (optional but recommended)
+### Verify (optional but recommended)
 
 ```sh
 npm run t3:check                                   # read-only: server descriptor, auth policy, projects, models, threads
@@ -817,7 +818,8 @@ Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot t
 | Pairing returns HTTP 4xx | Links are one-time and expire within minutes. Create a fresh one. |
 | Status says "pair Backroom again" | The stored token expired or was revoked in T3 (Settings → Connections → clients). On T3's machine, Backroom issues itself a new one within seconds. Elsewhere, pair again. Work not yet sent is untouched. |
 | An update, the folder list or today's usage says "Backroom's pairing with T3 does not allow this" | The credential lacks the permission it names (see [When T3 refuses for a missing permission](#when-t3-refuses-for-a-missing-permission)). On T3's machine, Backroom replaces it at its next hourly check, or right away when you restart the service. Elsewhere, run `t3 pair` on T3's machine and paste the link into the T3 panel. |
-| The T3 button says "pair again soon" | The credential expires within 7 days, and nothing will renew it: Backroom runs on another machine, or its renewal fails (the T3 panel says why). Pair again with a link from `t3 pair`. |
+| The T3 button says "pair again soon" | The credential expires within 7 days, and nothing will renew it: Backroom runs on another machine, or without T3's CLI. Pair again with a link from `t3 pair`. |
+| The T3 button says "renewal failed" | Backroom could not renew its credential with T3's CLI. The T3 panel says why. It tries again every 5 minutes; the credential it has keeps working until it expires or T3 refuses it. Fix the cause, or pair by hand with a link from `t3 pair`. |
 | The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
 | A member's turn stays "sending" or "starting" and then fails with "provider failed to start" | The harness behind that member isn't signed in, or its CLI is missing. Fix it in T3, then press **Retry** on the failed turn's notice. |
 | A member shows "working on its own" | Its thread is in a turn the room did not start: it woke itself, another agent messaged it, or someone typed in T3 Code. What the room has for it waits for that turn to end. |

@@ -1,12 +1,14 @@
 /** Backroom keeps its own T3 credential with T3's CLI where T3 runs on its machine, and warns ahead of expiry where it cannot. */
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { REQUESTED_SCOPES, readStoredAuth, writeStoredAuth, type StoredT3Auth } from "../src/adapter/auth.ts";
+import { REQUESTED_SCOPES, missingScopeMessage, readStoredAuth, writeStoredAuth, type StoredT3Auth } from "../src/adapter/auth.ts";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
-import { T3Credential, expiryWarning, localT3Cli, t3CliBinary, type IssuedSession, type T3Cli } from "../src/app/t3Credential.ts";
+import { RETRY_AFTER_MS, T3Credential, expiryWarning, localT3Cli, renewalFailure, t3CliBinary, type IssuedSession, type T3Cli } from "../src/app/t3Credential.ts";
+import { connectionProblem } from "../web/src/t3Connection.ts";
+import type { StatusResponse } from "../web/src/types.ts";
 import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
@@ -18,7 +20,8 @@ const BASE = "http://127.0.0.1:3773";
 /** A T3 token as T3 makes them: base64url JSON claims, a dot, a signature. */
 const tokenFor = (sid: string) => `${Buffer.from(JSON.stringify({ v: 1, kind: "session", sid, scopes: [] })).toString("base64url")}.sig-${sid}`;
 
-function fakeCli(options: { fail?: string } = {}) {
+/** `fail`: every issue fails with it; `failTimes`: only the first so many do. */
+function fakeCli(options: { fail?: string; failTimes?: number } = {}) {
   const issued: Array<{ scopes: string[]; ttl: string; label: string; subject: string }> = [];
   const revoked: string[] = [];
   let next = 1;
@@ -26,6 +29,7 @@ function fakeCli(options: { fail?: string } = {}) {
     async issue(input) {
       issued.push(input);
       if (options.fail) throw new Error(options.fail);
+      if (issued.length <= (options.failTimes ?? 0)) throw new Error("`t3 auth session issue` failed: database is locked");
       const sessionId = `session-${next++}`;
       return { sessionId, token: tokenFor(sessionId), scopes: input.scopes, expiresAt: new Date(NOW + 30 * DAY).toISOString() } satisfies IssuedSession;
     },
@@ -55,6 +59,7 @@ function setup(t: { after(fn: () => void): void }, options: { cli?: T3Cli | null
     log: (message) => logs.push(message),
     now: () => now,
   });
+  t.after(() => credential.stop());
   return { dataDir, credential, used, logs, advance: (ms: number) => (now += ms) };
 }
 
@@ -121,11 +126,103 @@ test("a session T3 does not take is revoked and not used; a failed renewal is tr
   await wrong.credential.check();
   assert.equal(issued.length, 2);
 
-  const broken = fakeCli({ fail: "`t3 auth session issue` failed: database is locked" });
-  const failing = setup(t, { cli: broken.cli, stored: { scope: "orchestration:read" } });
-  await failing.credential.check();
-  assert.equal(failing.credential.status().warning, null, "25 days left: an error alone is not yet a warning");
-  assert.match(failing.credential.status().error ?? "", /database is locked/);
+});
+
+test("the credential is written whole (a temporary file renamed over it), and a session T3 issued that could not be stored is revoked", async (t) => {
+  const { cli, revoked } = fakeCli();
+  const { dataDir, credential, used } = setup(t, { cli, stored: { scope: "orchestration:read" } });
+  // Something in the way of the temporary file: the write fails after T3 took the new session.
+  const temporary = join(dataDir, `t3-auth.json.${process.pid}.tmp`);
+  mkdirSync(temporary);
+  await credential.check();
+  assert.deepEqual(revoked, ["session-1"], "not left unused for 30 days");
+  assert.deepEqual(used, []);
+  assert.equal(readStoredAuth(dataDir)!.accessToken, tokenFor("paired"), "the old credential is whole");
+  rmSync(temporary, { recursive: true });
+  credential.paired();
+  await credential.check();
+  assert.equal(readStoredAuth(dataDir)!.sessionId, "session-2");
+  assert.deepEqual(readdirSync(dataDir), ["t3-auth.json"], "no temporary file left");
+  assert.equal(statSync(join(dataDir, "t3-auth.json")).mode & 0o777, 0o600);
+});
+
+/** The page's T3 status for a paired Backroom with this credential status. */
+const pagedT3 = (credential: NonNullable<StatusResponse["t3"]["credential"]>): StatusResponse["t3"] => ({ baseUrl: BASE, paired: true, pairedAt: null, tokenExpiresAt: null, credential, environment: null, auth: null, error: null });
+
+test("a failed renewal is said in the T3 panel and on the T3 button as soon as it happens, not only near expiry", async (t) => {
+  // The deploy case: the live token lacks four scopes and has weeks left; the first renewal fails.
+  const { cli } = fakeCli({ failTimes: 1 });
+  const { credential, advance } = setup(t, { cli, stored: { scope: "orchestration:read orchestration:operate" } });
+  assert.deepEqual(connectionProblem(pagedT3(credential.status())), { tone: "ok", problem: null });
+  await credential.check();
+  const failed = credential.status();
+  assert.equal(failed.error, "`t3 auth session issue` failed: database is locked");
+  assert.equal(
+    failed.warning,
+    "Backroom could not renew its T3 credential (`t3 auth session issue` failed: database is locked) and tries again every 5 minutes; to pair by hand, run `t3 pair` on T3's machine and paste the link it prints into the T3 panel (the T3 button at the top of the overview).",
+  );
+  assert.equal(failed.warning, renewalFailure(failed.error!));
+  assert.deepEqual(connectionProblem(pagedT3(failed)), { tone: "warn", problem: "renewal failed" });
+  // Near expiry the date leads, still with why.
+  advance(20 * DAY);
+  assert.equal(credential.status().warning, expiryWarning(new Date(NOW + 25 * DAY).toISOString(), 5 * DAY, failed.error));
+  advance(RETRY_AFTER_MS);
+  await credential.check();
+  assert.deepEqual([credential.status().error, credential.status().warning], [null, null]);
+  assert.deepEqual(connectionProblem(pagedT3(credential.status())), { tone: "ok", problem: null });
+});
+
+test("a failed renewal is tried again 5 minutes later by itself, a refusal's with the same force", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  // The deploy case: scopes short, the first attempt fails, nobody calls check() again.
+  const short = fakeCli({ failTimes: 1 });
+  const deploy = setup(t, { cli: short.cli, stored: { scope: "orchestration:read orchestration:operate" } });
+  await deploy.credential.check();
+  assert.equal(short.issued.length, 1);
+  t.mock.timers.tick(RETRY_AFTER_MS - 1);
+  await settle();
+  assert.equal(short.issued.length, 1, "not before 5 minutes");
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(short.issued.length, 2, "tried again without a call");
+  assert.equal(readStoredAuth(deploy.dataDir)!.scope, REQUESTED_SCOPES);
+  assert.equal(deploy.credential.status().error, null);
+  assert.match(deploy.logs.join("\n"), /not renewed \(the credential lacks providers:manage, environment:maintain, diagnostics:read, filesystem:read\): .*trying again in 5 minutes/);
+
+  // A token T3 refused (401) that is not otherwise due: the retry renews it all the same.
+  const refusedCli = fakeCli({ failTimes: 1 });
+  const refused = setup(t, { cli: refusedCli.cli });
+  refused.credential.rejected(tokenFor("paired"));
+  await refused.credential.check();
+  assert.equal(refusedCli.issued.length, 1);
+  t.mock.timers.tick(RETRY_AFTER_MS);
+  await settle();
+  assert.equal(refusedCli.issued.length, 2);
+  assert.equal(readStoredAuth(refused.dataDir)!.sessionId, "session-1");
+  assert.deepEqual(refusedCli.revoked, ["paired"]);
+});
+
+test("a 403 is a permission the token lacks: it names it and renews nothing; only a 401 renews", async (t) => {
+  const { cli, issued } = fakeCli();
+  const { credential } = setup(t, { cli });
+  const token = tokenFor("paired");
+  let status = 403;
+  // T3's EnvironmentScopeRequiredError, and its 401 for a token it does not take.
+  const fetchImpl = (async () =>
+    status === 403
+      ? new Response(JSON.stringify({ _tag: "EnvironmentScopeRequiredError", code: "insufficient_scope", requiredScope: "orchestration:read", requiredPermission: "diagnostics:read", traceId: "t" }), { status: 403 })
+      : new Response(JSON.stringify({ _tag: "EnvironmentAuthInvalidError", code: "auth_invalid", reason: "invalid_credential", traceId: "t" }), { status: 401 })) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: BASE, accessToken: token, fetchImpl, onCredentialRejected: (refused) => credential.rejected(refused) });
+  for (let i = 0; i < 10; i++) await assert.rejects(adapter.describe(), (error: Error) => error.message === missingScopeMessage("diagnostics:read"));
+  await credential.check();
+  assert.equal(issued.length, 0, "ten refused reads, no session issued");
+  status = 401;
+  await assert.rejects(adapter.describe(), /rejected the credential \(HTTP 401\)/);
+  await credential.check();
+  assert.equal(issued.length, 1);
 });
 
 test("without T3's CLI, or with T3 on another machine, renewal is the user's and the page warns from 7 days ahead of expiry", async (t) => {

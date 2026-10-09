@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "../api.ts";
 import { useToast } from "./Toast.tsx";
+import { connectionProblem } from "../t3Connection.ts";
 import type { StatusResponse } from "../types.ts";
 
 interface Props {
@@ -31,7 +32,7 @@ export function ConnectionChip({ status, onOpen }: { status: StatusResponse | nu
   }
   const { adapter, t3 } = status;
   const warning = t3.credential?.warning ?? null;
-  const tone = t3.error ? "err" : t3.paired && !warning ? "ok" : "warn";
+  const { tone, problem } = connectionProblem(t3);
   const detail = [
     `T3 ${hostOf(t3.baseUrl)}${t3.environment?.serverVersion ? ` · v${t3.environment.serverVersion}` : ""}`,
     `adapter: ${adapter}`,
@@ -42,7 +43,6 @@ export function ConnectionChip({ status, onOpen }: { status: StatusResponse | nu
   ]
     .filter(Boolean)
     .join("\n");
-  const problem = t3.error ? "error" : !t3.paired ? "not paired" : warning ? "pair again soon" : null;
   return (
     <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />

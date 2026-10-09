@@ -6,7 +6,8 @@
  * T3's CLI on its own machine issues a bot session with the scopes and lifetime asked for (`t3 auth session issue`).
  * Backroom runs it when its token is missing, lacks a scope it asks for, is refused by T3, or has less than
  * RENEW_BEFORE_MS left; checks that T3 takes the new token, stores and uses it, and revokes the session it replaced.
- * Where it cannot (T3 on another machine, no CLI), the page warns from WARN_BEFORE_MS ahead of expiry.
+ * A renewal that fails is tried again RETRY_AFTER_MS later, and the page says why until one succeeds. Where Backroom
+ * cannot renew (T3 on another machine, no CLI), the page warns from WARN_BEFORE_MS ahead of expiry.
  */
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -19,8 +20,8 @@ export const TOKEN_TTL = "30d";
 export const RENEW_BEFORE_MS = 7 * DAY_MS;
 export const WARN_BEFORE_MS = 7 * DAY_MS;
 const CHECK_EVERY_MS = 60 * 60_000;
-/** A renewal that failed is tried again after this, not on every check or refusal. */
-const RETRY_AFTER_MS = 5 * 60_000;
+/** A renewal that failed is tried again this much later, and not sooner on a check or refusal. */
+export const RETRY_AFTER_MS = 5 * 60_000;
 
 export interface IssuedSession {
   sessionId: string;
@@ -107,6 +108,7 @@ export class T3Credential {
   private readonly now: () => number;
   private running: Promise<void> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private retry: ReturnType<typeof setTimeout> | null = null;
   private renewedAt: string | null = null;
   private error: string | null = null;
   private failedAt: number | null = null;
@@ -132,6 +134,7 @@ export class T3Credential {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.cancelRetry();
   }
 
   /** T3 refused `token`: renew, if it is still the one in use (a request sent before a renewal does not count). */
@@ -143,6 +146,7 @@ export class T3Credential {
   paired(): void {
     this.error = null;
     this.failedAt = null;
+    this.cancelRetry();
   }
 
   /** Renew when due (or `force`d by a refusal); one at a time. */
@@ -172,13 +176,13 @@ export class T3Credential {
     const reason = force ? "T3 refused the credential" : this.due();
     if (!reason) return;
     const previous = readStoredAuth(dataDir);
+    // A session T3 issued and Backroom has not stored yet: revoked if the renewal fails, so none is left unused.
+    let pending: IssuedSession | null = null;
     try {
       const issued = await cli.issue({ scopes: REQUESTED_SCOPES.split(" "), ttl: TOKEN_TTL, label: "Backroom", subject: "backroom" });
+      pending = issued;
       const taken = await this.options.verify(issued.token).catch(() => false);
-      if (!taken) {
-        await cli.revoke(issued.sessionId).catch(() => undefined);
-        throw new Error(`T3 at ${baseUrl} does not take the session its CLI on this machine issued`);
-      }
+      if (!taken) throw new Error(`T3 at ${baseUrl} does not take the session its CLI on this machine issued`);
       writeStoredAuth(dataDir, {
         baseUrl,
         accessToken: issued.token,
@@ -189,10 +193,12 @@ export class T3Credential {
         sessionId: issued.sessionId,
         source: "t3-cli",
       });
+      pending = null;
       this.options.use(issued.token);
       this.renewedAt = new Date(this.now()).toISOString();
       this.error = null;
       this.failedAt = null;
+      this.cancelRetry();
       log(`T3 credential renewed with T3's CLI (${reason}); it expires ${issued.expiresAt}`);
       const replaced = previous ? (previous.sessionId ?? sessionIdOf(previous.accessToken)) : null;
       if (replaced && replaced !== issued.sessionId) {
@@ -202,10 +208,31 @@ export class T3Credential {
         );
       }
     } catch (error) {
+      if (pending) await cli.revoke(pending.sessionId).catch(() => undefined);
       this.error = (error as Error).message;
       this.failedAt = this.now();
-      log(`T3 credential not renewed (${reason}): ${this.error}`);
+      log(`T3 credential not renewed (${reason}): ${this.error}; trying again in ${RETRY_AFTER_MS / 60_000} minutes`);
+      this.scheduleRetry(force ? (previous?.accessToken ?? null) : null);
     }
+  }
+
+  /**
+   * Try again RETRY_AFTER_MS after a failure, without waiting for the hourly check (the deploy case: a token that still
+   * works but lacks scopes). A refusal is still the reason while the refused token is the one stored.
+   */
+  private scheduleRetry(refusedToken: string | null): void {
+    this.cancelRetry();
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      this.failedAt = null;
+      void this.check(refusedToken !== null && refusedToken === readStoredAuth(this.options.dataDir)?.accessToken);
+    }, RETRY_AFTER_MS);
+    this.retry.unref?.();
+  }
+
+  private cancelRetry(): void {
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
   }
 
   status(): CredentialStatus {
@@ -213,9 +240,16 @@ export class T3Credential {
     const renewal = this.automatic ? "automatic" : "manual";
     const left = expiresAt ? Date.parse(expiresAt) - this.now() : null;
     const unattended = renewal === "manual" || this.error !== null;
-    const warning = unattended && expiresAt && left !== null && left < WARN_BEFORE_MS ? expiryWarning(expiresAt, left, this.error) : null;
+    // Near expiry the date leads; otherwise a failed renewal is said as soon as it happens.
+    const warning =
+      unattended && expiresAt && left !== null && left < WARN_BEFORE_MS ? expiryWarning(expiresAt, left, this.error) : this.error !== null ? renewalFailure(this.error) : null;
     return { renewal, expiresAt, renewedAt: this.renewedAt, error: this.error, warning };
   }
+}
+
+/** The sentence when Backroom could not renew its credential and it does not expire within WARN_BEFORE_MS. */
+export function renewalFailure(error: string): string {
+  return `Backroom could not renew its T3 credential (${error}) and tries again every ${RETRY_AFTER_MS / 60_000} minutes; to pair by hand, ${HOW_TO_PAIR}.`;
 }
 
 /** The sentence ahead of (or past) expiry, with why Backroom could not renew it when it tried. */

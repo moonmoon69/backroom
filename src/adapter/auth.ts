@@ -3,7 +3,7 @@
  * it is exchanged at POST /oauth/token (RFC 8693 token exchange) for a scoped bearer access token.
  * The token is stored in the data directory with owner-only permissions and never returned to the UI.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export interface StoredT3Auth {
@@ -58,11 +58,14 @@ export function readStoredAuth(dataDir: string): StoredT3Auth | null {
   }
 }
 
+/** Written to a temporary file and renamed over the old one: a crash midway (renewals now write it unattended) leaves the old credential whole. */
 export function writeStoredAuth(dataDir: string, auth: StoredT3Auth): void {
   const path = authStorePath(dataDir);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(path, 0o600);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
 }
 
 /** Extract base URL and bootstrap credential from a pairing URL such as http://host:port/pair?token=abc */
