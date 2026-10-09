@@ -1060,6 +1060,15 @@ export interface StatusResponse {
     paired: boolean;
     pairedAt: string | null;
     tokenExpiresAt: string | null;
+    /** How Backroom keeps its T3 credential (src/app/t3Credential.ts); null with the fake adapter or T3_ACCESS_TOKEN. */
+    credential?: {
+      renewal: "automatic" | "manual";
+      expiresAt: string | null;
+      renewedAt: string | null;
+      error: string | null;
+      /** The sentence ahead of expiry when nothing is going to renew it. */
+      warning: string | null;
+    } | null;
     environment: T3Environment | null;
     auth: { authenticated: boolean; policy: string; bootstrapMethods: string[] } | null;
     error: string | null;

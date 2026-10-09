@@ -56,7 +56,8 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
   baseUrl: string;
@@ -74,6 +75,8 @@ export interface HttpAdapterOptions {
   worktreePollMs?: number;
   /** How long the shared command socket stays open after its last call has been answered. Default 30s. */
   commandLinkIdleMs?: number;
+  /** T3 refused the credential (HTTP 401/403); called with the token the request carried. */
+  onCredentialRejected?: (token: string | null) => void;
 }
 
 interface ShellSnapshot {
@@ -156,6 +159,29 @@ export interface WebSocketLike {
 type RpcExit = { _tag: string; value?: unknown; cause?: unknown };
 
 /** What T3 says went wrong, from an RPC failure's cause (a list of failures, each with T3's error and its message). */
+/** The permission an HTTP 403 from T3 names (its EnvironmentScopeRequiredError), else null. */
+function requiredScopeOf(text: string): string | null {
+  try {
+    const body = JSON.parse(text) as { requiredPermission?: unknown; requiredScope?: unknown };
+    const scope = body.requiredPermission ?? body.requiredScope;
+    return typeof scope === "string" && scope.length > 0 ? scope : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The permission T3 says the token lacks when it refuses a call for it (its EnvironmentAuthorizationError), else null. */
+function missingPermission(cause: unknown): string | null {
+  for (const failure of Array.isArray(cause) ? cause : [cause]) {
+    const error = (failure as { error?: { _tag?: unknown; requiredPermission?: unknown; requiredScope?: unknown } } | null)?.error;
+    if (error?._tag !== "EnvironmentAuthorizationError") continue;
+    // requiredScope is the permission's legacy parent (orchestration:read for filesystem:read), kept for older clients.
+    const scope = error.requiredPermission ?? error.requiredScope;
+    if (typeof scope === "string" && scope.length > 0) return scope;
+  }
+  return null;
+}
+
 function rpcFailure(cause: unknown): string {
   const failures = Array.isArray(cause) ? cause : [cause];
   for (const failure of failures) {
@@ -238,7 +264,10 @@ class RpcConnection {
         clearTimeout(timer);
         if (exit instanceof Error) reject(new T3OutcomeUnknown(`T3 RPC ${tag}: ${exit.message} before T3 answered`));
         else if (exit._tag === "Success") resolve(exit.value as T);
-        else reject(new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+        else {
+          const scope = missingPermission(exit.cause);
+          reject(scope ? new T3ScopeMissing(scope, exit) : new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+        }
       });
       this.socket.send(JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] }));
     });
@@ -424,6 +453,7 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketImpl: (new (url: string) => WebSocketLike) | undefined;
   private readonly userDataDir: string | undefined;
+  private readonly onCredentialRejected: ((token: string | null) => void) | undefined;
   private readonly shellCacheMs: number;
   private readonly requestTimeoutMs: number;
   private readonly worktreePollMs: number;
@@ -447,13 +477,25 @@ export class HttpT3Adapter implements T3Adapter {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.worktreePollMs = options.worktreePollMs ?? 500;
     this.commandLinkIdleMs = options.commandLinkIdleMs ?? 30_000;
+    this.onCredentialRejected = options.onCredentialRejected;
   }
 
+  /** Use another token from now on; the sockets opened with the old one are closed, and open again with it when next needed. */
   setAccessToken(token: string | null): void {
     this.accessToken = token;
     this.invalidateShell();
     this.protocolCheck = null;
     this.dropCommandLink();
+    const activity = this.activityLink;
+    this.activityLink = null;
+    void activity?.then((connection) => connection.close(), () => undefined);
+  }
+
+  /** Whether T3 takes `token` (its session check), without using it for anything else. */
+  async accepts(token: string): Promise<boolean> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/auth/session`, { headers: { accept: "application/json", authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(this.requestTimeoutMs) });
+    if (!response.ok) return false;
+    return ((await response.json()) as { authenticated?: unknown }).authenticated === true;
   }
 
   get hasCredentials(): boolean {
@@ -486,8 +528,15 @@ export class HttpT3Adapter implements T3Adapter {
     } catch (error) {
       throw unanswered(error);
     }
-    if (response.status === 401 || response.status === 403) {
-      throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); pair Backroom again`);
+    // T3 answers 401 for a token it does not take (bad, expired, revoked), 403 for a permission the token lacks
+    // (EnvironmentScopeRequiredError): a new token with the same scopes would be refused again, so only a 401 renews.
+    if (response.status === 401) {
+      this.onCredentialRejected?.(headers.authorization ? headers.authorization.slice("Bearer ".length) : null);
+      throw new T3Unavailable(`T3 rejected the credential (HTTP 401); pair Backroom again`);
+    }
+    if (response.status === 403) {
+      const scope = requiredScopeOf(text);
+      throw new T3Unavailable(scope ? missingScopeMessage(scope) : `T3 refused ${method} ${path} (HTTP 403): ${text.slice(0, 300)}`);
     }
     if (response.status >= 500) {
       throw new T3Unavailable(`T3 returned HTTP ${response.status}`);
