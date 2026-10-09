@@ -12,8 +12,8 @@ import { RoomStatePanel } from "./RoomState.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
-import { laneTarget, type Lane } from "../keyOrder.ts";
-import { byKey, focusItem, focusWhen, isTextField, itemOf, laneAt, listTarget, navItems, navKey, navProps, roomLanes, tabbables } from "../keys.ts";
+import { laneTarget, openLanding, type Lane } from "../keyOrder.ts";
+import { byKey, focusItem, focusWhen, itemOf, laneAt, listTarget, navItems, navKey, navProps, roomLanes, showsAtBottom, tabbables } from "../keys.ts";
 
 /** The room's panes, left to right (keys.ts): the board (or the chat), then the side panel's tabs as the header orders them. */
 const PANES = ["board", "people", "browser", "git"] as const;
@@ -44,7 +44,7 @@ export function OverviewRoom({
   onClose: () => void;
   onManageBrowser: (browserId: string | null) => void;
 }) {
-  const { snapshot, participantById } = useRoom();
+  const { snapshot, participantById, desk, deskError } = useRoom();
   const designated = snapshot.room.consigliereId ? participantById(snapshot.room.consigliereId) : undefined;
   const consigliere = designated && !designated.retiredAt ? designated : null;
   const [view, setView] = useState<"chat" | "board">("chat");
@@ -114,17 +114,48 @@ export function OverviewRoom({
     if (fromKey) focusWhen(() => (panelRef.current === tab ? landingRef.current(tab) : null));
   };
 
-  // Where the ring lands when the room opens: the first status chip that needs you, else the newest post, else the
-  // composer's strip. Typing anywhere still opens the composer; a text field that has the focus keeps it.
+  // Where the ring lands when the room opens (keyOrder.ts, openLanding: a chip that needs you, else the newest post if it
+  // shows, else the running turn's chip, else the strip), once the room's first desk read is drawn and its running
+  // turns' rows are laid out at their size (rows are content-visibility: auto, drawn at a placeholder height at first):
+  // a running turn's live feed comes with the desk, and its bubble can push the newest post out of the board's view.
+  // Whether it shows is judged with the board at its bottom, where it opens and stays. Focused without scrolling, so
+  // the board stays at its bottom and keeps following the turn. Typing anywhere still opens the composer; a ring
+  // already moved into the room (a key pressed while it opened) stays where it is.
+  const deskRead = desk !== null || deskError !== null;
+  const [waited, setWaited] = useState(false);
   useEffect(() => {
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && isTextField(active)) return;
-    return focusWhen(() => {
-      const all = lanesRef.current();
-      const chip = all.find((lane) => lane.name === "status")?.items.find((item) => item.closest(".work-needs"));
-      return chip ?? all.find((lane) => lane.name === "posts")?.items.at(-1) ?? all.find((lane) => lane.name === "strip")?.items[0];
-    });
+    const timer = setTimeout(() => setWaited(true), 1500);
+    return () => clearTimeout(timer);
   }, [snapshot.room.id]);
+  // The landing under way, kept outside the effect: its next run (the wait ending) must not cancel it.
+  const opening = useRef<{ roomId: string; cancel: () => void } | null>(null);
+  useEffect(() => () => opening.current?.cancel(), []);
+  useEffect(() => {
+    const roomId = snapshot.room.id;
+    if (opening.current?.roomId === roomId || (!deskRead && !waited)) return;
+    opening.current?.cancel();
+    const since = performance.now();
+    const cancel = focusWhen(() => {
+      const root = sheet.current;
+      const active = document.activeElement;
+      // Already in the room: focusing it again moves nothing.
+      if (root && active instanceof HTMLElement && root.contains(active)) return active;
+      const all = lanesRef.current();
+      const chips = all.find((lane) => lane.name === "status")?.items ?? [];
+      const newest = all.find((lane) => lane.name === "posts")?.items.at(-1) ?? null;
+      const live = [...(root?.querySelectorAll<HTMLElement>(".timeline .live-turn") ?? [])];
+      // A row's own box is drawn while its contents are skipped: the check is on what is in it (for up to a second).
+      if (performance.now() - since < 1000 && live.some((row) => row.firstElementChild?.checkVisibility({ contentVisibilityAuto: true }) === false)) return null;
+      return openLanding({
+        needs: chips.find((item) => item.closest(".work-needs")) ?? null,
+        newest,
+        newestInView: newest !== null && showsAtBottom(newest),
+        running: chips.find((item) => item.dataset.navKey?.startsWith("chip:run:")) ?? null,
+        strip: all.find((lane) => lane.name === "strip")?.items[0] ?? null,
+      });
+    }, 2000, false);
+    opening.current = { roomId, cancel };
+  }, [snapshot.room.id, deskRead, waited]);
 
   // The panel closed with the focus in it (Backspace, its ×): the focus goes back to the conversation, on the item it
   // came from, without moving the board. A key closed it when the ring shows there (:focus-visible follows the last

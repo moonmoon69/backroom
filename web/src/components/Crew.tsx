@@ -116,9 +116,9 @@ export function CrewPanel() {
 
 /**
  * The header's people button: a two-person icon and how many are seated, opening the People tab (where participants
- * are added, and each one's status and thread menu are). Hover lists who is doing what.
+ * are added, and each one's status and thread menu are). Hover lists who is doing what. `nav` makes it an item of the
+ * room's header lane (keys.ts).
  */
-/** The header's Members button; `nav` makes it an item of the room's header lane (keys.ts). */
 export function CrewButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot, desk } = useRoom();
   const crew = snapshot.participants.filter(isActiveParticipant);

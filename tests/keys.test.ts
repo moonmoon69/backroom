@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { barEntries, entryText, inReadingOrder, KEYS, keysMarkdown, laneTarget, placeById, readingTarget, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Placed } from "../web/src/keyOrder.ts";
+import { barEntries, entryText, inReadingOrder, KEYS, keysMarkdown, laneTarget, openLanding, placeById, readingTarget, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Placed } from "../web/src/keyOrder.ts";
 
 /** An item: its key, section, column (left edge) and top; 30 px tall. */
 const at = (key: string, section: number, column: number, top: number): Placed<string> => ({ element: key, section, column, top, middle: top + 15 });
@@ -153,6 +153,19 @@ test("from something of a lane that is no item (the earlier posts' button, a chi
   // The room state's text, open under its line: Up to the line, Down on to the chips.
   assert.equal(inRoom({ lane: 1, before: 1 }, "up"), "state");
   assert.equal(inRoom({ lane: 1, before: 1 }, "down"), "approval");
+});
+
+test("a room opens with the ring on something in view: a chip that needs you, the newest post if it shows, the running turn's chip, the strip", () => {
+  const room = { needs: null, newest: "#88", newestInView: true, running: "working", strip: "strip" };
+  assert.equal(openLanding({ ...room, needs: "approval" }), "approval");
+  assert.equal(openLanding({ ...room, needs: "approval", newestInView: false }), "approval");
+  assert.equal(openLanding(room), "#88");
+  // A running turn's tall live bubble pushed the newest post out of the board's view: its chip, in the status lane.
+  assert.equal(openLanding({ ...room, newestInView: false }), "working");
+  // No room run's chip (a turn typed in T3 is no stop): the strip.
+  assert.equal(openLanding({ ...room, newestInView: false, running: null }), "strip");
+  // An empty room.
+  assert.equal(openLanding({ ...room, newest: null, newestInView: false, running: null }), "strip");
 });
 
 /** The bar on a place, as it reads: each entry's keys, then what they do. */

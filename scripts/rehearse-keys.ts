@@ -25,7 +25,9 @@
  * waiting), else on its newest post; Up from the first post goes on to the status chips, the room state (written by the
  * Consigliere with rooms-board state) and the header, the key bar naming each as the API names it; Left and Right go
  * along the header (Enter on the Board tab shows the board, on Members opens the panel with the ring in it) and along
- * the status chips; Home and End go to the first and last post from every lane.
+ * the status chips; Home and End go to the first and last post from every lane. A room opened while a turn runs puts
+ * the ring on something in view (the newest post if it shows, else the running turn's chip) without moving the board,
+ * which stays at its bottom and follows the turn (its live bubble made tall with a style, as the fake streams no feed).
  *
  * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
@@ -146,6 +148,27 @@ const FOCUS = `() => {
     chipOpen: Boolean(document.querySelector('.work-open')),
     correctionOpen: [...document.querySelectorAll('.req-correct')].some((e) => !e.closest('[inert]')),
     inCorrection: Boolean(a && a.closest('.req-block')),
+  };
+}`;
+
+/**
+ * The open room's board: how far it is from its bottom, its newest post (its key, how much of it shows in the board's
+ * view, its height) and its live bubble's height.
+ */
+const BOARD = `() => {
+  const t = document.querySelector('.ov-drawer[data-view="room"] .timeline');
+  if (!t) return null;
+  const post = [...t.querySelectorAll('[data-nav="post"]')].at(-1);
+  const v = t.getBoundingClientRect();
+  const r = post ? post.getBoundingClientRect() : null;
+  const bubble = t.querySelector('.bubble-live');
+  return {
+    distance: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight),
+    newest: post ? post.dataset.navKey : null,
+    shown: r ? Math.round(Math.min(r.bottom, v.bottom) - Math.max(r.top, v.top)) : 0,
+    height: r ? Math.round(r.height) : 0,
+    bubble: bubble ? Math.round(bubble.getBoundingClientRect().height) : 0,
+    view: Math.round(v.height),
   };
 }`;
 
@@ -1078,6 +1101,45 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const waitingAfter = (await second.snapshot()).nativeRequests.length;
   if (waitingAfter !== 1) fail(`the approval changed in the API while the room was looked at: ${waitingAfter} waiting`);
   await state("Backspace from the second room: its approval still waits, the ring on its card", "Second");
+
+  // ---------------- 5c. a room opened while a turn runs: the ring on something in view, the board at its bottom ----------------
+
+  // @fable's turn on #openPost still runs (the fake holds it), the room's only one, and nothing needs the user. Its live
+  // bubble is small here (the fake T3 streams no feed): the newest post shows and takes the ring. Made tall with a style,
+  // as a streaming feed makes it (the review's way; 75vh, so that none of the post shows at this window), the bubble
+  // pushes the newest post out of the board's view: the room opens with the ring on the running turn's chip, and the
+  // board stays at its bottom and follows the bubble as it grows.
+  const s5 = await room.snapshot();
+  const turns = (s5.runs as Array<{ id: string; phase: string }>).filter((r) => r.phase !== "terminal");
+  if (turns.length !== 1 || turns[0]!.phase !== "running" || `chip:run:${turns[0]!.id}` !== chipKey || s5.nativeRequests.length > 0 || s5.needsYou.length > 0) fail(`the API should show @fable's one running turn and nothing that needs the user: ${JSON.stringify({ runs: turns, asking: s5.nativeRequests.length, needsYou: s5.needsYou.length })}`);
+  const board = () => browser.eval<{ distance: number; newest: string | null; shown: number; height: number; bubble: number; view: number } | null>(BOARD);
+  await goTo(`room:${R}`);
+  press("Enter");
+  await expect(`Enter: the room opens while @fable's turn runs, the ring on the newest post #${openPost.number} (it shows)`, (f) => inRoom(f) && f.key === `post:${openPost.seq}` && f.ring, 10_000);
+  const small = board() ?? fail("the page draws no open room's board");
+  if (small.newest !== `post:${openPost.seq}` || small.shown < Math.min(small.height, 48) || small.distance > 2) fail(`with a small live bubble the newest post should show and the board be at its bottom: ${JSON.stringify(small)}`);
+  log(`api: run ${turns[0]!.id.slice(0, 8)} running; page: the bubble ${small.bubble}px, the newest post shows ${small.shown}px of ${small.height}, the board ${small.distance}px from its bottom`);
+  press("Backspace");
+  await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  browser.eval<boolean>(`() => { document.head.insertAdjacentHTML('beforeend', '<style id="rehearse-tall-bubble">.bubble-live { min-height: 75vh }</style>'); return true; }`);
+  press("Enter");
+  const landed = await expect("Enter: the room opens with its live bubble tall, the ring placed", (f) => inRoom(f) && f.key !== null && f.ring, 10_000);
+  const tall = board() ?? fail("the page draws no open room's board");
+  log(`  page: the bubble ${tall.bubble}px of a ${tall.view}px board; the newest post shows ${Math.max(0, tall.shown)}px of ${tall.height}; the board ${tall.distance}px from its bottom`);
+  if (tall.shown >= Math.min(tall.height, 48) || tall.distance > 2) fail(`with a tall live bubble the newest post should be out of the board's view and the board at its bottom: ${JSON.stringify(tall)}`);
+  await expect("the ring on the running turn's chip, in view (not on the newest post out of view)", (f) => f.key === chipKey && f.chip && f.ring && landed.key === chipKey);
+  // The turn grows: the board follows it, the ring stays on the chip.
+  browser.eval<boolean>(`() => { document.getElementById('rehearse-tall-bubble').textContent = '.bubble-live { min-height: 95vh }'; return true; }`);
+  const grown = await until("the board to follow the grown bubble to its bottom", () => {
+    const now = board();
+    return now && now.bubble > tall.bubble && now.distance <= 2 ? now : null;
+  }, 6000, 200);
+  log(`  page: the bubble grew to ${grown.bubble}px, the board ${grown.distance}px from its bottom`);
+  await expect("the ring stays on the chip", (f) => f.key === chipKey && f.ring);
+  await state("a room opened while a turn runs: the ring on something in view, the board at its bottom and following", chipWhere);
+  browser.eval<boolean>(`() => { document.getElementById('rehearse-tall-bubble')?.remove(); return true; }`);
+  press("Backspace");
+  await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
 
   // A thread outside rooms, by keys: Enter on its card, Up from its composer's strip to the conversation, Esc back.
   await goTo(`thread:${loose.threadId}`);

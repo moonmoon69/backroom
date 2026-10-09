@@ -19,8 +19,10 @@ function useUncommitted(): { count: number; branch: string | null; folders: numb
   return { count: folders.reduce((n, folder) => n + folder.changed, 0), branch: folders.length === 1 ? folders[0]!.branch : null, folders: folders.length };
 }
 
-/** The header's Git switch: the branch icon with the count of uncommitted files; hover says the branch. */
-/** The header's Git button; `nav` makes it an item of the room's header lane (keys.ts). */
+/**
+ * The header's Git switch: the branch icon with the count of uncommitted files; hover says the branch. `nav` makes it an
+ * item of the room's header lane (keys.ts).
+ */
 export function GitButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const uncommitted = useUncommitted();
   const gitTitle = uncommitted

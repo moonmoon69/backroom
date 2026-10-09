@@ -93,21 +93,21 @@ export function byKey(root: ParentNode, key: string | null | undefined): HTMLEle
   return [...root.querySelectorAll<HTMLElement>("[data-nav-key]")].find((element) => element.dataset.navKey === key && visible(element)) ?? null;
 }
 
-/** Focus an item and bring it into view, the least scroll that shows it. */
-export function focusItem(element: HTMLElement | null): boolean {
+/** Focus an item and bring it into view, the least scroll that shows it (unless `scroll` is false: nothing moves). */
+export function focusItem(element: HTMLElement | null, scroll = true): boolean {
   if (!element) return false;
   element.focus({ preventScroll: true });
-  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (scroll) element.scrollIntoView({ block: "nearest", inline: "nearest" });
   return document.activeElement === element;
 }
 
 /** Focus what `probe` finds once it is drawn (a panel opening, a room loading): tried each frame, up to `ms`. */
-export function focusWhen(probe: () => HTMLElement | null | undefined, ms = 2000): () => void {
+export function focusWhen(probe: () => HTMLElement | null | undefined, ms = 2000, scroll = true): () => void {
   let frame = 0;
   const end = performance.now() + ms;
   const attempt = () => {
     const element = probe();
-    if (element) focusItem(element);
+    if (element) focusItem(element, scroll);
     else if (performance.now() < end) frame = requestAnimationFrame(attempt);
   };
   frame = requestAnimationFrame(attempt);
@@ -165,6 +165,18 @@ export function roomLanes(root: ParentNode, landing: (name: Lane<HTMLElement>["n
     const items = navItems(element).filter((item) => item.closest("[data-nav-lane]") === element && shown(item));
     return items.length > 0 ? [{ name, element, items, landing: landing(name, items) ?? items[0]! }] : [];
   });
+}
+
+/**
+ * Whether enough of an item shows to see the ring around it (all of it, or 48px of it) with the scroller it is in at its
+ * bottom: where a room's board opens, and stays while it follows a turn, whatever it is scrolled to while it settles.
+ */
+export function showsAtBottom(element: HTMLElement, scroller: HTMLElement | null = element.closest<HTMLElement>(".timeline")): boolean {
+  if (!scroller) return false;
+  const item = element.getBoundingClientRect();
+  const view = scroller.getBoundingClientRect();
+  const top = item.top - view.top + scroller.scrollTop;
+  return Math.min(top + item.height, scroller.scrollHeight) - Math.max(top, scroller.scrollHeight - scroller.clientHeight) >= Math.min(item.height, 48);
 }
 
 /** Where `target` is in the lanes: on an item, or on something of a lane between its items; null outside the lanes. */

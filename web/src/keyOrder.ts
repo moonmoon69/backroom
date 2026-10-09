@@ -528,9 +528,10 @@ const ACROSS = new Set<Lane<unknown>["name"]>(["header", "status"]);
 /**
  * Where a key moves in a room's lanes from `at` (null: from nothing in particular, the room itself). ↑ ↓ go post to post
  * in the posts lane and lane to lane elsewhere, landing on the next lane's landing; past the first post, with earlier
- * posts to draw (`earlier`), they are drawn first. From something of a lane that is no item, they go to the lane's item
- * on that side of it (in the posts, the post above or below), else on to the next lane. ← → go along the header and the status chips, stopping at the ends,
- * and are the room's anywhere else (null). Home and End go to the first and the last post.
+ * posts to draw (`earlier`), they are drawn first. From something of a lane that is no item, they go to the lane's
+ * landing when an item of the lane is on that side of it (in the posts, the post above or below), else on to the next
+ * lane. ← → go along the header and the status chips, stopping at the ends, and are the room's anywhere else (null).
+ * Home and End go to the first and the last post.
  */
 export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, earlier = false): LaneMove<T> {
   const postsAt = lanes.findIndex((lane) => lane.name === "posts");
@@ -552,9 +553,32 @@ export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, 
     if (next >= 0 && next < posts.length) return { to: posts[next]! };
     if (next < 0 && "item" in at && earlier) return { earlier: true };
   } else if ("before" in at && (step > 0 ? at.before < lane.items.length : at.before > 0)) {
-    // Something of a lane after its items (a chip's open choices, the room state's text): Up is back to the lane's item.
+    // Something of a lane after its items (a chip's open choices, the room state's text): Up is back to the lane's
+    // landing (the item last visited there: the chip whose choices are open).
     return { to: lane.landing };
   }
   const beyond = lanes[at.lane + step];
   return beyond ? { to: beyond.landing } : "stay";
+}
+
+/** What a room offers the ring as it opens, read off the page (OverviewRoom). */
+export interface OpenChoices<T> {
+  /** The first status chip that needs you (an approval, a question, a failed turn). */
+  needs: T | null;
+  /** The newest post, and whether enough of it shows in the board's view to see the ring around it. */
+  newest: T | null;
+  newestInView: boolean;
+  /** A running turn's status chip. */
+  running: T | null;
+  /** The composer's strip. */
+  strip: T | null;
+}
+
+/**
+ * Where the ring lands when a room opens, always on something in view: the first chip that needs you; else the newest
+ * post if it shows in the board's view (a running turn's live bubble under it can push it out); else the running
+ * turn's chip; else the composer's strip.
+ */
+export function openLanding<T>(choices: OpenChoices<T>): T | null {
+  return choices.needs ?? (choices.newestInView ? choices.newest : null) ?? choices.running ?? choices.strip;
 }

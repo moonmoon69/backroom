@@ -152,8 +152,8 @@ export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boole
 /**
  * The room header's Browser switch, beside Members and Git: a globe, checked while the room's agents may
  * use browsers, with the open tab count while its default browser runs. Opens the side panel on the room's browser.
+ * `nav` makes it an item of the room's header lane (keys.ts).
  */
-/** The header's Browser button; `nav` makes it an item of the room's header lane (keys.ts). */
 export function RoomBrowserButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot } = useRoom();
   const info = snapshot.browser;
