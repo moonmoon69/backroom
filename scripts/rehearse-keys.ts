@@ -1317,7 +1317,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       },
       // On the board, the ring on #openPost, as section 5 leaves it: Left comes back to the board.
       place: async () => {
-        await toChatTab();
+        // @fable's turn runs: Up past the posts reaches its status chip, then the room state, then the header.
+        await enterRoom(`the ring on #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
+        await abovePosts("@fable's running turn's chip", (f) => f.key?.startsWith("chip:") === true);
+        press("ArrowUp");
+        await expect("Up: the room state", (f) => f.key === "state");
+        press("ArrowUp");
+        await expect("Up: the header, on the chat's tab", (f) => f.key === "head:chat" && f.view === "chat" && f.ring);
         press("ArrowRight");
         await expect("Right: the Board tab", (f) => f.key === "head:board" && f.ring);
         press("Enter");
