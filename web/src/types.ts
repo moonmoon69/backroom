@@ -178,11 +178,13 @@ export interface EngineNoticeState {
   /** keep-alive: Backroom woke an idle seat while work it waits on is in flight; it needs nobody. */
   intent: "error" | "attention" | "keep-alive";
   runId: string | null;
-  /** The run the user can retry from here (failed, not retried, its seat not retired, one of its requests still open). */
+  /** The run the user can retry from here (failed, not retried, its seat not retired, one of its requests still open, not woken by a cancel alone). */
   retryRunId: string | null;
   retried: boolean;
   dismissed: boolean;
-  /** It waits on the user: addressed to the user, not dismissed or retried, its requests not all closed. */
+  /** About Backroom's requests alone (a briefing, a reseat's) and reaching the Consigliere: his, not the user's; not in the chat. */
+  backroom: boolean;
+  /** It waits on the user: addressed to the user, not dismissed or retried, its requests not all closed; never a failed run woken by a cancel alone. */
   needsYou: boolean;
 }
 

@@ -28,15 +28,17 @@ export function consigliereSeats(snapshot: Pick<RoomSnapshot, "room" | "bindings
 
 /**
  * The user's conversation with the room's Consigliere, as a view of the board: what the user posted to him (every
- * message in his room is his), his replies and turns to the user, and the notices that need the user. His answers to
- * members, what the members say to each other, Backroom's briefings to them, his replies to keep-alives (H6), and what
- * the user typed in T3 on another member's thread (or sent there as a T3 command) are on the board.
+ * message in his room is his), his replies and turns to the user (and to Backroom's requests to him: his reseat's
+ * checkpoint, a reseat called off), and the notices that need the user, his own failed turns among them (with Retry and
+ * Dismiss, as in the status bar). His answers to members, what the members say to each other, Backroom's requests to
+ * them (and their failures, which are his), his replies to keep-alives (H6), and what the user typed in T3 on another
+ * member's thread (or sent there as a T3 command) are on the board.
  */
 export function consigliereChat(posts: readonly EnginePost[], his: { seats: ReadonlySet<string>; threads: ReadonlySet<string> }): EnginePost[] {
   const hisRequests = new Set(posts.flatMap((post) => (post.request && his.seats.has(post.request.owner) ? [post.request.id] : [])));
   return posts.filter((post) => {
     if (post.author === "$user") {
-      // His requests (not Backroom's briefings), notes to the room or typed on his thread, and the user's corrections,
+      // His requests (not Backroom's in the user's name), notes to the room or typed on his thread, and the user's corrections,
       // cancels and retries of his work.
       if (post.kind === "request") return his.seats.has(post.request!.owner) && !backroomNotice(post);
       // Backroom's notes in the user's name (a reseat called off) only when they concern his requests.
@@ -46,10 +48,14 @@ export function consigliereChat(posts: readonly EnginePost[], his: { seats: Read
     }
     if (his.seats.has(post.author)) {
       if (post.kind === "note") return post.note?.source !== "keep-alive";
-      if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user") === true;
+      if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user" || claim.returnTo === "$system") === true;
+      // His own failed turn on your message: the same notice as the status bar's, with its Retry and Dismiss.
+      if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
       return false;
     }
-    if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
+    // A member's failure that needs the user or is addressed to the user, unless it is about Backroom's requests alone
+    // and reached the Consigliere (a briefing in the user's name from before B1): that one is his.
+    if (post.kind === "notice") return post.notice?.needsYou === true || (post.to.includes("$user") && post.notice?.backroom !== true);
     return false;
   });
 }

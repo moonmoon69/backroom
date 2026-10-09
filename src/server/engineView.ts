@@ -28,9 +28,9 @@ import type {
 } from "../domain/engineView.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { Participant, Room } from "../domain/types.ts";
-import { deliveredInputs, unread } from "../engine/index.ts";
+import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
-import { KEEP_ALIVE_REPLY, finalTargets } from "../runtime/index.ts";
+import { KEEP_ALIVE_REPLY, backroomRequest, finalTargets } from "../runtime/index.ts";
 import { withoutStatusLine } from "../runtime/status.ts";
 import { frozenDispatch } from "../runtime/work.ts";
 import type { ThreadCosts } from "../usage/threadCosts.ts";
@@ -406,16 +406,29 @@ export function journalView(input: ViewInput): JournalView {
         post.body = d.body;
         post.about = d.requestIds.map(ref);
         const run = p.runs.get(d.causeId) ?? null;
+        // A run woken only by a cancel (a member whose thread keeps failing, given the cancel of the request it failed)
+        // that failed: the engine's "Recovery failure", addressed to nobody. There is nothing to send again and nobody
+        // waits on it: the failure that matters is the one on the request, so it stays on the board and off every list.
+        // A run woken by a notice is not one of these: the Consigliere told of a member's failure whose own thread fails
+        // stalls the room, so that failure is the user's, with its Retry.
+        const delivered = run ? inputTree(deliveredInputs(p, run.id)) : [];
+        const recovery = d.intent === "error" && delivered.length > 0 && delivered.every((i) => i.intent === "cancel");
         const wasRetried = run !== null && retried.has(run.id);
         // Every request the failed run was on is closed (answered or cancelled since): sending it again would do work
         // nobody asks for any more, so it is neither retried from here nor waiting on you.
         const settled = d.requestIds.length > 0 && d.requestIds.every((r) => p.requests.get(r)?.state !== "open");
-        const retryable = run !== null && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
-        const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
+        const retryable = run !== null && !recovery && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
+        // About Backroom's requests alone (a briefing, a reseat's checkpoint or call-off; journals from before B1 hold
+        // them in the user's name) and reaching the Consigliere: it is his, whatever its recipients say. It keeps Retry.
+        const backroom = d.requestIds.length > 0 && d.requestIds.every((id) => {
+          const q = p.requests.get(id);
+          return q !== undefined && backroomRequest(q);
+        }) && d.recipients.some((r) => !r.startsWith("$"));
+        const toUser = !backroom && (d.recipients.includes("$user") || d.recipients.length === 0);
         const isDismissed = event.seq <= marks.through || dismissed.has(event.id);
         post.notice = {
-          intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed,
-          needsYou: toUser && !isDismissed && !wasRetried && !settled,
+          intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed, backroom,
+          needsYou: toUser && !recovery && !isDismissed && !wasRetried && !settled,
         };
         break;
       }
