@@ -168,7 +168,14 @@ describe("rehearsal state selection (T2: --only, --until)", () => {
       assert.ok(list.length > 20, `${step}: ${list.length} states`);
       assert.doesNotThrow(() => new Selection(list), step);
     }
-    const sections = sectionNames(readFileSync(new URL("../scripts/rehearse-keys.ts", import.meta.url), "utf8"));
-    assert.doesNotThrow(() => new Selection(steps.keys, [], null, sections), "keys' sections");
+    const sections = {
+      ui: [...sectionNames(functionSource(rehearse, "rehearseUi")), ...sectionNames(functionSource(rehearse, "rehearseAgentsFile"))],
+      room: [...sectionNames(functionSource(rehearse, "rehearseRoom")), ...sectionNames(functionSource(rehearse, "rehearseBrowserPanel"))],
+      keys: sectionNames(readFileSync(new URL("../scripts/rehearse-keys.ts", import.meta.url), "utf8")),
+    };
+    for (const [step, firsts] of Object.entries(sections)) {
+      assert.ok(firsts.length > 5, `${step}: ${firsts.length} sections`);
+      assert.doesNotThrow(() => new Selection(steps[step as keyof typeof steps], [], null, firsts), `${step}'s sections`);
+    }
   });
 });
