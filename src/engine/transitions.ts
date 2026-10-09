@@ -151,7 +151,9 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       break;
     }
     case "request": {
-      actor();
+      // Backroom ($system) asks a seat for itself (a seat briefing): under nothing, and its answer wakes nobody.
+      if (command.actor === "$system") requireThat(command.to !== "$user" && !command.parentId, "Backroom asks a seat, under nothing");
+      else actor();
       if (command.to !== "$user") seat(command.to);
       requireThat(command.to !== command.actor, "own request cannot create a wake");
       const parent = command.parentId ? request(command.parentId) : null;
@@ -400,8 +402,9 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
         claims.push({ requestId: id, outcome, returnTo: q.returnTo });
       }
       const progressIds = selected.filter((id) => request(id, p).owner === r.seatId && seat(r.seatId, p).status !== "retired");
+      // An answer to Backroom's own request wakes nobody: Backroom reads the journal.
       const recipients = disposition.kind === "progress" ? progressRecipients(p, command.author, progressIds, disposition.milestone)
-        : unique(claims.filter((c) => c.outcome === "answered").map((c) => c.returnTo));
+        : unique(claims.filter((c) => c.outcome === "answered" && c.returnTo !== "$system").map((c) => c.returnTo));
       const outputId = emit({ kind: "output", author: command.author, sourceKey: command.sourceKey, association: command.association, disposition, body: command.body, claims, recipients });
       undeliverable(recipients, outputId, claims.map((c) => c.requestId), command.author);
       if (claims.some((c) => c.outcome === "late")) attention("Late output retained; cancelled/transferred generation cannot claim completion", outputId, claims.filter((c) => c.outcome === "late").map((c) => c.requestId), command.author);

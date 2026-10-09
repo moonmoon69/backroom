@@ -62,3 +62,24 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const shortHis = consigliereSeats(snapshot, posts.filter((p) => p !== handover));
   assert.deepEqual([...shortHis.seats], ["B"]);
 });
+
+test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice) and a recovery failure are not in the user's chat", () => {
+  const snapshot = {
+    room: { consigliereId: "PC" },
+    bindings: [
+      { id: "C", participantId: "PC", generation: 1, threadId: "tC", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
+      { id: "G", participantId: "PG", generation: 1, threadId: "tG", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
+    ],
+    seats: [seat("C", "tC", { orchestrator: true }), seat("G", "tG")],
+  } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
+  const notice = (to: string[], needsYou: boolean) =>
+    post({ kind: "notice", author: "G", to, notice: { intent: "error", runId: "r", retryRunId: null, retried: false, dismissed: false, needsYou } });
+  const briefing = request("seat-briefing:G:seated", "$system", "G", { state: "open" });
+  const failed = notice(["C"], false);
+  const recovery = notice([], false);
+  const asked = request("u1", "$user", "C", { state: "open" });
+  // A briefing in the user's name (a journal from before B1) failed: that notice is the user's, so it is in the chat.
+  const before = notice(["$user", "C"], true);
+  const posts = [briefing, failed, recovery, asked, before];
+  assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, before.id]);
+});

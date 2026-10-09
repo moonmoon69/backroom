@@ -29,8 +29,9 @@ export function consigliereSeats(snapshot: Pick<RoomSnapshot, "room" | "bindings
 /**
  * The user's conversation with the room's Consigliere, as a view of the board: what the user posted to him (every
  * message in his room is his), his replies and turns to the user, and the notices that need the user. His answers to
- * members, what the members say to each other, Backroom's briefings to them, his replies to keep-alives (H6), and what
- * the user typed in T3 on another member's thread (or sent there as a T3 command) are on the board.
+ * members, what the members say to each other, Backroom's briefings to them (and their failures, which are his), his
+ * replies to keep-alives (H6), and what the user typed in T3 on another member's thread (or sent there as a T3 command)
+ * are on the board.
  */
 export function consigliereChat(posts: readonly EnginePost[], his: { seats: ReadonlySet<string>; threads: ReadonlySet<string> }): EnginePost[] {
   const hisRequests = new Set(posts.flatMap((post) => (post.request && his.seats.has(post.request.owner) ? [post.request.id] : [])));

@@ -18,7 +18,7 @@ export interface ReplyContext {
   nameOf: (principal: string) => string;
 }
 
-/** Backroom's own requests in the user's name (L4b), by what their IDs say they are. */
+/** Backroom's own requests (L4b), by what their IDs say they are: its briefings are its own, the reseat's in the user's name. */
 const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
   ["seat-briefing:", "seat briefing"],
   ["moved:", "new Consigliere notice"],
@@ -28,16 +28,16 @@ const BACKROOM_REQUESTS: Array<[prefix: string, words: string]> = [
 ];
 
 /**
- * A request Backroom made in the user's name, not something the user wrote: the standing facts a member of a room with
- * a Consigliere is given when seated, the notice that the Consigliere changed, a reseat's checkpoint, handover and
- * call-off. Every request the user writes comes from a message (`request.message`); one without it is Backroom's,
- * whatever its ID.
+ * A request Backroom made, not something the user wrote. Its own (`$system`): the standing facts a member of a room
+ * with a Consigliere is given when seated, the notice that the Consigliere changed (journals from before B1 hold these
+ * in the user's name). In the user's name: a reseat's checkpoint, handover and call-off. Every request the user writes
+ * comes from a message (`request.message`); one of the user's without it is Backroom's, whatever its ID.
  */
 export function backroomNotice(post: Pick<EnginePost, "author" | "request">): string | null {
-  if (post.author !== "$user" || !post.request) return null;
+  if ((post.author !== "$user" && post.author !== "$system") || !post.request) return null;
   const known = BACKROOM_REQUESTS.find(([prefix]) => post.request!.id.startsWith(prefix));
   if (known) return known[1];
-  return post.request.message === null ? "Backroom's request" : null;
+  return post.author === "$system" || post.request.message === null ? "Backroom's request" : null;
 }
 
 /** A note Backroom wrote in the user's name (a reseat called off): the user's own notes come from T3, or are notes to the room from before N1. */

@@ -157,7 +157,7 @@ class Seats {
 test("seating: a member gets its seat on the board and, in a Consigliere's room, the seat briefing; its acknowledgement wakes nobody", async () => {
   const h = await Seats.create();
   try {
-    // The Consigliere's mark is the journal's orchestrator; the members were briefed by the user, and he slept through it.
+    // The Consigliere's mark is the journal's orchestrator; the members were briefed by Backroom, and he slept through it.
     assert.equal(h.p.orchestrator, h.seat("C"));
     for (const alias of ["C", "W", "V"]) assert.equal(h.p.seats.get(h.seat(alias))?.threadId, h.thread(alias));
     assert.equal(h.wakes("C"), 0);
@@ -172,10 +172,12 @@ test("seating: a member gets its seat on the board and, in a Consigliere's room,
     const seatX = h.seat("X");
     assert.equal(h.p.seats.get(seatX)?.status, "active");
     const request = h.p.requests.get(`seat-briefing:${seatX}:seated`)!;
-    assert.deepEqual([request.owner, request.returnTo], [seatX, "$user"]);
+    assert.deepEqual([request.owner, request.returnTo], [seatX, "$system"], "Backroom's request, not the user's (B1)");
     await h.acknowledge();
     assert.equal(h.p.requests.get(request.id)!.state, "answered");
     assert.equal(h.wakes("C"), 0, "nobody is woken by a seat briefing's acknowledgement");
+    const ack = h.p.events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === request.id))!;
+    assert.deepEqual(ack.data.kind === "output" ? ack.data.recipients : null, [], "the acknowledgement is to nobody: not an answer to the user");
     assert.ok(x);
   } finally {
     h.close();
@@ -429,7 +431,7 @@ test("a reseated Consigliere: the orchestrator and the mark move, the members ar
     assert.equal([...h.p.requests.values()].some((q) => q.id.startsWith("takeover:")), false, "he reseated himself: nobody to report to");
     const moved = [...h.p.requests.values()].filter((q) => q.id.startsWith("moved:"));
     assert.deepEqual(moved.map((q) => q.owner).sort(), [h.seat("W"), h.seat("V")].sort(), "every other member is told");
-    assert.ok(moved.every((q) => q.returnTo === "$user"));
+    assert.ok(moved.every((q) => q.returnTo === "$system"), "Backroom's requests (B1)");
 
     // W answers A: the answer goes to the fresh Consigliere, whose final answers the user's request.
     h.complete("W", "A is built.");

@@ -170,14 +170,19 @@ export interface EngineNoticeState {
   intent: "error" | "attention" | "keep-alive";
   /** The failed run, when the notice is about one. */
   runId: string | null;
-  /** The run the user can retry from here: failed, not retried, its seat not retired, and one of its requests still open. */
+  /**
+   * The run the user can retry from here: failed, not retried, its seat not retired, one of its requests still open, and
+   * it carried something someone asked (not only a cancel, notices or a keep-alive).
+   */
   retryRunId: string | null;
   retried: boolean;
   dismissed: boolean;
   /**
    * It waits on the user: addressed to the user (or to nobody), after the room's notice mark, not dismissed, not
    * retried, and its requests (if it names any) not all closed. In a room with a Consigliere a worker's failure goes to
-   * him, not the user, so only his own needs you.
+   * him, not the user, so only his own needs you; a failed seat briefing (Backroom's request) is his too. A run that
+   * carried nothing anyone asked of it (a cancel, notices, a keep-alive) and failed needs nobody: its notice, to nobody,
+   * stays on the board.
    */
   needsYou: boolean;
 }

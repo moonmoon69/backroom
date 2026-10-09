@@ -28,7 +28,7 @@ import type {
 } from "../domain/engineView.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { Participant, Room } from "../domain/types.ts";
-import { deliveredInputs, unread } from "../engine/index.ts";
+import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_REPLY, finalTargets } from "../runtime/index.ts";
 import { withoutStatusLine } from "../runtime/status.ts";
@@ -283,6 +283,8 @@ export interface JournalView {
 }
 
 const LIVE: ReadonlySet<string> = new Set(["accepted", "running", "uncertain"]);
+/** What a run carries that nobody asked of it, as the engine counts it for a failure's notice (transitions.ts). */
+const NOT_ASKED: ReadonlySet<string> = new Set(["error", "attention", "progress", "cancel", "keep-alive"]);
 const isPending = (a: Activity) => a.status === "pending" || a.status === "uncertain";
 
 export function journalView(input: ViewInput): JournalView {
@@ -406,16 +408,20 @@ export function journalView(input: ViewInput): JournalView {
         post.body = d.body;
         post.about = d.requestIds.map(ref);
         const run = p.runs.get(d.causeId) ?? null;
+        // A run that carried nothing anyone asked of it (a cancel, notices, a keep-alive) and failed: the engine's
+        // "Recovery failure", addressed to nobody. There is nothing to send again and nobody waits on it: the failure
+        // that matters is the one on the work itself, so it stays on the board and off every list.
+        const recovery = run !== null && d.intent === "error" && !inputTree(deliveredInputs(p, run.id)).some((i) => !NOT_ASKED.has(i.intent));
         const wasRetried = run !== null && retried.has(run.id);
         // Every request the failed run was on is closed (answered or cancelled since): sending it again would do work
         // nobody asks for any more, so it is neither retried from here nor waiting on you.
         const settled = d.requestIds.length > 0 && d.requestIds.every((r) => p.requests.get(r)?.state !== "open");
-        const retryable = run !== null && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
+        const retryable = run !== null && !recovery && !wasRetried && !settled && run.phase === "terminal" && run.failure !== null && p.seats.get(run.seatId)?.status !== "retired";
         const toUser = d.recipients.includes("$user") || d.recipients.length === 0;
         const isDismissed = event.seq <= marks.through || dismissed.has(event.id);
         post.notice = {
           intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed,
-          needsYou: toUser && !isDismissed && !wasRetried && !settled,
+          needsYou: toUser && !recovery && !isDismissed && !wasRetried && !settled,
         };
         break;
       }

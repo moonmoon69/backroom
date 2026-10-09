@@ -19,7 +19,7 @@ import { roomForKey } from "../browser/catalog.ts";
 import { roomStateSection } from "../briefing/assemble.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
 import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
-import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, type EngineHost } from "../runtime/index.ts";
+import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, backroomBriefing, type EngineHost } from "../runtime/index.ts";
 import { BOARD_PAGE_CHARS, BoardError, threadOutcome, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
 import { readKeepAlive, writeKeepAlive } from "./keepAlive.ts";
@@ -71,7 +71,7 @@ The Consigliere's (the user posts from the page):
                                   other member. The member's reply wakes you, with its T3 status at the top, and so does
                                   each follow-up of it (a turn it started itself, background work that ended).
   correct #n "<text>"             corrects your request #n: its owner gets the correction with its next turn.
-  cancel #n                       withdraws your open request #n.
+  cancel #n                       withdraws your open request #n, or Backroom's briefing of a member.
   retry #n                        runs a failed turn again; #n is its error notice or its request.
   state "<text>"                  replaces the room state (at most ${ROOM_STATE_MAX_CHARS.toLocaleString("en-US")} characters).
   keepalive @name on|off          turns keep-alives on or off for that seat (on for you and off for members by default).
@@ -80,7 +80,8 @@ The Consigliere's (the user posts from the page):
   crew                            the user's saved crew, by name, with model.
   seat <saved crew name>          seats that saved crew member in this room.
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
-  retire <alias>                  that member leaves the room; refused while it has work open.`;
+  retire <alias>                  that member leaves the room; refused while it has work open. A briefing of
+                                  Backroom's it has not answered goes with it.`;
 
 /** Commands members had before H5 and N1, and why they are gone: a final reply is the answer. */
 const GONE: Record<string, string> = {
@@ -395,8 +396,14 @@ export class BoardEngine {
   /**
    * Cancel and correct are the requester's alone: the owner is told, and the requester is the one waiting for the
    * answer. Anyone else (the Consigliere too) would close or change work someone else is waiting on, unseen by them.
+   * Backroom's briefing of a member is nobody's work: the Consigliere may cancel it (a member whose thread fails it).
    */
   private mayControl(c: Caller, p: Projection, q: Request, verb: string): void {
+    if (backroomBriefing(q)) {
+      if (verb === "cancel" && this.orchestrator(c) === c.seatId) return;
+      const o = this.orchestrator(c);
+      throw new BoardError(`rooms-board: ${this.label(p, q.id)} is Backroom's briefing of ${this.name(q.owner)}: only this room's Consigliere${o ? ` (${this.name(o)})` : ""} can cancel it, and nobody corrects it.`, 403);
+    }
     if (q.returnTo !== c.seatId) {
       const asker = q.returnTo === "$user" ? "the user" : this.name(q.returnTo);
       throw new BoardError(`rooms-board: only ${asker}, who asked ${this.label(p, q.id)}, can ${verb} it${q.returnTo === "$user" ? "" : `; ask ${asker}`}.`, 403);

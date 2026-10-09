@@ -8,9 +8,11 @@
  * A seat is a member's binding: its ID and its thread (src/runtime/bindings.ts). The page and the CLI send the room
  * commands they always have; the service hands those to this class (src/app/service.ts).
  *
- * What Backroom asks a member for itself (the seat briefing, the checkpoint, the Consigliere's move) is a request from
- * the user, so the one-line answer wakes nobody. Request IDs say what each is: `seat-briefing:`, `reseat:`, `moved:`,
- * `takeover:`, `reseat-off:`.
+ * What Backroom asks a member for itself wakes nobody with its one-line answer. Its briefings (the seat briefing, the
+ * line naming a new Consigliere) are its own requests (`$system`): their failure goes to the Consigliere, not the user,
+ * he may cancel them, and a member that leaves takes its open one with it (journals from before B1 hold them as the
+ * user's, known by their IDs: backroomBriefing). The reseat's checkpoint and call-off are requests from the user. Request
+ * IDs say what each is: `seat-briefing:`, `reseat:`, `moved:`, `takeover:`, `reseat-off:`.
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3ThreadDetail, T3ThreadShell, ThreadLifecycleAction } from "../adapter/types.ts";
@@ -21,7 +23,7 @@ import type { Participant, Room, SessionBinding } from "../domain/types.ts";
 import type { Activity, Projection } from "../engine/index.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import { standingText } from "../briefing/assemble.ts";
-import { SEAT_BRIEFING } from "../runtime/bindings.ts";
+import { MOVED, SEAT_BRIEFING, backroomBriefing } from "../runtime/bindings.ts";
 import type { BriefingSource } from "../runtime/render.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import { threadFree } from "../runtime/t3.ts";
@@ -31,7 +33,6 @@ import { engineCheckpointInstruction, engineTakeoverInstruction, readEngineResea
 import type { CommandResult, EngineHandler } from "./service.ts";
 import { backgroundTasks } from "./threadView.ts";
 
-const MOVED = "moved:";
 const TAKEOVER = "takeover:";
 const RESEAT_OFF = "reseat-off:";
 
@@ -158,7 +159,7 @@ export class EngineSeats {
   /**
    * Make a member the Consigliere, move the mark, or clear it (room.consigliere.set, from the page). The journal's
    * orchestrator follows; a room's first Consigliere means every other member gets the seat briefing, a move tells
-   * every member who he is now. Each is a request from the user, so nobody is woken by the acknowledgements.
+   * every member who he is now. Each is Backroom's request, so nobody is woken by the acknowledgements.
    */
   async designate(command: { roomId: string; participantId: string | null }): Promise<CommandResult> {
     const room = this.room(command.roomId);
@@ -187,14 +188,17 @@ export class EngineSeats {
     return { type: "room.updated", roomId: room.id };
   }
 
-  /** A request from the user to a member: the seat facts, or the line naming the new Consigliere. Once per ID. */
+  /**
+   * Backroom's request to a member: the seat facts, or the line naming the new Consigliere. Once per ID. Its answer wakes
+   * nobody, and a turn that fails on it is the Consigliere's notice, not the user's.
+   */
   private brief(roomId: string, seatId: string, id: string, kind: "seat" | "moved"): void {
     const room = this.repos.getRoom(roomId);
     const consigliere = room?.consigliereId ? this.repos.getParticipant(room.consigliereId) : null;
     const p = this.view(roomId);
     if (!consigliere || consigliere.retiredAt || this.seatIdOf(consigliere.id) === seatId || p.requests.has(id) || !present(p, seatId)) return;
     const body = kind === "seat" ? engineSeatInstruction(consigliere) : movedInstruction(consigliere, this.repos.currentBinding(consigliere.id)?.threadId ?? null);
-    this.host.request(roomId, { actor: "$user", id, to: seatId, body });
+    this.host.request(roomId, { actor: "$system", id, to: seatId, body });
   }
 
   // ---------------- retire ----------------
@@ -202,9 +206,10 @@ export class EngineSeats {
   /**
    * A member leaves the room (participant.retire from the page, `rooms-board retire` from the Consigliere: `by`). Refused,
    * naming what is open, while its seat has a run (one being stopped too) or a turn in T3, owns an open request, has a
-   * pending activity, or has an answer to its own question that has not reached it. Then its seat is retired in the
-   * journal, the member and its thread in rooms.sqlite (with the Consigliere's mark when it was his), and its T3 thread
-   * goes as the thread setting says.
+   * pending activity, or has an answer to its own question that has not reached it. Backroom's briefing it has not
+   * answered (its thread failed on it, say) is nobody's work: it is cancelled in the same step. Then its seat is retired
+   * in the journal, the member and its thread in rooms.sqlite (with the Consigliere's mark when it was his), and its T3
+   * thread goes as the thread setting says.
    */
   async retire(input: { participantId: string; by?: string | null; thread: ThreadLifecycleAction | "keep" }): Promise<CommandResult> {
     const participant = this.member(input.participantId);
@@ -224,6 +229,9 @@ export class EngineSeats {
       // An unread answer holds it only while T3 still lists its thread (neither archived nor deleted, as listThreads
       // filters): otherwise nothing will ever wake it.
       this.refuseOpen(room.id, binding.id, participant.alias, "retired", shell !== null && shell.archivedAt === null && shell.deletedAt === null);
+      for (const q of this.view(room.id).requests.values()) {
+        if (q.owner === binding.id && q.state === "open" && backroomBriefing(q)) this.host.withdraw(room.id, { actor, id: `retire-briefing:${q.id}`, requestId: q.id });
+      }
       this.host.retire(room.id, { actor, id: `retire:${binding.id}`, seatId: binding.id, evidence: shell ? `lean: T3 thread ${binding.threadId} ${shell.status}` : `lean: T3 no longer lists thread ${binding.threadId}` });
     }
     this.deps.transaction(() => {
@@ -552,7 +560,8 @@ export class EngineSeats {
     const seat = p.seats.get(seatId)!;
     const reasons: string[] = [];
     if (seat.activeRunId) reasons.push(`it is in a turn (its run is ${p.runs.get(seat.activeRunId)?.phase ?? "open"})`);
-    const owned = [...p.requests.values()].filter((r) => r.owner === seatId && r.state === "open");
+    // Backroom's briefing is nobody's work: retire cancels it.
+    const owned = [...p.requests.values()].filter((r) => r.owner === seatId && r.state === "open" && !backroomBriefing(r));
     if (owned.length > 0) reasons.push(`it owns open request${owned.length > 1 ? "s" : ""} ${owned.map((r) => this.number(p, r.id)).join(", ")}: answer or cancel ${owned.length > 1 ? "them" : "it"} first`);
     for (const a of pendingActivities(p, seatId)) reasons.push(this.describeActivity(p, a));
     // An answer to a question it asked that has not reached it yet would be lost on it: it is about to be woken.

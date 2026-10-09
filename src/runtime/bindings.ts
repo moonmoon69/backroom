@@ -19,6 +19,17 @@ import type { BriefingSource } from "./render.ts";
 
 /** The ID prefix of a request that seats a member: its body is the standing facts already (L4b, src/app/engineSeats.ts). */
 export const SEAT_BRIEFING = "seat-briefing:";
+/** The ID prefix of the request that tells a member who the Consigliere is now (src/app/engineSeats.ts). */
+export const MOVED = "moved:";
+
+/**
+ * Backroom's briefing of a member: its seat facts, or the line naming a new Consigliere. Backroom asks it (`$system`);
+ * journals from before B1 hold it as the user's request, known by its ID. It is nobody's work: the Consigliere may
+ * cancel it, and a member leaving the room takes its open one with it.
+ */
+export function backroomBriefing(q: { id: string; returnTo: string }): boolean {
+  return q.returnTo === "$system" || (q.returnTo === "$user" && (q.id.startsWith(SEAT_BRIEFING) || q.id.startsWith(MOVED)));
+}
 
 /** The room browsers, as the server has them: starting the room's default for a briefing, and whether others run. */
 export interface BriefingBrowsers {
