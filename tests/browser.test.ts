@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RoomBrowsers, type BrowserBriefing } from "../src/browser/roomBrowsers.ts";
-import { accessForKey, agentKey, reconcileBrowserCatalog, threadKey } from "../src/browser/catalog.ts";
+import { accessForKey, agentKey, reconcileBrowserCatalog, roomsMayUseBrowser, threadKey } from "../src/browser/catalog.ts";
 import { BrowserTools, type BrowserToolError } from "../src/browser/tools.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
@@ -156,6 +156,55 @@ test("a room need not use general: dropping it from the list moves the default t
   const briefing = briefingOf(stack, "sol1");
   assert.match(briefing, /- testing \(this room's default\): Staging logins/);
   assert.doesNotMatch(briefing, /- general/);
+});
+
+test("the room's snapshot lists every browser it may use with its process, and a change to any of them reaches the room", async (t) => {
+  const state: Record<string, "running" | "stopped"> = { general: "running" };
+  const manager = {
+    status: (browserId: string) => ({
+      browserId,
+      state: state[browserId] ?? "stopped",
+      mode: "vnc",
+      cdpUrl: null,
+      cdpPort: null,
+      watchPort: null,
+      watchPath: null,
+      watchHost: null,
+      tabs: state[browserId] === "running" ? [{ id: "t1", title: "Example", url: "https://example.com/" }] : [],
+      startedAt: null,
+      lastActivityAt: null,
+      error: null,
+    }),
+    detach() {},
+  };
+  const stack = await createTestStack({ autoCompleteMs: null }, ["sol1"], { browsers: () => manager as never });
+  t.after(() => stack.close());
+  const staging = ((await stack.run({ type: "browser.create", name: "staging" })) as { browserId: string }).browserId;
+  const scratch = ((await stack.run({ type: "browser.create", name: "scratch" })) as { browserId: string }).browserId;
+  state[staging] = "running";
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/nonexistent/rooms-data", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  const snapshot = async () =>
+    (await (await app.request(`/api/rooms/${stack.roomId}`)).json()) as { browser: { browser: { name: string } } | null; browsers: Array<{ browser: { name: string }; status: { state: string; tabs: unknown[] } }> };
+
+  // Every browser, until the room is limited: the default is general; each carries its own process.
+  let seen = await snapshot();
+  assert.deepEqual(seen.browsers.map((b) => b.browser.name).sort(), ["general", "scratch", "staging"]);
+  assert.equal(seen.browser?.browser.name, "general");
+  assert.deepEqual(seen.browsers.map((b) => [b.browser.name, b.status.state, b.status.tabs.length]).sort(), [["general", "running", 1], ["scratch", "stopped", 0], ["staging", "running", 1]]);
+
+  // Limited to general and staging: scratch is gone from it, and a change to staging, not the default, reaches the room.
+  await stack.run({ type: "room.browser", roomId: stack.roomId, enabled: true, allowed: ["general", staging], browserId: "general" });
+  seen = await snapshot();
+  assert.deepEqual(seen.browsers.map((b) => b.browser.name).sort(), ["general", "staging"]);
+  assert.deepEqual(roomsMayUseBrowser(stack.repos, staging).map((room) => room.id), [stack.roomId]);
+  assert.deepEqual(roomsMayUseBrowser(stack.repos, scratch), [], "a browser outside the room's list is not the room's to show");
+  let told = 0;
+  const stop = stack.hub.subscribe(stack.roomId, () => (told += 1));
+  t.after(stop);
+  await stack.run({ type: "browser.update", browserId: staging, description: "Staging, signed in" });
+  assert.equal(told, 1, "a new description of a browser the room may use, though it is not the default, is told to the room");
+  await stack.run({ type: "browser.update", browserId: scratch, description: "Scratch" });
+  assert.equal(told, 1, "a browser the room may not use is not");
 });
 
 test("rooms-browser rules that need no browser: help, list, and a room's limits", async (t) => {

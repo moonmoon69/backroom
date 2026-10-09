@@ -71,6 +71,11 @@ export function roomsUsingBrowser(repos: Repos, browserId: string): Room[] {
   return repos.listRooms().filter((room) => room.browserEnabled && effectiveBrowser(repos, room)?.id === browserId);
 }
 
+/** Rooms whose agents may use this browser (its allowed list holds it, or lists every browser), browsers on or off: the rooms that show it. */
+export function roomsMayUseBrowser(repos: Repos, browserId: string): Room[] {
+  return repos.listRooms().filter((room) => browsersForRoom(repos, room).some((browser) => browser.id === browserId));
+}
+
 /** A browser name from free text: lowercase letters, digits and dashes, unique among the given names. */
 export function browserNameFrom(text: string, taken: ReadonlySet<string>): string {
   const base = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "browser";

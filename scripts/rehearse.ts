@@ -1358,6 +1358,9 @@ const BROWSER_CARDS = `() => [...document.querySelectorAll('.browser-panel .brow
   tabs: [...card.querySelectorAll('.browser-tabs li')].map((li) => li.title),
 }))`;
 
+/** The room header's Browser button: what it says and the number beside the globe. */
+const BROWSER_BUTTON = `() => { const button = document.querySelector('.room-browser-button'); return { label: button?.getAttribute('aria-label') ?? null, count: button?.querySelector('.panel-count')?.textContent ?? null }; }`;
+
 interface BrowserApi {
   id: string;
   name: string;
@@ -1369,8 +1372,10 @@ interface BrowserApi {
  * status, Start or Stop, Watch link and Copy, DevTools address and tabs, the default marked; the browser it may not use is
  * a plain line. The browsers are real Chromes on virtual screens (the service's own mode here) started through the API
  * with ports of their own, high ones, so that a stopped browser of the user's keeps the address it saved; they get tabs
- * over DevTools and are stopped again at the end, whatever happens. Each state reads the panel's boxes from the page and
- * compares them with GET /api/browsers; the panel's own Stop, Start and checkbox are pressed as the user would.
+ * over DevTools and are stopped again at the end, whatever happens. Each state reads the panel's boxes and the room header's
+ * Browser button (its count and its words speak for every browser the room may use) from the page and compares them with
+ * GET /api/browsers; a tab opened in the second browser with the panel closed must reach the room's stream and the button;
+ * the panel's own Stop, Start and checkbox are pressed as the user would.
  */
 async function rehearseBrowserPanel(service: Service, browser: Browser, room: Room, check: Checks): Promise<void> {
   const unit = Number(new URL(service.base).port) % 100;
@@ -1414,14 +1419,28 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     }
     return null;
   };
-  /** Until the boxes agree with the API (the panel reads it every four seconds; the service looks at tabs every five). */
-  const agree = async (what: string, want: { ticked: string[]; default: string }): Promise<{ cards: BrowserCard[]; api: BrowserApi[] }> => {
+  /** The header's button against the API: a line per ticked browser, in the list's order, and the tabs of the running ones added up. */
+  const buttonMismatch = (read: { label: string | null; count: string | null }, api: BrowserApi[], want: { ticked: string[]; default: string }): string | null => {
+    const shown = api.filter((b) => want.ticked.includes(b.name));
+    const tabs = (b: BrowserApi) => (b.status.state === "running" ? b.status.tabs.length : 0);
+    const line = (b: BrowserApi) => `${b.name}${b.name === want.default ? " (default)" : ""} ${b.status.state === "running" ? "running" : "off"}${tabs(b) > 0 ? `, ${tabs(b)} tab${tabs(b) === 1 ? "" : "s"}` : ""}`;
+    const label = `Browser: on for this room's agents · ${shown.map(line).join("; ")}`;
+    const total = shown.reduce((n, b) => n + tabs(b), 0);
+    if (read.label !== label) return `the Browser button says ${JSON.stringify(read.label)}, the API ${JSON.stringify(label)}`;
+    if ((read.count ?? "0") !== String(total)) return `the Browser button counts ${read.count ?? "nothing"}, the API ${total}`;
+    return null;
+  };
+  /**
+   * Until the page agrees with the API: the header's button always, the panel's boxes while it is open (the panel reads
+   * the API every four seconds; the service looks at tabs every five and tells the room).
+   */
+  const agree = async (what: string, want: { ticked: string[]; default: string }, options: { panel?: boolean } = {}): Promise<{ cards: BrowserCard[]; api: BrowserApi[] }> => {
     const end = Date.now() + 40_000;
     let last = "";
     for (;;) {
       const api = await listed();
-      const cards = browser.eval<BrowserCard[]>(BROWSER_CARDS);
-      const found = mismatch(cards, api, want);
+      const cards = options.panel === false ? [] : browser.eval<BrowserCard[]>(BROWSER_CARDS);
+      const found = (options.panel === false ? null : mismatch(cards, api, want)) ?? buttonMismatch(browser.eval<{ label: string | null; count: string | null }>(BROWSER_BUTTON), api, want);
       if (found === null) return { cards, api };
       last = found;
       if (Date.now() > end) fail(`the Browser panel, ${what}: ${last}`);
@@ -1437,6 +1456,29 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
   const reachDefault = async (name: string): Promise<void> => {
     await until(`the room's default browser to be ${name}`, async () => (await room.snapshot()).browser?.browser.name === name);
   };
+
+  // The room's stream as the page has it (GET /api/rooms/:id/stream): how many room.changed events it has carried.
+  const listener = new AbortController();
+  let carried = 0;
+  const changes = () => carried;
+  void (async () => {
+    try {
+      const response = await fetch(`${service.base}/api/rooms/${room.roomId}/stream`, { signal: listener.signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+        const events = text.split("\n\n");
+        text = events.pop() ?? "";
+        carried += events.filter((event) => event.split("\n").includes("event: room.changed")).length;
+      }
+    } catch {
+      // aborted at the end
+    }
+  })();
 
   try {
     // The room may use general (its default) and staging; scratch stays unticked.
@@ -1480,6 +1522,20 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     scrollPanel("end");
     browser.screenshot("the-browser-panel-with-two-browsers-scrolled-to-staging");
     scrollPanel("top");
+    log(`  page: the Browser button counts ${first.api.filter((b) => both.ticked.includes(b.name)).reduce((n, b) => n + b.status.tabs.length, 0)} tabs across general and staging, and says each one's state`);
+
+    // A tab opened in staging, which is not the default, with the panel closed: the service tells the room (its stream
+    // carries a room.changed, nothing else is going on in the room) and the button follows without waiting for a poll.
+    browser.click(/button "Browser: on for this room's agents/);
+    browser.poll<boolean>("the panel to close", "() => !document.querySelector('.browser-panel')", (closed) => closed === true);
+    const before = changes();
+    await open(started[1]!.cdpUrl!, `${service.base}/api/rooms`);
+    await until("the room's stream to carry a room.changed for the tab opened in staging", () => changes() > before, 20_000);
+    await agree("a tab opened in staging, the panel closed", both, { panel: false });
+    log(`  page: a tab opened in staging (not the default) reached the room's stream and the Browser button, the panel closed`);
+    browser.screenshot("the-browser-button-after-a-tab-in-staging");
+    openPanel();
+    await agree("the panel opened again", both);
 
     // Stop staging from the panel: it goes off, general stays.
     browser.click(/button "Stop staging"/);
@@ -1524,6 +1580,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     log("PASS the Browser panel in the pixel look");
     browser.on("eval", "() => { localStorage.removeItem('backroom.skin'); return true; }");
   } finally {
+    listener.abort();
     await stopAll();
   }
 }

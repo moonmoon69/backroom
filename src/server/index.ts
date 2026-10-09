@@ -12,7 +12,7 @@ import type { T3Adapter } from "../adapter/types.ts";
 import { createStack } from "../app/bootstrap.ts";
 import { T3Credential, localT3Cli } from "../app/t3Credential.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
-import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
+import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsMayUseBrowser } from "../browser/catalog.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
@@ -86,7 +86,8 @@ const stack = createStack({
       isBusy: (browserId) => browserBusy(repos, browserId, (roomId) => seatsWithLiveRuns(stack.engine.view(roomId)).size > 0),
       onChange: (browserId) => {
         browserTools?.browserChanged(browserId);
-        for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);
+        // Every room that may use it shows it (its Browser button and panel), not only the rooms it is the default of.
+        for (const room of roomsMayUseBrowser(repos, browserId)) notify(room.id);
       },
       log,
     }),

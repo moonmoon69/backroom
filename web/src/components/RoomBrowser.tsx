@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
+import { BROWSER_STATE_LABEL, roomBrowserSummary } from "../browserSummary.ts";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { CopyButton } from "./pickers.tsx";
@@ -13,12 +14,6 @@ export function watchUrl(status: RoomBrowserStatus): string | null {
   return `http://${host}:${status.watchPort}${status.watchPath}`;
 }
 
-export const BROWSER_STATE_LABEL: Record<RoomBrowserStatus["state"], string> = {
-  stopped: "off",
-  starting: "starting…",
-  running: "running",
-  error: "failed",
-};
 
 export interface BrowserPower {
   busy: boolean;
@@ -186,20 +181,17 @@ export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boole
 }
 
 /**
- * The room header's Browser switch, beside Members and Git: a globe, checked while the room's agents may
- * use browsers, with the open tab count while its default browser runs. Opens the side panel on the room's browser.
+ * The room header's Browser switch, beside Members and Git: a globe, checked while the room's agents may use
+ * browsers, with the open tab count of every browser the room may use that runs (the title names each one). Opens
+ * the side panel on the room's browsers.
  */
 export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {
   const { snapshot } = useRoom();
-  const info = snapshot.browser;
   const enabled = snapshot.room.browserEnabled;
-  const running = info?.status.state === "running";
-  const tabs = running ? info.status.tabs.length : 0;
-  const state = info ? `default "${info.browser.name}" ${BROWSER_STATE_LABEL[info.status.state]}${tabs > 0 ? `, ${tabs} tab${tabs === 1 ? "" : "s"}` : ""}` : "no browser yet";
-  const title = `Browser: ${enabled ? "on" : "off"} for this room's agents · ${state}`;
+  const { title, tabs, failed } = roomBrowserSummary(enabled, snapshot.browsers, snapshot.browser?.browser.id ?? null);
   return (
     <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick}>
-      <GlobeIcon checked={enabled} failed={info?.status.state === "error"} />
+      <GlobeIcon checked={enabled} failed={failed} />
       {tabs > 0 ? <span className="panel-count mono">{tabs}</span> : null}
     </button>
   );

@@ -17,7 +17,7 @@ import { messageAttachmentIds, messageOf } from "../app/engineMessages.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { isAfter, seenMarks } from "../app/seen.ts";
 import { liveFeed, runningRun } from "../app/threadView.ts";
-import { effectiveBrowser } from "../browser/catalog.ts";
+import { browsersForRoom, effectiveBrowser } from "../browser/catalog.ts";
 import { ROOM_NOTE } from "../briefing/envelope.ts";
 import type { Repos } from "../db/repos.ts";
 import type {
@@ -839,6 +839,7 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
       news: newsOf(view, seenSeq(repos, roomId), consigliereSeats(room)),
       notices: noticeMarks(repos, roomId),
       browser: browser && stack.browsers ? { browser, status: stack.browsers.status(browser.id) } : null,
+      browsers: stack.browsers ? browsersForRoom(repos, room).map((each) => ({ browser: each, status: stack.browsers!.status(each.id) })) : [],
       state: roomStateView(repos, roomId),
       t3: { reachable: reachable && list !== null },
     };
