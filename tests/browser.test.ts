@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { RoomBrowsers, type BrowserBriefing } from "../src/browser/roomBrowsers.ts";
 import { accessForKey, agentKey, reconcileBrowserCatalog, threadKey } from "../src/browser/catalog.ts";
-import { BrowserTools, cdpCall, type BrowserToolError } from "../src/browser/tools.ts";
+import { BrowserTools, BrowserToolError, cdpCall } from "../src/browser/tools.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
 import type { RoomError } from "../src/domain/errors.ts";
@@ -361,6 +361,37 @@ test("two agents in one browser: each its own engine and windows, one tab number
   await tools.run(["shared", tabB, "close"], b);
   await assert.rejects(tools.run(["shared", tabB, "snapshot"], b), (error: BrowserToolError) => error.status === 404 && /There is no tab/.test(error.message));
   assert.doesNotMatch(await tools.run(["shared", "tabs"], a), /4462/);
+  tools.closeAll();
+});
+
+test("an engine whose call timed out is closed; the agent's next call gets a fresh one and its tab is still its own", async () => {
+  const chrome = fakeChrome();
+  const record = { id: "shared", name: "shared", description: "", createdAt: "", updatedAt: "" };
+  let stuck = true;
+  // The first snapshot never answers, as a hung screenshot did: the engine gives up after its own timeout (here at once).
+  const engine = () => {
+    const inner = chrome.engine();
+    return {
+      get closed() {
+        return inner.closed;
+      },
+      close: () => inner.close(),
+      callTool: async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "take_snapshot" && stuck) {
+          stuck = false;
+          throw new BrowserToolError("the browser did not answer within 90s", 504);
+        }
+        return inner.callTool(tool, args);
+      },
+    };
+  };
+  const tools = new BrowserTools({ browsers: chrome.manager as never, findBrowser: () => record, accessFor: () => ({ subject: "the room", kind: "room", enabled: true, allowed: [record] }), engine: engine as never, cdp: chrome.cdp });
+  const a = { as: "worker.aaaaaaaa", force: false };
+  const tab = /Opened tab (\d+)/.exec(await tools.run(["shared", "open", "http://127.0.0.1:4461/"], a))?.[1] as string;
+  await assert.rejects(tools.run(["shared", tab, "snapshot"], a), (error: BrowserToolError) => error.status === 504);
+  assert.equal(chrome.engines[0]?.closed, true, "the stuck engine is closed");
+  assert.match(await tools.run(["shared", tab, "snapshot"], a), /take_snapshot on http:\/\/127.0.0.1:4461\//);
+  assert.equal(chrome.engines.length, 2, "a fresh engine took the call");
   tools.closeAll();
 });
 

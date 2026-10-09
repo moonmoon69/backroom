@@ -369,13 +369,24 @@ export class BrowserTools {
     return { shared, agent };
   }
 
-  /** One call on an agent's engine. An engine with no call for engineIdleMs closes; the agent's next call starts another. */
+  /**
+   * One call on an agent's engine. An engine with no call for engineIdleMs closes, and so does one whose call timed
+   * out (the engine is still stuck on it, and would hold every later call of the agent); the agent's next call starts
+   * another.
+   */
   private async call(shared: SharedBrowser, as: string, agent: AgentEngine, tool: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
     agent.calls += 1;
     if (agent.idle) clearTimeout(agent.idle);
     agent.idle = null;
     try {
       return await agent.engine.callTool(tool, args);
+    } catch (error) {
+      if (error instanceof BrowserToolError && error.status === 504 && shared.engines.get(as) === agent) {
+        shared.engines.delete(as);
+        agent.engine.close();
+        this.deps.log?.("browser engine closed after a call timed out", { as, tool });
+      }
+      throw error;
     } finally {
       agent.calls -= 1;
       if (agent.calls === 0) {
