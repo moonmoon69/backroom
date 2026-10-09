@@ -321,7 +321,8 @@ export function keyPressed(): void {
 
 /**
  * Remembers the last element focused outside dialogs and menus, so a dialog opened from a menu item (gone by the time the
- * dialog closes) gives the focus back to the menu's button. Started once by the app.
+ * dialog closes) gives the focus back to the menu's button; and whether the last input was a key (lastInputWasKey).
+ * Started once by the app.
  */
 export function trackFocus(): void {
   if (tracking) return;

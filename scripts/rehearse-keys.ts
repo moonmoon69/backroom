@@ -54,7 +54,7 @@
  * detail, the ring back on Detail when it closes. A live bubble with an approval offers its choices.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { barDoes, barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
 
@@ -1893,12 +1893,36 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await clickInTurn(clickRun.id, /DisclosureTriangle "sent to T3"/, `"sent to T3" on his running turn`);
   await expect(`a click on his turn's "sent to T3": the focus in his bubble, no ring drawn`, (f) => f.item === `live:${clickRun.id}` && f.tag === "SUMMARY" && !f.visible);
   const clickTop = await toBoardTop();
-  await room.finish("fable", "The parser is fine.");
-  await boardStays("the turn ended after a click in its bubble", clickTop, clickRun.id, await replyTo(clickAsk));
+  // His reply shows two images, one with alt text and one without (files in the run's project, which the page reads
+  // through /api/local-file).
+  for (const name of ["parser.png", "parser-2.png"]) copyFileSync(new URL("../web/dist/logo.png", import.meta.url), join(project, "notes", name));
+  await room.finish("fable", `The parser is fine.\n\n![a diagram](${join(project, "notes", "parser.png")}) ![](${join(project, "notes", "parser-2.png")})`);
+  const clickReply = await replyTo(clickAsk);
+  await boardStays("the turn ended after a click in its bubble", clickTop, clickRun.id, clickReply);
   await state("a click in a running turn's bubble: when the turn ends the page moves neither the board nor the focus", apiRoomTitle);
+
+  // That reply's actions: each image is named with its alt text, numbered after its label, in the strip and on the bar.
+  browser.poll<number>(`#${clickReply.number}'s two images drawn`, `() => document.querySelectorAll('[data-nav-key="post:${clickReply.seq}"] .image-preview-trigger').length`, (n) => n === 2);
+  press("End");
+  await expect(`End: his reply #${clickReply.number}`, (f) => f.key === `post:${clickReply.seq}` && f.ring);
+  press("Enter");
+  await expect("Enter: its actions", (f) => f.strips === 1 && f.action !== null);
+  const imageNames = strip()!.names.filter((name) => name.startsWith("Image"));
+  if (JSON.stringify(imageNames) !== JSON.stringify(["Image 1: a diagram", "Image 2"])) fail(`#${clickReply.number}'s actions name its images ${JSON.stringify(imageNames)}, expected ["Image 1: a diagram","Image 2"] (the API's body: ${JSON.stringify(clickReply.body)})`);
+  log(`api: #${clickReply.number}'s body has ![a diagram](…) and ![](…); page: its actions name them ${imageNames.join(" · ")}`);
+  for (let i = 0; i < 10 && focus().action !== "image:0"; i += 1) press("ArrowRight");
+  await expect("Right to the first image", (f) => f.action === "image:0");
+  const imageWhere = `Image 1: a diagram · #${clickReply.number} · @fable replied`;
+  const imageBar = await keyBar(imageWhere);
+  if (!imageBar.keys.includes("Enter Image 1: a diagram")) fail(`the key bar on the first image reads ${JSON.stringify(imageBar.keys)}: no "Enter Image 1: a diagram"`);
+  await state("a reply's actions: each image named with its alt text, on the bar too", imageWhere);
+  press("Escape");
+  await expect("Esc: the actions closed, the ring on his reply", (f) => f.strips === 0 && f.key === `post:${clickReply.seq}`);
 
   // A preview opened from a running turn, the turn ending while it is open, closed with a click: opened by the mouse
   // from the feed's file chip, then by the keys from the turn's actions. The board, scrolled to its top under it, stays.
+  // The mouse's holds without the fix too (its focus leaves the bubble for the dialog, so no rescue starts); the keys'
+  // is the one the rescue moved.
   const previewClosedByClick = async (how: "mouse" | "keys"): Promise<void> => {
     await room.settle("fable");
     const ask = await room.message(how === "mouse" ? "Check the notes." : "Check the notes once more.");
