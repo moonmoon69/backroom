@@ -28,6 +28,9 @@ import { fmtTokens, money } from "./deskFormat.ts";
 import { speakableSummary, useAutoRead } from "../speech.ts";
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
+import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
+import { imageAction, numberRepeats, stripOrder, type ActionKind } from "../keyOrder.ts";
+import { isTextField, lastInputWasKey } from "../keys.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -89,7 +92,7 @@ const useBoard = (): Board => {
 };
 
 /**
- * A post as drawn in its detail (Enter on a post): its folded text open, and not an item of the board's arrows.
+ * A post as drawn in its detail (its strip's Detail): its folded text open, not an item of the board's arrows, no strip.
  */
 const InDetail = createContext(false);
 
@@ -116,14 +119,220 @@ function postLabel(post: EnginePost, nameOf: (principal: string) => string, owne
 }
 
 /**
- * What makes a post's row an item the arrows reach (keys.ts): focusable, with a role and a name; Enter opens its detail.
- * The key bar names it by its number and what it is.
+ * What makes a post's row an item the arrows reach (keys.ts): focusable, with a role and a name; Enter opens its action
+ * strip (ItemActions). The key bar names it by its number and what it is.
  */
 function useNavProps(post: EnginePost, owners?: string[]) {
   const { nameOf } = useRoom();
   const inDetail = useContext(InDetail);
   if (inDetail) return {};
-  return { "data-nav": "post", "data-nav-key": `post:${post.seq}`, "data-where": `#${post.number} · ${postWhat(post, nameOf, owners)}`, tabIndex: -1, role: "article", "aria-label": postLabel(post, nameOf, owners), "aria-description": "Enter opens its detail" };
+  return { "data-nav": "post", "data-nav-key": `post:${post.seq}`, "data-where": postWhere(post, nameOf, owners), tabIndex: -1, role: "article", "aria-label": postLabel(post, nameOf, owners), "aria-description": "Enter shows its actions" };
+}
+
+/** The key bar's words for a post: its number and what it is ("#33 · you to @fable, open"). */
+const postWhere = (post: EnginePost, nameOf: (principal: string) => string, owners?: string[]): string => `#${post.number} · ${postWhat(post, nameOf, owners)}`;
+
+/** A turn running now (its live bubble) as an item of the posts lane, after the posts; Enter opens its action strip. */
+const liveNav = (key: string, where: string) => ({ "data-nav": "live", "data-nav-key": key, "data-where": where, tabIndex: -1, role: "article", "aria-label": where, "aria-description": "Enter shows its actions" });
+
+// ---- an item's action strip (K1-5): Enter on a post or a live bubble ----
+
+/** The item whose action strip is open (by its key), closing it, and a post's detail (the strip's Detail). */
+interface Strips {
+  open: string | null;
+  close: () => void;
+  detail: (seq: number) => void;
+}
+const StripsContext = createContext<Strips>({ open: null, close: () => {}, detail: () => {} });
+
+/** A control a mouse finds on an item, as its action strip offers it (ItemActions). */
+interface Control {
+  element: HTMLElement;
+  kind: ActionKind;
+  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel. */
+  id?: string | undefined;
+  label: string;
+  name: string;
+  title?: string | undefined;
+  tone?: "primary" | "danger" | undefined;
+  disabled: boolean;
+  pressed?: boolean | undefined;
+  expanded?: boolean | undefined;
+}
+
+/** What a mouse can press: a button, a link, a summary, a field. */
+const CONTROLS = "button, a[href], summary, input:not([type='hidden']), select, textarea";
+const textOf = (element: Element): string => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+const cut = (text: string, most = 40): string => (text.length > most ? `${text.slice(0, most - 1)}…` : text);
+
+/** An item's controls as they are drawn (a folded text's are not), but not its strip's own nor a correction box's. */
+function* drawnControls(item: HTMLElement): Generator<HTMLElement> {
+  for (const element of item.querySelectorAll<HTMLElement>(CONTROLS)) if (!element.closest(".action-strip, .req-correct") && element.getClientRects().length > 0) yield element;
+}
+
+/** Whether an item has anything its strip would offer (it stops at the first). */
+function offersControls(item: HTMLElement): boolean {
+  for (const element of drawnControls(item)) if (describe(element, 0)) return true;
+  return false;
+}
+
+/** What a control of an item is in its strip, by what it is on the page; null for none of it. */
+function describe(element: HTMLElement, requests: number): Omit<Control, "element" | "disabled"> | null {
+  const text = textOf(element);
+  const title = element.getAttribute("title")?.split("\n")[0] || undefined;
+  const expanded = element.tagName === "SUMMARY" ? Boolean(element.closest("details")?.open) : element.hasAttribute("aria-expanded") ? element.getAttribute("aria-expanded") === "true" : undefined;
+  const tone = element.classList.contains("danger") ? ("danger" as const) : element.classList.contains("primary") ? ("primary" as const) : undefined;
+  // A message to several members has a Correct… and a Cancel for each: said with its request's number and recipient.
+  const block = element.closest<HTMLElement>(".req-block");
+  const number = block?.dataset.number;
+  const of = requests > 1 && number ? ` #${number}` : "";
+  if (element.closest(".req-actions") && (text === "Correct…" || text === "Cancel")) {
+    const kind = text === "Correct…" ? "correct" : "cancel";
+    return { kind, id: number, label: `${text}${of}`, name: `${text}${of}${of && block?.dataset.to ? ` to ${block.dataset.to}` : ""}`, title, tone, expanded };
+  }
+  if (element.closest(".notice-actions") && (text === "Retry" || text === "Dismiss")) return { kind: text === "Retry" ? "retry" : "dismiss", label: text, name: text, title, tone };
+  if (element.closest(".live-turn .chat-head") && text === "Stop") return { kind: "stop", label: text, name: text, title, tone };
+  if (element.closest(".native-requests")) {
+    const input = element instanceof HTMLInputElement ? element : null;
+    const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
+    return { kind: "choice", label: cut(label), name: cut(label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
+  }
+  if (element.matches(".copy-button")) {
+    const label = element.getAttribute("aria-label") === "Copied" ? "Copied" : "Copy";
+    return { kind: "copy", label, name: label, title };
+  }
+  if (element.matches(".speak-button")) {
+    const label = element.getAttribute("aria-label") ?? "Read aloud";
+    return { kind: "speak", label, name: label, title, pressed: element.getAttribute("aria-pressed") === "true" };
+  }
+  if (element.matches(".post-ref")) return { kind: "ref", label: text, name: `show ${text}`, title };
+  if (element.matches(".md-file")) {
+    const name = textOf(element.querySelector(".md-file-name") ?? element);
+    return { kind: "file", label: cut(name), name, title };
+  }
+  // Named with its alt text: Markdown's (its title when it has none), else the image's own (an attached image's).
+  if (element.matches(".image-preview-trigger, .md-img")) return { kind: "image", ...imageAction(element.dataset.alt ?? element.querySelector("img")?.getAttribute("alt")), title: element.getAttribute("aria-label") ?? title };
+  if (element.tagName === "SUMMARY" && element.closest(".turn-in-t3")) return { kind: "turn", label: text, name: text, title, expanded };
+  if (element.tagName === "SUMMARY" && element.closest(".sent-to-t3")) return { kind: "sent", label: text, name: text, title, expanded };
+  if (element.matches(".md-copy")) return { kind: "code", label: "Copy code", name: "Copy code", title };
+  if (element.matches(".live-more")) return { kind: "more", label: text, name: text, title, expanded };
+  if (element.tagName === "SUMMARY") return { kind: "text", label: "Full text", name: "Full text", title: cut(text, 120), expanded };
+  if (element.matches("a[href]")) return { kind: "link", label: cut(text || element.getAttribute("href") || "Link"), name: cut(text || "Link"), title: element.getAttribute("href") ?? undefined };
+  const other = element.getAttribute("aria-label") || text || title;
+  return other ? { kind: "other", label: cut(other), name: cut(other), title, tone, expanded } : null;
+}
+
+/**
+ * The controls a mouse finds on an item now, in its strip's order (keyOrder.ts, stripOrder): those drawn (a folded
+ * text's are not, until it opens), not the strip's own nor what a button opened in place (a correction's box).
+ * Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
+ */
+function itemControls(item: HTMLElement): Control[] {
+  const requests = item.querySelectorAll(".req-block").length;
+  const found: Control[] = [];
+  for (const element of drawnControls(item)) {
+    const described = describe(element, requests);
+    if (described) found.push({ element, disabled: element.matches(":disabled"), ...described });
+  }
+  return numberRepeats(stripOrder(found));
+}
+
+const sameControls = (a: Control[], b: Control[]): boolean =>
+  a.length === b.length &&
+  a.every((x, i) => {
+    const y = b[i]!;
+    return x.element === y.element && x.kind === y.kind && x.id === y.id && x.label === y.label && x.name === y.name && x.title === y.title && x.tone === y.tone && x.disabled === y.disabled && x.pressed === y.pressed && x.expanded === y.expanded;
+  });
+
+/**
+ * An item's action strip, at its foot while it is open (Enter on the item): every control a mouse finds on it, in the
+ * order of the design's table, each pressing that control (so the strip does exactly what the mouse does), and for a
+ * post Detail last, its detail. It follows the item as it changes (Read aloud becomes Stop reading, an answered
+ * request loses Correct… and Cancel).
+ */
+function ItemActions({ navKey, where, detail }: { navKey: string; where: string; detail?: number | undefined }) {
+  const strips = useContext(StripsContext);
+  const inDetail = useContext(InDetail);
+  if (inDetail || strips.open !== navKey) return null;
+  return <OpenActions where={where} detail={detail} />;
+}
+
+function OpenActions({ where, detail }: { where: string; detail?: number | undefined }) {
+  const { close, detail: showDetail } = useContext(StripsContext);
+  const root = useRef<HTMLDivElement | null>(null);
+  const item = useRef<HTMLElement | null>(null);
+  // Null until the item's controls are read (after the first draw): the strip offers nothing before, so the ring lands
+  // on the first of all its buttons, not on Detail alone.
+  const [controls, setControls] = useState<Control[] | null>(null);
+  useLayoutEffect(() => {
+    const strip = root.current;
+    const owner = strip?.closest<HTMLElement>("[data-nav]") ?? null;
+    item.current = owner;
+    if (!strip || !owner) return;
+    const read = () => {
+      const next = itemControls(owner);
+      setControls((last) => (last && sameControls(last, next) ? last : next));
+    };
+    read();
+    // Whatever changes on the item; and a choice's checked state, a property no mutation shows, after React's draw
+    // once it is chosen or an answer of your own is typed.
+    const observer = new MutationObserver(read);
+    observer.observe(owner, { subtree: true, childList: true, attributes: true, characterData: true });
+    const changed = () => requestAnimationFrame(read);
+    owner.addEventListener("change", changed);
+    owner.addEventListener("input", changed);
+    return () => {
+      observer.disconnect();
+      owner.removeEventListener("change", changed);
+      owner.removeEventListener("input", changed);
+    };
+  }, []);
+  // Nothing to offer (a running turn with no button yet, no Detail): no strip; the ring stays on the item.
+  const empty = controls !== null && controls.length === 0 && detail === undefined;
+  useEffect(() => {
+    if (empty) close();
+  }, [empty, close]);
+  const actions = useMemo<StripAction[]>(() => {
+    if (controls === null) return [];
+    const at = new Map<ActionKind, number>();
+    const list: StripAction[] = controls.map((control) => {
+      const n = at.get(control.kind) ?? 0;
+      at.set(control.kind, n + 1);
+      const { element } = control;
+      return {
+        key: `${control.kind}:${control.id ?? n}`,
+        label: control.label,
+        name: control.name,
+        title: control.title,
+        tone: control.tone,
+        disabled: control.disabled,
+        pressed: control.pressed,
+        expanded: control.expanded,
+        // A field takes the focus (an answer of your own); anything else is clicked, as the mouse does. A #ref also
+        // takes the ring to the post it shows, which the click brings into view.
+        press: () => {
+          if (isTextField(element)) return element.focus();
+          element.click();
+          if (control.kind !== "ref") return;
+          const shown = element.closest(".timeline")?.querySelector<HTMLElement>(`[data-number="${control.label.replace(/^#/, "").split(" ")[0]}"]`);
+          (shown?.closest<HTMLElement>("[data-nav]") ?? null)?.focus({ preventScroll: true });
+        },
+      };
+    });
+    if (detail !== undefined) list.push({ key: "detail", label: "Detail", name: "Detail", title: "Who wrote it to whom, when, where it stands, and the post with its folded text open", press: () => showDetail(detail) });
+    return list;
+  }, [controls, detail, showDetail]);
+  return (
+    <ActionStrip
+      ref={root}
+      actions={actions}
+      where={where}
+      item={() => item.current}
+      onClose={close}
+      // A correction's box and an answer of your own, opened in place, keep the strip: Esc there closes the box first.
+      keeps={(element) => Boolean(item.current?.contains(element) && element.closest(".req-correct, .native-requests"))}
+    />
+  );
 }
 
 /** Lets a row stop the timeline from following the bottom (expanding a long reply must not jump the view). */
@@ -355,110 +564,168 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const unseen = far ? posts.filter((post) => post.seq > seenSeq && post.turn && !post.author.startsWith("$")).length : 0;
   const scrollControl = useMemo(() => ({ release: () => (stickToBottom.current = false) }), []);
   const noCrew = !snapshot.participants.some(isActiveParticipant);
-  // The post whose detail is open (Enter on a post), by its first seq.
+  // The post whose detail is open (its strip's Detail), by its first seq.
   const [detail, setDetail] = useState<number | null>(null);
   const detailItem = detail === null ? null : (allItems.find((item) => item.type !== "day" && (item.type === "message" ? item.posts[0]!.seq : item.post.seq) === detail) ?? null);
+  // The item whose action strip is open (Enter on a post or a live bubble), by its key.
+  const [strip, setStrip] = useState<string | null>(null);
+  const close = useCallback(() => setStrip(null), []);
+  const strips = useMemo<Strips>(() => ({ open: strip, close, detail: setDetail }), [strip, close]);
+  // The live bubble the ring is on or in, by its key: it goes when its turn ends.
+  const onLive = useRef<string | null>(null);
+  // Watching for a dialog to close whose opener went with its item (a preview a turn's strip opened, the turn ended).
+  const orphan = useRef<MutationObserver | null>(null);
+  useEffect(() => () => orphan.current?.disconnect(), []);
+  // Only a ring the keys put there is put back (keys.ts, lastInputWasKey): after a click the page moves neither the
+  // focus nor the board.
+  const toNewest = () => {
+    if (!lastInputWasKey()) return;
+    const newest = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-nav="post"]') ?? [])].at(-1);
+    newest?.focus({ preventScroll: true });
+    newest?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  // The item gone (a turn ended or stopped, or asks nothing more) with the ring on it or in its strip: the strip is
+  // closed, and the ring goes to the newest post (the turn's reply, when it has one) rather than nowhere. Not after a
+  // click (a mouse in a running turn's bubble, or a preview's closing): the focus is left where the page leaves it.
+  useLayoutEffect(() => {
+    const root = scroller.current;
+    if (!root || (strip === null && onLive.current === null)) return;
+    const keys = new Set([...root.querySelectorAll<HTMLElement>("[data-nav-key]")].map((element) => element.dataset.navKey));
+    if ([strip, onLive.current].every((key) => key === null || keys.has(key))) return;
+    if (strip !== null && !keys.has(strip)) setStrip(null);
+    if (onLive.current !== null && !keys.has(onLive.current)) onLive.current = null;
+    // In a dialog its strip opened (dialogs are at the body): once the last one closes, the ring has nowhere to go back
+    // to; if it is nowhere then and a key closed it, the newest post takes it.
+    const now = document.activeElement;
+    if (now?.closest(".dialog-backdrop")) {
+      orphan.current?.disconnect();
+      const watch = new MutationObserver(() => {
+        if (document.querySelector(".dialog-backdrop")) return;
+        watch.disconnect();
+        orphan.current = null;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (!document.activeElement || document.activeElement === document.body) toNewest();
+        }));
+      });
+      watch.observe(document.body, { childList: true });
+      orphan.current = watch;
+      return;
+    }
+    // Stranded: nowhere, in the strip about to go, or on a turn's bubble that is no stop any more (it asks nothing).
+    if (now && now !== document.body && !(root.contains(now) && now.closest(".action-strip, .live-turn:not([data-nav])"))) return;
+    toNewest();
+  });
 
   return (
     <BoardContext.Provider value={board}>
-      <ScrollControl.Provider value={scrollControl}>
-        {/* The posts lane of the room's keys (keys.ts): Up and Down post to post. */}
-        <div className="timeline-wrap" data-nav-lane="posts">
-          <div
-            className="timeline"
-            ref={scroller}
-            onScroll={onScroll}
-            aria-label={chat ? "Conversation with the Consigliere" : consigliereId ? "Board" : "Timeline"}
-            role="log"
-            onKeyDown={(event) => {
-              const target = event.target as HTMLElement;
-              if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || target.dataset.nav !== "post") return;
-              // Taken before the composer's "Enter writes a message" sees it.
-              event.preventDefault();
-              setDetail(Number(target.dataset.navKey!.slice("post:".length)));
-            }}
-          >
-            <div className="timeline-content" ref={content}>
-              {earlier > 0 ? (
-                <button type="button" className="small ghost earlier-posts mono" onClick={showEarlier}>
-                  {earlier} earlier · show {Math.min(earlier, limit)} more
-                </button>
-              ) : moreOnServer ? (
-                <button
-                  type="button"
-                  className="small ghost earlier-posts mono"
-                  disabled={loadingOlder}
-                  onClick={() => {
-                    keep();
-                    loadOlder();
-                  }}
-                >
-                  {loadingOlder ? "reading older posts…" : "load older posts"}
-                </button>
-              ) : null}
-              {chat && posts.length === 0 && liveRuns.length === 0 ? (
-                <div className="timeline-empty">
-                  <p className="serif">Tell {consigliereId ? (snapshot.participants.find((p) => p.id === consigliereId)?.alias ?? "the Consigliere") : "the Consigliere"} what you need. He brings in the others, hands out the work and reports back.</p>
-                  <p className="muted">Everything he and the members send each other is on the board.</p>
-                </div>
-              ) : null}
-              {!chat && (allPosts.length === 0 || noCrew) ? (
-                <div className="timeline-empty">
-                  <p className="serif">
-                    {noCrew
-                      ? "No crew seated yet; open People (the two-person icon above) to add a member, then hand out work here."
-                      : "The board is empty; address the crew to post the first request."}
-                  </p>
-                  <pre className="worked-example mono">{"@sol1 investigate the parser\n@sol1 @sol2 independently check the tests"}</pre>
-                  <p className="muted">Each line is one message. Send a follow-up once the work it builds on is answered.</p>
-                </div>
-              ) : null}
-              {items.map((item) =>
-                item.type === "day" ? (
-                  <div key={item.key} className="chat-day" role="separator">
-                    <span>{item.label}</span>
-                  </div>
-                ) : item.type === "message" ? (
-                  <UserMessage key={item.posts[0]!.id} posts={item.posts} chat={chat} />
-                ) : (
-                  <PostRow key={item.post.id} post={item.post} chat={chat} />
-                ),
-              )}
-              {liveTurns.map(({ participant, desk: participantDesk }) => (
-                <LiveTurnBubble
-                  key={participantDesk.runningRun?.runId ?? participant.id}
-                  participant={participant}
-                  desk={participantDesk}
-                  promptOnBoard={allPosts.some((post) => post.author === "$user" && post.note?.source === "t3-message" && post.note.t3?.threadId === participantDesk.threadId && participantDesk.runningRun?.prompt != null && post.body.trim().startsWith(participantDesk.runningRun.prompt.trim()))}
-                />
-              ))}
-              {liveRuns.map((run) => (
-                <LiveRunBubble key={run.id} run={run} />
-              ))}
-            </div>
-          </div>
-          {far ? (
-            <button
-              type="button"
-              className={`jump-latest mono${unseen > 0 ? " has-new" : ""}`}
-              onClick={() => {
-                stickToBottom.current = true;
-                scrollToBottom(true);
+      <StripsContext.Provider value={strips}>
+        <ScrollControl.Provider value={scrollControl}>
+          {/* The posts lane of the room's keys (keys.ts): Up and Down post to post. */}
+          <div className="timeline-wrap" data-nav-lane="posts">
+            <div
+              className="timeline"
+              ref={scroller}
+              onScroll={onScroll}
+              aria-label={chat ? "Conversation with the Consigliere" : consigliereId ? "Board" : "Timeline"}
+              role="log"
+              onFocus={(event) => {
+                const item = (event.target as HTMLElement).closest<HTMLElement>("[data-nav]");
+                onLive.current = item?.dataset.nav === "live" ? (item.dataset.navKey ?? null) : null;
+              }}
+              onBlur={(event) => {
+                // Off to somewhere else in the page (not lost with its bubble, which leaves it nowhere).
+                if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) onLive.current = null;
+              }}
+              onKeyDown={(event) => {
+                const target = event.target as HTMLElement;
+                if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || (target.dataset.nav !== "post" && target.dataset.nav !== "live")) return;
+                // Taken before the composer's "Enter writes a message" sees it: the item's action strip opens.
+                event.preventDefault();
+                setStrip(target.dataset.navKey!);
               }}
             >
-              {unseen > 0 ? `${unseen} new repl${unseen === 1 ? "y" : "ies"}` : "Jump to latest"} <Glyph name="down" text="↓" />
-            </button>
-          ) : null}
-        </div>
-        {detailItem && detailItem.type !== "day" ? <PostDetail item={detailItem} onClose={() => setDetail(null)} /> : null}
-      </ScrollControl.Provider>
+              <div className="timeline-content" ref={content}>
+                {earlier > 0 ? (
+                  <button type="button" className="small ghost earlier-posts mono" onClick={showEarlier}>
+                    {earlier} earlier · show {Math.min(earlier, limit)} more
+                  </button>
+                ) : moreOnServer ? (
+                  <button
+                    type="button"
+                    className="small ghost earlier-posts mono"
+                    disabled={loadingOlder}
+                    onClick={() => {
+                      keep();
+                      loadOlder();
+                    }}
+                  >
+                    {loadingOlder ? "reading older posts…" : "load older posts"}
+                  </button>
+                ) : null}
+                {chat && posts.length === 0 && liveRuns.length === 0 ? (
+                  <div className="timeline-empty">
+                    <p className="serif">Tell {consigliereId ? (snapshot.participants.find((p) => p.id === consigliereId)?.alias ?? "the Consigliere") : "the Consigliere"} what you need. He brings in the others, hands out the work and reports back.</p>
+                    <p className="muted">Everything he and the members send each other is on the board.</p>
+                  </div>
+                ) : null}
+                {!chat && (allPosts.length === 0 || noCrew) ? (
+                  <div className="timeline-empty">
+                    <p className="serif">
+                      {noCrew
+                        ? "No crew seated yet; open People (the two-person icon above) to add a member, then hand out work here."
+                        : "The board is empty; address the crew to post the first request."}
+                    </p>
+                    <pre className="worked-example mono">{"@sol1 investigate the parser\n@sol1 @sol2 independently check the tests"}</pre>
+                    <p className="muted">Each line is one message. Send a follow-up once the work it builds on is answered.</p>
+                  </div>
+                ) : null}
+                {items.map((item) =>
+                  item.type === "day" ? (
+                    <div key={item.key} className="chat-day" role="separator">
+                      <span>{item.label}</span>
+                    </div>
+                  ) : item.type === "message" ? (
+                    <UserMessage key={item.posts[0]!.id} posts={item.posts} chat={chat} />
+                  ) : (
+                    <PostRow key={item.post.id} post={item.post} chat={chat} />
+                  ),
+                )}
+                {liveTurns.map(({ participant, desk: participantDesk }) => (
+                  <LiveTurnBubble
+                    key={participantDesk.runningRun?.runId ?? participant.id}
+                    participant={participant}
+                    desk={participantDesk}
+                    promptOnBoard={allPosts.some((post) => post.author === "$user" && post.note?.source === "t3-message" && post.note.t3?.threadId === participantDesk.threadId && participantDesk.runningRun?.prompt != null && post.body.trim().startsWith(participantDesk.runningRun.prompt.trim()))}
+                  />
+                ))}
+                {liveRuns.map((run) => (
+                  <LiveRunBubble key={run.id} run={run} />
+                ))}
+              </div>
+            </div>
+            {far ? (
+              <button
+                type="button"
+                className={`jump-latest mono${unseen > 0 ? " has-new" : ""}`}
+                onClick={() => {
+                  stickToBottom.current = true;
+                  scrollToBottom(true);
+                }}
+              >
+                {unseen > 0 ? `${unseen} new repl${unseen === 1 ? "y" : "ies"}` : "Jump to latest"} <Glyph name="down" text="↓" />
+              </button>
+            ) : null}
+          </div>
+          {detailItem && detailItem.type !== "day" ? <PostDetail item={detailItem} onClose={() => setDetail(null)} /> : null}
+        </ScrollControl.Provider>
+      </StripsContext.Provider>
     </BoardContext.Provider>
   );
 }
 
 /**
- * A post's detail (Enter on it): who wrote it to whom, when, where it stands, and the post itself with its folded text
- * open and its controls. Esc closes it and the focus goes back to the post.
+ * A post's detail (Detail, last in its action strip): who wrote it to whom, when, where it stands, and the post itself
+ * with its folded text open and its controls. Esc closes it and the focus goes back to Detail.
  */
 function PostDetail({ item, onClose }: { item: Exclude<Item, { type: "day" }>; onClose: () => void }) {
   const { nameOf } = useRoom();
@@ -669,6 +936,7 @@ function UserBubble({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
         {posts.map((post) => (
           <RequestFoot key={post.id} post={post} owner={posts.length > 1 ? nameOf(post.request!.owner) : null} />
         ))}
+        <ItemActions navKey={`post:${first.seq}`} where={postWhere(first, nameOf, owners)} detail={first.seq} />
       </div>
     </div>
   );
@@ -691,6 +959,7 @@ function BackroomRequest({ post, notice }: { post: EnginePost; notice: string })
         </div>
       </details>
       <RequestMarker post={post} />
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
@@ -718,10 +987,15 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
   const correctButton = useRef<HTMLButtonElement>(null);
   const block = useRef<HTMLDivElement>(null);
   const open = request.state === "open";
+  // Back to Correct…: the one in the post's action strip while that is open (it opened the box), else the one here.
+  const backToCorrect = () => {
+    const inStrip = block.current?.closest("[data-nav]")?.querySelector<HTMLElement>(`.action-strip [data-action="correct:${post.number}"]`);
+    (inStrip ?? correctButton.current)?.focus({ preventScroll: true });
+  };
   // The open correction is in front wherever the focus is (keys.ts). Esc with the focus in it (its field, Send,
-  // Correct…) closes it first and goes back to Correct…; with the focus elsewhere, once a menu, the composer or a status
-  // chip's choices in front of it have closed, and not under a dialog it is not in. The focus, if it was in it or
-  // nowhere, goes back to Correct….
+  // Correct…) closes it first and goes back to Correct…; with the focus elsewhere, once a menu, an action strip, the
+  // composer or a status chip's choices in front of it have closed, and not under a dialog it is not in. The focus, if
+  // it was in it or nowhere, goes back to Correct….
   useEffect(() => {
     if (!correcting || !open) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
@@ -729,26 +1003,37 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || !root || root.closest("[inert]")) return;
       const dialog = [...document.querySelectorAll(".dialog:not([inert])")].at(-1);
       if (dialog && !dialog.contains(root)) return;
-      if ([...document.querySelectorAll(".menu, .composer-overlay, .work-open")].some((element) => !element.closest("[inert]"))) return;
+      if ([...document.querySelectorAll(".menu, .action-strip, .composer-overlay, .work-open")].some((element) => !element.closest("[inert]"))) return;
       event.preventDefault();
       const now = document.activeElement;
-      if (!now || now === document.body || root.contains(now)) correctButton.current?.focus();
+      if (!now || now === document.body || root.contains(now)) backToCorrect();
       setCorrecting(false);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [correcting, open]);
+  // The correction sent; from the keys (Enter in its field), the ring goes back to Correct….
+  const send = (back: boolean) => {
+    if (!text.trim()) return;
+    void runCommand({ type: "request.correct", roomId: snapshot.room.id, requestId: request.id, text: text.trim() }).then((result) => {
+      if (!result) return;
+      if (back && block.current?.contains(document.activeElement)) backToCorrect();
+      setText("");
+      setCorrecting(false);
+    });
+  };
   return (
     <div
       className="req-block"
       ref={block}
       data-number={post.number}
       data-seq={post.seq}
+      data-to={owner ?? undefined}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || !correcting || !open || event.nativeEvent.isComposing) return;
         event.preventDefault();
         setCorrecting(false);
-        correctButton.current?.focus();
+        backToCorrect();
       }}
     >
       <div className="req-foot">
@@ -776,21 +1061,21 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
           className="req-correct"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!text.trim()) return;
-            void runCommand({ type: "request.correct", roomId: snapshot.room.id, requestId: request.id, text: text.trim() }).then((result) => {
-              if (result) {
-                setText("");
-                setCorrecting(false);
-              }
-            });
+            send(false);
           }}
         >
-          {/* Opened, it has the focus (what is typed goes in it, not into a new message); Esc goes back to Correct…. */}
+          {/* Opened, it has the focus (what is typed goes in it, not into a new message); Enter sends it (Shift+Enter
+              a new line), and with Esc goes back to Correct…. */}
           <textarea
             autoFocus
             value={text}
             rows={2}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              send(true);
+            }}
             placeholder={`What changes in #${post.number}`}
             aria-label={`Correction to #${post.number}`}
           />
@@ -844,6 +1129,7 @@ function MemberRequest({ post }: { post: EnginePost }) {
           </details>
         )}
       </div>
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
@@ -896,6 +1182,7 @@ function Reply({ post }: { post: EnginePost }) {
             <ReplySpend post={post} />
           </div>
         </div>
+        <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
       </div>
     </div>
   );
@@ -1024,6 +1311,7 @@ function Note({ post }: { post: EnginePost }) {
             <div className={`bubble ${fromT3 ? "bubble-user bubble-user-t3" : "bubble-note"}`}>{shown ? <UserText text={shown} /> : null}</div>
             <CopyTextButton text={shown} label="Copy note" className="bubble-side" />
           </div>
+          <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
         </div>
       </div>
     );
@@ -1070,6 +1358,7 @@ function Note({ post }: { post: EnginePost }) {
             <ReplySpend post={post} />
           </div>
         </div>
+        <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
       </div>
     </div>
   );
@@ -1109,6 +1398,7 @@ function FollowUp({ post }: { post: EnginePost }) {
             <ReplySpend post={post} />
           </div>
         </div>
+        <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
       </div>
     </div>
   );
@@ -1129,12 +1419,14 @@ function Progress({ post }: { post: EnginePost }) {
       <span className="status-text" title={post.body}>
         {line.length > 200 ? `${line.slice(0, 200)}…` : line}
       </span>
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
 
 /** Something went wrong: a failed run, an undeliverable post, a late answer. Retry and Dismiss while it needs you. */
 function Notice({ post }: { post: EnginePost }) {
+  const { nameOf } = useRoom();
   const notice = post.notice!;
   const nav = useNavProps(post);
   return (
@@ -1147,6 +1439,7 @@ function Notice({ post }: { post: EnginePost }) {
       {notice.retried ? <span className="mono muted">retried</span> : null}
       {notice.dismissed && !notice.retried ? <span className="mono muted">dismissed</span> : null}
       <NoticeActions post={post} />
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
@@ -1199,6 +1492,7 @@ function Blocked({ post }: { post: EnginePost }) {
       <span className="status-text">
         {blocked.number !== null ? <Ref number={blocked.number} /> : "A post"} cannot reach {nameOf(blocked.seatId)}: it needs {blocked.requiredBytes.toLocaleString()} bytes, over the delivery budget (ROOMS_ENVELOPE_BYTES).
       </span>
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
@@ -1254,6 +1548,7 @@ function StatusPost({ post }: { post: EnginePost }) {
     <div className="chat-status mono" data-number={post.number} data-seq={post.seq} title={`${whenTitle(post)}\n${post.body}`} {...nav}>
       <span className="post-number">#{post.number}</span>
       <span className="status-text">{text}</span>
+      <ItemActions navKey={`post:${post.seq}`} where={postWhere(post, nameOf)} detail={post.seq} />
     </div>
   );
 }
@@ -1301,8 +1596,28 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
   const speaker = <span className="speaker mono identity">{alias}</span>;
   const uncertain = run.phase === "uncertain";
   const label = requests.length > 0 ? "needs you" : PHASE_WORDS[run.phase];
+  const where = `@${alias}'s turn · ${label}${numbers.length > 0 ? ` on ${numbers.map((n) => `#${n}`).join(", ")}` : ""}`;
+  // A stop only while it has something to press: a sent turn has "sent to T3" (and Stop while it runs), and any turn
+  // what it works on and what it asks. A turn still being prepared, on no request, has only what its feed shows (a
+  // file chip, a link): that is read from the page once drawn. No reading otherwise: the bubble is a lazily drawn row
+  // (content-visibility), and reading its layout as a room opens kept the board from its bottom.
+  const maybeBare = run.phase === "prepared" && numbers.length === 0 && requests.length === 0;
+  const bubble = useRef<HTMLDivElement | null>(null);
+  const [feedOffers, setFeedOffers] = useState(false);
+  const readFeed = maybeBare && items.length > 0;
+  useEffect(() => {
+    const element = bubble.current;
+    if (!readFeed || !element) return;
+    const read = () => setFeedOffers(offersControls(element));
+    read();
+    // What the feed draws changes inside it too (an image that fails to load is no button).
+    const observer = new MutationObserver(read);
+    observer.observe(element, { subtree: true, childList: true });
+    return () => observer.disconnect();
+  }, [readFeed]);
+  const bare = maybeBare && !(readFeed && feedOffers);
   return (
-    <div className={`chat-row from-agent live-turn${uncertain ? " live-uncertain" : ""}`} style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} aria-live="off" data-run={run.id}>
+    <div ref={bubble} className={`chat-row from-agent live-turn${uncertain ? " live-uncertain" : ""}`} style={identityStyle(participant ? colorOf(participant.id) : "var(--fg-muted)")} aria-live="off" data-run={run.id} {...(bare ? {} : liveNav(`live:${run.id}`, where))}>
       <div className="chat-stack">
         <div className="chat-head">
           {participant ? <Monogram participant={participant} size="xs" title={alias} /> : null}
@@ -1361,6 +1676,7 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
           </FileBaseContext.Provider>
           {run.phase !== "prepared" ? <SentToT3 runId={run.id} /> : null}
         </div>
+        <ItemActions navKey={`live:${run.id}`} where={where} />
       </div>
     </div>
   );
@@ -1375,6 +1691,10 @@ function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Par
   const running = desk.runningRun!;
   const requests = snapshot.nativeRequests.filter((request) => request.participantId === participant.id);
   const speaker = <span className="speaker mono identity">{participant.alias}</span>;
+  const where = `@${participant.alias}'s turn · needs you, ${running.prompt ? "typed in T3" : "on its own"}`;
+  const key = `live:t3:${running.runId}`;
+  // A stop only while it asks you something (an approval, a question): a turn the room did not start has no Stop here.
+  const nav = requests.length > 0 ? liveNav(key, where) : {};
   return (
     <>
       {/* The prompt, until the service imports it as the user's note (it does while the turn still runs). */}
@@ -1393,7 +1713,7 @@ function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Par
           </div>
         </div>
       ) : null}
-      <div className="chat-row from-agent live-turn" style={identityStyle(colorOf(participant.id))} aria-live="off">
+      <div className="chat-row from-agent live-turn" style={identityStyle(colorOf(participant.id))} aria-live="off" {...nav}>
         <div className="chat-stack">
           <div className="chat-head">
             <Monogram participant={participant} size="xs" title={participant.alias} />
@@ -1428,6 +1748,7 @@ function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Par
               <LiveFeed items={desk.liveFeed} placeholder="Thinking…" className="live-feed-chat" />
             </FileBaseContext.Provider>
           </div>
+          <ItemActions navKey={key} where={where} />
         </div>
       </div>
     </>

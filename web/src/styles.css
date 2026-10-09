@@ -7919,7 +7919,7 @@ span.reply-to {
   outline: none;
 }
 
-:root:not([data-skin="pixel"]) :is(.participant-chip, .timeline [data-nav="post"], .inspector, .room-body .timeline):focus-visible {
+:root:not([data-skin="pixel"]) :is(.participant-chip, .timeline [data-nav="post"], .timeline [data-nav="live"], .inspector, .room-body .timeline):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 6px;
@@ -7930,8 +7930,42 @@ span.reply-to {
 }
 
 /* A post brought into view by the arrows clears the composer laid over the board's foot. */
-.timeline [data-nav="post"] {
+.timeline :is([data-nav="post"], [data-nav="live"], .action-strip > button) {
   scroll-margin: 12px 0 calc(var(--composer-cover, 0px) + 12px);
+}
+
+/* An item's action strip (ActionStrip.tsx): Enter on a post or a live bubble draws its buttons in one row under it,
+   the ring on the one chosen. Under a centred line it is centred too, and takes a line of its own. */
+.action-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: flex-start;
+  flex-basis: 100%;
+  gap: 4px 6px;
+  margin-top: 6px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  font-family: var(--font);
+  text-align: left;
+}
+
+.chat-status > .action-strip {
+  justify-content: center;
+}
+
+.action-strip > button {
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-strip > button[aria-pressed="true"],
+.action-strip > button[aria-expanded="true"] {
+  background: var(--bg-3);
 }
 
 :root:not([data-skin="pixel"]) .ov-room:has(.ov-room-head:focus-visible) {

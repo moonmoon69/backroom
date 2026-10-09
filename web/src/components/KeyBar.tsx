@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { barEntries, type KeyEntry } from "../keyOrder.ts";
+import { barDoes, barEntries, type KeyEntry } from "../keyOrder.ts";
 import { keyPlace, type PlaceNow } from "../keys.ts";
 import { MOBILE_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 
-const same = (a: PlaceNow, b: PlaceNow): boolean => a.place === b.place && a.where === b.where && a.now.join() === b.now.join();
+const same = (a: PlaceNow, b: PlaceNow): boolean => a.place === b.place && a.where === b.where && a.name === b.name && a.now.join() === b.now.join();
 
 /**
  * One line at the foot of the page: on the left what the ring is on, in words, then the keys that do something there,
- * each named by what it does there (keyOrder.ts, KEYS: the same table as `?` and README), and `?` at the right end.
+ * each named by what it does there (keyOrder.ts, KEYS: the same table as `?` and README; in an action strip Enter is
+ * named by the button the ring is on), and `?` at the right end.
  * Keys are drawn whole or not at all: those that do not fit the window are left out from the end of the line (the last
  * in KEY_RANK first); `?` stays.
  * It follows the focus, and reads the page again each second for what changes under a still ring (a post answered).
@@ -70,22 +71,22 @@ export function KeyBar() {
         {entries
           .filter((entry) => entry !== help)
           .map((entry) => (
-            <KeyChip key={entry.keys.join(" ")} entry={entry} />
+            <KeyChip key={entry.keys.join(" ")} entry={entry} does={barDoes(entry, here.name)} />
           ))}
       </span>
-      {help ? <KeyChip entry={help} end /> : null}
+      {help ? <KeyChip entry={help} does={help.does} end /> : null}
     </div>,
     document.body,
   );
 }
 
-function KeyChip({ entry, end = false }: { entry: KeyEntry; end?: boolean }) {
+function KeyChip({ entry, does, end = false }: { entry: KeyEntry; does: string; end?: boolean }) {
   return (
     <span className={`key-bar-key${end ? " key-bar-end" : ""}`}>
       {entry.keys.map((key) => (
         <kbd key={key}>{key}</kbd>
       ))}
-      <span className="key-bar-does">{entry.does}</span>
+      <span className="key-bar-does">{does}</span>
     </span>
   );
 }

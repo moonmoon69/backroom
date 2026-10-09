@@ -13,7 +13,7 @@ import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
 import { laneTarget, openLanding, type Lane } from "../keyOrder.ts";
-import { byKey, focusItem, focusWhen, itemOf, laneAt, listTarget, navItems, navKey, navProps, roomLanes, showsAtBottom, tabbables } from "../keys.ts";
+import { byKey, focusItem, focusWhen, itemOf, laneAt, listTarget, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, tabbables } from "../keys.ts";
 
 /** The room's panes, left to right (keys.ts): the board (or the chat), then the side panel's tabs as the header orders them. */
 const PANES = ["board", "people", "browser", "git"] as const;
@@ -86,14 +86,14 @@ export function OverviewRoom({
   const panelRef = useRef(panel);
   panelRef.current = panel;
   // Where the ring lands coming into a lane: the item last visited there; else the header's open view (or Members), the
-  // first status chip that needs you, the newest post.
+  // first status chip that needs you, the newest post (not a turn running after it, its live bubble).
   const laneLanding = (name: Lane<HTMLElement>["name"], items: HTMLElement[]): HTMLElement | null => {
     const last = lastInLane.current[name];
     const kept = last ? items.find((item) => item.dataset.navKey === last) : undefined;
     if (kept) return kept;
     if (name === "header") return items.find((item) => item.getAttribute("aria-selected") === "true") ?? items.find((item) => item.dataset.navKey === "head:people") ?? null;
     if (name === "status") return items.find((item) => item.closest(".work-needs")) ?? null;
-    if (name === "posts") return items.at(-1) ?? null;
+    if (name === "posts") return postsOf(items).at(-1) ?? items.at(-1) ?? null;
     return null;
   };
   const lanes = () => (sheet.current ? roomLanes(sheet.current, laneLanding) : []);
@@ -148,7 +148,7 @@ export function OverviewRoom({
       if (root && active instanceof HTMLElement && root.contains(active) && (ours === null || active.dataset.navKey !== ours)) return active;
       const all = lanesRef.current();
       const chips = all.find((lane) => lane.name === "status")?.items ?? [];
-      const newest = all.find((lane) => lane.name === "posts")?.items.at(-1) ?? null;
+      const newest = all.find((lane) => lane.name === "posts")?.newest ?? null;
       const live = [...(root?.querySelectorAll<HTMLElement>(".timeline .live-turn") ?? [])];
       // A row's own box is drawn while its contents are skipped: the check is on what is in it (for up to a second).
       if (performance.now() - since < 1000 && live.some((row) => row.firstElementChild?.checkVisibility({ contentVisibilityAuto: true }) === false)) return null;

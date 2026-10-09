@@ -50,8 +50,8 @@ const PHASE: Record<EngineRunView["phase"], string> = {
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
   const [open, setOpen] = useState<string | null>(null);
-  // Esc folds the open chip (keys.ts), once a menu, a dialog or the composer in front of it has closed; the focus, if it
-  // was in the choices or nowhere, goes back to the chip.
+  // Esc folds the open chip (keys.ts), once a menu, a dialog, a post's action strip or the composer in front of it has
+  // closed; the focus, if it was in the choices or nowhere, goes back to the chip.
   const bar = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (open === null) return;
@@ -59,7 +59,7 @@ export function WorkBar() {
       const root = bar.current;
       const choices = root?.querySelector(".work-open");
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || !root || !choices || root.closest("[inert]")) return;
-      if ([...document.querySelectorAll(".dialog-backdrop, .menu, .composer-overlay")].some((element) => !element.closest("[inert]"))) return;
+      if ([...document.querySelectorAll(".dialog-backdrop, .menu, .action-strip, .composer-overlay")].some((element) => !element.closest("[inert]"))) return;
       event.preventDefault();
       const now = document.activeElement;
       if (!now || now === document.body || choices.contains(now)) root.querySelector<HTMLElement>('.work-chip[aria-expanded="true"]')?.focus({ preventScroll: true });
