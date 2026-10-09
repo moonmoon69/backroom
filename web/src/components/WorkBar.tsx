@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
@@ -48,6 +48,24 @@ const PHASE: Record<EngineRunView["phase"], string> = {
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
   const [open, setOpen] = useState<string | null>(null);
+  // Esc folds the open chip (keys.ts), once a menu, a dialog or the composer in front of it has closed; the focus, if it
+  // was in the choices or nowhere, goes back to the chip.
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      const root = bar.current;
+      const choices = root?.querySelector(".work-open");
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || !root || !choices || root.closest("[inert]")) return;
+      if ([...document.querySelectorAll(".dialog-backdrop, .menu, .composer-overlay")].some((element) => !element.closest("[inert]"))) return;
+      event.preventDefault();
+      const now = document.activeElement;
+      if (!now || now === document.body || choices.contains(now)) root.querySelector<HTMLElement>('.work-chip[aria-expanded="true"]')?.focus({ preventScroll: true });
+      setOpen(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
   const items: Item[] = [];
   const numberOf = (requestId: string) => snapshot.requests.find((q) => q.id === requestId)?.number ?? snapshot.posts.find((p) => p.request?.id === requestId)?.number ?? null;
   const refs = (ids: readonly string[]) =>
@@ -129,7 +147,7 @@ export function WorkBar() {
   const opened = items.find((item) => item.key === open) ?? null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   return (
-    <div className="work-bar" role="status" aria-label="What is going on in this room">
+    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar}>
       <div className="work-groups">
         {GROUPS.map((group) => {
           const list = items.filter((item) => item.group === group.key);

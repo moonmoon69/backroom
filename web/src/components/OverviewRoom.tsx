@@ -81,6 +81,15 @@ export function OverviewRoom({
   };
   const landingRef = useRef(landing);
   landingRef.current = landing;
+  // The panel closed with the focus in it (Backspace, its ×): the focus goes back to the conversation, on the item it
+  // came from.
+  const hadPanel = useRef(panel);
+  useEffect(() => {
+    const had = hadPanel.current;
+    hadPanel.current = panel;
+    const now = document.activeElement;
+    if (had && !panel && (!now || now === document.body)) focusItem(landingRef.current("board"));
+  }, [panel]);
   useEffect(() => {
     const landing = (pane: Pane) => landingRef.current(pane);
     const onKey = (event: KeyboardEvent) => {
@@ -142,7 +151,7 @@ export function OverviewRoom({
   return (
     <div className={`sheet ${chat ? "sheet-chat" : "sheet-board"}`} ref={sheet} data-room-id={snapshot.room.id}>
       <header className="sheet-head">
-        <button type="button" className="small ghost icon-only sheet-close" aria-label="Back to the overview" title="Back to the overview (Esc)" onClick={onClose}>
+        <button type="button" className="small ghost icon-only sheet-close" aria-label="Back to the overview" title="Back to the overview (Backspace)" onClick={onClose}>
           <CloseIcon />
         </button>
         <div className="sheet-title">

@@ -62,7 +62,7 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
         <h2>{TITLES[tab]}</h2>
         <span className="spacer" />
         {tab === "people" ? <AddParticipantButton /> : null}
-        <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel" onClick={onClose}>
+        <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel (Backspace)" onClick={onClose}>
           <CloseIcon />
         </button>
       </div>

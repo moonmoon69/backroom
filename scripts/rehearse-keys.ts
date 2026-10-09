@@ -11,6 +11,10 @@
  * menu, the side panel) against what the API says it should be (the room's ID and title, the post's number and seq, the
  * member's thread). Every state then reads the console (no error-level line) and keeps a screenshot.
  *
+ * Esc and Backspace (K1-2): Esc closes what is in front (a menu, the composer, a chip's choices, a correction, a dialog,
+ * the keys) and never the room, a member's thread, a thread or the side panel; Backspace outside a text field closes the
+ * same things first, then a member's thread, the panel and the room in turn; in a dialog's text field it deletes.
+ *
  * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
  * the first card's last member goes to the fourth card, not to the second as the page's own order would.
@@ -82,6 +86,10 @@ interface Focus {
   roomDraft: string | null;
   /** The open dialog's scrolled body: how far it is scrolled and how much it can be. */
   dialogBody: { top: number; more: number } | null;
+  /** The focus is on a status chip of the work bar. */
+  chip: boolean;
+  /** A status chip's choices are open under the work bar. */
+  chipOpen: boolean;
 }
 
 const FOCUS = `() => {
@@ -115,6 +123,8 @@ const FOCUS = `() => {
     composerOpen: Boolean(document.querySelector('.composer-overlay')),
     roomDraft: document.querySelector('.ov-layer:not(.ov-layer-member) .strip-draft-text')?.textContent ?? null,
     dialogBody: (() => { const b = document.querySelector('.dialog .dialog-body'); return b ? { top: Math.round(b.scrollTop), more: b.scrollHeight - b.clientHeight } : null; })(),
+    chip: Boolean(a && a.classList.contains('work-chip')),
+    chipOpen: Boolean(document.querySelector('.work-open')),
   };
 }`;
 
@@ -224,6 +234,18 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`the first item ${short(order[0]!.key)}`, (f) => f.key === order[0]!.key);
     for (let i = 1; i <= at; i += 1) press("ArrowDown");
     await expect(short(key), (f) => f.key === key);
+  };
+
+  /** Up from the posts to the view's tabs: Home, then Up past the first post until the earlier posts are all drawn. */
+  const toTabs = async (): Promise<Focus> => {
+    for (let i = 0; i < 8; i += 1) {
+      press("Home");
+      const first = await expect("Home: the first post drawn", (f) => f.key?.startsWith("post:") === true);
+      press("ArrowUp");
+      const now = await expect("Up past it: an earlier post, or the view's tab", (f) => f.role === "tab" || (f.key?.startsWith("post:") === true && f.key !== first.key), 10_000);
+      if (now.role === "tab") return now;
+    }
+    return fail("Up past the first post never reached the view's tabs");
   };
 
   /** Tab (or Shift+Tab) until the focus is where `ok` says, at most `max` presses: how a keyboard user reaches a control. */
@@ -379,9 +401,27 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Enter on ⋯ again: the menu, on Rename…", (f) => f.menu && f.label.startsWith("Rename"));
   press("Enter");
   await expect("Enter on Rename…: its dialog, the focus in its field", (f) => f.dialog === "Rename room" && f.inDialog && f.value === "Third");
+  press("End");
+  press("Backspace");
+  await expect("Backspace in the dialog's field deletes its last letter; the dialog stays", (f) => f.dialog === "Rename room" && f.inDialog && f.tag === "INPUT" && f.value === "Thir");
+  state("Backspace in a dialog's text field deletes");
+  await tabTo("Tab to a button of the dialog", (f) => f.dialog === "Rename room" && f.inDialog && f.tag === "BUTTON");
+  press("Backspace");
+  await expect("Backspace outside the field: the dialog closed, the focus back on the card's ⋯", (f) => f.dialog === null && !f.menu && f.label === "Third options" && f.ring && f.drawers.length === 0);
+  const renamed = (await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms")).find((r) => r.id === third.roomId);
+  if (renamed?.title !== "Third") fail(`the room was renamed to ${JSON.stringify(renamed?.title)}: closing the dialog with Backspace must cancel it`);
+  log(`api: room ${third.roomId.slice(0, 8)} is still "Third"`);
+  press("Enter");
+  await expect("Enter on ⋯: the menu again", (f) => f.menu && f.label.startsWith("Rename"));
+  press("Backspace");
+  await expect("Backspace in the menu closes it, the focus back on the card's ⋯", (f) => !f.menu && f.label === "Third options" && f.drawers.length === 0);
+  press("Enter");
+  await expect("Enter on ⋯: the menu once more", (f) => f.menu && f.label.startsWith("Rename"));
+  press("Enter");
+  await expect("Enter on Rename…: its dialog", (f) => f.dialog === "Rename room" && f.value === "Third");
   press("Escape");
   await expect("Esc: the dialog closed, the focus back on the card's ⋯", (f) => f.dialog === null && !f.menu && f.label === "Third options" && f.ring);
-  state("overview: a card's menu takes the focus and gives it back through its dialog");
+  state("overview: a card's menu takes the focus and gives it back through its dialog; Backspace closes them too");
 
   // ---------------- 3. into a room ----------------
 
@@ -505,6 +545,33 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect(`Esc again closes the detail, the focus back on #${openPost.number}`, (f) => f.dialog === null && f.key === `post:${openPost.seq}`);
   state("in a post's detail, Esc in a correction closes the field, not the detail");
 
+  // ---------------- 3b. a status chip: Esc folds its choices, and so does Backspace; the room stays ----------------
+
+  // His turn on the open request runs (the fake holds it): the work bar shows it as a chip whose choices hold Stop.
+  const running = ((await room.snapshot()).runs as Array<{ phase: string }>).filter((r) => r.phase === "running").length;
+  if (running === 0) fail("the API shows no running turn for the work bar's chip");
+  await toTabs();
+  await tabTo("Tab from the view's tab to the working chip", (f) => f.chip && f.expanded === "false" && f.label.includes("fable"), "Tab", 14);
+  press("Enter");
+  await expect("Enter: the chip's choices open under the bar", (f) => f.chip && f.expanded === "true" && f.chipOpen);
+  log(`api: ${running} running turn; page: its chip open`);
+  press("Escape");
+  await expect("Esc: the choices folded, the focus on the chip, the room still open", (f) => f.chip && f.expanded === "false" && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+  press("Escape");
+  await sleep(400);
+  await expect("Esc again, nothing in front: the room stays, the focus on the chip", (f) => f.chip && f.drawers.some((d) => d.view === "room" && !d.inert));
+  state("Esc with a chip expanded folds it; the room stays");
+  press("Enter");
+  await expect("Enter: the choices again", (f) => f.chip && f.chipOpen);
+  press("Backspace");
+  await expect("Backspace folds them as Esc does, the room still open", (f) => f.chip && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+  state("Backspace with a chip expanded folds it first");
+  // From the chip, outside the posts, the first key lands on the post last visited; End again goes to the newest.
+  press("End");
+  await expect("End from the chip: the posts", (f) => f.key?.startsWith("post:") === true);
+  press("End");
+  await expect(`End: back on the newest post, #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
+
   // ---------------- 4. the panes ----------------
 
   const members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
@@ -537,6 +604,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect("Esc: the menu closed, the room still open, the focus on the member", (f) => !f.menu && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}`);
   state("Esc closes a menu, not the room");
+  press("Escape");
+  await sleep(400);
+  await expect("Esc with the panel open and nothing in front: the room and the panel stay, the focus on the member", (f) => f.panel === "people" && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}`);
+  state("Esc with the panel open stays in the room");
 
   // A toast while a dialog is open is outside the inert page: read out (in the page snapshot), above the dialog.
   press("Tab");
@@ -581,12 +652,21 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   log(`  page: the member's thread has no thread menu, browser, settings or composer ("${controls.note}")`);
   state("Enter on a member opens its thread");
   press("Escape");
-  await expect(`Esc: back in the room, the focus on @${members[1]!.alias}`, (f) => !f.drawers.some((d) => d.view === "member") && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}` && f.ring);
-  state("Esc from a member's thread goes back to the room");
-  press("Escape");
-  await expect("Esc: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
+  await sleep(400);
+  await expect("Esc in the member's thread closes nothing: the thread stays over the room", (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.inLayer === "member");
+  press("Backspace");
+  await expect(`Backspace: back in the room, Members open, the focus on @${members[1]!.alias}`, (f) => !f.drawers.some((d) => d.view === "member") && f.drawers.some((d) => d.view === "room" && !d.inert) && f.panel === "people" && f.key === `member:${members[1]!.id}` && f.ring);
+  state("Backspace from a member's thread goes back to the room");
+  press("Backspace");
+  await expect(`Backspace: the panel folds, the room stays, the focus back on #${openPost.number} where it came from`, (f) => f.panel === null && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `post:${openPost.seq}` && f.ring);
+  state("Backspace folds the side panel, back to the conversation");
+  press("Backspace");
+  await expect("Backspace: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
   announced(/^button$/, "Rehearsal");
-  state("Esc from the room goes back to its card on the overview");
+  state("Backspace from the room goes back to its card on the overview");
+  press("Escape");
+  await sleep(400);
+  await expect("Esc on the overview, nothing in front: nothing moves", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
 
   // From the overview: Enter on a member opens its thread over its room; Esc twice comes back to it.
   const reviewer = members[2]!;
@@ -596,11 +676,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Enter");
   await expect(`Enter on @${reviewer.alias} on the overview: its thread over its room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
   state("Enter on an overview member opens its thread over its room");
-  press("Escape");
-  await expect(`Esc: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
-  press("Escape");
-  await expect(`Esc: the overview, the focus back on @${reviewer.alias}`, (f) => f.drawers.length === 0 && f.key === `member:${R}:${reviewer.id}` && f.ring);
-  state("Esc twice comes back to the overview member");
+  press("Backspace");
+  await expect(`Backspace: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
+  press("Backspace");
+  await expect("Backspace: the panel folds, the focus on the conversation's newest post", (f) => f.panel === null && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key?.startsWith("post:") === true);
+  press("Backspace");
+  await expect(`Backspace: the overview, the focus back on @${reviewer.alias}`, (f) => f.drawers.length === 0 && f.key === `member:${R}:${reviewer.id}` && f.ring);
+  state("Backspace three times comes back to the overview member: the thread, the panel, the room");
 
   // A thread outside rooms, by keys: Enter on its card, Up from its composer's strip to the conversation, Esc back.
   await goTo(`thread:${loose.threadId}`);
@@ -609,8 +691,11 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("ArrowUp");
   await expect("Up from the strip: the conversation (its arrows scroll it)", (f) => f.role === "log" && f.label === "Thread" && f.inLayer === "thread");
   press("Escape");
-  await expect("Esc: back on the thread's card", (f) => f.drawers.length === 0 && f.key === `thread:${loose.threadId}`);
-  state("a thread outside rooms: Enter, Up to its conversation, Esc");
+  await sleep(400);
+  await expect("Esc in the thread closes nothing: it stays open", (f) => f.drawers.some((d) => d.view === "thread" && d.id === loose.threadId) && f.role === "log");
+  press("Backspace");
+  await expect("Backspace: back on the thread's card", (f) => f.drawers.length === 0 && f.key === `thread:${loose.threadId}`);
+  state("a thread outside rooms: Enter, Up to its conversation, Esc stays, Backspace back");
 
   // ---------------- 6. the pixel look draws its own ring ----------------
 
@@ -634,7 +719,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("ArrowUp");
   await expect("pixel look: a post's ring is drawn", (f) => f.key?.startsWith("post:") === true && f.ring);
   state("pixel look: the room's focus ring");
-  press("Escape");
-  await expect("pixel look: Esc back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  press("Backspace");
+  await expect("pixel look: Backspace back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   return passed;
 }

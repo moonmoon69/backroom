@@ -711,7 +711,18 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
   const correctButton = useRef<HTMLButtonElement>(null);
   const open = request.state === "open";
   return (
-    <div className="req-block" data-number={post.number} data-seq={post.seq}>
+    <div
+      className="req-block"
+      data-number={post.number}
+      data-seq={post.seq}
+      onKeyDown={(event) => {
+        // Esc with the focus in the open correction (its field, Send, Correct…) closes it and goes back to Correct….
+        if (event.key !== "Escape" || !correcting || !open || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        setCorrecting(false);
+        correctButton.current?.focus();
+      }}
+    >
       <div className="req-foot">
         {owner ? <span className="mono muted">#{post.number} → {owner}</span> : null}
         <RequestMarker post={post} />
@@ -752,12 +763,6 @@ function RequestFoot({ post, owner }: { post: EnginePost; owner: string | null }
             value={text}
             rows={2}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-              event.preventDefault();
-              setCorrecting(false);
-              correctButton.current?.focus();
-            }}
             placeholder={`What changes in #${post.number}`}
             aria-label={`Correction to #${post.number}`}
           />

@@ -16,7 +16,8 @@ export const KEYS: Array<{ where: string; entries: KeyHelpEntry[] }> = [
       { keys: ["?"], what: "Show these keys (outside a text field)" },
       { keys: ["Tab", "Shift+Tab"], what: "Every button, link and field, in order" },
       { keys: ["Enter"], what: "Open or press what has the focus" },
-      { keys: ["Esc"], what: "Close one thing: a menu, a dialog, the composer, a member's thread, then the room" },
+      { keys: ["Esc"], what: "Close what is in front: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; never the room, a member's thread or the side panel" },
+      { keys: ["Backspace"], what: "Back one step, outside a text field: what is in front first, then a member's thread, the side panel, then the room to its card" },
     ],
   },
   {

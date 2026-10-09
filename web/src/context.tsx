@@ -21,7 +21,7 @@ export interface RoomContextValue {
   costs: RoomCosts | null;
   /** The room's git state: its working folders in brief, and the full view of the one the Git tab shows. */
   git: GitState;
-  /** Look at a member's thread, over the room (Esc comes back to the room). */
+  /** Look at a member's thread, over the room (Backspace comes back to the room). */
   openMember: (participantId: string) => void;
 }
 
