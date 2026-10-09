@@ -129,11 +129,13 @@ export function openWork(db: DatabaseSync, self: Self | null): IdleReport {
   const title = new Map(rooms(db).map((r) => [r.id, r.title]));
   if (hasTable(db, "tasks")) {
     const tasks = db.prepare(
-      `SELECT t.id, t.room_id AS roomId, t.number, t.state, t.participant_id AS participantId, p.alias FROM tasks t
+      `SELECT t.id, t.room_id AS roomId, t.number, t.revision, t.state, t.participant_id AS participantId, p.alias FROM tasks t
        JOIN participants p ON p.id = t.participant_id WHERE t.state NOT IN (${placeholders(TERMINAL_TASK)}) ORDER BY t.room_id, t.number`,
-    ).all(...TERMINAL_TASK) as Array<{ id: string; roomId: string; number: number; state: string; participantId: string; alias: string }>;
+    ).all(...TERMINAL_TASK) as Array<{ id: string; roomId: string; number: number; revision: number; state: string; participantId: string; alias: string }>;
     for (const t of tasks) {
-      const line = `${title.get(t.roomId) ?? t.roomId}: task #${t.number} for @${t.alias} is ${t.state}`;
+      // A task that waits can be cancelled through the old service: {"type":"task.cancel","taskId":…,"revision":…}.
+      const waiting = !LIVE_TASK.includes(t.state) ? ` (taskId ${t.id}, revision ${t.revision})` : "";
+      const line = `${title.get(t.roomId) ?? t.roomId}: task #${t.number} for @${t.alias} is ${t.state}${waiting}`;
       (self?.participantId === t.participantId && LIVE_TASK.includes(t.state) ? report.excused : report.open).push(line);
     }
   }

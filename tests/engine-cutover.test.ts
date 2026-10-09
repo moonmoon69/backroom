@@ -19,7 +19,7 @@ import { backups, check, copyDatabases, readManifest, restore, roundtrip, verify
 
 /** The old runtime's work tables, as main's database still has them (only the columns the check reads). */
 const OLD_TABLES = `
-  CREATE TABLE tasks (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, number INTEGER NOT NULL, participant_id TEXT NOT NULL, state TEXT NOT NULL);
+  CREATE TABLE tasks (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, number INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1, participant_id TEXT NOT NULL, state TEXT NOT NULL);
   CREATE TABLE runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL);
 `;
 
@@ -85,9 +85,9 @@ test("the idle check lists old work in flight, waiting approvals and reseats, an
     assert.equal(idle.idle, true);
     assert.deepEqual(idle.open, []);
 
-    writeDb(f.dir, "INSERT INTO tasks VALUES ('t1', ?, 1, ?, 'succeeded')", f.roomId, f.member("sol1"));
-    writeDb(f.dir, "INSERT INTO tasks VALUES ('t2', ?, 2, ?, 'queued')", f.roomId, f.member("sol2"));
-    writeDb(f.dir, "INSERT INTO tasks VALUES ('t3', ?, 3, ?, 'running')", f.roomId, f.member("boss"));
+    writeDb(f.dir, "INSERT INTO tasks VALUES ('t1', ?, 1, 1, ?, 'succeeded')", f.roomId, f.member("sol1"));
+    writeDb(f.dir, "INSERT INTO tasks VALUES ('t2', ?, 2, 3, ?, 'queued')", f.roomId, f.member("sol2"));
+    writeDb(f.dir, "INSERT INTO tasks VALUES ('t3', ?, 3, 1, ?, 'running')", f.roomId, f.member("boss"));
     writeDb(f.dir, "INSERT INTO runs VALUES ('r3', 't3', 'running')");
     writeDb(f.dir, "INSERT INTO runs VALUES ('r1', 't1', 'succeeded')");
     writeDb(f.dir, "INSERT INTO native_requests (participant_id, thread_id, request_id, kind, payload_json, created_at) VALUES (?, 'th', 'q1', 'approval', '{}', 'now')", f.member("sol2"));
@@ -97,7 +97,7 @@ test("the idle check lists old work in flight, waiting approvals and reseats, an
     assert.equal(anyone.idle, false);
     assert.deepEqual(anyone.excused, []);
     assert.deepEqual(anyone.open, [
-      "payments: task #2 for @sol2 is queued",
+      "payments: task #2 for @sol2 is queued (taskId t2, revision 3)",
       "payments: task #3 for @boss is running",
       "payments: run r3 of task #3 for @boss is running",
       "payments: @sol2 waits for an answer to approval q1",
@@ -109,8 +109,8 @@ test("the idle check lists old work in flight, waiting approvals and reseats, an
     assert.equal(asBoss.open.length, 3);
 
     // The caller's own work that waits (a wake queued for him) is not his running turn: it would be dropped.
-    writeDb(f.dir, "INSERT INTO tasks VALUES ('t4', ?, 4, ?, 'queued')", f.roomId, f.member("boss"));
-    assert.ok((await check({ dataDir: f.dir, as: f.key("boss"), threads: null })).open.includes("payments: task #4 for @boss is queued"));
+    writeDb(f.dir, "INSERT INTO tasks VALUES ('t4', ?, 4, 1, ?, 'queued')", f.roomId, f.member("boss"));
+    assert.ok((await check({ dataDir: f.dir, as: f.key("boss"), threads: null })).open.includes("payments: task #4 for @boss is queued (taskId t4, revision 1)"));
 
     await assert.rejects(check({ dataDir: f.dir, as: "nobody.12345678", threads: null }), /no active member nobody/);
     await assert.rejects(check({ dataDir: f.dir, as: "boss", threads: null }), /agent key like/);
