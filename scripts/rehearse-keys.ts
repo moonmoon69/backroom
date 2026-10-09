@@ -1786,6 +1786,55 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect("Esc: the actions closed, the ring on the reply", (f) => f.strips === 0 && f.key === `post:${reply.seq}`);
 
+  // A preview opened from a running turn's actions, the turn ending while it is open: its button went with the turn,
+  // so when the preview closes the ring goes to the newest post, the turn's reply, not to the page. The fake T3 streams
+  // no feed: the page's desk read is given one message naming the file, as T3's feed would show it.
+  await room.settle("fable");
+  const tagAsk = await room.message("Check the tag.");
+  const tagRun = await room.live("fable");
+  const tagAsked = room.post(await room.snapshot(), tagAsk);
+  browser.eval<boolean>(`() => {
+    if (!window.__rehearseFeedFetch) {
+      const real = window.fetch.bind(window);
+      window.__rehearseFeedFetch = real;
+      window.fetch = async (input, init) => {
+        const response = await real(input, init);
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const feed = window.__rehearseFeed;
+        if (!feed || !/\\/desk(\\?|$)/.test(url) || !response.ok) return response;
+        const body = await response.clone().json();
+        const desk = body.participants && body.participants[feed.participant];
+        if (!desk || !desk.runningRun) return response;
+        desk.liveFeed = [...(desk.liveFeed || []), feed.item];
+        return new Response(JSON.stringify(body), { status: response.status, headers: response.headers });
+      };
+    }
+    window.__rehearseFeed = { participant: '${room.participant.fable}', item: { kind: 'message', id: 'rehearse-feed', text: 'Checking \`notes/release.md\` for the tag.', streaming: false, at: new Date().toISOString() } };
+    return true;
+  }`);
+  browser.poll<boolean>("his running turn drawn, its feed naming the file", `() => Boolean(document.querySelector('[data-nav-key="live:${tagRun.id}"] .md-file'))`, (drawn) => drawn === true);
+  press("End");
+  await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect(`Down: his running turn (run ${tagRun.id.slice(0, 8)})`, (f) => f.key === `live:${tagRun.id}`);
+  press("Enter");
+  await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
+  names("his turn, a file named in its feed", ["Stop", `show #${tagAsked.number}`, "release.md", "sent to T3"]);
+  press("ArrowRight");
+  press("ArrowRight");
+  await expect("Right ×2: the feed's file chip", (f) => f.action === "file:0");
+  press("Enter");
+  await expect("Enter: its preview over the page", (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
+  await room.finish("fable", "The tag is v1.2.");
+  const tagReply = (await room.snapshot()).posts.find((p: any) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === tagAsk && c.outcome === "answered"));
+  if (!tagReply) fail(`the API has no reply answering #${tagAsked.number}`);
+  browser.poll<boolean>("the turn gone from the page under the preview", `() => !document.querySelector('[data-nav-key="live:${tagRun.id}"]')`, (gone) => gone === true);
+  log(`api: run ${tagRun.id.slice(0, 8)} ended with the reply #${tagReply.number}; page: its bubble gone under the preview`);
+  press("Escape");
+  await expect(`Esc: the preview closed; its button gone with the turn, the ring on his reply #${tagReply.number}`, (f) => f.dialog === null && f.key === `post:${tagReply.seq}` && f.ring);
+  await state("a preview opened from a running turn's actions: the turn ends meanwhile, its closing puts the ring on the reply", `#${tagReply.number} · @fable replied`);
+  browser.eval<boolean>("() => { window.__rehearseFeed = null; return true; }");
+
   // A turn typed in T3 (the worker's; the board draws it, the chat only the Consigliere's): no stop while it asks
   // nothing (it has no Stop here, nothing to do); with a question it is one, and its actions are the question's choices.
   // A choice pressed shows as chosen (the strip follows the checked state), an answer of your own takes the focus and Esc

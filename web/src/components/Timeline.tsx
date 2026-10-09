@@ -272,10 +272,18 @@ function OpenActions({ where, detail }: { where: string; detail?: number | undef
       setControls((last) => (last && sameControls(last, next) ? last : next));
     };
     read();
-    // Whatever changes on the item (a choice's checked state too: React keeps a controlled input's attribute in step).
+    // Whatever changes on the item; and a choice's checked state, a property no mutation shows, after React's draw
+    // once it is chosen or an answer of your own is typed.
     const observer = new MutationObserver(read);
     observer.observe(owner, { subtree: true, childList: true, attributes: true, characterData: true });
-    return () => observer.disconnect();
+    const changed = () => requestAnimationFrame(read);
+    owner.addEventListener("change", changed);
+    owner.addEventListener("input", changed);
+    return () => {
+      observer.disconnect();
+      owner.removeEventListener("change", changed);
+      owner.removeEventListener("input", changed);
+    };
   }, []);
   // Nothing to offer (a running turn with no button yet, no Detail): no strip; the ring stays on the item.
   const empty = controls !== null && controls.length === 0 && detail === undefined;
@@ -563,6 +571,14 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const strips = useMemo<Strips>(() => ({ open: strip, close, detail: setDetail }), [strip, close]);
   // The live bubble the ring is on or in, by its key: it goes when its turn ends.
   const onLive = useRef<string | null>(null);
+  // Watching for a dialog to close whose opener went with its item (a preview a turn's strip opened, the turn ended).
+  const orphan = useRef<MutationObserver | null>(null);
+  useEffect(() => () => orphan.current?.disconnect(), []);
+  const toNewest = () => {
+    const newest = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-nav="post"]') ?? [])].at(-1);
+    newest?.focus({ preventScroll: true });
+    newest?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
   // The item gone (a turn ended or stopped, or asks nothing more) with the ring on it or in its strip: the strip is
   // closed, and the ring goes to the newest post (the turn's reply, when it has one) rather than nowhere.
   useLayoutEffect(() => {
@@ -572,12 +588,26 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     if ([strip, onLive.current].every((key) => key === null || keys.has(key))) return;
     if (strip !== null && !keys.has(strip)) setStrip(null);
     if (onLive.current !== null && !keys.has(onLive.current)) onLive.current = null;
-    // Stranded: nowhere, in the strip about to go, or on a turn's bubble that is no stop any more (it asks nothing).
+    // In a dialog its strip opened (dialogs are at the body): once the last one closes, the ring has nowhere to go back
+    // to; if it is nowhere then, the newest post takes it.
     const now = document.activeElement;
+    if (now?.closest(".dialog-backdrop")) {
+      orphan.current?.disconnect();
+      const watch = new MutationObserver(() => {
+        if (document.querySelector(".dialog-backdrop")) return;
+        watch.disconnect();
+        orphan.current = null;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (!document.activeElement || document.activeElement === document.body) toNewest();
+        }));
+      });
+      watch.observe(document.body, { childList: true });
+      orphan.current = watch;
+      return;
+    }
+    // Stranded: nowhere, in the strip about to go, or on a turn's bubble that is no stop any more (it asks nothing).
     if (now && now !== document.body && !(root.contains(now) && now.closest(".action-strip, .live-turn:not([data-nav])"))) return;
-    const newest = [...root.querySelectorAll<HTMLElement>('[data-nav="post"]')].at(-1);
-    newest?.focus({ preventScroll: true });
-    newest?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    toNewest();
   });
 
   return (
