@@ -13,6 +13,10 @@ export interface StoredT3Auth {
   scope: string;
   expiresAt: string | null;
   pairedAt: string;
+  /** T3's session behind the token, when it said (its CLI does); otherwise read from the token (sessionIdOf). */
+  sessionId?: string;
+  /** How Backroom got it: a pairing link exchanged, or a session T3's CLI issued (src/app/t3Credential.ts). */
+  source?: "pairing" | "t3-cli";
 }
 
 export const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -32,9 +36,12 @@ export const SCOPE_USES = {
 } as const;
 export const REQUESTED_SCOPES = Object.keys(SCOPE_USES).join(" ");
 
+/** How the user pairs Backroom again, in the page's sentences. */
+export const HOW_TO_PAIR = "run `t3 pair` on T3's machine and paste the link it prints into the T3 panel (the T3 button at the top of the overview)";
+
 /** The page's sentence when T3 refuses a call because Backroom's pairing lacks `scope`. */
 export function missingScopeMessage(scope: string): string {
-  return `Backroom's pairing with T3 does not allow this (it lacks the "${scope}" permission): run \`t3 pair\` on T3's machine and paste the link it prints into the T3 panel (the T3 button at the top of the overview) to pair again.`;
+  return `Backroom's pairing with T3 does not allow this (it lacks the "${scope}" permission): ${HOW_TO_PAIR} to pair again.`;
 }
 
 export function authStorePath(dataDir: string): string {
@@ -108,7 +115,18 @@ export async function exchangePairingCredential(
     scope: parsed.scope,
     expiresAt: Number.isFinite(parsed.expires_in) && parsed.expires_in > 0 ? new Date(now + parsed.expires_in * 1000).toISOString() : null,
     pairedAt: new Date(now).toISOString(),
+    source: "pairing",
   };
+}
+
+/** The session a T3 token belongs to: its signed claims (base64url JSON before the dot) carry it as `sid`. */
+export function sessionIdOf(token: string): string | null {
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[0] ?? "", "base64url").toString("utf8")) as { sid?: unknown };
+    return typeof claims.sid === "string" && claims.sid.length > 0 ? claims.sid : null;
+  } catch {
+    return null;
+  }
 }
 
 export function redact(text: string): string {

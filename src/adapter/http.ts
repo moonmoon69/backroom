@@ -74,6 +74,8 @@ export interface HttpAdapterOptions {
   worktreePollMs?: number;
   /** How long the shared command socket stays open after its last call has been answered. Default 30s. */
   commandLinkIdleMs?: number;
+  /** T3 refused the credential (HTTP 401/403); called with the token the request carried. */
+  onCredentialRejected?: (token: string | null) => void;
 }
 
 interface ShellSnapshot {
@@ -439,6 +441,7 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketImpl: (new (url: string) => WebSocketLike) | undefined;
   private readonly userDataDir: string | undefined;
+  private readonly onCredentialRejected: ((token: string | null) => void) | undefined;
   private readonly shellCacheMs: number;
   private readonly requestTimeoutMs: number;
   private readonly worktreePollMs: number;
@@ -462,13 +465,25 @@ export class HttpT3Adapter implements T3Adapter {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.worktreePollMs = options.worktreePollMs ?? 500;
     this.commandLinkIdleMs = options.commandLinkIdleMs ?? 30_000;
+    this.onCredentialRejected = options.onCredentialRejected;
   }
 
+  /** Use another token from now on; the sockets opened with the old one are closed, and open again with it when next needed. */
   setAccessToken(token: string | null): void {
     this.accessToken = token;
     this.invalidateShell();
     this.protocolCheck = null;
     this.dropCommandLink();
+    const activity = this.activityLink;
+    this.activityLink = null;
+    void activity?.then((connection) => connection.close(), () => undefined);
+  }
+
+  /** Whether T3 takes `token` (its session check), without using it for anything else. */
+  async accepts(token: string): Promise<boolean> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/auth/session`, { headers: { accept: "application/json", authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(this.requestTimeoutMs) });
+    if (!response.ok) return false;
+    return ((await response.json()) as { authenticated?: unknown }).authenticated === true;
   }
 
   get hasCredentials(): boolean {
@@ -502,6 +517,7 @@ export class HttpT3Adapter implements T3Adapter {
       throw unanswered(error);
     }
     if (response.status === 401 || response.status === 403) {
+      this.onCredentialRejected?.(headers.authorization ? headers.authorization.slice("Bearer ".length) : null);
       throw new T3Unavailable(`T3 rejected the credential (HTTP ${response.status}); pair Backroom again`);
     }
     if (response.status >= 500) {

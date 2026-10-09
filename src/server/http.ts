@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
+import type { T3Credential } from "../app/t3Credential.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, sameT3Host, writeStoredAuth } from "../adapter/auth.ts";
 import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, runPrompt } from "../adapter/types.ts";
@@ -66,7 +67,7 @@ export interface BrowserToolsHttp {
   command: string;
 }
 
-export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, speech?: SpeechSynth | null): Hono {
+export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, speech?: SpeechSynth | null, t3Credential?: T3Credential | null): Hono {
   const app = new Hono();
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
   const costs = new ThreadCosts({
@@ -131,6 +132,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         paired: stack.adapter.kind === "fake" ? true : Boolean(httpAdapter?.hasCredentials),
         pairedAt: stored?.pairedAt ?? null,
         tokenExpiresAt: stored?.expiresAt ?? null,
+        credential: t3Credential?.status() ?? null,
         environment,
         auth,
         error,
@@ -151,6 +153,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     const auth = await exchangePairingCredential(baseUrl, credential);
     writeStoredAuth(config.dataDir, auth);
     httpAdapter.setAccessToken(auth.accessToken);
+    t3Credential?.paired();
     return c.json({ paired: true, scope: auth.scope, expiresAt: auth.expiresAt });
   });
 
