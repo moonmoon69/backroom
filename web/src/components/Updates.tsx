@@ -8,8 +8,8 @@ import { UpdateIcon } from "./icons.tsx";
 import { useToast } from "./Toast.tsx";
 
 /**
- * The Updates button in the overview's header: a count when T3 or a harness can be updated, a spinner while an
- * update runs. It opens the Updates popup.
+ * The Updates button in the overview's header (a button in its row of the keyboard's grid): a count when T3 or a harness
+ * can be updated, a spinner while an update runs. It opens the Updates popup.
  */
 export function UpdatesButton() {
   const { view } = useUpdates();
@@ -19,7 +19,7 @@ export function UpdatesButton() {
   const label = running ? "Updates: one is running" : count > 0 ? `Updates: ${count} available` : "Updates: T3 and its harnesses";
   return (
     <>
-      <button type="button" className={`small ghost icon-only updates-button${count > 0 ? " has-updates" : ""}`} aria-label={label} title={label} onClick={() => setOpen(true)}>
+      <button type="button" className={`small ghost icon-only updates-button${count > 0 ? " has-updates" : ""}`} aria-label={label} title={label} onClick={() => setOpen(true)} data-nav="ov" data-nav-key="head:updates">
         {running ? <span className="spinner" aria-hidden="true" /> : <UpdateIcon />}
         {count > 0 && !running ? (
           <span className="updates-count" aria-hidden="true">

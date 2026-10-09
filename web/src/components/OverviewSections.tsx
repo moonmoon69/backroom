@@ -4,7 +4,7 @@ import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { Popover } from "./Popover.tsx";
 import { ChevronIcon, MoreIcon, PlusIcon } from "./icons.tsx";
-import { PresetDialog, PresetIcon, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
+import { PresetDialog, PresetIcon, RoomChoices, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
 import { useSortable } from "./sortable.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
@@ -22,20 +22,21 @@ function shortAge(iso: string): string {
 }
 
 /**
- * Your crew, under the projects: each saved member with their model and what they are for. A click opens them to edit
- * (settings and look); their ⋯ seats them in a room or edits them. Dragged onto a room's tile they are seated there.
+ * Your crew, under the projects: each saved member with their model and what they are for. A click (or Enter) opens them
+ * to edit (settings and look), and the dialog's Seat in a room… seats them; so does their ⋯, or dragging them onto a
+ * room's tile.
  */
 export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: RoomListItem[]; projects: T3Project[]; onSeat: (roomId: string, presetId: string) => void; runCommand: RunCommand }) {
   const { presets } = usePresets();
   const presetText = usePresetText();
   const [editing, setEditing] = useState<{ preset: Preset | null } | null>(null);
   return (
-    <section className="ov-project ov-shelf" aria-label="Crew" data-nav-section>
+    <section className="ov-project ov-shelf" aria-label="Crew">
       <h2 className="ov-project-title">
         <span className="ov-project-name">Crew</span>
         <span className="ov-project-path muted">who you bring into rooms · drag one onto a room to seat them</span>
         <span className="spacer" />
-        <button type="button" className="small ghost ov-project-new" title="Save a crew member: a name with a model, its options, permission mode and where it works" onClick={() => setEditing({ preset: null })}>
+        <button type="button" className="small ghost ov-project-new" title="Save a crew member: a name with a model, its options, permission mode and where it works" onClick={() => setEditing({ preset: null })} data-nav="ov" data-nav-key="head:crew">
           <PlusIcon />
           New crew member
         </button>
@@ -45,7 +46,7 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
         {presets.map((preset) => {
           const { model, what, detail } = presetText(preset);
           return (
-            <li key={preset.id} className="ov-shelf-item" draggable onDragStart={(event) => startPresetDrag(event, preset)}>
+            <li key={preset.id} className="ov-shelf-item" draggable onDragStart={(event) => startPresetDrag(event, preset)} data-nav-card>
               <button
                 type="button"
                 className="ov-shelf-tile"
@@ -64,7 +65,14 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
           );
         })}
       </ul>
-      {editing ? <PresetDialog preset={editing.preset} runCommand={runCommand} onClose={() => setEditing(null)} /> : null}
+      {editing ? (
+        <PresetDialog
+          preset={editing.preset}
+          runCommand={runCommand}
+          onClose={() => setEditing(null)}
+          seat={{ rooms, projects, onSeat: (roomId) => editing.preset && onSeat(roomId, editing.preset.id) }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -98,7 +106,6 @@ function PresetMenu({ preset, rooms, projects, onSeat, onEdit }: { preset: Prese
     return () => cancelAnimationFrame(frame);
   }, [level, open]);
 
-  const projectTitle = new Map(projects.map((p) => [p.id, p.title]));
   const pick = (action: () => void) => {
     setLevel("closed");
     action();
@@ -136,12 +143,7 @@ function PresetMenu({ preset, rooms, projects, onSeat, onEdit }: { preset: Prese
                 <ChevronIcon dir="left" />
                 <span>Seat in a room</span>
               </button>
-              {rooms.map((room) => (
-                <button key={room.id} type="button" role="menuitem" className="menu-room" onClick={() => pick(() => onSeat(room.id))}>
-                  <span className="menu-room-title">{room.title}</span>
-                  <span className="menu-room-meta">{[projectTitle.get(room.projectId), `${room.participantCount} member${room.participantCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</span>
-                </button>
-              ))}
+              <RoomChoices rooms={rooms} projects={projects} onPick={(roomId) => pick(() => onSeat(roomId))} />
             </>
           )}
         </Popover>
@@ -154,12 +156,12 @@ function PresetMenu({ preset, rooms, projects, onSeat, onEdit }: { preset: Prese
 export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { browsers: BrowserListItem[]; onOpen: (browserId: string) => void; onChanged: () => void; runCommand: RunCommand }) {
   const [adding, setAdding] = useState(false);
   return (
-    <section className="ov-project ov-shelf" aria-label="Browsers" data-nav-section>
+    <section className="ov-project ov-shelf" aria-label="Browsers">
       <h2 className="ov-project-title">
         <span className="ov-project-name">Browsers</span>
         <span className="ov-project-path muted">shared Chrome browsers on this machine, for agents</span>
         <span className="spacer" />
-        <button type="button" className="small ghost ov-project-new" title="A new shared browser, named for what it is for" onClick={() => setAdding(true)}>
+        <button type="button" className="small ghost ov-project-new" title="A new shared browser, named for what it is for" onClick={() => setAdding(true)} data-nav="ov" data-nav-key="head:browsers">
           <PlusIcon />
           New browser
         </button>
@@ -168,7 +170,7 @@ export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { b
         {browsers.map((browser) => {
           const state = browser.status.state;
           return (
-            <li key={browser.id} className="ov-shelf-item">
+            <li key={browser.id} className="ov-shelf-item" data-nav-card>
               <button type="button" className="ov-shelf-tile" title={`${browser.name}${browser.description ? `\n${browser.description}` : ""}`} onClick={() => onOpen(browser.id)} data-nav="ov" data-nav-key={`browser:${browser.id}`} data-where={`${browser.name} · browser`}>
                 <span className={`thread-dot tone-${state === "running" ? "on" : state === "starting" ? "working" : state === "error" ? "error" : "idle"}`} aria-hidden="true" />
                 <span className="ov-shelf-name mono">{browser.name}</span>
@@ -212,7 +214,7 @@ export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T
       </button>
     ) : null;
   return (
-    <div className="ov-thread-shelf" data-nav-section>
+    <div className="ov-thread-shelf">
       <div className="ov-thread-shelf-toggles">
         {toggle("settled", settled.length, "Threads in T3's settled list: done for now. Sending one a message makes it active again.")}
         {toggle("archived", archived.length, "Threads archived in T3: hidden there, reversible. Open one to unarchive or delete it.")}

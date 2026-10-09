@@ -1,15 +1,15 @@
 /**
  * Keyboard navigation of the page (the shortcuts are listed in one place: keyOrder.ts, KEYS, shown by the key bar and
- * `?` and in README.md; the overview's reading order is there too, apart from the page, so it is tested on its own).
+ * `?` and in README.md; where the overview's arrows go is there too, apart from the page, so it is tested on its own).
  *
  * The page moves real focus: every item the arrows reach is an element with `data-nav` (its group) and `data-nav-key`
  * (a key that survives a redraw: "room:<id>", "post:<seq>", …), focusable (a button, or tabindex -1 with a role and a
  * label), so assistive technology announces it and `:focus-visible` draws its ring. Tab and Enter reach every control
  * as before; the arrows only add the quick way between items.
  *
- * - The overview reads section by section (each project, its shelf, the crew, the browsers); inside a section column
- *   by column, as the cards are stacked, each column top to bottom. Up and Down follow that order through every card
- *   and member; Left and Right go to the column beside, to the item nearest in height.
+ * - The overview is a grid of rows: the header, each section's head (its + button), its tiles, the crew, the browsers.
+ *   Tiles are the items, not the members on them. Up and Down go to the nearest row below or above, to the item in the
+ *   column the run began in; Left and Right along the row, stopping at its ends (keyOrder.ts, gridTarget).
  * - A room's conversation reads in lanes, top to bottom: its header, the room state, the status chips, the posts and the
  *   composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to lane, post to post in the posts lane; Left and
  *   Right go along the header and the status chips, and elsewhere between the panes: the board, then the side panel's
@@ -24,7 +24,7 @@
  */
 
 import { useEffect, useRef, type RefObject } from "react";
-import { inReadingOrder, readingTarget, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Placed } from "./keyOrder.ts";
+import type { Boxed, KeyWhen, Lane, LaneAt, NavKey, PlaceId } from "./keyOrder.ts";
 
 const OWN_ARROW_ROLES = ["listbox", "option", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "radiogroup", "radio", "slider", "spinbutton", "combobox", "grid", "gridcell", "tree", "treeitem", "tablist", "tab", "scrollbar", "textbox", "searchbox"];
 
@@ -114,28 +114,26 @@ export function focusWhen(probe: () => HTMLElement | null | undefined, ms = 2000
   return () => cancelAnimationFrame(frame);
 }
 
-// ---- the overview's reading order ----
+// ---- the overview's grid ----
 
-/** The overview's items where they are drawn now. */
-function placedItems(root: HTMLElement, group: string): Placed<HTMLElement>[] {
-  const sections = [...root.querySelectorAll<HTMLElement>("[data-nav-section]")];
-  return navItems(root, group).map((element): Placed<HTMLElement> => {
-    const rect = element.getBoundingClientRect();
-    const card = element.closest<HTMLElement>("[data-nav-card]") ?? element;
-    return {
-      element,
-      section: sections.indexOf(element.closest<HTMLElement>("[data-nav-section]")!),
-      column: Math.round(card.getBoundingClientRect().left),
-      top: rect.top,
-      middle: rect.top + rect.height / 2,
-    };
-  });
-}
-
-/** Where a key moves from `current` on the overview; null when it stays. */
-export function overviewTarget(root: HTMLElement, group: string, current: HTMLElement | null, key: NavKey): HTMLElement | null {
-  const order = inReadingOrder(placedItems(root, group));
-  return readingTarget(order, current ? order.findIndex((p) => p.element === current) : -1, key)?.element ?? null;
+/**
+ * The overview's items where they are drawn now, in document order: a tile is boxed by its card (a room's members are
+ * on it, not items of their own), a button in a row by itself; a disabled button is left out. Their heights are the
+ * page's, however far it is scrolled: the header sticks at the top while the rest scrolls under it, so its buttons stay
+ * where the header stands in the page, at the top.
+ */
+export function overviewItems(root: HTMLElement): Boxed<HTMLElement>[] {
+  const page = root.scrollTop - root.getBoundingClientRect().top;
+  const head = root.querySelector(".overview-head");
+  const atTop = head ? -head.getBoundingClientRect().top : page;
+  return navItems(root, "ov")
+    .filter((element) => !element.matches(":disabled"))
+    .map((element) => {
+      const card = element.closest<HTMLElement>("[data-nav-card]");
+      const { left, right, top, bottom } = (card ?? element).getBoundingClientRect();
+      const y = head?.contains(element) ? atTop : page;
+      return { element, left, right, top: top + y, bottom: bottom + y, tile: card !== null, needs: Boolean(card?.matches(".needs")) };
+    });
 }
 
 /** The next or previous item in a list (a pane's posts or members); with no current item, the last for Up, else the first. */
@@ -209,7 +207,7 @@ const whereOf = (item: HTMLElement): string => item.dataset.where ?? nameOf(item
 const HEAD_PLACES: Record<string, PlaceId> = { "head:close": "room-head-close", "head:chat": "room-head-tab", "head:board": "room-head-tab", "head:people": "room-head-panel", "head:browser": "room-head-panel", "head:git": "room-head-panel", "head:menu": "room-head-options" };
 
 /** The overview's items by the kind their key starts with. */
-const OVERVIEW_PLACES: Record<string, PlaceId> = { room: "overview-room", thread: "overview-thread", member: "overview-member", preset: "overview-crew", browser: "overview-browser", shelf: "overview-shelf" };
+const OVERVIEW_PLACES: Record<string, PlaceId> = { room: "overview-room", thread: "overview-thread", preset: "overview-crew", browser: "overview-browser", shelf: "overview-shelf", head: "overview-head" };
 
 /** Where the ring is now, read off the page: the focused element, what it is in, and what is open around it. */
 export function keyPlace(): PlaceNow {

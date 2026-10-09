@@ -1,8 +1,8 @@
 /**
  * The page's keys without the page (keys.ts does the DOM side): the table of every key by the place it works in, which
- * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, the
- * overview's reading order with where each arrow goes, on items placed as the overview draws them, and a room's lanes
- * with where each arrow goes in them.
+ * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, where each
+ * arrow goes on the overview's grid, on items boxed as the overview draws them, and a room's lanes with where each arrow
+ * goes in them.
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
@@ -38,10 +38,10 @@ export type PlaceId =
   | "overview"
   | "overview-room"
   | "overview-thread"
-  | "overview-member"
   | "overview-crew"
   | "overview-browser"
   | "overview-shelf"
+  | "overview-head"
   | "overview-other"
   | "overview-page"
   | "room"
@@ -111,31 +111,31 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
     places: [
       {
         id: "overview",
-        on: "a tile or a member",
+        on: "a tile or a button in a row",
         within: "everywhere",
         entries: [
-          { keys: ["↑", "↓"], does: "previous or next, column by column", more: "section by section: each project, its settled and archived threads, the crew, the browsers" },
-          { keys: ["←", "→"], does: "the column beside, at the same height" },
-          { keys: ["Home", "End"], does: "first or last on the page" },
+          { keys: ["↑", "↓"], does: "the row above or below", more: "the nearest item there, across sections: the header's buttons, each section's +, its tiles, then the crew's and the browsers'; a run of ↑ ↓ keeps to the column it began in" },
+          { keys: ["←", "→"], does: "along the row", more: "stops at the row's ends" },
+          { keys: ["Home", "End"], does: "first or last in the row" },
           { keys: ["Backspace"], does: "nothing to go back to", more: "the overview is the top", bar: false },
         ],
       },
-      { id: "overview-room", on: "a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "open the room" }] },
+      { id: "overview-room", on: "a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "open the room", more: "its members are read on the tile, not visited; in the room, Members has them" }] },
       { id: "overview-thread", on: "a thread's tile", within: "overview", entries: [{ keys: ["Enter"], does: "open the thread" }] },
-      { id: "overview-member", on: "a member on a room's tile", within: "overview", entries: [{ keys: ["Enter"], does: "its thread, over its room", more: "read only; Backspace goes back to the room, folds the panel, then back to the overview" }] },
-      { id: "overview-crew", on: "a crew member", within: "overview", entries: [{ keys: ["Enter"], does: "edit them" }] },
+      { id: "overview-crew", on: "a crew member", within: "overview", entries: [{ keys: ["Enter"], does: "edit them", more: "the dialog's Seat in a room… seats them, as dragging them onto a room's tile does" }] },
       { id: "overview-browser", on: "a browser", within: "overview", entries: [{ keys: ["Enter"], does: "open its page" }] },
       { id: "overview-shelf", on: "settled or archived threads", within: "overview", entries: [{ keys: ["Enter"], does: "show or hide them" }] },
+      { id: "overview-head", on: "a button in the header or a section's head", within: "overview", entries: [{ keys: ["Enter"], does: "press it" }] },
       {
         id: "overview-other",
-        on: "a button",
+        on: "a tile's ⋯, or another button",
         within: "everywhere",
         entries: [
-          { keys: ["↑", "↓", "←", "→"], does: "to the tiles" },
+          { keys: ["↑", "↓", "←", "→"], does: "as from its tile", more: "a button outside a tile: to the tiles" },
           { keys: ["Enter"], does: "press it" },
         ],
       },
-      { id: "overview-page", on: "nothing", within: "everywhere", entries: [{ keys: ["↑", "↓", "←", "→"], does: "to the tiles" }] },
+      { id: "overview-page", on: "nothing", within: "everywhere", entries: [{ keys: ["↑", "↓", "←", "→"], does: "to the tiles", more: "the first that needs you, else the first" }] },
     ],
   },
   {
@@ -469,40 +469,67 @@ export function keysMarkdown(): string {
 /** A key the page's navigation takes: the four arrows and the two ends. */
 export type NavKey = "up" | "down" | "left" | "right" | "first" | "last";
 
-/** Where an item sits, as the reading order needs it. */
-export interface Placed<T> {
-  element: T;
-  /** Its section, in document order (`data-nav-section`). */
-  section: number;
-  /** The left edge of the card it is in (its column). */
-  column: number;
-  top: number;
-  middle: number;
+/** A stretch of the page across: an item's left and right edges, or the column a run of ↑ ↓ keeps to. */
+export interface Span {
+  left: number;
+  right: number;
 }
 
-/** Reading order: section by section; inside a section column by column, left to right; each column top to bottom. */
-export function inReadingOrder<T>(placed: Placed<T>[]): Placed<T>[] {
-  return [...placed].sort((a, b) => a.section - b.section || a.column - b.column || a.top - b.top);
+/** An item where it is drawn: its box on the page (a tile's is its whole card). */
+export interface Boxed<T> extends Span {
+  element: T;
+  top: number;
+  bottom: number;
+  /** A tile (a room, a thread, a crew member, a browser), not a button in a row. */
+  tile?: boolean;
+  /** A tile that needs you (an approval, a question, a failure nobody followed up). */
+  needs?: boolean;
 }
+
+/** Slack for edges that touch, in pixels. */
+const EDGE = 1;
+/** How far apart two stretches are; 0 when they overlap. */
+const apart = (a0: number, a1: number, b0: number, b1: number): number => Math.max(0, Math.max(a0, b0) - Math.min(a1, b1));
+const overlap = (a0: number, a1: number, b0: number, b1: number): boolean => Math.min(a1, b1) - Math.max(a0, b0) > 0;
+const middle = (span: Span): number => (span.left + span.right) / 2;
+/** The first by these measures, each breaking the ties of the one before; the earliest in the list after that. */
+const first = <T>(items: T[], ...by: Array<(item: T) => number>): T | null =>
+  [...items].sort((a, b) => by.reduce((order, measure) => order || measure(a) - measure(b), 0))[0] ?? null;
 
 /**
- * Where a key moves from the item at `at` in a reading order (null: it stays). Down and Up are the next and previous
- * item; Left and Right the next column over in the same section, at the item there nearest in height; Home and End the
- * ends. With no current item (`at` < 0), the first.
+ * Where a key moves from `items[at]` on a page laid out in rows, as on a game grid (null: it stays). Down and Up go to
+ * the nearest row below or above, across sections (the item nearest the ring's edge and the items beside it, whose
+ * height overlaps its own), and in that row to the item in `column` (overlapping it across, else the nearest to it, and
+ * of two there the nearer; the ring's own span when no run of ↑ ↓ is going on), so a section's head with one button at the far right is a row
+ * passed on the way and does not pull the ring over. Left and Right go to the nearest item beside the ring whose
+ * height overlaps its own, and stop at the row's ends; Home and End go to the row's first and last.
  */
-export function readingTarget<T>(order: Placed<T>[], at: number, key: NavKey): Placed<T> | null {
-  if (order.length === 0) return null;
-  if (key === "first" || at < 0) return order[0]!;
-  if (key === "last") return order.at(-1)!;
-  const here = order[at]!;
-  if (key === "down") return order[at + 1] ?? null;
-  if (key === "up") return order[at - 1] ?? null;
-  const columns = [...new Set(order.filter((p) => p.section === here.section).map((p) => p.column))].sort((a, b) => a - b);
-  const next = columns[columns.indexOf(here.column) + (key === "right" ? 1 : -1)];
-  if (next === undefined) return null;
-  const candidates = order.filter((p) => p.section === here.section && p.column === next);
-  candidates.sort((a, b) => Math.abs(a.middle - here.middle) - Math.abs(b.middle - here.middle) || a.top - b.top);
-  return candidates[0] ?? null;
+export function gridTarget<T>(items: Boxed<T>[], at: number, key: NavKey, column?: Span): Boxed<T> | null {
+  const here = items[at];
+  if (!here) return null;
+  const inRow = (item: Boxed<T>) => overlap(item.top, item.bottom, here.top, here.bottom);
+  if (key === "first" || key === "last") return first(items.filter(inRow), (item) => (key === "first" ? item.left : -item.right));
+  if (key === "left" || key === "right") {
+    const beside = items.filter((item) => item !== here && inRow(item) && (key === "right" ? item.left >= here.right - EDGE : item.right <= here.left + EDGE));
+    return first(beside, (item) => apart(item.left, item.right, here.left, here.right), (item) => Math.abs(item.top - here.top));
+  }
+  const down = key === "down";
+  const ahead = items.filter((item) => item !== here && (down ? item.top >= here.bottom - EDGE : item.bottom <= here.top + EDGE));
+  const edge = first(ahead, (item) => (down ? item.top : -item.bottom));
+  if (!edge) return null;
+  const span = column ?? here;
+  return first(
+    ahead.filter((item) => overlap(item.top, item.bottom, edge.top, edge.bottom)),
+    (item) => apart(item.left, item.right, span.left, span.right),
+    (item) => Math.abs(middle(item) - middle(span)),
+    // Two in that column (tiles stacked beside a tall one): the nearer.
+    (item) => (down ? item.top : -item.bottom),
+  );
+}
+
+/** Where the ring starts with nothing focused: the first tile that needs you, else the first tile, else the first item. */
+export function gridStart<T>(items: Boxed<T>[]): Boxed<T> | null {
+  return items.find((item) => item.tile && item.needs) ?? items.find((item) => item.tile) ?? items[0] ?? null;
 }
 
 /**

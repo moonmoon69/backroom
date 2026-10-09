@@ -1,18 +1,21 @@
 /**
  * Presets: a participant's settings under a name (model and its options, permission mode, role, where it works), so
  * the same few combinations are not chosen again each time. A preset is seated in a room on a new thread (dragged
- * onto the room, or picked in the Add member dialog, several at once if you like) or used to start a thread on its own.
+ * onto the room, picked in the Add member dialog, several at once if you like, or from its Edit dialog's Seat in a
+ * room…) or used to start a thread on its own.
  */
-import { createContext, useContext, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { resolveLook, type Look } from "../../../src/domain/look.ts";
 import { LookPicker } from "./LookPicker.tsx";
-import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RuntimeMode } from "../types.ts";
+import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RoomListItem, RuntimeMode, T3Project } from "../types.ts";
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
+import { Popover } from "./Popover.tsx";
 import { NameInput } from "./NameInput.tsx";
 import { MemberMark } from "./MemberMark.tsx";
 import { RUNTIME_MODE_INFO, ThreadSettingsRow } from "./pickers.tsx";
 import { reloadConsigliereSetting, useConsigliereSetting } from "../consigliere.ts";
+import { tabbables } from "../keys.ts";
 
 export interface PresetsValue {
   presets: Preset[];
@@ -72,6 +75,7 @@ export function PresetIcon({ preset, size = 14 }: { preset: Preset; size?: numbe
 }
 
 const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): boolean => JSON.stringify(a) === JSON.stringify(b);
+const sameLook = (a: Look, b: Look): boolean => Object.keys({ ...a, ...b }).every((key) => a[key as keyof Look] === b[key as keyof Look]);
 
 /**
  * The presets as a row of buttons above a form's settings: one click fills them in. `model` and `runtimeMode` are the
@@ -149,6 +153,100 @@ export function PresetChips({
   );
 }
 
+// ---- seating ----
+
+/** The rooms to seat a crew member in, as a menu's items: each room's title, then its project and how many it holds. */
+export function RoomChoices({ rooms, projects, onPick }: { rooms: RoomListItem[]; projects: T3Project[]; onPick: (roomId: string) => void }) {
+  const projectTitle = new Map(projects.map((p) => [p.id, p.title]));
+  return (
+    <>
+      {rooms.map((room) => (
+        <button key={room.id} type="button" role="menuitem" className="menu-room" onClick={() => onPick(room.id)}>
+          <span className="menu-room-title">{room.title}</span>
+          <span className="menu-room-meta">{[projectTitle.get(room.projectId), `${room.participantCount} member${room.participantCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}</span>
+        </button>
+      ))}
+    </>
+  );
+}
+
+/** Where a crew member can be seated from their Edit dialog: every room, and what seats them. */
+export interface SeatChoices {
+  rooms: RoomListItem[];
+  projects: T3Project[];
+  onSeat: (roomId: string) => void;
+}
+
+/**
+ * Seat in a room…: the rooms in a menu over the dialog; Enter on one seats the crew member there on a new thread with
+ * their saved settings (the keyboard's version of dragging them onto a room's tile), and the dialog closes. Esc or
+ * Backspace closes the menu, the focus back on the button; Tab closes it and goes on from the button, in the dialog.
+ * While it cannot seat them (`why`: the form has changes, or there are no rooms) it waits: still reached by Tab, it
+ * opens nothing, and the line that says why (`whyId`, shown in the dialog) is its description.
+ */
+function SeatInRoom({ name, seat, why, whyId, busy, onSeated }: { name: string; seat: SeatChoices; why: string | null; whyId: string; busy: boolean; onSeated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!anchor.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-disabled={why !== null || undefined}
+        aria-describedby={why !== null ? whyId : undefined}
+        disabled={busy}
+        title={why ?? `Seat ${name} in a room, on a new thread with their saved settings: the same as dragging them onto the room's tile`}
+        onClick={() => why === null && setOpen((current) => !current)}
+      >
+        Seat in a room…
+      </button>
+      {open ? (
+        <Popover
+          anchor={anchor}
+          menuRef={menuRef}
+          role="menu"
+          className="preset-menu"
+          onClose={() => setOpen(false)}
+          menuProps={{
+            "aria-label": `Seat ${name} in a room`,
+            onKeyDown: (event) => {
+              if (event.key !== "Tab" || !anchor.current) return;
+              event.preventDefault();
+              // On from the button, before the menu goes (else the focus would go back to the button).
+              const stops = tabbables(anchor.current.closest(".dialog") ?? document.body);
+              const at = stops.indexOf(anchor.current);
+              stops[(at + (event.shiftKey ? -1 : 1) + stops.length) % stops.length]?.focus();
+              setOpen(false);
+            },
+          }}
+        >
+          <RoomChoices
+            rooms={seat.rooms}
+            projects={seat.projects}
+            onPick={(roomId) => {
+              setOpen(false);
+              seat.onSeat(roomId);
+              onSeated();
+            }}
+          />
+        </Popover>
+      ) : null}
+    </>
+  );
+}
+
 // ---- creating and editing ----
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
@@ -156,11 +254,14 @@ export function PresetDialog({
   preset,
   runCommand,
   onClose,
+  seat,
 }: {
   /** The preset to edit; null for a new one. */
   preset: Preset | null;
   runCommand: (command: RoomCommand) => Promise<CommandResult | null>;
   onClose: () => void;
+  /** Where an existing one can be seated from here (Seat in a room…; a new one has no such button). */
+  seat?: SeatChoices;
 }) {
   const { presets, reload } = usePresets();
   const consigliereSetting = useConsigliereSetting();
@@ -179,6 +280,12 @@ export function PresetDialog({
   const taken = presets.some((p) => p.id !== preset?.id && p.name.toLowerCase() === trimmed.toLowerCase());
   const valid = NAME_PATTERN.test(trimmed) && trimmed.toLowerCase() !== "all";
   const ready = valid && !taken && model !== null;
+  // Seated with their saved settings: not while the form says otherwise.
+  const changed =
+    preset !== null &&
+    (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
+  const seatWhy = !seat || seat.rooms.length === 0 ? "Seat in a room… waits: there are no rooms yet." : changed ? "Seat in a room… waits: save or cancel the changes first, as they are seated with their saved settings." : null;
+  const seatWhyId = useId();
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -244,6 +351,11 @@ export function PresetDialog({
             <span className="hint">How they are drawn in the pixel look, in every room. The pocket square is always their harness&rsquo;s colour.</span>
           </div>
         ) : null}
+        {preset && seat && seatWhy ? (
+          <p className="hint seat-why" id={seatWhyId}>
+            {seatWhy}
+          </p>
+        ) : null}
         <div className="dialog-actions">
           {preset ? (
             confirmDelete ? (
@@ -262,6 +374,7 @@ export function PresetDialog({
             )
           ) : null}
           <span className="spacer" />
+          {preset && seat ? <SeatInRoom name={preset.name} seat={seat} why={seatWhy} whyId={seatWhyId} busy={busy} onSeated={onClose} /> : null}
           <button type="button" onClick={onClose}>
             Cancel
           </button>

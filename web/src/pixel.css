@@ -351,7 +351,7 @@
   background: var(--accent-hover);
 }
 
-[data-skin="pixel"] button:where(:not(.ghost)):active:not(:disabled) {
+[data-skin="pixel"] button:where(:not(.ghost)):active:not(:disabled, [aria-disabled="true"]) {
   translate: var(--u) var(--u);
   box-shadow: inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--px-bevel-hi), inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
 }
