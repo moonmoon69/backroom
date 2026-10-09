@@ -23,7 +23,8 @@
  *   through a second connection, which the host replays): a run in phase "uncertain" (the host writes it only on its way
  *   to failing a run), an output whose claim comes out "late" (the host never names a closed request), and a blocked
  *   delivery (a reservation over a tiny byte budget; the real one is 4 MiB). Each is a command `decide` accepts.
- *   (`--step ui` only.)
+ *   (`--step ui` only; `--step room` writes one the same way for B1: a briefing in the user's name, as journals from
+ *   before B1 hold it.)
  *
  * The board's semantics are H5's ("members only answer", README.md): a member's final answers the requests its turn was
  * given and wakes the Consigliere, with its T3 status line at the top; members do not post (`rooms-board post` is
@@ -39,7 +40,13 @@
  * by the Consigliere with `rooms-board correct` while the worker's turn runs (that final comes out superseded), the
  * service killed (SIGKILL) and started again while two turns run (the worker's on the correction and his on the user's
  * message), the second review, PASS, his report (an update in the room's news); then a turn T3 fails and the user's
- * Retry from the page, a reseat, and a retire (refused first while the member has work). The fake T3 keeps its threads
+ * Retry from the page, a reseat, and a retire (refused first while the member has work); then B1's: a member seated
+ * whose briefing fails (Backroom's request: the Consigliere's notice, nothing for the user) and whom he retires at once,
+ * and the user's case (#438) on a journal from before B1, whose briefing in the user's name fails (his, as it reached
+ * him), then the Consigliere's cancel wakes the member to fail again (needing nobody), and he retires the member; a
+ * reseat's checkpoint the member fails (Backroom's request too: his notice), which he cancels; and his own failed turn
+ * on the user's message, in the chat as in the status bar, dismissed there (the bar, the counts and the overview's tile
+ * clear) and then retried there. The fake T3 keeps its threads
  * in <data>/fake-t3.json (ROOMS_FAKE_STATE), so it comes back from the kill as real T3 would, since T3 is not
  * Backroom's process; the script reads that file as T3's own record of what it ran.
  */
@@ -662,7 +669,7 @@ function membersOnlyAnswer(s: Snapshot): string {
   const requests = s.posts.filter((p) => p.kind === "request");
   const parented = requests.filter((p) => p.request.parentId !== null);
   if (parented.length > 0) fail(`posts with a parent: ${parented.map((p) => `#${p.number} under ${p.request.parentId}`).join(", ")}`);
-  const byMembers = requests.filter((p) => p.author !== "$user" && !his.has(p.author));
+  const byMembers = requests.filter((p) => p.author !== "$user" && p.author !== "$system" && !his.has(p.author));
   if (byMembers.length > 0) fail(`requests posted by members: ${byMembers.map((p) => `#${p.number} by ${p.author}`).join(", ")}`);
   const pending = s.posts.filter((p) => p.kind === "output" && p.output.claims.some((c: any) => c.outcome === "pending_activity"));
   if (pending.length > 0) fail(`outputs with a pending_activity claim: ${pending.map((p) => `#${p.number}`).join(", ")}`);
@@ -733,11 +740,12 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   browser.click(/tab "Board/);
   browser.consoleClean();
 
-  // 0. Backroom's seat briefings (L4b, in the user's name) are Backroom's on the board, and so are their acknowledgements.
+  // 0. Backroom's seat briefings (L4b; its own requests since B1) are Backroom's on the board, and so are their
+  // acknowledgements, which go to nobody.
   await check.state("Backroom's seat briefing, not the user's message", (x) => {
-    const briefing = x.posts.find((p) => p.kind === "request" && p.author === "$user" && p.request.id.startsWith("seat-briefing:") && p.request.owner === seat.worker);
+    const briefing = x.posts.find((p) => p.kind === "request" && p.author === "$system" && p.request.id.startsWith("seat-briefing:") && p.request.owner === seat.worker);
     const ack = briefing && claimOf(x, briefing.request.id, "answered");
-    return briefing && ack ? `#${briefing.number} request ${briefing.request.id.slice(0, 24)}… by $user, answered by #${ack.number}` : null;
+    return briefing && briefing.request.returnTo === "$system" && ack && ack.to.length === 0 ? `#${briefing.number} request ${briefing.request.id.slice(0, 24)}… by $system, answered by #${ack.number} (to nobody)` : null;
   }, ["Backroom → @worker: seat briefing", "(seat briefing)"]);
 
   // 1. The user asks the Consigliere; his turn runs: an open request, with who is on it.
@@ -1177,14 +1185,14 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     },
   });
 
-  // 18b. The Consigliere reseats the worker (L4b): Backroom's checkpoint request and the handover are Backroom's on the
-  // board, never the user's messages.
+  // 18b. The Consigliere reseats the worker (L4b): Backroom's checkpoint request (its own since B1) and the handover are
+  // Backroom's on the board, never the user's messages.
   browser.click(/tab "Board/);
   room.board("fable", "reseat", "worker");
   const checkpoint = await until("the reseat's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === seat.worker));
   await check.state("Backroom's reseat checkpoint, not the user's message", (x) => {
     const p = x.posts.find((q) => q.id === checkpoint.id);
-    return p && p.author === "$user" && p.request.message === null ? `#${p.number} request ${p.request.id.slice(0, 16)}… by $user with no user message: Backroom's` : null;
+    return p && p.author === "$system" && p.request.returnTo === "$system" ? `#${p.number} request ${p.request.id.slice(0, 16)}… by $system: Backroom's` : null;
   }, ["Backroom → @worker: reseat checkpoint"], {
     focus: () => checkpoint.number,
     extra: () => {
@@ -1637,7 +1645,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   await room.settle("fable");
   const oldWorker = seat.worker;
   room.board("fable", "reseat", "worker", "carry on with the parser follow-ups");
-  await until("the reseat's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === oldWorker));
+  const workerCheckpoint = await until("the reseat's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === oldWorker));
+  if (workerCheckpoint.author !== "$system" || workerCheckpoint.request.returnTo !== "$system") fail(`the checkpoint #${workerCheckpoint.number} is not Backroom's: by ${workerCheckpoint.author}, to ${workerCheckpoint.request.returnTo}`);
   await room.live("worker");
   await room.finish("worker", "Checkpoint: the parser fix and the v1.2 tag are done and answered; nothing is open.");
   const handover = await until("the handover to the fresh seat", async () => (await room.snapshot()).posts.find((p) => p.kind === "transfer" && p.transfer.oldSeatId === oldWorker), 60_000);
@@ -1690,6 +1699,222 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
       log("  page: Members (2)");
     },
   });
+
+  // 16. B1: a seat's briefing is Backroom's request. A member whose thread cannot run fails it: the notice is the
+  // Consigliere's and nothing reaches the user; he retires the member at once, and the briefing it never answered goes
+  // with it.
+  const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+  /** A member seated now (L4b): in a room with a Consigliere Backroom briefs it at once. Its runs are held. */
+  const seatNew = async (alias: string) => {
+    const participantId = (await service.command<{ participantId: string }>({ type: "participant.create", roomId: room.roomId, alias, modelSelection: model, thread: { mode: "create" } })).participantId;
+    const binding = (await room.snapshot()).bindings.find((b) => b.participantId === participantId)!;
+    await service.fake("hold", { threadId: binding.threadId, hold: true });
+    return { alias, seatId: binding.id, threadId: binding.threadId };
+  };
+  type Seated = Awaited<ReturnType<typeof seatNew>>;
+  const liveOf = (m: Seated) => until(`@${m.alias}'s run`, async () => {
+    const x = await room.snapshot();
+    const id = x.seats.find((w) => w.seatId === m.seatId)?.activeRunId;
+    const run = id ? x.runs.find((r) => r.id === id) : null;
+    return run?.phase === "running" ? run : null;
+  });
+  /** T3 ends the member's running turn (failed with `error`, or completed), and the host imports it. */
+  const endTurn = async (m: Seated, text: string, outcome: "error" | "completed") => {
+    const run = await liveOf(m);
+    await service.fake("complete", { threadId: m.threadId, text, outcome });
+    await until(`@${m.alias}'s run ${run.id.slice(0, 8)} to end`, async () => (await room.snapshot()).runs.find((r) => r.id === run.id)?.phase === "terminal");
+    return run;
+  };
+  const noticeOf = (x: Snapshot, runId: string) => x.posts.find((p) => p.kind === "notice" && p.notice.runId === runId);
+  /** The uid of a button in one post's row of the page (its lines up to the next post's), named `name`, if it has one. */
+  const rowButtonUid = (number: number, name: string): string | undefined => {
+    const rows = browser.on("snapshot").split("\n");
+    const at = rows.findIndex((line) => line.includes(`"#${number}, `));
+    if (at < 0) fail(`no row of #${number} on the page`);
+    const next = rows.findIndex((line, i) => i > at && /"#\d+, /.test(line));
+    const line = rows.slice(at + 1, next < 0 ? undefined : next).find((l) => l.includes(`button "${name}"`));
+    return line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+  };
+  const rowButton = (number: number, name: string): string => {
+    const uid = rowButtonUid(number, name);
+    if (!uid) fail(`no ${name} in the row of #${number}`);
+    return uid;
+  };
+  const noNeedsInBar = () => browser.poll<boolean>("no 'Needs you' in the status bar", "() => !document.querySelector('.work-bar .work-needs')", (none) => none === true);
+  const sol = await seatNew("sol");
+  const solBriefing = `seat-briefing:${sol.seatId}:seated`;
+  const solFailed = await endTurn(sol, "You've hit your usage limit. Try again at Oct 14th, 2026.", "error");
+  await check.state("B1: a seat's briefing fails: Backroom's request, the Consigliere's notice, nothing needs the user", (x) => {
+    const briefing = x.posts.find((p) => p.request?.id === solBriefing);
+    const notice = noticeOf(x, solFailed.id);
+    return briefing?.author === "$system" && briefing.request.returnTo === "$system" && briefing.request.state === "open" && notice && notice.to.length === 1 && notice.to[0] === seat.fable && !notice.notice.needsYou && x.needsYou.length === 0 && x.counts.needsYou === 0
+      ? `#${briefing.number} by $system to @sol, open; its failure #${notice.number} to @fable only, needsYou=false; the room's needsYou empty, counts.needsYou=0`
+      : null;
+  }, ["Backroom → @sol: seat briefing", "You've hit your usage limit"], { focus: (x) => noticeOf(x, solFailed.id)?.number, extra: noNeedsInBar });
+  // The notice woke him; he takes note of it.
+  await room.settle("fable");
+  // He reseats it: the checkpoint is Backroom's request too, and its failure his notice. He cancels the checkpoint, the
+  // reseat is called off, and the cancel's wake fails on nothing anyone asked: no notice for the user either.
+  room.board("fable", "reseat", "sol");
+  const solCheckpoint = (await until("@sol's checkpoint request", async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.request.id.startsWith("reseat:") && p.request.owner === sol.seatId))).request.id as string;
+  const checkpointFailed = await endTurn(sol, "You've hit your usage limit. Try again at Oct 14th, 2026.", "error");
+  await check.state("B1: a reseat's checkpoint fails: Backroom's request, the Consigliere's notice, nothing needs the user", (x) => {
+    const cp = x.posts.find((p) => p.request?.id === solCheckpoint);
+    const notice = noticeOf(x, checkpointFailed.id);
+    return cp?.author === "$system" && cp.request.returnTo === "$system" && notice && notice.to.length === 1 && notice.to[0] === seat.fable && !notice.notice.needsYou && x.needsYou.length === 0
+      ? `checkpoint #${cp.number} by $system to @sol; its failure #${notice.number} to @fable only, needsYou=false; the room's needsYou empty`
+      : null;
+  }, ["Backroom → @sol: reseat checkpoint"], { focus: (x) => noticeOf(x, checkpointFailed.id)?.number, extra: noNeedsInBar });
+  await room.settle("fable");
+  room.board("fable", "cancel", `#${room.post(await room.snapshot(), solCheckpoint).number}`);
+  const checkpointCancelWake = await endTurn(sol, "You've hit your usage limit. Try again at Oct 14th, 2026.", "error");
+  await room.settle("fable");
+  await check.state("B1: he cancels the checkpoint: the reseat is called off, and the cancel's wake needs nobody", (x) => {
+    const off = x.posts.find((p) => p.id === `reseat-off:${solCheckpoint}`);
+    const recovery = noticeOf(x, checkpointCancelWake.id);
+    return off && x.posts.find((p) => p.request?.id === solCheckpoint)?.request.state === "cancelled" && recovery && recovery.to.length === 0 && !recovery.notice.needsYou && recovery.notice.retryRunId === null && x.needsYou.length === 0 && x.seats.find((w) => w.seatId === sol.seatId)?.status === "active"
+      ? `#${off.number} "${off.body.slice(0, 40)}…"; the cancel's wake failed: #${recovery.number} to nobody, needsYou=false, no Retry; @sol keeps its seat`
+      : null;
+  }, ["Reseat of @sol called off"], { focus: (x) => x.posts.find((p) => p.id === `reseat-off:${solCheckpoint}`)?.number, extra: noNeedsInBar });
+  const solRuns = service.t3Runs(sol.threadId).length;
+  room.board("fable", "retire", "sol");
+  await sleep(1_500);
+  await check.state("B1: the Consigliere retires the member: the briefing it never answered goes with it", (x) => {
+    const left = x.seats.find((w) => w.seatId === sol.seatId);
+    const briefing = x.posts.find((p) => p.request?.id === solBriefing);
+    return left?.status === "retired" && briefing?.request.state === "cancelled" && service.t3Runs(sol.threadId).length === solRuns && x.needsYou.length === 0
+      ? `@sol's seat retired; #${briefing.number} cancelled with it; @sol not woken again (${solRuns} T3 run); needsYou empty`
+      : null;
+  }, [], {
+    extra: () => {
+      browser.poll<string | null>("the members after the retire", "() => document.querySelector('[aria-label^=\"Members (\"]')?.getAttribute('aria-label') ?? null", (label) => label === "Members (2)");
+      log("  page: Members (2)");
+    },
+  });
+
+  // 17. The user's case (#438), on a journal from before B1, where a briefing was a request in the user's name: it
+  // fails, and as it reached the Consigliere it is his (not in the chat or the status bar; Retry stays on the board);
+  // his request to the member fails (his); his cancel of it wakes the member, which fails once more on the cancel
+  // alone: that needs nobody. Nothing of the member's reaches the user; the Consigliere retires the member.
+  const grok = await seatNew("grok");
+  await endTurn(grok, "Acknowledged.", "completed");
+  const beforeB1 = `seat-briefing:${grok.seatId}:before-b1`;
+  room.journal([{ type: "request", actor: "$user", id: beforeB1, to: grok.seatId, body: "You are seated in a room whose Consigliere is @fable (a briefing as journals from before B1 hold it: in the user's name)." }]);
+  const grokFailed = await endTurn(grok, "Cursor Agent SDK open failed.", "error");
+  const firstNotice = await until("@grok's failure notice", async () => noticeOf(await room.snapshot(), grokFailed.id));
+  browser.click(/tab "[^"]*fable/);
+  await check.state("B1: a briefing in the user's name (before B1) fails: it reached the Consigliere, so it is his: not in the chat or the status bar, Retry kept", (x) => {
+    const notice = noticeOf(x, grokFailed.id);
+    return notice && notice.to.includes("$user") && notice.to.includes(seat.fable) && notice.notice.backroom && !notice.notice.needsYou && notice.notice.retryRunId === grokFailed.id && x.needsYou.length === 0
+      ? `#${notice.number} to ${notice.to.join(", ")}, backroom=true, needsYou=false, Retry offered; the room's needsYou empty`
+      : null;
+  }, [], {
+    extra: () => {
+      noNeedsInBar();
+      browser.poll<{ chat: string | null; row: boolean }>(
+        "the chat without the failure",
+        `() => { const log = document.querySelector('.timeline'); return { chat: log?.getAttribute('aria-label') ?? null, row: Boolean(log?.querySelector('[data-number="${firstNotice.number}"]')) }; }`,
+        (v) => v.chat === "Conversation with the Consigliere" && !v.row,
+      );
+      browser.click(/tab "Board/);
+      browser.waitFor("Cursor Agent SDK open failed");
+      browser.show(firstNotice.number);
+      rowButton(firstNotice.number, "Retry");
+      if (rowButtonUid(firstNotice.number, "Dismiss")) fail(`#${firstNotice.number} offers Dismiss: it does not wait on the user`);
+      log(`  page: no 'Needs you', not in the chat; on the board #${firstNotice.number} has Retry and no Dismiss`);
+    },
+  });
+  await room.settle("fable");
+  room.board("fable", "post", "@grok design K1, a keyboard-only Backroom");
+  const k1 = (await posted(grok.seatId, "his request to @grok")).request.id;
+  const k1Failed = await endTurn(grok, "Cursor Agent SDK open failed.", "error");
+  await room.settle("fable");
+  room.board("fable", "cancel", `#${room.post(await room.snapshot(), k1).number}`);
+  const cancelWake = await endTurn(grok, "Cursor Agent SDK open failed.", "error");
+  await room.settle("fable");
+  await check.state("B1: the cancel's wake fails too: a recovery failure that needs nobody; nothing of the member's needs the user", (x) => {
+    const his = noticeOf(x, k1Failed.id);
+    const recovery = noticeOf(x, cancelWake.id);
+    const wake = x.runs.find((r) => r.id === cancelWake.id);
+    const onlyCancel = wake?.inputs.every((seq: number) => x.posts.find((p) => p.seq === seq)?.kind === "cancel");
+    return his && his.to.length === 1 && his.to[0] === seat.fable && recovery && onlyCancel && recovery.to.length === 0 && !recovery.notice.needsYou && recovery.notice.retryRunId === null && x.needsYou.length === 0 && x.counts.needsYou === 0
+      ? `#${his.number} to @fable only; the cancel's wake ${cancelWake.id.slice(0, 8)} carried only the cancel and its #${recovery.number} ("${recovery.body.slice(0, 18)}…") is to nobody, needsYou=false, no Retry; needsYou empty`
+      : null;
+  }, ["Recovery failure"], { focus: (x) => noticeOf(x, cancelWake.id)?.number, extra: noNeedsInBar });
+  room.board("fable", "retire", "grok");
+  await check.state("B1: the Consigliere retires the member whose briefing (in the user's name) failed", (x) => {
+    const left = x.seats.find((w) => w.seatId === grok.seatId);
+    const briefing = x.posts.find((p) => p.request?.id === beforeB1);
+    return left?.status === "retired" && briefing?.request.state === "cancelled" && x.needsYou.length === 0
+      ? `@grok's seat retired; #${briefing.number} (the user's, from before B1) cancelled with it; needsYou empty`
+      : null;
+  }, [], {
+    extra: () => {
+      browser.poll<string | null>("the members after the retire", "() => document.querySelector('[aria-label^=\"Members (\"]')?.getAttribute('aria-label') ?? null", (label) => label === "Members (2)");
+      log("  page: Members (2)");
+    },
+  });
+
+  // 18. B1: the Consigliere's own failed turn on the user's message is in the chat as well as in the status bar, one
+  // notice: one Dismiss in the chat clears it everywhere (the bar, the room's count, the room list, the overview's tile),
+  // and Retry there sends his turn again.
+  await room.settle("fable");
+  browser.click(/tab "[^"]*fable/);
+  const release = await room.message("Plan the v1.3 release.");
+  await room.live("fable");
+  const hisFailed = runOf(await room.snapshot(), "fable")!;
+  await room.finish("fable", "provider error: the model is overloaded", { outcome: "error" });
+  const his = await check.state("B1: his own failed turn on your message: in the chat with Retry and Dismiss, the status bar's notice", (x) => {
+    const notice = noticeOf(x, hisFailed.id);
+    return notice && notice.to.length === 1 && notice.to[0] === "$user" && notice.notice.needsYou && notice.notice.retryRunId === hisFailed.id && x.needsYou.length === 1 && x.needsYou[0].id === notice.id
+      ? `#${notice.number} to the user, needsYou=true, Retry offered; the room's needsYou is it alone`
+      : null;
+  }, ["the model is overloaded", "Needs you · 1"], { focus: (x) => noticeOf(x, hisFailed.id)?.number });
+  const hisNotice = noticeOf(his, hisFailed.id)!;
+  browser.poll<{ chat: string | null; row: boolean }>(
+    "his failure's notice in the chat, with its buttons",
+    `() => { const log = document.querySelector('.timeline'); return { chat: log?.getAttribute('aria-label') ?? null, row: Boolean(log?.querySelector('[data-number="${hisNotice.number}"] .notice-actions')) }; }`,
+    (v) => v.chat === "Conversation with the Consigliere" && v.row,
+  );
+  browser.show(hisNotice.number);
+  rowButton(hisNotice.number, "Retry");
+  log(`  page: #${hisNotice.number} is in the chat with Retry and Dismiss`);
+  const tileNeeds = async () => ({
+    overview: (await service.call<{ rooms: Array<{ id: string; needs: number }> }>("GET", "/api/overview")).rooms.find((r) => r.id === room.roomId)?.needs,
+    list: (await service.call<Array<{ id: string; counts: { needsYou: number } }>>("GET", "/api/rooms")).find((r) => r.id === room.roomId)?.counts.needsYou,
+  });
+  const beforeDismiss = await tileNeeds();
+  if (beforeDismiss.overview !== 1 || beforeDismiss.list !== 1) fail(`the overview and the room list should count his failure once: ${JSON.stringify(beforeDismiss)}`);
+  browser.on("click", rowButton(hisNotice.number, "Dismiss"));
+  await check.state("B1: one Dismiss in the chat clears his failure from the status bar and the room's count", (x) => {
+    const notice = x.posts.find((p) => p.id === hisNotice.id);
+    return notice?.notice.dismissed && notice.notice.retryRunId === hisFailed.id && x.needsYou.length === 0 && x.counts.needsYou === 0 ? `#${notice.number} dismissed, Retry still offered; needsYou empty, counts.needsYou=0` : null;
+  }, ["dismissed"], { show: hisNotice.number, extra: noNeedsInBar });
+  const afterDismiss = await tileNeeds();
+  if (afterDismiss.overview !== 0 || afterDismiss.list !== 0) fail(`the overview or the room list still counts his failure: ${JSON.stringify(afterDismiss)}`);
+  browser.click(/button "Back to the overview"/);
+  browser.poll<{ pill: string | null } | null>(
+    "the room's tile without a 'needs you' pill",
+    `() => { const card = [...document.querySelectorAll('article.ov-room')].find((c) => c.querySelector('.ov-room-title')?.textContent === ${JSON.stringify(room.title)}); return card ? { pill: card.querySelector('.pill-input')?.textContent ?? null } : null; }`,
+    (tile) => tile !== null && tile.pill === null,
+  );
+  browser.screenshot("b1-the-tile-after-one-dismiss");
+  log("  page: the overview's tile has no 'needs you'; GET /api/overview and /api/rooms counted 1 before the Dismiss, 0 after");
+  browser.openRoom(room.title);
+  browser.click(/tab "[^"]*fable/);
+  browser.show(hisNotice.number);
+  browser.on("click", rowButton(hisNotice.number, "Retry"));
+  const retried = await until("his retried turn", async () => {
+    const run = runOf(await room.snapshot(), "fable");
+    return run && run.id !== hisFailed.id && run.phase === "running" ? run : null;
+  });
+  await room.finish("fable", "The v1.3 release plan: tag, changelog, announce.");
+  await check.state("B1: Retry from the chat: his turn runs again and answers your message", (x) => {
+    const out = finalOf(x, retried.id)[0];
+    const claim = out?.output.claims.find((c: any) => c.requestId === release);
+    return claim?.outcome === "answered" && room.post(x, release).request.state === "answered" ? `retried run ${retried.id.slice(0, 8)}; #${out.number} answers #${room.post(x, release).number}` : null;
+  }, ["The v1.3 release plan"], { focus: (x) => finalOf(x, retried.id)[0]?.number });
+  browser.click(/tab "Board/);
 
   // Where the room ends: nothing open, no run unresolved, no background work pending; H5's rules held throughout;
   // no old runtime tables.
