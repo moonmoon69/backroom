@@ -73,13 +73,32 @@ test("with nothing focused, any arrow starts at the first item", () => {
 const bar = (place: PlaceId, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${entry.does}`);
 
 test("the bar names the keys of a room's tile, a post and the composer by what they do there", () => {
-  assert.deepEqual(bar("overview-room"), ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Home End first or last on the page", "Enter open the room", "? all keys"]);
-  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the board, Members, Browser and Git", "Home End first or last post", "Enter its detail", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("overview-room"), ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Enter open the room", "Home End first or last on the page", "? all keys"]);
+  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Esc back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // In the field: no ? (it types), Backspace only while the field is empty.
   assert.deepEqual(bar("room-composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"]);
   assert.deepEqual(bar("room-composer", ["typing", "empty"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "Backspace close it", "@ mention a member", "/ a command"]);
   // A thread's composer has no lists.
   assert.deepEqual(bar("composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept"]);
+});
+
+test("with nothing focused, Enter is what it does there: a message in a room or a thread, nothing on the overview", () => {
+  // The room's or thread's window itself (as it opens, after a click on empty space) or the page under it: Enter opens
+  // the composer.
+  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  assert.deepEqual(bar("thread-itself"), ["Enter write a message", "Esc back to the overview", "a–z start writing", "? all keys"]);
+  // A button there is pressed.
+  assert.ok(bar("room-other").includes("Enter press it"));
+  assert.ok(bar("thread-other").includes("Enter press it"));
+  // The overview with nothing focused: the arrows go to the tiles, Enter does nothing; a button on it is pressed.
+  assert.deepEqual(bar("overview-page"), ["↑ ↓ ← → to the tiles", "? all keys"]);
+  assert.ok(bar("overview-other").includes("Enter press it"));
+  // A browser's page: Enter only on a button.
+  assert.deepEqual(bar("browser-page"), ["Esc back to the overview", "? all keys"]);
+  assert.deepEqual(bar("browser-other"), ["Enter press it", "Esc back to the overview", "? all keys"]);
+  // In a dialog's text field Enter is the field's (it sends the form or makes a line): the bar names no Enter there.
+  assert.ok(bar("dialog").includes("Enter press it"));
+  assert.ok(!bar("dialog", ["typing"]).some((line) => line.startsWith("Enter")));
 });
 
 test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {

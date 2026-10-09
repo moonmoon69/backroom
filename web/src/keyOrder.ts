@@ -39,6 +39,7 @@ export type PlaceId =
   | "overview-browser"
   | "overview-shelf"
   | "overview-other"
+  | "overview-page"
   | "room"
   | "room-post"
   | "room-tabs"
@@ -47,12 +48,15 @@ export type PlaceId =
   | "room-pane"
   | "room-button"
   | "room-other"
+  | "room-itself"
   | "member-thread"
   | "thread"
   | "thread-strip"
   | "thread-log"
   | "thread-other"
+  | "thread-itself"
   | "browser-page"
+  | "browser-other"
   | "composer"
   | "room-composer"
   | "suggestions"
@@ -110,13 +114,14 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       { id: "overview-shelf", on: "settled or archived threads", within: "overview", entries: [{ keys: ["Enter"], does: "show or hide them" }] },
       {
         id: "overview-other",
-        on: "a button, or nothing",
+        on: "a button",
         within: "everywhere",
         entries: [
-          { keys: ["↑", "↓", "←", "→"], does: "back to the tiles" },
+          { keys: ["↑", "↓", "←", "→"], does: "to the tiles" },
           { keys: ["Enter"], does: "press it" },
         ],
       },
+      { id: "overview-page", on: "nothing", within: "everywhere", entries: [{ keys: ["↑", "↓", "←", "→"], does: "to the tiles" }] },
     ],
   },
   {
@@ -127,10 +132,10 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "anywhere in it",
         within: "everywhere",
         entries: [
-          { keys: ["←", "→"], does: "between the board, Members, Browser and Git", more: "→ opens the side panel" },
+          { keys: ["←", "→"], does: "between the panes", more: "the board, Members, Browser and Git; → opens the side panel" },
           { keys: ["Esc"], does: "back to the overview", more: "the ring back on the room's tile" },
           { keys: ["Esc"], does: "close the composer", when: "composer-open" },
-          { keys: ["a–z"], does: "start writing", more: "any letter opens the composer and goes in" },
+          { keys: ["a–z"], does: "start writing", more: "any key that types a character, space aside, opens the composer and goes in" },
         ],
       },
       {
@@ -168,7 +173,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["↑", "↓"], does: "previous or next member" },
           { keys: ["Home", "End"], does: "first or last member" },
-          { keys: ["Enter"], does: "its thread, over the room", more: "read only; Esc comes back to the member" },
+          { keys: ["Enter"], does: "its thread", more: "over the room, read only; Esc comes back to the member" },
         ],
       },
       {
@@ -196,6 +201,15 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["↑", "↓"], does: "to the posts" },
           { keys: ["Enter"], does: "press it" },
+        ],
+      },
+      {
+        id: "room-itself",
+        on: "nothing in it",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "to the posts" },
+          { keys: ["Enter"], does: "write a message" },
         ],
       },
       {
@@ -240,16 +254,10 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["Enter"], does: "write a message" },
         ],
       },
-      { id: "thread-other", on: "a button", within: "thread", entries: [{ keys: ["Enter"], does: "press it" }] },
-      {
-        id: "browser-page",
-        on: "a browser's page",
-        within: "everywhere",
-        entries: [
-          { keys: ["Enter"], does: "press it" },
-          { keys: ["Esc"], does: "back to the overview" },
-        ],
-      },
+      { id: "thread-other", on: "a button in a thread", within: "thread", entries: [{ keys: ["Enter"], does: "press it" }] },
+      { id: "thread-itself", on: "nothing in a thread", within: "thread", entries: [{ keys: ["Enter"], does: "write a message" }] },
+      { id: "browser-page", on: "a browser's page", within: "everywhere", entries: [{ keys: ["Esc"], does: "back to the overview" }] },
+      { id: "browser-other", on: "a button on it", within: "browser-page", entries: [{ keys: ["Enter"], does: "press it" }] },
     ],
   },
   {
@@ -306,7 +314,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "a dialog",
         entries: [
           { keys: ["Tab", "Shift+Tab"], does: "next or previous button or field", more: "round inside the dialog" },
-          { keys: ["Enter"], does: "press it" },
+          { keys: ["Enter"], does: "press it", unless: "typing" },
           { keys: ["Esc"], does: "close it", more: "the ring back where it was" },
           { keys: ["?"], does: "close the keys", when: "help" },
         ],
@@ -330,7 +338,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["←", "→"], does: "the providers", more: "with the search empty" },
           { keys: ["Enter"], does: "choose it" },
           { keys: ["Shift+Enter"], does: "star or unstar it", more: "favorites" },
-          { keys: ["Alt+R"], does: "look for new models" },
+          { keys: ["Alt+1…9"], does: "pick by number", more: "the first nine in the list; Ctrl or ⌘ with the digit too" },
+          { keys: ["Alt+R"], does: "find new models", more: "T3 looks for models it has not listed yet" },
           { keys: ["Esc"], does: "close the list" },
         ],
       },
@@ -342,8 +351,11 @@ const PLACES = new Map(KEYS.flatMap((area) => area.places).map((place) => [place
 
 export const placeById = (id: PlaceId): KeyPlace => PLACES.get(id)!;
 
-/** The order keys take on the bar, wherever they are listed: the arrows first, `?` last. */
-const KEY_RANK = ["↑", "↓", "←", "→", "Home", "End", "Enter", "Shift+Enter", "Tab", "Shift+Tab", "Esc", "Backspace", "a–z", "@", "/", "Alt+R", "?"];
+/**
+ * The order keys take on the bar, wherever they are listed: the arrows first, `?` last. A key that does not fit the
+ * window is left out from the end (KeyBar.tsx), so the ones needed least come last: Home and End after the letters.
+ */
+const KEY_RANK = ["↑", "↓", "←", "→", "Enter", "Shift+Enter", "Tab", "Shift+Tab", "Esc", "Backspace", "a–z", "@", "/", "Home", "End", "Alt+1…9", "Alt+R", "?"];
 const rank = (entry: KeyEntry): number => Math.min(...entry.keys.map((key) => (KEY_RANK.includes(key) ? KEY_RANK.indexOf(key) : KEY_RANK.length)));
 
 /**

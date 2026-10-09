@@ -7997,9 +7997,11 @@ span.reply-to {
   overflow: hidden;
 }
 
+/* What the ring is on, up to 16rem (an ellipsis after): with it at its widest, every place's keys fit a 1439px window
+   (the keys rehearsal checks them all). */
 .key-bar-where {
   flex: 0 1 auto;
-  max-width: 40%;
+  max-width: 16rem;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg);
@@ -8010,14 +8012,20 @@ span.reply-to {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
-  gap: 16px;
+  gap: 12px;
   overflow: hidden;
 }
 
 .key-bar-key {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 4px;
+}
+
+/* A key that does not fit is left out whole (KeyBar.tsx). */
+.key-bar-key[hidden] {
+  display: none;
 }
 
 .key-bar-does {

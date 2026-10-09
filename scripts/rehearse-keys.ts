@@ -11,14 +11,17 @@
  * menu, the side panel) against what the API says it should be (the room's ID and title, the post's number and seq, the
  * member's thread). Every state then checks the key bar (K1-1, KeyBar.tsx): drawn at the foot of the window, naming what
  * the ring is on as the API names it (a room's title, a post's number, a member's alias), reads the console (no
- * error-level line) and keeps a screenshot, the bar in it. Three states read the whole bar, every key with its words:
- * on a room's tile, on a post, in the composer.
+ * error-level line) and keeps a screenshot, the bar in it; every key on the bar is drawn whole and none is left out (at
+ * this window the whole bar fits). One state draws every place's bar from the key table (keyOrder.ts) in the page, the
+ * where-text at its widest, and checks each fits the window. Five states read the whole bar, every key with its words:
+ * the overview with nothing focused, a room's tile, a post, the composer, and a room with nothing in it focused.
  *
  * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
  * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
  * the first card's last member goes to the fourth card, not to the second as the page's own order would.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
+import { barEntries, KEYS, type KeyWhen } from "../web/src/keyOrder.ts";
 
 // The parts of rehearse.ts this step uses (its classes, by shape).
 export interface KeysService {
@@ -151,23 +154,74 @@ interface Bar {
   keys: string[];
   /** The key at its right end (`? all keys`), if there is one. */
   end: string | null;
+  /** Keys drawn in part (cut by the bar's edge or the line's). */
+  cut: string[];
+  /** Keys left out because they did not fit (KeyBar.tsx). */
+  left: number;
 }
 
 const BAR = `() => {
   const b = document.querySelector('.key-bar');
-  if (!b) return { shown: false, foot: false, place: null, where: '', keys: [], end: null };
+  if (!b) return { shown: false, foot: false, place: null, where: '', keys: [], end: null, cut: [], left: 0 };
   const r = b.getBoundingClientRect();
   const chip = (k) => [...k.querySelectorAll('kbd')].map((x) => x.textContent).join(' ') + ' ' + k.querySelector('.key-bar-does').textContent;
+  const line = b.querySelector('.key-bar-keys');
+  const box = line.getBoundingClientRect();
+  const shown = [...line.querySelectorAll('.key-bar-key')].filter((k) => !k.hidden && k.getClientRects().length > 0);
   const end = b.querySelector('.key-bar-end');
+  // Whole: inside the line (a key of the line) or inside the bar (the end key), to the half pixel.
+  const whole = (k, outer) => { const c = k.getBoundingClientRect(); return c.left >= outer.left - 0.5 && c.right <= outer.right + 0.5; };
   return {
     shown: r.height > 0 && getComputedStyle(b).display !== 'none' && getComputedStyle(b).visibility !== 'hidden',
     foot: Math.abs(r.bottom - innerHeight) < 1 && r.top >= 0,
     place: b.dataset.place ?? null,
     where: b.querySelector('.key-bar-where').textContent,
-    keys: [...b.querySelectorAll('.key-bar-keys .key-bar-key')].map(chip),
+    keys: shown.map(chip),
     end: end ? chip(end) : null,
+    cut: [...shown.filter((k) => !whole(k, box)), ...(end && !whole(end, r) ? [end] : [])].map(chip),
+    left: Number(line.dataset.left ?? 0),
   };
 }`;
+
+/**
+ * Every place's whole bar (each place of the key table with each mix of what can hold), drawn in the page with its own
+ * CSS at the foot of the window, the where-text past its widest: the width its keys take against the width their line
+ * has. Returns the places whose keys do not fit.
+ */
+function everyBarFits(): string {
+  const conditions: KeyWhen[] = ["typing", "empty", "composer-open", "help"];
+  const mixes = Array.from({ length: 1 << conditions.length }, (_, mask) => conditions.filter((_, i) => mask & (1 << i)));
+  const bars = new Map<string, { id: string; keys: Array<{ k: string[]; d: string }>; end: { k: string[]; d: string } | null }>();
+  for (const place of KEYS.flatMap((area) => area.places)) {
+    for (const now of mixes) {
+      const entries = barEntries(place.id, now);
+      const help = entries.find((entry) => entry.keys.includes("?"));
+      const keys = entries.filter((entry) => entry !== help).map((entry) => ({ k: entry.keys, d: entry.does }));
+      const signature = JSON.stringify([keys, help?.does ?? null]);
+      if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end: help ? { k: help.keys, d: help.does } : null });
+    }
+  }
+  return `() => {
+    const bars = ${JSON.stringify([...bars.values()])};
+    const text = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const chip = (c, end) => '<span class="key-bar-key' + (end ? ' key-bar-end' : '') + '">' + c.k.map((k) => '<kbd>' + text(k) + '</kbd>').join('') + '<span class="key-bar-does">' + text(c.d) + '</span></span>';
+    const over = [];
+    for (const b of bars) {
+      const bar = document.createElement('div');
+      bar.className = 'key-bar';
+      bar.setAttribute('aria-hidden', 'true');
+      bar.innerHTML = '<span class="key-bar-where">' + 'A where-text longer than the bar ever shows it, cut by its ellipsis' + '</span><span class="key-bar-keys">' + b.keys.map((c) => chip(c, false)).join('') + '</span>' + (b.end ? chip(b.end, true) : '');
+      document.body.append(bar);
+      const line = bar.querySelector('.key-bar-keys').getBoundingClientRect();
+      const chips = [...bar.querySelectorAll('.key-bar-keys .key-bar-key')].map((c) => c.getBoundingClientRect());
+      const end = bar.querySelector('.key-bar-end')?.getBoundingClientRect();
+      const need = chips.length > 0 ? chips.at(-1).right - line.left : 0;
+      if (need > line.width + 0.5 || (end && end.right > bar.getBoundingClientRect().right + 0.5)) over.push(b.id + ': needs ' + Math.ceil(need) + ' px, has ' + Math.floor(line.width));
+      bar.remove();
+    }
+    return { bars: bars.length, width: innerWidth, over };
+  }`;
+}
 
 /** The reading order the overview's Up and Down must follow: section, then column, then top. */
 const readingOrder = (items: Placed[]): Placed[] => [...items].sort((a, b) => a.section - b.section || a.column - b.column || a.top - b.top);
@@ -210,16 +264,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (!role.test(gotRole!) || !nameOk) fail(`the focused element is announced as ${gotRole} "${gotName}", expected ${role} "${name}"`);
     log(`  announced: ${gotRole} "${gotName!.slice(0, 70)}"`);
   };
-  /** The key bar, once it names `where` (a string is the whole name, a pattern its start); fails with what it shows. */
+  /**
+   * The key bar, once it names `where` (a string is the whole name, a pattern its start) with every key drawn whole and
+   * none left out; fails with what it shows.
+   */
   const keyBar = async (where: string | RegExp, ms = 6000): Promise<Bar> => {
     let last: Bar | null = null;
     const end = Date.now() + ms;
     while (Date.now() < end) {
       last = browser.eval<Bar>(BAR);
-      if (last.shown && last.foot && (typeof where === "string" ? last.where === where : where.test(last.where))) return last;
+      if (last.shown && last.foot && (typeof where === "string" ? last.where === where : where.test(last.where)) && last.cut.length === 0 && last.left === 0) return last;
       await sleep(150);
     }
-    return fail(`expected the key bar at the foot of the window naming ${where}; it shows ${JSON.stringify(last)}`);
+    return fail(`expected the key bar at the foot of the window naming ${where}, every key whole and none left out; it shows ${JSON.stringify(last)}`);
   };
   /** A state of the page: the key bar names what the ring is on (`where`), the console is clean, and a screenshot. */
   const state = async (name: string, where: string | RegExp) => {
@@ -333,6 +390,15 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   browser.waitFor("Third");
   browser.waitFor("A thread outside rooms");
   browser.consoleClean();
+
+  // ---------------- 0. the key bar: nothing focused yet; every place's bar fits this window ----------------
+
+  await expect("the page open, nothing focused", (f) => f.tag === null && f.drawers.length === 0);
+  await barSays("the overview, nothing focused (no Enter: it does nothing there)", { place: "overview-page", where: "the overview", keys: ["↑ ↓ ← → to the tiles"], end: "? all keys" });
+  const fits = browser.eval<{ bars: number; width: number; over: string[] }>(everyBarFits());
+  if (fits.over.length > 0) fail(`at ${fits.width} px, ${fits.over.length} of ${fits.bars} bars do not fit: ${fits.over.join("; ")}`);
+  log(`  page: all ${fits.bars} bars of the key table (each place, each mix of what holds) fit ${fits.width} px with the where-text at its widest`);
+  await state("key bar: the overview with nothing focused; every place's whole bar fits the window", "the overview");
 
   // ---------------- 1. the overview's reading order ----------------
 
@@ -485,7 +551,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await barSays(`#${notes.at(-1).number}`, {
     place: "room-post",
     where: `#${notes.at(-1).number} · note from you`,
-    keys: ["↑ ↓ previous or next post", "← → between the board, Members, Browser and Git", "Home End first or last post", "Enter its detail", "Esc back to the overview", "a–z start writing"],
+    keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Esc back to the overview", "a–z start writing", "Home End first or last post"],
     end: "? all keys",
   });
   await state("key bar: a post's keys, each by what it does there", `#${notes.at(-1).number} · note from you`);
@@ -671,6 +737,23 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect(`Esc: back in the room, the focus on @${members[1]!.alias}`, (f) => !f.drawers.some((d) => d.view === "member") && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `member:${members[1]!.id}` && f.ring);
   await state("Esc from a member's thread goes back to the room", new RegExp(`^@${members[1]!.alias} · `));
+
+  // Nothing in the room focused (as when it opens, or after a click on empty space): Members' × pressed with Enter goes
+  // away with the focus on it. The bar says Enter writes a message, and it does.
+  await tabTo("Shift+Tab to the panel's × (Close panel)", (f) => f.label === "Close panel", "Shift+Tab");
+  press("Enter");
+  await expect("Enter: the panel closed, nothing in the room focused", (f) => f.tag === null && f.panel === null && f.drawers.some((d) => d.view === "room" && !d.inert));
+  await barSays("the room, nothing in it focused", {
+    place: "room-itself",
+    where: apiRoom.room.title,
+    keys: ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Esc back to the overview", "a–z start writing"],
+    end: "? all keys",
+  });
+  await state("key bar: a room with nothing in it focused, Enter writes a message", apiRoom.room.title);
+  press("Enter");
+  await expect("Enter: the composer, in its field", (f) => f.tag === "TEXTAREA" && f.composerOpen);
+  press("Escape");
+  await expect("Esc: the composer closed, the focus on its strip", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
   press("Escape");
   await expect("Esc: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
   announced(/^button$/, "Rehearsal");
@@ -678,7 +761,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await barSays("the room's tile", {
     place: "overview-room",
     where: apiRoom.room.title,
-    keys: ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Home End first or last on the page", "Enter open the room"],
+    keys: ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Enter open the room", "Home End first or last on the page"],
     end: "? all keys",
   });
   await state("key bar: a room's tile, each key by what it does there", apiRoom.room.title);

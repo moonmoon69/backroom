@@ -199,20 +199,22 @@ export function keyPlace(): PlaceNow {
     if (active?.matches(".composer-strip")) return at("room-strip", nameOf(active));
     const pane = active?.closest<HTMLElement>("[data-nav-pane='browser'], [data-nav-pane='git']");
     if (pane) return at("room-pane", pane === active ? `the ${nameOf(pane)} panel` : `${nameOf(active!)} · the ${pane.getAttribute("aria-label")} panel`);
-    return at("room-other", active && active !== layer ? nameOf(active) : title("Room"));
+    // Nothing in the room has the ring: the room's window itself (as it opens, after a click on empty space) or the page
+    // (the focused button went away); Enter there opens the composer.
+    return active && active !== layer ? at("room-other", nameOf(active)) : at("room-itself", title("Room"));
   }
   if (view === "thread") {
     if (layer!.querySelector(".composer-overlay")) now.push("composer-open");
     if (active?.matches(".composer-strip")) return at("thread-strip", nameOf(active));
     if (active?.matches("[role='log']")) return at("thread-log", title("Thread"));
-    return at("thread-other", active && active !== layer ? nameOf(active) : title("Thread"));
+    return active && active !== layer ? at("thread-other", nameOf(active)) : at("thread-itself", title("Thread"));
   }
-  if (view === "browser") return at("browser-page", active && active !== layer ? nameOf(active) : title("Browser"));
+  if (view === "browser") return active && active !== layer ? at("browser-other", nameOf(active)) : at("browser-page", title("Browser"));
 
   // The overview.
   const kind = item && item === active ? (item.dataset.navKey ?? "").split(":")[0]! : "";
   if (OVERVIEW_PLACES[kind]) return at(OVERVIEW_PLACES[kind]!, whereOf(item!));
-  return at("overview-other", control ?? (active ? nameOf(active) : "the overview"));
+  return active ? at("overview-other", control ?? nameOf(active)) : at("overview-page", "the overview");
 }
 
 // ---- where focus was, for when what had it goes away ----
