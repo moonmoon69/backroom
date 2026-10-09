@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type Keyb
 import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
+import { AgentsFileDialog } from "./AgentsFileDialog.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { PlusIcon, StarMark } from "./icons.tsx";
@@ -11,11 +12,11 @@ import { describeStatus } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
-import type { OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { AgentsFileQuestion, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
-import { byKey, focusItem, itemOf, keyOf, navKey, overviewTarget } from "../keys.ts";
+import { byKey, focusItem, focusWhen, itemOf, keyOf, navKey, overviewTarget } from "../keys.ts";
 
 /** How old something is, in a word: "now", "3m", "2h", "4d". */
 function age(iso: string | null | undefined): string {
@@ -60,6 +61,8 @@ export function Overview({
   onCommand,
   onT3Changed,
   onBrowsersChanged,
+  agentsFiles,
+  onAgentsFilesChanged,
   controls,
   active,
   returnTo,
@@ -82,6 +85,9 @@ export function Overview({
   /** Re-read projects from T3 (after one was added). */
   onT3Changed: () => void;
   onBrowsersChanged: () => void;
+  /** The commit questions still open: the agents file Backroom wrote in a project's folder (src/app/agentsFile.ts). */
+  agentsFiles: AgentsFileQuestion[];
+  onAgentsFilesChanged: () => void;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
   /** Nothing covers the page (no room, thread or browser open over it): the arrows are the page's. */
@@ -90,6 +96,9 @@ export function Overview({
   returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
+  // The commit question for a project's agents file: asked as its room is created (the room opens once it is closed),
+  // and from the project's heading until it is answered.
+  const [asking, setAsking] = useState<{ question: AgentsFileQuestion; then: string | null } | null>(null);
   const { presets } = usePresets();
   const consigliereSetting = useConsigliereSetting();
   const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
@@ -249,11 +258,25 @@ export function Overview({
         {groups.map(({ project, tiles: projectTiles }) => {
           const known = project.id !== "unknown";
           return (
-            <section key={project.id} className="ov-project" aria-label={project.title} data-nav-section>
+            <section key={project.id} className="ov-project" aria-label={project.title} data-nav-section data-project-id={project.id}>
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
                 <span className="spacer" />
+                {agentsFiles
+                  .filter((question) => question.projectId === project.id)
+                  .map((question) => (
+                    <button
+                      key="agents-file"
+                      type="button"
+                      className="small ov-project-ask"
+                      aria-label={`Commit AGENTS.md? (${project.title})`}
+                      title={`Backroom wrote ${question.files.join(" and ")} here; members in new worktrees get it once it is committed`}
+                      onClick={() => setAsking({ question, then: null })}
+                    >
+                      Commit AGENTS.md?
+                    </button>
+                  ))}
                 {known ? (
                   <button
                     type="button"
@@ -301,7 +324,9 @@ export function Overview({
             const result = await onCommand({ type: "room.create", projectId, title });
             if (result && "roomId" in result && result.roomId) {
               setDialog(null);
-              onOpenRoom(result.roomId as string);
+              // Backroom wrote the agents file in the project's folder just now: asked first, then the room opens.
+              if (result.type === "room.created" && result.agentsFile) setAsking({ question: result.agentsFile, then: result.roomId });
+              else onOpenRoom(result.roomId as string);
             }
           }}
         />
@@ -321,6 +346,28 @@ export function Overview({
         />
       ) : null}
       {dialog?.kind === "arrange" && projects ? <ArrangeDialog rooms={rooms} projects={projects} runCommand={onCommand} onClose={() => setDialog(null)} /> : null}
+      {asking ? (
+        <AgentsFileDialog
+          key={asking.question.projectId}
+          question={agentsFiles.find((question) => question.projectId === asking.question.projectId) ?? asking.question}
+          projectTitle={projects?.find((project) => project.id === asking.question.projectId)?.title ?? "this project"}
+          onClose={() => {
+            setAsking(null);
+            if (asking.then) onOpenRoom(asking.then);
+          }}
+          onAnswered={() => {
+            setAsking(null);
+            onAgentsFilesChanged();
+            if (asking.then) onOpenRoom(asking.then);
+            else {
+              // Asked from the heading, whose button goes with the answer: the focus goes to the project's +.
+              const projectId = asking.question.projectId;
+              focusWhen(() => [...document.querySelectorAll<HTMLElement>(".ov-project[data-project-id] .ov-project-new")].find((button) => button.closest<HTMLElement>(".ov-project")?.dataset.projectId === projectId));
+            }
+          }}
+          onChanged={onAgentsFilesChanged}
+        />
+      ) : null}
     </div>
   );
 }

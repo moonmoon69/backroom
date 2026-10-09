@@ -22,21 +22,22 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 6. [Try it without T3 (demo mode)](#try-it-without-t3-demo-mode)
 7. [Your first room](#your-first-room)
 8. [Projects, and threads without a room](#projects-and-threads-without-a-room)
-9. [Writing messages](#writing-messages)
-10. [Sending while someone is working](#sending-while-someone-is-working)
-11. [T3 slash commands](#t3-slash-commands)
-12. [The Consigliere](#the-consigliere)
-13. [Room browser](#room-browser)
-14. [What the room shows](#what-the-room-shows)
-15. [Managing rooms and members](#managing-rooms-and-members)
-16. [The overview](#the-overview)
-17. [Keyboard](#keyboard)
-18. [The pixel look](#the-pixel-look)
-19. [Configuration](#configuration)
-20. [Running, updating and backing up](#running-updating-and-backing-up)
-21. [Troubleshooting](#troubleshooting)
-22. [Development](#development)
-23. [How it works](#how-it-works)
+9. [The agents file](#the-agents-file)
+10. [Writing messages](#writing-messages)
+11. [Sending while someone is working](#sending-while-someone-is-working)
+12. [T3 slash commands](#t3-slash-commands)
+13. [The Consigliere](#the-consigliere)
+14. [Room browser](#room-browser)
+15. [What the room shows](#what-the-room-shows)
+16. [Managing rooms and members](#managing-rooms-and-members)
+17. [The overview](#the-overview)
+18. [Keyboard](#keyboard)
+19. [The pixel look](#the-pixel-look)
+20. [Configuration](#configuration)
+21. [Running, updating and backing up](#running-updating-and-backing-up)
+22. [Troubleshooting](#troubleshooting)
+23. [Development](#development)
+24. [How it works](#how-it-works)
 
 ---
 
@@ -247,9 +248,11 @@ A simulated T3 takes the place of the real one. Its agents reply after about fou
 ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 ```
 
+The demo project's folder is `/tmp/demo`, which need not exist. `ROOMS_FAKE_PROJECT_DIR=<folder>` points it at a folder of yours, a scratch git repository say, to see [the agents file](#the-agents-file) written and the commit question asked. In demo mode Backroom writes agents files only inside its data folder and `ROOMS_FAKE_PROJECT_DIR`: a real folder added to a demo instance as a project is never written in.
+
 ## Your first room
 
-1. **Create a room.** Click **+** beside a project's name on the overview and give the room a title (the dialog has the project picked; you can change it). Every member's thread belongs to that project. When a Consigliere is chosen in Settings he is seated in the new room at once, as its Consigliere (see [The Consigliere](#the-consigliere)).
+1. **Create a room.** Click **+** beside a project's name on the overview and give the room a title (the dialog has the project picked; you can change it). Every member's thread belongs to that project. When a Consigliere is chosen in Settings he is seated in the new room at once, as its Consigliere (see [The Consigliere](#the-consigliere)). When the project has no instructions for agents yet, Backroom writes the default ones into its folder and, in a git repository, asks whether to commit them before the room opens (see [The agents file](#the-agents-file)).
 2. **Bring in a member.** Click the members button (two-person icon) in the room header, then the add button at the top of the Members panel (a person with a plus), and choose one of:
    - **New:** the member gets a new thread. Pick an alias, then the thread's T3 settings in one row, as in T3 Code's composer: the model (T3's default for the project is prefilled), its options (reasoning effort, context window and so on, in one dropdown) and the permission mode (Supervised, Auto-accept edits, Auto, Full access). Backroom creates the thread in T3.
 
@@ -283,6 +286,45 @@ Deleted threads are gone: T3 keeps no record a client can list or restore.
 - **A new project.** **+** in the overview's header adds a T3 project for a folder on the machine T3 runs on. Type the path or browse: the list under the field shows the folders T3 finds for what is typed (a path ending in `/` lists that folder's subfolders; otherwise the folders whose names start with the last part), click one to go into it and `..` to go up; folders that are projects already say so. The folder the path names is the one added, so browsing into it and pressing **Add project** adds it. The folder must exist unless you tick **Create the folder**; T3 refuses a folder another project already uses. The title defaults to the folder name. Cloning from a Git URL or GitHub is T3 Code's own; a project added there shows here.
 
 The thread view reads T3's recent window of the thread each time it polls; older turns stay in T3 Code. Nothing about a thread outside a room is stored by Backroom.
+
+## The agents file
+
+An agent should work the way its project asks, whoever gave it the work. So Backroom puts a short file in each project with the habits that the room's reviews showed matter: before reporting ready, review your own diff (with a subagent or a review workflow, where the harness has one) and fix what it finds; turn every review finding into a test that fails without the fix; run the project's checks; end every answer with a Handoff naming the paths, the branch and the commit. Nothing about routing: that is the Consigliere's.
+
+**What Backroom writes, and when.** Only when a room is created (with **+** on the overview, or by a conversation started with the Consigliere, which makes its room the same way), in the project's folder, and only once per folder:
+
+| The project's folder has | Backroom writes |
+| --- | --- |
+| neither `AGENTS.md` nor `CLAUDE.md` | `AGENTS.md` with the habits, and a `CLAUDE.md` holding the one line `@AGENTS.md` |
+| `AGENTS.md` and no `CLAUDE.md` | the one-line `CLAUDE.md`, so Claude reads the project's own `AGENTS.md` too |
+| `CLAUDE.md` and no `AGENTS.md` | nothing: the project has instructions of its own |
+| both | nothing |
+
+`CLAUDE.md` counts as there in any capitals, as `.claude/CLAUDE.md`, as a link (even one to nowhere), or when git tracks it and it was deleted in the folder. `AGENTS.md` counts as there only under that very name, as a file or a link to one; when the folder has it in other capitals, has `AGENTS.override.md` instead, has a link to nowhere or a tracked one that was deleted, Backroom writes nothing. In a project folder below its repository's top, any of these files in a folder between them (the top included) is the project's own instructions, which Codex and Claude read from there: nothing is written either. The default names the project's checks from its package scripts (`check`, else `typecheck`, `lint` and `test`, run with the package manager its lockfile names) and its Makefile (`check`, else `lint` and `test`), "and whatever else its README asks for"; with none of those it points at the README and the package scripts. Its text has one source, `defaultAgentsText` in [`src/app/agentsFile.ts`](src/app/agentsFile.ts).
+
+Projects that have rooms already get nothing until a new room is made there. Nothing is written when Backroom starts, when a member is seated or when a project is added. A room waits a few seconds at most for this; past that it opens, and the question shows on the project's heading once it is ready. **Settings → Agents file** (on by default) turns the writing off; a question already asked stays until it is answered.
+
+**What it never does.** It never overwrites or edits a file (each file is created exclusively: one that appears meanwhile is kept as it is, and no link is followed), never creates a folder, never touches another file, never commits without your answer, never forces in a file git ignores, and never pushes. A folder that is not on Backroom's machine is left alone, and so is every folder when git cannot be run there. Once it has written in a folder it never writes there again: a file you remove stays removed, also when the project is removed from T3 and added again.
+
+**Why it asks to commit.** Members mostly work in git worktrees, and a new worktree holds only committed files: until the file is committed, only members working in the project folder itself read it. So when the folder is in a git repository, a room created from the overview asks first, before it opens: **Commit (suggested)** or **Leave uncommitted**, with that reason, the files, the branch and the text; either answer then opens the room. Esc or × answers nothing and closes the question alone: the new room's tile has the focus (Enter opens it), and the project's heading keeps a **Commit the agents file?** button until you answer. Backroom asks once per project and remembers the answer across restarts; deleting the room leaves the question with the project. A folder that is not a git repository gets the files and no question: members work in that folder itself.
+
+**What Commit commits.** The files Backroom wrote, as they are when you answer (your edits included), and nothing else: whatever else is staged stays staged and uncommitted. The commit goes on the branch checked out in the project folder, with the git identity you configured (git guesses none), your hooks and your signing. New worktrees made from that branch have the files; a worktree that exists gets them once that branch is merged into it; once the branch is pushed, they go with it to everyone who uses the repository. No commit is offered on a detached HEAD, during a merge, rebase, cherry-pick, revert or bisect, or with conflicts, and a file git ignores stays out of it (with every file ignored there is nothing to commit); the dialog says which. When git refuses (a hook fails, no identity is configured, another git command holds the index) or cannot read the folder, nothing is committed, the index is left as it was, and the question stays open with git's reason. Files you committed or removed yourself before answering close the question.
+
+**When members read it.** A harness reads its project files when its session starts: a member already seated reads the new file in its next session (after a reseat, say), and one in a new worktree only once the file is committed on the worktree's base branch.
+
+**Which harness reads which file.** One `AGENTS.md` holds the text, and `CLAUDE.md` imports it rather than copying it: a copy would drift, and Cursor, which reads both, would load the text twice.
+
+| Harness | Reads from the project | Gets the habits from |
+| --- | --- | --- |
+| Claude Code | `CLAUDE.md` and `.claude/CLAUDE.md`; `AGENTS.md` only where no CLAUDE.md is ([docs](https://code.claude.com/docs/en/memory)) | `CLAUDE.md`, whose line `@AGENTS.md` imports it |
+| Codex | `AGENTS.override.md`, else `AGENTS.md`, in each folder from the git root down to the working folder, 32 KiB in all ([docs](https://developers.openai.com/codex/guides/agents-md)) | `AGENTS.md` |
+| Cursor | `AGENTS.md`, `CLAUDE.md` and `.cursor/rules` ([docs](https://cursor.com/docs/context/rules)) | `AGENTS.md` (the one-line `CLAUDE.md` is a harmless rule to it) |
+| Antigravity (Gemini) | `AGENTS.md`, `GEMINI.md` and `.agents/rules` ([docs](https://antigravity.google/docs/rules)) | `AGENTS.md` |
+| OpenCode, Pi, Grok | not verified | |
+
+T3 starts Claude with its default setting sources, project files included, and Cursor with its project settings (read in T3 0.0.46's code), so members read these files as they would in T3 Code.
+
+Backroom's own repository has its `AGENTS.md`, with its real checks, and the same one-line `CLAUDE.md`.
 
 ## Writing messages
 
@@ -844,6 +886,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_DATA_DIR` | `./data` | Database, stored credential and images |
 | `ROOMS_DB_PATH` | `$ROOMS_DATA_DIR/rooms.sqlite` | Database file, if it should live elsewhere |
 | `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
+| `ROOMS_FAKE_PROJECT_DIR` | `/tmp/demo` | Demo mode: the demo project's folder (never created), a scratch git repository to try [the agents file](#the-agents-file) |
 | `T3_BASE_URL` | from `~/.t3/userdata/server-runtime.json`, else the paired server, else `http://127.0.0.1:3773` | T3 server origin |
 | `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token (used as it is, never renewed) |
 | `T3_CLI` | the T3 binary of T3's service (`~/.t3/runtime/versions/<active>/t3`) | T3's CLI Backroom keeps its credential with; `off` for none (then pair with a link) |
@@ -938,7 +981,7 @@ npm --workspace web run dev      # Vite on :5173, proxying /api to :4400
 
 UI text uses one type scale, defined at the top of `web/src/styles.css`: `--text-xs` 11px (meta), `--text-sm` 12px (secondary), `--text-md` 13px (list rows, menus), `--text-base` 14px (messages, inputs), `--text-lg` 16px (titles), `--text-xl` 18px (brand). Use those rather than literal sizes; icons come from `web/src/components/icons.tsx`.
 
-Tests never touch a real T3 server. To try UI changes safely, run a demo instance on another port (`ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start`).
+Tests never touch a real T3 server, and write no agents file outside folders they make. To try UI changes safely, run a demo instance on another port (`ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start`); `ROOMS_FAKE_PROJECT_DIR` points its demo project at a scratch repository, for a rehearsal too. The habits for anyone working here, agents or not, and the checks to run before reporting ready are in [`AGENTS.md`](AGENTS.md).
 
 | Path | Purpose |
 | --- | --- |
@@ -953,6 +996,7 @@ Tests never touch a real T3 server. To try UI changes safely, run a demo instanc
 | `src/speech` | Backroom's voice: Kokoro run in the service, one piece at a time, recent pieces kept |
 | `src/git` | Git read with the CLI on this machine: a folder's branch, uncommitted files, commits, worktrees and diffs (`reader.ts`), and where each member works (`workspaces.ts`) |
 | `src/adapter` | T3 boundary (Orchestrator V2): HTTP reads and WebSocket RPC commands with pairing and protocol check, and an in-memory fake |
+| `src/app/agentsFile.ts` | The agents file: the default text, when it is written in a project's folder, the commit question and the commit |
 | `src/app/threadView.ts` | What is shown of a T3 thread, from its projection: one reply per run, the run in progress, requests, context, background work, changed files |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |

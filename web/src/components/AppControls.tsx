@@ -5,7 +5,7 @@ import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { FolderIcon, GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
@@ -64,6 +64,15 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const notifyOn = useNotifyOn();
   const boxSpeech = Boolean(useBoxStatus()?.available);
   const { toast } = useToast();
+  // Settings → Agents file (src/app/agentsFile.ts): read from the service each time the menu opens; on by default.
+  const [agentsFile, setAgentsFile] = useState(true);
+  useEffect(() => {
+    if (!open) return;
+    api.settings().then(
+      (settings) => setAgentsFile(settings.agentsFile ?? true),
+      () => undefined,
+    );
+  }, [open]);
   useMenuFocus(wrapper, open, () => setOpen(false));
   useEffect(() => {
     if (!open) return;
@@ -90,7 +99,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Settings"
-        title="Settings: the Consigliere, notifications, voice, theme and look"
+        title="Settings: the Consigliere, the agents file, notifications, voice, theme and look"
         onClick={() => setOpen((v) => !v)}
       >
         <SettingsIcon />
@@ -108,6 +117,31 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             </span>
             Consigliere…
             <span className="menu-value">{consigliere ? consigliere.name : "none"}</span>
+          </button>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={agentsFile}
+            title={
+              agentsFile
+                ? "When a room is created in a project with no instructions for agents yet, Backroom writes the default ones into its folder, once per project (README: The agents file), and in a git repository asks whether to commit them. Click to turn it off."
+                : "Backroom writes no agents file into projects. Click to have new rooms write the default one where a project has no instructions for agents yet."
+            }
+            onClick={pick(async () => {
+              try {
+                await api.command({ type: "agentsFile.enabled.set", enabled: !agentsFile });
+                setAgentsFile(!agentsFile);
+                toast(agentsFile ? "New rooms write no agents file" : "New rooms write the default agents file where a project has no instructions for agents yet", "success");
+              } catch (error) {
+                toast(error instanceof Error ? error.message : String(error));
+              }
+            })}
+          >
+            <span className="menu-icon" aria-hidden="true">
+              <FolderIcon />
+            </span>
+            Agents file
+            <span className="menu-value">{agentsFile ? "on" : "off"}</span>
           </button>
           {notificationsSupported ? (
             <button

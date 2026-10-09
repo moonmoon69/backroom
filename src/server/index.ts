@@ -30,11 +30,12 @@ const log = (message: string, detail?: unknown) => {
 let adapter: T3Adapter;
 let credential: T3Credential | null = null;
 if (config.adapter === "fake") {
-  const fake = new FakeT3Adapter({ autoCompleteMs: 4000 });
+  // ROOMS_FAKE_PROJECT_DIR points the demo project at a folder of the caller's (a scratch repository for a rehearsal).
+  const fake = new FakeT3Adapter({ autoCompleteMs: 4000, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? { projectRoot: process.env.ROOMS_FAKE_PROJECT_DIR } : {}) });
   // Kept in a file when asked, so its threads outlive a restart of the service as T3's do (scripts/rehearse.ts --step room).
   const stateFile = process.env.ROOMS_FAKE_STATE;
   adapter = stateFile ? persistFake(fake, stateFile) : fake;
-  log(`using the fake T3 adapter (demo mode${stateFile ? `, kept in ${stateFile}` : ""})`);
+  log(`using the fake T3 adapter (demo mode${stateFile ? `, kept in ${stateFile}` : ""}; the demo project's folder is ${fake.projects[0]!.workspaceRoot})`);
 } else {
   const stored = readStoredAuth(config.dataDir);
   const baseUrl = config.t3BaseUrl ?? stored?.baseUrl ?? "http://127.0.0.1:3773";
@@ -80,6 +81,9 @@ const stack = createStack({
   briefingBudgetChars: config.briefingBudgetChars,
   threadActionTimeoutMs: config.threadActionTimeoutMs,
   keepAliveMs: config.keepAliveMs,
+  // A throwaway service on the fake T3 writes agents files only in its own data folder and ROOMS_FAKE_PROJECT_DIR: a real
+  // folder added to it as a project is never written in (and it does not know what the user's Backroom wrote there).
+  agentsFile: config.adapter === "fake" ? { onlyUnder: [config.dataDir, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? [process.env.ROOMS_FAKE_PROJECT_DIR] : [])] } : true,
   browserCommand,
   boardCommand,
   log,

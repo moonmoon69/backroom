@@ -32,6 +32,11 @@
  * later ones are updates; a member's turn the room did not start is a follow-up that wakes him, and background work
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
+ * `--step ui` ends with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
+ * without one writes it and asks whether to commit it. ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the
+ * demo project every step uses at a folder of the caller's (a scratch git repository, so the steps run where the
+ * agents file is written too).
+ *
  * `--step room` (Z2) plays one whole job with nothing written by hand: the user's assignment from the composer, the
  * Consigliere hands it to the worker (his final answers the user), the worker's answer wakes him, he sends it to the
  * reviewer, the reviewer's finding wakes him, he sends the finding to the worker, the user's correction from the page
@@ -1310,9 +1315,101 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   });
   check.passed.push(...talked.passed);
 
+  // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it and asks.
+  check.passed.push(...(await rehearseAgentsFile(service, browser, room)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
+}
+
+/**
+ * A1, the agents file (src/app/agentsFile.ts), on a scratch project: a git repository with one commit in this run's
+ * own data folder (deleted with it by the next run), added to the fake T3. A room created from the overview's + writes
+ * AGENTS.md and a CLAUDE.md importing it, and asks whether to commit them before the room opens; Esc answers nothing
+ * (the room opens, the project's heading keeps the question); from there "Commit" makes one commit of those two files.
+ */
+async function rehearseAgentsFile(service: Service, browser: Browser, room: Room): Promise<string[]> {
+  const passed: string[] = [];
+  const state = async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void) => {
+    log(`CHECK ${name}`);
+    log(`  api: ${await until(`the service to show: ${name}`, probe)}`);
+    for (const text of page) browser.waitFor(text);
+    extra?.();
+    browser.consoleClean();
+    browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
+    passed.push(name);
+    log(`PASS ${name}`);
+  };
+  const folder = join(room.dataDir, "agents-project");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
+  const git = (...args: string[]) => execFileSync("git", ["-C", folder, ...args], { encoding: "utf8" });
+  execFileSync("git", ["init", "-q", "-b", "main", folder]);
+  // The commit Backroom makes takes the folder's own identity, whatever this machine's git config says.
+  git("config", "user.name", "Rehearsal");
+  git("config", "user.email", "rehearsal@example.com");
+  git("config", "commit.gpgsign", "false");
+  git("add", ".");
+  git("commit", "-q", "-m", "First commit");
+  const title = "agents-scratch";
+  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
+  const questions = () => service.call<Array<{ projectId: string; files: string[]; branch: string | null }>>("GET", "/api/agents-files");
+  const sheetTitle = "() => document.querySelector('.sheet-title h1')?.textContent ?? null";
+
+  browser.click(/button "Back to the overview"/);
+  browser.waitFor(title);
+  browser.click(new RegExp(`button "New room in ${title}"`));
+  browser.waitFor("Create room");
+  // The dialog's title is the project's name already: nothing is typed.
+  browser.click(/button "Create room"/);
+  await state(
+    "a room created in a project without AGENTS.md: Backroom writes it and asks whether to commit it",
+    async () => {
+      const open = (await questions()).find((q) => q.projectId === projectId);
+      if (!open || !existsSync(join(folder, "AGENTS.md"))) return null;
+      if (JSON.stringify(open.files) !== JSON.stringify(["AGENTS.md", "CLAUDE.md"]) || open.branch !== "main") fail(`the question: ${JSON.stringify(open)}`);
+      if (readFileSync(join(folder, "CLAUDE.md"), "utf8") !== "@AGENTS.md\n") fail("CLAUDE.md is not the one line importing AGENTS.md");
+      if (!readFileSync(join(folder, "AGENTS.md"), "utf8").includes("`npm run test`")) fail("AGENTS.md does not name the project's check");
+      const status = git("status", "--porcelain").trim();
+      if (status !== "?? AGENTS.md\n?? CLAUDE.md") fail(`before the answer, git status: ${JSON.stringify(status)}`);
+      return `AGENTS.md and CLAUDE.md written in ${folder}, untracked; the question is open (files ${open.files.join(", ")}, branch ${open.branch})`;
+    },
+    ["Commit the agents file?", "Why commit it:", "Commit (suggested)"],
+    () => {
+      if (browser.eval<string | null>(sheetTitle) !== null) fail("the room opened under the question");
+      log("  page: the question is asked before the room opens");
+    },
+  );
+
+  browser.on("press", "Escape");
+  browser.poll<string | null>("the room to open once the question is closed", sheetTitle, (t) => t === title);
+  browser.click(/button "Back to the overview"/);
+  await state(
+    "closed without an answer: the room opened, and the project's heading keeps the question",
+    async () => ((await questions()).some((q) => q.projectId === projectId) && git("log", "--oneline").trim().split("\n").length === 1 ? "the question is still open; nothing committed" : null),
+    ["Commit AGENTS.md?"],
+  );
+
+  browser.click(new RegExp(`button "Commit AGENTS\\.md\\? \\(${title}\\)"`));
+  browser.waitFor("Commit (suggested)");
+  browser.click(/button "Commit \(suggested\)"/);
+  await state(
+    "Commit: one commit of AGENTS.md and CLAUDE.md, and the question is gone",
+    async () => {
+      if ((await questions()).some((q) => q.projectId === projectId)) return null;
+      const files = git("show", "--name-only", "--format=", "HEAD").trim();
+      if (files !== "AGENTS.md\nCLAUDE.md") fail(`the commit's files: ${JSON.stringify(files)}`);
+      if (git("status", "--porcelain").trim() !== "") fail("files left uncommitted");
+      return `HEAD ${git("rev-parse", "--short", "HEAD").trim()} on ${git("rev-parse", "--abbrev-ref", "HEAD").trim()} holds ${files.replace("\n", " and ")}; nothing asked any more`;
+    },
+    ["Committed AGENTS.md and CLAUDE.md on main"],
+    () => {
+      browser.poll<boolean>("the heading's question to go", "() => document.querySelector('.ov-project-ask') === null", (gone) => gone);
+      log("  page: the project's heading no longer asks");
+    },
+  );
+  return passed;
 }
 
 /** The old runtime's queue is gone (Z4; Z2 gated on its tables being empty): a fresh rooms.sqlite has none of its tables. */

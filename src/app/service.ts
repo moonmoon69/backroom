@@ -12,6 +12,7 @@ import type { RoomCommand, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
+import { AGENTS_FILE_SETTING_KEY, type AgentsFileQuestion, type AgentsFiles } from "./agentsFile.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
 import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
@@ -33,7 +34,8 @@ import {
 } from "../domain/types.ts";
 
 export type CommandResult =
-  | { type: "room.created"; roomId: string }
+  /** agentsFile: Backroom wrote the default agents file in the project's folder just now, and asks whether to commit it. */
+  | { type: "room.created"; roomId: string; agentsFile?: AgentsFileQuestion }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
@@ -64,6 +66,8 @@ export type CommandResult =
   | { type: "browser.created"; browserId: string }
   | { type: "browser.updated"; browserId: string }
   | { type: "browser.deleted"; browserId: string }
+  /** commit: the commit Backroom made; null for "leave", or when nothing it wrote was left uncommitted. */
+  | { type: "project.agentsFile.answered"; projectId: string; answer: "commit" | "leave"; commit: string | null }
   | DirectResult;
 
 export const now = (): string => new Date().toISOString();
@@ -101,9 +105,19 @@ export function orderProjects<T extends { id: string }>(repos: Repos, projects: 
  */
 export const THREAD_ACTION_TIMEOUT_MS = 5000;
 
+/**
+ * How long creating a room waits for the agents file to be written and its question read (src/app/agentsFile.ts).
+ * Past it the room is answered without the question, which the project's heading on the overview shows once it is read.
+ */
+export const AGENTS_FILE_WAIT_MS = 5000;
+
 export interface RoomServiceOptions {
   /** Per-call limit on the T3 thread actions room deletion sends (they run concurrently). */
   threadActionTimeoutMs?: number;
+  /** Writes the default agents file when a room is created in a project without one (src/app/agentsFile.ts); null: never. */
+  agentsFiles?: AgentsFiles | null;
+  /** How long room creation waits for it (AGENTS_FILE_WAIT_MS). */
+  agentsFileWaitMs?: number;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -116,6 +130,8 @@ export class RoomService {
   private readonly direct: DirectThreads;
   private readonly engineHandlers: EngineHandler[] = [];
   private readonly threadActionTimeoutMs: number;
+  readonly agentsFiles: AgentsFiles | null;
+  private readonly agentsFileWaitMs: number;
   private readonly log: (message: string, detail?: unknown) => void;
 
   constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}, options: RoomServiceOptions = {}) {
@@ -127,6 +143,8 @@ export class RoomService {
     const limit = options.threadActionTimeoutMs;
     // Node fires a timer longer than 2^31-1 ms (about 24.8 days) after 1 ms: a huge limit is held at that.
     this.threadActionTimeoutMs = limit !== undefined && Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2 ** 31 - 1) : THREAD_ACTION_TIMEOUT_MS;
+    this.agentsFiles = options.agentsFiles ?? null;
+    this.agentsFileWaitMs = options.agentsFileWaitMs ?? AGENTS_FILE_WAIT_MS;
     this.log = options.log ?? (() => {});
   }
 
@@ -241,6 +259,15 @@ export class RoomService {
       case "project.reorder":
         this.repos.setKv(PROJECT_ORDER_KEY, JSON.stringify([...new Set(command.projectIds)]));
         return { type: "projects.reordered" };
+      case "agentsFile.enabled.set":
+        if (command.enabled) this.repos.deleteKv(AGENTS_FILE_SETTING_KEY);
+        else this.repos.setKv(AGENTS_FILE_SETTING_KEY, "off");
+        return { type: "settings.updated" };
+      case "project.agentsFile.answer": {
+        if (!this.agentsFiles) throw new RoomError("no_question", "This Backroom writes no agents files", 404);
+        const record = await this.agentsFiles.answer(command.projectId, command.commit);
+        return { type: "project.agentsFile.answered", projectId: record.projectId, answer: record.answer ?? (command.commit ? "commit" : "leave"), commit: record.commit };
+      }
       case "room.delete":
         return this.deleteRoom(command);
       case "participant.create":
@@ -373,9 +400,11 @@ export class RoomService {
 
   private async createRoom(command: Extract<RoomCommand, { type: "room.create" }>): Promise<CommandResult> {
     let environmentId: string | null = null;
+    let project: { id: string; workspaceRoot: string } | null = null;
     try {
       const projects = await this.adapter.listProjects();
-      if (!projects.some((project) => project.id === command.projectId)) {
+      project = projects.find((candidate) => candidate.id === command.projectId) ?? null;
+      if (!project) {
         throw new RoomError("unknown_project", `T3 project ${command.projectId} was not found on the connected server`);
       }
       environmentId = (await this.adapter.describe()).environmentId;
@@ -398,9 +427,24 @@ export class RoomService {
     };
     this.db.transaction(() => this.repos.insertRoom(room));
     this.notify(room.id);
+    // Before anyone is seated: a member seated in the project folder reads it from its first turn. A failure here is
+    // logged and never fails the room, and the room waits for it a few seconds at most.
+    let agentsFile: AgentsFileQuestion | null = null;
+    if (this.agentsFiles) {
+      const writing = this.agentsFiles.roomCreated(project).catch((error: unknown) => {
+        this.log(`the agents file for project ${project.id}`, error instanceof Error ? error.message : String(error));
+        return null;
+      });
+      let timer: NodeJS.Timeout | undefined;
+      const limit = new Promise<null>((done) => {
+        timer = setTimeout(() => done(null), this.agentsFileWaitMs);
+      });
+      agentsFile = await Promise.race([writing, limit]);
+      clearTimeout(timer);
+    }
     // A room opens with the Consigliere seated, when one is chosen in Settings: he is the one you talk to in it.
     if (command.consigliere) await this.seatConsigliere(room);
-    return { type: "room.created", roomId: room.id };
+    return { type: "room.created", roomId: room.id, ...(agentsFile ? { agentsFile } : {}) };
   }
 
   // ---------- browsers ----------

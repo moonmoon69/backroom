@@ -9,6 +9,7 @@ import { EngineHost, KEEP_ALIVE_MS, bindingSource, nativeRequestMirror } from ".
 import type { EngineSeats } from "./engineSeats.ts";
 import { engineMessages, messageImages } from "./engineMessages.ts";
 import { keepAliveSetting } from "./keepAlive.ts";
+import { AgentsFiles, type AgentsFilesOptions } from "./agentsFile.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -75,6 +76,12 @@ export function createStack(input: {
   threadActionTimeoutMs?: number;
   /** The engine's keep-alive interval where a room sets none (ROOMS_KEEPALIVE_MS; H6): 55 minutes by default, 0 for off. */
   keepAliveMs?: number;
+  /**
+   * Whether this Backroom may write the default agents file in a project's folder when a room is created there without
+   * one (src/app/agentsFile.ts; the user's switch is Settings → Agents file). The server says yes; tests only when they
+   * say so, so they write in no folder of the machine.
+   */
+  agentsFile?: boolean | Pick<AgentsFilesOptions, "onlyUnder" | "questionsCacheMs">;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
@@ -83,6 +90,7 @@ export function createStack(input: {
   const notify = (roomId: string) => hub.notify(roomId);
   const service = new RoomService(db, repos, input.adapter, notify, {
     ...(input.threadActionTimeoutMs !== undefined ? { threadActionTimeoutMs: input.threadActionTimeoutMs } : {}),
+    agentsFiles: input.agentsFile ? new AgentsFiles(repos, { ...(typeof input.agentsFile === "object" ? input.agentsFile : {}), ...(input.log ? { log: input.log } : {}) }) : null,
     ...(input.log ? { log: input.log } : {}),
   });
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;

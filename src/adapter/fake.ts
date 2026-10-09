@@ -75,6 +75,8 @@ export interface FakeAdapterOptions {
   autoReply?: (input: { threadId: string; text: string }) => FakeRunCompletion;
   /** How long a harness or server update takes, in milliseconds (0: at once). */
   updateMs?: number;
+  /** The demo project's folder (ROOMS_FAKE_PROJECT_DIR for the service); /tmp/demo by default, which is never created. */
+  projectRoot?: string;
 }
 
 export class FakeT3Adapter implements T3Adapter {
@@ -117,9 +119,10 @@ export class FakeT3Adapter implements T3Adapter {
   readonly serverUpdates: Array<{ targetVersion: string; continueRunningThreads: boolean }> = [];
   readonly providerRefreshes: Array<{ instanceId?: string; refreshModels?: boolean }> = [];
   readonly activityReports: Array<ClientActivity | null> = [];
-  private readonly options: Required<FakeAdapterOptions>;
+  private readonly options: Required<Omit<FakeAdapterOptions, "projectRoot">>;
 
   constructor(options: FakeAdapterOptions = {}) {
+    if (options.projectRoot) this.projects[0]!.workspaceRoot = options.projectRoot;
     this.options = {
       updateMs: options.updateMs ?? 0,
       autoCompleteMs: options.autoCompleteMs === undefined ? 10 : options.autoCompleteMs,

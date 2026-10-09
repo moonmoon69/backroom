@@ -1,6 +1,7 @@
 /** Typed fetch helpers for the Backroom HTTP API plus the SSE room-stream hook. */
 import { useEffect, useRef, useState } from "react";
 import type {
+  AgentsFileQuestion,
   FilePreviewResponse,
   UpdatesView,
   ApiErrorBody,
@@ -167,9 +168,11 @@ export const api = {
   /** The folders T3 lists for a path being typed: "/a/b/" lists b's subfolders, "/a/b" those of a whose names start with b. */
   folders: (path: string): Promise<FolderListing> => get(`/api/t3/folders?path=${encodeURIComponent(path)}`),
   presets: (): Promise<Preset[]> => get("/api/presets"),
+  /** The commit questions still open: the agents file Backroom wrote in a project's folder, per project. */
+  agentsFiles: (): Promise<AgentsFileQuestion[]> => get("/api/agents-files"),
   overview: (): Promise<{ rooms: OverviewRoom[]; threads: OverviewThread[]; readAt: string }> => get("/api/overview"),
   /** App-wide settings: which saved crew member is the Consigliere of new rooms, his rules, and what his retiring does to a thread (absent from an older service). */
-  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice }> => get("/api/settings"),
+  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean }> => get("/api/settings"),
   /** Reasons designating this member may not work (plan mode, approvals, an untried harness); it is allowed anyway. */
   consigliereWarnings: (roomId: string, participantId: string): Promise<{ warnings: string[] }> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/participants/${encodeURIComponent(participantId)}/consigliere-warnings`),

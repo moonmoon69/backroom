@@ -45,6 +45,7 @@ import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { BoardError } from "../app/board.ts";
 import { BoardEngine } from "../app/boardEngine.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, ENGINE_DEFAULT_CONSIGLIERE_RULES, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
+import { AGENTS_FILE_SETTING_KEY } from "../app/agentsFile.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import { previewFile } from "./filePreview.ts";
@@ -308,6 +309,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- crew library ----
   app.get("/api/presets", (c) => c.json(stack.repos.listPresets()));
+
+  // The commit questions still open: per project, the agents file Backroom wrote and has not been told what to do with
+  // (src/app/agentsFile.ts). Answered with the command project.agentsFile.answer.
+  app.get("/api/agents-files", async (c) => c.json(stack.service.agentsFiles ? await stack.service.agentsFiles.questions() : []));
 
   // The room routes read the rooms' journal (src/server/engineView.ts, L4c).
   mountEngineView(app, stack, costs);
@@ -786,6 +791,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       consigliereRules: { text: saved && saved.trim() ? saved.trim() : defaultText, custom: Boolean(saved && saved.trim()), defaultText },
       // What happens to a member's T3 thread when the Consigliere retires it or a reseat retires the old seat.
       retireThread: retireThreadChoice(stack.repos),
+      // Settings → Agents file: whether a new room writes the default agents file in its project's folder (src/app/agentsFile.ts).
+      agentsFile: stack.repos.getKv(AGENTS_FILE_SETTING_KEY) !== "off",
     });
   });
   /** What to tell the user before a member is made Consigliere: reasons it may not work. It is allowed all the same. */
