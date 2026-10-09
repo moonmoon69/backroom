@@ -1,4 +1,4 @@
-import type { EngineClaim, EnginePost, EngineRunView } from "./types.ts";
+import type { EngineClaim, EnginePost, EngineRequestView, EngineRunView } from "./types.ts";
 
 /**
  * What a member's reply did to the requests it named, said truthfully, for the tag over it. The engine decides each
@@ -38,6 +38,15 @@ export function backroomNotice(post: Pick<EnginePost, "author" | "request">): st
   const known = BACKROOM_REQUESTS.find(([prefix]) => post.request!.id.startsWith(prefix));
   if (known) return known[1];
   return post.author === "$system" || post.request.message === null ? "Backroom's request" : null;
+}
+
+/**
+ * Backroom's briefing of a member, as the service counts it (src/runtime/bindings.ts): its own request, or one from
+ * before B1 in the user's name (a seat briefing, the line naming a new Consigliere). It is nobody's work: removing the
+ * member cancels it.
+ */
+export function backroomBriefing(q: Pick<EngineRequestView, "id" | "returnTo">): boolean {
+  return q.returnTo === "$system" || (q.returnTo === "$user" && (q.id.startsWith("seat-briefing:") || q.id.startsWith("moved:")));
 }
 
 /** A note Backroom wrote in the user's name (a reseat called off): the user's own notes come from T3, or are notes to the room from before N1. */

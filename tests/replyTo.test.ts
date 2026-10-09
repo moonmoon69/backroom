@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backroomNote, backroomNotice, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
+import { backroomBriefing, backroomNote, backroomNotice, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
 import type { EngineClaim, EnginePost } from "../web/src/types.ts";
 import { journalView } from "../src/server/engineView.ts";
 import { Room } from "./runtime/helpers.ts";
@@ -112,6 +112,13 @@ test("what Backroom wrote in the user's name is Backroom's: any request without 
   assert.equal(backroomNotice(request("seat-briefing:W:seated", 11, "$system")), "seat briefing");
   assert.equal(backroomNotice(request("moved:W:y", 12, "$system")), "new Consigliere notice");
   assert.equal(backroomNotice(request("something-new:def", 13, "$system")), "Backroom's request");
+  // What removing a member cancels with it (the Remove dialog does not count it as open work): Backroom's briefings.
+  assert.equal(backroomBriefing({ id: "seat-briefing:W:seated", returnTo: "$system" }), true);
+  assert.equal(backroomBriefing({ id: "seat-briefing:W:seated", returnTo: "$user" }), true, "a journal from before B1");
+  assert.equal(backroomBriefing({ id: "moved:W:x", returnTo: "$user" }), true);
+  assert.equal(backroomBriefing({ id: "reseat:abc", returnTo: "$user" }), false, "a reseat's checkpoint is not a briefing");
+  assert.equal(backroomBriefing({ id: "msg:m1:0:W", returnTo: "$user" }), false, "the user's own request");
+  assert.equal(backroomBriefing({ id: "board:abc", returnTo: "C" }), false);
 
   const note = (source: "post" | "t3-message", room: boolean, author = "$user") =>
     ({ kind: "note" as const, author, note: { source, room, t3: null, afterAnswer: false } });
