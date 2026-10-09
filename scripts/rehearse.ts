@@ -72,6 +72,7 @@ import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
 import { forStep, functionSource, sectionNames, Selection, SelectionDone, stateNames } from "./rehearse-select.ts";
+import { parseArgs, portOf, stepPassed, tabGone } from "./rehearse-launch.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -79,7 +80,24 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 type Step = "ui" | "room" | "keys";
 const STEPS: readonly Step[] = ["ui", "room", "keys"];
-const USAGE = "usage: node scripts/rehearse.ts --step ui|room|keys|all --as <rooms-browser key> [--only <state>]… [--until <state>] [--list]";
+const USAGE = "usage: node scripts/rehearse.ts --step ui|room|keys|all --as <rooms-browser key> [--port <port>] [--only <state>]… [--until <state>] [--list] [--help]";
+const HELP = `${USAGE}
+
+  --step ui|room|keys   one step, on a throwaway service of its own (ROOMS_ADAPTER=fake) on --port (default 4471)
+  --step all            the three together: ui on --port, room on the next, keys on the one after; ui and room in
+                        --browser (default general), keys in --keys-browser (default backroom-dev); prints each
+                        step's result, exits 1 if any failed, and cleans up after a failed or stopped one
+  --as <key>            your rooms-browser key (from your briefing)
+  --browser <name>      the shared browser (default backroom-dev for one step)
+  --data <dir>          the run's data (default data/rehearse-<step>-<port>; --step all: data/rehearse-all-<port>/<step>)
+  --out <dir>           screenshots (default <data>/screens; --step all: <out>/<step>, and each step's log beside it)
+  --only <state>        check only this state (as often as wanted): its number from --list, a range (12-15), a
+                        /pattern/ or part of its name; what it depends on is set up first, its checks off, and the
+                        step stops after the last state named
+  --until <state>       play the step, every check on, and stop after this state
+  --list                print each step's states, numbered, and run nothing
+  --keep                leave the service running at the end
+  --browser-cli <path>  rooms-browser to use (default: the main checkout's bin/rooms-browser)`;
 
 interface Options {
   step: Step | "all";
@@ -102,31 +120,45 @@ interface Options {
 }
 
 function options(argv: string[]): Options {
-  const take = (flag: string): string | undefined => {
-    const index = argv.indexOf(flag);
-    return index >= 0 ? argv[index + 1] : undefined;
-  };
-  const takeAll = (flag: string): string[] => argv.flatMap((arg, i) => (arg === flag && argv[i + 1] !== undefined ? [argv[i + 1]!] : []));
-  const step = take("--step");
-  const as = take("--as");
-  const list = argv.includes("--list");
+  let args: ReturnType<typeof parseArgs>;
+  try {
+    args = parseArgs(argv);
+  } catch (error) {
+    fail(`${(error as Error).message}\n${USAGE}`);
+  }
+  if (args.has("--help")) {
+    console.log(HELP);
+    process.exit(0);
+  }
+  const step = args.value("--step");
+  const as = args.value("--as");
+  const list = args.has("--list");
   if (step !== "ui" && step !== "room" && step !== "keys" && step !== "all") fail(USAGE);
   if (!as && !list) fail("--as <key> is required: the rooms-browser key of the room whose browser this uses");
   const all = step === "all";
-  const data = resolve(take("--data") ?? join(repo, "data", `rehearse-${step}`));
+  let port: number;
+  try {
+    port = portOf(args.value("--port"), 4471);
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  // A run's own folder by default, named by its port: runs side by side (another step, a launcher, a trial) never share
+  // one (a run deletes its folder's old data as it starts).
+  const data = resolve(args.value("--data") ?? join(repo, "data", `rehearse-${step}-${port}`));
+  const out = args.value("--out");
   return {
     step,
     as: as ?? "",
-    browser: take("--browser") ?? (all ? "general" : "backroom-dev"),
-    keysBrowser: take("--keys-browser") ?? "backroom-dev",
-    port: Number(take("--port") ?? 4471),
+    browser: args.value("--browser") ?? (all ? "general" : "backroom-dev"),
+    keysBrowser: args.value("--keys-browser") ?? "backroom-dev",
+    port,
     data,
-    out: resolve(take("--out") ?? (all ? data : join(data, "screens"))),
-    outGiven: take("--out") !== undefined,
-    cli: take("--browser-cli") ?? process.env.ROOMS_BROWSER_CLI ?? (list ? "" : browserCli()),
-    keep: argv.includes("--keep"),
-    only: takeAll("--only"),
-    until: take("--until") ?? null,
+    out: resolve(out ?? (all ? data : join(data, "screens"))),
+    outGiven: out !== undefined,
+    cli: args.value("--browser-cli") ?? process.env.ROOMS_BROWSER_CLI ?? (list ? "" : browserCli()),
+    keep: args.has("--keep"),
+    only: args.all("--only"),
+    until: args.value("--until") ?? null,
     list,
   };
 }
@@ -201,6 +233,8 @@ class Service {
       detached: true,
     });
     this.child = child;
+    // For the launcher: what to stop if this script is ended before it stops the service itself.
+    writeFileSync(join(this.o.data, "service.pid"), `${child.pid}\n`);
     child.on("exit", (code, signal) => {
       if (this.child === child) log(`the service exited by itself (code ${code}, signal ${signal}): see ${join(this.o.data, "service.log")}`);
     });
@@ -312,7 +346,7 @@ class Browser {
   private lookup(): string {
     const listing = this.run(["tabs"]).out;
     const mine = listing.split("\n").map((line) => /^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/.exec(line)).filter((m): m is RegExpExecArray => m !== null && m[2]!.startsWith(this.url));
-    const id = mine.at(-1)?.[1] ?? this.tabId;
+    const id = mine.at(-1)?.[1];
     if (!id) fail(`no tab of ours on ${this.url}:\n${listing}`);
     this.tabId = id;
     return id;
@@ -321,7 +355,7 @@ class Browser {
   private onTab(args: string[], timeoutMs?: number): { ok: boolean; out: string } {
     const kept = this.tab();
     const result = this.run([kept, ...args], timeoutMs);
-    if (result.ok || !/There is no tab \d+|Tab \d+ is closed|Tab \d+ (belongs to|was not opened by an agent)/.test(result.out)) return result;
+    if (result.ok || !tabGone(result.out)) return result;
     const found = this.lookup();
     log(`  (rooms-browser: ${result.out.trim().split("\n")[0]}; our tab on ${this.url} is ${found} now)`);
     return found === kept ? result : this.run([found, ...args], timeoutMs);
@@ -2471,28 +2505,93 @@ function stepSections(step: Step): string[] {
 }
 
 /**
+ * What a step left behind when it was ended before it could clean up (killed, or stopped by a signal while a browser
+ * call held it): its service, by the pid it wrote in its data folder (if that process is still a Backroom service, with
+ * the browsers it started), and its tabs on its service's address in the shared browser.
+ */
+async function leftBehind(step: Step, data: string, port: number, browser: string, o: Options): Promise<string[]> {
+  const done: string[] = [];
+  const base = `http://127.0.0.1:${port}`;
+  const pidFile = join(data, "service.pid");
+  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : NaN;
+  const alive = (p: number) => {
+    try {
+      return readFileSync(`/proc/${p}/cmdline`, "utf8").includes("src/server/index.ts");
+    } catch {
+      return false;
+    }
+  };
+  if (Number.isInteger(pid) && alive(pid)) {
+    // Its real browsers (B3's) outlive the service by design: stopped through it first.
+    const browsers = await fetch(`${base}/api/browsers`).then((r) => r.json() as Promise<Array<{ id: string; status: { state: string } }>>, () => []);
+    for (const b of browsers.filter((x) => x.status.state !== "stopped")) await fetch(`${base}/api/browsers/${b.id}/stop`, { method: "POST" }).catch(() => undefined);
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      process.kill(pid, "SIGTERM");
+    }
+    for (let i = 0; i < 50 && alive(pid); i += 1) await sleep(200);
+    if (alive(pid)) process.kill(pid, "SIGKILL");
+    done.push(`its service (pid ${pid}) stopped`);
+  }
+  let listing = "";
+  try {
+    listing = execFileSync(o.cli, [browser, "tabs", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
+    // rooms-browser unreachable: nothing more to do here
+  }
+  for (const m of listing.matchAll(/^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/gm)) {
+    if (!m[2]!.startsWith(base)) continue;
+    try {
+      execFileSync(o.cli, [browser, m[1]!, "close", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+      done.push(`its tab ${m[1]} closed`);
+    } catch {
+      // closed meanwhile
+    }
+  }
+  return done;
+}
+
+/**
  * --step all: the three steps started together, each a process of its own on a port and a data folder of its own (ui
  * on --port, room on the next, keys on the one after), keys in a browser of its own (a tab behind another one's in the
  * same window scrolls late: the End-scroll flake). Each step's output goes to its log; this prints each step's result
- * and fails if any step failed. With --only or --until, a step runs only if they name one of its states.
+ * and fails if any step failed. With --only or --until, a step runs only if they name one of its states. A step that
+ * failed or was stopped has its service and tabs cleaned up after it, if it left them; a signal to the launcher stops
+ * every step and does the same.
  */
 async function runAll(o: Options): Promise<void> {
   if (o.keysBrowser === o.browser) fail(`keys needs a browser of its own: --keys-browser ${o.keysBrowser} is also --browser`);
   const begun = Date.now();
   mkdirSync(o.data, { recursive: true });
   if (o.outGiven) mkdirSync(o.out, { recursive: true });
+  const children = new Set<ChildProcess>();
+  let stopping: string | null = null;
+  const stop = (signal: NodeJS.Signals) => {
+    if (stopping) return;
+    stopping = signal;
+    console.log(`all: ${signal}: stopping the steps`);
+    for (const child of children) child.kill("SIGTERM");
+    // A step held in a browser call reads the signal only when the call returns: then it is killed, and cleaned up after.
+    setTimeout(() => {
+      for (const child of children) child.kill("SIGKILL");
+    }, 20_000).unref();
+  };
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
   const runs = STEPS.map((step, i) => {
     const { run: chosen, only, until } = forStep(stepStates(step), o.only, o.until);
     const port = o.port + i;
     const browser = step === "keys" ? o.keysBrowser : o.browser;
+    const data = join(o.data, step);
     const logFile = join(o.outGiven ? o.out : o.data, `${step}.log`);
     if (!chosen) {
       console.log(`${step}: not run (no state of it matches ${[...o.only.map((x) => `--only ${x}`), ...(o.until === null ? [] : [`--until ${o.until}`])].join(" ")})`);
-      return Promise.resolve({ step, ok: true, line: "not run" });
+      return Promise.resolve({ step, ok: true });
     }
     const args = [
       "--no-warnings=ExperimentalWarning", join(repo, "scripts", "rehearse.ts"),
-      "--step", step, "--as", o.as, "--browser", browser, "--port", String(port), "--data", join(o.data, step), "--browser-cli", o.cli,
+      "--step", step, "--as", o.as, "--browser", browser, "--port", String(port), "--data", data, "--browser-cli", o.cli,
       ...(o.outGiven ? ["--out", join(o.out, step)] : []),
       ...only.flatMap((pattern) => ["--only", pattern]),
       ...(until === null ? [] : ["--until", until]),
@@ -2500,23 +2599,37 @@ async function runAll(o: Options): Promise<void> {
     ];
     console.log(`${step}: port ${port}, browser ${browser}, log ${logFile}`);
     const fd = openSync(logFile, "w");
-    const child = spawn(process.execPath, args, { cwd: repo, stdio: ["ignore", fd, fd] });
-    return new Promise<{ step: Step; ok: boolean; line: string }>((done) => {
-      child.on("exit", (code, signal) => {
+    // Its own process group: a Ctrl-C reaches the launcher, which stops each step and cleans up after it.
+    const child = spawn(process.execPath, args, { cwd: repo, stdio: ["ignore", fd, fd], detached: true });
+    children.add(child);
+    return new Promise<{ step: Step; ok: boolean }>((done) => {
+      let startError: Error | null = null;
+      child.on("error", (error) => {
+        startError = error;
+      });
+      child.on("close", async (code, signal) => {
+        children.delete(child);
         const seconds = Math.round((Date.now() - begun) / 1000);
-        const lines = readFileSync(logFile, "utf8").split("\n");
-        const result = code === 0
-          ? `PASS after ${seconds} s: ${lines.findLast((l) => /\] DONE: /.test(l))?.replace(/^.*\] DONE: /, "") ?? "done"}`
-          : `FAILED after ${seconds} s (exit ${code ?? signal}): ${lines.find((l) => l.startsWith("[rehearse] FAILED: "))?.slice("[rehearse] FAILED: ".length) ?? "see its log"}`;
-        console.log(`${step}: ${result}`);
-        done({ step, ok: code === 0, line: result });
+        const ok = stepPassed(code, signal, startError);
+        const lines = existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n") : [];
+        const why = startError ? `could not start: ${(startError as Error).message}` : (lines.find((l) => l.startsWith("[rehearse] FAILED: "))?.slice("[rehearse] FAILED: ".length) ?? "see its log");
+        console.log(
+          ok
+            ? `${step}: PASS after ${seconds} s: ${lines.findLast((l) => /\] DONE: /.test(l))?.replace(/^.*\] DONE: /, "") ?? "done"} (log ${logFile})`
+            : `${step}: FAILED after ${seconds} s (${signal ? `ended by ${signal}` : `exit ${code}`}): ${why} (log ${logFile})`,
+        );
+        if (!ok && !o.keep) {
+          const cleaned = await leftBehind(step, data, port, browser, o);
+          if (cleaned.length > 0) console.log(`${step}: cleaned up after it: ${cleaned.join(", ")}`);
+        }
+        done({ step, ok });
       });
     });
   });
   const results = await Promise.all(runs);
   const failed = results.filter((r) => !r.ok);
-  console.log(`all: ${failed.length === 0 ? "PASS" : `FAILED (${failed.map((r) => r.step).join(", ")})`} after ${Math.round((Date.now() - begun) / 1000)} s`);
-  if (failed.length > 0) process.exit(1);
+  console.log(`all: ${failed.length === 0 && !stopping ? "PASS" : `FAILED (${stopping ? `stopped by ${stopping}` : failed.map((r) => r.step).join(", ")})`} after ${Math.round((Date.now() - begun) / 1000)} s`);
+  process.exit(failed.length > 0 || stopping ? 1 : 0);
 }
 
 async function main(): Promise<void> {
@@ -2540,6 +2653,15 @@ async function main(): Promise<void> {
   const service = new Service(o);
   const browser = new Browser(o, service.base);
   let passed: string[] = [];
+  // Stopped from outside (Ctrl-C, or the launcher): the tab closed and the service stopped all the same.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      stoppedBy = signal;
+      log(`${signal}: closing our tab and stopping the service`);
+      browser.close();
+      void service.stop().finally(() => process.exit(1));
+    });
+  }
   try {
     await service.start();
     const room = new Room(service, o);
@@ -2552,6 +2674,7 @@ async function main(): Promise<void> {
       if (!(error instanceof SelectionDone)) throw error;
       log(`DONE: ${error.message}`);
     }
+    if (!selection.whole && selection.checked === 0) fail("no state was checked: --only and --until named states the step never reached");
   } finally {
     browser.close();
     if (o.keep) log(`--keep: the service stays on ${service.base}`);
@@ -2559,9 +2682,13 @@ async function main(): Promise<void> {
   }
 }
 
+/** The signal that stopped the run, if one did: what failed after it failed because of it. */
+let stoppedBy: string | null = null;
+
 main().then(
   () => process.exit(0),
   (error: unknown) => {
+    if (stoppedBy) return console.error(`[rehearse] FAILED: stopped by ${stoppedBy}`);
     console.error(`[rehearse] FAILED: ${error instanceof RehearsalFailure ? error.message : error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     process.exit(1);
   },

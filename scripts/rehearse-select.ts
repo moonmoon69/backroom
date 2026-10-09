@@ -194,6 +194,11 @@ export class Selection {
     throw new SelectionDone(`${this.summary()}; stopped after state ${this.last + 1} of ${this.names.length}`);
   }
 
+  /** How many states were checked so far. */
+  get checked(): number {
+    return this.count.checked;
+  }
+
   /** How many states were checked, set up silently and not played. */
   summary(): string {
     const { checked, silent, skipped } = this.count;

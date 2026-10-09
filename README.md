@@ -1026,8 +1026,8 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 ```
 
 - **The steps:** `ui` and `room` play a room's story (the turn relay, notices, the Browser panel); `keys` drives the page by keys alone (focus, scrolling, layout, the key bar).
-- **`--step all`** starts the three together, each on a port of its own (`--port` and the next two) with its data under `--data` (default `data/rehearse-all/<step>`), keys in a browser of its own (`--keys-browser`, default backroom-dev; ui and room in `--browser`, default general). It prints each step's result and exits non-zero if any failed; each step's output is in `<step>.log` there (or under `--out`).
-- **`--only <state>`** (as often as wanted) checks just the states it names: a number from `--list`, a range (`12-15`), a `/pattern/` or part of a name. What they depend on is set up silently first, and the step stops after the last of them. **`--until <state>`** plays a step as always and stops after the state it names.
+- **`--step all`** starts the three together, each on a port of its own (`--port` and the next two) with its data under `--data` (default `data/rehearse-all-<port>/<step>`; one step's is `data/rehearse-<step>-<port>`, so runs side by side never share a folder), keys in a browser of its own (`--keys-browser`, default backroom-dev; ui and room in `--browser`, default general). It prints each step's result and exits non-zero if any failed; each step's output is in `<step>.log` there (or under `--out`). A step that fails or is stopped (Ctrl-C stops them all) has its service and tabs cleaned up after it.
+- **`--only <state>`** (as often as wanted) checks just the states it names: a number from `--list`, a range (`12-15`), a `/pattern/` or part of a name. What they depend on is set up first with the checks off (keys jumps to the section the state is in), and the step stops after the last of them. **`--until <state>`** plays a step as always and stops after the state it names. `--help` prints every flag.
 
 | Path | Purpose |
 | --- | --- |
@@ -1051,7 +1051,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 | `scripts/t3-pair.ts` | Pair from the command line |
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
 | `scripts/t3-v2-cutover.ts` | Moves the machine from T3's V1 to V2 together with Backroom (`npm run t3:v2`) |
-| `scripts/rehearse.ts` | The page rehearsed in a browser against a fake-T3 service of its own (`--step ui`, `room`, `keys`) |
+| `scripts/rehearse.ts` | The page rehearsed in a browser against a fake-T3 service of its own (`--step ui`, `room`, `keys`, or `all` for the three at once; `--only` and `--until` choose states, `--list` lists them; `rehearse-select.ts` chooses, `rehearse-keys.ts` is the keys step) |
 | `tests/` | Acceptance tests driven through the fake adapter |
 
 ## How it works
