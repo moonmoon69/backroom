@@ -1016,6 +1016,19 @@ UI text uses one type scale, defined at the top of `web/src/styles.css`: `--text
 
 Tests never touch a real T3 server, and write no agents file outside folders they make. To try UI changes safely, run a demo instance on another port (`ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start`); `ROOMS_FAKE_PROJECT_DIR` points its demo project at a scratch repository, for a rehearsal too. The habits for anyone working here, agents or not, and the checks to run before reporting ready are in [`AGENTS.md`](AGENTS.md).
 
+The browser rehearsal (`scripts/rehearse.ts`) plays the page in one of the shared browsers against a throwaway service of its own (the fake T3, its own data folder, the page last built with `npm run build:web`), and checks each state in the API and on the page:
+
+```bash
+node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key> --port 4511   # one step
+node scripts/rehearse.ts --step all --as <rooms-browser key> --port 4511            # the three at once, on 4511-4513
+node scripts/rehearse.ts --step keys --list                                         # a step's states, numbered
+node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Esc closes"
+```
+
+- **The steps:** `ui` and `room` play a room's story (the turn relay, notices, the Browser panel); `keys` drives the page by keys alone (focus, scrolling, layout, the key bar).
+- **`--step all`** starts the three together, each on a port of its own (`--port` and the next two) with its data under `--data` (default `data/rehearse-all/<step>`), keys in a browser of its own (`--keys-browser`, default backroom-dev; ui and room in `--browser`, default general). It prints each step's result and exits non-zero if any failed; each step's output is in `<step>.log` there (or under `--out`).
+- **`--only <state>`** (as often as wanted) checks just the states it names: a number from `--list`, a range (`12-15`), a `/pattern/` or part of a name. What they depend on is set up silently first, and the step stops after the last of them. **`--until <state>`** plays a step as always and stops after the state it names.
+
 | Path | Purpose |
 | --- | --- |
 | `src/domain` | Room records, the versioned command contract (zod), the read API's shapes (`engineView.ts`) |

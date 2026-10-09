@@ -3,7 +3,12 @@
  * `--step keys`, keyboard only, is in rehearse-keys.ts).
  *
  *   node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key> [--browser backroom-dev] [--port 4471]
- *        [--data <dir>] [--out <dir>] [--keep]
+ *        [--data <dir>] [--out <dir>] [--keep] [--only <state>]… [--until <state>]
+ *   node scripts/rehearse.ts --step all --as <key> [--browser general] [--keys-browser backroom-dev] [--port 4471] …
+ *   node scripts/rehearse.ts --step ui|room|keys|all --list
+ *
+ * `--step all` starts the three steps together (runAll); `--only` and `--until` choose the states a step checks and
+ * where it stops (scripts/rehearse-select.ts); `--list` prints each step's states, numbered.
  *
  * It starts its own service from this checkout (ROOMS_ADAPTER=fake ROOMS_PORT=<port>
  * ROOMS_DATA_DIR=<dir>, the throwaway service of the plan's conventions; never the user's :4400), scripts a room with
@@ -66,20 +71,34 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
+import { forStep, functionSource, sectionNames, Selection, SelectionDone, stateNames } from "./rehearse-select.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------------- options ----------------
 
+type Step = "ui" | "room" | "keys";
+const STEPS: readonly Step[] = ["ui", "room", "keys"];
+const USAGE = "usage: node scripts/rehearse.ts --step ui|room|keys|all --as <rooms-browser key> [--only <state>]… [--until <state>] [--list]";
+
 interface Options {
-  step: "ui" | "room" | "keys";
+  step: Step | "all";
   as: string;
   browser: string;
+  /** --step all: the browser keys has to itself (ui and room share --browser). */
+  keysBrowser: string;
   port: number;
   data: string;
   out: string;
+  /** Whether --out was given: --step all then writes each step's log beside its screenshots. */
+  outGiven: boolean;
   cli: string;
   keep: boolean;
+  /** --only, as often as given, and --until (scripts/rehearse-select.ts). */
+  only: string[];
+  until: string | null;
+  /** --list: print the step's states, numbered, and run nothing. */
+  list: boolean;
 }
 
 function options(argv: string[]): Options {
@@ -87,20 +106,28 @@ function options(argv: string[]): Options {
     const index = argv.indexOf(flag);
     return index >= 0 ? argv[index + 1] : undefined;
   };
+  const takeAll = (flag: string): string[] => argv.flatMap((arg, i) => (arg === flag && argv[i + 1] !== undefined ? [argv[i + 1]!] : []));
   const step = take("--step");
   const as = take("--as");
-  if (step !== "ui" && step !== "room" && step !== "keys") fail("usage: node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key>");
-  if (!as) fail("--as <key> is required: the rooms-browser key of the room whose browser this uses");
+  const list = argv.includes("--list");
+  if (step !== "ui" && step !== "room" && step !== "keys" && step !== "all") fail(USAGE);
+  if (!as && !list) fail("--as <key> is required: the rooms-browser key of the room whose browser this uses");
+  const all = step === "all";
   const data = resolve(take("--data") ?? join(repo, "data", `rehearse-${step}`));
   return {
     step,
-    as,
-    browser: take("--browser") ?? "backroom-dev",
+    as: as ?? "",
+    browser: take("--browser") ?? (all ? "general" : "backroom-dev"),
+    keysBrowser: take("--keys-browser") ?? "backroom-dev",
     port: Number(take("--port") ?? 4471),
     data,
-    out: resolve(take("--out") ?? join(data, "screens")),
-    cli: take("--browser-cli") ?? process.env.ROOMS_BROWSER_CLI ?? browserCli(),
+    out: resolve(take("--out") ?? (all ? data : join(data, "screens"))),
+    outGiven: take("--out") !== undefined,
+    cli: take("--browser-cli") ?? process.env.ROOMS_BROWSER_CLI ?? (list ? "" : browserCli()),
     keep: argv.includes("--keep"),
+    only: takeAll("--only"),
+    until: take("--until") ?? null,
+    list,
   };
 }
 
@@ -274,8 +301,15 @@ class Browser {
       return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}` || e.message };
     }
   }
-  /** Our tab: the one rooms-browser marks as ours on this service's URL (found again each time; ids may shift). */
+  /**
+   * Our tab: the number `open` printed, kept (rooms-browser never reuses a number while the browser runs). Only when
+   * rooms-browser answers that it has no such tab of ours is it looked up again, among the tabs it marks as ours on
+   * this service's URL.
+   */
   private tab(): string {
+    return this.tabId ?? this.lookup();
+  }
+  private lookup(): string {
     const listing = this.run(["tabs"]).out;
     const mine = listing.split("\n").map((line) => /^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/.exec(line)).filter((m): m is RegExpExecArray => m !== null && m[2]!.startsWith(this.url));
     const id = mine.at(-1)?.[1] ?? this.tabId;
@@ -283,8 +317,17 @@ class Browser {
     this.tabId = id;
     return id;
   }
+  /** A command on our tab; refused for the tab (gone, or not ours: the browser restarted), it is tried once more on the tab found again. */
+  private onTab(args: string[], timeoutMs?: number): { ok: boolean; out: string } {
+    const kept = this.tab();
+    const result = this.run([kept, ...args], timeoutMs);
+    if (result.ok || !/There is no tab \d+|Tab \d+ is closed|Tab \d+ (belongs to|was not opened by an agent)/.test(result.out)) return result;
+    const found = this.lookup();
+    log(`  (rooms-browser: ${result.out.trim().split("\n")[0]}; our tab on ${this.url} is ${found} now)`);
+    return found === kept ? result : this.run([found, ...args], timeoutMs);
+  }
   on(...args: string[]): string {
-    const result = this.run([this.tab(), ...args]);
+    const result = this.onTab(args);
     if (!result.ok) fail(`rooms-browser ${args[0]} failed: ${result.out.trim().slice(0, 400)}`);
     return result.out;
   }
@@ -292,19 +335,20 @@ class Browser {
   open(): void {
     const result = this.run(["open", `${this.url}/`]);
     if (!result.ok) fail(`could not open a tab: ${result.out}`);
+    this.tabId = /^Opened tab (\d+) in /m.exec(result.out)?.[1] ?? null;
     this.tab();
     // A fresh start: whatever an earlier rehearsal (or anyone) left in this origin's storage would open another room.
     this.on("eval", "() => { localStorage.clear(); sessionStorage.clear(); return true; }");
     this.on("reload");
   }
   close(): void {
-    if (this.tabId) this.run([this.tab(), "close"]);
+    if (this.tabId) this.run([this.tabId, "close"]);
     this.tabId = null;
   }
 
   /** `wait-for` must print a match; it fails after its own 30 s. */
   waitFor(text: string): void {
-    const result = this.run([this.tab(), "wait-for", text], 90_000);
+    const result = this.onTab(["wait-for", text], 90_000);
     if (!result.ok || !/Element matching one of .* found\./.test(result.out)) fail(`the page never showed ${JSON.stringify(text)}: ${result.out.trim().split("\n")[0]}`);
     log(`  page: wait-for ${JSON.stringify(text)} matched`);
   }
@@ -623,17 +667,29 @@ class Checks {
   readonly passed: string[] = [];
   private readonly room: Pick<Room, "snapshot">;
   private readonly browser: Browser;
-  constructor(room: Pick<Room, "snapshot">, browser: Browser) {
+  private readonly selection: Selection;
+  constructor(room: Pick<Room, "snapshot">, browser: Browser, selection: Selection) {
     this.room = room;
     this.browser = browser;
+    this.selection = selection;
   }
 
   /**
    * One state: the snapshot has it (polled until `api` returns a description of the fields that show it), then the page
    * shows it (`wait-for` each text), the console is clean, and a screenshot is kept.
+   *
+   * A state --only does not name, played before one it names, is set up silently: the snapshot is polled and the texts
+   * waited for as always (the story goes on from both), and `always` runs, but nothing else of the page is checked, and
+   * `silently` stands in for what `extra` does that the story needs.
    */
-  async state(name: string, api: (s: Snapshot) => string | null | false, page: string[], options: { show?: number; focus?: (s: Snapshot) => number | undefined; extra?: () => void } = {}): Promise<Snapshot> {
-    log(`CHECK ${name}`);
+  async state(
+    name: string,
+    api: (s: Snapshot) => string | null | false,
+    page: string[],
+    options: { show?: number; focus?: (s: Snapshot) => number | undefined; extra?: () => void; always?: () => void; silently?: () => void } = {},
+  ): Promise<Snapshot> {
+    const { index, loud } = this.selection.enter(name);
+    log(`${loud ? "CHECK" : "SET UP (silently)"} ${this.selection.label(index)}`);
     let described = "";
     const snap = await until(`the snapshot to show: ${name}`, async () => {
       const s = await this.room.snapshot();
@@ -643,16 +699,35 @@ class Checks {
       return s;
     });
     log(`  api: ${described}`);
-    const show = options.show ?? options.focus?.(snap);
+    const show = loud ? (options.show ?? options.focus?.(snap)) : undefined;
     if (show !== undefined) this.browser.show(show);
     for (const text of page) this.browser.waitFor(text);
-    options.extra?.();
-    this.browser.consoleClean();
-    if (show !== undefined) this.browser.show(show);
-    this.browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
-    this.passed.push(name);
-    log(`PASS ${name}`);
+    options.always?.();
+    if (loud) {
+      options.extra?.();
+      this.browser.consoleClean();
+      if (show !== undefined) this.browser.show(show);
+      this.browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
+      this.passed.push(name);
+      log(`PASS ${name}`);
+    } else {
+      options.silently?.();
+    }
     return snap;
+  }
+
+  /** A state whose checks are written out where it is played (B3's): its place in the selection, and whether to check it. */
+  begin(name: string): { index: number; loud: boolean } {
+    const entered = this.selection.enter(name);
+    log(`${entered.loud ? "CHECK" : "SET UP (checked as always)"} ${this.selection.label(entered.index)}`);
+    return entered;
+  }
+  /** Its end, all its checks done: passed, and the step stops here if it is the last one played. */
+  pass(entered: { index: number; loud: boolean }): void {
+    const name = this.selection.names[entered.index]!;
+    if (entered.loud) this.passed.push(name);
+    log(`PASS ${name}`);
+    this.selection.leave(entered.index);
   }
 }
 
@@ -697,8 +772,8 @@ function membersOnlyAnswer(s: Snapshot): string {
 
 // ---------------- the rehearsal (--step ui) ----------------
 
-async function rehearseUi(service: Service, browser: Browser, room: Room): Promise<string[]> {
-  const check = new Checks(room, browser);
+async function rehearseUi(service: Service, browser: Browser, room: Room, selection: Selection): Promise<string[]> {
+  const check = new Checks(room, browser, selection);
   const { seat } = room;
   const claimOf = (s: Snapshot, requestId: string, outcome: string) => s.posts.find((p) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === requestId && c.outcome === outcome));
   /** The member's run now, if it has one. */
@@ -1245,7 +1320,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
     assignments: [{ recipients: [second.participant.alpha!, second.participant.beta!], instruction: "independently check the date tests" }],
   });
   browser.openRoom("Rehearsal B");
-  const two = new Checks(second, browser);
+  const two = new Checks(second, browser, selection);
   await two.state("one message to two members, with its image", (x) => {
     const posts = x.posts.filter((p) => p.kind === "request" && p.request.message?.id === both.messageId);
     return posts.length === 2 && posts.every((p) => p.request.message.attachmentIds.includes(image))
@@ -1302,7 +1377,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   browser.openRoom((await talkSnapshot()).room.title);
   browser.click(/tab "[^"]*astra/);
   const chatHas = (text: string, row: string) => browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.${row}')].some((r) => r.textContent.includes(${JSON.stringify(text)}))`);
-  const talked = new Checks({ snapshot: talkSnapshot }, browser);
+  const talked = new Checks({ snapshot: talkSnapshot }, browser, selection);
   const first = await talked.state("Talk to …: the first message is the Consigliere's request and his turn runs on it", (x) => {
     const post = x.posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === opening);
     const run = post && x.runs.find((r) => r.seatId === astra.id && r.phase === "running" && r.inputs.includes(post.seq));
@@ -1329,7 +1404,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
   check.passed.push(...talked.passed);
 
   // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
-  check.passed.push(...(await rehearseAgentsFile(service, browser, room)));
+  check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
 
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
@@ -1342,12 +1417,15 @@ async function rehearseUi(service: Service, browser: Browser, room: Room): Promi
  * AGENTS.md and a CLAUDE.md importing it, keeps them out of git in the repository's .git/info/exclude, installs the
  * post-checkout hook, opens at once and says so in a toast; a worktree added then holds the two files, copied by the hook.
  */
-async function rehearseAgentsFile(service: Service, browser: Browser, room: Room): Promise<string[]> {
+async function rehearseAgentsFile(service: Service, browser: Browser, room: Room, selection: Selection): Promise<string[]> {
   const passed: string[] = [];
+  // As Checks.state: a state --only does not name is set up silently (the service polled, the texts waited for).
   const state = async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void) => {
-    log(`CHECK ${name}`);
+    const { index, loud } = selection.enter(name);
+    log(`${loud ? "CHECK" : "SET UP (silently)"} ${selection.label(index)}`);
     log(`  api: ${await until(`the service to show: ${name}`, probe)}`);
     for (const text of page) browser.waitFor(text);
+    if (!loud) return;
     extra?.();
     browser.consoleClean();
     browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
@@ -1707,6 +1785,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     scrollPanel("top");
     log(`  page: the Browser button counts ${first.api.filter((b) => both.ticked.includes(b.name)).reduce((n, b) => n + b.status.tabs.length, 0)} tabs across general and staging, and says each one's state`);
 
+    const panelControls = check.begin("the Browser panel: Stop, Start and the checkbox of a second browser from the panel");
     // A tab opened in staging, which is not the default, with the panel closed: the service tells the room (its stream
     // carries a room.changed, nothing else is going on in the room) and the button follows without waiting for a poll.
     browser.click(/button "Browser: on for this room's agents/);
@@ -1744,10 +1823,10 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     browser.click(/checkbox "staging"/);
     await until("staging ticked again", async () => (await room.snapshot()).room.allowedBrowserIds?.length === 2);
     await agree("staging ticked again", both);
-    check.passed.push("the Browser panel: Stop, Start and the checkbox of a second browser from the panel");
-    log("PASS the Browser panel: Stop, Start and the checkbox of a second browser from the panel");
+    check.pass(panelControls);
 
     // The pixel look draws the same boxes.
+    const pixelPanel = check.begin("the Browser panel in the pixel look");
     browser.on("eval", "() => { localStorage.setItem('backroom.skin', 'pixel'); return true; }");
     browser.on("reload");
     // The page reopens the room it had open; if it did not, the overview is there and its card is pressed.
@@ -1767,8 +1846,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     await agree("staging stopped in the pixel look", both);
     checkColours("pixel", { running: 1, off: 1 });
     browser.screenshot("the-browser-panel-in-the-pixel-look-staging-off");
-    check.passed.push("the Browser panel in the pixel look");
-    log("PASS the Browser panel in the pixel look");
+    check.pass(pixelPanel);
     browser.on("eval", "() => { localStorage.removeItem('backroom.skin'); return true; }");
   } finally {
     listener.abort();
@@ -1778,8 +1856,8 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
 
 // ---------------- the whole room (--step room, Z2; H5: relayed by the Consigliere) ----------------
 
-async function rehearseRoom(service: Service, browser: Browser, room: Room): Promise<string[]> {
-  const check = new Checks(room, browser);
+async function rehearseRoom(service: Service, browser: Browser, room: Room, selection: Selection): Promise<string[]> {
+  const check = new Checks(room, browser, selection);
   const { seat } = room;
   const claimOf = (s: Snapshot, requestId: string, outcome: string) => s.posts.find((p) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === requestId && c.outcome === outcome));
   /** The member's run now, if it has one. */
@@ -1962,7 +2040,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
       : null;
   }, ["Working ·"], {
     show: A2,
-    extra: () => {
+    // Silent too: every later state's console check counts on it.
+    always: () => {
       const lines = browser.acceptOutage();
       log(`  page: ${lines.length} console line(s) from Chrome for requests it made while the service was down${lines.length ? `, e.g. ${lines[0]!.slice(0, 160)}` : ""}`);
     },
@@ -2264,6 +2343,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
       if (rowButtonUid(firstNotice.number, "Dismiss")) fail(`#${firstNotice.number} offers Dismiss: it does not wait on the user`);
       log(`  page: no 'Needs you', not in the chat; on the board #${firstNotice.number} has Retry and no Dismiss`);
     },
+    // The extra leaves the board shown, where the next state's notice is (it goes to nobody, so not to the chat).
+    silently: () => browser.click(/tab "Board/),
   });
   await room.settle("fable");
   room.board("fable", "post", "@grok design K1, a keyboard-only Backroom");
@@ -2368,25 +2449,109 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   membersOnlyAnswer(end);
   oldTablesAbsent(room.dataDir);
 
-  // B3: the Browser panel of a room that may use two browsers.
+  // B3: the Browser panel of a room that may use two browsers (not started, with its real Chromes, past the last state
+  // --only or --until names).
+  selection.stopIfDone();
   await rehearseBrowserPanel(service, browser, room, check);
   return check.passed;
 }
 
 // ---------------- main ----------------
 
+/** A step's states, in the order it plays them, from the scripts' source (scripts/rehearse-select.ts). */
+function stepStates(step: Step): string[] {
+  const source = readFileSync(join(repo, "scripts", "rehearse.ts"), "utf8");
+  if (step === "keys") return stateNames(readFileSync(join(repo, "scripts", "rehearse-keys.ts"), "utf8"));
+  const parts = step === "ui" ? ["rehearseUi", "rehearseAgentsFile"] : ["rehearseRoom", "rehearseBrowserPanel"];
+  return parts.flatMap((name) => stateNames(functionSource(source, name)));
+}
+/** The first states of a step's sections (keys' only). */
+function stepSections(step: Step): string[] {
+  return step === "keys" ? sectionNames(readFileSync(join(repo, "scripts", "rehearse-keys.ts"), "utf8")) : [];
+}
+
+/**
+ * --step all: the three steps started together, each a process of its own on a port and a data folder of its own (ui
+ * on --port, room on the next, keys on the one after), keys in a browser of its own (a tab behind another one's in the
+ * same window scrolls late: the End-scroll flake). Each step's output goes to its log; this prints each step's result
+ * and fails if any step failed. With --only or --until, a step runs only if they name one of its states.
+ */
+async function runAll(o: Options): Promise<void> {
+  if (o.keysBrowser === o.browser) fail(`keys needs a browser of its own: --keys-browser ${o.keysBrowser} is also --browser`);
+  const begun = Date.now();
+  mkdirSync(o.data, { recursive: true });
+  if (o.outGiven) mkdirSync(o.out, { recursive: true });
+  const runs = STEPS.map((step, i) => {
+    const { run: chosen, only, until } = forStep(stepStates(step), o.only, o.until);
+    const port = o.port + i;
+    const browser = step === "keys" ? o.keysBrowser : o.browser;
+    const logFile = join(o.outGiven ? o.out : o.data, `${step}.log`);
+    if (!chosen) {
+      console.log(`${step}: not run (no state of it matches ${[...o.only.map((x) => `--only ${x}`), ...(o.until === null ? [] : [`--until ${o.until}`])].join(" ")})`);
+      return Promise.resolve({ step, ok: true, line: "not run" });
+    }
+    const args = [
+      "--no-warnings=ExperimentalWarning", join(repo, "scripts", "rehearse.ts"),
+      "--step", step, "--as", o.as, "--browser", browser, "--port", String(port), "--data", join(o.data, step), "--browser-cli", o.cli,
+      ...(o.outGiven ? ["--out", join(o.out, step)] : []),
+      ...only.flatMap((pattern) => ["--only", pattern]),
+      ...(until === null ? [] : ["--until", until]),
+      ...(o.keep ? ["--keep"] : []),
+    ];
+    console.log(`${step}: port ${port}, browser ${browser}, log ${logFile}`);
+    const fd = openSync(logFile, "w");
+    const child = spawn(process.execPath, args, { cwd: repo, stdio: ["ignore", fd, fd] });
+    return new Promise<{ step: Step; ok: boolean; line: string }>((done) => {
+      child.on("exit", (code, signal) => {
+        const seconds = Math.round((Date.now() - begun) / 1000);
+        const lines = readFileSync(logFile, "utf8").split("\n");
+        const result = code === 0
+          ? `PASS after ${seconds} s: ${lines.findLast((l) => /\] DONE: /.test(l))?.replace(/^.*\] DONE: /, "") ?? "done"}`
+          : `FAILED after ${seconds} s (exit ${code ?? signal}): ${lines.find((l) => l.startsWith("[rehearse] FAILED: "))?.slice("[rehearse] FAILED: ".length) ?? "see its log"}`;
+        console.log(`${step}: ${result}`);
+        done({ step, ok: code === 0, line: result });
+      });
+    });
+  });
+  const results = await Promise.all(runs);
+  const failed = results.filter((r) => !r.ok);
+  console.log(`all: ${failed.length === 0 ? "PASS" : `FAILED (${failed.map((r) => r.step).join(", ")})`} after ${Math.round((Date.now() - begun) / 1000)} s`);
+  if (failed.length > 0) process.exit(1);
+}
+
 async function main(): Promise<void> {
   const o = options(process.argv.slice(2));
+  if (o.list) {
+    for (const step of o.step === "all" ? STEPS : [o.step]) stepStates(step).forEach((name, i) => console.log(`${step} ${i + 1}: ${name}`));
+    return;
+  }
+  if (o.step === "all") return runAll(o);
+  const step = o.step;
+  let selection: Selection;
+  try {
+    selection = new Selection(stepStates(step), o.only, o.until, stepSections(step));
+  } catch (error) {
+    fail(`${step}: ${(error as Error).message}`);
+  }
+  if (!selection.whole) {
+    const loud = selection.names.map((_, i) => i).filter((i) => selection.loud(i));
+    log(`${o.only.length > 0 ? "--only" : "--until"}: checks ${loud.length === selection.last + 1 ? `states 1 to ${selection.last + 1}` : loud.map((i) => selection.label(i)).join("; ")}; the step stops after state ${selection.last + 1}`);
+  }
   const service = new Service(o);
   const browser = new Browser(o, service.base);
   let passed: string[] = [];
   try {
     await service.start();
     const room = new Room(service, o);
-    await room.create(o.step === "room" ? "Whole room" : "Rehearsal");
-    passed =
-      o.step === "ui" ? await rehearseUi(service, browser, room) : o.step === "keys" ? await rehearseKeys(service, browser, room, { log, fail, until, sleep }) : await rehearseRoom(service, browser, room);
-    log(`DONE: ${passed.length} states checked in the API and on the page, console clean`);
+    await room.create(step === "room" ? "Whole room" : "Rehearsal");
+    try {
+      passed =
+        step === "ui" ? await rehearseUi(service, browser, room, selection) : step === "keys" ? await rehearseKeys(service, browser, room, { log, fail, until, sleep, selection }) : await rehearseRoom(service, browser, room, selection);
+      log(`DONE: ${selection.whole ? `${passed.length} states checked in the API and on the page, console clean` : selection.summary()}`);
+    } catch (error) {
+      if (!(error instanceof SelectionDone)) throw error;
+      log(`DONE: ${error.message}`);
+    }
   } finally {
     browser.close();
     if (o.keep) log(`--keep: the service stays on ${service.base}`);

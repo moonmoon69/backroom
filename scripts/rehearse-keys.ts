@@ -57,6 +57,7 @@ import { ROOM_NOTE } from "../src/briefing/envelope.ts";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { barDoes, barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
+import type { Selection } from "./rehearse-select.ts";
 
 // The parts of rehearse.ts this step uses (its classes, by shape).
 export interface KeysService {
@@ -99,6 +100,8 @@ export interface KeysTools {
   fail: (message: string) => never;
   until: <T>(what: string, probe: () => Promise<T | null | undefined | false> | T | null | undefined | false, ms?: number, every?: number) => Promise<T>;
   sleep: (ms: number) => Promise<unknown>;
+  /** Which states --only and --until choose (scripts/rehearse-select.ts). */
+  selection: Selection;
 }
 
 /** What the page says about the focus, read in one `eval`. */
@@ -342,7 +345,7 @@ function route(grid: Grid, from: string, to: string): Array<{ press: string; to:
 }
 
 export async function rehearseKeys(service: KeysService, browser: KeysBrowser, room: KeysRoom, tools: KeysTools): Promise<string[]> {
-  const { log, fail, until, sleep } = tools;
+  const { log, fail, until, sleep, selection } = tools;
   const passed: string[] = [];
   const R = room.roomId;
   const short = (key: string | null) => (key ? key.replace(/([0-9a-f]{8})[0-9a-f-]{28}/g, "$1") : String(key));
@@ -393,14 +396,24 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     }
     return fail(`expected the key bar at the foot of the window naming ${where}, every key whole and none left out; it shows ${JSON.stringify(last)}`);
   };
-  /** A state of the page: the key bar names what the ring is on (`where`), the console is clean, and a screenshot. */
+  /**
+   * A state of the page, called once its keys and checks are done: the key bar names what the ring is on (`where`), the
+   * console is clean, and a screenshot. One --only does not name, played on the way to one it names, is set up
+   * silently: its keys and checks ran, and the key bar is waited for, but no console read or screenshot.
+   */
   const state = async (name: string, where: string | RegExp) => {
+    const { index, loud } = selection.enter(name);
     const bar = await keyBar(where);
-    log(`  key bar: "${bar.where}" · ${[...bar.keys, bar.end ?? "(no ?)"].join(" · ")}`);
-    browser.consoleClean();
-    browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
-    passed.push(name);
-    log(`PASS ${name}`);
+    if (loud) {
+      log(`  key bar: "${bar.where}" · ${[...bar.keys, bar.end ?? "(no ?)"].join(" · ")}`);
+      browser.consoleClean();
+      browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
+      passed.push(name);
+      log(`PASS ${name}`);
+    } else {
+      log(`SET UP (silently) ${selection.label(index)}`);
+    }
+    selection.leave(index);
   };
   /** The whole key bar, as the user reads it: what the ring is on, each key with its words, and the key at its end. */
   const barSays = async (what: string, want: { place: string; where: string; keys: string[]; end: string | null }) => {
