@@ -4,7 +4,8 @@
  * rehearse.ts starts the throwaway service and seats the room (a Consigliere, a worker, a reviewer); this module adds
  * a second and a third room and a thread outside rooms through the API, and a long board of room notes on the journal
  * (src/briefing/envelope.ts's ROOM_NOTE, as journals from before N1 hold them), then drives the page with
- * `rooms-browser … press` and nothing else: never a click, a fill or a command that moves the user. Each state checks
+ * `rooms-browser … press` and nothing else: never a click, a fill or a command that moves the user (but for two states of
+ * the mouse on a tile's member line, a hover and a click, which are what they check). Each state checks
  * the page and the API: which item has the focus (its `data-nav-key`, read with `eval`), that the browser draws its ring
  * (`:focus-visible` with an outline, the card's ring or the pixel brackets), that assistive technology gets it (the page
  * snapshot's `focused` line carries a role and a name), what is open (the drawer's `data-view`/`data-id`, a dialog, a
@@ -27,6 +28,8 @@
  * below, then Crew's head, a crew member, Browsers' head and a browser, keeping to the column it began in; Up from the
  * first row reaches its section's + and then the header, which is the top; Left and Right stop at a row's ends. A crew
  * member is seated in a room by keys alone, from its Edit dialog's Seat in a room…, and the API shows the new member.
+ * The mouse does the same (#499, #507): hovering a member's line on a tile hovers the tile, not the member, and the ring
+ * and the key bar stay on the room; a click on it opens the room's conversation, not the member's thread.
  * Every other move on the overview (goTo) follows the grid's own function (keyOrder.ts, gridTarget), each step checked
  * on the page.
  */
@@ -483,6 +486,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // ---------------- 1. the overview's grid (K1-3) ----------------
 
   let grid = await settledGrid();
+  const members0 = ((await room.snapshot()).participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+  const apiRoomTitle = (await room.snapshot()).room.title as string;
   const overview = await service.call<{ rooms: Array<{ id: string; members: Array<{ id: string; alias: string }> }> }>("GET", "/api/overview");
   const apiRooms = await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms");
   const apiPresets = await service.call<Array<{ id: string; name: string }>>("GET", "/api/presets");
@@ -587,6 +592,43 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Home: the row's first tile", (f) => f.key === firstRow[0]!.element);
   announced(/^button$/, /\S/);
   await state("overview: Left and Right go along the row and stop at its ends", await overviewWhere(firstRow[0]!.element));
+
+  // ---------------- 1b. the mouse on a member's line: it is the tile's (#499, #507) ----------------
+
+  // The ring on Rehearsal's tile, then the mouse over @worker's line on it: the tile is hovered, not the member (nothing
+  // in the line is under the pointer), the ring stays on the tile and the bar names the room.
+  const workerAlias = members0.find((m) => m.alias === "worker")!;
+  const memberLine = (): string => {
+    // A member's line is no control, so only the full snapshot lists it.
+    const line = browser.on("snapshot", "--verbose").split("\n").find((l) => /\blistitem "@worker,/.test(l));
+    const uid = line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+    return uid ?? fail(`the page snapshot has no line of @${workerAlias.alias} on Rehearsal's tile`);
+  };
+  await goTo(`room:${R}`);
+  browser.on("hover", memberLine());
+  const hovered = browser.eval<{ member: boolean; deepest: string | null; inTile: boolean; focus: string | null }>(
+    `() => { const chain = [...document.querySelectorAll(':hover')]; const deepest = chain.at(-1) ?? null; const tile = document.querySelector('[data-nav-key="room:${R}"]').closest('[data-nav-card]'); return { member: chain.some((e) => e.closest('.ov-member')), deepest: deepest ? (deepest.dataset.navKey ?? deepest.className) : null, inTile: Boolean(deepest && tile.contains(deepest)), focus: document.activeElement?.dataset?.navKey ?? null }; }`,
+  );
+  if (hovered.member || !hovered.inTile) fail(`the mouse over @worker's line hovers ${JSON.stringify(hovered)}: the tile must be hovered, not the member`);
+  log(`  page: the mouse over @worker's line hovers ${hovered.deepest} (the tile's), no member line; the focus on ${short(hovered.focus)}`);
+  await expect("the ring stays on Rehearsal's tile", (f) => f.key === `room:${R}`);
+  await barSays("Rehearsal's tile, the mouse over a member's line", {
+    place: "overview-room",
+    where: apiRoomTitle,
+    keys: ["↑ ↓ the row above or below", "← → along the row", "Enter open the room", "Home End first or last in the row"],
+    end: "? all keys",
+  });
+  await state("the mouse over a member's line on a tile: the tile is hovered, the bar names the room", apiRoomTitle);
+
+  // A click on that line opens the room's conversation, not the member's thread; Backspace comes back to the tile.
+  browser.on("click", memberLine());
+  await expect("a click on @worker's line: Rehearsal is open, no member's thread over it", (f) => f.drawers.some((d) => d.view === "room" && d.id === R && !d.inert) && !f.drawers.some((d) => d.view === "member") && f.inLayer === "room");
+  const clicked = focus();
+  if (clicked.drawers[0]!.label !== `Room ${apiRoomTitle}`) fail(`the click opened ${clicked.drawers[0]!.label}, the API's room is ${apiRoomTitle}`);
+  log(`api: room ${R.slice(0, 8)} "${apiRoomTitle}"; page: the drawer data-id ${R.slice(0, 8)}, no member's layer`);
+  await state("a click on a member's line opens the room's conversation", "Write a message");
+  press("Backspace");
+  await expect("Backspace: back on the overview, the ring on Rehearsal's tile", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
 
   // ---------------- 2. the focus survives a poll that moves its card ----------------
 

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
@@ -411,6 +411,19 @@ function threadState(thread: OverviewThread): TileState {
   return { needs: activity.tone === "input" ? 1 : 0, busy: activity.tone === "working" || activity.tone === "background" ? 1 : 0, unseen: thread.news ? 1 : 0 };
 }
 
+/**
+ * A click anywhere on a tile opens it, its members' lines included (they take no pointer events, styles.css): only the
+ * tile's own controls (its head, its ⋯ and the menu that opens in place) handle their clicks themselves. The tile does
+ * not rely on its head's stretched hit area alone: a press that lands on it and a release that lands on the card make a
+ * click on the card, which the head never sees.
+ */
+const openOnClick = (open: () => void) => (event: ReactMouseEvent<HTMLElement>) => {
+  const target = event.target as Element;
+  // Not a click inside a dialog the tile's menu opened: portalled, it bubbles here through React only.
+  if (!event.currentTarget.contains(target) || target.closest("button, a, input, select, textarea, [role='menu'], .menu")) return;
+  open();
+};
+
 /** Unsent text kept for the conversation: it is there when you open it. */
 const DraftMark = () => (
   <span className="pill pill-draft" title="You have an unsent message here">
@@ -439,7 +452,7 @@ function RoomCard({
   const { needs, busy } = roomState(room, detail);
   const news = room.news.unseen > 0 ? room.news : null;
   return (
-    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} data-nav-card>
+    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} onClick={openOnClick(onOpen)} data-nav-card>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`} data-where={room.title}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
@@ -463,12 +476,12 @@ function RoomCard({
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
             // T3's time of it, or the lower bound when T3 did not time it.
             const when = member.live || member.doing ? "" : age(member.lastReply?.at ?? member.lastReply?.after);
-            // Read on the tile, not an item of its own: the arrows pass over it, and the room's Members has it.
+            // Read on the tile, not an item of its own: the arrows pass over it, a click or a hover on it is the tile's
+            // (no pointer events, styles.css), and the room's Members has it.
             return (
               <li
                 key={member.id}
                 className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`}
-                title={line ? oneLine(line, 400) : described.label}
                 aria-label={`@${member.alias}${member.consigliere ? ", the Consigliere" : ""}, ${described.label}${line ? `: ${oneLine(line, 160)}` : ""}`}
               >
                 <span className="avatar avatar-xs" aria-hidden="true">
@@ -504,7 +517,7 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
   const working = activity.tone === "working" || activity.tone === "background";
   const when = working ? "" : age(thread.latestRunCompletedAt ?? thread.updatedAt);
   return (
-    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} data-nav-card>
+    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} onClick={openOnClick(onOpen)} data-nav-card>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
@@ -515,7 +528,7 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
         <span className="mono muted">1 member</span>
       </button>
       <ul className="ov-members">
-        <li className={`ov-member status-${activity.tone}`} title={thread.line ? oneLine(thread.line, 400) : activity.label}>
+        <li className={`ov-member status-${activity.tone}`}>
           <span className="avatar avatar-xs" aria-hidden="true">
             <MemberMark seed={thread.id} selection={thread.modelSelection} presetId={crew?.presetId} />
           </span>

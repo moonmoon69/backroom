@@ -6483,8 +6483,9 @@ button.work-chip:hover,
 }
 
 /* A room tile: its name and what it asks of you on top, its members under. A stripe down the left says needs you
-   (violet) or busy (blue). The whole tile is the way in. */
+   (violet) or busy (blue). The whole tile is the way in: a click anywhere on it opens it (Overview.tsx). */
 .ov-room {
+  cursor: pointer;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -6594,6 +6595,8 @@ button.work-chip:hover,
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Read on the tile, never a target of their own: a click or a hover on a member's line is the tile's. */
+  pointer-events: none;
 }
 
 /* One member: mark, name and state on one line, what they are at under it (two lines at most). */
@@ -7873,7 +7876,7 @@ span.reply-to {
   outline: none;
 }
 
-:root:not([data-skin="pixel"]) :is(.ov-member, .participant-chip, .timeline [data-nav="post"], .inspector, .room-body .timeline):focus-visible {
+:root:not([data-skin="pixel"]) :is(.participant-chip, .timeline [data-nav="post"], .inspector, .room-body .timeline):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 6px;
