@@ -192,13 +192,6 @@ export function App() {
     setMemberThread(null);
     setOutside(false);
   }, []);
-  const openMember = useCallback(
-    (roomId: string, participantId: string) => {
-      openInDrawer({ kind: "room", id: roomId });
-      setMemberThread({ roomId, participantId });
-    },
-    [openInDrawer],
-  );
   /** Back from a member's thread to its room: the Members panel open, the focus on the member. */
   const closeMember = useCallback(() => {
     const participantId = memberThread?.participantId;
@@ -590,7 +583,6 @@ export function App() {
           onOpenRoom={(roomId) => openInDrawer({ kind: "room", id: roomId })}
           onOpenThread={(threadId) => openInDrawer({ kind: "thread", id: threadId })}
           onOpenBrowser={(browserId) => openInDrawer({ kind: "browser", id: browserId })}
-          onOpenMember={openMember}
           onSeatPreset={seatPreset}
           onCommand={runCommand}
           onT3Changed={loadT3}

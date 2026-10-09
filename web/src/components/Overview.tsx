@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
@@ -16,7 +16,8 @@ import type { AgentsFileQuestion, OverviewRoom, OverviewThread, RoomListItem, T3
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
-import { byKey, focusItem, focusWhen, itemOf, keyOf, navKey, overviewTarget } from "../keys.ts";
+import { byKey, focusItem, focusWhen, itemOf, keyOf, navKey, overviewItems } from "../keys.ts";
+import { gridStart, gridTarget, type Span } from "../keyOrder.ts";
 
 /** How old something is, in a word: "now", "3m", "2h", "4d". */
 function age(iso: string | null | undefined): string {
@@ -43,6 +44,9 @@ const oneLine = (text: string, max = 140): string => {
  * Arrange sets the order of projects and rooms. Rooms are the one thing made here; threads started in T3 show up as
  * their own tiles.
  *
+ * From the keyboard it is a grid of rows (keys.ts): the header's buttons, then per section its head (the + button) and
+ * its tiles. The tiles are the items, not the members drawn on them: a room's members are acted on inside the room.
+ *
  * Inside a project the tiles are ranked by what they ask of you: needs you first (an approval, a question, a failure
  * nobody followed up), then new for you (a reply you have not seen), then busy, then the rest. Inside a tier they keep
  * the arranged order (Arrange), so a tile moves only when its tier changes: forward when it wants you, back once you looked.
@@ -56,7 +60,6 @@ export function Overview({
   onOpenRoom,
   onOpenThread,
   onOpenBrowser,
-  onOpenMember,
   onSeatPreset,
   onCommand,
   onT3Changed,
@@ -78,8 +81,6 @@ export function Overview({
   onOpenRoom: (roomId: string) => void;
   onOpenThread: (threadId: string) => void;
   onOpenBrowser: (browserId: string) => void;
-  /** A member's thread, over its room (Enter on a member). */
-  onOpenMember: (roomId: string, participantId: string) => void;
   onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
   /** Re-read projects from T3 (after one was added). */
@@ -96,7 +97,7 @@ export function Overview({
   returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
-  // The commit question for a project's agents file: asked as its room is created (the room opens once it is closed),
+  // The commit question for a project's agents file: asked as its room is created (the room opens once it is answered),
   // and from the project's heading until it is answered.
   const [asking, setAsking] = useState<{ question: AgentsFileQuestion; then: string | null } | null>(null);
   const { presets } = usePresets();
@@ -145,14 +146,31 @@ export function Overview({
     };
   }, []);
 
-  // ---- the keys (keys.ts): the arrows move the focus over the page's cards and members, in reading order ----
+  // ---- the keys (keys.ts): the arrows move the focus over the page's rows of tiles and buttons ----
   const root = useRef<HTMLDivElement>(null);
+  // The header sticks at the top while the page scrolls under it: what the ring goes to is brought into view below it
+  // (scroll-padding-top in styles.css, from the header's height in either look, wrapped or not).
+  const head = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const element = root.current;
+    const header = head.current;
+    if (!element || !header) return;
+    const measure = () => element.style.setProperty("--overview-head", `${header.offsetHeight}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
   // The item last focused here, by key. A poll that redraws the page can move a card (to another tier, another project),
   // and the browser drops the focus of what it moves: the same item takes it back before the frame is painted.
   const remembered = useRef<string | null>(null);
   // Whether the item last focused anywhere on the page was that one: only then was it the poll that took the focus. A
   // dialog that closed (it gives the focus back itself), a click elsewhere, the address bar: none of them is.
   const holding = useRef(false);
+  // The column a run of Up and Down keeps to: the span of the item it began on, while the ring is still on the item the
+  // run's last press landed on (not on its ⋯, not elsewhere). A section's head (one + at the far right) is passed on the
+  // way without pulling it over.
+  const column = useRef<{ key: string | null; span: Span } | null>(null);
   const wasActive = useRef(active);
   useLayoutEffect(() => {
     const element = root.current;
@@ -197,7 +215,14 @@ export function Overview({
       event.preventDefault();
       // On a card's own button (its ⋯), the card's head is where the arrows start from.
       const card = target?.closest<HTMLElement>("[data-nav-card]")?.querySelector<HTMLElement>("[data-nav]") ?? null;
-      focusItem(overviewTarget(element, "ov", itemOf(target) ?? card ?? (onPage ? byKey(element, remembered.current) : null), key));
+      const from = itemOf(target) ?? card ?? (onPage ? byKey(element, remembered.current) : null);
+      const items = overviewItems(element);
+      const at = items.findIndex((item) => item.element === from);
+      const run = column.current && at >= 0 && from === target && column.current.key === keyOf(from) ? column.current.span : undefined;
+      const next = at < 0 ? gridStart(items) : gridTarget(items, at, key, run);
+      if (!next) return;
+      focusItem(next.element);
+      column.current = at >= 0 && (key === "up" || key === "down") ? { key: keyOf(next.element), span: run ?? items[at]! } : null;
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -229,16 +254,16 @@ export function Overview({
 
   return (
     <div className="overview" ref={root} inert={!active}>
-      <header className="overview-head">
+      <header className="overview-head" ref={head}>
         <span className="brand serif">
           <BrandMark />
           Backroom
         </span>
         <span className="overview-title muted">Run the family</span>
-        <button type="button" className="small ghost icon-only overview-new" aria-label="New project" title="New project: add a folder on the T3 machine" disabled={!projects} onClick={() => setDialog({ kind: "project" })}>
+        <button type="button" className="small ghost icon-only overview-new" aria-label="New project" title="New project: add a folder on the T3 machine" disabled={!projects} onClick={() => setDialog({ kind: "project" })} data-nav="ov" data-nav-key="head:project">
           <PlusIcon />
         </button>
-        <button type="button" className="small ghost overview-new" title="The order of projects, and of rooms within each" disabled={!projects?.length} onClick={() => setDialog({ kind: "arrange" })}>
+        <button type="button" className="small ghost overview-new" title="The order of projects, and of rooms within each" disabled={!projects?.length} onClick={() => setDialog({ kind: "arrange" })} data-nav="ov" data-nav-key="head:arrange">
           Arrange
         </button>
         <span className="spacer" />
@@ -258,7 +283,7 @@ export function Overview({
         {groups.map(({ project, tiles: projectTiles }) => {
           const known = project.id !== "unknown";
           return (
-            <section key={project.id} className="ov-project" aria-label={project.title} data-nav-section data-project-id={project.id}>
+            <section key={project.id} className="ov-project" aria-label={project.title} data-project-id={project.id}>
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
@@ -267,14 +292,16 @@ export function Overview({
                   .filter((question) => question.projectId === project.id)
                   .map((question) => (
                     <button
-                      key="agents-file"
+                      key={question.folder}
                       type="button"
                       className="small ov-project-ask"
-                      aria-label={`Commit AGENTS.md? (${project.title})`}
-                      title={`Backroom wrote ${question.files.join(" and ")} here; members in new worktrees get it once it is committed`}
+                      aria-label={`Commit the agents file? (${project.title})`}
+                      title={`Backroom wrote ${question.files.join(" and ")} here; members working in a new worktree read ${question.files.length > 1 ? "them" : "it"} once committed`}
                       onClick={() => setAsking({ question, then: null })}
+                      data-nav="ov"
+                      data-nav-key={`head:agents:${project.id}`}
                     >
-                      Commit AGENTS.md?
+                      Commit the agents file?
                     </button>
                   ))}
                 {known ? (
@@ -284,6 +311,8 @@ export function Overview({
                     aria-label={`New room in ${project.title}`}
                     title={`New room in ${project.title}${consigliere ? `, with ${consigliere.name} seated as its Consigliere` : ""}`}
                     onClick={() => setDialog({ kind: "room", projectId: project.id })}
+                    data-nav="ov"
+                    data-nav-key={`head:room:${project.id}`}
                   >
                     <PlusIcon />
                   </button>
@@ -301,7 +330,6 @@ export function Overview({
                       presetOver={presetOver === tile.room.id}
                       dropTarget={presetTarget(tile.room.id, (presetId) => void onSeatPreset(tile.room.id, presetId))}
                       onOpen={() => onOpenRoom(tile.room.id)}
-                      onOpenMember={(participantId) => onOpenMember(tile.room.id, participantId)}
                       onCommand={onCommand}
                     />
                   ) : (
@@ -352,8 +380,10 @@ export function Overview({
           question={agentsFiles.find((question) => question.projectId === asking.question.projectId) ?? asking.question}
           projectTitle={projects?.find((project) => project.id === asking.question.projectId)?.title ?? "this project"}
           onClose={() => {
+            // Esc or ×: the question closes and nothing else happens (the keyboard's rule); the new room's tile has the focus.
             setAsking(null);
-            if (asking.then) onOpenRoom(asking.then);
+            const roomId = asking.then;
+            if (roomId) focusWhen(() => byKey(document, `room:${roomId}`));
           }}
           onAnswered={() => {
             setAsking(null);
@@ -362,7 +392,7 @@ export function Overview({
             else {
               // Asked from the heading, whose button goes with the answer: the focus goes to the project's +.
               const projectId = asking.question.projectId;
-              focusWhen(() => [...document.querySelectorAll<HTMLElement>(".ov-project[data-project-id] .ov-project-new")].find((button) => button.closest<HTMLElement>(".ov-project")?.dataset.projectId === projectId));
+              focusWhen(() => byKey(document, `head:room:${projectId}`));
             }
           }}
           onChanged={onAgentsFilesChanged}
@@ -445,6 +475,19 @@ function threadState(thread: OverviewThread): TileState {
   return { needs: activity.tone === "input" ? 1 : 0, busy: activity.tone === "working" || activity.tone === "background" ? 1 : 0, unseen: thread.news ? 1 : 0 };
 }
 
+/**
+ * A click anywhere on a tile opens it, its members' lines included (they take no pointer events, styles.css): only the
+ * tile's own controls (its head, its ⋯ and the menu that opens in place) handle their clicks themselves. The tile does
+ * not rely on its head's stretched hit area alone: a press that lands on it and a release that lands on the card make a
+ * click on the card, which the head never sees.
+ */
+const openOnClick = (open: () => void) => (event: ReactMouseEvent<HTMLElement>) => {
+  const target = event.target as Element;
+  // Not a click inside a dialog the tile's menu opened: portalled, it bubbles here through React only.
+  if (!event.currentTarget.contains(target) || target.closest("button, a, input, select, textarea, [role='menu'], .menu")) return;
+  open();
+};
+
 /** Unsent text kept for the conversation: it is there when you open it. */
 const DraftMark = () => (
   <span className="pill pill-draft" title="You have an unsent message here">
@@ -459,7 +502,6 @@ function RoomCard({
   presetOver,
   dropTarget,
   onOpen,
-  onOpenMember,
   onCommand,
 }: {
   room: RoomListItem;
@@ -469,13 +511,12 @@ function RoomCard({
   presetOver: boolean;
   dropTarget: { onDragOver: (event: DragEvent) => void; onDragLeave: () => void; onDrop: (event: DragEvent) => void };
   onOpen: () => void;
-  onOpenMember: (participantId: string) => void;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
 }) {
   const { needs, busy } = roomState(room, detail);
   const news = room.news.unseen > 0 ? room.news : null;
   return (
-    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} data-nav-card>
+    <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} onClick={openOnClick(onOpen)} data-nav-card>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`} data-where={room.title}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
@@ -499,24 +540,13 @@ function RoomCard({
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";
             // T3's time of it, or the lower bound when T3 did not time it.
             const when = member.live || member.doing ? "" : age(member.lastReply?.at ?? member.lastReply?.after);
-            // Reached with the arrows (keys.ts); Enter opens the member's thread over its room.
-            const open = (event: KeyboardEvent) => {
-              if (event.key !== "Enter" || event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-              event.preventDefault();
-              onOpenMember(member.id);
-            };
+            // Read on the tile, not an item of its own: the arrows pass over it, a click or a hover on it is the tile's
+            // (no pointer events, styles.css), and the room's Members has it.
             return (
               <li
                 key={member.id}
                 className={`ov-member status-${described.tone}${member.consigliere ? " ov-consigliere" : ""}`}
-                title={line ? oneLine(line, 400) : described.label}
-                tabIndex={-1}
-                data-nav="ov"
-                data-nav-key={`member:${room.id}:${member.id}`}
-                data-where={`@${member.alias} in ${room.title}`}
                 aria-label={`@${member.alias}${member.consigliere ? ", the Consigliere" : ""}, ${described.label}${line ? `: ${oneLine(line, 160)}` : ""}`}
-                aria-description="Enter opens its thread"
-                onKeyDown={open}
               >
                 <span className="avatar avatar-xs" aria-hidden="true">
                   <MemberMark seed={member.id} selection={member.modelSelection} presetId={member.presetId} name={member.alias} />
@@ -551,7 +581,7 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
   const working = activity.tone === "working" || activity.tone === "background";
   const when = working ? "" : age(thread.latestRunCompletedAt ?? thread.updatedAt);
   return (
-    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} data-nav-card>
+    <article className={`ov-room${activity.tone === "input" ? " needs" : working ? " busy" : ""}`} onClick={openOnClick(onOpen)} data-nav-card>
       <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${thread.title}`} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
@@ -562,7 +592,7 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
         <span className="mono muted">1 member</span>
       </button>
       <ul className="ov-members">
-        <li className={`ov-member status-${activity.tone}`} title={thread.line ? oneLine(thread.line, 400) : activity.label}>
+        <li className={`ov-member status-${activity.tone}`}>
           <span className="avatar avatar-xs" aria-hidden="true">
             <MemberMark seed={thread.id} selection={thread.modelSelection} presetId={crew?.presetId} />
           </span>

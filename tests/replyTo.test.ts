@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backroomNote, backroomNotice, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
+import { backroomNote, backroomNotice, backroomRequest, claimPieces, intoRunningTurn, replyPieces, replyText, sourceWords, type ReplyContext } from "../web/src/replyTo.ts";
 import type { EngineClaim, EnginePost } from "../web/src/types.ts";
 import { journalView } from "../src/server/engineView.ts";
 import { Room } from "./runtime/helpers.ts";
@@ -47,6 +47,9 @@ test("each outcome the engine gives a claim gets its own words, with the request
   // Backroom's briefing to a member, made in the user's name: its acknowledgement does not say "from you".
   const briefing = { ...request("seat-briefing:W:seated", 2, "$user", "open", false), id: "b" };
   assert.equal(replyText(claimPieces(claim("seat-briefing:W:seated", 2, "answered"), context([...posts, briefing]))), "answers #2 (seat briefing)");
+  // B1: Backroom's own ($system), as briefings are recorded now: the same words, its answer returning to nobody.
+  const own = { ...request("seat-briefing:V:seated", 4, "$system"), id: "c" };
+  assert.equal(replyText(claimPieces({ ...claim("seat-briefing:V:seated", 4, "answered"), returnTo: "$system" }, context([...posts, own]))), "answers #4 (seat briefing)");
   // A request the page does not hold (older than the loaded posts): its number is still read from the claim.
   assert.equal(replyText(claimPieces(claim("Z", 3, "answered"), context(posts))), "answers #3");
 });
@@ -105,6 +108,19 @@ test("what Backroom wrote in the user's name is Backroom's: any request without 
   assert.equal(backroomNotice(request("reseat-off:abc", 8, "$user", "open", false)), "reseat called off");
   assert.equal(backroomNotice(request("something-new:abc", 9, "$user", "open", false)), "Backroom's request", "no user message: Backroom's, whatever the ID");
   assert.equal(backroomNotice(request("board:abc", 10, "C")), null, "a member's request is the member's");
+  // B1: Backroom's own requests ($system), as its briefings are recorded now.
+  assert.equal(backroomNotice(request("seat-briefing:W:seated", 11, "$system")), "seat briefing");
+  assert.equal(backroomNotice(request("moved:W:y", 12, "$system")), "new Consigliere notice");
+  assert.equal(backroomNotice(request("something-new:def", 13, "$system")), "Backroom's request");
+  assert.equal(backroomNotice(request("reseat:def", 14, "$system")), "reseat checkpoint");
+  assert.equal(backroomNotice(request("reseat-off:def", 15, "$system")), "reseat called off");
+  // What removing a member cancels with it (the Remove dialog does not count it as open work): Backroom's requests.
+  assert.equal(backroomRequest({ id: "seat-briefing:W:seated", returnTo: "$system" }), true);
+  assert.equal(backroomRequest({ id: "reseat:abc", returnTo: "$system" }), true);
+  for (const id of ["seat-briefing:W:seated", "moved:W:x", "reseat:abc", "reseat-off:abc"]) assert.equal(backroomRequest({ id, returnTo: "$user" }), true, `${id}: a journal from before B1`);
+  assert.equal(backroomRequest({ id: "takeover:abc", returnTo: "C" }), false, "the handover is the Consigliere's");
+  assert.equal(backroomRequest({ id: "msg:m1:0:W", returnTo: "$user" }), false, "the user's own request");
+  assert.equal(backroomRequest({ id: "board:abc", returnTo: "C" }), false);
 
   const note = (source: "post" | "t3-message", room: boolean, author = "$user") =>
     ({ kind: "note" as const, author, note: { source, room, t3: null, afterAnswer: false } });
