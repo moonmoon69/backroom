@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
@@ -47,39 +47,64 @@ export function useBrowserPower(browserId: string, onChanged: () => void): Brows
   return { busy, error, start: () => void act(() => api.browserStart(browserId)), stop: () => void act(() => api.browserStop(browserId)) };
 }
 
-/** "Start browser" (the primary action while it is off) or "Stop browser", for a dialog's action row or a header. */
-export function BrowserPowerButton({ status, power, small }: { status: RoomBrowserStatus; power: BrowserPower; small?: boolean }) {
+/**
+ * "Start browser" (the primary action while it is off) or "Stop browser", for a dialog's action row or a header. Named
+ * `name`, as one of several browsers in a panel, it says only "Start" or "Stop" and keeps the browser in its label.
+ */
+export function BrowserPowerButton({ status, power, small, name }: { status: RoomBrowserStatus; power: BrowserPower; small?: boolean; name?: string }) {
+  const noun = name ? "" : " browser";
   if (status.state === "running") {
     return (
-      <button type="button" className={small ? "small" : undefined} disabled={power.busy} onClick={power.stop}>
-        {power.busy ? "Stopping…" : "Stop browser"}
+      <button type="button" className={small ? "small" : undefined} disabled={power.busy} aria-label={name ? `Stop ${name}` : undefined} onClick={power.stop}>
+        {power.busy ? "Stopping…" : `Stop${noun}`}
       </button>
     );
   }
   const starting = status.state === "starting" || power.busy;
   return (
-    <button type="button" className={small ? "small primary" : "primary"} disabled={starting || status.mode === null} onClick={power.start}>
-      {starting ? "Starting…" : "Start browser"}
+    <button type="button" className={small ? "small primary" : "primary"} disabled={starting || status.mode === null} aria-label={name ? `Start ${name}` : undefined} onClick={power.start}>
+      {starting ? "Starting…" : `Start${noun}`}
     </button>
   );
 }
 
+/** Tabs listed under a browser: the browser's own page lists ten; one of several in the room's side panel, five. */
+const TABS_SHOWN = 10;
+const TABS_SHOWN_COMPACT = 5;
+
 /**
  * A browser's process as it is: state, the watch link, the DevTools address agents attach to, and the open tabs.
- * Shared by the room's Browser dialog and the browser view; Start and Stop sit with each one's other actions.
+ * Shared by the room's Browser panel and the browser view; Start and Stop sit with each one's other actions, or in the
+ * status row as `action`. `compact` is one of several in the room's side panel: it drops the hints the panel says once
+ * (RoomBrowserHints), and `name` then tells apart the links of one browser from another's.
  */
-export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatus; error: string | null }) {
+export function BrowserStatusPanel({
+  status,
+  error,
+  action,
+  compact,
+  name,
+}: {
+  status: RoomBrowserStatus;
+  error: string | null;
+  action?: ReactNode;
+  compact?: boolean;
+  name?: string;
+}) {
   const running = status.state === "running";
   const unavailable = status.mode === null;
   const link = running ? watchUrl(status) : null;
+  const shown = compact ? TABS_SHOWN_COMPACT : TABS_SHOWN;
   return (
     <>
       <div className="browser-status">
         <span className="label">Status</span>
-        <span>
+        <span className={`browser-state is-${unavailable ? "unavailable" : status.state}`}>
           {unavailable ? "unavailable" : BROWSER_STATE_LABEL[status.state]}
           {running ? ` · ${status.mode === "vnc" ? "virtual screen" : status.mode === "window" ? "Chrome window" : "headless"}` : ""}
         </span>
+        {action ? <span className="spacer" /> : null}
+        {action}
       </div>
 
       {status.error || error ? <p className="status-error browser-error">{error ?? status.error}</p> : null}
@@ -87,15 +112,15 @@ export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatu
       {running && status.mode === "vnc" && link ? (
         <div className="browser-row">
           <span className="label">Watch</span>
-          <a href={link} target="_blank" rel="noreferrer noopener">
+          <a href={link} target="_blank" rel="noreferrer noopener" aria-label={name ? `Open the screen of ${name}` : undefined}>
             Open the browser screen
           </a>
-          <CopyButton text={link} label="Copy watch link" />
-          <span className="hint">Mouse and keyboard work: close tabs, type a password. The link holds the viewer password.</span>
+          <CopyButton text={link} label={name ? `Copy the watch link of ${name}` : "Copy watch link"} />
+          {compact ? null : <span className="hint">Mouse and keyboard work: close tabs, type a password. The link holds the viewer password.</span>}
         </div>
       ) : null}
-      {running && status.mode === "window" ? <p className="hint">It is a Chrome window on this computer with the browser&rsquo;s own profile; use it directly.</p> : null}
-      {running && status.mode === "headless" ? (
+      {!compact && running && status.mode === "window" ? <p className="hint">It is a Chrome window on this computer with the browser&rsquo;s own profile; use it directly.</p> : null}
+      {!compact && running && status.mode === "headless" ? (
         <p className="hint">Headless: no screen to watch; agents use it over DevTools. On Linux, installing Xvfb, x11vnc and noVNC makes it watchable.</p>
       ) : null}
       {running && status.cdpUrl ? (
@@ -110,21 +135,33 @@ export function BrowserStatusPanel({ status, error }: { status: RoomBrowserStatu
           <span className="label">Tabs</span>
           {status.tabs.length === 0 ? <span className="muted">none open</span> : null}
           <ul>
-            {status.tabs.slice(0, 10).map((tab) => (
+            {status.tabs.slice(0, shown).map((tab) => (
               <li key={tab.id} title={tab.url}>
                 <span className="tab-title">{tab.title || tab.url}</span>
                 {tab.title && tab.title !== tab.url ? <span className="muted tab-url">{tab.url}</span> : null}
               </li>
             ))}
           </ul>
-          {status.tabs.length > 10 ? <span className="muted">and {status.tabs.length - 10} more</span> : null}
+          {status.tabs.length > shown ? <span className="muted">and {status.tabs.length - shown} more</span> : null}
         </div>
       ) : null}
-      {!running && !unavailable ? (
+      {!compact && !running && !unavailable ? (
         <p className="hint">Stops by itself after a while with no activity and no work in flight; its profile, logins and tabs are kept.</p>
       ) : null}
     </>
   );
+}
+
+/** What each browser's status in the side panel would repeat, said once under the list, for the modes the browsers are in. */
+function RoomBrowserHints({ statuses }: { statuses: RoomBrowserStatus[] }) {
+  const running = statuses.filter((status) => status.state === "running");
+  const hints = [
+    running.some((status) => status.mode === "vnc") ? "Watch opens the browser's screen; mouse and keyboard work, so you can close tabs or type a password. The link holds the viewer password." : null,
+    running.some((status) => status.mode === "window") ? "A Chrome window is on this computer with the browser's own profile; use it directly." : null,
+    running.some((status) => status.mode === "headless") ? "Headless: no screen to watch; agents use it over DevTools. On Linux, installing Xvfb, x11vnc and noVNC makes it watchable." : null,
+    statuses.some((status) => status.state !== "running" && status.mode !== null) ? "A browser stops by itself after a while with no activity and no work in flight; its profile, logins and tabs are kept." : null,
+  ].filter((hint): hint is string => hint !== null);
+  return hints.length > 0 ? <p className="hint">{hints.join(" ")}</p> : null;
 }
 
 /**
@@ -183,6 +220,8 @@ export function BrowserChoices({
   subject,
   onChange,
   onEdit,
+  onOpen,
+  statusOf,
 }: {
   list: BrowserListItem[] | null;
   enabled: boolean;
@@ -194,6 +233,10 @@ export function BrowserChoices({
   onChange: (next: { browserId?: string | null; allowed?: string[] | null }) => void;
   /** Edit a browser's name and description; without it there is no Edit link. */
   onEdit?: (browser: BrowserListItem) => void;
+  /** Open a ticked browser's own page; without it there is no Page link. */
+  onOpen?: (browser: BrowserListItem) => void;
+  /** What to show under a ticked browser's description (its process); unticked browsers stay a plain line. */
+  statusOf?: (browser: BrowserListItem) => ReactNode;
 }) {
   const isAllowed = (browserId: string) => allowedIds === null || allowedIds.includes(browserId);
   const tickedCount = list ? list.filter((b) => isAllowed(b.id)).length : 0;
@@ -237,8 +280,18 @@ export function BrowserChoices({
                   Edit
                 </button>
               ) : null}
+              {onOpen && allowed ? (
+                <button type="button" className="link-button" onClick={() => onOpen(browser)} title="Open this browser's page: the rooms using it, its profile">
+                  Page
+                </button>
+              ) : null}
             </div>
             <p className="browser-choice-purpose">{browser.description || <span className="muted">No description; agents see only the name.</span>}</p>
+            {statusOf && allowed ? (
+              <div className="browser-choice-status" role="group" aria-label={`${browser.name}: process`}>
+                {statusOf(browser)}
+              </div>
+            ) : null}
           </div>
         );
       })}
@@ -249,24 +302,50 @@ export function BrowserChoices({
   );
 }
 
+/** One ticked browser's process in the side panel: status with Start or Stop, the watch link, the DevTools address and the tabs. */
+function BrowserCardStatus({ browser, onChanged }: { browser: BrowserListItem; onChanged: () => void }) {
+  const power = useBrowserPower(browser.id, onChanged);
+  return (
+    <BrowserStatusPanel status={browser.status} error={power.error} compact name={browser.name} action={<BrowserPowerButton status={browser.status} power={power} small name={browser.name} />} />
+  );
+}
+
+/** How often the panel reads the browsers again; the service itself looks at their tabs every five seconds. */
+const LIST_POLL_MS = 4000;
+
 /**
  * The Browser tab of the room's side panel, in the order it matters to agents: first whether they are told about
- * browsers at all, then which browsers they may use, each with the name and description they read (editable here),
- * one of them the default that starts for each turn; then that default's process, with Start or Stop at the bottom.
- * The browsers themselves are managed under Browsers on the overview.
+ * browsers at all, then which browsers they may use. Each is a box with the name and description agents read
+ * (editable here); the ones ticked also show their process, with Start or Stop, the watch link, the DevTools address
+ * and the open tabs, the default marked as such, so any of them can be started, watched or logged into from here.
+ * Unticked browsers stay a plain line. The browsers themselves are managed on their own pages (Page).
  */
 export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
   const info = snapshot.browser;
-  const power = useBrowserPower(info?.browser.id ?? "", refetch);
   const enabled = snapshot.room.browserEnabled;
   const [busy, setBusy] = useState(false);
   const [list, setList] = useState<BrowserListItem[] | null>(null);
   const [editing, setEditing] = useState<BrowserListItem | null>(null);
   const loadList = useCallback(() => {
-    api.browsers().then(setList, () => setList([]));
+    api.browsers().then(
+      (next) => setList((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next)),
+      // A read that fails keeps what the panel shows; before the first read there is nothing to keep.
+      () => setList((prev) => prev ?? []),
+    );
   }, []);
-  useEffect(loadList, [loadList]);
+  // The room's snapshot changes at once when its default browser does (the service tells the room), so the list is read
+  // again then; the others are read every few seconds.
+  const defaultStatus = info ? JSON.stringify(info.status) : "";
+  useEffect(loadList, [loadList, defaultStatus]);
+  useEffect(() => {
+    const timer = setInterval(loadList, LIST_POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadList]);
+  const changed = useCallback(() => {
+    loadList();
+    refetch();
+  }, [loadList, refetch]);
 
   const unavailable = !info || info.status.mode === null;
   const setBrowser = async (next: { enabled: boolean; browserId?: string | null; allowed?: string[] | null }) => {
@@ -277,6 +356,7 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
       setBusy(false);
     }
   };
+  const ticked = list?.filter((browser) => snapshot.room.allowedBrowserIds === null || snapshot.room.allowedBrowserIds.includes(browser.id)) ?? [];
 
   return (
     <div className="browser-panel">
@@ -300,24 +380,11 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
         subject="room"
         onChange={(next) => void setBrowser({ enabled, ...next })}
         onEdit={setEditing}
+        onOpen={(browser) => onManage(browser.id)}
+        statusOf={(browser) => <BrowserCardStatus browser={browser} onChanged={changed} />}
       />
 
-      {info ? (
-        <>
-          <div className="browser-row">
-            <span className="label">Default</span>
-            <button type="button" className="link-button mono" onClick={() => onManage(info.browser.id)} title="Open this browser's page">
-              {info.browser.name}
-            </button>
-          </div>
-          <BrowserStatusPanel status={info.status} error={power.error} />
-          <div className="panel-actions">
-            <BrowserPowerButton status={info.status} power={power} />
-          </div>
-        </>
-      ) : (
-        <p className="hint">No browser yet: create one under Browsers on the overview.</p>
-      )}
+      {info ? <RoomBrowserHints statuses={ticked.map((browser) => browser.status)} /> : <p className="hint">No browser yet: create one under Browsers on the overview.</p>}
 
       {editing ? (
         <BrowserFormDialog

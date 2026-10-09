@@ -5111,7 +5111,8 @@ body.sorting * {
 .browser-choice-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
 }
 
 .browser-choice-head .pill {
@@ -5124,6 +5125,30 @@ body.sorting * {
   font-size: var(--text-sm);
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+
+/* A ticked browser's process under its description: status with Start or Stop, watch link, DevTools address, tabs. */
+.browser-choice-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+
+.browser-choice-status .browser-row code {
+  overflow-wrap: anywhere;
+}
+
+.browser-state.is-running {
+  color: var(--ok);
+}
+
+.browser-state.is-error {
+  color: var(--err);
 }
 
 .composer-notice {
