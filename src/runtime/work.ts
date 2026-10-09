@@ -49,7 +49,8 @@ export function finalTargets(p: Projection, run: Run): string[] {
   const allowed = allowedIds(p, run);
   const selected = [...targets].filter((id) => allowed.has(id));
   // A reseat's checkpoint run answers the checkpoint only: the seat's other requests stay open for the fresh seat (L4b).
-  const checkpoints = selected.filter((id) => id.startsWith(RESEAT_CHECKPOINT) && p.requests.get(id)?.returnTo === "$user");
+  // The checkpoint is Backroom's request (the user's in journals from before B1).
+  const checkpoints = selected.filter((id) => id.startsWith(RESEAT_CHECKPOINT) && ["$system", "$user"].includes(p.requests.get(id)?.returnTo ?? ""));
   return checkpoints.length > 0 ? checkpoints : selected;
 }
 

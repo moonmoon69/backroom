@@ -157,7 +157,7 @@ class Seats {
 test("seating: a member gets its seat on the board and, in a Consigliere's room, the seat briefing; its acknowledgement wakes nobody", async () => {
   const h = await Seats.create();
   try {
-    // The Consigliere's mark is the journal's orchestrator; the members were briefed by the user, and he slept through it.
+    // The Consigliere's mark is the journal's orchestrator; the members were briefed by Backroom, and he slept through it.
     assert.equal(h.p.orchestrator, h.seat("C"));
     for (const alias of ["C", "W", "V"]) assert.equal(h.p.seats.get(h.seat(alias))?.threadId, h.thread(alias));
     assert.equal(h.wakes("C"), 0);
@@ -172,10 +172,12 @@ test("seating: a member gets its seat on the board and, in a Consigliere's room,
     const seatX = h.seat("X");
     assert.equal(h.p.seats.get(seatX)?.status, "active");
     const request = h.p.requests.get(`seat-briefing:${seatX}:seated`)!;
-    assert.deepEqual([request.owner, request.returnTo], [seatX, "$user"]);
+    assert.deepEqual([request.owner, request.returnTo], [seatX, "$system"], "Backroom's request, not the user's (B1)");
     await h.acknowledge();
     assert.equal(h.p.requests.get(request.id)!.state, "answered");
     assert.equal(h.wakes("C"), 0, "nobody is woken by a seat briefing's acknowledgement");
+    const ack = h.p.events.find((e) => e.data.kind === "output" && e.data.claims.some((c) => c.requestId === request.id))!;
+    assert.deepEqual(ack.data.kind === "output" ? ack.data.recipients : null, [], "the acknowledgement is to nobody: not an answer to the user");
     assert.ok(x);
   } finally {
     h.close();
@@ -300,7 +302,7 @@ test("reseat carries every unread input and every owned request exactly once, an
     const reseat = (await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: "finish A" })) as { eventId: string };
     const checkpoint = reseat.eventId;
     assert.match(checkpoint, /^reseat:/);
-    assert.deepEqual([h.p.requests.get(checkpoint)!.owner, h.p.requests.get(checkpoint)!.returnTo], [seatW, "$user"]);
+    assert.deepEqual([h.p.requests.get(checkpoint)!.owner, h.p.requests.get(checkpoint)!.returnTo], [seatW, "$system"], "Backroom's request (B1)");
     await h.refused({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: null }, /being reseated already/);
     h.host.correct(h.roomId, { actor: h.seat("C"), id: "fix-A", requestId: a, body: "Use the new API." });
     h.complete("W", "A is written in src/a.ts.");
@@ -429,7 +431,7 @@ test("a reseated Consigliere: the orchestrator and the mark move, the members ar
     assert.equal([...h.p.requests.values()].some((q) => q.id.startsWith("takeover:")), false, "he reseated himself: nobody to report to");
     const moved = [...h.p.requests.values()].filter((q) => q.id.startsWith("moved:"));
     assert.deepEqual(moved.map((q) => q.owner).sort(), [h.seat("W"), h.seat("V")].sort(), "every other member is told");
-    assert.ok(moved.every((q) => q.returnTo === "$user"));
+    assert.ok(moved.every((q) => q.returnTo === "$system"), "Backroom's requests (B1)");
 
     // W answers A: the answer goes to the fresh Consigliere, whose final answers the user's request.
     h.complete("W", "A is built.");
@@ -763,6 +765,43 @@ test("F6: the Consigliere's rules on the engine adjust running work with correct
   } finally {
     h.close();
   }
+});
+
+test("R3 review speed: the engine's briefing for the Consigliere carries the seven review-speed rules and the two reworded ones, word for word", async () => {
+  const freshSeat = "A fresh seat for every review: each gate that needs a reviewer gets a newly seated one, who also checks the fixes it asked for and is retired when the gate is passed. The member who did the work never reviews it.";
+  const route = "You route reviews: members never post to each other. When the work is ready, send the reviewer the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.";
+  const speed = [
+    "Seat the reviewer when you seat the writer: it sends you what it will check while the writer builds, and you pass that to the writer.",
+    "Before a writer reports its work ready, it reviews its own diff with a subagent or a review workflow and fixes what that finds.",
+    "Anything that changes or describes behaviour gets a fresh reviewer; wording that changes and describes no behaviour gets your own read and the automated gate.",
+    "After two review rounds, rule on the open technical points yourself and bring the user only product questions.",
+    "Keep one revision in review at a time: the writer sends the next only after the reviewer's verdict on the last.",
+    "Every reviewer finding becomes a test in the deliverable before its gate passes.",
+  ];
+  const reseatSelf = "Reseat yourself the same way when your own context nears compaction, at a quiet moment, after writing the room state.";
+  const lines = [freshSeat, route, ...speed, reseatSelf];
+
+  // Each is a whole line of the default rules, once.
+  for (const line of lines) assert.equal(ENGINE_DEFAULT_CONSIGLIERE_RULES.split("\n").filter((l) => l === `- ${line}`).length, 1, `once: ${line.slice(0, 50)}`);
+  // The six sit with the review rules, in this order, after the one that routes reviews; the seventh follows the rule it says "the same way" of.
+  assert.ok(ENGINE_DEFAULT_CONSIGLIERE_RULES.includes([freshSeat, route, ...speed].map((l) => `- ${l}`).join("\n") + "\n- Scope is yours:"));
+  assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, new RegExp(`\\n- Reseat long work before the harness compacts it[^\\n]*\\n- ${reseatSelf}\\n- Keep the room state current`));
+  // The old wording of the two reworded rules is gone.
+  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /each gate gets a newly seated reviewer|When the work is ready, seat the reviewer/);
+
+  // The briefing the engine sends a Consigliere carries all nine.
+  const h = await Seats.create();
+  try {
+    h.request("$user", "C", "Plan it.");
+    await h.tick();
+    const prompt = h.prompt("C");
+    for (const line of lines) assert.ok(prompt.includes(`- ${line}\n`), `missing: ${line.slice(0, 50)}`);
+  } finally {
+    h.close();
+  }
+  // What the user saved replaces them, as it replaces every default rule.
+  const custom = engineConsigliereRules("- Be brief.");
+  for (const line of lines) assert.equal(custom.includes(line), false);
 });
 
 test("F7: members are told their reply is their answer, and that they post nothing (H5)", () => {

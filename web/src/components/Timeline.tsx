@@ -492,7 +492,7 @@ function PostDetail({ item, onClose }: { item: Exclude<Item, { type: "day" }>; o
 function PostRow({ post, chat }: { post: EnginePost; chat: boolean }) {
   switch (post.kind) {
     case "request":
-      return post.author === "$user" ? <UserMessage posts={[post]} chat={chat} /> : <MemberRequest post={post} />;
+      return post.author === "$user" || post.author === "$system" ? <UserMessage posts={[post]} chat={chat} /> : <MemberRequest post={post} />;
     case "output":
       return <Reply post={post} />;
     case "note":
@@ -674,7 +674,7 @@ function UserBubble({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
   );
 }
 
-/** Backroom's briefing to a member, made in the user's name: one line, opening to its text, with its marker. */
+/** Backroom's request to a member (its briefing, or a reseat's in the user's name): one line, opening to its text, with its marker. */
 function BackroomRequest({ post, notice }: { post: EnginePost; notice: string }) {
   const { nameOf } = useRoom();
   const nav = useNavProps(post);

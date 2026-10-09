@@ -21,6 +21,7 @@ import { ContextMeterLine, ContextReadout } from "./ContextMeter.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
+import { backroomRequest } from "../replyTo.ts";
 import { sinceWords } from "../engineTime.ts";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
 import { InheritedLine, RUNTIME_MODE_INFO, ThreadList, ThreadSettingsRow, WorkspacePicker, branchSlug, useAttachableThreads, workspaceReady } from "./pickers.tsx";
@@ -511,8 +512,9 @@ export function RemoveParticipantDialog({ participant, onClose }: { participant:
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   // Its open work on the journal: requests it owns and has not answered, and its run. Removal is refused while it has any.
+  // Backroom's request it never answered (its briefing) is not work: removal cancels it.
   const seatIds = new Set(snapshot.bindings.filter((b) => b.participantId === participant.id).map((b) => b.id));
-  const owned = snapshot.requests.filter((q) => seatIds.has(q.owner));
+  const owned = snapshot.requests.filter((q) => seatIds.has(q.owner) && !backroomRequest(q));
   const running = snapshot.runs.some((run) => seatIds.has(run.seatId) && run.phase !== "terminal");
   // A thread T3 no longer has cannot be settled, archived, or deleted; the choice is skipped and "keep" sent.
   const threadMissing = snapshot.participantStatus[participant.id]?.threadMissing === true;

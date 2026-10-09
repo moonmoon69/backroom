@@ -23,7 +23,7 @@ event takes the command's ID, the others `<command ID>/<n>`; a command ID may no
 output's source key to its event), `commandKeys` (`[actor, command ID]`), `blocked` (seat to the input that does not
 fit) and `orchestrator`. All of it can be thrown away and rebuilt from the log.
 
-Principals are seat IDs, `$user` and `$system` (the host).
+Principals are seat IDs, `$user` and `$system` (the host, Backroom: it also asks a seat for itself, its seat briefing or a reseat's checkpoint).
 
 There is no backward compatibility: every engine journal written before L6 must be recreated. One that holds an event
 kind the carve dropped (any control, provider or protocol event; a mid-turn cancel used to write a control) does not
@@ -39,7 +39,7 @@ folders.
 | `retire` | user or orchestrator | `seat.retired`; refused unless the seat is quiet (below) and owns no open request; clears the orchestrator if it was |
 | `designate` | user | `orchestrator.set` to an active seat or null; naming the current one is idle |
 | `transfer` | user or orchestrator | `transfer`: a quiet seat's open owned and awaited requests (named exactly) and its unread input move to a fresh seat |
-| `request` | a seat or the user | `request` to a seat (or the user), optionally under a parent the author may act on |
+| `request` | a seat, the user or `$system` | `request` to a seat (or the user), optionally under a parent the author may act on; `$system`'s (Backroom's own: a seat briefing, a reseat's checkpoint) is to a seat, under nothing |
 | `correct` | the requester, orchestrator or user | `correction` of an open request; it becomes the request's version |
 | `cancel` | the requester, orchestrator or user | `cancel`; applied only to an open request. A run T3 rejected for the owner ends with it. Stopping a live turn is the host's: it sends T3 the interrupt (§6) |
 | `post` | a seat or the user | `note` (wakes nobody) or `progress` (wakes only followers of its milestone), under requests the author owns |
@@ -69,10 +69,11 @@ input; an activity's output, the activity's). Each gets one outcome:
   correction addressed to the seat whose request walks up `parentId` to it (K1). It stays open; the next run delivers it;
 - `pending_activity`: an open child request or a pending or uncertain activity remains under it (the only blocking
   rule, `pendingWork`). It stays open and nobody is woken;
-- `answered`: closed, and its requester is woken once.
+- `answered`: closed, and its requester is woken once (`$system`, Backroom, is woken by nothing: it reads the journal).
 
 `progress` wakes only followers of the milestone; `yield` and `silent` answer nothing. `error` records one bounded
-error notice per run or activity to the requesters of the fresh work it affected and the orchestrator. An output the host
+error notice per run or activity to the requesters of the fresh work it affected and the orchestrator (a failed request
+of `$system`'s, a seat briefing say, to the orchestrator alone). An output the host
 cannot tie to a run is recorded as `orphan`, with an attention notice. Input addressed to a retired seat gets an
 attention notice to the orchestrator.
 
