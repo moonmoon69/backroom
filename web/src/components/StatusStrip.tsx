@@ -20,11 +20,11 @@ const hostOf = (baseUrl: string | null): string => {
   }
 };
 
-/** The T3 connection in the overview's header: dot and state; host, version and policy on hover. */
+/** The T3 connection in the overview's header (a button in its row of the keyboard's grid): dot and state; host, version and policy on hover. */
 export function ConnectionChip({ status, onOpen }: { status: StatusResponse | null; onOpen: () => void }) {
   if (!status) {
     return (
-      <button type="button" className="small ghost connection-chip" onClick={onOpen} title="Connecting to Backroom…" aria-label="T3 connection: connecting">
+      <button type="button" className="small ghost connection-chip" onClick={onOpen} title="Connecting to Backroom…" aria-label="T3 connection: connecting" data-nav="ov" data-nav-key="head:t3" data-where="T3 connection: connecting">
         <span className="dot dot-unknown" aria-hidden="true" />
         T3
       </button>
@@ -44,7 +44,7 @@ export function ConnectionChip({ status, onOpen }: { status: StatusResponse | nu
     .filter(Boolean)
     .join("\n");
   return (
-    <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`}>
+    <button type="button" className="small ghost connection-chip" onClick={onOpen} title={detail} aria-label={`T3 connection: ${detail}`} data-nav="ov" data-nav-key="head:t3" data-where={`T3 connection${problem ? `: ${problem}` : ""}`}>
       <span className={`dot dot-${tone}`} aria-hidden="true" />
       {/* The green dot says connected; words only for the demo or a problem. */}
       T3{adapter === "fake" ? " demo" : ""}

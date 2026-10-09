@@ -4,7 +4,8 @@
  * rehearse.ts starts the throwaway service and seats the room (a Consigliere, a worker, a reviewer); this module adds
  * a second and a third room and a thread outside rooms through the API, and a long board of room notes on the journal
  * (src/briefing/envelope.ts's ROOM_NOTE, as journals from before N1 hold them), then drives the page with
- * `rooms-browser … press` and nothing else: never a click, a fill or a command that moves the user. Each state checks
+ * `rooms-browser … press` and nothing else: never a click, a fill or a command that moves the user (but for two states of
+ * the mouse on a tile's member line, a hover and a click, which are what they check). Each state checks
  * the page and the API: which item has the focus (its `data-nav-key`, read with `eval`), that the browser draws its ring
  * (`:focus-visible` with an outline, the card's ring or the pixel brackets), that assistive technology gets it (the page
  * snapshot's `focused` line carries a role and a name), what is open (the drawer's `data-view`/`data-id`, a dialog, a
@@ -21,12 +22,21 @@
  * the keys) and never the room, a member's thread, a thread or the side panel; Backspace outside a text field closes the
  * same things first, then a member's thread, the panel and the room in turn; in a dialog's text field it deletes.
  *
- * The overview's reading order is checked as keys.ts defines it: section by section, column by column (cards are stacked
- * per column), each column top to bottom. With four tiles on three columns the fourth sits under the first, so Down from
- * the first card's last member goes to the fourth card, not to the second as the page's own order would.
+ * The overview's grid (K1-3): its stops are the tiles (every room, thread, crew member and browser of the API has one,
+ * and a room's members are read on its tile, not visited) and the buttons of its rows (the header, each section's +).
+ * With four tiles on three columns the fourth sits under the first, so Down from that room's tile reaches the tile
+ * below, then Crew's head, a crew member, Browsers' head and a browser, keeping to the column it began in; Up from the
+ * first row reaches its section's + and then the header, which is the top, and from a page scrolled to its foot each stop
+ * on the way up is brought into view below the sticky header, not under it (in both looks); Left and Right stop at a
+ * row's ends. A crew
+ * member is seated in a room by keys alone, from its Edit dialog's Seat in a room…, and the API shows the new member.
+ * The mouse does the same (#499, #507): hovering a member's line on a tile hovers the tile, not the member, and the ring
+ * and the key bar stay on the room; a click on it opens the room's conversation, not the member's thread.
+ * Every other move on the overview (goTo) follows the grid's own function (keyOrder.ts, gridTarget), each step checked
+ * on the page.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
-import { barEntries, KEYS, type KeyWhen } from "../web/src/keyOrder.ts";
+import { barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
 
 // The parts of rehearse.ts this step uses (its classes, by shape).
 export interface KeysService {
@@ -141,25 +151,24 @@ const FOCUS = `() => {
   };
 }`;
 
-/** The overview's items with where each sits: its section, the left edge of its card (its column), its top and middle. */
-const LAYOUT = `() => {
+/**
+ * The overview's stops as keys.ts boxes them (overviewItems), by their keys: a tile by its card, a button in a row by
+ * itself, a disabled one left out; the stray ones too (anything else with `data-nav` or focusable on a tile's members).
+ */
+const GRID = `() => {
   const root = document.querySelector('.overview');
-  const sections = [...root.querySelectorAll('[data-nav-section]')];
-  return [...root.querySelectorAll('[data-nav]')].filter((e) => e.getClientRects().length > 0).map((e) => {
-    const r = e.getBoundingClientRect();
-    const card = e.closest('[data-nav-card]') ?? e;
-    return { key: e.dataset.navKey, section: sections.indexOf(e.closest('[data-nav-section]')), column: Math.round(card.getBoundingClientRect().left), top: r.top, middle: r.top + r.height / 2, card: card === e ? null : (card.querySelector('[data-nav]')?.dataset.navKey ?? null) };
+  const page = root.scrollTop - root.getBoundingClientRect().top;
+  const head = root.querySelector('.overview-head');
+  const atTop = head ? -head.getBoundingClientRect().top : page;
+  return [...root.querySelectorAll('[data-nav="ov"]')].filter((e) => e.getClientRects().length > 0 && !e.closest('[inert], [hidden]') && !e.matches(':disabled')).map((e) => {
+    const card = e.closest('[data-nav-card]');
+    const r = (card ?? e).getBoundingClientRect();
+    const y = head && head.contains(e) ? atTop : page;
+    return { element: e.dataset.navKey, left: r.left, right: r.right, top: r.top + y, bottom: r.bottom + y, tile: card !== null, needs: Boolean(card && card.matches('.needs')) };
   });
 }`;
 
-interface Placed {
-  key: string;
-  section: number;
-  column: number;
-  top: number;
-  middle: number;
-  card: string | null;
-}
+type Grid = Array<Boxed<string>>;
 
 /** The key bar as the window shows it: where it is, what it names, and each key with its words ("Enter open the room"). */
 interface Bar {
@@ -240,8 +249,31 @@ function everyBarFits(): string {
   }`;
 }
 
-/** The reading order the overview's Up and Down must follow: section, then column, then top. */
-const readingOrder = (items: Placed[]): Placed[] => [...items].sort((a, b) => a.section - b.section || a.column - b.column || a.top - b.top);
+const ARROWS: Array<[NavKey, string]> = [["down", "ArrowDown"], ["up", "ArrowUp"], ["right", "ArrowRight"], ["left", "ArrowLeft"]];
+
+/**
+ * The fewest arrow presses from one stop to another on the grid, as the page moves (gridTarget): a run of Up and Down
+ * keeps to the column it began in, Left and Right end the run. Each step: the key and where it lands.
+ */
+function route(grid: Grid, from: string, to: string): Array<{ press: string; to: string }> | null {
+  const queue: Array<{ at: string; column: Span | undefined; path: Array<{ press: string; to: string }> }> = [{ at: from, column: undefined, path: [] }];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const state = queue.shift()!;
+    if (state.at === to) return state.path;
+    const id = `${state.at}|${state.column ? `${state.column.left},${state.column.right}` : ""}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const at = grid.findIndex((p) => p.element === state.at);
+    for (const [key, press] of ARROWS) {
+      const vertical = key === "up" || key === "down";
+      const next = gridTarget(grid, at, key, vertical ? state.column : undefined);
+      if (!next || next.element === state.at) continue;
+      queue.push({ at: next.element, column: vertical ? (state.column ?? grid[at]) : undefined, path: [...state.path, { press, to: next.element }] });
+    }
+  }
+  return null;
+}
 
 export async function rehearseKeys(service: KeysService, browser: KeysBrowser, room: KeysRoom, tools: KeysTools): Promise<string[]> {
   const { log, fail, until, sleep } = tools;
@@ -311,14 +343,21 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (JSON.stringify(got) !== JSON.stringify(want)) fail(`the key bar on ${what} reads ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
     log(`  key bar on ${what}: "${bar.where}" · ${[...bar.keys, bar.end ?? "(no ?)"].join(" · ")}`);
   };
-  /** What the bar calls an overview item, from the API: a room's title, "@alias in <room>", a thread's title, a browser's name. */
+  /**
+   * What the bar calls an overview stop, from the API: a room's title, a thread's title, a crew member's or a browser's
+   * name; a button in a row by its name (a section's + by the project's title from T3's list).
+   */
   const overviewWhere = async (key: string): Promise<string> => {
-    const [kind, id, member] = key.split(":");
-    const view = await service.call<{ rooms: Array<{ id: string; title: string; members: Array<{ id: string; alias: string }> }>; threads: Array<{ id: string; title: string }> }>("GET", "/api/overview");
+    const [kind, id, more] = key.split(":");
+    const heads: Record<string, string> = { project: "New project", arrange: "Arrange", settings: "Settings", crew: "New crew member", browsers: "New browser" };
+    if (kind === "head" && heads[id!]) return heads[id!]!;
+    if (kind === "head" && id === "room") {
+      const project = (await service.call<Array<{ id: string; title: string }>>("GET", "/api/t3/projects")).find((p) => p.id === more);
+      if (project) return `New room in ${project.title}`;
+    }
+    const view = await service.call<{ rooms: Array<{ id: string; title: string }>; threads: Array<{ id: string; title: string }> }>("GET", "/api/overview");
     const apiRoom = view.rooms.find((r) => r.id === id);
     if (kind === "room" && apiRoom) return apiRoom.title;
-    const alias = apiRoom?.members.find((m) => m.id === member)?.alias;
-    if (kind === "member" && apiRoom && alias) return `@${alias} in ${apiRoom.title}`;
     const thread = view.threads.find((t) => t.id === id);
     if (kind === "thread" && thread) return thread.title;
     const browserItem = kind === "browser" ? (await service.call<Array<{ id: string; name: string }>>("GET", "/api/browsers")).find((b) => b.id === id) : undefined;
@@ -350,28 +389,72 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     }
     browser.poll<string | null>(`the composer to hold ${JSON.stringify(letter)}`, value, (v) => v === letter);
   };
-  const layout = (): Placed[] => browser.eval<Placed[]>(LAYOUT);
-  /** The overview's order once it holds still (its polls rank the tiles: news, busy, needs you). */
-  const settledOrder = async (): Promise<Placed[]> => {
+  /** The overview's stops once they hold still (its polls rank the tiles: news, busy, needs you), as the page boxes them. */
+  const settledGrid = async (): Promise<Grid> => {
     let previous = "";
     return until("the overview to hold still", async () => {
-      const order = readingOrder(layout());
-      const signature = order.map((p) => `${p.key}@${p.column}`).join(" ");
+      const grid = browser.eval<Grid>(GRID);
+      const signature = grid.map((p) => `${p.element}@${Math.round(p.left)},${Math.round(p.top)},${Math.round(p.bottom)}`).join(" ");
       const same = signature === previous;
       previous = signature;
       if (!same) await sleep(1200);
-      return same ? order : null;
+      return same ? grid : null;
     }, 30_000, 100);
   };
-  /** Move the overview's focus to an item with Down (and Up), from Home, following the reading order. */
-  const goTo = async (key: string): Promise<void> => {
-    const order = await settledOrder();
-    const at = order.findIndex((p) => p.key === key);
-    if (at < 0) fail(`${short(key)} is not on the overview`);
+  /** How far the overview is scrolled, and how far it can be. */
+  const scrolled = () => browser.eval<{ top: number; more: number }>("() => { const o = document.querySelector('.overview'); return { top: Math.round(o.scrollTop), more: o.scrollHeight - o.clientHeight }; }");
+  /**
+   * The ring's stop in sight, not under the sticky header: its top below the header's foot, and the page's element at
+   * its middle (elementFromPoint) the stop itself or inside it.
+   */
+  const inSight = async (key: string, what: string): Promise<void> => {
+    const seen = browser.eval<{ hit: string; top: number; head: number }>(
+      `() => { const e = document.querySelector('[data-nav-key="${key}"]'); const r = e.getBoundingClientRect(); const at = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return { hit: at === e || e.contains(at) ? 'itself' : (at ? at.tagName + '.' + at.className : 'nothing'), top: Math.round(r.top), head: Math.round(document.querySelector('.overview-head').getBoundingClientRect().bottom) }; }`,
+    );
+    if (seen.hit !== "itself" || seen.top < seen.head) fail(`${what} is under the header: its top at ${seen.top}px, the header's foot at ${seen.head}px, its middle shows ${seen.hit}`);
+    log(`  page: ${what} in sight below the header (its top at ${seen.top}px, the header's foot at ${seen.head}px; elementFromPoint at its middle: the stop)`);
+  };
+  /**
+   * From the page scrolled to its foot (the ring on a browser there), up to the first row and onto its section's +:
+   * each in sight below the header. Returns the first row's stop the way up came to, and the run's column.
+   */
+  const upFromTheFoot = async (foot: string, first: string): Promise<Span | undefined> => {
+    await goTo(foot);
+    const down = scrolled();
+    if (down.more <= 0) fail(`the overview does not scroll in this window (${JSON.stringify(down)}): the check needs a page taller than it`);
+    if (down.top <= 0) fail(`the ring on ${short(foot)} at the foot, yet the page is not scrolled (${JSON.stringify(down)})`);
+    log(`  page: scrolled ${down.top} of ${down.more} px, the ring at the foot`);
+    const column = await goTo(first);
+    await inSight(first, `the first row's ${short(first)}`);
+    press("ArrowUp");
+    await expect("Up from the first row: its section's +, New room in demo", (f) => f.key === "head:room:project_demo" && f.label === "New room in demo" && f.ring);
+    await inSight("head:room:project_demo", "the section's + (New room in demo)");
+    return column;
+  };
+  /** Where a key moves from a stop on the grid as it is now, as the page's function says (null: it stays). */
+  const predict = (grid: Grid, from: string, key: NavKey, column?: Span): string | null => gridTarget(grid, grid.findIndex((p) => p.element === from), key, column)?.element ?? null;
+  /**
+   * Move the overview's ring to a stop by the arrows alone: Home first (on the ring's row, or the start with nothing
+   * focused; it ends any run of Up and Down), then the fewest arrows the grid needs (route), each landing checked. Returns
+   * the column the run of Up and Down at the end keeps to, if it ends with one.
+   */
+  const goTo = async (key: string): Promise<Span | undefined> => {
+    const grid = await settledGrid();
+    if (!grid.some((p) => p.element === key)) fail(`${short(key)} is not a stop of the overview`);
     press("Home");
-    await expect(`the first item ${short(order[0]!.key)}`, (f) => f.key === order[0]!.key);
-    for (let i = 1; i <= at; i += 1) press("ArrowDown");
-    await expect(short(key), (f) => f.key === key);
+    const start = (await expect("Home: a stop of the overview", (f) => grid.some((p) => p.element === f.key))).key!;
+    const steps = route(grid, start, key);
+    if (!steps) return fail(`the arrows lead nowhere from ${short(start)} to ${short(key)}`);
+    let column: Span | undefined;
+    let here = start;
+    for (const step of steps) {
+      press(step.press);
+      await expect(`${step.press.replace("Arrow", "")}: ${short(step.to)}`, (f) => f.key === step.to);
+      const vertical = step.press === "ArrowUp" || step.press === "ArrowDown";
+      column = vertical ? (column ?? grid.find((p) => p.element === here)) : undefined;
+      here = step.to;
+    }
+    return column;
   };
 
   /** Up from the posts to the view's tabs: Home, then Up past the first post until the earlier posts are all drawn. */
@@ -410,14 +493,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   // so these are written to the journal as one from before N1 holds them, which the page still shows.
   room.journal(Array.from({ length: 62 }, (_, i) => ({ type: "post", actor: "$user", id: `note:long-board:${i + 1}`, intent: "note", body: `Note ${i + 1} on the long board`, milestone: ROOM_NOTE })));
   const second = await room.second("Second", ["alpha", "beta"]);
-  const third = await room.second("Third", ["solo"]);
+  // Third seats seven, so its tile is tall and the overview scrolls in the rehearsal's window (the ring brought into view
+  // under the sticky header is checked on the way up from the foot).
+  const third = await room.second("Third", ["solo", "ada", "bea", "cyd", "dee", "eli", "fay"]);
   const loose = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "A thread outside rooms: read the logs" });
-  log(`set up: rooms Rehearsal ${R.slice(0, 8)}, Second ${second.roomId.slice(0, 8)}, Third ${third.roomId.slice(0, 8)}; thread ${loose.threadId.slice(0, 8)} outside rooms; 62 notes`);
+  // Two crew members, for the grid's Crew row and a seat by keys (the throwaway's Browsers row has its "general").
+  for (const name of ["sol", "astra"]) await service.command({ type: "preset.create", name, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
+  log(`set up: rooms Rehearsal ${R.slice(0, 8)}, Second ${second.roomId.slice(0, 8)}, Third ${third.roomId.slice(0, 8)}; thread ${loose.threadId.slice(0, 8)} outside rooms; 62 notes; crew sol and astra`);
 
   browser.open();
   browser.waitFor("Rehearsal");
   browser.waitFor("Third");
   browser.waitFor("A thread outside rooms");
+  browser.waitFor("astra");
   browser.consoleClean();
 
   // ---------------- 0. the key bar: nothing focused yet; every place's bar fits this window ----------------
@@ -429,66 +517,152 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   log(`  page: all ${fits.bars} bars of the key table (each place, each mix of what holds) fit ${fits.width} px with the where-text at its widest`);
   await state("key bar: the overview with nothing focused; every place's whole bar fits the window", "the overview");
 
-  // ---------------- 1. the overview's reading order ----------------
+  // ---------------- 1. the overview's grid (K1-3) ----------------
 
-  let order = await settledOrder();
-  const overview = await service.call<{ rooms: Array<{ id: string; members: Array<{ id: string }> }> }>("GET", "/api/overview");
+  let grid = await settledGrid();
+  const members0 = ((await room.snapshot()).participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+  const apiRoomTitle = (await room.snapshot()).room.title as string;
+  const overview = await service.call<{ rooms: Array<{ id: string; members: Array<{ id: string; alias: string }> }> }>("GET", "/api/overview");
   const apiRooms = await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms");
+  const apiPresets = await service.call<Array<{ id: string; name: string }>>("GET", "/api/presets");
+  const apiBrowsers = await service.call<Array<{ id: string; name: string }>>("GET", "/api/browsers");
+  // The stops are the tiles and the buttons of the rows: every room, the thread, every crew member and browser of the API
+  // has a tile; nothing else is a stop.
+  const tileOf = (key: string) => grid.find((p) => p.element === key && p.tile);
+  for (const apiRoom of apiRooms) if (!tileOf(`room:${apiRoom.id}`)) fail(`room ${apiRoom.title} of the API has no tile on the page`);
+  if (!tileOf(`thread:${loose.threadId}`)) fail("the thread outside rooms has no tile");
+  for (const preset of apiPresets) if (!tileOf(`preset:${preset.id}`)) fail(`crew member ${preset.name} of the API has no tile`);
+  for (const item of apiBrowsers) if (!tileOf(`browser:${item.id}`)) fail(`browser ${item.name} of the API has no tile`);
+  const stray = grid.filter((p) => !/^(room|thread|preset|browser|shelf|head):/.test(p.element));
+  if (stray.length > 0) fail(`stops that are neither tiles nor buttons of a row: ${stray.map((p) => short(p.element)).join(", ")}`);
+  // A room's members are read on its tile, as the API lists them, and none of them is a stop or takes the focus.
+  const onTiles = browser.eval<Array<{ key: string; aliases: string[]; stops: number }>>(
+    "() => [...document.querySelectorAll('.overview .ov-room')].map((card) => ({ key: card.querySelector('[data-nav]')?.dataset.navKey ?? '', aliases: [...card.querySelectorAll('.ov-member')].map((m) => (m.getAttribute('aria-label') ?? '').split(',')[0]), stops: card.querySelectorAll('.ov-member[data-nav], .ov-member [data-nav], .ov-member[tabindex]').length }))",
+  );
   for (const apiRoom of overview.rooms) {
-    const onPage = order.filter((p) => p.key.startsWith(`member:${apiRoom.id}:`)).map((p) => p.key.split(":")[2]).sort();
-    const api = apiRoom.members.map((m) => m.id).sort();
-    if (onPage.join() !== api.join()) fail(`room ${apiRoom.id.slice(0, 8)}: members on the page ${onPage.join()} != the API's ${api.join()}`);
+    const tile = onTiles.find((t) => t.key === `room:${apiRoom.id}`);
+    const want = apiRoom.members.map((m) => `@${m.alias}`).sort();
+    if (!tile || [...tile.aliases].sort().join() !== want.join()) return fail(`room ${apiRoom.id.slice(0, 8)}: its tile reads ${JSON.stringify(tile?.aliases)}, the API's members are ${want.join(", ")}`);
+    if (tile.stops > 0) fail(`room ${apiRoom.id.slice(0, 8)}: ${tile.stops} of its members on the tile are stops`);
   }
-  for (const apiRoom of apiRooms) if (!order.some((p) => p.key === `room:${apiRoom.id}`)) fail(`room ${apiRoom.title} of the API has no card on the page`);
-  if (!order.some((p) => p.key === `thread:${loose.threadId}`)) fail("the thread outside rooms has no card");
-  // The column rule matters only if a column holds two cards: four tiles on fewer than four columns.
-  const projectCards = order.filter((p) => p.section === 0 && p.card === p.key);
-  const columns = [...new Set(projectCards.map((p) => p.column))];
-  const stacked = columns.find((column) => projectCards.filter((p) => p.column === column).length >= 2);
-  if (stacked === undefined) fail(`no column of the project holds two cards (cards at ${projectCards.map((p) => p.column).join(", ")}): the window is too wide for this check`);
-  const pageOrder = browser.eval<string[]>("() => [...document.querySelectorAll('.overview [data-nav]')].filter((e) => e.getClientRects().length > 0).map((e) => e.dataset.navKey)");
-  log(`api: ${apiRooms.length} rooms, members as /api/overview lists them; page: ${order.length} items on ${columns.length} columns, column ${stacked} holds two cards`);
-  log(`  reading order: ${order.map((p) => short(p.key)).join(" → ")}`);
-  if (pageOrder.join() === order.map((p) => p.key).join()) fail("the reading order equals the page's own order: the column rule is not exercised");
+  log(`api: ${apiRooms.length} rooms, ${apiPresets.length} crew members, ${apiBrowsers.length} browsers; page: ${grid.length} stops (${grid.filter((p) => p.tile).length} tiles), every room's members on its tile and none a stop`);
 
-  press("Home");
-  await expect(`Home: the first item ${short(order[0]!.key)}`, (f) => f.key === order[0]!.key && f.ring);
-  for (let i = 1; i < order.length; i += 1) {
+  // Down from a room's tile with another under it (four tiles on three columns: the fourth sits under the first): the
+  // tile below, then Crew's head, a crew member, Browsers' head and a browser, in the column the run began in.
+  const sameColumn = (a: Boxed<string>, b: Boxed<string>) => Math.abs(a.left - b.left) < 2;
+  const projectTiles = grid.filter((p) => p.tile && /^(room|thread):/.test(p.element));
+  const upper = projectTiles.find((t) => t.element.startsWith("room:") && projectTiles.some((u) => u !== t && sameColumn(u, t) && u.top >= t.bottom - 1));
+  if (!upper) return fail(`no room's tile has another under it (tiles at ${projectTiles.map((p) => Math.round(p.left)).join(", ")}): the window is too wide for this check`);
+  const below = projectTiles.filter((u) => u !== upper && sameColumn(u, upper) && u.top >= upper.bottom - 1).sort((a, b) => a.top - b.top)[0]!;
+  // The run's column: the tile's own, unless the way there was already a run of Up and Down.
+  const span = (await goTo(upper.element)) ?? upper;
+  const middleOf = (p: Span) => (p.left + p.right) / 2;
+  const inColumn = (kind: string) => grid.filter((p) => p.element.startsWith(`${kind}:`) && p.left < span.right && p.right > span.left).sort((a, b) => Math.abs(middleOf(a) - middleOf(span)) - Math.abs(middleOf(b) - middleOf(span)))[0];
+  const crewTile = inColumn("preset");
+  const browserTile = inColumn("browser");
+  if (!crewTile || !browserTile) return fail(`no crew member or browser under the column ${Math.round(span.left)}–${Math.round(span.right)}`);
+  const run: Array<[string, string]> = [
+    [below.element, `the tile below it, ${short(below.element)}`],
+    ["head:crew", "Crew's head, its + New crew member"],
+    [crewTile.element, `the crew member in its column, ${apiPresets.find((p) => `preset:${p.id}` === crewTile.element)?.name}`],
+    ["head:browsers", "Browsers' head, its + New browser"],
+    [browserTile.element, `the browser in its column, ${apiBrowsers.find((b) => `browser:${b.id}` === browserTile.element)?.name}`],
+  ];
+  for (const [key, what] of run) {
     press("ArrowDown");
-    await expect(`Down #${i}: ${short(order[i]!.key)}`, (f) => f.key === order[i]!.key && f.ring);
+    await expect(`Down: ${what}`, (f) => f.key === key && f.ring);
   }
   press("ArrowDown");
-  await expect("Down at the end stays on the last item", (f) => f.key === order.at(-1)!.key);
-  for (let i = order.length - 2; i >= order.length - 4 && i >= 0; i -= 1) {
-    press("ArrowUp");
-    await expect(`Up: ${short(order[i]!.key)}`, (f) => f.key === order[i]!.key);
-  }
-  press("End");
-  await expect("End: the last item", (f) => f.key === order.at(-1)!.key);
-  await state("overview: Up and Down follow the reading order, column by column", await overviewWhere(order.at(-1)!.key));
+  await sleep(300);
+  await expect("Down at the foot stays on the browser", (f) => f.key === browserTile.element);
+  await state("overview: Down from a room's tile reaches the tile below, then Crew, then Browsers", await overviewWhere(browserTile.element));
 
-  // Left and Right: the column beside, the item nearest in height.
-  const rehearsalColumn = order.find((p) => p.key === `room:${R}`)!.column;
-  const startAt = order.filter((p) => p.key.startsWith(`member:${R}:`))[1]!;
-  await goTo(startAt.key);
-  const sorted = [...columns].sort((a, b) => a - b);
-  const rightColumn = sorted[sorted.indexOf(rehearsalColumn) + 1];
-  const leftColumn = sorted[sorted.indexOf(rehearsalColumn) - 1];
-  const nearest = (column: number, middle: number) => order.filter((p) => p.section === 0 && p.column === column).sort((a, b) => Math.abs(a.middle - middle) - Math.abs(b.middle - middle) || a.top - b.top)[0]!;
-  if (rightColumn !== undefined) {
-    const target = nearest(rightColumn, startAt.middle);
+  // Up from the first row: its section's +, then the page's header, which is the top. Along the header, Right stops at
+  // its end; Home and End go to its ends.
+  grid = await settledGrid();
+  const firstRow = projectTiles.filter((p) => Math.abs(p.top - Math.min(...projectTiles.map((t) => t.top))) < 2).sort((a, b) => a.left - b.left);
+  const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !p.element.startsWith("head:room:")).sort((a, b) => a.left - b.left);
+  // The page scrolled down first (the ring on the browser at the foot, where the run above ended): the way up brings each
+  // stop into view below the sticky header (scroll-padding-top), the first row's tile and the + both in sight.
+  const firstColumn = (await upFromTheFoot(browserTile.element, firstRow[0]!.element)) ?? firstRow[0]!;
+  await keyBar("New room in demo");
+  const onHeader = predict(grid, "head:room:project_demo", "up", firstColumn);
+  if (!onHeader || !header.some((p) => p.element === onHeader)) fail(`Up from the section's + would go to ${onHeader}, not the header`);
+  press("ArrowUp");
+  await expect(`Up: the page's header, ${short(onHeader)}`, (f) => f.key === onHeader && f.ring);
+  press("ArrowUp");
+  await sleep(300);
+  await expect("Up on the header stays: it is the top", (f) => f.key === onHeader && f.drawers.length === 0);
+  press("Home");
+  await expect(`Home: the header's first, ${short(header[0]!.element)}`, (f) => f.key === header[0]!.element);
+  for (const item of header.slice(1)) {
     press("ArrowRight");
-    await expect(`Right: ${short(target.key)}, in the next column at the same height`, (f) => f.key === target.key && f.ring);
-    press("ArrowLeft");
-    const back = nearest(rehearsalColumn, target.middle);
-    await expect(`Left: back to ${short(back.key)}`, (f) => f.key === back.key);
-  } else if (leftColumn !== undefined) {
-    const target = nearest(leftColumn, startAt.middle);
-    press("ArrowLeft");
-    await expect(`Left: ${short(target.key)}, in the column before at the same height`, (f) => f.key === target.key && f.ring);
+    await expect(`Right: ${short(item.element)}`, (f) => f.key === item.element && f.ring);
   }
-  announced(/^(listitem|button)$/, /\S/);
-  await state("overview: Left and Right go to the column beside, at the same height", await overviewWhere(focus().key!));
+  press("ArrowRight");
+  await sleep(300);
+  await expect("Right at the header's end stays", (f) => f.key === header.at(-1)!.element);
+  await state("overview: Up from the first row reaches its section's +, then the page's header", await overviewWhere(header.at(-1)!.element));
+
+  // Left and Right along the first row of tiles, stopping at its ends; End and Home go to them.
+  await goTo(firstRow[0]!.element);
+  for (const tile of firstRow.slice(1)) {
+    press("ArrowRight");
+    await expect(`Right: the tile beside, ${short(tile.element)}`, (f) => f.key === tile.element && f.ring);
+  }
+  press("ArrowRight");
+  await sleep(300);
+  await expect("Right at the row's end stays", (f) => f.key === firstRow.at(-1)!.element);
+  for (const tile of firstRow.slice(0, -1).reverse()) {
+    press("ArrowLeft");
+    await expect(`Left: ${short(tile.element)}`, (f) => f.key === tile.element);
+  }
+  press("ArrowLeft");
+  await sleep(300);
+  await expect("Left at the row's start stays", (f) => f.key === firstRow[0]!.element);
+  press("End");
+  await expect("End: the row's last tile", (f) => f.key === firstRow.at(-1)!.element);
+  press("Home");
+  await expect("Home: the row's first tile", (f) => f.key === firstRow[0]!.element);
+  announced(/^button$/, /\S/);
+  await state("overview: Left and Right go along the row and stop at its ends", await overviewWhere(firstRow[0]!.element));
+
+  // ---------------- 1b. the mouse on a member's line: it is the tile's (#499, #507) ----------------
+
+  // The ring on Rehearsal's tile, then the mouse over @worker's line on it: the tile is hovered, not the member (nothing
+  // in the line is under the pointer), the ring stays on the tile and the bar names the room.
+  const workerAlias = members0.find((m) => m.alias === "worker")!;
+  const memberLine = (): string => {
+    // A member's line is no control, so only the full snapshot lists it.
+    const line = browser.on("snapshot", "--verbose").split("\n").find((l) => /\blistitem "@worker,/.test(l));
+    const uid = line ? /uid=(\S+)/.exec(line)?.[1] : undefined;
+    return uid ?? fail(`the page snapshot has no line of @${workerAlias.alias} on Rehearsal's tile`);
+  };
+  await goTo(`room:${R}`);
+  browser.on("hover", memberLine());
+  const hovered = browser.eval<{ member: boolean; deepest: string | null; inTile: boolean; focus: string | null }>(
+    `() => { const chain = [...document.querySelectorAll(':hover')]; const deepest = chain.at(-1) ?? null; const tile = document.querySelector('[data-nav-key="room:${R}"]').closest('[data-nav-card]'); return { member: chain.some((e) => e.closest('.ov-member')), deepest: deepest ? (deepest.dataset.navKey ?? deepest.className) : null, inTile: Boolean(deepest && tile.contains(deepest)), focus: document.activeElement?.dataset?.navKey ?? null }; }`,
+  );
+  if (hovered.member || !hovered.inTile) fail(`the mouse over @worker's line hovers ${JSON.stringify(hovered)}: the tile must be hovered, not the member`);
+  log(`  page: the mouse over @worker's line hovers ${hovered.deepest} (the tile's), no member line; the focus on ${short(hovered.focus)}`);
+  await expect("the ring stays on Rehearsal's tile", (f) => f.key === `room:${R}`);
+  await barSays("Rehearsal's tile, the mouse over a member's line", {
+    place: "overview-room",
+    where: apiRoomTitle,
+    keys: ["↑ ↓ the row above or below", "← → along the row", "Enter open the room", "Home End first or last in the row"],
+    end: "? all keys",
+  });
+  await state("the mouse over a member's line on a tile: the tile is hovered, the bar names the room", apiRoomTitle);
+
+  // A click on that line opens the room's conversation, not the member's thread; Backspace comes back to the tile.
+  browser.on("click", memberLine());
+  await expect("a click on @worker's line: Rehearsal is open, no member's thread over it", (f) => f.drawers.some((d) => d.view === "room" && d.id === R && !d.inert) && !f.drawers.some((d) => d.view === "member") && f.inLayer === "room");
+  const clicked = focus();
+  if (clicked.drawers[0]!.label !== `Room ${apiRoomTitle}`) fail(`the click opened ${clicked.drawers[0]!.label}, the API's room is ${apiRoomTitle}`);
+  log(`api: room ${R.slice(0, 8)} "${apiRoomTitle}"; page: the drawer data-id ${R.slice(0, 8)}, no member's layer`);
+  await state("a click on a member's line opens the room's conversation", "Write a message");
+  press("Backspace");
+  await expect("Backspace: back on the overview, the ring on Rehearsal's tile", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
 
   // ---------------- 2. the focus survives a poll that moves its card ----------------
 
@@ -514,8 +688,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
 
   // ---------------- 2b. a dialog and a menu from the overview: the focus comes back; Tab stays in a dialog ----------------
 
-  await goTo((await settledOrder())[0]!.key);
-  await tabTo("Shift+Tab to the project's + (New room in demo)", (f) => f.label === "New room in demo", "Shift+Tab");
+  await goTo("head:room:project_demo");
+  await expect("the arrows reach the project's + (New room in demo)", (f) => f.label === "New room in demo" && f.ring);
   press("Enter");
   await expect("Enter: the New room dialog, the focus in it", (f) => f.dialog === "New room" && f.inDialog);
   for (let i = 0; i < 8; i += 1) press("Tab");
@@ -528,13 +702,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc: the dialog closed, the focus back on its + button", (f) => f.dialog === null && f.label === "New room in demo" && f.ring);
   await state("overview: a dialog holds Tab and gives the focus back to its button", "New room in demo");
 
+  // A tile's ⋯ is no stop: from it the arrows go on as from its tile, in a run of their own (in the tile's column).
   await goTo(`room:${third.roomId}`);
+  grid = await settledGrid();
+  const thirdBox = grid.find((p) => p.element === `room:${third.roomId}`)!;
+  const underThird = predict(grid, thirdBox.element, "down");
+  if (!underThird) return fail("nothing under Third's tile on the grid");
+  if (predict(grid, underThird, "up", thirdBox) !== thirdBox.element) fail(`Up from ${short(underThird)} in Third's column would not come back to Third`);
   press("Tab");
   await expect("Tab: the card's ⋯", (f) => f.label === "Third options");
   press("ArrowDown");
-  await expect("Down from the card's ⋯: its member (the arrows go on from the card)", (f) => f.key === `member:${third.roomId}:${third.participant.solo}`);
+  await expect(`Down from the card's ⋯: as from the card, ${short(underThird)}`, (f) => f.key === underThird && f.ring);
   press("ArrowUp");
-  await expect("Up: the card", (f) => f.key === `room:${third.roomId}`);
+  await expect("Up: back on the card", (f) => f.key === `room:${third.roomId}`);
   press("Tab");
   press("Enter");
   await expect("Enter on ⋯: its menu, the focus on its first item", (f) => f.menu && f.role === "menuitem" && f.label.startsWith("Rename"));
@@ -642,7 +822,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect(`Esc: the detail closed, the focus back on #${detailPost.number}, the room still open`, (f) => f.dialog === null && f.key === `post:${detailPost.seq}` && f.drawers.some((d) => d.view === "room"));
   // The keys, with ?: Esc closes it and the focus is back.
   press("?");
-  const help = await expect("?: the keys are shown", (f) => f.help && f.dialog === "Keyboard");
+  // Shown, and the focus in it (the dialog takes it a frame after it is drawn: a Tab before that starts over at its ×).
+  const help = await expect("?: the keys are shown, the focus in them", (f) => f.help && f.dialog === "Keyboard" && f.inDialog);
   if (help.dialogBody && help.dialogBody.more > 0) {
     // Its body scrolls in this window: Tab reaches it and the keys scroll it.
     press("Tab");
@@ -889,7 +1070,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await barSays("the room's tile", {
     place: "overview-room",
     where: apiRoom.room.title,
-    keys: ["↑ ↓ previous or next, column by column", "← → the column beside, at the same height", "Enter open the room", "Home End first or last on the page"],
+    keys: ["↑ ↓ the row above or below", "← → along the row", "Enter open the room", "Home End first or last in the row"],
     end: "? all keys",
   });
   press("Escape");
@@ -897,14 +1078,21 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Esc on the overview, nothing in front: nothing moves", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   await state("key bar: a room's tile, each key by what it does there", apiRoom.room.title);
 
-  // From the overview: Enter on a member opens its thread over its room; Esc twice comes back to it.
+  // A member is reached in the room (the overview's tiles only show them): the room's tile, Right to Members, the
+  // member, Enter for its thread over the room; Backspace three times comes back to the tile.
   const reviewer = members[2]!;
   const reviewerThread = (s1.bindings as Array<{ participantId: string; threadId: string; retiredAt: string | null }>).find((b) => b.participantId === reviewer.id && !b.retiredAt)!.threadId;
-  await goTo(`member:${R}:${reviewer.id}`);
-  announced(/^listitem$/, `@${reviewer.alias}`);
+  await goTo(`room:${R}`);
   press("Enter");
-  await expect(`Enter on @${reviewer.alias} on the overview: its thread over its room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
-  await state("Enter on an overview member opens its thread over its room", `@${reviewer.alias}'s thread, read only`);
+  await expect("Enter: the room open, the focus in it", (f) => f.drawers.some((d) => d.view === "room" && d.id === R && !d.inert) && f.inLayer === "room");
+  press("ArrowRight");
+  await expect("Right: Members open, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+  press("Home");
+  for (let i = 0; i < members.length && focus().key !== `member:${reviewer.id}`; i += 1) press("ArrowDown");
+  await expect(`Down to @${reviewer.alias}`, (f) => f.key === `member:${reviewer.id}`);
+  press("Enter");
+  await expect(`Enter on @${reviewer.alias}: its thread over the room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
+  await state("from the room's tile: Members, a member, Enter opens its thread over the room", `@${reviewer.alias}'s thread, read only`);
   press("Backspace");
   await expect(`Backspace: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
   press("Backspace");
@@ -936,8 +1124,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect("Esc: the composer closed, the focus on its strip", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
   press("Backspace");
-  await expect(`Backspace: the overview, the focus back on @${reviewer.alias}`, (f) => f.drawers.length === 0 && f.key === `member:${R}:${reviewer.id}` && f.ring);
-  await state("Backspace three times comes back to the overview member: the thread, the panel, the room", await overviewWhere(`member:${R}:${reviewer.id}`));
+  await expect("Backspace: the overview, the focus back on the room's tile", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
+  await state("Backspace three times comes back to the room's tile: the thread, the panel, the room", apiRoom.room.title);
 
   // A thread outside rooms, by keys: Enter on its card, Up from its composer's strip to the conversation, Esc back.
   await goTo(`thread:${loose.threadId}`);
@@ -952,11 +1140,62 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await expect("Backspace: back on the thread's card", (f) => f.drawers.length === 0 && f.key === `thread:${loose.threadId}`);
   await state("a thread outside rooms: Enter, Up to its conversation, Esc stays, Backspace back", await overviewWhere(`thread:${loose.threadId}`));
 
+  // ---------------- 5b. a crew member seated in a room by keys alone (K1-3) ----------------
+
+  // Enter on the crew member's tile opens its Edit dialog; its Seat in a room… lists the rooms; Enter on one seats them
+  // there on a new thread, as dragging them onto the room's tile does. The API shows the new member.
+  const sol = apiPresets.find((p) => p.name === "sol")!;
+  const thirdBefore = ((await third.snapshot()).participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+  await goTo(`preset:${sol.id}`);
+  await keyBar("sol · crew member");
+  press("Enter");
+  await expect("Enter on sol's tile: its Edit dialog, the focus in its name", (f) => f.dialog === "Edit sol" && f.inDialog && f.value === "sol");
+  const seatButton =
+    "() => { const b = [...document.querySelectorAll('.dialog button')].find((e) => e.textContent.trim() === 'Seat in a room…'); const why = b && b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null; return b ? { waits: b.getAttribute('aria-disabled') === 'true', disabled: b.disabled, why: why && why.getClientRects().length > 0 ? why.textContent.trim() : null } : null; }";
+  type Seat = { waits: boolean; disabled: boolean; why: string | null } | null;
+  // They are seated with their saved settings: the button waits while the form says otherwise. A keyboard user still
+  // reaches it, and its reason is a line in the dialog, the button's description.
+  press("End");
+  press("x");
+  const waiting = browser.poll<Seat>("Seat in a room… to wait while the name is changed, its reason in sight", seatButton, (b) => b?.waits === true && !b.disabled && (b.why ?? "").includes("save or cancel the changes first"));
+  log(`  page: Seat in a room… waits, its reason shown: "${waiting!.why}"`);
+  await tabTo("Shift+Tab reaches the waiting Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
+  announced(/^button$/, "Seat in a room…");
+  press("Enter");
+  await sleep(400);
+  await expect("Enter on it while it waits opens nothing; the dialog stays", (f) => !f.menu && f.dialog === "Edit sol" && f.label === "Seat in a room…");
+  await state("crew: Seat in a room… waits while the form has changes, reached by Tab, its reason in the dialog", "Edit sol");
+  await tabTo("Tab back to the name field", (f) => f.inDialog && f.tag === "INPUT" && f.value === "solx", "Tab", 8);
+  press("End");
+  press("Backspace");
+  browser.poll<Seat>("Seat in a room… to be back once the name is as saved, no reason shown", seatButton, (b) => b?.waits === false && b.why === null);
+  await tabTo("Shift+Tab to Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
+  press("Enter");
+  await expect("Enter: the rooms in a menu over the dialog, the focus on the first", (f) => f.menu && f.role === "menuitem" && f.dialog === "Edit sol");
+  press("Escape");
+  await expect("Esc: the menu closed, the dialog stays, the focus back on Seat in a room…", (f) => !f.menu && f.dialog === "Edit sol" && f.label === "Seat in a room…");
+  press("Enter");
+  await expect("Enter: the rooms again", (f) => f.menu && f.role === "menuitem");
+  for (let i = 0; i < apiRooms.length && !focus().label.startsWith("Third"); i += 1) press("ArrowDown");
+  await expect("Down to Third", (f) => f.menu && f.label.startsWith("Third"));
+  await state("crew: Seat in a room… in the Edit dialog lists the rooms", "Seat sol in a room");
+  press("Enter");
+  await expect("Enter on Third: the menu and the dialog closed, the focus back on sol's tile", (f) => !f.menu && f.dialog === null && f.key === `preset:${sol.id}` && f.ring);
+  const seated = await until("the API to show sol seated in Third", async () => {
+    const now = ((await third.snapshot()).participants as Array<{ id: string; alias: string; presetId?: string | null; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+    return now.length === thirdBefore.length + 1 ? now.find((p) => !thirdBefore.some((b) => b.id === p.id)) : null;
+  });
+  if (seated.alias !== "sol") fail(`the member seated in Third is @${seated.alias}, not @sol`);
+  const seatToast = browser.poll<string | null>("the toast for the seat", "() => [...document.querySelectorAll('.toast-stack .toast')].map((t) => t.textContent.trim()).find((t) => t.includes('is seated')) ?? null", (t) => t !== null);
+  log(`api: Third has @${seated.alias} (${seated.id.slice(0, 8)}), ${thirdBefore.length + 1} members; page: "${seatToast}"`);
+  await state("a crew member seated in a room by keys alone", "sol · crew member");
+
   // ---------------- 6. the pixel look draws its own ring ----------------
 
-  // Settings → Look → Pixel, by keys: the menu takes the focus, Down to Pixel, Enter; the focus goes back to Settings.
-  await goTo((await settledOrder())[0]!.key);
-  await tabTo("Shift+Tab to Settings", (f) => f.label === "Settings", "Shift+Tab");
+  // Settings → Look → Pixel, by keys: the arrows to Settings in the header, Enter, Down to Pixel, Enter; the focus goes
+  // back to Settings.
+  await goTo("head:settings");
+  await expect("the arrows reach Settings in the header", (f) => f.label === "Settings");
   press("Enter");
   await expect("Enter: the Settings menu, the focus on its first item", (f) => f.menu && (f.role ?? "").startsWith("menuitem"));
   for (let i = 0; i < 30 && !focus().label.startsWith("Pixel"); i += 1) press("ArrowDown");
@@ -964,9 +1203,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Enter");
   await expect("Enter: the menu closed, the focus back on Settings", (f) => !f.menu && f.label === "Settings");
   await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
-  await goTo(`member:${R}:${reviewer.id}`);
-  await expect("pixel look: the member's ring is drawn", (f) => f.ring);
-  await state("pixel look: the overview's focus ring", await overviewWhere(`member:${R}:${reviewer.id}`));
+  grid = await settledGrid();
+  const pixelFoot = grid.filter((p) => p.element.startsWith("browser:")).sort((a, b) => b.bottom - a.bottom)[0]!;
+  const pixelFirst = grid.filter((p) => p.tile && /^(room|thread):/.test(p.element)).sort((a, b) => a.top - b.top || a.left - b.left)[0]!;
+  await upFromTheFoot(pixelFoot.element, pixelFirst.element);
+  await state("pixel look: from the foot, Up brings the first row and its + into sight below the header", "New room in demo");
+  await goTo(`preset:${sol.id}`);
+  await expect("pixel look: the crew member's ring is drawn", (f) => f.ring);
+  await state("pixel look: the overview's focus ring", "sol · crew member");
   await goTo(`room:${R}`);
   await expect("pixel look: the room card's brackets are drawn", (f) => f.ring);
   press("Enter");
