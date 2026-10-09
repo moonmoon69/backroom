@@ -747,11 +747,11 @@ Backroom opens on one page of everything: a section per project, its rooms as ti
 
 ## Keyboard
 
-The whole page works without a mouse. The arrows move a ring over the overview's tiles and the buttons of its rows and, in a room, over its posts and members; Enter opens what the ring is on. Esc closes what is in front and nothing else: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; it never closes the room, a member's thread or the side panel, so a reflex Esc never costs you your place. Backspace outside a text field goes back one step: what is in front first (as Esc), then a member's thread, then the side panel, then the room to its card; it is the only key that leaves a room, and the focus lands where you were. In a text field Backspace deletes as always; a fresh press in an empty composer closes the composer, and a held one stops at the empty field. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
+The whole page works without a mouse. The arrows move a ring over the overview's tiles and the buttons of its rows and, in a room, over its lanes and members; Enter opens what the ring is on. Esc closes what is in front and nothing else: a menu, the composer (its draft kept), a status chip's choices, a Correct… box, a dialog, these keys; it never closes the room, a member's thread or the side panel, so a reflex Esc never costs you your place. Backspace outside a text field goes back one step: what is in front first (as Esc), then a member's thread, then the side panel, then the room to its card; it is the only key that leaves a room, and the focus lands where you were. In a text field Backspace deletes as always; a fresh press in an empty composer closes the composer, and a held one stops at the empty field. Tab and Shift+Tab still reach every button, link and field (Retry, Dismiss, Cancel, Correct…, the composer, Settings and every menu). A menu opened from the keyboard takes the focus into it, with ↑ ↓ between its items, and closes when Tab leaves it; while a dialog is open the page under it is out of reach, Tab goes round inside the dialog, and a dialog whose text runs longer than the window takes the focus too, so the keys scroll it. The ring shows in both looks, and what it is on is named to a screen reader (for a post its number, who wrote it to whom, where it stands and how it starts).
 
 **The key bar** at the foot of the page (not on a phone) says what the ring is on, in words ("Improvement", "#33 · you to @opus, open", "writing a message"), then the keys that do something there, each named by what it does there and then: "Enter open the room" on a room's tile, "Backspace back to the overview" in a room, "Esc close it, the draft kept" in the composer; "? all keys" stays at its right end. It changes as the ring moves. Every key on it is shown whole: in a narrow window those that do not fit are left out from the end of the line, the ones needed least first (Home and End come last), and "? all keys" stays. **?** shows every key by place (outside a text field). The bar, **?** and the tables below are drawn from one table (`web/src/keyOrder.ts`, `KEYS`), so the three say the same; after a change to it, `node scripts/keys-readme.ts` draws the tables below again.
 
-The overview is a grid of rows, as on a game screen: the header's buttons (+ project, Arrange, T3, Updates, Settings), then for each section its head (the + beside its name) and its tiles: each project's rooms and threads, its settled and archived threads, the crew, the browsers. The tiles are the stops, not the members drawn on them: a room's members are read on its tile and acted on in the room, where Members has them (the mouse agrees: a member's line takes no hover or click of its own, and a click on it opens the room). ↓ goes to the nearest row below, across sections, to the item in the column you are going down in (a section's head, one + at the far right, is passed on the way without pulling the ring across), and ↑ the same upwards, up to the header; ← → go along the row and stop at its ends, and Home and End go to them. With nothing focused, the first arrow lands on the first tile that needs you, else the first tile. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a crew member opens their Edit dialog, whose **Seat in a room…** lists the rooms: Enter on one seats them there, as dragging them onto its tile does. In a room, ← → go between the panes: the board (or the chat), then the side panel's Members, Browser and Git, opening the panel. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
+The overview is a grid of rows, as on a game screen: the header's buttons (+ project, Arrange, T3, Updates, Settings), then for each section its head (the + beside its name) and its tiles: each project's rooms and threads, its settled and archived threads, the crew, the browsers. The tiles are the stops, not the members drawn on them: a room's members are read on its tile and acted on in the room, where Members has them (the mouse agrees: a member's line takes no hover or click of its own, and a click on it opens the room). ↓ goes to the nearest row below, across sections, to the item in the column you are going down in (a section's head, one + at the far right, is passed on the way without pulling the ring across), and ↑ the same upwards, up to the header; ← → go along the row and stop at its ends, and Home and End go to them. With nothing focused, the first arrow lands on the first tile that needs you, else the first tile. A tile a poll moves (it needs you now, or has news) keeps the ring. Enter on a crew member opens their Edit dialog, whose **Seat in a room…** lists the rooms: Enter on one seats them there, as dragging them onto its tile does. A room reads top to bottom in lanes: its header (×, the chat and the board, Members, Browser, Git and the room's options), the room state, the status chips (those with choices: an approval, a question, a failed turn, a running turn), the posts and the composer's strip. ↑ ↓ go lane to lane, and post to post in the posts lane: past the first post the earlier posts load, then the ring reaches the status chips, the room state and the header, and the key bar names each as it gets there. A lane with nothing to do is not a stop (no room state yet, chips with nothing to open). ← → go along the header and the status chips, stopping at their ends; Enter presses what the ring is on there: a tab shows its view, Members, Browser or Git opens its panel with the ring in it (Backspace brings it back), × leaves the room. Elsewhere ← → go between the panes: the conversation, then the side panel's Members, Browser and Git, opening the panel. Home and End go to the first and the last post from every lane. When a room opens the ring is on the first status chip that needs you (an approval, a question, a failed turn), else on the newest post if it shows, else on the running turn's chip (a working turn's live bubble can push the newest post out of view), else on the composer's strip; opening never moves the board, which stays at its bottom following a turn, and typing anywhere still opens the composer. Coming back into a lane comes back to the item you were on there. Enter on a post opens its detail: who wrote it to whom, when, where it stands, and the post with its folded text open and its buttons.
 
 The arrows keep their own meaning wherever they already have one: in text fields and selects, in the composer's suggestion lists, the model list, menus, dialogs and the Arrange dialog (Alt+↑ ↓), and with any modifier (Alt+← stays the browser's back).
 
@@ -784,19 +784,32 @@ The arrows keep their own meaning wherever they already have one: in text fields
 
 | On | Keys | What they do |
 |---|---|---|
-| anywhere in it | `←` `→` | Between the panes (the board, Members, Browser and Git; → opens the side panel) |
+| anywhere in it | `←` `→` | Between the panes (the board, Members, Browser and Git; → opens the side panel; along the header and the status chips they move along them instead) |
 |  | `Esc` `Backspace` | Close composer (the draft kept; while the composer is open) |
 |  | `Esc` `Backspace` | Fold the choices (a status chip's; while a status chip's choices are open) |
 |  | `Esc` `Backspace` | Close correction (Correct…'s box, its text kept; while a correction is open) |
 |  | `Backspace` | Fold the side panel (the ring back on the conversation; while the side panel is open) |
 |  | `Backspace` | Back to the overview (the ring back on the room's tile; Esc never leaves a room) |
 |  | `a–z` | Start writing (any key that types a character, space aside, opens the composer and goes in) |
-| a post | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the view's tabs) |
+| the header (any of its buttons) | `←` `→` | Along the header (×, the chat and the board, Members, Browser, Git, the room's options; it stops at its ends) |
+|  | `↓` | The lane below (the room state, the status chips or the posts, the first there is) |
+|  | `Home` `End` | First or last post |
+| × in the header | `Enter` | Back to the overview |
+| a view's tab in the header | `Enter` | Show this view (the chat with the Consigliere, or the board) |
+| Members, Browser or Git in the header | `Enter` | Open or fold its panel (opened, the ring goes into it; Backspace there brings it back) |
+| the room's options (⋯) in the header | `Enter` | Its menu (read new replies aloud, rename, delete) |
+| the room state | `↑` `↓` | The lane above or below |
+|  | `Home` `End` | First or last post |
+|  | `Enter` | Open or fold it |
+| a status chip | `↑` `↓` | The lane above or below |
+|  | `←` `→` | Between the chips (those with choices; it stops at the ends) |
+|  | `Home` `End` | First or last post |
+|  | `Enter` | Its choices (again to fold them) |
+| a post | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the status chips, the room state and the header; past the last, the composer's strip) |
 |  | `Home` `End` | First or last post |
 |  | `Enter` | Its detail |
-| the view's tabs | `←` `→` | The chat or the board |
-|  | `↓` | Back to the posts |
-| the composer's strip | `↑` `↓` | To the posts |
+| the composer's strip | `↑` | The posts (the post you were on, else the newest) |
+|  | `Home` `End` | First or last post |
 |  | `Enter` | Write a message |
 | a member, in Members | `↑` `↓` | Previous or next member |
 |  | `Home` `End` | First or last member |
@@ -811,9 +824,11 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `Enter` | Press it |
 | a button on a post or a member | `↑` `↓` | Previous or next item (from the post or member it is on) |
 |  | `Enter` | Press it |
-| another button | `↑` `↓` | To the posts |
+| another button | `↑` `↓` | The item above or below (in its lane, else the lane above or below; outside the lanes, the posts) |
+|  | `Home` `End` | First or last post |
 |  | `Enter` | Press it |
 | nothing in it | `↑` `↓` | To the posts |
+|  | `Home` `End` | First or last post |
 |  | `Enter` | Write a message |
 | a member's thread | `↑` `↓` | Scroll it |
 |  | `Backspace` | Back to the room (Members open, the ring on the member) |

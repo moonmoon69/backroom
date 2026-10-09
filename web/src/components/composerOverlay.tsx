@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode, type RefObject, type WheelEvent } from "react";
 import { flushSync } from "react-dom";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
+import { navProps } from "../keys.ts";
 
 /**
  * Look → Overview: the composer as an overlay. Closed, it is one thin strip where the composer was: who the message
@@ -33,7 +34,8 @@ const scrollerBeside = (panel: HTMLElement | null): HTMLElement | null => panel?
 
 const isTextField = (element: HTMLElement): boolean => element.isContentEditable || element.matches("input, textarea, select");
 
-export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTextAreaElement | null>, text: string): ComposerOverlay {
+/** `arrival`: the strip takes the focus as it is first drawn (a thread); a room places the ring itself (OverviewRoom). */
+export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTextAreaElement | null>, text: string, arrival = true): ComposerOverlay {
   const [isOpen, setOpen] = useState(false);
   const open = !enabled || isOpen;
   const panel = useRef<HTMLDivElement>(null);
@@ -46,9 +48,9 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   // first Enter opens the composer; a text field that has the focus keeps it.
   useEffect(() => {
     const active = document.activeElement;
-    if (!enabled || (active instanceof HTMLElement && isTextField(active))) return;
+    if (!enabled || !arrival || (active instanceof HTMLElement && isTextField(active))) return;
     strip.current?.focus({ preventScroll: true });
-  }, [enabled]);
+  }, [enabled, arrival]);
 
   // The field grows with the text up to its CSS max-height, then scrolls inside.
   useLayoutEffect(() => {
@@ -207,6 +209,7 @@ export function ComposerStrip({
   draft,
   images = 0,
   actions,
+  lane = false,
   onDragOver,
   onDragLeave,
   onDrop,
@@ -221,6 +224,8 @@ export function ComposerStrip({
   images?: number;
   /** Buttons beside the strip (Stop for a running turn). */
   actions?: ReactNode;
+  /** The strip is the composer's lane of a room's keys (keys.ts), its one item. */
+  lane?: boolean;
   onDragOver?: (event: DragEvent<HTMLDivElement>) => void;
   onDragLeave?: (event: DragEvent<HTMLDivElement>) => void;
   onDrop?: (event: DragEvent<HTMLDivElement>) => void;
@@ -229,12 +234,13 @@ export function ComposerStrip({
   const kept = draft.trim().length > 0 || images > 0;
   return (
     <div className={`composer-slot${overlay.open ? " under" : ""}`} onWheel={overlay.onWheel} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
-      <div className="composer-strip-row">
+      <div className="composer-strip-row" data-nav-lane={lane ? "strip" : undefined}>
         <button
           ref={overlay.strip}
           type="button"
           className="composer-strip"
           onClick={() => overlay.show()}
+          {...(lane ? navProps("strip", "strip", kept ? "Continue your draft" : "Write a message") : {})}
           title={touch ? "Write a message" : "Write a message: Enter, or start typing"}
           aria-label={kept ? "Continue your draft" : "Write a message"}
         >

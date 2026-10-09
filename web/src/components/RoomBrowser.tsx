@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import type { NavProps } from "../keys.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { copyWatchLinkName, powerName, powerText, WATCH_LINK_TEXT, watchLinkName, type PowerPhase } from "../browserLabels.ts";
@@ -185,14 +186,14 @@ export function GlobeIcon({ checked, failed }: { checked: boolean; failed: boole
 /**
  * The room header's Browser switch, beside Members and Git: a globe, checked while the room's agents may use
  * browsers, with the open tab count of every browser the room may use that runs (the title names each one). Opens
- * the side panel on the room's browsers.
+ * the side panel on the room's browsers. `nav` makes it an item of the room's header lane (keys.ts).
  */
-export function RoomBrowserButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+export function RoomBrowserButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot } = useRoom();
   const enabled = snapshot.room.browserEnabled;
   const { title, tabs, failed } = roomBrowserSummary(enabled, snapshot.browsers, snapshot.browser?.browser.id ?? null);
   return (
-    <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick}>
+    <button type="button" className={`small room-browser-button${active ? " active" : ""}`} aria-pressed={active} aria-label={title} title={title} onClick={onClick} {...nav}>
       <GlobeIcon checked={enabled} failed={failed} />
       {tabs > 0 ? <span className="panel-count mono">{tabs}</span> : null}
     </button>

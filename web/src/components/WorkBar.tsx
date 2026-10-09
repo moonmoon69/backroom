@@ -5,6 +5,7 @@ import { isActiveParticipant, type EnginePost, type EngineRunView, type Particip
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { NativeRequestsPanel } from "./NativeRequests.tsx";
 import { NoticeActions } from "./Timeline.tsx";
+import { navProps } from "../keys.ts";
 
 type Group = "needs" | "working" | "waiting";
 
@@ -43,7 +44,8 @@ const PHASE: Record<EngineRunView["phase"], string> = {
  * what it asks of you. "Needs you" is a notice that waits on you (a failed turn: Retry or Dismiss) and an approval or
  * question T3 is waiting on; "Working" is a run (an uncertain one says so), a turn the room did not start, and
  * background work a member holds open ("working since"); "Waiting" is a member with posts it has not been given yet
- * (its unread backlog), or a delivery that cannot be made. Clicking a chip opens what can be done about it.
+ * (its unread backlog), or a delivery that cannot be made. Clicking a chip opens what can be done about it. The chips
+ * with something to open are a lane of the room's keys (keys.ts): Left and Right between them, Enter opens one.
  */
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
@@ -147,7 +149,7 @@ export function WorkBar() {
   const opened = items.find((item) => item.key === open) ?? null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   return (
-    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar}>
+    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar} data-nav-lane="status">
       <div className="work-groups">
         {GROUPS.map((group) => {
           const list = items.filter((item) => item.group === group.key);
@@ -169,7 +171,7 @@ export function WorkBar() {
                 const style = identityStyle(item.participant ? colorOf(item.participant.id) : "var(--fg-muted)");
                 const title = `${item.participant?.alias ?? ""} · ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 400)}` : ""}`;
                 return item.open ? (
-                  <button key={item.key} type="button" className={`work-chip${open === item.key ? " open" : ""}`} style={style} title={title} aria-expanded={open === item.key} onClick={() => setOpen(open === item.key ? null : item.key)}>
+                  <button key={item.key} type="button" className={`work-chip${open === item.key ? " open" : ""}`} style={style} title={title} aria-expanded={open === item.key} onClick={() => setOpen(open === item.key ? null : item.key)} {...navProps("chip", `chip:${item.key}`, `status · ${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`)}>
                     {body}
                   </button>
                 ) : (

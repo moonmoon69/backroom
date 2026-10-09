@@ -8,7 +8,7 @@ import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
 import { MoreIcon } from "./icons.tsx";
 import { useAutoRead, useSpeechAvailable } from "../speech.ts";
-import { useMenuFocus } from "../keys.ts";
+import { useMenuFocus, type NavProps } from "../keys.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
 
@@ -65,8 +65,11 @@ export function RoomMenu({ room, onCommand }: { room: RoomListItem; onCommand: R
 
 type RoomRef = Pick<Room, "id" | "title">;
 
-/** The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the card's menu. */
-export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }) {
+/**
+ * The ⋯ menu in the room header: the T3 project the room works in (name and id), and the same rename and delete as the
+ * card's menu. `nav` makes its button an item of the room's header lane (keys.ts).
+ */
+export function RoomHeaderMenu({ projectTitle, nav }: { projectTitle: string | null; nav?: NavProps }) {
   const { snapshot, runCommand } = useRoom();
   const [autoRead, setAutoRead] = useAutoRead(`room:${snapshot.room.id}`);
   const canSpeak = useSpeechAvailable();
@@ -102,6 +105,7 @@ export function RoomHeaderMenu({ projectTitle }: { projectTitle: string | null }
         aria-expanded={open}
         title="Room options"
         onClick={() => setOpen((v) => !v)}
+        {...nav}
       >
         <MoreIcon />
       </button>
