@@ -121,12 +121,13 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     setOpen(false);
   }, []);
 
-  // Esc with the focus elsewhere (a post, a button) closes the open composer before anything else closes; in its field
-  // fieldKey takes it.
+  // Esc with the focus elsewhere (a post, a button) closes the open composer before anything else closes but a menu, a
+  // dialog or a post's action strip (keys.ts, inFront); in its field fieldKey takes it.
   useEffect(() => {
     if (!enabled || !isOpen) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || covered() || document.querySelector(".dialog-backdrop, .menu")) return;
+      if ([...document.querySelectorAll(".action-strip")].some((element) => !element.closest("[inert]"))) return;
       event.preventDefault();
       hide();
     };

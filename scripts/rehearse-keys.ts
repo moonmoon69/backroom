@@ -43,9 +43,20 @@
  * and the key bar stay on the room; a click on it opens the room's conversation, not the member's thread.
  * Every other move on the overview (goTo) follows the grid's own function (keyOrder.ts, gridTarget), each step checked
  * on the page.
+ *
+ * A post's actions (K1-5): Enter on a post opens its action strip under it, the ring on its first button; Left and Right
+ * choose and stop at its ends (the side panel stays folded); Esc and Backspace close it with the ring back on the post;
+ * Up and Down leave it for the post above or below (a running turn's live bubble after the newest post, then the
+ * composer's strip), and a letter for the composer; it stays open past a poll. Each button does what the post's own does,
+ * checked in the API: Correct… opens its box in place and Enter sends it (in a post's Detail too), Cancel, Retry and
+ * Dismiss on failed turns, Stop on a live bubble; on a reply Copy (the clipboard stubbed), Read aloud (speechSynthesis
+ * stubbed), a file chip's preview (a file in a project of the run's own) and "turn in T3"; Detail, last, the post's
+ * detail, the ring back on Detail when it closes. A live bubble with an approval offers its choices.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
-import { barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { barDoes, barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
 
 // The parts of rehearse.ts this step uses (its classes, by shape).
 export interface KeysService {
@@ -68,11 +79,13 @@ export interface KeysRoom {
   roomId: string;
   readonly participant: Record<Alias, string>;
   readonly thread: Record<Alias, string>;
+  /** The run's data folder (the throwaway service's): files the rehearsal needs live here, never in a temp folder. */
+  readonly dataDir: string;
   snapshot(): Promise<any>;
   post(snapshot: any, requestId: string): any;
   message(text: string): Promise<string>;
   live(alias: Alias, phases?: string[]): Promise<any>;
-  finish(alias: Alias, text: string): Promise<void>;
+  finish(alias: Alias, text: string, extra?: { outcome?: "completed" | "error" | "interrupted"; progress?: string[]; files?: unknown[] }): Promise<void>;
   settle(alias: Alias): Promise<void>;
   second(title: string, aliases: string[]): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<any> }>;
   /** Appends engine commands to the room's journal through a second connection, as another process would. */
@@ -122,6 +135,14 @@ interface Focus {
   correctionOpen: boolean;
   /** The focus is in a request's block: its Correct…, Cancel, or its open correction. */
   inCorrection: boolean;
+  /** Action strips on the page (K1-5): there is at most one. */
+  strips: number;
+  /** The focused button of an action strip (its `data-action`: "correct:88", "copy:0", "detail"), else null. */
+  action: string | null;
+  /** The item the focus is in or on (its `data-nav-key`): a strip's button is in its post. */
+  item: string | null;
+  /** The focused button's aria-pressed (a strip's choice, Read aloud). */
+  pressed: string | null;
 }
 
 const FOCUS = `() => {
@@ -159,7 +180,17 @@ const FOCUS = `() => {
     chipOpen: Boolean(document.querySelector('.work-open')),
     correctionOpen: [...document.querySelectorAll('.req-correct')].some((e) => !e.closest('[inert]')),
     inCorrection: Boolean(a && a.closest('.req-block')),
+    strips: document.querySelectorAll('.action-strip').length,
+    action: a && a.closest('.action-strip') ? (a.dataset.action ?? null) : null,
+    item: a?.closest('[data-nav]')?.dataset.navKey ?? null,
+    pressed: a?.getAttribute('aria-pressed') ?? null,
   };
+}`;
+
+/** The open action strip's buttons, by the names they are announced with (and its first's `data-action`), and the item it is on. */
+const STRIP = `() => {
+  const s = document.querySelector('.action-strip');
+  return s ? { item: s.closest('[data-nav]')?.dataset.navKey ?? null, label: s.getAttribute('aria-label'), first: s.querySelector(':scope > button')?.dataset.action ?? null, names: [...s.querySelectorAll(':scope > button')].map((b) => b.getAttribute('aria-label')) } : null;
 }`;
 
 /**
@@ -255,7 +286,8 @@ function everyBarFits(): string {
     for (const now of mixes) {
       const entries = barEntries(place.id, now);
       const help = entries.find((entry) => entry.keys.includes("?"));
-      const keys = entries.filter((entry) => entry !== help).map((entry) => ({ k: entry.keys, d: entry.does }));
+      // Enter in an action strip is named by its button, cut on the bar: drawn at its longest.
+      const keys = entries.filter((entry) => entry !== help).map((entry) => ({ k: entry.keys, d: barDoes(entry, "Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm") }));
       const signature = JSON.stringify([keys, help?.does ?? null]);
       if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end: help ? { k: help.keys, d: help.does } : null });
     }
@@ -519,6 +551,16 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       press(key);
     }
     return expect(what, ok, 2000);
+  };
+
+  /** In an open action strip, Right to its last button, Detail: each step on the next button, then Right stays. */
+  const toDetail = async (): Promise<void> => {
+    for (let i = 0; i < 12 && focus().action !== "detail"; i += 1) {
+      const before = focus().action;
+      press("ArrowRight");
+      await expect(`Right: the next button after ${before}`, (f) => f.action !== before && f.action !== null && f.strips === 1);
+    }
+    await expect("Right to the strip's end: Detail", (f) => f.action === "detail");
   };
 
   // ---------------- setup through the API (the room is seated by rehearse.ts) ----------------
@@ -822,7 +864,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await barSays(`#${notes.at(-1).number}`, {
     place: "room-post",
     where: `#${notes.at(-1).number} · note from you`,
-    keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
+    keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
     end: "? all keys",
   });
   await state("key bar: a post's keys, each by what it does there", `#${notes.at(-1).number} · note from you`);
@@ -917,13 +959,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   announced(/^article$/, new RegExp(`^#${s1.posts.at(-4).number}, `));
   await state("in a room: the board's posts in the API's order, from the tabs", new RegExp(`^#${s1.posts.at(-4).number} · \\S`));
 
-  // A post's detail, and back to the post.
+  // A post's detail, through its actions (K1-5): Enter opens them, Right to Detail (last), Enter; Esc closes the detail
+  // with the ring back on Detail, and Esc again the actions with the ring back on the post.
   const detailPost = s1.posts.at(-4);
   press("Enter");
-  await expect(`Enter: the detail of #${detailPost.number}`, (f) => f.dialog === `Post #${detailPost.number}` && f.label === "Close dialog");
-  await state("Enter on a post opens its detail", `Post #${detailPost.number}`);
+  await expect(`Enter: #${detailPost.number}'s actions, the ring on the first`, (f) => f.strips === 1 && f.item === `post:${detailPost.seq}` && f.action !== null && f.action === browser.eval<{ first: string | null } | null>(STRIP)?.first && f.ring);
+  await toDetail();
+  press("Enter");
+  await expect(`Enter on Detail: the detail of #${detailPost.number}`, (f) => f.dialog === `Post #${detailPost.number}` && f.label === "Close dialog");
+  await state("Detail, last in a post's actions, opens its detail", `Post #${detailPost.number}`);
   press("Escape");
-  await expect(`Esc: the detail closed, the focus back on #${detailPost.number}, the room still open`, (f) => f.dialog === null && f.key === `post:${detailPost.seq}` && f.drawers.some((d) => d.view === "room"));
+  await expect(`Esc: the detail closed, the ring back on Detail in #${detailPost.number}'s actions`, (f) => f.dialog === null && f.action === "detail" && f.item === `post:${detailPost.seq}` && f.ring && f.drawers.some((d) => d.view === "room"));
+  press("Escape");
+  await expect(`Esc: the actions closed, the ring back on #${detailPost.number}, the room still open`, (f) => f.strips === 0 && f.key === `post:${detailPost.seq}` && f.ring && f.drawers.some((d) => d.view === "room"));
   // The keys, with ?: Esc closes it and the focus is back.
   press("?");
   // Shown, and the focus in it (the dialog takes it a frame after it is drawn: a Tab before that starts over at its ×).
@@ -1000,11 +1048,15 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   await state("an open correction is in front wherever the focus is: Esc closes it, Backspace closes it first", onPost);
   await tabTo("Shift+Tab back to Correct…", (f) => f.label === "Correct…" && f.inCorrection, "Shift+Tab", 6);
 
-  // The same inside the post's detail: Esc in the correction closes the field, not the dialog (and its text with it).
+  // The same inside the post's detail (through its actions): Esc in the correction closes the field, not the dialog (and
+  // its text with it).
   press("End");
   await expect(`End: #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
   press("Enter");
-  await expect(`Enter: the detail of #${openPost.number}`, (f) => f.dialog === `Post #${openPost.number}`);
+  await expect(`Enter: #${openPost.number}'s actions`, (f) => f.strips === 1 && f.item === `post:${openPost.seq}`);
+  await toDetail();
+  press("Enter");
+  await expect(`Enter on Detail: the detail of #${openPost.number}`, (f) => f.dialog === `Post #${openPost.number}`);
   await tabTo("Tab to Correct… in the detail", (f) => f.inDialog && f.label === "Correct…");
   press("Enter");
   await expect("Enter: the correction's field in the detail has the focus", (f) => f.inDialog && f.tag === "TEXTAREA");
@@ -1019,7 +1071,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   press("Escape");
   await expect("Esc from elsewhere in the detail closes the correction, not the detail", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && !f.correctionOpen && f.label === elsewhere.label);
   press("Escape");
-  await expect(`Esc again closes the detail, the focus back on #${openPost.number}`, (f) => f.dialog === null && f.key === `post:${openPost.seq}`);
+  await expect(`Esc again closes the detail, the ring back on Detail in #${openPost.number}'s actions`, (f) => f.dialog === null && f.action === "detail" && f.item === `post:${openPost.seq}`);
+  press("Escape");
+  await expect(`Esc: the actions closed, the ring on #${openPost.number}`, (f) => f.strips === 0 && f.key === `post:${openPost.seq}`);
   await state("in a post's detail, Esc in a correction closes the field, not the detail", new RegExp(`^#${openPost.number} · you to @fable, `));
 
   // ---------------- 3b. a status chip: Esc folds its choices, and so does Backspace; the room stays ----------------
@@ -1384,6 +1438,440 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   browser.eval<boolean>(`() => { document.getElementById('rehearse-feed-bubble')?.remove(); return true; }`);
   press("Backspace");
   await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+
+  // ---------------- 5e. a post's actions (K1-5) ----------------
+
+  // @fable's turn on #openPost still runs (the fake holds it), the room's only one, and nothing needs you: the room opens
+  // on #openPost, your open request, and Enter opens its actions under it (Correct…, Cancel, Copy, Detail), the ring on
+  // Correct…. Left and Right choose, stopping at the ends (the side panel stays folded); a poll keeps them; Esc and
+  // Backspace close them, the ring back on the post.
+  const strip = () => browser.eval<{ item: string | null; label: string | null; first: string | null; names: string[] } | null>(STRIP);
+  const names = (what: string, want: string[]) => {
+    const got = strip();
+    if (JSON.stringify(got?.names) !== JSON.stringify(want)) fail(`${what}: the strip offers ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+    log(`  page: "${got!.label}": ${got!.names.join(" · ")}`);
+  };
+  /** The arrows to a post, once the page draws it: End, then Up until it has the ring. */
+  const toPost = async (seq: number, what: string): Promise<void> => {
+    browser.poll<boolean>(`the page to draw ${what}`, `() => Boolean(document.querySelector('[data-nav-key="post:${seq}"]'))`, (drawn) => drawn === true);
+    press("End");
+    await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+    for (let i = 0; i < 12 && focus().key !== `post:${seq}`; i += 1) {
+      press("ArrowUp");
+      await sleep(200);
+    }
+    await expect(what, (f) => f.key === `post:${seq}` && f.ring);
+  };
+  const s6 = await room.snapshot();
+  const fableRun = (s6.runs as Array<{ id: string; phase: string }>).find((r) => r.phase !== "terminal");
+  if (!fableRun || fableRun.id !== turns[0]!.id || fableRun.phase !== "running" || s6.needsYou.length > 0 || s6.nativeRequests.length > 0) return fail(`the API should still show @fable's one running turn and nothing that needs you: ${JSON.stringify({ runs: s6.runs.filter((r: any) => r.phase !== "terminal").map((r: any) => [r.id.slice(0, 8), r.phase]), needsYou: s6.needsYou.length })}`);
+  const mine = `#${openPost.number} · you to @fable, open`;
+  const correct = `correct:${openPost.number}`;
+  await goTo(`room:${R}`);
+  press("Enter");
+  await expect(`Enter: the room, the ring on its newest post #${openPost.number}`, (f) => inRoom(f) && f.key === `post:${openPost.seq}` && f.ring, 10_000);
+  press("Enter");
+  await expect(`Enter on #${openPost.number}: its actions under it, the ring on Correct…, the panel folded`, (f) => f.strips === 1 && f.item === `post:${openPost.seq}` && f.action === correct && f.ring && f.panel === null);
+  names(`#${openPost.number}, your open request`, ["Correct…", "Cancel", "Copy", "Detail"]);
+  announced(/^button$/, "Correct…");
+  await barSays(`#${openPost.number}'s actions`, { place: "room-actions", where: `Correct… · ${mine}`, keys: ["↑ ↓ previous or next post", "← → choose", "Enter Correct…", "Esc Backspace close", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+  press("ArrowLeft");
+  await sleep(400);
+  await expect("Left at the strip's start: the ring stays on Correct…, the panel folded", (f) => f.action === correct && f.strips === 1 && f.panel === null);
+  press("ArrowRight");
+  await expect("Right: Cancel", (f) => f.action === `cancel:${openPost.number}` && f.ring);
+  const onCancel = await keyBar(`Cancel · ${mine}`);
+  if (!onCancel.keys.includes("Enter Cancel")) fail(`on Cancel the key bar reads ${JSON.stringify(onCancel.keys)}: expected "Enter Cancel"`);
+  press("ArrowRight");
+  await expect("Right: Copy", (f) => f.action === "copy:0");
+  press("ArrowRight");
+  await expect("Right: Detail", (f) => f.action === "detail");
+  press("ArrowRight");
+  await sleep(400);
+  await expect("Right at the strip's end: the ring stays on Detail, the panel folded", (f) => f.action === "detail" && f.strips === 1 && f.panel === null);
+  // Past a poll of the room (its snapshot read again): still open, the ring on the same button.
+  browser.eval<boolean>("() => { performance.clearResourceTimings(); return true; }");
+  await until("a poll of the room (its snapshot read again)", () => browser.eval<number>(`() => performance.getEntriesByType('resource').filter((e) => new URL(e.name).pathname === '/api/rooms/${R}').length`) > 0 || null, 20_000, 500);
+  await sleep(600);
+  await expect("after a poll: the actions still open, the ring still on Detail", (f) => f.strips === 1 && f.action === "detail" && f.ring);
+  await state("a post's actions: Enter opens them under it, Left and Right choose and stop at the ends, a poll keeps them", `Detail · ${mine}`);
+  press("Escape");
+  await expect(`Esc: the actions closed, the ring on #${openPost.number}, the room open`, (f) => f.strips === 0 && f.key === `post:${openPost.seq}` && f.ring && inRoom(f));
+  press("Enter");
+  await expect("Enter: the actions again, on Correct…", (f) => f.strips === 1 && f.action === correct);
+  press("Backspace");
+  await expect("Backspace closes them as Esc does: the ring on the post, the room open", (f) => f.strips === 0 && f.key === `post:${openPost.seq}` && f.ring && inRoom(f));
+  await state("Esc and Backspace close a post's actions, the ring back on the post, the room open", mine);
+
+  // A letter on the actions: the composer opens with it (after the draft it holds) and the actions close; Esc then
+  // closes only the composer.
+  const heldDraft = focus().roomDraft ?? "";
+  press("q");
+  await expect(`a letter: the composer opens with it after the draft ${JSON.stringify(heldDraft)}, the actions closed`, (f) => f.tag === "TEXTAREA" && f.value === `${heldDraft}q` && f.composerOpen && f.strips === 0);
+  press("Escape");
+  await expect("Esc closes only the composer: the room open, the actions still closed, the ring on the composer's strip", (f) => !f.composerOpen && f.strips === 0 && inRoom(f) && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
+  await state("a letter on a post's actions opens the composer with it; Esc then closes only the composer", /^(Write a message|Continue your draft)/);
+  // The letter taken out of the draft again, by keys.
+  press("Enter");
+  await expect("Enter: the composer with the draft", (f) => f.tag === "TEXTAREA" && f.value === `${heldDraft}q`);
+  press("Backspace");
+  await expect("Backspace: the draft as it was", (f) => f.tag === "TEXTAREA" && f.value === heldDraft);
+  press("Escape");
+  await expect("Esc: the composer closed", (f) => !f.composerOpen && f.tag === "BUTTON");
+
+  // The composer open behind a post's actions (the ring put on the post as a click puts it, the composer left open):
+  // Esc closes the actions first, then the composer.
+  press("Enter");
+  await expect("Enter on the composer's strip: the composer, its draft as it was", (f) => f.tag === "TEXTAREA" && f.value === heldDraft && f.composerOpen);
+  browser.eval<boolean>(`() => { document.querySelector('[data-nav-key="post:${openPost.seq}"]').focus(); return true; }`);
+  log(`  page: the ring put on #${openPost.number} as a click on it puts it, the composer left open`);
+  await expect(`the ring on #${openPost.number}, the composer open`, (f) => f.key === `post:${openPost.seq}` && f.composerOpen);
+  press("Enter");
+  await expect("Enter: its actions, the composer still open behind them", (f) => f.strips === 1 && f.action === correct && f.composerOpen);
+  press("Escape");
+  await expect("Esc: the actions closed first, the composer still open", (f) => f.strips === 0 && f.composerOpen && f.key === `post:${openPost.seq}`);
+  await state("with the composer open behind a post's actions, Esc closes the actions first", mine);
+  press("Escape");
+  await expect("Esc again: the composer closed, the ring on the post", (f) => !f.composerOpen && f.strips === 0 && f.key === `post:${openPost.seq}`);
+
+  // Up and Down leave the actions for the post above or below: past the newest post, @fable's running turn (its live
+  // bubble), whose actions are Stop, what it works on and sent to T3 (no Detail: no post behind it yet); past it the
+  // composer's strip.
+  press("Enter");
+  await expect("Enter: its actions", (f) => f.strips === 1 && f.item === `post:${openPost.seq}`);
+  press("ArrowUp");
+  const postAbove = await expect("Up from the actions: the post above, no actions left", (f) => f.strips === 0 && f.key?.startsWith("post:") === true && f.key !== `post:${openPost.seq}` && f.ring);
+  press("Enter");
+  await expect("Enter: the post above's actions", (f) => f.strips === 1 && f.item === postAbove.key);
+  press("ArrowDown");
+  await expect(`Down from them: #${openPost.number}, no actions left`, (f) => f.strips === 0 && f.key === `post:${openPost.seq}`);
+  const liveKey = `live:${fableRun.id}`;
+  const liveWhere = `@fable's turn · working on #${openPost.number}`;
+  // End, then Down past the newest post.
+  press("End");
+  await expect("End: the newest post (End stays on the posts, not the running turn after them)", (f) => f.key?.startsWith("post:") === true && f.ring);
+  press("ArrowDown");
+  await expect(`Down from the newest post: @fable's running turn (run ${fableRun.id.slice(0, 8)} in the API)`, (f) => f.key === liveKey && f.ring);
+  announced(/^article$/, liveWhere);
+  await keyBar(liveWhere);
+  press("Enter");
+  await expect("Enter: the turn's actions, the ring on Stop", (f) => f.strips === 1 && f.item === liveKey && f.action === "stop:0" && f.ring);
+  names("@fable's running turn", ["Stop", `show #${openPost.number}`, "sent to T3"]);
+  await barSays("the turn's actions", { place: "room-actions", where: `Stop · ${liveWhere}`, keys: ["↑ ↓ previous or next post", "← → choose", "Enter Stop", "Esc Backspace close", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+  await state("a running turn's actions: Stop, what it works on, sent to T3", `Stop · ${liveWhere}`);
+  press("ArrowDown");
+  await expect("Down from the turn's actions: the composer's strip, no actions left", (f) => f.strips === 0 && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
+  press("ArrowUp");
+  await expect("Up: back on the running turn", (f) => f.key === liveKey);
+  await state("Up and Down leave a post's actions: the post above or below, the running turn, the composer's strip", liveWhere);
+
+  // Stop from the turn's actions (nothing waits for him, so nothing wakes him again): the API shows the run ended and
+  // T3's thread running nothing; the ring goes to a post.
+  press("Enter");
+  await expect("Enter: the turn's actions, on Stop", (f) => f.action === "stop:0");
+  press("Enter");
+  const stopped = await until("the API to show @fable's turn stopped", async () => {
+    const s = await room.snapshot();
+    const desk = await service.call<{ participants: Record<string, { runningRun?: unknown }> }>("GET", `/api/rooms/${R}/desk`);
+    const run = s.runs.find((r: any) => r.id === fableRun.id);
+    const notice = s.needsYou.find((p: any) => p.notice?.retryRunId === fableRun.id);
+    return run?.phase === "terminal" && !desk.participants[room.participant.fable]?.runningRun && notice ? notice : null;
+  });
+  log(`api: run ${fableRun.id.slice(0, 8)} terminal, T3's thread runs nothing; #${stopped.number} needs you, Retry offered`);
+  const afterStop = await expect("the turn gone, the ring on a post (not on the page itself)", (f) => f.key?.startsWith("post:") === true && f.ring && inRoom(f) && !browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="${liveKey}"]'))`));
+  await state("Stop from a running turn's actions stops it through T3", await postWhere(afterStop.key));
+
+  // A failed turn's actions: Retry, Dismiss, the post it is on, Detail. Down from the newest post's actions goes to the
+  // composer's strip. Retry sends the turn again (the API: a new run on the request, the notice retried); then the new
+  // turn fails in T3 and Dismiss takes its notice off your list.
+  press("End");
+  const newestNow = await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("Enter");
+  await expect("Enter: the newest post's actions", (f) => f.strips === 1 && f.item === newestNow.key);
+  press("ArrowDown");
+  await expect("Down from the newest post's actions (no turn running): the composer's strip, no actions left", (f) => f.strips === 0 && f.tag === "BUTTON" && /Write a message|draft/.test(f.label));
+  await toPost(stopped.seq, `the stopped turn's notice #${stopped.number}`);
+  press("Enter");
+  await expect("Enter: the notice's actions, the ring on Retry", (f) => f.strips === 1 && f.item === `post:${stopped.seq}` && f.action === "retry:0" && f.ring);
+  names(`#${stopped.number}, a failed turn`, ["Retry", "Dismiss", `show #${openPost.number}`, "Detail"]);
+  press("Enter");
+  const retried = await until("the API to show the turn sent again", async () => {
+    const s = await room.snapshot();
+    const notice = s.posts.find((p: any) => p.id === stopped.id);
+    const run = s.runs.find((r: any) => r.id !== fableRun.id && r.phase !== "terminal" && r.requestIds.includes(open));
+    return notice?.notice.retried && !s.needsYou.some((p: any) => p.id === stopped.id) && run ? run : null;
+  });
+  await room.live("fable");
+  log(`api: #${stopped.number} retried, off your list; run ${retried.id.slice(0, 8)} on #${openPost.number} runs`);
+  await expect("Retry gone with the ring on it: the actions closed, the ring on the notice", (f) => f.strips === 0 && f.key === `post:${stopped.seq}` && f.ring);
+  await state("Retry from a failed turn's actions sends it again", await postWhere(`post:${stopped.seq}`));
+  // Correct… from the actions (while the retried turn runs): its box opens in place, the field focused (the actions
+  // stay under it); Esc closes the box with the ring back on Correct…; Enter sends (Shift+Enter is a new line) and the
+  // ring is back on Correct….
+  const unCorrected = room.post(await room.snapshot(), open).request.corrections as number;
+  await toPost(openPost.seq, `#${openPost.number}, still open`);
+  press("Enter");
+  await expect("Enter: the actions, on Correct…", (f) => f.action === correct);
+  press("Enter");
+  await expect("Enter on Correct…: its box in place, the field focused, the actions still there", (f) => f.tag === "TEXTAREA" && f.label === `Correction to #${openPost.number}` && f.correctionOpen && f.strips === 1);
+  await barSays("the correction's field", { place: "correction", where: `correcting #${openPost.number}`, keys: ["Enter send it", "Shift+Enter new line", "Tab on to Send correction", "Esc close it, back to Correct…"], end: null });
+  press("Escape");
+  await expect("Esc: the box closed, the ring back on Correct… in the actions", (f) => !f.correctionOpen && f.action === correct && f.strips === 1 && f.ring);
+  press("Enter");
+  await expect("Enter on Correct… again: the field", (f) => f.tag === "TEXTAREA" && f.correctionOpen);
+  for (const key of ["d", "a", "t", "e"]) press(key);
+  press("Shift+Enter");
+  for (const key of ["o", "k"]) press(key);
+  await expect("typed: date, Shift+Enter a new line, ok", (f) => f.value === "date\nok");
+  press("Enter");
+  const corrected = await until("the API to show the correction sent", async () => {
+    const s = await room.snapshot();
+    const post = room.post(s, open);
+    const correction = s.posts.find((p: any) => p.kind === "correction" && p.body === "date\nok");
+    return post.request.corrections === unCorrected + 1 && post.request.state === "open" && correction ? { post, correction } : null;
+  });
+  log(`api: #${openPost.number} corrected ${corrected.post.request.corrections}×, still open; the correction #${corrected.correction.number} reads "date\\nok"`);
+  await expect("Enter sent it: the box closed, the ring back on Correct… in the actions", (f) => !f.correctionOpen && f.action === correct && f.strips === 1 && f.ring);
+  await state("Correct… from a post's actions: the box in place, Esc closes it, Enter sends it, the ring back on Correct…", `Correct… · ${mine}`);
+
+  // The same in the post's Detail: Enter in its correction sends it too; the detail stays, the ring on its Correct….
+  await toDetail();
+  press("Enter");
+  await expect(`Enter on Detail: the detail of #${openPost.number}`, (f) => f.dialog === `Post #${openPost.number}`);
+  await tabTo("Tab to Correct… in the detail", (f) => f.inDialog && f.label === "Correct…");
+  press("Enter");
+  await expect("Enter: the detail's correction field", (f) => f.inDialog && f.tag === "TEXTAREA");
+  for (const key of ["t", "a", "g"]) press(key);
+  await expect("typed: tag", (f) => f.inDialog && f.value === "tag");
+  press("Enter");
+  await until("the API to show the detail's correction sent", async () => {
+    const s = await room.snapshot();
+    return room.post(s, open).request.corrections === unCorrected + 2 && s.posts.some((p: any) => p.kind === "correction" && p.body === "tag") ? true : null;
+  });
+  await expect("Enter sent it: the detail stays, the ring on its Correct…", (f) => f.dialog === `Post #${openPost.number}` && f.inDialog && f.label === "Correct…" && !f.correctionOpen);
+  log(`api: #${openPost.number} corrected ${unCorrected + 2}×, the second "tag", from the detail`);
+  await state("Enter in the Detail's correction sends it too", `Post #${openPost.number}`);
+  press("Escape");
+  await expect("Esc: the detail closed, the ring back on Detail in the actions", (f) => f.dialog === null && f.action === "detail" && f.strips === 1);
+  press("Escape");
+  await expect("Esc: the actions closed", (f) => f.strips === 0 && f.key === `post:${openPost.seq}`);
+
+  // The retried turn fails in T3 (the corrections then wake him again, for a turn of their own).
+  await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+  const failed = await until("the API to show the new turn failed, needing you", async () => {
+    const s = await room.snapshot();
+    return s.needsYou.find((p: any) => p.notice?.retryRunId === retried.id) ?? null;
+  });
+  await toPost(failed.seq, `the failed turn's notice #${failed.number}`);
+  press("Enter");
+  await expect("Enter: its actions, on Retry", (f) => f.strips === 1 && f.item === `post:${failed.seq}` && f.action === "retry:0");
+  press("ArrowRight");
+  await expect("Right: Dismiss", (f) => f.action === "dismiss:0");
+  press("Enter");
+  await until("the API to show the notice dismissed", async () => {
+    const s = await room.snapshot();
+    const notice = s.posts.find((p: any) => p.id === failed.id);
+    return notice?.notice.dismissed && !notice.notice.needsYou && s.needsYou.length === 0 ? true : null;
+  });
+  log(`api: #${failed.number} dismissed, nothing needs you`);
+  await expect("Dismiss gone with the ring on it: the actions closed, the ring on the notice", (f) => f.strips === 0 && f.key === `post:${failed.seq}` && f.ring);
+  await state("Dismiss from a failed turn's actions takes it off your list", await postWhere(`post:${failed.seq}`));
+
+  // Cancel from the actions: the API shows the request cancelled, with its cancel post; the ring on the post.
+  await toPost(openPost.seq, `#${openPost.number}, still open`);
+  press("Enter");
+  await expect("Enter: its actions", (f) => f.strips === 1 && f.action === correct);
+  press("ArrowRight");
+  await expect("Right: Cancel", (f) => f.action === `cancel:${openPost.number}`);
+  press("Enter");
+  const cancelled = await until("the API to show the request cancelled", async () => {
+    const s = await room.snapshot();
+    const cancel = s.posts.find((p: any) => p.kind === "cancel" && p.about.some((r: any) => r.requestId === open));
+    return room.post(s, open).request.state === "cancelled" && cancel ? cancel : null;
+  });
+  log(`api: #${openPost.number} cancelled, the cancel #${cancelled.number}`);
+  await expect("Correct… and Cancel gone: the actions closed, the ring on the post", (f) => f.strips === 0 && f.key === `post:${openPost.seq}` && f.ring);
+  await state("Cancel from a request's actions cancels it", new RegExp(`^#${openPost.number} · you to @fable, cancelled`));
+
+  // A reply's actions: Copy, Read aloud, what it answers, its file chip, turn in T3, sent to T3, Detail. The file is in
+  // a project of the run's own (its data folder), named in his text; his turn has earlier messages and a file changed.
+  const project = join(room.dataDir, "k1-5-project");
+  const fileText = "# Release v1.2\n\nThe parser fix, then the tag, then these notes.\n";
+  mkdirSync(join(project, "notes"), { recursive: true });
+  writeFileSync(join(project, "notes", "release.md"), fileText);
+  await service.command({ type: "project.create", workspaceRoot: project, title: "k1-5-files" });
+  await room.settle("fable");
+  const notesAsk = await room.message("Write the release notes.");
+  const notesRun = await room.live("fable");
+  // The ring on his running turn when it ends: it goes to the reply that replaced it, not to the page.
+  browser.poll<boolean>("the page to draw his running turn", `() => Boolean(document.querySelector('[data-nav-key="live:${notesRun.id}"]'))`, (drawn) => drawn === true);
+  press("End");
+  await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect(`Down: his running turn (run ${notesRun.id.slice(0, 8)})`, (f) => f.key === `live:${notesRun.id}` && f.ring, 10_000);
+  const progress = ["Reading the parser fix.", "Writing the notes."];
+  await room.finish("fable", "The notes are in `notes/release.md`: the parser fix, then the tag.", { progress, files: [{ path: "notes/release.md", kind: "modified", additions: 3, deletions: 0 }] });
+  const s8 = await room.snapshot();
+  const asked = room.post(s8, notesAsk);
+  const reply = s8.posts.find((p: any) => p.kind === "output" && p.output.claims.some((c: any) => c.requestId === notesAsk && c.outcome === "answered"));
+  if (!reply?.output.t3?.runId) fail(`the API has no reply with a T3 turn answering #${asked.number}: ${JSON.stringify(reply?.output ?? null).slice(0, 300)}`);
+  const replyWhere = `#${reply.number} · @fable replied`;
+  await expect(`the turn ended: the ring on his reply #${reply.number}, not on the page`, (f) => f.key === `post:${reply.seq}` && f.ring, 10_000);
+  await state("the ring on a running turn goes to its reply when the turn ends", replyWhere);
+  browser.eval<boolean>(`() => {
+    window.__rehearseCopied = null;
+    navigator.clipboard.writeText = (text) => { window.__rehearseCopied = text; return Promise.resolve(); };
+    window.__rehearseSpoken = [];
+    window.__rehearseHushed = 0;
+    speechSynthesis.speak = (u) => { window.__rehearseSpoken.push(u.text); setTimeout(() => u.onstart && u.onstart(new Event('start')), 0); };
+    speechSynthesis.cancel = () => { window.__rehearseHushed += 1; };
+    return true;
+  }`);
+  log("  page: the clipboard's writeText and speechSynthesis stubbed, recording what the page sends them");
+  await toPost(reply.seq, `@fable's reply #${reply.number}`);
+  press("Enter");
+  await expect("Enter: the reply's actions, the ring on Copy", (f) => f.strips === 1 && f.item === `post:${reply.seq}` && f.action === "copy:0" && f.ring);
+  names(`#${reply.number}, a reply`, ["Copy", "Read aloud", `show #${asked.number}`, "release.md", "turn in T3", "sent to T3", "Detail"]);
+  press("Enter");
+  await expect("Enter on Copy: Copied", (f) => f.action === "copy:0" && f.label === "Copied");
+  const copied = browser.eval<string | null>("() => window.__rehearseCopied");
+  if (copied === null || copied !== reply.body) return fail(`the clipboard got ${JSON.stringify(copied)}, the API's post reads ${JSON.stringify(reply.body)}`);
+  log(`  page: the clipboard holds the API's body of #${reply.number} (${copied.length} characters)`);
+  press("ArrowRight");
+  await expect("Right: Read aloud", (f) => f.action === "speak:0" && f.label === "Read aloud");
+  press("Enter");
+  await expect("Enter: it reads, the button says Stop reading", (f) => f.action === "speak:0" && f.label === "Stop reading");
+  const spoken = browser.eval<string[]>("() => window.__rehearseSpoken").join(" ");
+  if (!spoken.includes("fable") || !spoken.includes("The notes are in")) fail(`the voice was given ${JSON.stringify(spoken)}`);
+  const hushed = browser.eval<number>("() => window.__rehearseHushed");
+  await keyBar(`Stop reading · ${replyWhere}`);
+  press("Enter");
+  await expect("Enter on Stop reading: it stops, Read aloud again", (f) => f.action === "speak:0" && f.label === "Read aloud");
+  if (browser.eval<number>("() => window.__rehearseHushed") <= hushed) fail("Stop reading did not stop the voice");
+  log(`  page: the voice was given "${spoken.slice(0, 60)}…", then stopped`);
+  await state("a reply's actions: Copy puts it on the clipboard, Read aloud reads it, Stop reading stops", `Read aloud · ${replyWhere}`);
+  // A #ref shows the post it names and takes the ring there.
+  press("ArrowRight");
+  await expect(`Right: show #${asked.number}`, (f) => f.action === "ref:0");
+  press("Enter");
+  await expect(`Enter on show #${asked.number}: the ring on #${asked.number}, the actions closed`, (f) => f.key === `post:${asked.seq}` && f.strips === 0 && f.ring);
+  await until(`#${asked.number} in the board's view`, () => browser.eval<boolean>(`() => { const t = document.querySelector('.ov-drawer[data-view="room"] .timeline').getBoundingClientRect(); const r = document.querySelector('[data-nav-key="post:${asked.seq}"]').getBoundingClientRect(); return r.top >= t.top - 1 && r.bottom <= t.bottom + 1; }`) || null, 6000, 200);
+  await state("a reply's actions: a #ref shows the post it names, the ring on it", await postWhere(`post:${asked.seq}`));
+  await toPost(reply.seq, `back on @fable's reply #${reply.number}`);
+  press("Enter");
+  await expect("Enter: the reply's actions, on Copy", (f) => f.strips === 1 && f.action === "copy:0");
+  press("ArrowRight");
+  press("ArrowRight");
+  press("ArrowRight");
+  await expect("Right ×3: the file chip release.md", (f) => f.action === "file:0" && f.label === "release.md");
+  press("Enter");
+  await expect("Enter on release.md: its preview over the page", (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
+  browser.poll<string>("the preview to show the file", "() => document.querySelector('.dialog')?.textContent ?? ''", (text) => text.includes("The parser fix, then the tag, then these notes."));
+  const previewed = await service.call<{ content?: string; path: string }>("GET", `/api/file-preview?path=${encodeURIComponent("notes/release.md")}`);
+  if (previewed.content !== fileText) fail(`the API previews ${JSON.stringify(previewed)}, the file holds ${JSON.stringify(fileText)}`);
+  log(`api: GET /api/file-preview reads ${previewed.path}, as the page shows it`);
+  await state("a reply's actions: a file chip opens its preview", focus().dialog!);
+  press("Escape");
+  await expect("Esc: the preview closed, the ring back on release.md in the actions", (f) => f.dialog === null && f.action === "file:0" && f.strips === 1 && f.ring);
+  press("ArrowRight");
+  await expect("Right: turn in T3", (f) => f.action === "turn:0");
+  press("Enter");
+  await expect("Enter: turn in T3 opens", (f) => f.action === "turn:0" && f.expanded === "true");
+  browser.poll<string>("the turn as T3 shows it", `() => document.querySelector('[data-nav-key="post:${reply.seq}"] .turn-in-t3')?.textContent ?? ''`, (text) => progress.every((m) => text.includes(m)) && text.includes("1 file changed"));
+  const t3 = await service.call<{ items: Array<{ kind: string; runId?: string; progress?: Array<{ text: string }>; files?: { count: number } | null }> }>("GET", `/api/threads/${room.thread.fable}`);
+  const turn = t3.items.find((i) => i.kind === "reply" && i.runId === reply.output.t3.runId);
+  if (JSON.stringify(turn?.progress?.map((n) => n.text)) !== JSON.stringify(progress) || turn?.files?.count !== 1) fail(`T3's turn for #${reply.number} is ${JSON.stringify(turn)}`);
+  log(`api: T3's turn ${String(reply.output.t3.runId).slice(0, 8)}: ${progress.length} earlier messages, 1 file changed, as the page shows them`);
+  await state("a reply's actions: turn in T3 shows its earlier messages and the files it changed", `turn in T3 · ${replyWhere}`);
+  press("Escape");
+  await expect("Esc: the actions closed, the ring on the reply", (f) => f.strips === 0 && f.key === `post:${reply.seq}`);
+
+  // A turn typed in T3 (the worker's; the board draws it, the chat only the Consigliere's): no stop while it asks
+  // nothing (it has no Stop here, nothing to do); with a question it is one, and its actions are the question's choices.
+  // A choice pressed shows as chosen (the strip follows the checked state), an answer of your own takes the focus and Esc
+  // there gives the ring back to its button, and Submit answers answers T3.
+  await abovePosts("the room state", (f) => f.key === "state");
+  press("ArrowUp");
+  await expect("Up: the header, on the chat's tab", (f) => f.key === "head:chat");
+  press("ArrowRight");
+  await expect("Right: the Board tab", (f) => f.key === "head:board");
+  press("Enter");
+  await expect("Enter: the board", (f) => f.view === "board" && f.key === "head:board");
+  const external = (await service.fake("external-run", { threadId: room.thread.worker, text: "Check the logs in T3." })) as { runId: string };
+  const liveT3 = `live:t3:${external.runId}`;
+  browser.poll<boolean>("the worker's turn drawn on the board", "() => [...document.querySelectorAll('.timeline .live-turn')].some((row) => row.textContent.includes('worker'))", (drawn) => drawn === true);
+  press("End");
+  await expect("End: the board's newest post", (f) => f.key?.startsWith("post:") === true && f.view === "board");
+  press("ArrowDown");
+  await expect("Down from the newest post: the composer's strip (the worker's turn asks nothing: no stop)", (f) => f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && f.strips === 0);
+  if (browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="${liveT3}"]'))`)) fail("the worker's turn typed in T3 is a stop while it asks nothing");
+  log(`api: the worker's turn ${external.runId.slice(0, 8)} typed in T3 runs; page: drawn on the board, no stop`);
+  await service.fake("question", { threadId: room.thread.worker, questions: [{ id: "Proceed?", header: "Confirm", question: "Proceed?", options: [{ label: "yes", description: "Proceed" }, { label: "no", description: "Do not proceed" }], allowCustomAnswer: true }] });
+  await until("the API to show the worker's question", async () => ((await room.snapshot()).nativeRequests as Array<{ participantId: string }>).some((r) => r.participantId === room.participant.worker) || null);
+  browser.poll<boolean>("the worker's turn a stop now it asks", `() => Boolean(document.querySelector('[data-nav-key="${liveT3}"]'))`, (stop) => stop === true);
+  press("ArrowUp");
+  await expect("Up from the strip: the newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect("Down: the worker's turn, a stop now", (f) => f.key === liveT3 && f.ring);
+  press("Enter");
+  await expect("Enter: its actions, the ring on yes", (f) => f.strips === 1 && f.item === liveT3 && f.action === "choice:0" && f.ring);
+  names("the worker's turn asking", ["yes", "no", "the answer of your own", "Custom answer", "Submit answers", "Dismiss"]);
+  const pressedOf = (key: string) => browser.eval<string | null>(`() => document.querySelector('.action-strip [data-action="${key}"]')?.getAttribute('aria-pressed') ?? null`);
+  press("Enter");
+  await expect("Enter on yes: chosen", (f) => f.action === "choice:0" && f.pressed === "true");
+  press("ArrowRight");
+  await expect("Right: no, not chosen", (f) => f.action === "choice:1" && f.pressed === "false");
+  press("Enter");
+  await expect("Enter on no: chosen", (f) => f.action === "choice:1" && f.pressed === "true");
+  await until("yes shown as no longer chosen", () => pressedOf("choice:0") === "false" || null, 3000, 100);
+  await state("a turn typed in T3 asking a question: its actions are the choices, each shown as chosen", "no · @worker's turn · needs you, typed in T3");
+  press("ArrowRight");
+  press("ArrowRight");
+  await expect("Right ×2: Custom answer", (f) => f.action === "choice:3");
+  press("Enter");
+  await expect("Enter on Custom answer: its field focused, the actions still open", (f) => f.tag === "INPUT" && f.strips === 1);
+  for (const key of ["m", "a", "y", "b", "e"]) press(key);
+  await expect("typed: maybe", (f) => f.tag === "INPUT" && f.value === "maybe");
+  await until("the answer of your own shown as chosen once typed", () => pressedOf("choice:2") === "true" || null, 3000, 100);
+  press("Escape");
+  await expect("Esc in the field: the ring back on Custom answer in the actions", (f) => f.action === "choice:3" && f.strips === 1 && f.ring);
+  press("ArrowRight");
+  await expect("Right: Submit answers", (f) => f.action === "choice:4");
+  press("Enter");
+  await until("the API to show the question answered", async () => !((await room.snapshot()).nativeRequests as Array<{ participantId: string }>).some((r) => r.participantId === room.participant.worker) || null);
+  log("api: the worker's question answered, nothing asks you");
+  await expect("the turn asks nothing more: no stop, the actions gone, the ring on a post (not on the page)", (f) => f.strips === 0 && f.key?.startsWith("post:") === true && f.ring, 10_000);
+  await state("Submit answers from a turn's actions answers T3; asking nothing more, the turn is no stop", await postWhere(focus().key));
+  // The worker's turn ends; its follow-up wakes the Consigliere, whose turn is ended too.
+  await service.fake("complete", { threadId: room.thread.worker, text: "Logs checked." });
+  await room.settle("worker");
+  await room.settle("fable");
+  press("Backspace");
+  await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+
+  // A running turn with an approval waiting (the second room's @alpha): its actions hold Stop, the approval's choices,
+  // what it works on and sent to T3. Esc closes them; the approval still waits in the API.
+  const secondLive = (await second.snapshot()) as { runs: Array<{ id: string; phase: string; requestIds: string[] }>; nativeRequests: unknown[]; requests: Array<{ id: string; number: number }> };
+  const alphaLive = secondLive.runs.find((r) => r.id === alphaRun[0]!.id && r.phase === "running");
+  if (!alphaLive || secondLive.nativeRequests.length !== 1) return fail(`the API should still show @alpha's turn running with its approval waiting: ${JSON.stringify({ runs: secondLive.runs.map((r) => [r.id.slice(0, 8), r.phase]), asking: secondLive.nativeRequests.length })}`);
+  const alphaOn = alphaLive.requestIds.map((id) => secondLive.requests.find((q) => q.id === id)?.number).filter((n): n is number => n !== undefined);
+  await goTo(`room:${second.roomId}`);
+  press("Enter");
+  await expect("Enter: the second room, the ring on the approval's chip", (f) => f.key === `chip:ask:${second.participant.alpha}` && inRoom(f), 10_000);
+  press("ArrowDown");
+  await expect("Down: its newest post", (f) => f.key?.startsWith("post:") === true);
+  press("ArrowDown");
+  await expect(`Down: @alpha's running turn (run ${alphaLive.id.slice(0, 8)})`, (f) => f.key === `live:${alphaLive.id}` && f.ring);
+  press("Enter");
+  await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
+  names("@alpha's turn with an approval", ["Stop", "Accept", "Accept for session", "Always accept", "Decline", "Cancel turn", ...alphaOn.map((n) => `show #${n}`), "sent to T3"]);
+  await state("a running turn with an approval waiting: its actions offer the approval's choices", new RegExp("^Stop · @alpha's turn · needs you"));
+  press("Escape");
+  await expect("Esc: the actions closed, the ring on the turn", (f) => f.strips === 0 && f.key === `live:${alphaLive.id}`);
+  press("Backspace");
+  await expect("Backspace: back on the second room's card", (f) => f.drawers.length === 0 && f.key === `room:${second.roomId}`);
+  if ((await second.snapshot()).nativeRequests.length !== 1) fail("the approval changed in the API while its actions were looked at");
+  log("api: @alpha's approval still waits");
 
   // A thread outside rooms, by keys: Enter on its card, Up from its composer's strip to the conversation, Esc back.
   await goTo(`thread:${loose.threadId}`);

@@ -11,7 +11,8 @@
  *   POST /api/fake/self-run      { threadId }                  a turn the agent starts itself -> { runId }
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
  *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
- *   POST /api/fake/question      { threadId }                  a question on the running run -> { requestId }
+ *   POST /api/fake/question      { threadId, questions? }      a question on the running run -> { requestId }
+ *                                questions: T3's own shape (options, allowCustomAnswer); T3's "Proceed?" yes/no by default
  *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
  */
 import { Hono, type Context } from "hono";
@@ -47,7 +48,7 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/self-run", run((input) => ({ runId: fake.startSelfRun(thread(input)) })));
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
   controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));
-  controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input)) })));
+  controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input), Array.isArray(input.questions) ? { questions: input.questions as never } : {}) })));
   controls.post("/api/fake/background", run((input) => {
     fake.setBackground(thread(input), Array.isArray(input.taskIds) ? input.taskIds.filter((id): id is string => typeof id === "string") : []);
     return {};

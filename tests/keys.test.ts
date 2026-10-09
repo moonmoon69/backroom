@@ -7,10 +7,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { barEntries, entryText, gridStart, gridTarget, KEYS, keysMarkdown, laneTarget, openLanding, placeById, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, gridStart, gridTarget, KEYS, keysMarkdown, laneTarget, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
+
+/**
+ * The page's keys (K1-5 adds a post's action strip: its keys on the bar, the order of its buttons, and the turns running
+ * now after the posts).
+ */
 
 /**
  * The overview at 1439 px as the throwaway draws it: the header's buttons; the project's head (+ New room at the far
@@ -212,7 +217,7 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
   assert.ok(bar("overview-crew").includes("Enter edit them"));
   // Backspace has nothing to go back to on the overview: said in ? and README, not on the bar, which names what works.
   assert.ok(!bar("overview-room").some((line) => line.startsWith("Backspace")));
-  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its detail", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // In the field: no ? (it types), Backspace only while the field is empty.
   assert.deepEqual(bar("room-composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"]);
   assert.deepEqual(bar("room-composer", ["typing", "empty"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "Backspace close it", "@ mention a member", "/ a command"]);
@@ -324,4 +329,79 @@ test("README.md's Keyboard section is the key table, row for row", () => {
   assert.ok(section.includes(tables), "README.md's Keyboard tables differ from KEYS: node scripts/keys-readme.ts draws them again");
   const rows = (text: string) => text.split("\n").filter((line) => line.startsWith("|")).length;
   assert.equal(rows(section), rows(tables), "README.md's Keyboard section has no table rows besides KEYS'");
+});
+
+test("the turns running now follow the posts: Down from the newest post reaches them, End stays the newest post", () => {
+  // The posts lane holds three posts, then two live bubbles; the newest post is #3.
+  const live: Lane<string>[] = room.map((lane) => (lane.name === "posts" ? { ...lane, items: ["#1", "#2", "#3", "live:a", "live:b"], newest: "#3" } : lane));
+  assert.equal(inRoom("#3", "down", false, live), "live:a");
+  assert.equal(inRoom("live:a", "down", false, live), "live:b");
+  assert.equal(inRoom("live:b", "down", false, live), "strip");
+  assert.equal(inRoom("live:a", "up", false, live), "#3");
+  for (const from of ["live:b", "#1", "approval", "strip", null]) {
+    assert.equal(inRoom(from, "last", false, live), "#3", `End from ${from}`);
+    assert.equal(inRoom(from, "first", false, live), "#1", `Home from ${from}`);
+  }
+  // A room with no post yet and a turn running: End goes to its bubble.
+  const fresh: Lane<string>[] = room.map((lane) => (lane.name === "posts" ? { ...lane, items: ["live:a"], landing: "live:a" } : lane));
+  assert.equal(inRoom("strip", "last", false, fresh), "live:a");
+});
+
+/** The bar on a place as it reads with the ring on a button of this name (an action strip's). */
+const barNamed = (place: PlaceId, name: string, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${barDoes(entry, name)}`);
+
+test("on a post Enter opens its actions; in them the bar says choose, Enter and the button's name, Esc close", () => {
+  assert.ok(bar("room-post").includes("Enter its actions"));
+  assert.deepEqual(barNamed("room-actions", "Correct…"), ["↑ ↓ previous or next post", "← → choose", "Enter Correct…", "Esc Backspace close", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.ok(barNamed("room-actions", "Cancel").includes("Enter Cancel"));
+  // A long name (a file chip, a link) is cut on the bar, so the bar still fits.
+  const long = "web/src/components/ActionStrip.tsx:42";
+  const enter = barNamed("room-actions", long).find((line) => line.startsWith("Enter "))!;
+  assert.equal(enter, `Enter ${long.slice(0, BAR_NAME - 1)}…`);
+  // The strip is in front of a correction, a chip's choices and the panel: Esc and Backspace close it first.
+  for (const now of [["correcting"], ["chip-open"], ["panel-open"], ["correcting", "chip-open", "panel-open"]] as KeyWhen[][]) {
+    assert.ok(barNamed("room-actions", "Copy", now).includes("Esc Backspace close"), now.join());
+    assert.ok(!barNamed("room-actions", "Copy", now).some((line) => line.startsWith("Backspace ") || line.startsWith("Esc ") && line !== "Esc Backspace close"), now.join());
+  }
+  // Without a name (nothing to name) the bar says what the table says.
+  assert.ok(bar("room-actions").includes("Enter press it"));
+  assert.equal(barDoes({ keys: ["Enter"], does: "send" }, "Correct…"), "send");
+});
+
+test("in a correction Enter sends it and Shift+Enter makes a line; Esc closes it, back to Correct…", () => {
+  assert.deepEqual(bar("correction", ["typing"]), ["Enter send it", "Shift+Enter new line", "Tab on to Send correction", "Esc close it, back to Correct…"]);
+});
+
+test("an action strip's buttons in the design's order, Detail last", () => {
+  /** Kinds as an item draws them, in the strip's order. */
+  const order = (kinds: ActionKind[]): ActionKind[] => stripOrder(kinds.map((kind) => ({ kind }))).map((control) => control.kind);
+  // Your message with an open request: its Copy beside the bubble, then the request's Correct… and Cancel, its #refs.
+  assert.deepEqual(order(["copy", "correct", "cancel", "ref", "detail"]), ["correct", "cancel", "copy", "ref", "detail"]);
+  // A reply: what it answers (#ref) in its head, then its text's file chips and images, sent to T3, turn in T3, then
+  // Copy and Read aloud at its foot.
+  assert.deepEqual(order(["ref", "file", "image", "file", "sent", "turn", "copy", "speak", "detail"]), ["copy", "speak", "ref", "file", "file", "image", "turn", "sent", "detail"]);
+  // A failed-turn notice: the post it is on, then Retry and Dismiss.
+  assert.deepEqual(order(["ref", "retry", "dismiss", "detail"]), ["retry", "dismiss", "ref", "detail"]);
+  // A live bubble: what it works on, Stop, an approval's choices, its feed's earlier part, sent to T3 (no Detail).
+  assert.deepEqual(order(["ref", "stop", "choice", "choice", "more", "sent"]), ["stop", "choice", "choice", "ref", "sent", "more"]);
+  // Within a kind, as the item draws them; a link, a code block's Copy and a folded text after the table's, before Detail.
+  assert.deepEqual(stripOrder([{ kind: "file" as const, n: 2 }, { kind: "link" as const, n: 1 }, { kind: "file" as const, n: 1 }, { kind: "code" as const, n: 1 }, { kind: "text" as const, n: 1 }]).map((c) => `${c.kind}${c.n}`), ["file2", "file1", "link1", "code1", "text1"]);
+  assert.equal(ACTION_KINDS.at(-1), "detail");
+  // A message to two members: each request's Correct… and Cancel stay together, in the message's order.
+  const pairs = stripOrder([{ kind: "copy" as const, n: 0 }, { kind: "correct" as const, n: 33 }, { kind: "cancel" as const, n: 33 }, { kind: "correct" as const, n: 34 }, { kind: "cancel" as const, n: 34 }, { kind: "ref" as const, n: 0 }]);
+  assert.deepEqual(pairs.map((c) => `${c.kind}${c.n || ""}`), ["correct33", "cancel33", "correct34", "cancel34", "copy", "ref"]);
+});
+
+test("Left and Right in a strip go to the next button that can be pressed, and stop at its ends", () => {
+  const all = [true, true, true, true];
+  assert.equal(stripStep(all, 0, "right"), 1);
+  assert.equal(stripStep(all, 3, "right"), null);
+  assert.equal(stripStep(all, 0, "left"), null);
+  assert.equal(stripStep(all, 2, "left"), 1);
+  // A busy button (Retry while it is sent) is passed over; with none further on, the ring stays.
+  assert.equal(stripStep([true, false, true], 0, "right"), 2);
+  assert.equal(stripStep([true, false, true], 2, "left"), 0);
+  assert.equal(stripStep([true, false, false], 0, "right"), null);
+  // From outside the strip, nothing.
+  assert.equal(stripStep(all, -1, "right"), null);
 });

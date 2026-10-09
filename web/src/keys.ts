@@ -10,12 +10,13 @@
  * - The overview is a grid of rows: the header, each section's head (its + button), its tiles, the crew, the browsers.
  *   Tiles are the items, not the members on them. Up and Down go to the nearest row below or above, to the item in the
  *   column the run began in; Left and Right along the row, stopping at its ends (keyOrder.ts, gridTarget).
- * - A room's conversation reads in lanes, top to bottom: its header, the room state, the status chips, the posts and the
- *   composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to lane, post to post in the posts lane; Left and
- *   Right go along the header and the status chips, and elsewhere between the panes: the board, then the side panel's
- *   Members, Browser and Git, where Up and Down go through the members (or the pane's controls).
- * - Escape closes what is in front, one thing at a time (a menu, the composer, a status chip's choices, a Correct… box, a
- *   dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
+ * - A room's conversation reads in lanes, top to bottom: its header, the room state, the status chips, the posts (then
+ *   the turns running now, their live bubbles) and the composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to
+ *   lane, post to post in the posts lane; Left and Right go along the header and the status chips, and elsewhere between
+ *   the panes: the board, then the side panel's Members, Browser and Git, where Up and Down go through the members (or
+ *   the pane's controls). Enter on a post opens its action strip (ActionStrip.tsx), whose own Left and Right choose.
+ * - Escape closes what is in front, one thing at a time (a menu, an action strip, the composer, a status chip's choices,
+ *   a Correct… box, a dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
  * - Backspace outside a text field goes back one step: what is in front first (as Escape), then a member's thread, the
  *   side panel, and the room to its card. In a text field it is the field's.
  *
@@ -45,10 +46,10 @@ export const isTextField = (element: Element | null): boolean =>
   element instanceof HTMLElement && (element.isContentEditable || element.matches("textarea, select, input:not([type=button], [type=submit], [type=reset], [type=checkbox], [type=radio], [type=image], [type=file], [type=color])"));
 
 /**
- * Something open that takes Escape: a dialog, a menu, a popover, a suggestion list, the composer, a status chip's
- * choices, a correction (Correct…'s box).
+ * Something open that takes Escape: a dialog, a menu, a popover, a suggestion list, an action strip, the composer, a
+ * status chip's choices, a correction (Correct…'s box).
  */
-const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .composer-overlay, .work-open, .req-correct";
+const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .popover, .mention-menu, .slash-menu, .action-strip, .composer-overlay, .work-open, .req-correct";
 
 /**
  * Whether something is in front, for Escape and Backspace: such a thing open where the keys reach it, wherever the
@@ -153,15 +154,20 @@ export function listTarget(items: HTMLElement[], current: HTMLElement | null, ke
 /** Shown and not hidden away (the composer's strip is kept in place, hidden, while the composer is open). */
 const shown = (element: HTMLElement): boolean => visible(element) && getComputedStyle(element).visibility !== "hidden";
 
+/** The posts of a lane's items: the turns running now (their live bubbles, `data-nav="live"`) are not posts. */
+export const postsOf = (items: HTMLElement[]): HTMLElement[] => items.filter((item) => item.dataset.nav === "post");
+
 /**
  * A room's lanes as drawn now, top to bottom (`data-nav-lane`, each holding its items), those with an item. `landing`
  * says where the ring lands coming into a lane: given the lane and its items, the item, else the lane's own default.
+ * The posts lane knows its newest post (End goes there, not to a live bubble after it).
  */
 export function roomLanes(root: ParentNode, landing: (name: Lane<HTMLElement>["name"], items: HTMLElement[]) => HTMLElement | null): Array<Lane<HTMLElement> & { element: HTMLElement }> {
   return [...root.querySelectorAll<HTMLElement>("[data-nav-lane]")].flatMap((element) => {
     const name = element.dataset.navLane as Lane<HTMLElement>["name"];
     const items = navItems(element).filter((item) => item.closest("[data-nav-lane]") === element && shown(item));
-    return items.length > 0 ? [{ name, element, items, landing: landing(name, items) ?? items[0]! }] : [];
+    const newest = name === "posts" ? postsOf(items).at(-1) : undefined;
+    return items.length > 0 ? [{ name, element, items, landing: landing(name, items) ?? items[0]!, ...(newest ? { newest } : {}) }] : [];
   });
 }
 
@@ -189,11 +195,15 @@ export function laneAt(lanes: Array<Lane<HTMLElement> & { element: HTMLElement }
 
 // ---- where the ring is, for the key bar (KeyBar.tsx) ----
 
-/** The place the ring is on (keyOrder.ts, KEYS), what it is on in words, and what holds now that changes a key. */
+/**
+ * The place the ring is on (keyOrder.ts, KEYS), what it is on in words, what holds now that changes a key, and the
+ * name of the button it is on where the bar says it (an action strip's: "Enter Correct…").
+ */
 export interface PlaceNow {
   place: PlaceId;
   where: string;
   now: KeyWhen[];
+  name?: string;
 }
 
 /** An element as it reads: its label, else its text, else its title. */
@@ -219,7 +229,7 @@ export function keyPlace(): PlaceNow {
     now.push("typing");
     if ("value" in active && active.value === "") now.push("empty");
   }
-  const at = (place: PlaceId, where: string): PlaceNow => ({ place, where, now });
+  const at = (place: PlaceId, where: string, name?: string): PlaceNow => ({ place, where, now, ...(name ? { name } : {}) });
 
   if (active?.closest(".model-menu")) return at("model-list", "choosing a model");
   // A menu is named by the button that opened it ("Third options").
@@ -252,8 +262,12 @@ export function keyPlace(): PlaceNow {
     if (layer!.querySelector(".work-open")) now.push("chip-open");
     if (layer!.querySelector(".req-correct")) now.push("correcting");
     if (layer!.querySelector(".inspector")) now.push("panel-open");
+    // A button of an action strip: named with the item it is on ("Cancel · #33 · you to @fable, open"), and by its name
+    // for Enter.
+    const strip = active?.closest<HTMLElement>(".action-strip");
+    if (strip) return at("room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
     if (control) return at("room-button", control);
-    if (item?.dataset.nav === "post") return at("room-post", whereOf(item));
+    if (item?.dataset.nav === "post" || item?.dataset.nav === "live") return at("room-post", whereOf(item));
     if (item?.dataset.nav === "member") return at("room-member", whereOf(item));
     // The lanes above the posts: the header's buttons, the room state, the status chips; each says its lane first.
     if (item?.dataset.nav === "head" && HEAD_PLACES[item.dataset.navKey ?? ""]) return at(HEAD_PLACES[item.dataset.navKey!]!, whereOf(item));
