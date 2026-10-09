@@ -14,6 +14,7 @@ import { T3Credential, localT3Cli } from "../app/t3Credential.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsUsingBrowser } from "../browser/catalog.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
+import { mainCheckoutData } from "../browser/ports.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
 import { KokoroSpeech } from "../speech/kokoro.ts";
@@ -68,6 +69,10 @@ const quote = (path: string) => (/\s/.test(path) ? `'${path}'` : path);
 const browserCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-browser"))}`;
 const boardCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-board"))}`;
 let browserTools: BrowserTools | null = null;
+// A Backroom run from a worktree (a throwaway for tests and rehearsals) also records the ports of the browsers in the
+// main checkout's data folder, the user's Backroom's, even before that one runs a version that records them itself.
+const userData = mainCheckoutData(repoRoot);
+const knownDataDirs = userData && resolve(userData) !== resolve(config.dataDir) ? [userData] : [];
 
 const stack = createStack({
   dbPath: config.dbPath,
@@ -82,8 +87,18 @@ const stack = createStack({
     new RoomBrowsers({
       dataDir: config.dataDir,
       ...config.browser,
-      // Busy while any room using the browser has a seat with a live run; changes are shown in those rooms.
-      isBusy: (browserId) => browserBusy(repos, browserId, (roomId) => seatsWithLiveRuns(stack.engine.view(roomId)).size > 0),
+      knownDataDirs,
+      // Busy while a room using it as its default has a seat with a live run, or an agent with work in flight has a tab
+      // open in it; changes are shown in the rooms using it.
+      isBusy: (browserId) =>
+        browserBusy(repos, browserId, {
+          roomBusy: (roomId) => seatsWithLiveRuns(stack.engine.view(roomId)).size > 0,
+          threadBusy: async (threadId) => {
+            const shell = await adapter.getThreadShell(threadId);
+            return Boolean(shell && (shell.activeRunId !== null || shell.pendingBackgroundTasks.length > 0));
+          },
+          agentsWithTabs: async (id) => (browserTools ? browserTools.agentsWithTabs(id) : []),
+        }),
       onChange: (browserId) => {
         browserTools?.browserChanged(browserId);
         for (const room of roomsUsingBrowser(repos, browserId)) notify(room.id);
