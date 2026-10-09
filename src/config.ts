@@ -38,6 +38,8 @@ export interface Config {
     watchHost: string | null;
     noVncDir: string;
     idleMinutes: number;
+    /** The folder this machine's Backrooms share to record which keeps which browser ports (src/browser/ports.ts); null: off. */
+    portsDir: string | null;
   };
   /** Backroom's own voice for reading replies aloud (src/speech/kokoro.ts): on unless turned off, and which voice. */
   speech: {
@@ -104,6 +106,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       watchHost: env.ROOMS_BROWSER_HOST ?? null,
       noVncDir: env.ROOMS_BROWSER_NOVNC_DIR ?? "/usr/share/novnc",
       idleMinutes: Number(env.ROOMS_BROWSER_IDLE_MINUTES ?? 30),
+      portsDir:
+        env.ROOMS_BROWSER_PORTS_DIR === "off"
+          ? null
+          : (env.ROOMS_BROWSER_PORTS_DIR ?? join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "backroom", "browser-ports")),
     },
     speech: {
       enabled: env.ROOMS_SPEECH !== "off",

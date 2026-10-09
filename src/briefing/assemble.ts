@@ -75,7 +75,7 @@ export function browserSection(input: BrowsersBriefing): string {
     run(`${started.name} <tab> snapshot --as ${as}      the page as text, with element uids`),
     run(`${started.name} <tab> click <uid> --as ${as}   also: fill <uid> <text>, press <key>, navigate <url>, wait-for <text>, screenshot, eval, console, close`),
     run("help                                          every command"),
-    `Work only in tabs you opened (always pass --as ${as}): other tabs belong to other agents or to the user, and are refused. Close your tabs when you are done. Other agents${room ? ", in this room and others," : ""} may use the same browsers and logins.`,
+    `Work only in tabs you opened (always pass --as ${as}): other tabs belong to other agents or to the user, and are refused. Close your tabs when you are done. Other agents${room ? ", in this room and others," : ""} may use the same browsers and logins at the same time, each in tabs of its own; you never need to wait for them.`,
   ];
   if (started.mode === "vnc") {
     lines.push(
