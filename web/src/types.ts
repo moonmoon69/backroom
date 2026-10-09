@@ -448,6 +448,8 @@ export interface RoomSnapshot {
   notices: EngineNoticeMarks;
   /** The room's effective browser and its process; null when it has none or the service cannot run browsers. */
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
+  /** Every browser the room may use, in the list's order, each with its process (the default among them); empty when the service cannot run browsers. */
+  browsers: Array<{ browser: Browser; status: RoomBrowserStatus }>;
   /** The room state: null until one is written. */
   state: RoomState | null;
   /** Whether T3 answered for this read: when not, member status is "unknown" and untimed posts stay untimed. */

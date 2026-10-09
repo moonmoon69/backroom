@@ -374,6 +374,8 @@ export interface EngineRoomSnapshot {
   news: EngineNews;
   notices: EngineNoticeMarks;
   browser: { browser: Browser; status: RoomBrowserStatus } | null;
+  /** Every browser the room may use, in the list's order, each with its process (the default among them): the header's Browser button counts their tabs. Empty when the service cannot run browsers. */
+  browsers: Array<{ browser: Browser; status: RoomBrowserStatus }>;
   state: RoomStateView | null;
   /** Whether T3 answered for this read: when not, member status is "unknown" and unread T3 times are null. */
   t3: { reachable: boolean };

@@ -38,6 +38,8 @@
  * demo project every step uses at a folder of the caller's (a scratch git repository, so the steps run where the
  * agents file is written too).
  *
+ * `--step room` ends with B3's state, the Browser panel of a room that may use two browsers (see rehearseBrowserPanel).
+ *
  * `--step room` (Z2) plays one whole job with nothing written by hand: the user's assignment from the composer, the
  * Consigliere hands it to the worker (his final answers the user), the worker's answer wakes him, he sends it to the
  * reviewer, the reviewer's finding wakes him, he sends the finding to the worker, the user's correction from the page
@@ -58,6 +60,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -419,7 +422,9 @@ class Browser {
 // ---------------- the room ----------------
 
 type Snapshot = {
-  room: { id: string; title: string; consigliereId: string | null };
+  room: { id: string; title: string; consigliereId: string | null; browserEnabled: boolean; allowedBrowserIds: string[] | null };
+  /** The room's default browser and its process; null when it has none. */
+  browser: { browser: { id: string; name: string }; status: { state: string } } | null;
   bindings: Array<{ id: string; participantId: string; threadId: string }>;
   /** The journal's length: every event, posts and the board's own records. */
   head: number;
@@ -1448,6 +1453,350 @@ function oldTablesAbsent(dataDir: string): void {
   }
 }
 
+// ---------------- B3: the Browser panel of a room that may use two browsers (--step room) ----------------
+
+/** What the panel draws for one browser's box, read from the page. */
+interface BrowserCard {
+  name: string;
+  ticked: boolean;
+  isDefault: boolean;
+  status: string | null;
+  power: string | null;
+  powerName: string | null;
+  watch: string | null;
+  watchText: string | null;
+  watchName: string | null;
+  copy: boolean;
+  copyText: string | null;
+  copyName: string | null;
+  agents: string | null;
+  tabs: string[];
+}
+
+const BROWSER_CARDS = `() => [...document.querySelectorAll('.browser-panel .browser-choice')].map((card) => ({
+  name: card.querySelector('.browser-choice-head .mono')?.textContent ?? '',
+  ticked: card.querySelector('input[type=checkbox]')?.checked === true,
+  isDefault: [...card.querySelectorAll('.browser-choice-head .pill')].some((pill) => pill.textContent === 'default'),
+  status: card.querySelector('.browser-state')?.textContent ?? null,
+  power: card.querySelector('.browser-status button')?.textContent ?? null,
+  powerName: card.querySelector('.browser-status button')?.getAttribute('aria-label') ?? null,
+  watch: card.querySelector('.browser-row a')?.href ?? null,
+  watchText: card.querySelector('.browser-row a')?.textContent ?? null,
+  watchName: card.querySelector('.browser-row a')?.getAttribute('aria-label') ?? null,
+  copy: Boolean(card.querySelector('.browser-row button[aria-label^="Copy"]')),
+  copyText: card.querySelector('.browser-row button')?.textContent ?? null,
+  copyName: card.querySelector('.browser-row button')?.getAttribute('aria-label') ?? null,
+  agents: card.querySelector('.browser-row code')?.textContent ?? null,
+  tabs: [...card.querySelectorAll('.browser-tabs li')].map((li) => li.title),
+}))`;
+
+/** The room header's Browser button: what it says and the number beside the globe. */
+const BROWSER_BUTTON = `() => {
+  const button = document.querySelector('.room-browser-button');
+  const badge = button?.querySelector('.globe-badge');
+  const count = button?.querySelector('.panel-count');
+  return {
+    label: button?.getAttribute('aria-label') ?? null,
+    count: count?.textContent ?? null,
+    covered: Boolean(badge && count && count.getBoundingClientRect().left < badge.getBoundingClientRect().right - 0.5),
+  };
+}`;
+type BrowserButtonRead = { label: string | null; count: string | null; covered: boolean };
+
+/**
+ * The colour a state word should have (the CSS variable the look colours running with: --ok in the plain look,
+ * --px-st-new in the pixel look), as the page computes it, and each state word in the panel with its colour and, where
+ * the look draws one, the square before it.
+ */
+const stateColours = (variable: string) => `() => {
+  const probe = document.createElement('span');
+  probe.style.color = 'var(${variable})';
+  document.body.append(probe);
+  const want = getComputedStyle(probe).color;
+  probe.remove();
+  return {
+    want,
+    states: [...document.querySelectorAll('.browser-panel .browser-state')].map((word) => {
+      const square = getComputedStyle(word, '::before');
+      return { text: word.textContent, color: getComputedStyle(word).color, square: square.content === 'none' || square.content === 'normal' ? null : { background: square.backgroundColor, width: square.width } };
+    }),
+  };
+}`;
+type StateColours = { want: string; states: Array<{ text: string; color: string; square: { background: string; width: string } | null }> };
+
+interface BrowserApi {
+  id: string;
+  name: string;
+  status: { state: string; mode: string | null; cdpUrl: string | null; watchHost: string | null; watchPort: number | null; watchPath: string | null; tabs: Array<{ url: string }> };
+}
+
+/**
+ * B3 (the user's report, board #530): a room that may use two browsers shows both in its Browser panel, each with its
+ * status, Start or Stop, Watch link and Copy, DevTools address and tabs, the default marked; the browser it may not use is
+ * a plain line. The browsers are real Chromes on virtual screens (the service's own mode here) started through the API;
+ * their ports and displays are the browser layer's to pick, free and kept by no other Backroom, and the state checks that
+ * each is recorded as this rehearsal's in the folder all Backrooms share (so two rehearsals at once never share one);
+ * they get tabs over DevTools and are stopped again at the end, whatever happens. Each state reads the panel's boxes and
+ * the room header's Browser button (its count and its words speak for every browser the room may use) from the page and
+ * compares them with GET /api/browsers; the Watch link, Copy and Start or Stop are named with the words they show and the
+ * browser they are for; running is drawn in the look's green, and in the pixel look with a filled square (off: a hollow
+ * one); a tab opened in the second browser with the panel closed must reach the room's stream and the button; the
+ * panel's own Stop, Start and checkbox are pressed as the user would.
+ */
+async function rehearseBrowserPanel(service: Service, browser: Browser, room: Room, check: Checks): Promise<void> {
+  const staging = (await service.command<{ browserId: string }>({ type: "browser.create", name: "staging", description: "Staging site, logged in as the test admin." })).browserId;
+  const scratch = (await service.command<{ browserId: string }>({ type: "browser.create", name: "scratch", description: "Throwaway browsing." })).browserId;
+  const ids = ["general", staging];
+  const listed = () => service.call<BrowserApi[]>("GET", "/api/browsers");
+  const stopAll = async () => {
+    for (const id of ids) await service.call("POST", `/api/browsers/${id}/stop`).catch(() => undefined);
+  };
+  /** The boxes the page draws against what the API says, for the browsers named: ticked ones in full, the rest a plain line. */
+  const mismatch = (cards: BrowserCard[], api: BrowserApi[], want: { ticked: string[]; default: string }): string | null => {
+    for (const b of api) {
+      const card = cards.find((c) => c.name === b.name);
+      if (!card) return `no box for ${b.name}`;
+      const ticked = want.ticked.includes(b.name);
+      if (card.ticked !== ticked) return `${b.name}: ticked ${card.ticked}, expected ${ticked}`;
+      if (card.isDefault !== (b.name === want.default)) return `${b.name}: default mark ${card.isDefault}`;
+      if (!ticked) {
+        if (card.status || card.power || card.watch || card.agents || card.tabs.length > 0) return `${b.name} is not ticked and shows a process: ${JSON.stringify(card)}`;
+        continue;
+      }
+      const s = b.status;
+      // An accessible name holds the words the control shows and the browser it is for (label in name).
+      const named = (what: string, name: string | null, shown: string | null): string | null =>
+        name && shown && name.toLowerCase().includes(shown.replace(/…/g, "").trim().toLowerCase()) && name.includes(b.name) ? null : `${b.name}: the ${what} shows ${JSON.stringify(shown)} but is named ${JSON.stringify(name)}`;
+      if (s.state !== "running") {
+        if (card.status !== "off" || card.power !== "Start" || card.watch || card.agents || card.tabs.length > 0) return `${b.name} is ${s.state}: ${JSON.stringify(card)}`;
+        const power = named("Start button", card.powerName, card.power);
+        if (power) return power;
+        continue;
+      }
+      const labels = named("Watch link", card.watchName, card.watchText) ?? named("Copy button", card.copyName, card.copyText) ?? named("Stop button", card.powerName, card.power);
+      if (labels) return labels;
+      const watch = `http://${s.watchHost}:${s.watchPort}${s.watchPath}`;
+      if (card.status !== "running · virtual screen") return `${b.name}: status ${JSON.stringify(card.status)}`;
+      if (card.power !== "Stop") return `${b.name}: power button ${JSON.stringify(card.power)}`;
+      if (card.watch !== watch) return `${b.name}: watch link ${card.watch}, API ${watch}`;
+      if (!card.copy) return `${b.name}: no Copy for the watch link`;
+      if (card.agents !== s.cdpUrl) return `${b.name}: DevTools address ${card.agents}, API ${s.cdpUrl}`;
+      const tabs = s.tabs.slice(0, 5).map((tab) => tab.url);
+      if (JSON.stringify(card.tabs) !== JSON.stringify(tabs)) return `${b.name}: tabs ${JSON.stringify(card.tabs)}, API ${JSON.stringify(tabs)}`;
+    }
+    return null;
+  };
+  /** The header's button against the API: a line per ticked browser, in the list's order, and the tabs of the running ones added up. */
+  const buttonMismatch = (read: BrowserButtonRead, api: BrowserApi[], want: { ticked: string[]; default: string }): string | null => {
+    const shown = api.filter((b) => want.ticked.includes(b.name));
+    const tabs = (b: BrowserApi) => (b.status.state === "running" ? b.status.tabs.length : 0);
+    const line = (b: BrowserApi) => `${b.name}${b.name === want.default ? " (default)" : ""} ${b.status.state === "running" ? "running" : "off"}${tabs(b) > 0 ? `, ${tabs(b)} tab${tabs(b) === 1 ? "" : "s"}` : ""}`;
+    const label = `Browser: on for this room's agents · ${shown.map(line).join("; ")}`;
+    const total = shown.reduce((n, b) => n + tabs(b), 0);
+    if (read.label !== label) return `the Browser button says ${JSON.stringify(read.label)}, the API ${JSON.stringify(label)}`;
+    if ((read.count ?? "0") !== String(total)) return `the Browser button counts ${read.count ?? "nothing"}, the API ${total}`;
+    if (read.covered) return "the Browser button's count sits under the globe's badge";
+    return null;
+  };
+  /**
+   * Until the page agrees with the API: the header's button always, the panel's boxes while it is open (the panel reads
+   * the API every four seconds; the service looks at tabs every five and tells the room).
+   */
+  const agree = async (what: string, want: { ticked: string[]; default: string }, options: { panel?: boolean } = {}): Promise<{ cards: BrowserCard[]; api: BrowserApi[] }> => {
+    const end = Date.now() + 40_000;
+    let last = "";
+    for (;;) {
+      const api = await listed();
+      const cards = options.panel === false ? [] : browser.eval<BrowserCard[]>(BROWSER_CARDS);
+      const found = (options.panel === false ? null : mismatch(cards, api, want)) ?? buttonMismatch(browser.eval<BrowserButtonRead>(BROWSER_BUTTON), api, want);
+      if (found === null) return { cards, api };
+      last = found;
+      if (Date.now() > end) fail(`the Browser panel, ${what}: ${last}`);
+      await sleep(700);
+    }
+  };
+  /** The panel's own scroll, to its end (staging's box and the hints) or back to its top, for a screenshot of each half. */
+  const scrollPanel = (to: "end" | "top") => browser.on("eval", `() => { const body = document.querySelector('.inspector .queue-body'); body.scrollTop = ${to === "end" ? "body.scrollHeight" : "0"}; return true; }`);
+  /**
+   * Running reads as running by colour in both looks: the word in the look's green (--ok, --px-st-new in the pixel look),
+   * and in the pixel look a filled square of it before the word; a browser that is off has neither.
+   */
+  const checkColours = (look: "plain" | "pixel", expect: { running: number; off: number }) => {
+    const read = browser.eval<StateColours>(stateColours(look === "pixel" ? "--px-st-new" : "--ok"));
+    const running = read.states.filter((word) => word.text.startsWith("running"));
+    const off = read.states.filter((word) => word.text === "off");
+    if (running.length !== expect.running || off.length !== expect.off) fail(`${look} look: ${running.length} running and ${off.length} off state words, expected ${expect.running} and ${expect.off}: ${JSON.stringify(read.states)}`);
+    for (const word of running) {
+      if (word.color !== read.want) fail(`${look} look: "${word.text}" is ${word.color}, not the look's green ${read.want}`);
+      if (look === "pixel" && (word.square?.background !== read.want || word.square.width !== "6px")) fail(`${look} look: "${word.text}" has no filled square of the green before it: ${JSON.stringify(word.square)}`);
+    }
+    for (const word of off) {
+      if (word.color === read.want) fail(`${look} look: "off" is drawn in the running colour ${read.want}`);
+      if (look === "pixel" && (word.square?.background !== "rgba(0, 0, 0, 0)" || word.square.width !== "6px")) fail(`${look} look: "off" does not have a hollow square before it: ${JSON.stringify(word.square)}`);
+    }
+    log(`  page: ${look} look: ${running.length} running in ${read.want}${look === "pixel" ? " with a filled square" : ""}, ${off.length} off in another colour${look === "pixel" ? " with a hollow one" : ""}`);
+  };
+  const openPanel = () => {
+    if (!browser.eval<boolean>("() => Boolean(document.querySelector('.browser-panel'))")) browser.click(/button "Browser: on for this room's agents/);
+    browser.poll<number>("the Browser panel's boxes", "() => document.querySelectorAll('.browser-panel .browser-choice').length", (n) => n === 3);
+  };
+  const reachDefault = async (name: string): Promise<void> => {
+    await until(`the room's default browser to be ${name}`, async () => (await room.snapshot()).browser?.browser.name === name);
+  };
+
+  // The room's stream as the page has it (GET /api/rooms/:id/stream): how many room.changed events it has carried.
+  const listener = new AbortController();
+  let carried = 0;
+  const changes = () => carried;
+  void (async () => {
+    try {
+      const response = await fetch(`${service.base}/api/rooms/${room.roomId}/stream`, { signal: listener.signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+        const events = text.split("\n\n");
+        text = events.pop() ?? "";
+        carried += events.filter((event) => event.split("\n").includes("event: room.changed")).length;
+      }
+    } catch {
+      // aborted at the end
+    }
+  })();
+
+  try {
+    // The room may use general (its default) and staging; scratch stays unticked.
+    await service.command({ type: "room.browser", roomId: room.roomId, enabled: true, allowed: ["general", staging], browserId: "general" });
+    // One after the other, as a person presses Start: two starts at once may pick the same virtual display.
+    const started: Array<BrowserApi["status"] & { cdpPort: number }> = [];
+    for (const id of ids) started.push(await service.call<BrowserApi["status"] & { cdpPort: number }>("POST", `/api/browsers/${id}/start`));
+    started.forEach((status, index) => {
+      if (status.mode !== "vnc") fail(`this step needs browsers on virtual screens (Xvfb, x11vnc, websockify, noVNC); ${ids[index]} runs as ${status.mode}`);
+    });
+    // Ports and displays are the machine's. The browser layer picks ones that are free and that no other Backroom keeps,
+    // and records them in the folder every Backroom shares (ROOMS_BROWSER_PORTS_DIR, src/browser/ports.ts), so rehearsals
+    // running at once, whatever their service ports, never share one: nothing is chosen here, only checked.
+    const owner = resolve(room.dataDir, "browsers");
+    const portsDir = process.env.ROOMS_BROWSER_PORTS_DIR === "off" ? null : (process.env.ROOMS_BROWSER_PORTS_DIR ?? join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "backroom", "browser-ports"));
+    const kept = ids.map((id) => JSON.parse(readFileSync(join(owner, id, "ports.json"), "utf8")) as { cdp: number; vnc: number; web: number; display: number });
+    const mine = kept.flatMap((k) => [k.cdp, k.vnc, k.web]);
+    if (new Set(mine).size !== mine.length || kept[0]!.display === kept[1]!.display) fail(`the two browsers share a port or display: ${JSON.stringify(kept)}`);
+    if (started.some((status, index) => status.cdpPort !== kept[index]!.cdp || status.watchPort !== kept[index]!.web)) fail(`the browsers run on other ports than they saved: ${JSON.stringify(kept)}`);
+    if (portsDir) {
+      const recorded = [...mine.map((port) => `port-${port}`), ...kept.map((k) => `display-${k.display}`)];
+      const strangers = recorded.filter((file) => !existsSync(join(portsDir, file)) || readFileSync(join(portsDir, file), "utf8").trim() !== owner);
+      if (strangers.length > 0) fail(`not recorded as this rehearsal's in ${portsDir}: ${strangers.join(", ")}`);
+      log(`  ports: general ${kept[0]!.cdp}/${kept[0]!.vnc}/${kept[0]!.web} :${kept[0]!.display}, staging ${kept[1]!.cdp}/${kept[1]!.vnc}/${kept[1]!.web} :${kept[1]!.display}, each recorded as this rehearsal's in ${portsDir}`);
+    } else {
+      log("  ports: ROOMS_BROWSER_PORTS_DIR=off, so only this service's own are checked");
+    }
+    // Tabs, opened over DevTools as any program on the box may: two in general, one in staging, each beside its blank one.
+    const open = async (cdpUrl: string, url: string) => {
+      const response = await fetch(`${cdpUrl}/json/new?${url}`, { method: "PUT" });
+      if (!response.ok) fail(`opening ${url} over DevTools: ${response.status}`);
+    };
+    await open(started[0]!.cdpUrl!, `${service.base}/`);
+    await open(started[0]!.cdpUrl!, `${service.base}/api/status`);
+    await open(started[1]!.cdpUrl!, `${service.base}/api/browsers`);
+    await until("the service to list the three tabs", async () => {
+      const api = await listed();
+      const count = (name: string) => api.find((b) => b.name === name)?.status.tabs.length ?? 0;
+      return count("general") === 3 && count("staging") === 2;
+    }, 30_000);
+    await reachDefault("general");
+
+    // The page has the last room of the step open (the Talk to… one): back to the overview, then this room's card.
+    browser.click(/button "Back to the overview"/);
+    browser.openRoom(room.title);
+    openPanel();
+    const both = { ticked: ["general", "staging"], default: "general" };
+    const first = await agree("both running", both);
+    await check.state("the Browser panel with two browsers", (s) => {
+      const allowed = s.room.allowedBrowserIds;
+      return s.room.browserEnabled && allowed?.length === 2 && allowed.includes("general") && allowed.includes(staging) && !allowed.includes(scratch) && s.browser?.browser.name === "general"
+        ? `browsers on; allowed general and staging (not scratch); the default is general, ${s.browser.status.state}`
+        : null;
+    }, ["running · virtual screen", "Open the browser screen", "Browsers they can use"]);
+    log(`  page: general and staging each show running · virtual screen, Stop, Watch link with Copy, DevTools address, ${first.cards.filter((c) => c.ticked).map((c) => `${c.tabs.length} tab(s)`).join(" and ")}; scratch is a plain line`);
+    checkColours("plain", { running: 2, off: 0 });
+    if (!browser.eval<string>("() => document.querySelector('.browser-panel')?.textContent ?? ''").includes("Watch opens the browser's screen")) fail("the panel does not say once what Watch opens");
+    scrollPanel("end");
+    browser.screenshot("the-browser-panel-with-two-browsers-scrolled-to-staging");
+    scrollPanel("top");
+    log(`  page: the Browser button counts ${first.api.filter((b) => both.ticked.includes(b.name)).reduce((n, b) => n + b.status.tabs.length, 0)} tabs across general and staging, and says each one's state`);
+
+    // A tab opened in staging, which is not the default, with the panel closed: the service tells the room (its stream
+    // carries a room.changed, nothing else is going on in the room) and the button follows without waiting for a poll.
+    browser.click(/button "Browser: on for this room's agents/);
+    browser.poll<boolean>("the panel to close", "() => !document.querySelector('.browser-panel')", (closed) => closed === true);
+    const before = changes();
+    await open(started[1]!.cdpUrl!, `${service.base}/api/rooms`);
+    await until("the room's stream to carry a room.changed for the tab opened in staging", () => changes() > before, 20_000);
+    await agree("a tab opened in staging, the panel closed", both, { panel: false });
+    log(`  page: a tab opened in staging (not the default) reached the room's stream and the Browser button, the panel closed`);
+    browser.screenshot("the-browser-button-after-a-tab-in-staging");
+    openPanel();
+    await agree("the panel opened again", both);
+
+    // Stop staging from the panel: it goes off, general stays.
+    browser.click(/button "Stop staging"/);
+    await until("staging to stop", async () => (await listed()).find((b) => b.id === staging)?.status.state === "stopped", 30_000);
+    await agree("staging stopped from the panel", both);
+    log("  page: staging stopped from the panel: off, Start, no Watch, no tabs; general still running");
+    checkColours("plain", { running: 1, off: 1 });
+    browser.screenshot("staging-stopped-from-the-panel");
+
+    // Start it again from the panel.
+    browser.click(/button "Start staging"/);
+    await until("staging to run again", async () => (await listed()).find((b) => b.id === staging)?.status.state === "running", 40_000);
+    await agree("staging started from the panel", both);
+    log("  page: staging started from the panel: running again with its Watch link and tabs");
+
+    // Untick staging: it becomes a plain line, general stays ticked and cannot be unticked (one stays).
+    browser.click(/checkbox "staging"/);
+    await until("staging unticked", async () => JSON.stringify((await room.snapshot()).room.allowedBrowserIds) === JSON.stringify(["general"]));
+    const plain = await agree("staging unticked", { ticked: ["general"], default: "general" });
+    if (plain.cards.find((c) => c.name === "general")?.power !== "Stop") fail("general lost its status when staging was unticked");
+    log("  page: staging unticked: a plain line again; general keeps its status");
+    browser.screenshot("staging-unticked-a-plain-line");
+    browser.click(/checkbox "staging"/);
+    await until("staging ticked again", async () => (await room.snapshot()).room.allowedBrowserIds?.length === 2);
+    await agree("staging ticked again", both);
+    check.passed.push("the Browser panel: Stop, Start and the checkbox of a second browser from the panel");
+    log("PASS the Browser panel: Stop, Start and the checkbox of a second browser from the panel");
+
+    // The pixel look draws the same boxes.
+    browser.on("eval", "() => { localStorage.setItem('backroom.skin', 'pixel'); return true; }");
+    browser.on("reload");
+    // The page reopens the room it had open; if it did not, the overview is there and its card is pressed.
+    const shown = browser.poll<string | null>("the page after the reload", "() => document.querySelector('.sheet-title h1')?.textContent ?? (document.querySelector('.ov-room-title') ? '' : null)", (t) => t !== null);
+    if (shown !== room.title) browser.openRoom(room.title);
+    await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
+    openPanel();
+    await agree("in the pixel look", both);
+    checkColours("pixel", { running: 2, off: 0 });
+    browser.consoleClean();
+    browser.screenshot("the-browser-panel-in-the-pixel-look");
+    scrollPanel("end");
+    browser.screenshot("the-browser-panel-in-the-pixel-look-scrolled-to-staging");
+    // Staging off, in the pixel look too: its word and square differ from general's running ones.
+    browser.click(/button "Stop staging"/);
+    await until("staging to stop", async () => (await listed()).find((b) => b.id === staging)?.status.state === "stopped", 30_000);
+    await agree("staging stopped in the pixel look", both);
+    checkColours("pixel", { running: 1, off: 1 });
+    browser.screenshot("the-browser-panel-in-the-pixel-look-staging-off");
+    check.passed.push("the Browser panel in the pixel look");
+    log("PASS the Browser panel in the pixel look");
+    browser.on("eval", "() => { localStorage.removeItem('backroom.skin'); return true; }");
+  } finally {
+    listener.abort();
+    await stopAll();
+  }
+}
+
 // ---------------- the whole room (--step room, Z2; H5: relayed by the Consigliere) ----------------
 
 async function rehearseRoom(service: Service, browser: Browser, room: Room): Promise<string[]> {
@@ -2039,6 +2388,9 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room): Pro
   log(`the room ends quiet: ${end.posts.length} posts, ${end.runs.length} runs all terminal, no open request, no pending activity`);
   membersOnlyAnswer(end);
   oldTablesAbsent(room.dataDir);
+
+  // B3: the Browser panel of a room that may use two browsers.
+  await rehearseBrowserPanel(service, browser, room, check);
   return check.passed;
 }
 

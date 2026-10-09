@@ -293,6 +293,7 @@ function snapshot(over: Omit<Partial<EngineRoomSnapshot>, "counts"> & { counts?:
     news: { seenSeq: 0, unseen: 0, latest: null },
     notices: { through: 0, ids: [] },
     browser: null,
+    browsers: [],
     state: null,
     t3: { reachable: true },
     ...over,

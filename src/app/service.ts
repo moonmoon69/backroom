@@ -18,7 +18,7 @@ import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import type { BriefingSource } from "../runtime/render.ts";
-import { effectiveBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
+import { effectiveBrowser, roomsMayUseBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
 import {
   POST_KINDS,
   type Browser,
@@ -534,7 +534,8 @@ export class RoomService {
     this.db.transaction(() =>
       this.repos.updateBrowser({ ...browser, name: command.name ?? browser.name, description: command.description ?? browser.description, updatedAt: now() }),
     );
-    for (const room of this.roomsUsingBrowser(browser.id)) this.notify(room.id);
+    // A rename or a new description shows in every room that may use the browser, not only where it is the default.
+    for (const room of roomsMayUseBrowser(this.repos, browser.id)) this.notify(room.id);
     return { type: "browser.updated", browserId: browser.id };
   }
 
