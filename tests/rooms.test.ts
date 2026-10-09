@@ -240,3 +240,17 @@ test("the room list counts the participants seated now, not the ones removed", a
   await stack.run({ type: "participant.create", roomId: stack.roomId, alias: "sol1", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } });
   assert.equal(await count(), 2, "and one was added again");
 });
+
+test("members seated in the same millisecond are listed in the order they were seated, not by alias", async () => {
+  const stack = await createTestStack({ autoCompleteMs: null }, []);
+  try {
+    const at = "2026-10-09T00:00:00.000Z";
+    for (const [id, alias] of [["p-1", "zed"], ["p-2", "abe"]] as const) {
+      stack.repos.insertParticipant({ id, roomId: stack.roomId, alias, modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 0, retiredAt: null, presetId: null, createdAt: at, updatedAt: at });
+    }
+    assert.deepEqual(stack.repos.listParticipants(stack.roomId).map((p) => p.alias), ["zed", "abe"]);
+    assert.deepEqual(stack.repos.listAllParticipants().map((p) => p.alias), ["zed", "abe"]);
+  } finally {
+    stack.close();
+  }
+});

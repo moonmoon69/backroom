@@ -310,14 +310,15 @@ export class Repos {
     return row ? rowToParticipant(row) : null;
   }
 
+  /** In the order they were seated: members seated in the same millisecond by insertion (the room's alias index would give alias order). */
   listParticipants(roomId: string): Participant[] {
-    return (this.raw.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at").all(roomId) as Row[]).map(
+    return (this.raw.prepare("SELECT * FROM participants WHERE room_id = ? ORDER BY created_at, rowid").all(roomId) as Row[]).map(
       rowToParticipant,
     );
   }
 
   listAllParticipants(): Participant[] {
-    return (this.raw.prepare("SELECT * FROM participants ORDER BY created_at").all() as Row[]).map(rowToParticipant);
+    return (this.raw.prepare("SELECT * FROM participants ORDER BY created_at, rowid").all() as Row[]).map(rowToParticipant);
   }
 
   // ---- bindings ----
