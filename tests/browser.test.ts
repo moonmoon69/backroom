@@ -650,6 +650,7 @@ test("a real headless Chrome idle past its time is stopped only once nothing use
     rmSync(dataDir, { recursive: true, force: true });
   });
   await browsers.ensure("idle");
+  const chrome = (JSON.parse(readFileSync(join(dataDir, "browsers", "idle", "state.json"), "utf8")) as { groups: number[] }).groups.at(-1) as number;
   browsers.start();
   const after = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   await after(1000);
@@ -662,4 +663,15 @@ test("a real headless Chrome idle past its time is stopped only once nothing use
   const end = Date.now() + 8000;
   while (browsers.status("idle").state !== "stopped" && Date.now() < end) await after(100);
   assert.equal(browsers.status("idle").state, "stopped");
+  // The poll's stop lets Chrome quit on its own; its last writes go to the profile, so the folder is removed after.
+  const alive = () => {
+    try {
+      process.kill(-chrome, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  while (alive() && Date.now() < end + 10_000) await after(100);
+  assert.equal(alive(), false, "Chrome has quit");
 });
