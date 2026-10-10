@@ -2654,6 +2654,28 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     browser.eval<boolean>(`() => { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0 })); return true; }`);
     await expect("the pointer released: the strip gone, the chip folded", (f) => f.strips === 0 && !f.chipOpen && inRoom(f));
     log(`  page: the bar kept its ${press0}px while the pointer was pressed on Correct…; released, the strip and the choices went`);
+    // Pressed and clicked on another chip with the strip open: that chip's choices open, and stay open (the strip's
+    // close, once the pointer is released, takes only what is still its own chip's).
+    const runChip = `chip:run:${turn.id}`;
+    const clickChip = (key: string) => browser.eval<boolean>(`() => { const c = document.querySelector('[data-nav-key="${key}"]'); const o = { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 }; c.dispatchEvent(new PointerEvent('pointerdown', o)); c.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })); return true; }`);
+    const expanded = (key: string) => browser.eval<string | null>(`() => document.querySelector('[data-nav-key="${key}"]')?.getAttribute('aria-expanded') ?? null`);
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    clickChip(runChip);
+    await sleep(500);
+    await expect("a click on @fable's working chip: its choices open, the strip gone", (f) => f.strips === 0 && f.chipOpen && expanded(runChip) === "true" && expanded(askChip()) === "false");
+    clickChip(runChip);
+    await expect("a click on it again: folded", (f) => !f.chipOpen && expanded(runChip) === "false");
+    // A press whose release never reaches the page (a menu opened on it): Esc still folds the chip at once.
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    browser.eval<boolean>(`() => { document.querySelector('.ov-drawer[data-view=room] .timeline').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 })); return true; }`);
+    await sleep(300);
+    press("Escape");
+    await expect("Esc with the pointer still pressed elsewhere: the chip folded at once, the ring on it", (f) => f.key === askChip() && f.strips === 0 && !f.chipOpen);
+    browser.eval<boolean>(`() => { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse', button: 0 })); return true; }`);
     await toAskChip("approval");
     press("Enter");
     await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
