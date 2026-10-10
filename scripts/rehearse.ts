@@ -15,7 +15,9 @@
  * a Consigliere, a worker and a reviewer, and for every state the page must show checks two things: the room snapshot
  * from the API (GET /api/rooms/:id) has the expected fields, and `rooms-browser … wait-for <text>` printed a match in
  * the user's view of it. After each step it reads `rooms-browser … console` and fails on any error-level line. The
- * first failure ends the run with exit code 1; a screenshot of each state goes to --out.
+ * first failure ends the run with exit code 1; a screenshot of each state goes to --out. The page opens on
+ * http://localhost:<port> (REHEARSE_TAB_HOST names another host): a renderer of its own, which a crash in the run
+ * takes down alone.
  *
  * How the room is played:
  * - The user's messages and controls go through /api/commands, the members' through `rooms-board` (bin/rooms-board.mjs,
@@ -2672,6 +2674,14 @@ function stepSections(step: Step): string[] {
 }
 
 /**
+ * The service's address as our tab opens it: on localhost, not 127.0.0.1, a site of its own, so a renderer of its own,
+ * and a crash in a run takes no other agent's 127.0.0.1 tab with it (C1). REHEARSE_TAB_HOST names another host.
+ */
+function tabUrl(base: string): string {
+  return base.replace("127.0.0.1", process.env.REHEARSE_TAB_HOST ?? "localhost");
+}
+
+/**
  * What a step left behind when it was ended before it could clean up (killed, or stopped by a signal while a browser
  * call held it): its service, by the record it wrote in its data folder, and its tabs on its service's address in the
  * shared browser. Only a record of this child's for its port counts: a child refused at the start (its port taken, its
@@ -2702,7 +2712,7 @@ async function leftBehind(data: string, port: number, browser: string, child: nu
   } catch {
     // rooms-browser unreachable: nothing more to do here
   }
-  for (const tab of ourTabs(listing, base)) {
+  for (const tab of ourTabs(listing, tabUrl(base))) {
     try {
       execFileSync(o.cli, [browser, tab, "close", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
       done.push(`its tab ${tab} closed`);
@@ -2831,7 +2841,7 @@ async function main(): Promise<void> {
     log(`${o.only.length > 0 ? "--only" : "--until"}: checks ${loud.length === selection.last + 1 ? `states 1 to ${selection.last + 1}` : loud.map((i) => selection.label(i)).join("; ")}; the step stops after state ${selection.last + 1}`);
   }
   const service = new Service(o);
-  const browser = new Browser(o, service.base);
+  const browser = new Browser(o, tabUrl(service.base));
   let passed: string[] = [];
   // Stopped from outside (Ctrl-C, or the launcher): the tab closed and the service stopped all the same.
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
