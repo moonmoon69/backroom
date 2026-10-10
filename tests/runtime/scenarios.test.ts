@@ -126,7 +126,7 @@ test("H2: each continuation turn after an answer is one follow-up on it, waking 
   room.assertQuiet();
 });
 
-test("S3: a burst while busy goes out in one run, and one late result in exactly one more", async () => {
+test("S3 (M1): a burst while busy goes into the running turn as one message, the members' answers riding along with the next, and one late result wakes exactly once more", async () => {
   room = await Room.create({ seats: ["C", "W", "X", "V"] });
   const u = room.user("C", "Start.");
   await room.tick();
@@ -139,17 +139,23 @@ test("S3: a burst while busy goes out in one run, and one late result in exactly
   const and = room.user("C", "And that.");
   await room.tick();
   assert.equal(room.wakes("C"), 1, "C is still in its first run");
+  const intoC = () => room.fake.thread(room.threadOf("C")).turnItems.flatMap((i) => (i.type === "user_message" && i.inputIntent === "steer" ? [i.text] : []));
+  assert.equal(intoC().length, 1, "the burst went into C's running turn as one message");
+  for (const text of ["Also this", "And that"]) assert.match(intoC()[0]!, new RegExp(text));
+  // W's and X's answers, imported later in that tick, wake nobody on their own while C works: they ride along.
   const c1 = room.user("C", "The user asks C something more.");
+  await room.tick();
+  assert.equal(intoC().length, 2, "the next message went in after T3 took the first");
+  for (const text of ["asks C something more", "A done", "B done"]) assert.match(intoC()[1]!, new RegExp(text));
   room.complete("C", "Handed out.");
   await room.tick();
-  assert.equal(room.wakes("C"), 2);
-  for (const text of ["A done", "B done", "Also this", "And that", "asks C something more"]) assert.match(room.prompt("C"), new RegExp(text));
+  assert.equal(room.wakes("C"), 1, "nothing is left to wake C for: everything went into its turn");
+  for (const id of [u, also, and, c1]) assert.equal(room.answeredClaims(id).length, 1, "C's one final answers each of the user's messages");
   const late = room.post("C", "W", "One more: A2.");
-  room.complete("C", "All handled.");
   await room.tick();
   room.complete("W", "A2 done.");
   await room.tick(2);
-  assert.equal(room.wakes("C"), 3, "exactly one more wake for the late result");
+  assert.equal(room.wakes("C"), 2, "exactly one more wake for the late result");
   assert.match(room.prompt("C"), /A2 done/);
   room.complete("C", "Done.");
   await room.tick(2);
@@ -244,8 +250,8 @@ test("S7: a lost acknowledgement and a restart make one T3 run; error-only feedb
 
 /**
  * The six coding flows' payloads (D#316), on the relayed flow: C hands A to W and the review to V; V's finding wakes C,
- * which corrects A while W is still in its turn; W's next turn, carrying each payload, answers A; C asks V to review
- * again; the PASS wakes C, which reports. Each must finish; none may stall.
+ * which corrects A while W is still in its turn; the correction goes into that turn (M1), whose final, carrying each
+ * payload, answers A; C asks V to review again; the PASS wakes C, which reports. Each must finish; none may stall.
  */
 const PNG: TurnImage = { name: "bug.png", mimeType: "image/png", sizeBytes: 772, dataUrl: `data:image/png;base64,${Buffer.alloc(772, 3).toString("base64")}` };
 const flows: Array<{ name: string; during?: (r: Room) => void; final?: string; afterTurn?: (r: Room, a: string) => Promise<void> }> = [
@@ -304,11 +310,10 @@ for (const flow of flows) {
     room.host.correct(room.room, { actor: "C", id: room.id("correct"), requestId: a, body: "V found February is wrong; fix it." });
     room.complete("C", "Relayed V's finding to W.");
     await room.tick();
-    room.complete("W", "Fix written.");
-    await room.tick();
-    assert.equal(room.state(a), "open", "W had not seen the correction: its final is superseded");
-    assert.equal(room.running("W"), true);
-    assert.match(room.prompt("W"), /February is wrong/);
+    const wThread = room.fake.thread(room.threadOf("W"));
+    assert.equal(wThread.runs.length, 1, "no turn of its own: the correction went into W's running turn");
+    assert.match(wThread.messages.at(-1)!.text, /February is wrong/);
+    assert.ok([...room.p.runs.values()].some((x) => x.seatId === "W" && x.receipts.some((c) => c.confirmed)), "confirmed into W's run");
     flow.during?.(room);
     room.complete("W", flow.final ?? "A done: dates.ts fixed, February included.", { files: [{ path: "src/dates.ts", kind: "modified", additions: 6, deletions: 2 }] });
     await room.tick();

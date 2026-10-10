@@ -17,7 +17,7 @@ import { startAttemptKey } from "../src/app/consigliere.ts";
 import { MAX_POST_BYTES, messageIdOf } from "../src/app/engineMessages.ts";
 import { CommandValidationError, parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { RoomEvent } from "../src/engine/index.ts";
-import { AFTER_GONE, HOLD_GONE, NOTE_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
+import { AFTER_GONE, HOLD_GONE, NOTE_GONE, STEER_GONE, parseExplicit, type Draft } from "../src/parser/explicit.ts";
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
 
 /**
@@ -136,7 +136,7 @@ async function engineRoom(aliases = ["sol", "grok"], options: { consigliere?: st
       if (errors.length) throw new Error(`draft refused: ${errors.map((u) => u.message).join("; ")}`);
       return (await run({
         type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds, ...(clientMessageId ? { clientMessageId } : {}),
-        assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
+        assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand) })),
       })) as { messageId: string; requestIds: string[]; noteIds: string[] };
     },
     async tick(times = 2) {
@@ -248,20 +248,22 @@ test("How a message becomes requests, 2. timing: /now still starts an assignment
   assert.equal(r.runs("grok").length, 1, "both start at once");
 });
 
-test("How a message becomes requests, 3. deliver: a request goes to its member's thread straight away, or after that thread's current turn ends", async (t) => {
+test("How a message becomes requests, 3. deliver: a request goes to its member's thread straight away: a turn of its own, or into the turn running (M1)", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
-  await r.say("@sol build it");
+  const first = await r.say("@sol build it");
   await r.tick();
-  assert.equal(r.runs("sol").length, 1, "straight away");
-  await r.say("@sol also add tests");
+  assert.equal(r.runs("sol").length, 1, "straight away, as a turn of its own");
+  const more = await r.say("@sol also add tests");
   await r.tick();
-  assert.equal(r.runs("sol").length, 1, "waits for the running turn");
-  assert.equal(r.fake.steeredMessages, 0);
-  r.complete("sol", "Built.");
+  assert.equal(r.runs("sol").length, 1, "no turn of its own: it went into the running one");
+  assert.equal(r.fake.steeredMessages, 1);
+  assert.match(dispatches(r).at(-1)!.text, /also add tests/);
+  r.complete("sol", "Built, with tests.");
   await r.tick();
-  assert.equal(r.runs("sol").length, 2, "then starts its own turn");
-  assert.match(r.prompt("sol", 1), /also add tests/);
+  assert.equal(r.runs("sol").length, 1, "nothing left for another turn");
+  assert.equal(requestState(r, first.requestIds[0]!), "answered");
+  assert.equal(requestState(r, more.requestIds[0]!), "answered");
 });
 
 // ---------------- Addressing ----------------
@@ -416,13 +418,13 @@ test("Quoting and escaping: code, quoted lines and \\@name address nobody", asyn
 
 // ---------------- Sending while someone is working ----------------
 
-test("Sending while someone is working: /steer goes into the running turn, recorded as sync.offered plus confirm_sync with T3's evidence, and one final answers both", async (t) => {
+test("Sending while someone is working: a message goes into the running turn, recorded as sync.offered plus confirm_sync with T3's evidence, and one final answers both", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   const first = await r.say("@sol build it");
   await r.tick();
-  const steer = await r.say("@sol /steer also cover the edge cases");
-  assert.ok(steer.requestIds[0]!.startsWith("steer:"));
+  const steer = await r.say("@sol also cover the edge cases");
+  assert.ok(steer.requestIds[0]!.startsWith("msg:"), "an ordinary message: nothing marks it");
   await r.tick(1);
   assert.equal(r.fake.steeredMessages, 1);
   assert.equal(r.runs("sol").length, 1, "no new run in T3");
@@ -445,23 +447,23 @@ test("Sending while someone is working: /steer goes into the running turn, recor
   assert.equal(r.runs("sol").length, 1);
 });
 
-test("Sending while someone is working: a steer for an idle member is an ordinary turn with the full briefing", async (t) => {
+test("Sending while someone is working: a message for an idle member is an ordinary turn with the full briefing", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
-  await r.say("@sol /steer review the diff");
+  await r.say("@sol review the diff");
   await r.tick();
   assert.equal(r.fake.steeredMessages, 0);
   assert.equal(dispatches(r)[0]!.mode.type, "start");
   assert.match(r.prompt("sol", 0), /^\[Backroom briefing for @sol in room "engine"\]/);
 });
 
-test("Sending while someone is working: a steer is never sent while the turn waits on an approval; it goes in once that is answered", async (t) => {
+test("Sending while someone is working: a message is never sent into the turn while the turn waits on an approval; it goes in once that is answered", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
   await r.tick();
   const approval = r.fake.raiseApproval(r.thread("sol"));
-  await r.say("@sol /steer use the new API");
+  await r.say("@sol use the new API");
   await r.tick();
   assert.equal(r.fake.steeredMessages, 0, "not while an approval is open");
   await r.run({ type: "native.approval.respond", participantId: r.ids.sol!, requestId: approval, decision: "accept" });
@@ -469,14 +471,14 @@ test("Sending while someone is working: a steer is never sent while the turn wai
   assert.equal(r.fake.steeredMessages, 1, "sent once the turn runs again");
 });
 
-test("Sending while someone is working: when the turn has ended by the time T3 has the steer, T3's own run for it is adopted and its reply answers it", async (t) => {
+test("Sending while someone is working: when the turn has ended by the time T3 has the message, T3's own run for it is adopted and its reply answers it", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   const first = await r.say("@sol build it");
   await r.tick();
   // The turn ends just as the steer reaches T3, so T3 starts a run of its own for the message.
   r.fake.beforeSteer = () => r.complete("sol", "Built.");
-  const steer = await r.say("@sol /steer also add tests");
+  const steer = await r.say("@sol also add tests");
   await r.tick(1);
   assert.equal(r.runs("sol").length, 2, "T3 ran the steered message as a turn of its own");
   assert.equal(r.fake.steeredMessages, 0);
@@ -493,13 +495,13 @@ test("Sending while someone is working: when the turn has ended by the time T3 h
   assert.equal(r.events().filter((e) => e.data.kind === "note").length, 0, "neither the message nor its reply is imported as a note");
 });
 
-test("Sending while someone is working: a run T3 started for a steer is not adopted when more input came since; its reply is a follow-up and one ordinary run carries everything", async (t) => {
+test("Sending while someone is working: a run T3 started for a message is not adopted when more input came since; its reply is a follow-up and one ordinary run carries everything", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
   await r.tick();
   r.fake.beforeSteer = () => r.complete("sol", "Built.");
-  const steer = await r.say("@sol /steer also add tests");
+  const steer = await r.say("@sol also add tests");
   await r.tick(1);
   const later = await r.say("@sol and update the changelog");
   await r.tick();
@@ -518,7 +520,7 @@ test("Sending while someone is working: a run T3 started for a steer is not adop
   assert.equal(requestState(r, later.requestIds[0]!), "answered");
 });
 
-test("Sending while someone is working: a steer T3 did not take is sent again with the same IDs, also after a restart", async (t) => {
+test("Sending while someone is working: a message T3 did not take is sent again with the same IDs, also after a restart", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "backroom-l4a-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const fake = new Fake();
@@ -526,7 +528,7 @@ test("Sending while someone is working: a steer T3 did not take is sent again wi
   await r.say("@sol build it");
   await r.tick();
   fake.unavailableSteers = 1;
-  const steer = await r.say("@sol /steer also add tests");
+  const steer = await r.say("@sol also add tests");
   await r.tick(1);
   assert.equal(fake.steeredMessages, 0, "the send was lost");
   const offer = r.events().find((e) => e.data.kind === "sync.offered")!;
@@ -544,13 +546,13 @@ test("Sending while someone is working: a steer T3 did not take is sent again wi
   assert.equal(requestState(r, steer.requestIds[0]!), "answered");
 });
 
-test("Sending while someone is working: a steer whose acknowledgement was lost, and that T3 records only after its run ended, reaches the agent once", async (t) => {
+test("Sending while someone is working: a message whose acknowledgement was lost, and that T3 records only after its run ended, reaches the agent once", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
   await r.tick();
   r.fake.lateSteer = true;
-  const steer = await r.say("@sol /steer also add tests");
+  const steer = await r.say("@sol also add tests");
   await r.tick(1);
   r.complete("sol", "Built.");
   await r.tick(1);
@@ -565,14 +567,14 @@ test("Sending while someone is working: a steer whose acknowledgement was lost, 
   assert.equal(carried.length, 1);
 });
 
-test("Sending while someone is working: a steer T3 refused, or never reached, waits for nothing: the next ordinary run carries it", async (t) => {
+test("Sending while someone is working: a message T3 refused, or never reached, waits for nothing: the next ordinary run carries it", async (t) => {
   for (const fault of ["refuseSteers", "unavailableSteers"] as const) {
     const r = await engineRoom(["sol"]);
     t.after(() => r.close());
     await r.say("@sol build it");
     await r.tick();
     r.fake[fault] = 99;
-    const steer = await r.say("@sol /steer also add tests");
+    const steer = await r.say("@sol also add tests");
     await r.tick(1);
     r.fake[fault] = 0;
     r.complete("sol", "Built.");
@@ -586,14 +588,14 @@ test("Sending while someone is working: a steer T3 refused, or never reached, wa
   }
 });
 
-test("Sending while someone is working: a steer T3 never records is waited for up to five minutes after its run ended, then an ordinary run carries it", async (t) => {
+test("Sending while someone is working: a message T3 never records is waited for up to five minutes after its run ended, then an ordinary run carries it", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await r.say("@sol build it");
   await r.tick();
   r.fake.dropSteers = true;
-  const steer = await r.say("@sol /steer also add tests");
+  const steer = await r.say("@sol also add tests");
   await r.tick(1);
   r.complete("sol", "Built.");
   await r.tick(3);
@@ -684,13 +686,31 @@ test("T3 slash commands: a message sent again under its client message ID record
   assert.equal(r.runs("sol").length, 1, "which T3 ran once");
 });
 
-test("T3 slash commands: unknown commands are blocked, and one cannot be combined with /steer", async (t) => {
+test("T3 slash commands: unknown commands are blocked; /steer is gone (M1), refused with its hint and never sent to T3, as a command or as text", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   await assert.rejects(r.say("@sol /nonsense"), /has no \/nonsense command/);
-  assert.match(errorsOf(r.draft("@sol /steer /compact")).join(), /starts its own turn/);
-  assert.throws(() => parseCommand({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "/compact", slashCommand: true, delivery: "steer" }] }));
+  assert.deepEqual(errorsOf(r.draft("@sol /steer /compact")), [STEER_GONE]);
+  assert.deepEqual(errorsOf(r.draft("/steer @sol also check the logs")), [STEER_GONE]);
+  // A client that sends it anyway (an old page, a script) is refused by the service too.
+  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, sourceText: "/steer @sol also check the logs", assignments: [{ recipients: [r.ids.sol!], instruction: "also check the logs" }] }), /\/steer is gone/);
+  await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "/steer also check the logs", slashCommand: true }] }), /\/steer is gone/);
   assert.equal(dispatches(r).length, 0);
+  assert.equal(r.events().filter((e) => e.data.kind === "request").length, 0, "nothing recorded");
+});
+
+test("Old pages (M1): a page loaded before M1 still sends delivery; it is accepted and ignored, and the message goes into the running turn as any", async (t) => {
+  const r = await engineRoom(["sol"]);
+  t.after(() => r.close());
+  await r.say("@sol build it");
+  await r.tick();
+  for (const delivery of ["queue", "steer"] as const) {
+    const created = (await r.run({ type: "message.create", roomId: r.roomId, sourceText: `@sol also ${delivery}`, assignments: [{ recipients: [r.ids.sol!], instruction: `also ${delivery}`, delivery }] })) as { requestIds: string[] };
+    assert.match(created.requestIds[0]!, /^msg:/, delivery);
+    await r.tick();
+  }
+  assert.equal(r.runs("sol").length, 1, "both went into the running turn");
+  assert.equal(r.fake.steeredMessages, 2);
 });
 
 test("T3 slash commands: a command does not count as the member having seen the room; its next request gets the full briefing", async (t) => {
@@ -705,7 +725,7 @@ test("T3 slash commands: a command does not count as the member having seen the 
 
 // ---------------- The Consigliere: every message is for him ----------------
 
-test("The Consigliere: every message is for him, also when it names members, and it is steered into his turn when he is working", async (t) => {
+test("The Consigliere: every message is for him, also when it names members, and it goes into his turn when he is working, by name too (M1: no exception)", async (t) => {
   const r = await engineRoom(["fable", "sol"], { consigliere: "fable" });
   t.after(() => r.close());
   const first = await r.say("@sol check the logs");
@@ -715,9 +735,17 @@ test("The Consigliere: every message is for him, also when it names members, and
   await r.tick();
   assert.equal(r.runs("fable").length, 1, "a turn of his own when idle");
   assert.equal(r.runs("sol").length, 0);
-  await r.say("and the metrics too");
+  const more = await r.say("and the metrics too");
   await r.tick(1);
   assert.equal(r.fake.steeredMessages, 1, "into his turn when he is working");
+  // Addressed to him by name: it goes in all the same (before M1 it waited for his turn to end).
+  const named = await r.say("@fable and the traces");
+  await r.tick(1);
+  assert.equal(r.fake.steeredMessages, 2, "by name too");
+  assert.equal(r.runs("fable").length, 1, "no turn of its own");
+  r.complete("fable", "Logs, metrics and traces: handed to sol.");
+  await r.tick();
+  for (const id of [first, more, named].map((m) => m.requestIds[0]!)) assert.equal(requestState(r, id), "answered", "his first reply answers each");
   await assert.rejects(r.run({ type: "message.create", roomId: r.roomId, assignments: [{ recipients: [r.ids.sol!], instruction: "check the logs" }] }), /every message is for him/);
 });
 
@@ -790,7 +818,7 @@ test("Cancel: the user withdraws a request a member is working on; the turn is s
   await assert.rejects(r.run({ type: "request.cancel", roomId: r.roomId, requestId: "nope" }), /not a request in this room/);
 });
 
-test("Correct: the user amends a running request; the turn's final does not answer it, the next run carries the correction and answers it", async (t) => {
+test("Correct: the user's correction that lands as the turn ends, too late to go in, leaves the final answering nothing; the next run carries it and answers", async (t) => {
   const r = await engineRoom(["sol"]);
   t.after(() => r.close());
   const created = await r.say("@sol write the release note");

@@ -14,7 +14,7 @@ const post = (fields: Partial<EnginePost> & Pick<EnginePost, "kind" | "author">)
 };
 /** A request post; the user's own come from a message, as on the journal (Backroom's in the user's name do not). */
 const request = (id: string, author: string, owner: string, extra: Partial<NonNullable<EnginePost["request"]>> = {}) =>
-  post({ kind: "request", author, about: [{ requestId: id, number: seq + 1 }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, steer: false, attachmentIds: [] } : null, ...extra } });
+  post({ kind: "request", author, about: [{ requestId: id, number: seq + 1 }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null, ...extra } });
 const reply = (author: string, requestId: string, returnTo: string) =>
   post({ kind: "output", author, turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
 const seat = (seatId: string, threadId: string, extra: Partial<EngineSeatView> = {}): EngineSeatView => ({

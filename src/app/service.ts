@@ -913,7 +913,7 @@ export class RoomService {
       preamble: "",
       clientMessageId: command.requestId,
       attachmentIds: [],
-      assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), delivery: "queue", slashCommand: false }],
+      assignments: [{ recipients: [current.participantId], instruction: command.text.trim(), slashCommand: false }],
     });
     save({ ...current, delivered: true });
     return { type: "consigliere.started", roomId: current.roomId, participantId: current.participantId };

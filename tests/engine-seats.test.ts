@@ -753,7 +753,10 @@ test("F6: the Consigliere's rules on the engine adjust running work with correct
   assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, /If it only adjusts running work, correct the request you posted: `rooms-board correct <number> "the adjustment"`/);
   // The user's own wording may still name them: the mechanics, appended whatever the wording, say how it is on the board.
   const custom = engineConsigliereRules("- If it only adjusts running work, post `@name /steer <the adjustment>`.");
-  assert.match(custom, /The board carries no slash commands to members \(`\/steer`, `\/compact` and the like are the user's\), whatever the wording above says\./);
+  assert.match(custom, /The board carries no slash commands to members \(`\/compact` and the like are the user's\), whatever the wording above says\./);
+  // M1: the mechanics say a post or correction goes into a working member's running turn, whatever a saved copy says.
+  assert.match(custom, /A post, correction or retry to a member who is working goes into its running turn, as a message typed into its harness does, and that turn's reply answers it; a turn the room did not start \(one typed in T3, or the member's own\) takes nothing/);
+  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /next turn/, "no default rule says a correction waits for the next turn");
   const h = await Seats.create();
   try {
     h.s.repos.setKv(CONSIGLIERE_RULES_KEY, "- Be brief.");

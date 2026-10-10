@@ -498,7 +498,7 @@ async function engineStack(t: TestContext, aliases = ["worker", "reviewer"], opt
     const draft = parseExplicit(text, stack.repos.listActiveParticipants(roomId).map((p) => ({ id: p.id, alias: p.alias })), { consigliereId: null });
     return (await run({
       type: "message.create", roomId, sourceText: text, preamble: draft.preamble, attachmentIds,
-      assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand), delivery: a.delivery })),
+      assignments: draft.assignments.map((a) => ({ recipients: a.recipients, instruction: a.instruction, slashCommand: Boolean(a.slashCommand) })),
     })) as { messageId: string; requestIds: string[] };
   };
   return { dir, fake, stack, engine, roomId, seats, app, get, post, ask, tick, run, say };
@@ -790,7 +790,7 @@ test("gate: per-reply spend on a thread with two replies: each reply has what it
   assert.deepEqual(Object.keys(after.replies).sort(), finals.map((post) => post.id).sort(), "keyed by journal event ID, nothing else");
 });
 
-test("a user message is one message: its requests share the message, with its images and whether it was steered", async (t) => {
+test("a user message is one message: its requests share the message, with its images; an old journal's /steer requests read the same", async (t) => {
   const s = await engineStack(t);
   const image = s.stack.service.storeAttachment({ roomId: s.roomId, name: "screen.png", mimeType: "image/png", data: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]) }).id;
   const sent = await s.say("Look at this. @worker @reviewer check the layout", [image]);
@@ -799,17 +799,24 @@ test("a user message is one message: its requests share the message, with its im
   const requests = snapshot.posts.filter((post) => post.kind === "request");
   assert.equal(requests.length, 2);
   assert.deepEqual(requests.map((post) => post.request!.message), [
-    { id: sent.messageId, index: 0, steer: false, attachmentIds: [image] },
-    { id: sent.messageId, index: 0, steer: false, attachmentIds: [image] },
+    { id: sent.messageId, index: 0, attachmentIds: [image] },
+    { id: sent.messageId, index: 0, attachmentIds: [image] },
   ], "one message to two members: two requests, one message, its image");
   assert.deepEqual(snapshot.requests.map((q) => q.messageId), [sent.messageId, sent.messageId]);
   // A request made on the board, not with a user message, comes from none. (Members post nothing since H5.)
   await s.tick();
   const board = s.ask("reviewer", "Second opinion?");
-  const steered = await s.say("@worker /steer also check the colours");
-  const after = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+  const plain = await s.say("@worker also check the colours");
+  assert.match(plain.requestIds[0]!, /^msg:/, "M1: every request from a message is msg:, whether it goes into a running turn or not");
+  // A journal from before M1 holds `steer:` requests, from messages sent with /steer: they read as the same messages.
+  let after = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+  const worker = after.posts.find((post) => post.request?.id === plain.requestIds[0])!.request!.owner;
+  const old = "11111111-2222-4333-8444-555555555555";
+  (s.stack.engine as EngineHost).request(s.roomId, { actor: "$user", id: `steer:${old}:0:${worker}`, to: worker, body: "an old steered message" });
+  after = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
   assert.equal(after.posts.find((post) => post.request?.id === board)!.request!.message, null);
-  assert.deepEqual(after.posts.find((post) => post.request?.id === steered.requestIds[0])!.request!.message, { id: steered.messageId, index: 0, steer: true, attachmentIds: [] });
+  assert.deepEqual(after.posts.find((post) => post.request?.id === plain.requestIds[0])!.request!.message, { id: plain.messageId, index: 0, attachmentIds: [] });
+  assert.deepEqual(after.posts.find((post) => post.request?.id === `steer:${old}:0:${worker}`)!.request!.message, { id: old, index: 0, attachmentIds: [] });
 });
 
 /** The fake T3 with a hook on a steered message just before T3 takes it (as L4a's tests have). */

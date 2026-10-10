@@ -56,9 +56,9 @@ export function backroomNote(post: Pick<EnginePost, "author" | "kind" | "note">)
 }
 
 /**
- * Whether a run that was already running took this request into its turn (a steer T3 accepted mid-turn): a run
- * delivered it, and that run was reserved before it was posted. A steer to an idle member starts a turn of its own, and
- * one T3 ran after the running turn (Claude) is adopted by a run reserved after it: neither went into a running turn.
+ * Whether a run that was already running took this request into its turn (T3 took it mid-turn, M1): a run delivered it,
+ * and that run was reserved before it was posted. A message to an idle member starts a turn of its own, and one T3 ran
+ * after the running turn had ended is adopted by a run reserved after it: neither went into a running turn.
  */
 export function intoRunningTurn(post: Pick<EnginePost, "seq">, runs: ReadonlyArray<Pick<EngineRunView, "inputs" | "reservedSeq">>): boolean {
   return runs.some((run) => run.reservedSeq < post.seq && run.inputs.includes(post.seq));

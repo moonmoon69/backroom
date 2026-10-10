@@ -2336,10 +2336,6 @@ button.primary.destructive {
   white-space: nowrap;
 }
 
-.plan-pill.tone-now {
-  color: var(--ok);
-}
-
 .plan-pill.tone-warn {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 50%, transparent);
@@ -4054,10 +4050,6 @@ span.reply-to {
 }
 .reply-to-time:hover {
   color: var(--fg);
-}
-.plan-pill.tone-steer {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 /* Changed files under a reply: one summary line, open for the list. */
@@ -7912,14 +7904,6 @@ span.reply-to {
   border-color: color-mix(in srgb, var(--warn) 55%, transparent);
 }
 
-/* The plan row's timing: "now", or "next" behind a member's running turn (D2: nothing else). */
-.plan-pill.tone-next {
-  color: var(--fg-muted);
-}
-.plan-pill:disabled {
-  cursor: default;
-  opacity: 1;
-}
 
 /* The exact briefing a turn was sent, opened from its reply or its live run. */
 .briefing-text {

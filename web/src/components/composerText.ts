@@ -12,7 +12,7 @@ export interface TextEdit {
 }
 
 const REF = String.raw`(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)`;
-/** Timing directives as the parser reads them in an assignment's head: /now, /steer, and the retired /hold, /after <refs>. */
+/** Timing directives as the parser reads them in an assignment's head: /now, and the retired /hold, /steer, /after <refs>. */
 const DIRECTIVES = new RegExp(String.raw`\/(?:hold|now|steer)\b\s*|\/after\b\s*(?:${REF}(?:\s*,\s*${REF})*[\s,]*)?`, "gi");
 
 /** Insert `token` at `at`, keeping one space on each side. */
@@ -26,10 +26,10 @@ function insertToken(text: string, at: number, token: string): TextEdit {
 }
 
 /**
- * Set an assignment's timing directive: drop any directive in its head (a retired /hold or /after too), then write
- * `/now` or `/steer` right after its addressing. `null` just removes it (the assignment starts now, or next).
+ * Set an assignment's timing directive: drop any directive in its head (a retired /hold, /steer or /after too), then
+ * write `/now` right after its addressing. `null` just removes it.
  */
-export function setTiming(text: string, assignment: DraftAssignment, timing: "now" | "steer" | null): TextEdit {
+export function setTiming(text: string, assignment: DraftAssignment, timing: "now" | null): TextEdit {
   const head = text.slice(assignment.start, assignment.insertAt);
   const stripped = head.replace(DIRECTIVES, "");
   const base = `${text.slice(0, assignment.start)}${stripped}${text.slice(assignment.insertAt)}`;
@@ -39,12 +39,12 @@ export function setTiming(text: string, assignment: DraftAssignment, timing: "no
 }
 
 /**
- * What a plan row offers for a timing D2 refuses: "Remove /hold" or "Remove /after" for a directive written in the
- * assignment's head, and "Send it now" (/now) for a wait the text implies (then, a name, a condition, a pronoun),
- * which /now lifts.
+ * What a plan row offers for a retired directive or a timing D2 refuses: "Remove /hold", "Remove /after" or "Remove
+ * /steer" for a directive written in the assignment's head, and "Send it now" (/now) for a wait the text implies (then,
+ * a name, a condition, a pronoun), which /now lifts.
  */
-export function timingFixes(assignment: Pick<DraftAssignment, "timing" | "after" | "unresolved">): { remove: "hold" | "after" | null; sendNow: boolean } {
-  const remove = assignment.timing === "hold" || assignment.timing === "after" ? assignment.timing : null;
+export function timingFixes(assignment: Pick<DraftAssignment, "timing" | "after" | "unresolved">): { remove: "hold" | "after" | "steer" | null; sendNow: boolean } {
+  const remove = assignment.timing === "hold" || assignment.timing === "after" || assignment.timing === "steer" ? assignment.timing : null;
   const sendNow = remove === null && assignment.timing !== "now" && (assignment.after.length > 0 || assignment.unresolved.some((u) => u.field === "wait"));
   return { remove, sendNow };
 }

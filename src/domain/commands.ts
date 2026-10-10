@@ -267,8 +267,11 @@ export const AssignmentSchema = z
     recipients: z.array(nonEmpty).min(1),
     /** May be empty only when the message carries attachments. */
     instruction: z.string().trim().default(""),
-    /** When the recipient is mid-turn: wait for the turn to end ("queue") or send into the running turn ("steer"). */
-    delivery: z.enum(["queue", "steer"]).default("queue"),
+    /**
+     * Ignored: every message goes into a working recipient's running turn (M1). A page loaded before M1 still sends it,
+     * and the schema is strict, so it is accepted and dropped rather than refused.
+     */
+    delivery: z.enum(["queue", "steer"]).optional(),
     /** The instruction is one of the recipient's T3 slash commands ("/compact …"), sent verbatim without a briefing. */
     slashCommand: z.boolean().default(false),
   })
@@ -299,9 +302,6 @@ export const MessageCreateCommand = z
     command.assignments.forEach((assignment, index) => {
       if (assignment.slashCommand && !/^\/[a-z0-9]/i.test(assignment.instruction)) {
         ctx.addIssue({ code: "custom", path: ["assignments", index, "instruction"], message: "a slash command must start with /" });
-      }
-      if (assignment.slashCommand && assignment.delivery === "steer") {
-        ctx.addIssue({ code: "custom", path: ["assignments", index, "delivery"], message: "a slash command starts its own turn; it cannot be sent into a running one" });
       }
       if (assignment.instruction.length === 0 && command.attachmentIds.length === 0) {
         ctx.addIssue({ code: "custom", path: ["assignments", index, "instruction"], message: "instruction is empty" });

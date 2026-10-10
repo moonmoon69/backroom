@@ -80,7 +80,7 @@ test("FIX+WAKE Q6: two requests in one run, C's and the user's, are answered tog
   room.assertQuiet();
 });
 
-test("Q10: K1 case-7 shape, relayed: V reviews while W works, C corrects A with V's finding; W's final is superseded and the next run answers A once", async () => {
+test("Q10: K1 case-7 shape, relayed: V reviews while W works, C corrects A with V's finding; the correction goes into W's running turn (M1) and its final answers A once", async () => {
   room = await Room.create();
   const a = room.post("C", "W", "Implement slugify.");
   const r = room.post("C", "V", "Review slugify on the branch while W works on it.");
@@ -93,14 +93,12 @@ test("Q10: K1 case-7 shape, relayed: V reviews while W works, C corrects A with 
   room.host.correct(room.room, { actor: "C", id: room.id("correct"), requestId: a, body: "V found the unicode case is wrong; fix it." });
   room.complete("C", "Relayed V's finding to W.");
   await room.tick();
-  room.complete("W", "A is done.");
-  await room.tick();
-  assert.deepEqual(wOutputs(room).map((o) => o.claims.map((c) => c.outcome)), [["superseded"]]);
-  assert.equal(room.state(a), "open");
-  assert.match(room.prompt("W"), /unicode case is wrong/);
+  assert.match(room.fake.thread(room.threadOf("W")).messages.at(-1)!.text, /unicode case is wrong/, "W has the correction in its running turn");
   room.complete("W", "Fixed the unicode case.");
   await room.tick(2);
+  assert.deepEqual(wOutputs(room).map((o) => o.claims.map((c) => c.outcome)), [["answered"]], "not superseded: W saw the correction");
   assert.equal(room.answeredClaims(a).length, 1);
+  assert.equal(room.fake.thread(room.threadOf("W")).runs.length, 1, "no second turn");
   assert.equal(room.wakes("C"), 2, "C woken by V's finding and by A's answer");
   assert.match(room.prompt("C"), /Fixed the unicode case/);
   room.complete("C", "ok");

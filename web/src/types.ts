@@ -143,7 +143,7 @@ export interface EnginePost extends EngineTime {
     answer: { seq: number; number: number } | null;
     corrections: number;
     /** The user message it came from: its requests share `id` (one message), with its images. Null for a member's request. */
-    message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
+    message: { id: string; index: number; attachmentIds: string[] } | null;
   };
   output?: {
     /** answer: names requests (claims say what each came to); yield: an update that answers nothing; progress: a follow-up on a request; error: a failed run. */
@@ -1096,8 +1096,8 @@ export interface StatusResponse {
 // ---- Parser draft (src/parser/explicit.ts) ----
 
 export interface Unresolved {
-  /** "wait": the assignment waits on other work, which is refused (D2); "delivery": how it reaches a running turn. */
-  field: "recipients" | "wait" | "delivery" | "instruction";
+  /** "wait": the assignment waits on other work, which is refused (D2), or is written with a retired directive. */
+  field: "recipients" | "wait" | "instruction";
   message: string;
   /** "incomplete": still being written (guidance, never an error). "error": cannot be sent as written. */
   severity: "incomplete" | "error";
@@ -1127,9 +1127,8 @@ export interface DraftAssignment {
   instruction: string;
   /** Earlier assignments in this message that this one's text waits for: a wait that is refused (D2), unless /now. */
   after: DependencyRef[];
-  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold and /after are refused. */
-  timing: "now" | "hold" | "after" | null;
-  delivery: "queue" | "steer";
+  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold, /after and /steer are refused. */
+  timing: "now" | "hold" | "after" | "steer" | null;
   slashCommand: string | null;
   /** Offsets into sourceText: the assignment's span, and where a directive can be inserted (after its addressing). */
   start: number;
@@ -1247,7 +1246,7 @@ export type RoomCommand =
       preamble?: string;
       clientMessageId?: string;
       attachmentIds: string[];
-      assignments: Array<{ recipients: string[]; instruction: string; slashCommand?: boolean; delivery?: "queue" | "steer" }>;
+      assignments: Array<{ recipients: string[]; instruction: string; slashCommand?: boolean }>;
     }
   /** The user's controls on the journal, by journal IDs: withdraw or amend a request of yours, retry a failed run, stop a member's turn. */
   | { type: "request.cancel"; roomId: string; requestId: string }

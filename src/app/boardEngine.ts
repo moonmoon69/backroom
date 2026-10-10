@@ -70,7 +70,7 @@ The Consigliere's (the user posts from the page):
   post "@name the job"            a request to that member; "@a @b the job" makes one request each, "@all" one for every
                                   other member. The member's reply wakes you, with its T3 status at the top, and so does
                                   each follow-up of it (a turn it started itself, background work that ended).
-  correct #n "<text>"             corrects your request #n: its owner gets the correction with its next turn.
+  correct #n "<text>"             corrects your request #n: it goes into its owner's running turn, or starts one.
   cancel #n                       withdraws your open request #n, or Backroom's to a member (a seat briefing, a
                                   reseat's checkpoint).
   retry #n                        runs a failed turn again; #n is its error notice or its request.
@@ -378,7 +378,7 @@ export class BoardEngine {
     return out;
   }
 
-  /** `correct #n "…"`, for the requester: the owner gets it with its next turn. */
+  /** `correct #n "…"`, for the requester: it goes into the owner's running turn (M1), or starts one. */
   private async correct(c: Caller, args: string[]): Promise<string> {
     const { requests, text } = this.refsAndText(c, args);
     if (requests.length !== 1 || !text) throw new BoardError('rooms-board: correct needs one request and the text: correct #n "…".');
@@ -391,7 +391,7 @@ export class BoardEngine {
     await this.act(c, () => this.host.correct(c.room.id, { actor: c.seatId, id, requestId: q.id, body: text }));
     const after = this.view(c.room.id);
     const event = this.appended(after, c.seatId, id)[0];
-    return `Correction #${event?.seq ?? "?"} to ${this.label(after, q.id)} → ${this.name(q.owner)}: it reaches it with its next turn, and its answer to ${this.label(after, q.id)} then takes it into account.`;
+    return `Correction #${event?.seq ?? "?"} to ${this.label(after, q.id)} → ${this.name(q.owner)}: it goes into ${this.name(q.owner)}'s running turn, or starts one, and its answer to ${this.label(after, q.id)} takes it into account.`;
   }
 
   /**

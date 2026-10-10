@@ -130,10 +130,10 @@ export interface EnginePost extends EngineTime {
     corrections: number;
     /**
      * The user message it came from (L4a): the requests of one message share `id` (show them as one message), `index`
-     * is the assignment's place in it, `steer` says it was sent into a running turn, and `attachmentIds` are the
-     * message's images (GET /api/attachments/:id). Null for a member's request.
+     * is the assignment's place in it, and `attachmentIds` are the message's images (GET /api/attachments/:id). Null for a
+     * member's request. Whether it went into a running turn is the run that delivered it (`runs[].inputs`).
      */
-    message: { id: string; index: number; steer: boolean; attachmentIds: string[] } | null;
+    message: { id: string; index: number; attachmentIds: string[] } | null;
   };
   output?: {
     /** answer: it names requests (see `claims` for what each came to); yield: an update that answers nothing; progress: a follow-up on a request; error: a failed run. */

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTestStack, type TestStack } from "./helpers.ts";
-import { NOTE_GONE, parseExplicit } from "../src/parser/explicit.ts";
+import { NOTE_GONE, STEER_GONE, parseExplicit } from "../src/parser/explicit.ts";
 
 const preset = async (stack: TestStack, name: string) =>
   ((await stack.run({ type: "preset.create", name, modelSelection: { instanceId: "codex", model: "gpt-6-sol" } })) as { presetId: string }).presetId;
@@ -43,25 +43,33 @@ test("starting a conversation makes one room with the chosen saved crew member a
   assert.equal(stack.repos.getRoom(started.roomId)!.consigliereId, started.participantId);
 });
 
-test("in a room with a Consigliere every message is for him, as a steer, whoever it names; without one plain text is incomplete", () => {
+test("in a room with a Consigliere every message is for him, whoever it names (by name too: M1 has no exception); without one plain text is incomplete; /steer is refused", () => {
   const members = [{ id: "a", alias: "alice" }, { id: "b", alias: "bob" }, { id: "c", alias: "carol" }];
   const plain = parseExplicit("change direction: look at the queue first", members, { consigliereId: "a" });
   assert.equal(plain.unresolved.length, 0);
-  assert.deepEqual(plain.assignments.map((a) => [a.recipients, a.instruction, a.delivery]), [[["a"], "change direction: look at the queue first", "steer"]]);
+  assert.deepEqual(plain.assignments.map((a) => [a.recipients, a.instruction]), [[["a"], "change direction: look at the queue first"]]);
+  assert.equal("delivery" in plain.assignments[0]!, false, "no delivery to choose: every message goes into his running turn when he works");
   const without = parseExplicit("change direction: look at the queue first", members);
   assert.deepEqual(without.unresolved.map((u) => u.severity), ["incomplete"]);
   assert.deepEqual(parseExplicit("@all review it", members).assignments[0]!.recipients, ["a", "b", "c"]);
   // A message that names members goes to him whole: he reads the names and hands the work out.
   for (const text of ["@bob check the logs", "@all review it", "@bob fix it. @carol check bob's work", "hey team, @bob do x", "@nobody do it"]) {
     const routed = parseExplicit(text, members, { consigliereId: "a" });
-    assert.deepEqual(routed.assignments.map((a) => [a.recipients, a.instruction, a.delivery]), [[["a"], text, "steer"]], text);
+    assert.deepEqual(routed.assignments.map((a) => [a.recipients, a.instruction]), [[["a"], text]], text);
     assert.equal(routed.unresolved.length, 0, text);
   }
   // A T3 slash command still goes to the member it names: a harness runs one only on its own thread.
   assert.deepEqual(parseExplicit("@bob /compact", members, { consigliereId: "a" }).assignments.map((a) => [a.recipients, a.slashCommand]), [[["b"], "compact"]]);
   // The note directive is gone (N1): refused, not sent to him as a slash command.
   assert.deepEqual(parseExplicit("/note keep the API", members, { consigliereId: "a" }).unresolved.map((u) => u.message), [NOTE_GONE]);
-  assert.deepEqual(parseExplicit("/compact", members, { consigliereId: "a" }).assignments.map((a) => [a.recipients, a.delivery, a.slashCommand]), [[["a"], "queue", "compact"]]);
+  assert.deepEqual(parseExplicit("/compact", members, { consigliereId: "a" }).assignments.map((a) => [a.recipients, a.slashCommand]), [[["a"], "compact"]]);
+  // Addressed to him by name: his like any message, with nothing that holds it to his next turn.
+  const named = parseExplicit("@alice deploy it", members, { consigliereId: "a" });
+  assert.deepEqual([named.assignments.map((a) => [a.recipients, a.instruction, a.timing]), named.unresolved], [[[["a"], "deploy it", null]], []]);
+  // /steer is gone (M1): refused with its hint, at the start of a message and after an @name, never sent to T3 as a command.
+  for (const text of ["/steer look at the queue first", "@alice /steer look at the queue first", "@bob /steer check the logs"]) {
+    assert.deepEqual(parseExplicit(text, members, { consigliereId: "a" }).unresolved.filter((u) => u.severity === "error").map((u) => u.message), [STEER_GONE], text);
+  }
 });
 
 test("a question a member's turn asks can be dropped", async (t) => {

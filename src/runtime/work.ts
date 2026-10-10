@@ -71,6 +71,23 @@ export function seatsWithLiveRuns(p: Projection): Set<string> {
 /** The ID prefix of the request that asks a member for its reseat checkpoint (L4b, src/app/engineSeats.ts); reserved. */
 export const RESEAT_CHECKPOINT = "reseat:";
 
+/** The ID prefix of a request that seats a member: its body is the standing facts already (L4b, src/app/engineSeats.ts). */
+export const SEAT_BRIEFING = "seat-briefing:";
+/** The ID prefix of the request that tells a member who the Consigliere is now (src/app/engineSeats.ts). */
+export const MOVED = "moved:";
+/** The ID prefix of the request that tells the asker a reseat was called off (src/app/engineSeats.ts). */
+export const RESEAT_OFF = "reseat-off:";
+
+/**
+ * Backroom's own request to a member: its seat briefing, the line naming a new Consigliere, a reseat's checkpoint, or
+ * the call-off of a reseat. Backroom asks it (`$system`); journals from before B1 hold it as the user's request, known by
+ * its ID. It is nobody's work: the Consigliere may cancel it, and a member leaving the room takes its open one with it.
+ * The page has its own copy of the prefixes (backroomRequest in web/src/replyTo.ts): keep the two lists in step.
+ */
+export function backroomRequest(q: { id: string; returnTo: string }): boolean {
+  return q.returnTo === "$system" || (q.returnTo === "$user" && [SEAT_BRIEFING, MOVED, RESEAT_CHECKPOINT, RESEAT_OFF].some((prefix) => q.id.startsWith(prefix)));
+}
+
 /** The seat's background work on the journal. The host registers none since H5; the core keeps the commands. */
 export function pendingActivities(p: Projection, seatId: string): Activity[] {
   return [...p.activities.values()].filter((a) => a.seatId === seatId && (a.status === "pending" || a.status === "uncertain"));

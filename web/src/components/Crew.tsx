@@ -376,7 +376,7 @@ function SeatLines({ participant }: { participant: Participant }) {
       ))}
       {seat.blocked ? <span className="crew-activity mono status-error">blocked delivery{seat.blocked.number !== null ? `: #${seat.blocked.number}` : ""}</span> : null}
       {!seat.blocked && seat.unread > 0 && seat.activeRunId === null ? (
-        <span className="crew-activity mono" title="Posts addressed to it that its next turn brings">
+        <span className="crew-activity mono" title="Posts addressed to it that it has not been given yet">
           {seat.unread} unread
         </span>
       ) : null}
