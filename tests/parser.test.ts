@@ -244,6 +244,9 @@ test("/steer is gone (M1): refused with its hint after an @name and at the start
   assert.deepEqual(errorsOf(parseExplicit("@sol1 add tests", participants)), []);
   assert.deepEqual(errorsOf(parseExplicit("@sol1 please /steer clear of the parser", participants)), [], "in the middle of a sentence it is plain text");
   assert.equal("delivery" in only(parseExplicit("@sol1 add tests", participants)), false);
+  // A directive ends at the word: a T3 command that starts like one is not it.
+  const command = only(parseExplicit("@sol1 /steer-mode on", participants));
+  assert.deepEqual([command.slashCommand, errorsOf(parseExplicit("@sol1 /steer-mode on", participants))], ["steer-mode", []]);
 });
 
 test("quoted text addresses nobody: code blocks, inline code, > quotes, and \\@name", () => {

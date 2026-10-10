@@ -548,7 +548,7 @@ test("M1: rooms-board post and correct to a working member go into its running t
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
   const reply = await f.cli("c", "correct", `#${f.num(a!)}`, "use the new grammar");
-  assert.match(reply, new RegExp(`to #${f.num(a!)} → @w: it goes into @w's running turn, or starts one, and its answer to #${f.num(a!)} takes it into account\\.`));
+  assert.match(reply, new RegExp(`to #${f.num(a!)} → @w: it goes into @w's running turn, or into its next one when that turn takes nothing \\(one typed in T3, a keep-alive's, one on Backroom's own request, one being stopped\\), and its answer to #${f.num(a!)} takes it into account\\.`));
   assert.doesNotMatch(reply, /next turn/);
   const [b] = f.posted(await f.cli("c", "post", "@w and the printer"));
   await f.tick();
@@ -560,7 +560,7 @@ test("M1: rooms-board post and correct to a working member go into its running t
   f.complete("w", "parser done with the new grammar, and the printer");
   await f.tick();
   assert.deepEqual(f.finalsOn("w", a!).map((e) => (e.data.kind === "output" ? e.data.claims.map((cl) => [cl.requestId, cl.outcome]) : [])), [[[a, "answered"], [b, "answered"]]]);
-  assert.match(await f.cli("c", "help"), /correct #n "<text>"\s+corrects your request #n: it goes into its owner's running turn, or starts one\./);
+  assert.match(await f.cli("c", "help"), /correct #n "<text>"\s+corrects your request #n: it goes into its owner's running turn, or the next one\./);
 });
 
 test("a correction that lands as the turn ends, too late to go in, supersedes its final: the request stays open and the next turn answers it", async (t) => {

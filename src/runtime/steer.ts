@@ -14,7 +14,7 @@
 import type { Input, Projection, Run, SyncReceipt } from "../engine/index.ts";
 import type { T3ThreadDetail, T3TurnItem } from "../adapter/types.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
-import { backroomRequest, keepAliveRun, runRecords, reservedSeq } from "./work.ts";
+import { TARGETING, backroomRequest, deferredCancels, keepAliveRun, runRecords, reservedSeq } from "./work.ts";
 
 const RECEIPT = "t3steer:";
 /** The inputs a person sends: they go into a running turn. Results, follow-ups, notices, cancels and keep-alives ride along. */
@@ -45,6 +45,31 @@ export function takesMessages(p: Projection, run: Run): boolean {
     const q = p.requests.get(id);
     return q !== undefined && q.owner === run.seatId && backroomRequest(q);
   }));
+}
+
+/**
+ * Whether what is unread since the run's watermark must all wait for the turn's end: it names Backroom's own request of
+ * the seat (riding along, a reseat's checkpoint would make the turn's final answer the checkpoint only), or a request
+ * whose cancel is held to the turn's end (it would go in with no word of the cancel). The sync takes every unread input,
+ * so one such input holds back the rest.
+ */
+export function holdsBack(p: Projection, seatId: string, unread: readonly Input[]): boolean {
+  const held = new Set(deferredCancels(p).map((d) => d.requestId));
+  return unread.some((i) => TARGETING.has(i.intent) && i.requestIds.some((id) => {
+    const q = p.requests.get(id);
+    return held.has(id) || (q !== undefined && q.owner === seatId && backroomRequest(q));
+  }));
+}
+
+/**
+ * An offer whose every input was delivered since (a later offer to the run, confirmed, carried them, or the seat's
+ * cursor is past them): it is settled, and never sent again, whatever this process remembers of it.
+ */
+export function settledOffer(p: Projection, offer: SteerOffer): boolean {
+  const run = p.runs.get(offer.runId);
+  const past = Math.max(run?.through ?? 0, p.seats.get(offer.seatId)?.cursor ?? 0);
+  const inputs = inputTree(offer.receipt.envelope.inputs);
+  return inputs.length > 0 && inputs.every((i) => i.seq <= past);
 }
 
 export function steerReceiptId(commandId: string, messageId: string): string {
@@ -115,7 +140,7 @@ export function adoptableSteers(p: Projection, seatId: string): Array<SteerOffer
   const taken = new Set(hostRuns.map((r) => r.dispatchMessageId));
   return steerOffers(p, seatId).flatMap((s) => {
     const run = p.runs.get(s.runId)!;
-    if (s.receipt.confirmed || run.phase !== "terminal" || taken.has(s.messageId)) return [];
+    if (s.receipt.confirmed || run.phase !== "terminal" || taken.has(s.messageId) || settledOffer(p, s)) return [];
     const after = reservedSeq(p, run.id);
     if (hostRuns.some((r) => reservedSeq(p, r.id) > after)) return [];
     return [{ ...s, carrierT3RunId: records.get(run.id)?.t3?.id ?? null }];

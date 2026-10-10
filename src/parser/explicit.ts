@@ -522,7 +522,8 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
           continue;
         }
       }
-      const directive = /^\/(after|hold|now|steer)\b\s*/i.exec(rest);
+      // A directive ends at the word: "/steer-mode" or "/now:x" is a T3 command, not /steer or /now.
+      const directive = /^\/(after|hold|now|steer)(?![\w:.-])\s*/i.exec(rest);
       if (directive) {
         const name = (directive[1] as string).toLowerCase();
         assignment.consumed.push(directive[0].trim());

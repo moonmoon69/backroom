@@ -40,7 +40,7 @@ import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
-import { adoptableSteers, goesIntoTurn, steerMessageIds, steerOffers, steerReceiptId, takenInRun, takesMessages, type SteerOffer } from "./steer.ts";
+import { adoptableSteers, goesIntoTurn, holdsBack, settledOffer, steerMessageIds, steerOffers, steerReceiptId, takenInRun, takesMessages, type SteerOffer } from "./steer.ts";
 import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
@@ -892,7 +892,7 @@ export class EngineHost {
     const threadId = p.seats.get(seatId)!.threadId;
     // Nothing more goes into a turn that is being stopped: what is unread waits for the seat's next turn.
     if (this.ending(p, run)) return;
-    const inFlight = steerOffers(p, seatId).find((s) => s.runId === runId && !s.receipt.confirmed && !this.steerGaveUp.has(s.receipt.id));
+    const inFlight = steerOffers(p, seatId).find((s) => s.runId === runId && !s.receipt.confirmed && !this.steerGaveUp.has(s.receipt.id) && !settledOffer(p, s));
     if (inFlight) {
       // T3 has it (taken, or soon): wait. Or T3 ran it as a turn of its own: adopted once this run ends.
       if (detail.messages.some((m) => m.id === inFlight.messageId) || t3Run.status !== "running") return;
@@ -909,7 +909,8 @@ export class EngineHost {
     }
     if (t3Run.status !== "running" || detail.shell.pendingRequest !== null || p.seats.get(seatId)!.status !== "active" || !takesMessages(p, run)) return;
     const offered = new Set(run.receipts.flatMap((r) => inputTree(r.envelope.inputs).map((i) => i.eventId)));
-    if (!unread(p, seatId, run.through).some((i) => goesIntoTurn(p, i) && !offered.has(i.eventId))) return;
+    const waiting = unread(p, seatId, run.through);
+    if (!waiting.some((i) => goesIntoTurn(p, i) && !offered.has(i.eventId)) || holdsBack(p, seatId, waiting)) return;
     const receiptId = steerReceiptId(randomUUID(), randomUUID());
     if (this.exec(roomId, { type: "sync", actor: SYSTEM, id: `sync:${receiptId}`, runId, receiptId, maxBytes: this.maxBytes }).outcome !== "appended") return;
     this.step("steered", roomId, seatId, runId);
@@ -953,7 +954,8 @@ export class EngineHost {
     try {
       await this.adapter.sendMessage({ commandId: offer.commandId, threadId, messageId: offer.messageId, text: rendered.text, ...(images.length ? { images } : {}), mode: { type: "steer", runId: t3RunId } });
     } catch (error) {
-      if (error instanceof T3Unavailable) return false;
+      // Sent but never answered: T3 may have it. Counted toward `unrecordedMs` like any unknown acknowledgement.
+      if (error instanceof T3Unavailable && !(error instanceof T3OutcomeUnknown)) return false;
       if (error instanceof T3CommandRejected) {
         this.steerGaveUp.add(offer.receipt.id);
         this.log("T3 refused a message into the running turn; what it carried waits for the next turn", { receiptId: offer.receipt.id, error: error.message });
@@ -1008,9 +1010,16 @@ export class EngineHost {
         const id = steer.receipt.id;
         // Refused, or every try in this process failed to reach T3: it never left, and an ordinary run carries it.
         if (!steer.carrierT3RunId || this.steerGaveUp.has(id) || (this.steerAttempted.has(id) && !this.steerSent.has(id))) continue;
+        // Everything it asks was cancelled since: it is not sent again.
+        if (this.withdrawn(this.project(roomId), steer)) {
+          this.steerGaveUp.add(id);
+          continue;
+        }
         // T3 counted the thread's runs from 1 again (H4) and gave the carrier's ID to another run: nothing is sent into it.
+        // The carrier's own messages are its dispatch and those offered to it (Cursor and Antigravity restart a turn with one).
+        const own = new Set([this.project(roomId).runs.get(steer.runId)!.dispatchMessageId, ...steerOffers(this.project(roomId), seatId).filter((s) => s.runId === steer.runId).map((s) => s.messageId)]);
         const carrier = detail.runs.find((r) => r.id === steer.carrierT3RunId);
-        if (carrier && carrier.userMessageId !== this.project(roomId).runs.get(steer.runId)!.dispatchMessageId && carrier.userMessageId !== steer.messageId) {
+        if (carrier && !own.has(carrier.userMessageId)) {
           this.steerGaveUp.add(id);
           continue;
         }
@@ -1177,10 +1186,17 @@ export class EngineHost {
     if (!seat || seat.status === "retired") throw new HostRefusal(`@${seatId} is not seated in this room.`);
     const shell = await this.adapter.getThreadShell(seat.threadId);
     if (!shell?.activeRunId) throw new HostRefusal(`@${seatId} is not running anything in T3 now.`);
-    // Nothing more goes into the host run being stopped: a message sent now starts the seat's next turn.
+    // Nothing more goes into the host run being stopped: a message sent now starts the seat's next turn. A Stop T3 did
+    // not take stops nothing, and the run takes messages again.
     const live = this.liveRun(this.project(roomId), seatId);
-    if (live?.providerRunId === shell.activeRunId) this.stopping.add(live.id);
-    await this.adapter.interruptRun({ commandId: randomUUID(), threadId: seat.threadId, runId: shell.activeRunId });
+    const marked = live?.providerRunId === shell.activeRunId ? live.id : null;
+    if (marked) this.stopping.add(marked);
+    try {
+      await this.adapter.interruptRun({ commandId: randomUUID(), threadId: seat.threadId, runId: shell.activeRunId });
+    } catch (error) {
+      if (marked) this.stopping.delete(marked);
+      throw error;
+    }
     this.hint();
   }
 

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { T3CommandRejected } from "../../src/adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown } from "../../src/adapter/types.ts";
 import { Room } from "./helpers.ts";
 
 let room: Room;
@@ -456,4 +456,153 @@ test("the fake follows T3 0.0.46: a message into an unknown or stopped run is re
   const second = room.fake.thread(W).runs[1]!;
   room.fake.completeRun(W, { text: "(stopped)", outcome: "interrupted" });
   await assert.rejects(send(second.id, "stopped"), /is interrupted and cannot be steered/);
+});
+
+// ---------------- the writer's self-review (R1-R7) ----------------
+
+test("R1: a request cancelled before it goes in (its cancel held to the turn's end) never goes into the turn, nor rides along with a later message", async () => {
+  room = await Room.create();
+  const a = await wOnA(room);
+  const b = room.post("C", "W", "B: fix text.ts.");
+  assert.deepEqual(await room.cancel("C", b), { applied: false, deferred: true }, "held: the turn works on A");
+  await room.tick(2);
+  const d = room.post("C", "W", "D: and the docs.");
+  await room.tick(2);
+  assert.deepEqual(intoTurn(room, "W"), [], "neither B nor D went in: B would have gone in with no word of its cancel");
+  room.complete("W", "A fixed.");
+  await room.tick(2);
+  assert.equal(room.state(b), "cancelled");
+  assert.equal(room.answeredClaims(a).length, 1);
+  assert.match(room.prompt("W"), /and the docs/, "D in the next turn, with B's cancel");
+  room.complete("W", "Docs done; B dropped as cancelled.");
+  await room.tick(2);
+  assert.equal(room.answeredClaims(d).length, 1);
+  assert.equal(room.answeredClaims(b).length, 0);
+});
+
+test("R2: Backroom's own request waiting for a working member holds back a later message too: the turn's final answers A, not the checkpoint", async () => {
+  room = await Room.create();
+  const a = await wOnA(room);
+  room.host.request(room.room, { actor: "$system", id: "reseat:x1", to: "W", body: "Write your checkpoint." });
+  room.post("C", "W", "B: also fix text.ts.");
+  await room.tick(2);
+  assert.deepEqual(intoTurn(room, "W"), [], "nothing went in");
+  room.complete("W", "A fixed.");
+  await room.tick(2);
+  assert.equal(room.answeredClaims(a).length, 1, "the first final answers A");
+  assert.equal(room.state("reseat:x1"), "open", "the checkpoint is its own turn's");
+});
+
+test("R3: a message whose send was never answered, cancelled while its turn ran, is not sent again once that turn has ended", async () => {
+  room = await Room.create();
+  await wOnA(room);
+  const realSend = room.fake.sendMessage.bind(room.fake);
+  room.fake.sendMessage = async (input) => {
+    if (input.mode.type === "steer") {
+      room.fake.attempts.push({ threadId: input.threadId, commandId: input.commandId, messageId: input.messageId });
+      throw new Error("socket closed (simulated)");
+    }
+    return realSend(input);
+  };
+  const b = room.post("C", "W", "B: fix text.ts.");
+  await room.tick();
+  const offer = runsOf(room, "W")[0]!.receipts[0]!;
+  const sendsOfB = () => room.fake.attempts.filter((t) => offer.id.endsWith(`${t.commandId}:${t.messageId}`)).length;
+  const tried = sendsOfB();
+  assert.ok(tried >= 1);
+  assert.deepEqual(await room.cancel("C", b), { applied: false, deferred: true });
+  room.fake.sendMessage = realSend;
+  room.complete("W", "A fixed.");
+  await room.tick(3);
+  assert.equal(room.state(b), "cancelled");
+  assert.equal(sendsOfB(), tried, "B's message was not sent again");
+  assert.equal(room.fake.thread(room.threadOf("W")).runs.filter((r) => offer.id.endsWith(`:${r.userMessageId}`)).length, 0, "T3 ran no turn of its own for B's message");
+});
+
+test("R4: after a restart, an offer T3 refused, whose input a later offer delivered, is never sent again (mid-run and after the run)", async () => {
+  room = await Room.create();
+  const a = await wOnA(room);
+  room.fake.refuseSends = 1;
+  const b = room.post("C", "W", "B: fix text.ts.");
+  await room.tick();
+  const first = runsOf(room, "W")[0]!.receipts[0]!;
+  const d = room.post("C", "W", "D: and the docs.");
+  await room.tick();
+  assert.ok(runsOf(room, "W")[0]!.receipts.some((x) => x.confirmed), "the second offer, carrying B and D, went in");
+  const attemptsOf = (receiptId: string) => room.fake.attempts.filter((t) => receiptId.endsWith(`${t.commandId}:${t.messageId}`)).length;
+  assert.equal(attemptsOf(first.id), 1);
+  room.restart();
+  await room.tick(2);
+  assert.equal(attemptsOf(first.id), 1, "mid-run: not sent again into the same turn");
+  room.complete("W", "A, B and D done.");
+  await room.tick(2);
+  for (const id of [a, b, d]) assert.equal(room.answeredClaims(id).length, 1);
+  room.restart();
+  room.post("C", "W", "E: one more.");
+  await room.tick(2);
+  assert.equal(attemptsOf(first.id), 1, "after the run: not sent again either");
+  assert.equal(room.wakes("W"), 2, "E's own turn, and no turn for the old offer");
+});
+
+test("R5: a Stop T3 does not take leaves the turn taking messages", async () => {
+  room = await Room.create();
+  await wOnA(room);
+  room.fake.interruptRun = async () => { throw new T3CommandRejected("busy (simulated)", 500, null); };
+  await assert.rejects(room.host.stopSeat(room.room, "W"), /busy/);
+  room.post("C", "W", "B: fix text.ts.");
+  await room.tick(2);
+  assert.equal(intoTurn(room, "W").length, 1, "B went into the turn that goes on");
+});
+
+test("R6: Cursor: a second message never recorded in a turn the first restarted is still sent with its own IDs once the turn ends, and T3's run for it is adopted", async () => {
+  room = await Room.create();
+  room.fake.thread(room.threadOf("W")).shell.providerInstanceId = "cursor";
+  await wOnA(room);
+  room.post("C", "W", "B: fix text.ts.");
+  await room.tick();
+  const realSend = room.fake.sendMessage.bind(room.fake);
+  room.fake.sendMessage = async (input) => {
+    if (input.mode.type === "steer") throw new Error("socket closed (simulated)");
+    return realSend(input);
+  };
+  const c = room.post("C", "W", "C2: and the docs.");
+  await room.tick();
+  room.fake.sendMessage = realSend;
+  const second = runsOf(room, "W")[0]!.receipts.find((x) => !x.confirmed)!;
+  room.complete("W", "A and B fixed.");
+  await room.tick(3);
+  const t3 = room.fake.thread(room.threadOf("W")).runs;
+  assert.equal(t3.length, 2);
+  assert.ok(second.id.endsWith(`:${t3[1]!.userMessageId}`), "T3's run for the second message, sent with its own IDs: adopted, not given up as a reused run ID");
+  room.complete("W", "Docs done.");
+  await room.tick(2);
+  assert.equal(room.answeredClaims(c).length, 1);
+});
+
+test("R7: a message into the turn whose sends T3 never answers is bounded: after unrecordedMs it is given up and the next turn carries it", async () => {
+  room = await Room.create();
+  const a = await wOnA(room);
+  const realSend = room.fake.sendMessage.bind(room.fake);
+  room.fake.sendMessage = async (input) => {
+    if (input.mode.type === "steer") {
+      room.fake.attempts.push({ threadId: input.threadId, commandId: input.commandId, messageId: input.messageId });
+      throw new T3OutcomeUnknown("T3 did not answer (simulated)");
+    }
+    return realSend(input);
+  };
+  const b = room.post("C", "W", "B: fix text.ts.");
+  await room.tick(3);
+  room.clock += 6 * 60_000;
+  await room.tick(2);
+  const after = room.fake.attempts.length;
+  await room.tick(3);
+  assert.equal(room.fake.attempts.length, after, "given up: not sent again every tick");
+  room.fake.sendMessage = realSend;
+  room.complete("W", "A fixed.");
+  await room.tick(3);
+  assert.equal(room.answeredClaims(a).length, 1);
+  assert.match(room.prompt("W"), /fix text\.ts/, "the next turn carries B");
+  room.complete("W", "B fixed.");
+  await room.tick(2);
+  assert.equal(room.answeredClaims(b).length, 1);
 });
