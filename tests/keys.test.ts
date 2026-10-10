@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, numberRepeats, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, entryText, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, numberRepeats, openLanding, placeById, runCanStop, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
@@ -368,18 +368,44 @@ test("on a post Enter opens its actions; in them the bar says choose, Enter and 
   assert.equal(barDoes({ keys: ["Enter"], does: "send" }, "Correct…"), "send");
 });
 
-test("on a status chip Enter opens its choices as a strip; in it the bar says choose, Enter and the choice, Esc fold them", () => {
+test("on a status chip Enter opens its choices as a strip; in it the bar says choose, Enter and the choice, Esc leave it waiting or fold", () => {
   assert.ok(bar("room-chip").includes("Enter its choices"));
-  assert.deepEqual(barNamed("room-chip-actions", "Accept for session", ["chip-open"]), ["↑ ↓ the chip or the posts", "← → choose", "Enter Accept for session", "Esc Backspace fold the choices", "a–z start writing", "Home End first or last post", "? all keys"]);
-  // Its own place, not a post's: ↑ ↓ are not "previous or next post", and Esc folds the chip rather than closing a strip.
+  // An approval's or a question's: Esc and Backspace leave it waiting.
+  assert.deepEqual(barNamed("room-chip-actions", "Accept for session", ["chip-open", "asking"]), ["↑ ↓ chip or posts", "← → choose", "Enter Accept for session", "Esc Backspace leave it waiting", "a–z start writing", "Home End first or last post", "? all keys"]);
+  // A failed or running turn's: they fold the choices.
+  assert.deepEqual(barNamed("room-chip-actions", "Retry", ["chip-open"]), ["↑ ↓ chip or posts", "← → choose", "Enter Retry", "Esc Backspace fold the choices", "a–z start writing", "Home End first or last post", "? all keys"]);
+  // Its own place, not a post's: ↑ ↓ are not "previous or next post".
   assert.ok(!barNamed("room-chip-actions", "Stop").includes("↑ ↓ previous or next post"));
   // In front of the composer, a correction and the panel, as a post's strip is.
   for (const now of [["chip-open", "composer-open"], ["chip-open", "correcting"], ["chip-open", "panel-open"]] as KeyWhen[][]) {
-    assert.ok(barNamed("room-chip-actions", "Retry", now).includes("Esc Backspace fold the choices"), now.join());
-    assert.ok(!barNamed("room-chip-actions", "Retry", now).some((line) => line.startsWith("Backspace ") || (line.startsWith("Esc ") && line !== "Esc Backspace fold the choices")), now.join());
+    for (const asking of [[], ["asking"]] as KeyWhen[][]) {
+      const lines = barNamed("room-chip-actions", "Retry", [...now, ...asking]);
+      const esc = asking.length > 0 ? "Esc Backspace leave it waiting" : "Esc Backspace fold the choices";
+      assert.ok(lines.includes(esc), [...now, ...asking].join());
+      assert.ok(!lines.some((line) => line.startsWith("Backspace ") || (line.startsWith("Esc ") && line !== esc)), now.join());
+    }
   }
   // A long option is cut as any button's name is.
   assert.equal(barNamed("room-chip-actions", "the answer of your own").find((line) => line.startsWith("Enter ")), `Enter ${"the answer of your own".slice(0, BAR_NAME - 1)}…`);
+});
+
+test("a status chip is a stop only with something to press; a turn can be stopped in the phases its choices show Stop", () => {
+  assert.deepEqual(["prepared", "sending", "accepted", "running", "uncertain", "rejected", "terminal"].filter(runCanStop), ["sending", "accepted", "running", "uncertain"]);
+  assert.ok(chipOffers({ kind: "ask" }));
+  assert.ok(chipOffers({ kind: "notice" }));
+  assert.ok(chipOffers({ kind: "run", phase: "running", member: true, posts: 0 }));
+  assert.ok(chipOffers({ kind: "run", phase: "uncertain", member: true, posts: 0 }));
+  // Nothing to stop: a stop only if it is about a post ("show #n").
+  assert.ok(!chipOffers({ kind: "run", phase: "prepared", member: true, posts: 0 }));
+  assert.ok(!chipOffers({ kind: "run", phase: "rejected", member: true, posts: 0 }));
+  assert.ok(!chipOffers({ kind: "run", phase: "running", member: false, posts: 0 }));
+  assert.ok(chipOffers({ kind: "run", phase: "prepared", member: true, posts: 1 }));
+  // The chip gone with the ring in its strip, the ring lands as a room opens: a chip that needs you, else the newest
+  // post if it shows, else a running turn's chip, else the composer's strip.
+  assert.equal(openLanding({ needs: "chip", newest: "#9", newestInView: true, running: "run", strip: "strip" }), "chip");
+  assert.equal(openLanding({ needs: null, newest: "#9", newestInView: true, running: "run", strip: "strip" }), "#9");
+  assert.equal(openLanding({ needs: null, newest: "#9", newestInView: false, running: "run", strip: "strip" }), "run");
+  assert.equal(openLanding({ needs: null, newest: null, newestInView: false, running: null, strip: "strip" }), "strip");
 });
 
 test("in a correction Enter sends it and Shift+Enter makes a line; Esc closes it, back to Correct…", () => {

@@ -6,7 +6,7 @@
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
-export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "panel-open" | "help";
+export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "asking" | "panel-open" | "help";
 
 /** What the conditions are called in `?` and README. */
 const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
@@ -15,6 +15,7 @@ const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
   correcting: ["while a correction is open", "while no correction is open"],
   "composer-open": ["while the composer is open", "while the composer is closed"],
   "chip-open": ["while a status chip's choices are open", "while no chip's choices are open"],
+  asking: ["on an approval's or a question's choices", "on a failed or running turn's choices"],
   "panel-open": ["while the side panel is open", "while the side panel is folded"],
   help: ["while this list is open", "while this list is closed"],
 };
@@ -221,10 +222,11 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "a status chip's choices",
         within: "room",
         entries: [
-          { keys: ["↑", "↓"], does: "the chip or the posts", more: "the choices fold; what they ask still waits" },
+          { keys: ["↑", "↓"], does: "chip or posts", more: "↑ back to the chip, ↓ on to the posts; the choices fold" },
           { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
-          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back" },
-          { keys: ["Esc", "Backspace"], does: "fold the choices", more: "the ring back on the chip; what they ask still waits for you" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back; a held Enter presses nothing" },
+          { keys: ["Esc", "Backspace"], does: "leave it waiting", when: "asking", more: "the choices fold, the ring back on the chip; the approval or question still waits for you" },
+          { keys: ["Esc", "Backspace"], does: "fold the choices", more: "the ring back on the chip" },
           { keys: ["Home", "End"], does: "first or last post" },
         ],
       },
@@ -629,6 +631,20 @@ export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, 
   }
   const beyond = lanes[at.lane + step];
   return beyond ? { to: beyond.landing } : "stay";
+}
+
+/** Whether a turn in this phase can be stopped from its status chip (its choices show Stop): not one still being
+ * prepared, one T3 refused, or one that has ended. */
+export const runCanStop = (phase: string): boolean => phase !== "prepared" && phase !== "rejected" && phase !== "terminal";
+
+/**
+ * Whether a status chip is a stop of the room's status lane: its choices offer something to press (as a running turn's
+ * bubble is a stop only then, K1-5), so Enter on it never does nothing. An approval or a question always; a notice that
+ * needs you always (Dismiss at least); a running turn its Stop, in the phases its choices show it, or a post it is about
+ * ("show #n").
+ */
+export function chipOffers(chip: { kind: "ask" | "notice" } | { kind: "run"; phase: string; member: boolean; posts: number }): boolean {
+  return chip.kind !== "run" || (chip.member && runCanStop(chip.phase)) || chip.posts > 0;
 }
 
 /** What a room offers the ring as it opens, read off the page (OverviewRoom). */

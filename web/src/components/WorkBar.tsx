@@ -3,11 +3,12 @@ import { useRoom } from "../context.tsx";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
-import { NativeRequestsPanel } from "./NativeRequests.tsx";
+import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
 import { flashPost, NoticeActions } from "./Timeline.tsx";
 import { ControlsStrip } from "./ControlsStrip.tsx";
 import type { StripAction } from "./ActionStrip.tsx";
-import { lastInputWasKey, navProps } from "../keys.ts";
+import { lastInputWasKey, navProps, showsNow } from "../keys.ts";
+import { chipOffers, openLanding, runCanStop } from "../keyOrder.ts";
 
 type Group = "needs" | "working" | "waiting";
 
@@ -55,9 +56,11 @@ const PHASE: Record<EngineRunView["phase"], string> = {
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
   const [open, setOpen] = useState<string | null>(null);
-  // The chip whose choices the keys opened, as an action strip: folded with the strip, by a key (Esc, Backspace, the
-  // ring moved off); a click away leaves the choices as a click on the chip would have.
+  // The chip whose choices the keys opened, as an action strip: folded with the strip (Esc, Backspace, the ring or a
+  // click elsewhere), except by a click on the chip itself, which then folds it as it always has.
   const [strip, setStrip] = useState<string | null>(null);
+  // What was chosen on an approval or question goes once it no longer waits.
+  useEffect(() => keepAnswers(snapshot.nativeRequests), [snapshot.nativeRequests]);
   // Esc folds the open chip (keys.ts), once a menu, a dialog, a post's action strip or the composer in front of it has
   // closed; the focus, if it was in the choices or nowhere, goes back to the chip.
   const bar = useRef<HTMLDivElement>(null);
@@ -157,8 +160,11 @@ export function WorkBar() {
 
   // The room around the bar, kept for when the bar goes (nothing left going on).
   const room = useRef<HTMLElement | null>(null);
+  /** A post the open view draws, by its number (the chat leaves some out; a long board draws only its latest). */
+  const post = (n: number) => room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`) ?? null;
   // The chip gone with its strip open (its request answered, its turn retried, dismissed or ended): after a key, the
-  // ring goes where a room opens (keyOrder.ts, openLanding): the first chip that needs you, else the newest post.
+  // ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved: the first chip
+  // that needs you, else the newest post if it shows, else a running turn's chip, else the composer's strip.
   const gone = strip !== null && !items.some((item) => item.key === strip);
   useLayoutEffect(() => {
     if (bar.current) room.current = bar.current.parentElement;
@@ -168,28 +174,34 @@ export function WorkBar() {
     const now = document.activeElement;
     if (!lastInputWasKey() || (now && now !== document.body && now.isConnected)) return;
     const root = room.current;
-    const next = root?.querySelector<HTMLElement>('.work-needs [data-nav="chip"]') ?? [...(root?.querySelectorAll<HTMLElement>('.timeline [data-nav="post"]') ?? [])].at(-1) ?? root?.querySelector<HTMLElement>(".composer-strip");
-    next?.focus({ preventScroll: true });
-    next?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const newest = [...(root?.querySelectorAll<HTMLElement>('.timeline [data-nav="post"]') ?? [])].at(-1) ?? null;
+    openLanding({
+      needs: root?.querySelector<HTMLElement>('.work-needs [data-nav="chip"]') ?? null,
+      newest,
+      newestInView: newest !== null && showsNow(newest),
+      running: root?.querySelector<HTMLElement>('[data-nav-key^="chip:run:"]') ?? null,
+      strip: root?.querySelector<HTMLElement>(".composer-strip") ?? null,
+    })?.focus({ preventScroll: true });
   });
 
   const opened = items.find((item) => item.key === open) ?? null;
-  // "show #n" for each post the chip is about that the board draws (a click on a #ref shows only those): the ring goes
-  // to the post, brought into view. Whether it is drawn is read as the bar draws, which it does at every poll.
-  const post = (n: number) => room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`) ?? null;
-  const shows: StripAction[] = (opened?.posts ?? []).map((n) => ({
-    key: `show:${n}`,
-    label: `show #${n}`,
-    name: `show #${n}`,
-    title: `Show #${n}`,
-    disabled: post(n) === null,
-    press: () => {
-      const shown = post(n);
-      if (!shown) return;
-      flashPost(shown);
-      shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
-    },
-  }));
+  // "show #n" for each post the chip is about that the open view draws (a click on a #ref shows only those; a post
+  // the chat leaves out, or older than the posts drawn, is not offered): the ring goes to the post, brought into view.
+  // Whether it is drawn is read as the bar draws, which it does at every poll.
+  const shows: StripAction[] = (opened?.posts ?? [])
+    .filter((n) => post(n) !== null)
+    .map((n) => ({
+      key: `show:${n}`,
+      label: `show #${n}`,
+      name: `show #${n}`,
+      title: `Show #${n}`,
+      press: () => {
+        const shown = post(n);
+        if (!shown) return;
+        flashPost(shown);
+        shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
+      },
+    }));
   if (items.length === 0) return null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
@@ -216,6 +228,10 @@ export function WorkBar() {
                 );
                 const style = identityStyle(item.participant ? colorOf(item.participant.id) : "var(--fg-muted)");
                 const title = `${item.participant?.alias ?? ""} · ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 400)}` : ""}`;
+                // A chip is a stop only with something to press (keyOrder.ts, chipOffers); a click opens any.
+                const stop =
+                  item.open !== undefined &&
+                  chipOffers("asking" in item.open ? { kind: "ask" } : "notice" in item.open ? { kind: "notice" } : { kind: "run", phase: item.open.run.phase, member: item.participant !== undefined, posts: (item.posts ?? []).filter((n) => post(n) !== null).length });
                 return item.open ? (
                   <button
                     key={item.key}
@@ -235,7 +251,7 @@ export function WorkBar() {
                       setStrip(null);
                       setOpen(open === item.key ? null : item.key);
                     }}
-                    {...navProps("chip", `chip:${item.key}`, `status · ${whereOf(item)}`)}
+                    {...(stop ? navProps("chip", `chip:${item.key}`, `status · ${whereOf(item)}`) : {})}
                   >
                     {body}
                   </button>
@@ -276,9 +292,11 @@ export function WorkBar() {
           where={whereOf(opened)}
           // An answer of your own, which Custom answer focuses, is in the choices: the strip stays.
           keeps={(element) => Boolean(bar.current?.contains(element) && element.closest(".work-open"))}
-          onClose={() => {
+          onClose={(cause) => {
             setStrip(null);
-            if (lastInputWasKey()) setOpen(null);
+            // A click on the chip itself: its click folds it, as a click on an open chip does.
+            if (cause?.type === "pointerdown" && cause.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${opened.key}"]`)) return;
+            setOpen(null);
           }}
           // Nothing to press (a turn being prepared, or refused): the choices stay open, the ring on the chip.
           onEmpty={() => setStrip(null)}
@@ -301,7 +319,7 @@ function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantI
             ? `T3 refused this turn${run.failure ? `: ${run.failure}` : ""}.`
             : `${PHASE[run.phase]}${run.startedAt ? ` since ${new Date(run.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`}
       </span>
-      {participant && run.phase !== "prepared" && run.phase !== "rejected" ? (
+      {participant && runCanStop(run.phase) ? (
         <button type="button" className="small danger" title="Stop the turn through T3" onClick={() => onStop(participant.id)}>
           Stop
         </button>

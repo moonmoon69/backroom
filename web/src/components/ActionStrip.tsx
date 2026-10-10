@@ -37,7 +37,8 @@ export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
   where: string;
   /** The item the strip is on: the ring goes back to it. */
   item: () => HTMLElement | null;
-  onClose: () => void;
+  /** The strip closes: with what took the focus or the pointer elsewhere, if that closed it. */
+  onClose: (cause?: Event) => void;
   keeps?: ((element: Element) => boolean) | undefined;
   ref?: Ref<HTMLDivElement | null> | undefined;
 }) {
@@ -102,10 +103,10 @@ export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
     const away = (target: EventTarget | null) =>
       target instanceof Element && !root.contains(target) && !target.closest(OVER) && !keepsRef.current?.(target);
     const onFocus = (event: FocusEvent) => {
-      if (away(event.target)) close.current();
+      if (away(event.target)) close.current(event);
     };
     const onPointer = (event: PointerEvent) => {
-      if (away(event.target)) close.current();
+      if (away(event.target)) close.current(event);
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("focusin", onFocus);
