@@ -23,14 +23,14 @@ import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
-import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
+import { NativeRequestCard } from "./NativeRequests.tsx";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { speakableSummary, useAutoRead } from "../speech.ts";
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
-import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
-import { imageAction, numberRepeats, stripOrder, type ActionKind } from "../keyOrder.ts";
-import { isTextField, lastInputWasKey } from "../keys.ts";
+import type { StripAction } from "./ActionStrip.tsx";
+import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
+import { lastInputWasKey } from "../keys.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -145,105 +145,6 @@ interface Strips {
 }
 const StripsContext = createContext<Strips>({ open: null, close: () => {}, detail: () => {} });
 
-/** A control a mouse finds on an item, as its action strip offers it (ItemActions). */
-interface Control {
-  element: HTMLElement;
-  kind: ActionKind;
-  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel. */
-  id?: string | undefined;
-  label: string;
-  name: string;
-  title?: string | undefined;
-  tone?: "primary" | "danger" | undefined;
-  disabled: boolean;
-  pressed?: boolean | undefined;
-  expanded?: boolean | undefined;
-}
-
-/** What a mouse can press: a button, a link, a summary, a field. */
-const CONTROLS = "button, a[href], summary, input:not([type='hidden']), select, textarea";
-const textOf = (element: Element): string => (element.textContent ?? "").replace(/\s+/g, " ").trim();
-const cut = (text: string, most = 40): string => (text.length > most ? `${text.slice(0, most - 1)}…` : text);
-
-/** An item's controls as they are drawn (a folded text's are not), but not its strip's own nor a correction box's. */
-function* drawnControls(item: HTMLElement): Generator<HTMLElement> {
-  for (const element of item.querySelectorAll<HTMLElement>(CONTROLS)) if (!element.closest(".action-strip, .req-correct") && element.getClientRects().length > 0) yield element;
-}
-
-/** Whether an item has anything its strip would offer (it stops at the first). */
-function offersControls(item: HTMLElement): boolean {
-  for (const element of drawnControls(item)) if (describe(element, 0)) return true;
-  return false;
-}
-
-/** What a control of an item is in its strip, by what it is on the page; null for none of it. */
-function describe(element: HTMLElement, requests: number): Omit<Control, "element" | "disabled"> | null {
-  const text = textOf(element);
-  const title = element.getAttribute("title")?.split("\n")[0] || undefined;
-  const expanded = element.tagName === "SUMMARY" ? Boolean(element.closest("details")?.open) : element.hasAttribute("aria-expanded") ? element.getAttribute("aria-expanded") === "true" : undefined;
-  const tone = element.classList.contains("danger") ? ("danger" as const) : element.classList.contains("primary") ? ("primary" as const) : undefined;
-  // A message to several members has a Correct… and a Cancel for each: said with its request's number and recipient.
-  const block = element.closest<HTMLElement>(".req-block");
-  const number = block?.dataset.number;
-  const of = requests > 1 && number ? ` #${number}` : "";
-  if (element.closest(".req-actions") && (text === "Correct…" || text === "Cancel")) {
-    const kind = text === "Correct…" ? "correct" : "cancel";
-    return { kind, id: number, label: `${text}${of}`, name: `${text}${of}${of && block?.dataset.to ? ` to ${block.dataset.to}` : ""}`, title, tone, expanded };
-  }
-  if (element.closest(".notice-actions") && (text === "Retry" || text === "Dismiss")) return { kind: text === "Retry" ? "retry" : "dismiss", label: text, name: text, title, tone };
-  if (element.closest(".live-turn .chat-head") && text === "Stop") return { kind: "stop", label: text, name: text, title, tone };
-  if (element.closest(".native-requests")) {
-    const input = element instanceof HTMLInputElement ? element : null;
-    const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
-    return { kind: "choice", label: cut(label), name: cut(label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
-  }
-  if (element.matches(".copy-button")) {
-    const label = element.getAttribute("aria-label") === "Copied" ? "Copied" : "Copy";
-    return { kind: "copy", label, name: label, title };
-  }
-  if (element.matches(".speak-button")) {
-    const label = element.getAttribute("aria-label") ?? "Read aloud";
-    return { kind: "speak", label, name: label, title, pressed: element.getAttribute("aria-pressed") === "true" };
-  }
-  if (element.matches(".post-ref")) return { kind: "ref", label: text, name: `show ${text}`, title };
-  if (element.matches(".md-file")) {
-    const name = textOf(element.querySelector(".md-file-name") ?? element);
-    return { kind: "file", label: cut(name), name, title };
-  }
-  // Named with its alt text: Markdown's (its title when it has none), else the image's own (an attached image's).
-  if (element.matches(".image-preview-trigger, .md-img")) return { kind: "image", ...imageAction(element.dataset.alt ?? element.querySelector("img")?.getAttribute("alt")), title: element.getAttribute("aria-label") ?? title };
-  if (element.tagName === "SUMMARY" && element.closest(".turn-in-t3")) return { kind: "turn", label: text, name: text, title, expanded };
-  if (element.tagName === "SUMMARY" && element.closest(".sent-to-t3")) return { kind: "sent", label: text, name: text, title, expanded };
-  if (element.matches(".md-copy")) return { kind: "code", label: "Copy code", name: "Copy code", title };
-  if (element.matches(".live-more")) return { kind: "more", label: text, name: text, title, expanded };
-  if (element.tagName === "SUMMARY") return { kind: "text", label: "Full text", name: "Full text", title: cut(text, 120), expanded };
-  if (element.matches("a[href]")) return { kind: "link", label: cut(text || element.getAttribute("href") || "Link"), name: cut(text || "Link"), title: element.getAttribute("href") ?? undefined };
-  const other = element.getAttribute("aria-label") || text || title;
-  return other ? { kind: "other", label: cut(other), name: cut(other), title, tone, expanded } : null;
-}
-
-/**
- * The controls a mouse finds on an item now, in its strip's order (keyOrder.ts, stripOrder): those drawn (a folded
- * text's are not, until it opens), not the strip's own nor what a button opened in place (a correction's box).
- * Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
- */
-function itemControls(item: HTMLElement): Control[] {
-  const requests = item.querySelectorAll(".req-block").length;
-  const found: Control[] = [];
-  for (const element of drawnControls(item)) {
-    const described = describe(element, requests);
-    if (described) found.push({ element, disabled: element.matches(":disabled"), ...described });
-  }
-  return numberRepeats(stripOrder(found));
-}
-
-const sameControls = (a: Control[], b: Control[]): boolean =>
-  a.length === b.length &&
-  a.every((x, i) => {
-    const y = b[i]!;
-    return x.element === y.element && x.kind === y.kind && x.id === y.id && x.label === y.label && x.name === y.name && x.title === y.title && x.tone === y.tone && x.disabled === y.disabled && x.pressed === y.pressed && x.expanded === y.expanded;
-  });
-
 /**
  * An item's action strip, at its foot while it is open (Enter on the item): every control a mouse finds on it, in the
  * order of the design's table, each pressing that control (so the strip does exactly what the mouse does), and for a
@@ -259,78 +160,18 @@ function ItemActions({ navKey, where, detail }: { navKey: string; where: string;
 
 function OpenActions({ where, detail }: { where: string; detail?: number | undefined }) {
   const { close, detail: showDetail } = useContext(StripsContext);
-  const root = useRef<HTMLDivElement | null>(null);
-  const item = useRef<HTMLElement | null>(null);
-  // Null until the item's controls are read (after the first draw): the strip offers nothing before, so the ring lands
-  // on the first of all its buttons, not on Detail alone.
-  const [controls, setControls] = useState<Control[] | null>(null);
-  useLayoutEffect(() => {
-    const strip = root.current;
-    const owner = strip?.closest<HTMLElement>("[data-nav]") ?? null;
-    item.current = owner;
-    if (!strip || !owner) return;
-    const read = () => {
-      const next = itemControls(owner);
-      setControls((last) => (last && sameControls(last, next) ? last : next));
-    };
-    read();
-    // Whatever changes on the item; and a choice's checked state, a property no mutation shows, after React's draw
-    // once it is chosen or an answer of your own is typed.
-    const observer = new MutationObserver(read);
-    observer.observe(owner, { subtree: true, childList: true, attributes: true, characterData: true });
-    const changed = () => requestAnimationFrame(read);
-    owner.addEventListener("change", changed);
-    owner.addEventListener("input", changed);
-    return () => {
-      observer.disconnect();
-      owner.removeEventListener("change", changed);
-      owner.removeEventListener("input", changed);
-    };
-  }, []);
-  // Nothing to offer (a running turn with no button yet, no Detail): no strip; the ring stays on the item.
-  const empty = controls !== null && controls.length === 0 && detail === undefined;
-  useEffect(() => {
-    if (empty) close();
-  }, [empty, close]);
-  const actions = useMemo<StripAction[]>(() => {
-    if (controls === null) return [];
-    const at = new Map<ActionKind, number>();
-    const list: StripAction[] = controls.map((control) => {
-      const n = at.get(control.kind) ?? 0;
-      at.set(control.kind, n + 1);
-      const { element } = control;
-      return {
-        key: `${control.kind}:${control.id ?? n}`,
-        label: control.label,
-        name: control.name,
-        title: control.title,
-        tone: control.tone,
-        disabled: control.disabled,
-        pressed: control.pressed,
-        expanded: control.expanded,
-        // A field takes the focus (an answer of your own); anything else is clicked, as the mouse does. A #ref also
-        // takes the ring to the post it shows, which the click brings into view.
-        press: () => {
-          if (isTextField(element)) return element.focus();
-          element.click();
-          if (control.kind !== "ref") return;
-          const shown = element.closest(".timeline")?.querySelector<HTMLElement>(`[data-number="${control.label.replace(/^#/, "").split(" ")[0]}"]`);
-          (shown?.closest<HTMLElement>("[data-nav]") ?? null)?.focus({ preventScroll: true });
-        },
-      };
-    });
-    if (detail !== undefined) list.push({ key: "detail", label: "Detail", name: "Detail", title: "Who wrote it to whom, when, where it stands, and the post with its folded text open", press: () => showDetail(detail) });
-    return list;
-  }, [controls, detail, showDetail]);
+  const extra = useMemo<StripAction[]>(
+    () => (detail === undefined ? [] : [{ key: "detail", label: "Detail", name: "Detail", title: "Who wrote it to whom, when, where it stands, and the post with its folded text open", press: () => showDetail(detail) }]),
+    [detail, showDetail],
+  );
   return (
-    <ActionStrip
-      ref={root}
-      actions={actions}
+    <ControlsStrip
+      item={(strip) => strip.closest<HTMLElement>("[data-nav]")}
+      extra={extra}
       where={where}
-      item={() => item.current}
       onClose={close}
       // A correction's box and an answer of your own, opened in place, keep the strip: Esc there closes the box first.
-      keeps={(element) => Boolean(item.current?.contains(element) && element.closest(".req-correct, .native-requests"))}
+      keeps={(element, item) => Boolean(item?.contains(element) && element.closest(".req-correct, .native-requests"))}
     />
   );
 }
@@ -423,11 +264,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
       typedInT3,
       reveal: (number) => {
         const element = scroller.current?.querySelector<HTMLElement>(`[data-number="${number}"]`);
-        if (!element) return;
-        element.scrollIntoView({ behavior: "smooth", block: "center" });
-        element.classList.remove("flash");
-        void element.offsetWidth;
-        element.classList.add("flash");
+        if (element) flashPost(element);
       },
     };
   }, [allPosts, snapshot.seats]);
@@ -773,6 +610,14 @@ function PostRow({ post, chat }: { post: EnginePost; chat: boolean }) {
     default:
       return <StatusPost post={post} />;
   }
+}
+
+/** A post shown: brought to the middle of the board and flashed (a #ref's click, a status chip's "show #n"). */
+export function flashPost(element: HTMLElement) {
+  element.scrollIntoView({ behavior: "smooth", block: "center" });
+  element.classList.remove("flash");
+  void element.offsetWidth;
+  element.classList.add("flash");
 }
 
 /** "#12" with the post's time as its tooltip. */
@@ -1644,31 +1489,9 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
           {run.phase === "rejected" ? <div className="status-error">T3 refused this turn{run.failure ? `: ${run.failure}` : ""}.</div> : null}
           {requests.length > 0 ? (
             <div className="native-requests thread-requests" role="group" aria-label={`${alias} is waiting for you`}>
-              {requests.map((request) =>
-                request.kind === "approval" ? (
-                  <ApprovalRequestCard
-                    key={request.requestId}
-                    payload={request.payload}
-                    speaker={speaker}
-                    onRespond={async (decision) => {
-                      await runCommand({ type: "native.approval.respond", participantId: request.participantId, requestId: request.requestId, decision });
-                    }}
-                  />
-                ) : (
-                  <UserInputRequestCard
-                    key={request.requestId}
-                    requestId={request.requestId}
-                    payload={request.payload}
-                    speaker={speaker}
-                    onSubmit={async (answers) => {
-                      await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers });
-                    }}
-                    onDismiss={async () => {
-                      await runCommand({ type: "native.userInput.dismiss", participantId: request.participantId, requestId: request.requestId });
-                    }}
-                  />
-                ),
-              )}
+              {requests.map((request) => (
+                <NativeRequestCard key={request.requestId} request={request} speaker={speaker} />
+              ))}
             </div>
           ) : null}
           <FileBaseContext.Provider value={participantDesk?.worktreePath ?? null}>
@@ -1687,7 +1510,7 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
  * prompt, and the turn live. When it ends the service imports it as notes and this goes away.
  */
 function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Participant; desk: Desk; promptOnBoard: boolean }) {
-  const { snapshot, colorOf, runCommand } = useRoom();
+  const { snapshot, colorOf } = useRoom();
   const running = desk.runningRun!;
   const requests = snapshot.nativeRequests.filter((request) => request.participantId === participant.id);
   const speaker = <span className="speaker mono identity">{participant.alias}</span>;
@@ -1728,20 +1551,9 @@ function LiveTurnBubble({ participant, desk, promptOnBoard }: { participant: Par
           <div className="bubble bubble-agent bubble-live bubble-direct" aria-label={`${participant.alias} is working`}>
             {requests.length > 0 ? (
               <div className="native-requests thread-requests" role="group" aria-label={`${participant.alias} is waiting for you`}>
-                {requests.map((request) =>
-                  request.kind === "approval" ? (
-                    <ApprovalRequestCard key={request.requestId} payload={request.payload} speaker={speaker} onRespond={async (decision) => void (await runCommand({ type: "native.approval.respond", participantId: request.participantId, requestId: request.requestId, decision }))} />
-                  ) : (
-                    <UserInputRequestCard
-                      key={request.requestId}
-                      requestId={request.requestId}
-                      payload={request.payload}
-                      speaker={speaker}
-                      onSubmit={async (answers) => void (await runCommand({ type: "native.userInput.respond", participantId: request.participantId, requestId: request.requestId, answers }))}
-                      onDismiss={async () => void (await runCommand({ type: "native.userInput.dismiss", participantId: request.participantId, requestId: request.requestId }))}
-                    />
-                  ),
-                )}
+                {requests.map((request) => (
+                  <NativeRequestCard key={request.requestId} request={request} speaker={speaker} />
+                ))}
               </div>
             ) : null}
             <FileBaseContext.Provider value={desk.worktreePath ?? null}>

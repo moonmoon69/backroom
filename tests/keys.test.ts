@@ -368,6 +368,20 @@ test("on a post Enter opens its actions; in them the bar says choose, Enter and 
   assert.equal(barDoes({ keys: ["Enter"], does: "send" }, "Correct…"), "send");
 });
 
+test("on a status chip Enter opens its choices as a strip; in it the bar says choose, Enter and the choice, Esc fold them", () => {
+  assert.ok(bar("room-chip").includes("Enter its choices"));
+  assert.deepEqual(barNamed("room-chip-actions", "Accept for session", ["chip-open"]), ["↑ ↓ the chip or the posts", "← → choose", "Enter Accept for session", "Esc Backspace fold the choices", "a–z start writing", "Home End first or last post", "? all keys"]);
+  // Its own place, not a post's: ↑ ↓ are not "previous or next post", and Esc folds the chip rather than closing a strip.
+  assert.ok(!barNamed("room-chip-actions", "Stop").includes("↑ ↓ previous or next post"));
+  // In front of the composer, a correction and the panel, as a post's strip is.
+  for (const now of [["chip-open", "composer-open"], ["chip-open", "correcting"], ["chip-open", "panel-open"]] as KeyWhen[][]) {
+    assert.ok(barNamed("room-chip-actions", "Retry", now).includes("Esc Backspace fold the choices"), now.join());
+    assert.ok(!barNamed("room-chip-actions", "Retry", now).some((line) => line.startsWith("Backspace ") || (line.startsWith("Esc ") && line !== "Esc Backspace fold the choices")), now.join());
+  }
+  // A long option is cut as any button's name is.
+  assert.equal(barNamed("room-chip-actions", "the answer of your own").find((line) => line.startsWith("Enter ")), `Enter ${"the answer of your own".slice(0, BAR_NAME - 1)}…`);
+});
+
 test("in a correction Enter sends it and Shift+Enter makes a line; Esc closes it, back to Correct…", () => {
   assert.deepEqual(bar("correction", ["typing"]), ["Enter send it", "Shift+Enter new line", "Tab on to Send correction", "Esc close it, back to Correct…"]);
 });

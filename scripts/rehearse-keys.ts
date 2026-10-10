@@ -1301,26 +1301,30 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowDown");
     await expect("Down ×2: back on the working chip", (f) => f.key === chipKey && f.ring);
     await state("in a room: Up from the first post names the status chips, the room state and the header on the key bar", chipWhere);
+    // Enter: its choices under the bar, as a strip (K1-6) with the ring on Stop, the key bar on a place of its own.
+    const chipChoices = chipWhere.replace(/^status · /, "");
     press("Enter");
-    await expect("Enter: the chip's choices open under the bar", (f) => f.chip && f.expanded === "true" && f.chipOpen);
-    log(`api: ${running} running turn; page: its chip open`);
-    const chipBar = await keyBar(chipWhere);
-    if (!chipBar.keys.includes("Esc Backspace fold the choices")) fail(`with the chip open the key bar reads ${JSON.stringify(chipBar.keys)}: expected Esc and Backspace to fold the chip's choices`);
+    await expect("Enter: the chip's choices open under the bar, as a strip, the ring on Stop", (f) => f.chipOpen && f.strips === 1 && f.action === "stop:0" && f.label === "Stop");
+    log(`api: ${running} running turn; page: its chip open, its strip ${JSON.stringify(strip()?.names)}`);
+    names("the working chip's choices", ["Stop", `show #${openPost.number}`]);
+    const chipBar = await keyBar(`Stop · ${chipChoices}`);
+    if (chipBar.place !== "room-chip-actions" || !chipBar.keys.includes("Esc Backspace fold the choices") || !chipBar.keys.includes("Enter Stop")) fail(`with the chip's strip open the key bar reads ${JSON.stringify(chipBar)}: expected its own place, Enter Stop and Esc and Backspace to fold the chip's choices`);
     log(`  key bar: ${chipBar.keys.join(" · ")}`);
-    // Its choices are reached with Tab (K1-6 makes them a strip); Up from them is back on the chip, the choices still open.
-    await tabTo("Tab to Stop in the chip's choices", (f) => f.label === "Stop" && f.chipOpen, "Tab", 4);
+    // Up from the strip is back on the chip, the choices folded with it.
     press("ArrowUp");
-    await expect("Up from the choices: back on the chip, its choices still open", (f) => f.key === chipKey && f.chipOpen && f.expanded === "true");
+    await expect("Up from the strip: back on the chip, its choices folded", (f) => f.key === chipKey && !f.chipOpen && f.strips === 0 && f.expanded === "false");
+    press("Enter");
+    await expect("Enter: the strip again, on Stop", (f) => f.chipOpen && f.action === "stop:0");
     press("Escape");
-    await expect("Esc: the choices folded, the focus on the chip, the room still open", (f) => f.chip && f.expanded === "false" && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+    await expect("Esc: the choices folded, the focus on the chip, the room still open", (f) => f.chip && f.key === chipKey && f.expanded === "false" && !f.chipOpen && f.strips === 0 && f.drawers.some((d) => d.view === "room" && !d.inert));
     press("Escape");
     await sleep(400);
     await expect("Esc again, nothing in front: the room stays, the focus on the chip", (f) => f.chip && f.drawers.some((d) => d.view === "room" && !d.inert));
     await state("Esc with a chip expanded folds it; the room stays", chipWhere);
     press("Enter");
-    await expect("Enter: the choices again", (f) => f.chip && f.chipOpen);
+    await expect("Enter: the choices again", (f) => f.chipOpen && f.action === "stop:0");
     press("Backspace");
-    await expect("Backspace folds them as Esc does, the room still open", (f) => f.chip && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+    await expect("Backspace folds them as Esc does, the ring on the chip, the room still open", (f) => f.chip && f.key === chipKey && !f.chipOpen && f.strips === 0 && f.drawers.some((d) => d.view === "room" && !d.inert));
     const foldedBar = await keyBar(chipWhere);
     if (!foldedBar.keys.includes("Backspace back to the overview") || foldedBar.keys.some((key) => key.startsWith("Esc "))) fail(`with the chip folded the key bar reads ${JSON.stringify(foldedBar.keys)}: expected "Backspace back to the overview" and no Esc`);
     await state("Backspace with a chip expanded folds it first", chipWhere);
@@ -2469,6 +2473,320 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const seatToast = browser.poll<string | null>("the toast for the seat", "() => [...document.querySelectorAll('.toast-stack .toast')].map((t) => t.textContent.trim()).find((t) => t.includes('is seated')) ?? null", (t) => t !== null);
     log(`api: Third has @${seated.alias} (${seated.id.slice(0, 8)}), ${thirdBefore.length + 1} members; page: "${seatToast}"`);
     await state("a crew member seated in a room by keys alone", "sol · crew member");
+  }
+
+  // ---------------- 7. a status chip's choices (K1-6) ----------------
+
+  // @fable's turn on a request of yours, held running, which T3's fake asks approvals and questions on. Once.
+  let chipRun: { id: string; request: string; seq: number; number: number } | undefined;
+  const chipTurn = async () => {
+    if (chipRun) return chipRun;
+    await room.settle("fable");
+    const request = await room.message("Build the release.");
+    const run = await room.live("fable");
+    const post = room.post(await room.snapshot(), request);
+    chipRun = { id: run.id, request, seq: post.seq, number: post.number };
+    return chipRun;
+  };
+  /** T3's fake asks @fable an approval or a question; the API shows it. */
+  const fableAsks = async (kind: "approval" | "question", body: Record<string, unknown> = {}): Promise<string> => {
+    const { requestId } = (await service.fake(kind, { threadId: room.thread.fable, ...body })) as { requestId: string };
+    await until(`the API to show @fable's ${kind}`, async () => ((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === requestId));
+    return requestId;
+  };
+  /** What T3's fake keeps of it: pending, or resolved with the decision or the answers it got, or cancelled. */
+  const t3Record = (requestId: string) => service.fake("request", { threadId: room.thread.fable, requestId }) as Promise<{ status: string; decision: string | null; answers: Record<string, unknown> | null }>;
+  const answered = async (requestId: string, what: string) => {
+    const got = await until(`T3's fake to record ${what}`, async () => {
+      const r = await t3Record(requestId);
+      return r.status === "pending" ? null : r;
+    });
+    await until("the API to show it answered", async () => !((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === requestId));
+    return got;
+  };
+  const askChip = () => `chip:ask:${room.participant.fable}`;
+  /** The newest post the board draws, by its key. */
+  const newestDrawn = () => browser.eval<string>(`() => [...document.querySelectorAll('.timeline [data-nav="post"]')].at(-1)?.dataset.navKey ?? ''`);
+  /** The chip gone with the ring in its strip: the ring on the newest post (no other chip needs you), in the room. */
+  const onNewest = async (what: string) => {
+    const f = await expect(`${what}: the chip gone, the ring on the newest post`, (f) => f.key?.startsWith("post:") === true && f.ring && inRoom(f) && f.strips === 0 && !f.chipOpen);
+    if (f.key !== newestDrawn()) fail(`the ring is on ${f.key}, not on the newest post ${newestDrawn()}`);
+    return f;
+  };
+  /** Out to the room's card and in again: the room opens with the ring on the chip that needs you. */
+  const toAskChip = async (what: string) => {
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect(`Enter: the room, the ring on @fable's ${what} chip`, (f) => f.key === askChip() && inRoom(f) && f.ring, 10_000);
+  };
+  const DECISIONS = [
+    ["accept", "Accept"],
+    ["acceptForSession", "Accept for session"],
+    ["acceptAlways", "Always accept"],
+    ["decline", "Decline"],
+    ["cancel", "Cancel turn"],
+  ] as const;
+  const QUESTION = { questions: [{ id: "Which build?", header: "Build", question: "Which build?", options: [{ label: "debug", description: "With symbols" }, { label: "release", description: "Optimised" }], allowCustomAnswer: true }] };
+  const questionChoices = (on: number) => ["debug", "release", "the answer of your own", "Custom answer", "Submit answers", "Dismiss", `show #${on}`];
+  /** The choices checked on @fable's question where the page draws it: under the bar, and in his turn's bubble. */
+  const checked = () => browser.eval<{ bar: string[]; bubble: string[] }>(`() => {
+    const of = (root) => [...document.querySelectorAll(root + ' .native-card input[type=radio]')].filter((i) => i.checked).map((i) => (i.closest('label')?.textContent ?? '').trim() || 'the answer of your own');
+    return { bar: of('.work-open'), bubble: of('.live-turn') };
+  }`);
+
+  if (
+    await section("a status chip's choices: Enter on an approval's chip opens them as a strip under the bar, the ring on Accept", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+    })
+  ) {
+    // @fable's turn runs on a request of yours and T3 asks an approval of it: the room opens with the ring on its chip;
+    // Enter opens its choices under the bar as a strip, the ring on Accept, then the request it is about. (Into the room
+    // first: the turn and the approval rank its tile anew, which would move the overview under the arrows.)
+    await goTo(`room:${R}`);
+    press("Enter");
+    await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+    const turn = await chipTurn();
+    const first = await fableAsks("approval");
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the chip's choices under the bar as a strip, the ring on Accept", (f) => f.chipOpen && f.strips === 1 && f.action === "choice:0" && f.label === "Accept" && f.ring);
+    names("@fable's approval", [...DECISIONS.map(([, label]) => label), `show #${turn.number}`]);
+    if (strip()?.item !== null) fail(`the chip's strip is under the bar, on no post: ${JSON.stringify(strip())}`);
+    await barSays("the approval's strip", { place: "room-chip-actions", where: "Accept · @fable approval: waiting for you", keys: ["↑ ↓ the chip or the posts", "← → choose", "Enter Accept", "Esc Backspace fold the choices", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    press("ArrowLeft");
+    await sleep(300);
+    await expect("Left at the start: the ring stays on Accept", (f) => f.action === "choice:0");
+    for (let i = 1; i < DECISIONS.length; i += 1) press("ArrowRight");
+    await expect("Right ×4: Cancel turn", (f) => f.action === "choice:4" && f.label === "Cancel turn");
+    press("ArrowRight");
+    await expect("Right: show #n", (f) => f.action === `show:${turn.number}`);
+    press("ArrowRight");
+    await sleep(300);
+    await expect("Right at the end: the ring stays", (f) => f.action === `show:${turn.number}` && f.panel === null);
+    for (let i = 0; i < DECISIONS.length; i += 1) press("ArrowLeft");
+    await expect("Left ×5: back on Accept", (f) => f.action === "choice:0");
+    if ((await t3Record(first)).status !== "pending") fail("the approval was answered by moving along its choices");
+    log("api: the approval still waits in T3's fake");
+    await state("a status chip's choices: Enter on an approval's chip opens them as a strip under the bar, the ring on Accept", "Accept · @fable approval: waiting for you");
+
+    // Esc folds the chip, the ring back on it, the approval left waiting; Backspace the same; ↑ too. show #n takes the
+    // ring to the request, the chip folded, the approval still waiting.
+    press("Escape");
+    await expect("Esc: the chip folded, the ring back on it", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0 && f.expanded === "false" && f.ring && inRoom(f));
+    press("Enter");
+    await expect("Enter: the strip again, on Accept", (f) => f.chipOpen && f.action === "choice:0");
+    press("Backspace");
+    await expect("Backspace: the chip folded as Esc does, the room still open", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0 && inRoom(f));
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: the strip on Accept for session", (f) => f.chipOpen && f.action === "choice:1");
+    press("ArrowUp");
+    await expect("Up: back on the chip, folded", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0);
+    press("Enter");
+    press("ArrowDown");
+    await expect("Enter, Down: on the posts, the chip folded", (f) => f.key?.startsWith("post:") === true && !f.chipOpen && f.strips === 0);
+    await toAskChip("approval");
+    press("Enter");
+    for (let i = 0; i < DECISIONS.length; i += 1) press("ArrowRight");
+    await expect(`Enter, Right ×5: show #${turn.number}`, (f) => f.action === `show:${turn.number}`);
+    press("Enter");
+    await expect(`Enter: the ring on your request #${turn.number}, the chip folded`, (f) => f.key === `post:${turn.seq}` && !f.chipOpen && f.strips === 0 && f.ring);
+    const waiting = await t3Record(first);
+    if (waiting.status !== "pending" || !((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === first)) fail(`the approval should still wait: ${JSON.stringify(waiting)}`);
+    log("api: the approval still waits, in the API and in T3's fake");
+    await state("a status chip's choices: Esc and Backspace fold the chip and leave the approval waiting; show #n takes the ring to its request", await postWhere(`post:${turn.seq}`));
+
+    // Each choice by keys alone: the room opens on the approval's chip, Enter, Right to the choice, Enter; T3's fake
+    // records that decision, and the chip gone, the ring is on the newest post.
+    for (const [index, [decision, label]] of DECISIONS.entries()) {
+      const requestId = index === 0 ? first : await fableAsks("approval");
+      await toAskChip("approval");
+      press("Enter");
+      for (let i = 0; i < index; i += 1) press("ArrowRight");
+      await expect(`Enter${index > 0 ? `, Right ×${index}` : ""}: ${label}`, (f) => f.action === `choice:${index}` && f.label === label);
+      await keyBar(`${label} · @fable approval: waiting for you`);
+      press("Enter");
+      const got = await answered(requestId, label);
+      if (got.status !== "resolved" || got.decision !== decision) fail(`T3's fake got ${JSON.stringify(got)} for ${label}, expected the decision ${decision}`);
+      log(`api: T3's fake recorded ${requestId.slice(0, 8)} ${got.status}, decision ${got.decision}`);
+      await onNewest(label);
+    }
+    await state("a status chip's choices: each of an approval's choices by keys alone reaches T3", /^#\d+ · /);
+  }
+
+  if (
+    await section("a status chip's choices: a question's option chosen by keys shows in the turn's bubble too; Submit reaches T3", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // A question with two options and an answer of your own: the chip's strip offers its options, the answer of your own,
+    // Custom answer, Submit answers and Dismiss; an option chosen there is chosen in @fable's turn's bubble too (one
+    // request, drawn twice), and Submit sends it to T3.
+    const turn = await chipTurn();
+    const first = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    await expect("Enter: the question's choices, the ring on its first option", (f) => f.chipOpen && f.action === "choice:0" && f.label === "debug");
+    names("@fable's question", questionChoices(turn.number));
+    press("ArrowRight");
+    await expect("Right: release", (f) => f.action === "choice:1" && f.label === "release");
+    press("Enter");
+    await expect("Enter: release chosen", (f) => f.action === "choice:1" && f.pressed === "true");
+    const both = await until("release to be chosen under the bar and in the turn's bubble", async () => {
+      const now = checked();
+      return JSON.stringify(now) === JSON.stringify({ bar: ["release"], bubble: ["release"] }) ? now : null;
+    });
+    log(`  page: chosen under the bar ${JSON.stringify(both.bar)}, in the bubble ${JSON.stringify(both.bubble)}`);
+    // Folded, the choice is kept: the turn's own actions show it pressed.
+    press("Escape");
+    await expect("Esc: the chip folded, the question still waiting", (f) => f.key === askChip() && !f.chipOpen);
+    press("End");
+    press("ArrowDown");
+    await expect(`End, Down: @fable's running turn (run ${turn.id.slice(0, 8)})`, (f) => f.key === `live:${turn.id}`);
+    press("Enter");
+    await expect("Enter: the turn's actions", (f) => f.strips === 1 && f.item === `live:${turn.id}`);
+    const bubble = browser.eval<Array<{ name: string; pressed: string | null }>>(`() => [...document.querySelectorAll('.action-strip > button')].map((b) => ({ name: b.getAttribute('aria-label'), pressed: b.getAttribute('aria-pressed') }))`);
+    const offered = bubble.map((b) => b.name);
+    const same = questionChoices(turn.number).slice(0, -1);
+    if (JSON.stringify(offered.filter((n) => same.includes(n))) !== JSON.stringify(same) || bubble.find((b) => b.name === "release")?.pressed !== "true" || bubble.find((b) => b.name === "debug")?.pressed !== "false") fail(`the turn's actions should offer the chip's choices, release pressed: ${JSON.stringify(bubble)}`);
+    log(`  page: the turn's actions ${offered.join(" · ")}; release pressed`);
+    press("Escape");
+    await expect("Esc: the turn's actions closed", (f) => f.strips === 0 && f.key === `live:${turn.id}`);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 4; i += 1) press("ArrowRight");
+    await expect("Enter, Right ×4: Submit answers, release still chosen", (f) => f.action === "choice:4" && f.label === "Submit answers" && checked().bar.join() === "release");
+    press("Enter");
+    const got = await answered(first, "the question's answer");
+    if (got.status !== "resolved" || JSON.stringify(got.answers) !== JSON.stringify({ "Which build?": "release" })) fail(`T3's fake got ${JSON.stringify(got)}, expected the answer release`);
+    log(`api: T3's fake recorded ${first.slice(0, 8)} ${got.status}, answers ${JSON.stringify(got.answers)}`);
+    await onNewest("Submit answers");
+    await state("a status chip's choices: a question's option chosen by keys shows in the turn's bubble too; Submit reaches T3", /^#\d+ · /);
+
+    // Custom answer: Enter goes into its field, the keys type the answer, Esc comes back to Custom answer; Submit sends it.
+    // Then Dismiss drops the next question: T3's fake records it cancelled.
+    const custom = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 3; i += 1) press("ArrowRight");
+    await expect("Enter, Right ×3: Custom answer", (f) => f.action === "choice:3" && f.label === "Custom answer");
+    await keyBar("Custom answer · @fable question: waiting for you");
+    press("Enter");
+    await expect("Enter: in the Custom answer field, the strip still open", (f) => f.tag === "INPUT" && f.strips === 1 && f.chipOpen);
+    for (const key of ["n", "i", "g", "h", "t", "l", "y"]) press(key);
+    await expect("typed: nightly, the composer shut", (f) => f.tag === "INPUT" && f.value === "nightly" && !f.composerOpen);
+    press("Escape");
+    await expect("Esc: back on Custom answer, the answer kept", (f) => f.action === "choice:3" && f.strips === 1);
+    press("ArrowRight");
+    await expect("Right: Submit answers, which can be pressed now", (f) => f.action === "choice:4");
+    press("Enter");
+    const typed = await answered(custom, "the typed answer");
+    if (typed.status !== "resolved" || JSON.stringify(typed.answers) !== JSON.stringify({ "Which build?": "nightly" })) fail(`T3's fake got ${JSON.stringify(typed)}, expected the answer nightly`);
+    log(`api: T3's fake recorded ${custom.slice(0, 8)} ${typed.status}, answers ${JSON.stringify(typed.answers)}`);
+    await onNewest("Submit answers");
+    const dropped = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 4; i += 1) press("ArrowRight");
+    // Submit answers can be pressed only once there is an answer: until then the ring passes over it.
+    await expect("Enter, Right ×4, past Submit answers (nothing chosen yet): Dismiss", (f) => f.action === "choice:5" && f.label === "Dismiss");
+    press("Enter");
+    const gone = await answered(dropped, "the question dismissed");
+    if (gone.status !== "cancelled" || gone.answers !== null) fail(`T3's fake got ${JSON.stringify(gone)}, expected the question cancelled`);
+    log(`api: T3's fake recorded ${dropped.slice(0, 8)} ${gone.status}`);
+    await onNewest("Dismiss");
+    await state("a status chip's choices: a question's Custom answer typed by keys reaches T3; Dismiss drops the next", /^#\d+ · /);
+  }
+
+  if (
+    await section("a running turn's chip: Stop by keys stops it through T3", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // @fable's turn runs, nothing asked: its chip's strip holds Stop and the request it works on. Stop stops it through
+    // T3; the chip gone, the ring goes to the stopped turn's notice, which needs you, or to the newest post.
+    const turn = await chipTurn();
+    const runKey = `chip:run:${turn.id}`;
+    await abovePosts(`@fable's working chip`, (f) => f.key === runKey);
+    press("Enter");
+    await expect("Enter: the turn's choices, the ring on Stop", (f) => f.chipOpen && f.action === "stop:0" && f.label === "Stop");
+    names("@fable's running turn", ["Stop", `show #${turn.number}`]);
+    await keyBar(`Stop · @fable working: on #${turn.number}`);
+    press("Enter");
+    const stopped = await until("the API to show @fable's turn stopped", async () => {
+      const s = await room.snapshot();
+      const desk = await service.call<{ participants: Record<string, { runningRun?: unknown }> }>("GET", `/api/rooms/${R}/desk`);
+      const notice = s.needsYou.find((p: any) => p.notice?.retryRunId === turn.id);
+      return s.runs.find((r: any) => r.id === turn.id)?.phase === "terminal" && !desk.participants[room.participant.fable]?.runningRun && notice ? notice : null;
+    });
+    log(`api: run ${turn.id.slice(0, 8)} terminal, T3's thread runs nothing; #${stopped.number} needs you`);
+    const noticeChip = `chip:notice:${stopped.id}`;
+    const landed = await expect("the chip gone: the ring on the notice's chip, or on the newest post", (f) => (f.key === noticeChip || f.key?.startsWith("post:") === true) && f.ring && f.strips === 0 && inRoom(f));
+    await state("a running turn's chip: Stop by keys stops it through T3", landed.key === noticeChip ? /^status · @fable failed: / : await postWhere(landed.key));
+
+    // The failed turn's chip: Retry sends it again (a new run on the request, the notice retried); that turn fails in T3
+    // and Dismiss on its chip takes it off your list.
+    if (focus().key !== noticeChip) {
+      press("Backspace");
+      await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+      press("Enter");
+      await expect("Enter: the room, the ring on the notice's chip", (f) => f.key === noticeChip && inRoom(f), 10_000);
+    }
+    press("Enter");
+    await expect("Enter: the failed turn's choices, the ring on Retry", (f) => f.chipOpen && f.action === "retry:0" && f.ring);
+    names(`#${stopped.number}, a failed turn`, ["Retry", "Dismiss", `show #${stopped.number}`]);
+    await keyBar(/^Retry · @fable failed: /);
+    press("Enter");
+    const retried = await until("the API to show the turn sent again", async () => {
+      const s = await room.snapshot();
+      const notice = s.posts.find((p: any) => p.id === stopped.id);
+      const run = s.runs.find((r: any) => r.id !== turn.id && r.phase !== "terminal" && r.requestIds.includes(turn.request));
+      return notice?.notice.retried && !s.needsYou.some((p: any) => p.id === stopped.id) && run ? run : null;
+    });
+    log(`api: #${stopped.number} retried, run ${retried.id.slice(0, 8)} on #${turn.number}`);
+    await onNewest("Retry");
+    await room.live("fable");
+    await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+    const failed = await until("the API to show the new turn failed, needing you", async () => (await room.snapshot()).needsYou.find((p: any) => p.notice?.retryRunId === retried.id) ?? null);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect("Enter: the room, the ring on the new notice's chip", (f) => f.key === `chip:notice:${failed.id}` && inRoom(f), 10_000);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Dismiss", (f) => f.action === "dismiss:0" && f.label === "Dismiss");
+    press("Enter");
+    await until("the API to show the notice dismissed", async () => {
+      const s = await room.snapshot();
+      const notice = s.posts.find((p: any) => p.id === failed.id);
+      return notice?.notice.dismissed && !notice.notice.needsYou && s.needsYou.length === 0 ? true : null;
+    });
+    log(`api: #${failed.number} dismissed, nothing needs you`);
+    await onNewest("Dismiss");
+    chipRun = undefined;
+    await state("a failed turn's chip: Retry by keys sends it again, Dismiss by keys takes the next off your list", /^#\d+ · /);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   }
 
   if (

@@ -755,6 +755,8 @@ The overview is a grid of rows, as on a game screen: the header's buttons (+ pro
 
 **A post's actions.** Enter on a post (or a running turn's live bubble) opens its **action strip**: one row under it holding every button a mouse finds on that post, the ring on the first. ← → choose between them and stop at the ends, Enter presses the one the ring is on (the key bar names it: "Enter Correct…"), and Esc (or Backspace) closes the strip with the ring back on the post; ↑ ↓ close it and move on as from the post. The order is fixed: your open request's Correct… and Cancel, a failed turn's Retry and Dismiss, a running turn's Stop and the choices of an approval or question it shows; then Copy, Read aloud (Stop reading while it reads), each #ref, each file chip (its preview), each image (named with its alt text), "turn in T3" and "sent to T3"; then what else is on the post (a link, a code block's Copy, a folded text, a live feed's earlier part); and Detail last, the post's detail (who wrote it to whom, when, where it stands, the post with its folded text open). Correct… opens its box in place with the field focused: Enter sends the correction (Shift+Enter a new line), Esc closes the box, and either way the ring is back on Correct…. A button that opens something over the page (Detail, a file's or an image's preview) gets the ring back when that closes. A live bubble has no Detail (there is no post behind it yet). When a running turn ends with the ring on it or in its strip, the ring goes to the newest post, the turn's reply; after a click in it the page moves neither the focus nor the board.
 
+**A status chip's choices.** Enter on a status chip opens it under the bar, as a click does, with its choices in an action strip under it and the ring on the first: an approval's Accept, Accept for session, Always accept, Decline and Cancel turn; a question's options, the answer of your own and Custom answer (Enter goes into its field; Esc there comes back), then Submit answers and Dismiss; a failed turn's Retry and Dismiss; a running turn's Stop; then "show #n" for each post it is about (the failed turn's notice, the request the turn works on), which takes the ring to that post. ← → choose, Enter presses (the key bar names the choice), and Esc or Backspace folds the chip with the ring back on it, leaving what it asks waiting; ↑ goes back to the chip and ↓ on to the posts, the chip folded. Each button presses the choice's own control, the one a mouse clicks, so it does what a click does. An approval or a question a running turn shows in its live bubble too is one request in both places: what you choose in one shows in the other, and either answers it. When the chip goes (answered, retried, dismissed, its turn ended) with the ring in its strip, the ring goes where it goes when a room opens: the next chip that needs you, else the newest post.
+
 The arrows keep their own meaning wherever they already have one: in text fields and selects, in the composer's suggestion lists, the model list, menus, dialogs and the Arrange dialog (Alt+↑ ↓), and with any modifier (Alt+← stays the browser's back).
 
 **Everywhere**
@@ -806,7 +808,7 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | a status chip | `↑` `↓` | The lane above or below |
 |  | `←` `→` | Between the chips (those with choices; it stops at the ends) |
 |  | `Home` `End` | First or last post |
-|  | `Enter` | Its choices (again to fold them) |
+|  | `Enter` | Its choices (in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a failed turn's Retry, a running turn's Stop, then the posts it is about) |
 | a post, or a turn running (its live bubble) | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the status chips, the room state and the header; past the newest, the turns running now, then the composer's strip) |
 |  | `Home` `End` | First or last post |
 |  | `Enter` | Its actions (in a row under it, the ring on the first: every button the post has, then Detail, its detail) |
@@ -814,6 +816,11 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `←` `→` | Choose (between its buttons; it stops at the ends) |
 |  | `Enter` | Press it (the bar names the button the ring is on) |
 |  | `Esc` `Backspace` | Close (the ring back on the post) |
+|  | `Home` `End` | First or last post |
+| a status chip's choices | `↑` `↓` | The chip or the posts (the choices fold; what they ask still waits) |
+|  | `←` `→` | Choose (between its buttons; it stops at the ends) |
+|  | `Enter` | Press it (the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back) |
+|  | `Esc` `Backspace` | Fold the choices (the ring back on the chip; what they ask still waits for you) |
 |  | `Home` `End` | First or last post |
 | the composer's strip | `↑` | The posts (the post you were on, else the newest) |
 |  | `Home` `End` | First or last post |

@@ -56,6 +56,7 @@ export type PlaceId =
   | "room-chip"
   | "room-post"
   | "room-actions"
+  | "room-chip-actions"
   | "room-strip"
   | "room-member"
   | "room-pane"
@@ -190,7 +191,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["↑", "↓"], does: "the lane above or below" },
           { keys: ["←", "→"], does: "between the chips", more: "those with choices; it stops at the ends" },
           { keys: ["Home", "End"], does: "first or last post" },
-          { keys: ["Enter"], does: "its choices", more: "again to fold them" },
+          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a failed turn's Retry, a running turn's Stop, then the posts it is about" },
         ],
       },
       {
@@ -212,6 +213,18 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
           { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on" },
           { keys: ["Esc", "Backspace"], does: "close", more: "the ring back on the post" },
+          { keys: ["Home", "End"], does: "first or last post" },
+        ],
+      },
+      {
+        id: "room-chip-actions",
+        on: "a status chip's choices",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "the chip or the posts", more: "the choices fold; what they ask still waits" },
+          { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back" },
+          { keys: ["Esc", "Backspace"], does: "fold the choices", more: "the ring back on the chip; what they ask still waits for you" },
           { keys: ["Home", "End"], does: "first or last post" },
         ],
       },

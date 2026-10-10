@@ -7956,6 +7956,17 @@ span.reply-to {
   justify-content: center;
 }
 
+/* A status chip's choices opened by the keys (WorkBar.tsx): their strip under them, in the same column. */
+.work-bar > .action-strip {
+  max-width: 720px;
+  margin-bottom: 4px;
+}
+
+.sheet .work-bar > .action-strip {
+  margin: 6px auto 4px;
+  max-width: var(--sheet-col);
+}
+
 .action-strip > button {
   max-width: 24rem;
   overflow: hidden;

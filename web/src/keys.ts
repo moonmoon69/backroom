@@ -262,10 +262,10 @@ export function keyPlace(): PlaceNow {
     if (layer!.querySelector(".work-open")) now.push("chip-open");
     if (layer!.querySelector(".req-correct")) now.push("correcting");
     if (layer!.querySelector(".inspector")) now.push("panel-open");
-    // A button of an action strip: named with the item it is on ("Cancel · #33 · you to @fable, open"), and by its name
-    // for Enter.
+    // A button of an action strip: named with the item it is on ("Cancel · #33 · you to @fable, open"; "Accept · @alpha
+    // approval: waiting for you"), and by its name for Enter.
     const strip = active?.closest<HTMLElement>(".action-strip");
-    if (strip) return at("room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
+    if (strip) return at(strip.closest(".work-bar") ? "room-chip-actions" : "room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
     if (control) return at("room-button", control);
     if (item?.dataset.nav === "post" || item?.dataset.nav === "live") return at("room-post", whereOf(item));
     if (item?.dataset.nav === "member") return at("room-member", whereOf(item));

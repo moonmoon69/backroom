@@ -14,6 +14,9 @@
  *   POST /api/fake/question      { threadId, questions? }      a question on the running run -> { requestId }
  *                                questions: T3's own shape (options, allowCustomAnswer); T3's "Proceed?" yes/no by default
  *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
+ *   POST /api/fake/request       { threadId, requestId }       an approval's or question's record, as T3 keeps it -> { status,
+ *                                decision, answers }: what the page answered reached T3 ("resolved" with the decision or
+ *                                the answers; a dismissed question "cancelled")
  */
 import { Hono, type Context } from "hono";
 import type { FakeT3Adapter } from "../adapter/fake.ts";
@@ -49,6 +52,11 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
   controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));
   controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input), Array.isArray(input.questions) ? { questions: input.questions as never } : {}) })));
+  controls.post("/api/fake/request", run((input) => {
+    const request = fake.threads.get(thread(input))!.runtimeRequests.find((r) => r.id === input.requestId);
+    if (!request) throw new Error("requestId must name a request of the thread");
+    return { status: request.status, decision: request.decision, answers: request.answers };
+  }));
   controls.post("/api/fake/background", run((input) => {
     fake.setBackground(thread(input), Array.isArray(input.taskIds) ? input.taskIds.filter((id): id is string => typeof id === "string") : []);
     return {};
