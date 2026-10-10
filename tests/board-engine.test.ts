@@ -542,12 +542,33 @@ test("H5: a member's post is refused with a plain sentence and appends nothing; 
   assert.equal(f.request(q.id).state, "answered");
 });
 
-test("a correction during the turn supersedes its final: the request stays open and the next turn answers it", async (t) => {
+test("M1: rooms-board post and correct to a working member go into its running turn, the reply says so, and its one final answers both with the correction seen", async (t) => {
   const f = await Fixture.create();
   t.after(() => f.close());
   const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
   await f.tick();
-  // A correction lands during the turn: w has not read it, so its final is superseded and the request stays open.
+  const reply = await f.cli("c", "correct", `#${f.num(a!)}`, "use the new grammar");
+  assert.match(reply, new RegExp(`to #${f.num(a!)} → @w: it goes into @w's running turn, or starts one, and its answer to #${f.num(a!)} takes it into account\\.`));
+  assert.doesNotMatch(reply, /next turn/);
+  const [b] = f.posted(await f.cli("c", "post", "@w and the printer"));
+  await f.tick();
+  const t3 = f.fake.thread(f.thread("w"));
+  assert.equal(t3.runs.length, 1, "no turn of its own");
+  const went = t3.turnItems.flatMap((i) => (i.type === "user_message" && i.inputIntent === "steer" ? [i.text] : []));
+  assert.equal(went.length, 1);
+  assert.match(went[0]!, /use the new grammar[\s\S]*and the printer/);
+  f.complete("w", "parser done with the new grammar, and the printer");
+  await f.tick();
+  assert.deepEqual(f.finalsOn("w", a!).map((e) => (e.data.kind === "output" ? e.data.claims.map((cl) => [cl.requestId, cl.outcome]) : [])), [[[a, "answered"], [b, "answered"]]]);
+  assert.match(await f.cli("c", "help"), /correct #n "<text>"\s+corrects your request #n: it goes into its owner's running turn, or starts one\./);
+});
+
+test("a correction that lands as the turn ends, too late to go in, supersedes its final: the request stays open and the next turn answers it", async (t) => {
+  const f = await Fixture.create();
+  t.after(() => f.close());
+  const [a] = f.posted(await f.cli("c", "post", "@w build the parser"));
+  await f.tick();
+  // The correction lands as the turn ends, with no tick between: w has not read it, so its final is superseded.
   const correction = await f.appended(() => f.cli("c", "correct", `#${f.num(a!)}`, "use the new grammar"));
   assert.deepEqual(kinds(correction), ["correction"]);
   f.complete("w", "parser done");

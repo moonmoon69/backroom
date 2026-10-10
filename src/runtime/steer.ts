@@ -26,11 +26,9 @@ const MESSAGES: ReadonlySet<string> = new Set(["request", "correction", "retry"]
  * user's) wait for the turn's end, as every other input does unless a message carries it along.
  */
 export function goesIntoTurn(p: Projection, input: Input): boolean {
-  if (!MESSAGES.has(input.intent)) return false;
-  const event = p.events[input.seq - 1]?.id === input.eventId ? p.events[input.seq - 1] : p.events.find((e) => e.id === input.eventId);
-  const d = event?.data;
-  if (!d || !("author" in d) || d.author === "$system") return false;
-  return input.requestIds.every((id) => {
+  // Only the user and the orchestrator send these (the core refuses the rest); Backroom's own requests are known by
+  // their return address, or by their IDs in journals from before B1.
+  return MESSAGES.has(input.intent) && input.requestIds.every((id) => {
     const q = p.requests.get(id);
     return !q || !backroomRequest(q);
   });

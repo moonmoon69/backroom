@@ -19,8 +19,8 @@ function allEnded(r: Room): boolean {
 }
 
 /**
- * C hands A to W, which answers U (H5: nothing is held); the user steers W's running turn; W's final answers A and the
- * steer with a subagent still running, and wakes C; the subagent ends and W's own continuation is a follow-up on both,
+ * C hands A to W, which answers U (H5: nothing is held); the user's message goes into W's running turn (an old journal's
+ * steer: ID); W's final answers A and the message with a subagent still running, and wakes C; the subagent ends and W's own continuation is a follow-up on both,
  * which wakes C again; C reports. Touches every host step.
  */
 async function scenario(r: Room): Promise<{ u: string; a: string; steer: string }> {
@@ -79,7 +79,9 @@ function assertCrashInvariants(r: Room): void {
 function assertOutcome(r: Room, ids: { u: string; a: string; steer: string }): void {
   assert.equal(r.answeredClaims(ids.a).length, 1, "A answered exactly once");
   assert.equal(r.answeredClaims(ids.u).length, 1, "U answered exactly once, by C's hand-off");
-  assert.equal(r.answeredClaims(ids.steer).length, 1, "the steer answered exactly once, by W's final");
+  assert.equal(r.answeredClaims(ids.steer).length, 1, "the message answered exactly once, by W's final");
+  const copies = r.fake.thread(r.threadOf("W")).messages.filter((m) => m.role === "user" && /Also look at the tests folder/.test(m.text));
+  assert.equal(copies.length, 1, "the message reached W once, whatever restarts came between its offer, its send and its confirmation");
   const answer = r.outputs().find((o) => o.claims.some((c) => c.requestId === ids.a && c.outcome === "answered"))!;
   assert.equal(answer.body, '[T3 status of @W: still running: subagent "subagent sub-1"]\n\nA subagent is reading the files.');
   const follow = followUps(r);
@@ -92,7 +94,9 @@ function assertOutcome(r: Room, ids: { u: string; a: string; steer: string }): v
   assert.equal(r.wakes("W"), 2, "W: its run on A, and its own continuation");
 }
 
-const STEPS: HostStep[] = ["reserved", "sending", "sent", "accepted", "running", "steered", "output", "ended", "imported"];
+// "steered": the offer of a message into W's running turn is recorded, nothing sent; "steer-sent": T3 took it, not yet
+// confirmed; "steer-confirmed": confirmed, the run not yet ended (M1 review item 13).
+const STEPS: HostStep[] = ["reserved", "sending", "sent", "accepted", "running", "steered", "steer-sent", "steer-confirmed", "output", "ended", "imported"];
 
 test("without a crash the scenario passes every step once", async () => {
   room = await Room.create();
@@ -104,8 +108,8 @@ test("without a crash the scenario passes every step once", async () => {
 
 for (const seat of ["W", "C"]) {
   for (const step of STEPS) {
-    // The steer and the continuation's import are W's only.
-    if (seat === "C" && (step === "steered" || step === "imported")) continue;
+    // The message into a running turn and the continuation's import are W's only.
+    if (seat === "C" && (step.startsWith("steer") || step === "imported")) continue;
     test(`a crash after ${step} on ${seat}: one T3 run per dispatch, no input lost, every run ends`, async () => {
       room = await Room.create();
       room.crashOnce(step, seat);
