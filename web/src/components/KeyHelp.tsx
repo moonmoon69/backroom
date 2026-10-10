@@ -1,14 +1,28 @@
-import { entryText, KEYS } from "../keyOrder.ts";
+import { entryText, FOUR_KEYS, KEYS } from "../keyOrder.ts";
 import { Dialog } from "./Dialog.tsx";
 
 /**
- * The page's keys, in one place (keyOrder.ts, KEYS, which the key bar and README read too): by area, each place the
- * ring can be on with what each key does there. `?` opens it, Esc closes it and the focus goes back where it was.
+ * The page's keys, in one place (keyOrder.ts, KEYS, which the key bar and README read too): the four keys first
+ * (FOUR_KEYS, as README opens with them), then by area each place the ring can be on with what each key does there. `?`
+ * opens it, Esc closes it and the focus goes back where it was.
  */
 export function KeyHelp({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="Keyboard" onClose={onClose} manageFocus wide>
       <div className="key-help">
+        <ul className="key-help-four" aria-label="The four keys">
+          {FOUR_KEYS.map(({ keys, does }) => (
+            <li key={keys.join(" ")}>
+              <span className="key-help-keys">
+                {keys.map((key) => (
+                  <kbd key={key}>{key}</kbd>
+                ))}
+              </span>{" "}
+              {does[0]!.toUpperCase()}
+              {does.slice(1)}.
+            </li>
+          ))}
+        </ul>
         {KEYS.map(({ area, places }) => (
           <section key={area} aria-label={area}>
             <h3>{area}</h3>

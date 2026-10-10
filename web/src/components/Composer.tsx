@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -340,6 +341,11 @@ export function Composer({ overlay: asOverlay = false }: Props) {
       : [];
     return [...room, ...t3].filter((c) => c.name.toLowerCase().includes(slashPick.query)).slice(0, 12);
   }, [slashPick, commandsFor]);
+  // The list open under the field, if any (the / list wins, as it is drawn first), and its id for the field's
+  // aria-activedescendant.
+  const listId = useId();
+  const slashOpen = slashPick !== null && slashMatches.length > 0;
+  const mentionOpen = mention !== null && mentionMatches.length > 0;
 
   const acceptSlash = (name: string) => {
     if (!slashPick) return;
@@ -587,13 +593,18 @@ export function Composer({ overlay: asOverlay = false }: Props) {
               }, 150)
             }
             aria-label="Message"
+            // The @ or / list the arrows choose in (the focus stays in the field): a screen reader reads the option chosen.
+            aria-autocomplete="list"
+            aria-controls={slashOpen ? `${listId}-slash` : mentionOpen ? `${listId}-at` : undefined}
+            aria-activedescendant={slashOpen ? `${listId}-slash-${slashPick.index}` : mentionOpen ? `${listId}-at-${mention.index}` : undefined}
           />
         </div>
-        {slashPick && slashMatches.length > 0 ? (
-          <ul className="mention-menu slash-menu" role="listbox" aria-label="Commands">
+        {slashOpen ? (
+          <ul className="mention-menu slash-menu" role="listbox" aria-label="Commands" id={`${listId}-slash`}>
             {slashMatches.map((command, index) => (
               <li
                 key={`${command.group}:${command.name}`}
+                id={`${listId}-slash-${index}`}
                 role="option"
                 aria-selected={index === slashPick.index}
                 className={`${index === slashPick.index ? "active" : ""}${index > 0 && slashMatches[index - 1]?.group !== command.group ? " group-start" : ""}`}
@@ -612,11 +623,12 @@ export function Composer({ overlay: asOverlay = false }: Props) {
             ))}
           </ul>
         ) : null}
-        {mention && mentionMatches.length > 0 ? (
-          <ul className="mention-menu" role="listbox" aria-label="Mention a member">
+        {mentionOpen ? (
+          <ul className="mention-menu" role="listbox" aria-label="Mention a member" id={`${listId}-at`}>
             {mentionMatches.map((p, index) => (
               <li
                 key={p.id}
+                id={`${listId}-at-${index}`}
                 role="option"
                 aria-selected={index === mention.index}
                 className={index === mention.index ? "active" : ""}

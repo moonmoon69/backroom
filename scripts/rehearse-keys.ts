@@ -59,6 +59,7 @@
  * are played silently.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { barDoes, barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
@@ -288,7 +289,7 @@ const BAR = `() => {
  * has. Returns the places whose keys do not fit.
  */
 function everyBarFits(): string {
-  const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "panel-open", "help"];
+  const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "panel-open", "help", "disabled"];
   const mixes = Array.from({ length: 1 << conditions.length }, (_, mask) => conditions.filter((_, i) => mask & (1 << i)));
   const bars = new Map<string, { id: string; keys: Array<{ k: string[]; d: string }>; end: { k: string[]; d: string } | null }>();
   for (const place of KEYS.flatMap((area) => area.places)) {
@@ -1032,7 +1033,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await barSays(`#${notes.at(-1).number}`, {
       place: "room-post",
       where: `#${notes.at(-1).number} · note from you`,
-      keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
+      keys: ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
       end: "? all keys",
     });
     await state("key bar: a post's keys, each by what it does there", `#${notes.at(-1).number} · note from you`);
@@ -1057,7 +1058,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await abovePosts("the room state", (f) => f.key === "state");
     await expect("the room state's line has the ring", (f) => f.key === "state" && f.ring && f.tag === "BUTTON");
     announced(/^button$/, /^Room state/);
-    await barSays("the room state", { place: "room-state", where: stateWhere, keys: ["↑ ↓ the lane above or below", "← → between the panes", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    await barSays("the room state", { place: "room-state", where: stateWhere, keys: ["↑ ↓ the lane above or below", "→ the side panel", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
     const folded = focus().expanded;
     press("Enter");
     await expect("Enter opens or folds the room state", (f) => f.key === "state" && f.expanded !== folded);
@@ -1334,7 +1335,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
-    await section("in a room: Left and Right between the board, Members, Browser and Git", {
+    await section("in a room: Right into the side panel at the same height, along its head, down its members, Left back", {
       replay: async () => {
         await secondApproval();
         await openRequest();
@@ -1359,27 +1360,52 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       },
     })
   ) {
-    // ---------------- 4. the panes ----------------
+    // ---------------- 4. the side panel (K1-7) ----------------
 
+    // Right from #openPost goes into the side panel, unfolding Members, to the item there nearest in height; Home, Up and
+    // Down go through its rows (the head, then the members, as the API lists them); Right along its head stops at ×;
+    // Left from a row's first goes back to the board's item nearest in height, the panel left open.
     members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
     press("ArrowRight");
-    await expect(`Right: the Members panel opens, the focus on @${members[0]!.alias}`, (f) => f.panel === "people" && f.key === `member:${members[0]!.id}` && f.ring);
+    const beside = await expect("Right: the Members panel unfolds, the ring on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true && f.ring);
+    const heights = browser.eval<{ post: number[]; ring: number[]; nearer: string[] }>(
+      `() => { const box = (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; }; const post = document.querySelector('[data-nav-key="post:${openPost.seq}"]'); const ring = document.activeElement; const [t, b] = box(post); const gap = (e) => { const [et, eb] = box(e); return Math.max(0, Math.max(et, t) - Math.min(eb, b)); }; const nearer = [...document.querySelectorAll('[data-nav-side] [data-nav]')].filter((e) => e !== ring && gap(e) < gap(ring)).map((e) => e.dataset.navKey); return { post: box(post), ring: box(ring), nearer }; }`,
+    );
+    if (heights.nearer.length > 0) fail(`Right from #${openPost.number} landed on ${beside.key}, but ${heights.nearer.join(", ")} is nearer in height`);
+    log(`  page: #${openPost.number} at y ${heights.post.join("-")}; the ring on ${beside.key} at y ${heights.ring.join("-")}, none nearer`);
+    press("Home");
+    await expect(`Home: @${members[0]!.alias}, the first member, as the API lists them`, (f) => f.key === `member:${members[0]!.id}` && f.ring);
     announced(/^group$/, `@${members[0]!.alias}`);
     press("ArrowDown");
     await expect(`Down: @${members[1]!.alias}, as the API lists the members`, (f) => f.key === `member:${members[1]!.id}`);
+    press("ArrowUp");
+    press("ArrowUp");
+    await expect("Up past the first member: the panel's head, on the tab showing (Members)", (f) => f.key === "side:tab:people" && f.role === "tab" && f.ring);
+    for (const [key, what] of [["side:tab:browser", "the Browser tab"], ["side:tab:git", "the Git tab"], ["side:add", "+ Add member"], ["side:close", "×"]] as const) {
+      press("ArrowRight");
+      await expect(`Right: ${what}, the panel still Members`, (f) => f.key === key && f.panel === "people" && f.ring);
+    }
     press("ArrowRight");
-    await expect("Right: the Browser panel", (f) => f.panel === "browser" && f.inLayer === "room");
+    await sleep(300);
+    await expect("Right at the head's right end: the ring stays", (f) => f.key === "side:close" && f.panel === "people");
+    press("Home");
+    await expect(`Home: @${members[0]!.alias}, the first under the head`, (f) => f.key === `member:${members[0]!.id}`);
+    press("ArrowLeft");
+    await expect("Left from a member: back on the board, on a post or the strip beside it, the panel left open", (f) => f.panel === "people" && inRoom(f) && /^(post|live):|^strip$/.test(f.key ?? "") && f.ring);
+    press("End");
+    await expect(`End: #${openPost.number}, the newest post`, (f) => f.key === `post:${openPost.seq}`);
     press("ArrowRight");
-    await expect("Right: the Git panel", (f) => f.panel === "git" && f.inLayer === "room");
-    press("ArrowLeft");
-    await expect("Left: the Browser panel", (f) => f.panel === "browser");
-    press("ArrowLeft");
-    await expect(`Left: Members, back on @${members[1]!.alias}`, (f) => f.panel === "people" && f.key === `member:${members[1]!.id}`);
-    press("ArrowLeft");
-    await expect(`Left: the board, back on #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
-    press("ArrowRight");
-    await expect(`Right: Members, on @${members[1]!.alias}`, (f) => f.key === `member:${members[1]!.id}`);
-    await state("in a room: Left and Right between the board, Members, Browser and Git", new RegExp(`^@${members[1]!.alias} · `));
+    await expect(`Right: back in the open panel, on ${beside.key} again (the nearest in height)`, (f) => f.key === beside.key && f.panel === "people");
+    press("Home");
+    press("ArrowDown");
+    await expect(`Home, Down: @${members[1]!.alias}`, (f) => f.key === `member:${members[1]!.id}` && f.ring);
+    await barSays(`@${members[1]!.alias}`, {
+      place: "room-member",
+      where: (await keyBar(new RegExp(`^@${members[1]!.alias} · `))).where,
+      keys: ["↑ ↓ previous or next member", "← the conversation", "Enter its actions", "Backspace fold the side panel", "a–z start writing", "Home End first or last member"],
+      end: "? all keys",
+    });
+    await state("in a room: Right into the side panel at the same height, along its head, down its members, Left back", new RegExp(`^@${members[1]!.alias} · `));
 
     // Esc in a menu closes the menu only; the focus goes back to the member.
     press("Tab");
@@ -1424,8 +1450,31 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // ---------------- 5. a member's thread, and back out ----------------
 
     const workerThread = (s1.bindings as Array<{ participantId: string; threadId: string; retiredAt: string | null }>).find((b) => b.participantId === members[1]!.id && !b.retiredAt)!.threadId;
+    // Enter on a member opens its action strip under it (K1-7): the menu's items in the design's order, the ring on the
+    // first; ← → choose and stop at the ends.
     press("Enter");
-    await expect(`Enter: @${members[1]!.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.drawers.some((d) => d.view === "room" && d.inert) && f.inLayer === "member");
+    await expect(`Enter: @${members[1]!.alias}'s actions under it, the ring on Open thread`, (f) => f.strips === 1 && f.action === "thread" && f.item === `member:${members[1]!.id}` && f.ring);
+    const memberStrip = browser.eval<string[]>("() => [...document.querySelectorAll('.participant-chip .action-strip > button')].map((b) => b.getAttribute('aria-label'))");
+    const consigliereAction = members[1]!.id === apiRoom.room.consigliereId ? "Remove as Consigliere" : "Make Consigliere";
+    if (JSON.stringify(memberStrip) !== JSON.stringify(["Open thread", "Settings…", "Thread details…", "Open in T3", consigliereAction, "Remove from room…"])) fail(`@${members[1]!.alias}'s actions read ${JSON.stringify(memberStrip)}`);
+    log(`  page: @${members[1]!.alias}'s actions: ${memberStrip.join(" · ")}`);
+    for (let i = 0; i < 6; i += 1) press("ArrowRight");
+    await expect("Right to the strip's end: Remove from room…, where it stops", (f) => f.action === "remove");
+    for (let i = 0; i < 5; i += 1) press("ArrowLeft");
+    await expect("Left back to Open thread", (f) => f.action === "thread");
+    await barSays(`@${members[1]!.alias}'s actions`, {
+      place: "room-member-actions",
+      where: `Open thread · ${(await keyBar(new RegExp(`^Open thread · @${members[1]!.alias} · `))).where.replace(/^Open thread · /, "")}`,
+      keys: ["↑ ↓ previous or next member", "← → choose", "Enter Open thread", "Esc Backspace close", "a–z start writing"],
+      end: "? all keys",
+    });
+    await state("a member's actions: Enter opens them under it, the ring on Open thread", new RegExp(`^Open thread · @${members[1]!.alias} · `));
+    press("Escape");
+    await expect(`Esc: the actions closed, the ring back on @${members[1]!.alias}`, (f) => f.strips === 0 && f.key === `member:${members[1]!.id}` && f.panel === "people");
+    press("Enter");
+    await expect("Enter: the actions again, on Open thread", (f) => f.action === "thread");
+    press("Enter");
+    await expect(`Enter on Open thread: @${members[1]!.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.drawers.some((d) => d.view === "room" && d.inert) && f.inLayer === "member");
     log(`api: @${members[1]!.alias}'s binding is thread ${workerThread.slice(0, 8)}; page: the layer shows data-id ${workerThread.slice(0, 8)}, the room under it inert`);
     browser.waitFor("This thread is now a member in a room");
     // Read only: what is typed here goes nowhere, not into the room's composer under it; Enter opens nothing.
@@ -1440,7 +1489,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     );
     if (controls.menu + controls.browser + controls.settings + controls.composer > 0 || !controls.note.includes("read only")) fail(`the member's thread offers what T3 refuses for a seated thread: ${JSON.stringify(controls)}`);
     log(`  page: the member's thread has no thread menu, browser, settings or composer ("${controls.note}")`);
-    await state("Enter on a member opens its thread", `@${members[1]!.alias}'s thread, read only`);
+    await state("Open thread from a member's actions opens its thread", `@${members[1]!.alias}'s thread, read only`);
     press("Escape");
     await sleep(400);
     await expect("Esc in the member's thread closes nothing: the thread stays over the room", (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.inLayer === "member");
@@ -1453,25 +1502,30 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Backspace: the panel folds, the room stays, the focus back on #${openPost.number} where it came from`, (f) => f.panel === null && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `post:${openPost.seq}` && f.ring);
     await state("Backspace folds the side panel, back to the conversation", await postWhere(`post:${openPost.seq}`));
 
-    // A side panel itself holding the ring: → → from the conversation reaches the Browser panel (it has no items, so the
-    // panel takes the ring). The bar says Enter writes a message, and it does; Backspace folds the panel, then leaves.
+    // The Browser panel by its tab in the panel's head: Right into the panel, Home and Up to the head, Right to Browser,
+    // Enter; Down reaches its first row's control (Browser and Git are rows of the controls drawn there). The bar says
+    // Enter presses it; Backspace folds the panel, the ring back on #openPost.
     press("ArrowRight");
     await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    press("ArrowUp");
+    await expect("Home, Up: the Members tab", (f) => f.key === "side:tab:people");
     press("ArrowRight");
-    await expect("Right: the Browser panel itself holds the ring", (f) => f.panel === "browser" && f.tag === "ASIDE" && f.label === "Browser" && f.inLayer === "room");
-    await barSays("the Browser panel itself", {
-      place: "room-pane",
-      where: "the Browser panel",
-      keys: ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing"],
+    press("Enter");
+    await expect("Right, Enter: the Browser panel shows, the ring still on its tab", (f) => f.panel === "browser" && f.key === "side:tab:browser" && f.ring);
+    press("ArrowDown");
+    const row = await expect("Down: a control of the Browser panel's first row", (f) => f.panel === "browser" && f.key === null && f.tag !== "ASIDE" && f.inLayer === "room" && f.ring);
+    const rowBar = await keyBar(/ · the Browser panel$/);
+    await barSays("a row of the Browser panel", {
+      place: "room-side-row",
+      where: rowBar.where,
+      keys: ["↑ ↓ row above or below", "← → along the row", "Enter press it", "Backspace fold the side panel", "a–z start writing", "Home End first or last in the panel"],
       end: "? all keys",
     });
-    await state("key bar: the Browser panel itself, Enter writes a message", "the Browser panel");
-    press("Enter");
-    await expect("Enter: the composer, in its field", (f) => f.tag === "TEXTAREA" && f.composerOpen && f.panel === "browser");
-    press("Escape");
-    await expect("Esc: the composer closed, the focus on its strip, the panel still open", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && f.panel === "browser");
+    log(`  page: the ring on ${row.tag} "${row.label}"`);
+    await state("key bar: a row of the Browser panel, Enter presses it", / · the Browser panel$/);
     press("Backspace");
-    await expect("Backspace: the panel folds, the focus stays on the strip", (f) => f.panel === null && f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && inRoom(f));
+    await expect(`Backspace: the panel folds, the ring back on #${openPost.number}`, (f) => f.panel === null && f.key === `post:${openPost.seq}` && inRoom(f) && f.ring);
     press("Backspace");
     await expect("Backspace: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
     announced(/^button$/, "Rehearsal");
@@ -1502,7 +1556,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await state("key bar: a room's tile, each key by what it does there", apiRoom.room.title);
 
     // A member is reached in the room (the overview's tiles only show them): the room's tile, Right to Members, the
-    // member, Enter for its thread over the room; Backspace three times comes back to the tile.
+    // member, Enter and Enter on its Open thread for its thread over the room; Backspace three times comes back to the tile.
     const reviewer = members[2]!;
     const reviewerThread = (s1.bindings as Array<{ participantId: string; threadId: string; retiredAt: string | null }>).find((b) => b.participantId === reviewer.id && !b.retiredAt)!.threadId;
     await goTo(`room:${R}`);
@@ -1514,8 +1568,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     for (let i = 0; i < members.length && focus().key !== `member:${reviewer.id}`; i += 1) press("ArrowDown");
     await expect(`Down to @${reviewer.alias}`, (f) => f.key === `member:${reviewer.id}`);
     press("Enter");
-    await expect(`Enter on @${reviewer.alias}: its thread over the room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
-    await state("from the room's tile: Members, a member, Enter opens its thread over the room", `@${reviewer.alias}'s thread, read only`);
+    await expect(`Enter on @${reviewer.alias}: its actions, on Open thread`, (f) => f.action === "thread" && f.item === `member:${reviewer.id}`);
+    press("Enter");
+    await expect(`Enter on Open thread: @${reviewer.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
+    await state("from the room's tile: Members, a member, its Open thread opens its thread over the room", `@${reviewer.alias}'s thread, read only`);
     press("Backspace");
     await expect(`Backspace: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
     press("Backspace");
@@ -1538,7 +1594,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await barSays("the room, nothing in it focused", {
       place: "room-itself",
       where: apiRoom.room.title,
-      keys: ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
+      keys: ["↑ ↓ to the posts", "→ the side panel", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
       end: "? all keys",
     });
     await state("key bar: a room with nothing in it focused, Enter writes a message", apiRoom.room.title);
@@ -2291,7 +2347,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Up from the strip: the newest post", (f) => f.key?.startsWith("post:") === true);
     press("ArrowDown");
     await expect("Down: his turn being prepared", (f) => f.key === "live:rehearse-prepared" && f.ring);
-    await barSays("his turn being prepared, on a request", { place: "room-post", where: preparedWhere, keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    await barSays("his turn being prepared, on a request", { place: "room-post", where: preparedWhere, keys: ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
     press("Enter");
     await expect("Enter: its actions, on what it works on", (f) => f.strips === 1 && f.action === "ref:0");
     names("his turn being prepared, on a request", [`show #${clickAsked.number}`]);
@@ -2445,6 +2501,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`  page: Seat in a room… waits, its reason shown: "${waiting!.why}"`);
     await tabTo("Shift+Tab reaches the waiting Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
     announced(/^button$/, "Seat in a room…");
+    // The key bar does not promise what Enter will not do there (#1025, K1-9).
+    const waitBar = await keyBar("Edit sol");
+    if (!waitBar.keys.includes("Enter not now") || waitBar.keys.includes("Enter press it")) fail(`on the waiting Seat in a room… the key bar reads ${JSON.stringify(waitBar.keys)}: expected "Enter not now"`);
+    log(`  key bar on the waiting button: ${waitBar.keys.join(" · ")}`);
     press("Enter");
     await sleep(400);
     await expect("Enter on it while it waits opens nothing; the dialog stays", (f) => !f.menu && f.dialog === "Edit sol" && f.label === "Seat in a room…");
@@ -2828,6 +2888,187 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await state("pixel look: the room's focus ring", await postWhere(pixelPost.key));
     press("Backspace");
     await expect("pixel look: Backspace back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  }
+
+  /** A room of the run's own in a git folder of its own (a.txt changed since its commit), with @alpha and @beta. Once. */
+  type Member = { id: string; alias: string; retiredAt: string | null; modelSelection: { model: string } };
+  let side: { roomId: string; members: () => Promise<Member[]> } | undefined;
+  const sideRoom = async (): Promise<{ roomId: string; members: () => Promise<Member[]> }> => {
+    if (side) return side;
+    const folder = join(room.dataDir, "k1-rest-git");
+    mkdirSync(folder, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", folder, ...args], { encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    for (const [name, value] of [["user.name", "Rehearsal"], ["user.email", "rehearsal@example.com"], ["commit.gpgsign", "false"]] as const) git("config", name, value);
+    writeFileSync(join(folder, "a.txt"), "a\n");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "First commit");
+    writeFileSync(join(folder, "a.txt"), "a\nb\n");
+    const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title: "k1-rest-git" });
+    const roomId = (await service.command<{ roomId: string }>({ type: "room.create", projectId, title: "Side panel", consigliere: false })).roomId;
+    for (const alias of ["alpha", "beta"]) await service.command({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } });
+    const snapshot = () => service.call<{ participants: Member[]; bindings: Array<{ threadId: string }> }>("GET", `/api/rooms/${roomId}`);
+    for (const binding of (await snapshot()).bindings) await service.fake("hold", { threadId: binding.threadId, hold: true });
+    log(`room ${roomId}: Side panel, in ${folder} (a.txt changed), @alpha and @beta`);
+    side = { roomId, members: async () => (await snapshot()).participants.filter((p) => !p.retiredAt) };
+    return side;
+  };
+  /** The look by keys (Settings → Look in the overview's header), from the overview; nothing when it is so already. */
+  const setLook = async (look: "Plain" | "Pixel") => {
+    const skin = () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''");
+    if ((skin() === "pixel") === (look === "Pixel")) return;
+    await goTo("head:settings");
+    press("Enter");
+    await expect("Enter: the Settings menu", (f) => f.menu && (f.role ?? "").startsWith("menuitem"));
+    for (let i = 0; i < 30 && !focus().label.startsWith(look); i += 1) press("ArrowDown");
+    await expect(`Down to Look → ${look}`, (f) => f.menu && f.label.startsWith(look));
+    press("Enter");
+    await until(`the ${look.toLowerCase()} look`, () => (skin() === "pixel") === (look === "Pixel"));
+  };
+
+  if (
+    await section("side panel: + Add member by keys seats a member, the API shows it", {
+      replay: async () => {
+        await sideRoom();
+      },
+    })
+  ) {
+    // ---------------- 7. the side panel's dialogs and Git by keys (K1-7); the composer's lists (K1-9) ----------------
+
+    const { roomId, members: sideMembers } = await sideRoom();
+    await setLook("Plain");
+    await goTo(`room:${roomId}`);
+    press("Enter");
+    await expect("Enter: the Side panel room is open", (f) => f.inLayer === "room");
+    press("ArrowRight");
+    await expect("Right: Members unfolds, the ring on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    press("ArrowUp");
+    await expect("Home, Up: the Members tab", (f) => f.key === "side:tab:people");
+    for (let i = 0; i < 3; i += 1) press("ArrowRight");
+    await expect("Right ×3: + Add member", (f) => f.key === "side:add" && f.ring);
+    press("Enter");
+    await expect("Enter: the Add member dialog", (f) => f.dialog === "Add member" && f.inDialog);
+    await tabTo("Tab to its name field", (f) => f.inDialog && f.tag === "INPUT" && f.value === "");
+    for (const letter of "gamma") press(letter);
+    await expect("typed: gamma", (f) => f.value === "gamma");
+    await tabTo("Tab to Add member", (f) => f.inDialog && f.label === "Add member", "Tab", 12);
+    press("Enter");
+    await expect("Enter: the dialog closed, the ring back on + Add member", (f) => f.dialog === null && f.key === "side:add" && f.ring);
+    const gamma = await until("the API to show @gamma seated", async () => (await sideMembers()).find((p) => p.alias === "gamma") ?? null);
+    log(`api: @gamma seated (${gamma.id.slice(0, 8)})`);
+    await state("side panel: + Add member by keys seats a member, the API shows it", "the panel's head · + Add member");
+
+    // Settings… from @alpha's actions: the model list by keys, Save; the API has the new model.
+    const [alpha, beta] = await sideMembers();
+    press("Home");
+    await expect(`Home: @${alpha!.alias}`, (f) => f.key === `member:${alpha!.id}`);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Settings… in @alpha's actions", (f) => f.action === "settings" && f.ring);
+    press("Enter");
+    await expect("Enter: @alpha's settings", (f) => f.dialog === "@alpha settings" && f.inDialog);
+    await tabTo("Tab to the model's button", (f) => f.inDialog && f.label.startsWith("Claude Opus 5.5"));
+    press("Enter");
+    await expect("Enter: the model list", (f) => f.label === "Search models");
+    const chosen = () => browser.eval<string>("() => { const id = document.activeElement?.getAttribute('aria-activedescendant'); return (id && document.getElementById(id)?.textContent) ?? ''; }");
+    for (let i = 0; i < 5 && !chosen().startsWith("Claude Fable"); i += 1) press("ArrowUp");
+    if (!chosen().startsWith("Claude Fable")) fail(`Up in the model list reached "${chosen()}", not Claude Fable`);
+    press("Enter");
+    await expect("Enter: Fable chosen, the list closed", (f) => f.inDialog && f.label.startsWith("Claude Fable"));
+    await tabTo("Tab to Save", (f) => f.inDialog && f.label === "Save", "Tab", 6);
+    press("Enter");
+    await expect("Enter: saved, the dialog closed, the ring back on Settings…", (f) => f.dialog === null && f.action === "settings" && f.ring);
+    const model = await until("the API to show @alpha on claude-fable-5-1", async () => ((await sideMembers()).find((p) => p.id === alpha!.id)?.modelSelection.model === "claude-fable-5-1" ? "claude-fable-5-1" : null));
+    log(`api: @alpha's model is ${model}`);
+    await state("side panel: a member's Settings… by keys changes its model in the API", /^Settings… · @alpha · /);
+
+    // Remove from room… from @beta's actions: the API retires it, and the ring goes to the member after it.
+    press("ArrowDown");
+    await expect(`Down: @${beta!.alias}, the actions closed`, (f) => f.key === `member:${beta!.id}` && f.strips === 0);
+    press("Enter");
+    for (let i = 0; i < 6; i += 1) press("ArrowRight");
+    await expect("Enter, Right to the end: Remove from room…", (f) => f.action === "remove");
+    press("Enter");
+    await expect("Enter: the Remove dialog", (f) => f.dialog === `Remove ${beta!.alias} from the room` && f.inDialog);
+    await tabTo(`Tab to Remove @${beta!.alias}`, (f) => f.inDialog && f.label === `Remove @${beta!.alias}`, "Tab", 10);
+    press("Enter");
+    await until(`the API to show @${beta!.alias} retired`, async () => !(await sideMembers()).some((p) => p.id === beta!.id));
+    await expect("the ring on the next member, @gamma, not on the page", (f) => f.dialog === null && f.key === `member:${gamma.id}` && f.ring);
+    await state("side panel: a member's Remove from room… by keys retires it, the ring on the next member", /^@gamma · /);
+
+    // Git: its tab in the panel's head; a.txt's row, Enter, its diff.
+    press("Home");
+    press("ArrowUp");
+    press("ArrowRight");
+    press("ArrowRight");
+    await expect("Home, Up, Right ×2: the Git tab", (f) => f.key === "side:tab:git");
+    press("Enter");
+    await expect("Enter: the Git panel, the ring on its tab", (f) => f.panel === "git" && f.key === "side:tab:git");
+    for (let i = 0; i < 8 && !/a\.txt/.test(focus().label); i += 1) press("ArrowDown");
+    await expect("Down to a.txt, the uncommitted file", (f) => f.panel === "git" && /a\.txt/.test(f.label) && f.ring);
+    press("Enter");
+    await expect("Enter: a.txt's diff", (f) => f.dialog === "a.txt");
+    const diff = browser.poll<string>("the diff to be read", "() => document.querySelector('.dialog')?.textContent ?? ''", (text) => text.includes("+b"));
+    log(`  page: the diff reads "${diff.replace(/\s+/g, " ").slice(0, 80)}"`);
+    await state("side panel: a Git row's Enter opens its diff", "a.txt");
+    press("Escape");
+    await expect("Esc: the diff closed, the ring back on a.txt's row", (f) => f.dialog === null && /a\.txt/.test(f.label) && f.ring);
+
+    // The composer's @ list: the field names the option chosen (aria-activedescendant), which the arrows move.
+    press("@");
+    await expect("@: the composer with the members' list", (f) => f.composerOpen && f.tag === "TEXTAREA");
+    const named = "() => { const t = document.activeElement; const chosen = document.querySelector('.mention-menu [aria-selected=\"true\"]'); return { active: t.getAttribute('aria-activedescendant'), chosen: chosen?.id ?? null, text: chosen?.textContent ?? null, controls: t.getAttribute('aria-controls'), list: document.querySelector('.mention-menu')?.id ?? null }; }";
+    type Named = { active: string | null; chosen: string | null; text: string | null; controls: string | null; list: string | null };
+    const agrees = (n: Named | null) => Boolean(n && n.active && n.active === n.chosen && n.controls && n.controls === n.list);
+    const firstNamed = browser.poll<Named>("the field to name the list's option", named, agrees)!;
+    press("ArrowDown");
+    const nextNamed = browser.poll<Named>("Down: the field to name the next option", named, (n) => agrees(n) && n!.active !== firstNamed.active)!;
+    log(`  page: the field names ${firstNamed.active} ("${firstNamed.text}"), then after Down ${nextNamed.active} ("${nextNamed.text}")`);
+    await state("the composer's @ list: the field names the option chosen", "choosing a member");
+    press("Escape");
+    press("Backspace");
+    await expect("Esc, Backspace: the list closed, the @ deleted", (f) => f.tag === "TEXTAREA" && f.value === "");
+    press("Backspace");
+    await expect("Backspace on the empty field: the composer closed", (f) => !f.composerOpen && inRoom(f));
+  }
+
+  if (
+    await section("pixel look: a member's actions, the key bar and the side panel's tabs", {
+      replay: async () => {
+        await sideRoom();
+      },
+    })
+  ) {
+    // ---------------- 8. the pixel look draws the strip, the key bar and the room's rings (K1-8) ----------------
+
+    const { roomId } = await sideRoom();
+    if (focus().inLayer === "room") {
+      press("Backspace");
+      press("Backspace");
+    }
+    await expect("on the overview", (f) => f.drawers.length === 0);
+    await setLook("Pixel");
+    await goTo(`room:${roomId}`);
+    press("Enter");
+    await expect("Enter: the Side panel room is open", (f) => f.inLayer === "room");
+    press("ArrowRight");
+    await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    const first = await expect("Home: the first member, in the pixel look's brackets", (f) => f.key?.startsWith("member:") === true && f.ring);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Settings… in its actions, its dashed ring", (f) => f.action === "settings" && f.item === first.key && f.ring);
+    const drawn = browser.eval<{ strip: string; bar: string; kbd: string; tab: string }>(
+      "() => { const css = (e, p) => (e ? getComputedStyle(e).getPropertyValue(p) : ''); return { strip: css(document.querySelector('.participant-chip .action-strip'), 'border-radius'), bar: css(document.querySelector('.key-bar'), 'border-top-style'), kbd: css(document.querySelector('.key-bar kbd'), 'border-radius'), tab: css(document.querySelector('.inspector-tab.on'), 'box-shadow') }; }",
+    );
+    if (drawn.strip !== "0px" || drawn.kbd !== "0px" || drawn.bar !== "solid" || !drawn.tab.includes("inset")) fail(`the pixel look does not draw the strip, the key bar or the panel's tab: ${JSON.stringify(drawn)}`);
+    log(`  page: pixel strip and keys square (${drawn.strip}, ${drawn.kbd}), the bar ruled, the tab showing underlined`);
+    await state("pixel look: a member's actions, the key bar and the side panel's tabs", /^Settings… · @/);
+    press("Escape");
+    press("Backspace");
+    press("Backspace");
+    await expect("Esc, Backspace ×2: back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${roomId}`);
   }
 
   return passed;

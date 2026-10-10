@@ -12,12 +12,11 @@ import { RoomStatePanel } from "./RoomState.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
-import { laneTarget, openLanding, type Lane } from "../keyOrder.ts";
-import { byKey, focusItem, focusWhen, itemOf, laneAt, listTarget, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, tabbables } from "../keys.ts";
+import { gridTarget, laneTarget, nearestInHeight, openLanding, type Lane } from "../keyOrder.ts";
+import { boxed, byKey, focusItem, focusWhen, inView, itemOf, laneAt, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, sideItems } from "../keys.ts";
 
-/** The room's panes, left to right (keys.ts): the board (or the chat), then the side panel's tabs as the header orders them. */
-const PANES = ["board", "people", "browser", "git"] as const;
-type Pane = (typeof PANES)[number];
+/** The room's panes (keys.ts): the board (or the chat), and the side panel's tabs. */
+type Pane = "board" | InspectorTab;
 
 /**
  * The ring's landing as a room opens: the item it put the ring on (by key), whether the room's desk had been read when
@@ -61,8 +60,10 @@ export function OverviewRoom({
   // ---- the keys (keys.ts) ----
   // The conversation reads in lanes, top to bottom: the header, the room state, the status chips, the posts and the
   // composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to lane, post to post in the posts lane; Left and
-  // Right go along the header and the status chips, and elsewhere between the panes: the board (the conversation), then
-  // the side panel's Members, Browser and Git, where Up and Down go through the members (or the pane's controls).
+  // Right go along the header and the status chips. Elsewhere Right goes into the side panel, to its item nearest in
+  // height (Members unfolding if it is folded): a column of rows (its head, then its members or the Browser and Git
+  // panes' controls) where the arrows move as on the overview's grid (keyOrder.ts, gridTarget), and Left from a row's
+  // first goes back to the conversation's item nearest in height.
   const sheet = useRef<HTMLDivElement>(null);
   // The item last focused in each pane and in each lane, by key: coming back to one comes back to it.
   const lastIn = useRef<Partial<Record<Pane, string>>>({});
@@ -97,13 +98,14 @@ export function OverviewRoom({
     return null;
   };
   const lanes = () => (sheet.current ? roomLanes(sheet.current, laneLanding) : []);
-  // What a pane's arrows land on first: the item last focused there, else the newest post or the first member, else the
-  // composer's strip (an empty board) or the pane itself.
+  // What a pane's arrows land on first: the item last focused there, else the newest post or the panel's first under its
+  // head (a member, a row's control), else the composer's strip (an empty board) or the pane itself.
   const landing = (pane: Pane): HTMLElement | null => {
     const element = paneElement(pane);
     if (!element) return null;
     if (pane === "board") return byKey(sheet.current!, lastIn.current.board) ?? lanes().find((lane) => lane.name === "posts")?.landing ?? element.querySelector<HTMLElement>(".composer-strip") ?? element;
-    return byKey(element, lastIn.current[pane]) ?? navItems(element)[0] ?? element;
+    const items = sideItems(element);
+    return byKey(element, lastIn.current[pane]) ?? items.find((item) => !item.closest(".inspector-head")) ?? items[0] ?? element;
   };
   const landingRef = useRef(landing);
   landingRef.current = landing;
@@ -233,26 +235,49 @@ export function OverviewRoom({
         }
       }
       event.preventDefault();
-      if (key === "left" || key === "right") {
-        const next = PANES[PANES.indexOf(pane) + (key === "right" ? 1 : -1)];
-        if (!next) return;
-        if (next !== "board" && panelRef.current !== next) onPanel(next);
-        focusWhen(() => landing(next));
+      // The ring's item, or what it is on (the room itself: the board's view), for the item nearest in height across.
+      const from = ((target && root.contains(target) && target !== root ? (itemOf(target) ?? target) : null) ?? root.querySelector<HTMLElement>(".timeline") ?? root).getBoundingClientRect();
+      if (pane === "board") {
+        // Not a lane key: Right off the conversation goes into the side panel, unfolding Members if it is folded; Left
+        // stays (the conversation is the room's left edge).
+        if (key !== "right") return;
+        if (!panelRef.current) onPanel("people");
+        focusWhen(() => {
+          const side = root.querySelector<HTMLElement>("[data-nav-side]");
+          return side ? (nearestInHeight(boxed(sideItems(side).filter(inView)), from)?.element ?? landing(side.dataset.navPane as Pane)) : null;
+        });
         return;
       }
-      // The side panel: its members; a pane without any (Browser, Git) goes through its controls.
-      const element = scope!;
-      const navigable = navItems(element);
-      const items = navigable.length > 0 ? navigable : tabbables(element);
-      const current = navigable.length > 0 ? itemOf(target) : (target as HTMLElement | null);
-      // From outside the pane's items (a button, the pane itself), the first key lands on the pane's item.
-      if (!current || !items.includes(current)) {
+      // The side panel: a column of rows, as the overview's grid.
+      const side = scope!;
+      const items = sideItems(side);
+      const current = items.find((item) => item === target || item === itemOf(target)) ?? null;
+      // From the panel itself (or what is no stop of it), the first key lands on the pane's landing.
+      if (!current) {
         const land = landing(pane);
-        focusItem(land && land !== target ? land : listTarget(items, null, key));
+        focusItem(land && land !== target ? land : (items[0] ?? null));
         return;
       }
-      const next = listTarget(items, current, key);
-      if (next) focusItem(next);
+      if (key === "first" || key === "last") {
+        const body = items.filter((item) => !item.closest(".inspector-head"));
+        focusItem((key === "first" ? body[0] : body.at(-1)) ?? null);
+        return;
+      }
+      const next = gridTarget(boxed(items), items.indexOf(current), key);
+      if (next) {
+        // Up into the head from below lands on the tab showing, as the room's header lands on its open view.
+        const into = next.element.closest(".inspector-head") && !current.closest(".inspector-head");
+        focusItem((into ? side.querySelector<HTMLElement>(".inspector-head [aria-selected='true']") : null) ?? next.element);
+        return;
+      }
+      // Left from a row's first: back to the conversation, to its item nearest in height (the panel stays as it is):
+      // of the board's beside the panel (its posts, the turns running, the composer's strip), not the header, the room
+      // state or the status chips across the top of both.
+      if (key === "left") {
+        const board = paneElement("board");
+        const across = lanesRef.current().flatMap((lane) => lane.items).filter((item) => board?.contains(item) && inView(item));
+        focusItem(nearestInHeight(boxed(across), current.getBoundingClientRect())?.element ?? landing("board"));
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -304,7 +329,7 @@ export function OverviewRoom({
           <BackgroundBar />
           <Composer overlay />
         </section>
-        {panel ? <Inspector tab={panel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
+        {panel ? <Inspector tab={panel} onTab={onPanel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
       </div>
     </div>
   );

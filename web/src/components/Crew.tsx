@@ -30,6 +30,7 @@ import { ThreadUsageCard } from "./ThreadUsageCard.tsx";
 import { useToast } from "./Toast.tsx";
 import { PresetChips, PresetIcon, usePresets, usePresetText } from "./presets.tsx";
 import { Popover } from "./Popover.tsx";
+import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
 import { THREAD_CHOICES } from "./RoomActions.tsx";
 import { PeopleIcon, PersonPlusIcon } from "./icons.tsx";
 
@@ -143,12 +144,15 @@ export function CrewButton({ active, onClick, nav }: { active: boolean; onClick:
   );
 }
 
-/** The People panel's add button, in its head beside the close button: seat a participant (new or existing thread). */
-export function AddParticipantButton() {
+/**
+ * The People panel's add button, in its head beside the close button: seat a participant (new or existing thread). `nav`
+ * makes it an item of the panel's head row (keys.ts).
+ */
+export function AddParticipantButton({ nav }: { nav?: NavProps }) {
   const [adding, setAdding] = useState(false);
   return (
     <>
-      <button type="button" className="small ghost icon-only" aria-label="Add member" title="Add member" onClick={() => setAdding(true)}>
+      <button type="button" className="small ghost icon-only" aria-label="Add member" title="Add member" onClick={() => setAdding(true)} {...nav}>
         <PersonPlusIcon />
       </button>
       {adding ? <AddParticipantDialog onClose={() => setAdding(false)} /> : null}
@@ -194,6 +198,8 @@ function ParticipantChip({
   onAction: (action: MenuAction) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Its action strip (K1-7): Enter on the member draws the menu's items in a row under it (ActionStrip.tsx).
+  const [strip, setStrip] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // The menu is portalled to the body (see Popover), so the outside-click check has to know about it too.
   const menuRef = useRef<HTMLDivElement>(null);
@@ -226,8 +232,20 @@ function ParticipantChip({
     setOpen(false);
     onAction(action);
   };
+  const where = `@${participant.alias}${isConsigliere ? ", the Consigliere" : ""} · ${described.label}`;
+  // The strip holds the menu's items, in the design's order (K1-Fable section 4): each does what its menu item does.
+  const actions: StripAction[] = [
+    { key: "thread", label: "Open thread", name: "Open thread", title: "Its thread here, over the room (Backspace comes back)", press: () => onAction("thread") },
+    { key: "settings", label: "Settings…", name: "Settings…", press: () => onAction("settings") },
+    { key: "details", label: "Thread details…", name: "Thread details…", press: () => onAction("details") },
+    { key: "open", label: "Open in T3", name: "Open in T3", press: () => onAction("open") },
+    isConsigliere
+      ? { key: "consigliere", label: "Remove as Consigliere", name: "Remove as Consigliere", title: "The room goes back to one board with the composer; nobody is removed", press: () => onAction("unconsigliere") }
+      : { key: "consigliere", label: "Make Consigliere", name: "Make Consigliere", title: "You talk to him; he hands the work to the other members and reports back", press: () => onAction("consigliere") },
+    { key: "remove", label: "Remove from room…", name: "Remove from room…", tone: "danger", press: () => onAction("remove") },
+  ];
   return (
-    // An item of the Members pane's arrows (keys.ts): Enter on it opens the member's thread; its button opens the menu.
+    // An item of the side panel's rows (keys.ts): Enter on it opens its action strip; its button opens the menu.
     <div
       className={`participant-chip${described.motion ? ` activity-${described.motion}` : ""}${attention}`}
       ref={ref}
@@ -236,13 +254,13 @@ function ParticipantChip({
       role="group"
       data-nav="member"
       data-nav-key={`member:${participant.id}`}
-      data-where={`@${participant.alias}${isConsigliere ? ", the Consigliere" : ""} · ${described.label}`}
+      data-where={where}
       aria-label={`@${participant.alias}${isConsigliere ? ", the Consigliere" : ""}, ${described.label}${described.detail ? `, ${described.detail}` : ""}`}
-      aria-description="Enter opens its thread"
+      aria-description="Enter: its actions"
       onKeyDown={(event) => {
         if (event.key !== "Enter" || event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
         event.preventDefault();
-        onAction("thread");
+        setStrip(true);
       }}
     >
       <button
@@ -322,6 +340,7 @@ function ParticipantChip({
           </button>
         </Popover>
       ) : null}
+      {strip ? <ActionStrip actions={actions} where={where} item={() => ref.current} onClose={() => setStrip(false)} /> : null}
     </div>
   );
 }

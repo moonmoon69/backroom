@@ -1,5 +1,5 @@
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
-import type { NavProps } from "../keys.ts";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { byKey, itemOf, lastInputWasKey, navProps, sideItems, type NavProps } from "../keys.ts";
 import { useRoom } from "../context.tsx";
 import { AddParticipantButton, CrewPanel } from "./Crew.tsx";
 import { GitTab } from "./GitTab.tsx";
@@ -10,6 +10,7 @@ import { RoomBrowserPanel } from "./RoomBrowser.tsx";
 export type InspectorTab = "people" | "browser" | "git";
 
 const TITLES: Record<InspectorTab, string> = { people: "Members", browser: "Browser", git: "Git" };
+const TABS = ["people", "browser", "git"] as const;
 
 /** Uncommitted files across the room's working folders, and the branch when there is one folder; null until read. */
 function useUncommitted(): { count: number; branch: string | null; folders: number } | null {
@@ -38,17 +39,22 @@ export function GitButton({ active, onClick, nav }: { active: boolean; onClick: 
 
 interface Props {
   tab: InspectorTab;
+  /** Show another tab (from the panel's head; the room's header has the same three). */
+  onTab: (tab: InspectorTab) => void;
   onClose: () => void;
   /** Open a browser's own page (from the Browser tab's Manage…). */
   onManageBrowser: (browserId: string | null) => void;
 }
 
 /**
- * Right side panel, switched from the header: People (who is seated, their threads), Browser (the room's browser) and
- * Git (the room's folders: branch, uncommitted files, commits, worktrees). What the members are doing is the status bar
- * above the conversation (WorkBar.tsx).
+ * Right side panel, switched from the header or its own head's tabs: People (who is seated, their threads), Browser (the
+ * room's browser) and Git (the room's folders: branch, uncommitted files, commits, worktrees). What the members are
+ * doing is the status bar above the conversation (WorkBar.tsx).
+ *
+ * The room's side column for the keys (keys.ts, `data-nav-side`): rows of items, its head first (the tabs, + Add member
+ * on Members, ×), then the members or the Browser and Git panes' rows.
  */
-export function Inspector({ tab, onClose, onManageBrowser }: Props) {
+export function Inspector({ tab, onTab, onClose, onManageBrowser }: Props) {
   const { desk, deskError, aliasOf, git } = useRoom();
   const errors = Object.entries(desk?.errors ?? {});
 
@@ -60,13 +66,70 @@ export function Inspector({ tab, onClose, onManageBrowser }: Props) {
     return () => clearInterval(timer);
   }, [tab]);
 
+  // The ring never falls to the page: a stop that goes away with the ring on it (a member removed, a browser stopped)
+  // puts it on the stop that took its place, else the one before it, else the panel's head. After a click nothing moves.
+  const aside = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const root = aside.current;
+    if (!root) return;
+    // The stop the ring was last on, while the focus has not gone anywhere else since (an element taken out of the page
+    // with the focus on it sends no event: the focus is then on the body).
+    let last: { key: string | null; at: number } | null = null;
+    const onIn = (event: FocusEvent) => {
+      const target = event.target as HTMLElement;
+      const stop = root.contains(target) ? sideItems(root).find((item) => item === target || item === itemOf(target)) : undefined;
+      last = stop ? { key: stop.dataset.navKey ?? null, at: sideItems(root).indexOf(stop) } : null;
+    };
+    const observer = new MutationObserver(() => {
+      const now = document.activeElement;
+      if (!last || (now && now !== document.body) || document.querySelector(".dialog-backdrop") || !lastInputWasKey()) return;
+      const items = sideItems(root);
+      (byKey(root, last.key) ?? items[Math.min(last.at, items.length - 1)])?.focus({ preventScroll: true });
+    });
+    document.addEventListener("focusin", onIn);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      document.removeEventListener("focusin", onIn);
+      observer.disconnect();
+    };
+  }, []);
+
   return (
-    <aside className="queue-drawer inspector" aria-label={TITLES[tab]} data-nav-pane={tab} tabIndex={-1}>
+    <aside
+      className="queue-drawer inspector"
+      ref={aside}
+      aria-label={TITLES[tab]}
+      data-nav-pane={tab}
+      data-nav-side=""
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        // Enter presses a row's switch as it presses a button (a checkbox takes only Space of its own).
+        const target = event.target as HTMLElement;
+        if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
+        event.preventDefault();
+        target.click();
+      }}
+    >
       <div className="inspector-head">
-        <h2>{TITLES[tab]}</h2>
+        <div className="inspector-tabs" role="tablist" aria-label="Panel">
+          {TABS.map((each) => (
+            <button
+              key={each}
+              type="button"
+              role="tab"
+              aria-selected={each === tab}
+              tabIndex={each === tab ? 0 : -1}
+              className={`inspector-tab${each === tab ? " on" : ""}`}
+              onClick={() => onTab(each)}
+              {...navProps("side", `side:tab:${each}`, `the panel's head · ${TITLES[each]}`)}
+            >
+              {TITLES[each]}
+            </button>
+          ))}
+        </div>
         <span className="spacer" />
-        {tab === "people" ? <AddParticipantButton /> : null}
-        <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel (Backspace)" onClick={onClose}>
+        {tab === "people" ? <AddParticipantButton nav={navProps("side", "side:add", "the panel's head · + Add member")} /> : null}
+        <button type="button" className="small ghost icon-only" aria-label="Close panel" title="Close panel (Backspace)" onClick={onClose} {...navProps("side", "side:close", "the panel's head · fold the panel")}>
           <CloseIcon />
         </button>
       </div>

@@ -12,9 +12,11 @@
  *   column the run began in; Left and Right along the row, stopping at its ends (keyOrder.ts, gridTarget).
  * - A room's conversation reads in lanes, top to bottom: its header, the room state, the status chips, the posts (then
  *   the turns running now, their live bubbles) and the composer's strip (keyOrder.ts, laneTarget). Up and Down go lane to
- *   lane, post to post in the posts lane; Left and Right go along the header and the status chips, and elsewhere between
- *   the panes: the board, then the side panel's Members, Browser and Git, where Up and Down go through the members (or
- *   the pane's controls). Enter on a post opens its action strip (ActionStrip.tsx), whose own Left and Right choose.
+ *   lane, post to post in the posts lane; Left and Right go along the header and the status chips. Elsewhere Right goes
+ *   into the side panel (`data-nav-side`), to its item nearest in height, unfolding Members if the panel is folded. The
+ *   panel is a column of rows as the overview is (its head: its tabs, + Add member, ×; then its members, or the Browser
+ *   and Git panes' rows), Left from a row's first item going back to the conversation's item nearest in height. Enter
+ *   on a post or a member opens its action strip (ActionStrip.tsx), whose own Left and Right choose.
  * - Escape closes what is in front, one thing at a time (a menu, an action strip, the composer, a status chip's choices,
  *   a Correct… box, a dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
  * - Backspace outside a text field goes back one step: what is in front first (as Escape), then a member's thread, the
@@ -35,8 +37,9 @@ export function keepsArrows(element: Element | null): boolean {
   if (element.isContentEditable) return true;
   if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
   if (element instanceof HTMLInputElement && !["button", "submit", "reset", "checkbox", "image", "file", "color"].includes(element.type)) return true;
-  // An item of a room's lane (a view's tab among the header's buttons, a status chip) moves along its lane.
-  if (element.dataset.nav && element.closest("[data-nav-lane]")) return false;
+  // An item of a room's lane (a view's tab among the header's buttons, a status chip) or of its side panel (a tab in the
+  // panel's head, a row's switch) moves along its lane or row.
+  if (element.dataset.nav && element.closest("[data-nav-lane], [data-nav-side]")) return false;
   if (element.closest(OWN_ARROW_ROLES.map((role) => `[role="${role}"]`).join(", "))) return true;
   return Boolean(element.closest(".dialog, .menu, .popover, [data-own-keys]"));
 }
@@ -149,6 +152,34 @@ export function listTarget(items: HTMLElement[], current: HTMLElement | null, ke
   return null;
 }
 
+// ---- a room's side panel ----
+
+/**
+ * The side panel's stops as drawn now, in document order: its items (`data-nav`: the head's tabs, + Add member and ×,
+ * the members) and every control of the Browser and Git panes that is in no item (a switch, a browser's allow, make
+ * default, Edit, Page, Start or Stop; a folder, a file, a commit, Show older commits, a worktree); a disabled one is
+ * left out. Their rows are where they are drawn (keyOrder.ts, gridTarget), so the panes need no markup of their own.
+ */
+export function sideItems(side: HTMLElement): HTMLElement[] {
+  const items = new Set([...navItems(side), ...tabbables(side).filter((element) => itemOf(element) === null)]);
+  return [...items].filter((element) => !element.matches(":disabled")).sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+}
+
+/** Elements boxed where they are drawn in the window (both columns of a room scroll on their own, under one header). */
+export const boxed = (elements: HTMLElement[]): Boxed<HTMLElement>[] =>
+  elements.map((element) => {
+    const { left, right, top, bottom } = element.getBoundingClientRect();
+    return { element, left, right, top, bottom };
+  });
+
+/** Whether any of an element shows: in the window and in the view of the list it scrolls in (the board, a panel's body). */
+export function inView(element: HTMLElement): boolean {
+  const box = element.getBoundingClientRect();
+  const scroller = element.closest<HTMLElement>(".timeline, .queue-body");
+  const view = scroller?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+  return box.bottom > Math.max(0, view.top) && box.top < Math.min(window.innerHeight, view.bottom);
+}
+
 // ---- a room's lanes ----
 
 /** Shown and not hidden away (the composer's strip is kept in place, hidden, while the composer is open). */
@@ -216,6 +247,9 @@ const whereOf = (item: HTMLElement): string => item.dataset.where ?? nameOf(item
 /** A room header's items by their key. */
 const HEAD_PLACES: Record<string, PlaceId> = { "head:close": "room-head-close", "head:chat": "room-head-tab", "head:board": "room-head-tab", "head:people": "room-head-panel", "head:browser": "room-head-panel", "head:git": "room-head-panel", "head:menu": "room-head-options" };
 
+/** The side panel's head by its items' keys ("side:tab:git", "side:add", "side:close"); its other items are rows. */
+const SIDE_PLACES: Record<string, PlaceId> = { tab: "room-side-tab", add: "room-side-add", close: "room-side-close" };
+
 /** The overview's items by the kind their key starts with. */
 const OVERVIEW_PLACES: Record<string, PlaceId> = { room: "overview-room", thread: "overview-thread", preset: "overview-crew", browser: "overview-browser", shelf: "overview-shelf", head: "overview-head" };
 
@@ -229,6 +263,8 @@ export function keyPlace(): PlaceNow {
     now.push("typing");
     if ("value" in active && active.value === "") now.push("empty");
   }
+  // A button that waits (Seat in a room… while its form has a change): Enter does nothing there now.
+  if (active?.matches("button:disabled, [aria-disabled='true']")) now.push("disabled");
   const at = (place: PlaceId, where: string, name?: string): PlaceNow => ({ place, where, now, ...(name ? { name } : {}) });
 
   if (active?.closest(".model-menu")) return at("model-list", "choosing a model");
@@ -265,24 +301,27 @@ export function keyPlace(): PlaceNow {
     // A button of an action strip: named with the item it is on ("Cancel · #33 · you to @fable, open"; "Accept · @alpha
     // approval: waiting for you"), and by its name for Enter.
     const strip = active?.closest<HTMLElement>(".action-strip");
-    if (strip) return at(strip.closest(".work-bar") ? "room-chip-actions" : "room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
+    if (strip) return at(strip.closest(".work-bar") ? "room-chip-actions" : strip.closest("[data-nav='member']") ? "room-member-actions" : "room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
+    // The side panel: its head (its tabs, + Add member, ×), its members, the Browser and Git panes' rows, the panel
+    // itself (reached after a click on empty space), where Enter opens the composer, or another button in it.
+    const side = active?.closest<HTMLElement>("[data-nav-side]");
+    if (side) {
+      if (control) return at("room-side-other", control);
+      if (item?.dataset.nav === "member") return at("room-member", whereOf(item));
+      if (item?.dataset.nav === "side") return at(SIDE_PLACES[(item.dataset.navKey ?? "").split(":")[1] ?? ""] ?? "room-side-row", whereOf(item));
+      const panel = `the ${side.getAttribute("aria-label")} panel`;
+      if (active === side) return at("room-side-panel", panel);
+      // A control of the Browser or Git pane, a stop of its rows: a switch is named by its label.
+      const name = nameOf(active!) || nameOf(active!.closest("label") ?? active!);
+      return at(sideItems(side).includes(active!) ? "room-side-row" : "room-side-other", `${name} · ${panel}`);
+    }
     if (control) return at("room-button", control);
     if (item?.dataset.nav === "post" || item?.dataset.nav === "live") return at("room-post", whereOf(item));
-    if (item?.dataset.nav === "member") return at("room-member", whereOf(item));
     // The lanes above the posts: the header's buttons, the room state, the status chips; each says its lane first.
     if (item?.dataset.nav === "head" && HEAD_PLACES[item.dataset.navKey ?? ""]) return at(HEAD_PLACES[item.dataset.navKey!]!, whereOf(item));
     if (item?.dataset.nav === "state") return at("room-state", whereOf(item));
     if (item?.dataset.nav === "chip") return at("room-chip", whereOf(item));
     if (active?.matches(".composer-strip")) return at("room-strip", nameOf(active));
-    // A side panel: the panel itself (reached with the arrows, or after a click on empty space), where Enter opens the
-    // composer, or a button in it. The arrows in Members go to the members; in Browser and Git through its controls.
-    const pane = active?.closest<HTMLElement>("[data-nav-pane='people'], [data-nav-pane='browser'], [data-nav-pane='git']");
-    if (pane) {
-      const members = pane.dataset.navPane === "people";
-      const panel = `the ${pane.getAttribute("aria-label")} panel`;
-      if (pane === active) return at(members ? "room-members" : "room-pane", panel);
-      return at(members ? "room-members-button" : "room-pane-button", `${nameOf(active!)} · ${panel}`);
-    }
     // Nothing in the room has the ring: the room's window itself (as it opens, after a click on empty space) or the page
     // (the focused button went away); Enter there opens the composer.
     return active && active !== layer ? at("room-other", nameOf(active)) : at("room-itself", title("Room"));

@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, numberRepeats, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, entryText, fourKeysMarkdown, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, nearestInHeight, numberRepeats, openLanding, placeById, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
@@ -159,7 +159,7 @@ test("Left and Right go along the header and the status chips and stop at their 
   assert.equal(inRoom("chat", "left"), "close");
   assert.equal(inRoom("approval", "right"), "working");
   assert.equal(inRoom("working", "right"), "stay");
-  // The room state, a post, the strip and nothing focused: between the panes (OverviewRoom), not the lanes'.
+  // The room state, a post, the strip and nothing focused: into the side panel (OverviewRoom), not the lanes'.
   for (const from of ["state", "#2", "strip", null]) for (const key of ["left", "right"] as const) assert.equal(inRoom(from, key), null, `${from} ${key}`);
   // Something of the status lane that is no item (a chip's choices): its arrows are the room's too.
   assert.equal(inRoom({ lane: 2, before: 2 }, "right"), null);
@@ -209,6 +209,8 @@ test("a room opens with the ring on something in view: a chip that needs you, th
 
 /** The bar on a place, as it reads: each entry's keys, then what they do. */
 const bar = (place: PlaceId, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${entry.does}`);
+/** The bar on a place as it reads with the ring on a button of this name (an action strip's). */
+const barNamed = (place: PlaceId, name: string, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${barDoes(entry, name)}`);
 
 test("the bar names the keys of a room's tile, a post and the composer by what they do there", () => {
   assert.deepEqual(bar("overview-room"), ["↑ ↓ the row above or below", "← → along the row", "Enter open the room", "Home End first or last in the row", "? all keys"]);
@@ -217,7 +219,7 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
   assert.ok(bar("overview-crew").includes("Enter edit them"));
   // Backspace has nothing to go back to on the overview: said in ? and README, not on the bar, which names what works.
   assert.ok(!bar("overview-room").some((line) => line.startsWith("Backspace")));
-  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // In the field: no ? (it types), Backspace only while the field is empty.
   assert.deepEqual(bar("room-composer", ["typing"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "@ mention a member", "/ a command"]);
   assert.deepEqual(bar("room-composer", ["typing", "empty"]), ["Enter send", "Shift+Enter new line", "Esc close it, the draft kept", "Backspace close it", "@ mention a member", "/ a command"]);
@@ -228,7 +230,7 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
 test("with nothing focused, Enter is what it does there: a message in a room or a thread, nothing on the overview", () => {
   // The room's or thread's window itself (as it opens, after a click on empty space) or the page under it: Enter opens
   // the composer.
-  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-itself"), ["↑ ↓ to the posts", "→ the side panel", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   assert.deepEqual(bar("thread-itself"), ["Enter write a message", "Backspace back to the overview", "a–z start writing", "? all keys"]);
   // A button there is pressed.
   assert.ok(bar("room-other").includes("Enter press it"));
@@ -255,27 +257,93 @@ test("each lane says its keys: the header's buttons by what Enter does on each, 
     assert.ok(bar(place).includes("↓ the lane below"), place);
     assert.ok(!bar(place).some((line) => line.startsWith("↑")), `${place}: nothing above the header`);
   }
-  assert.deepEqual(bar("room-state"), ["↑ ↓ the lane above or below", "← → between the panes", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-state"), ["↑ ↓ the lane above or below", "→ the side panel", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   assert.deepEqual(bar("room-chip"), ["↑ ↓ the lane above or below", "← → between the chips", "Enter its choices", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   assert.ok(bar("room-chip", ["chip-open"]).includes("Esc Backspace fold the choices"));
-  assert.deepEqual(bar("room-strip"), ["↑ the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
+  assert.deepEqual(bar("room-strip"), ["↑ the posts", "→ the side panel", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // Home and End go to the posts from every lane of the conversation, and stay the side panel's own there.
   for (const place of ["room-post", "room-state", "room-chip", "room-strip", "room-other", "room-itself"] as const) assert.ok(bar(place).includes("Home End first or last post"), place);
-  for (const place of ["room-pane", "room-pane-button", "room-members", "room-members-button"] as const) assert.ok(!bar(place).includes("Home End first or last post"), place);
+  for (const place of ["room-side-panel", "room-side-tab", "room-member", "room-member-actions", "room-side-row"] as const) assert.ok(!bar(place).includes("Home End first or last post"), place);
 });
 
-test("a side panel itself writes a message with Enter; a button in it is pressed; the Members panel's arrows go to the members", () => {
-  // Browser or Git itself (→ → from a post): ↑ ↓ into its controls, Enter opens the composer.
-  // The ring on a panel means the panel is open: Backspace folds it.
-  assert.deepEqual(bar("room-pane", ["panel-open"]), ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing", "? all keys"]);
-  assert.ok(bar("room-pane-button").includes("Enter press it"));
-  assert.ok(bar("room-pane-button").includes("↑ ↓ its buttons and fields, in order"));
-  // Members itself (after a click on empty space): ↑ ↓ to a member, Enter opens the composer.
-  assert.deepEqual(bar("room-members", ["panel-open"]), ["↑ ↓ to the members", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing", "? all keys"]);
-  // A button in Members' head (+ Add member, ×): pressed; its arrows go to the members too.
-  assert.ok(bar("room-members-button").includes("Enter press it"));
-  assert.ok(bar("room-members-button").includes("↑ ↓ to the members"));
-  for (const place of ["room-pane", "room-members", "room-members-button"] as const) assert.ok(!bar(place).includes("↑ ↓ to the posts"), place);
+test("the side panel's places: its head, a member, a member's actions, a row; ← goes back to the conversation, → is never the side panel there", () => {
+  // The panel itself (after a click on empty space): Enter opens the composer; the ring on it means it is open.
+  assert.deepEqual(bar("room-side-panel", ["panel-open"]), ["↑ ↓ row above or below", "← → along the row", "Enter write a message", "Backspace fold the side panel", "a–z start writing", "Home End first or last in the panel", "? all keys"]);
+  // Its head: the tabs show their panel, + adds a member, × folds it.
+  assert.deepEqual(bar("room-side-tab"), ["↑ ↓ row above or below", "← → along its head", "Enter show its panel", "Backspace back to the overview", "a–z start writing", "Home End first or last in the panel", "? all keys"]);
+  assert.ok(bar("room-side-add").includes("Enter add a member"));
+  assert.ok(bar("room-side-close").includes("Enter fold the panel"));
+  // A member: Enter its actions, ← back to the conversation, and no → at all (the room's "→ the side panel" is the conversation's).
+  assert.deepEqual(bar("room-member", ["panel-open"]), ["↑ ↓ previous or next member", "← the conversation", "Enter its actions", "Backspace fold the side panel", "a–z start writing", "Home End first or last member", "? all keys"]);
+  // In a member's actions: choose, the button's name for Enter, Esc and Backspace close them.
+  assert.deepEqual(barNamed("room-member-actions", "Settings…"), ["↑ ↓ previous or next member", "← → choose", "Enter Settings…", "Esc Backspace close", "a–z start writing", "? all keys"]);
+  // A row of the Browser or Git panel: along it, Enter presses.
+  assert.ok(bar("room-side-row").includes("← → along the row"));
+  assert.ok(bar("room-side-row").includes("Enter press it"));
+  for (const place of ["room-side-panel", "room-side-head", "room-side-tab", "room-side-add", "room-side-close", "room-member", "room-member-actions", "room-side-row", "room-side-other"] as const) {
+    assert.ok(!bar(place).some((line) => line.startsWith("→ ") || line.includes("the side panel") && !line.startsWith("Backspace")), place);
+    assert.ok(!bar(place).includes("↑ ↓ to the posts"), place);
+  }
+  // The conversation's lanes say where → goes; the header and the chips keep → for themselves.
+  for (const place of ["room-post", "room-state", "room-strip", "room-other", "room-itself", "room-button"] as const) assert.ok(bar(place).includes("→ the side panel"), place);
+  for (const place of ["room-head-tab", "room-chip", "room-actions", "room-chip-actions"] as const) assert.ok(!bar(place).includes("→ the side panel"), place);
+});
+
+/**
+ * A room at 1439 px with the side panel open (Members), boxed as the page draws it: the conversation's posts on the left;
+ * the panel's head on the right (its tabs, + Add member, ×), then three members.
+ */
+const sidePanel: Boxed<string>[] = [
+  box("side:tab:people", 1092, 1160, 112, 134),
+  box("side:tab:browser", 1162, 1220, 114, 132),
+  box("side:tab:git", 1222, 1250, 114, 132),
+  box("side:add", 1370, 1398, 110, 136),
+  box("side:close", 1402, 1430, 110, 136),
+  box("member:a", 1092, 1430, 150, 260),
+  box("member:b", 1092, 1430, 268, 378),
+  box("member:c", 1092, 1430, 386, 496),
+];
+const conversation: Boxed<string>[] = [box("post:1", 40, 1060, 120, 240), box("post:2", 40, 1060, 250, 300), box("post:3", 40, 1060, 310, 640), box("strip", 40, 1060, 760, 800)];
+/** Where a key goes in the side panel from the item with that key. */
+const inSide = (from: string, key: NavKey): string | null => gridTarget(sidePanel, sidePanel.findIndex((item) => item.element === from), key)?.element ?? null;
+
+test("the side panel is a column of rows: its head's tabs, + and × along it, then the members; it stops at its ends", () => {
+  assert.equal(inSide("side:tab:people", "right"), "side:tab:browser");
+  assert.equal(inSide("side:tab:git", "right"), "side:add");
+  assert.equal(inSide("side:add", "right"), "side:close");
+  assert.equal(inSide("side:close", "right"), null, "the head's right end");
+  assert.equal(inSide("side:tab:people", "down"), "member:a");
+  assert.equal(inSide("side:close", "down"), "member:a");
+  assert.equal(inSide("member:a", "down"), "member:b");
+  assert.equal(inSide("member:c", "down"), null, "the last member");
+  // Up from a member reaches the head (OverviewRoom puts the ring on the tab showing, the head's landing).
+  assert.ok(["side:tab:people", "side:tab:browser", "side:tab:git", "side:add", "side:close"].includes(inSide("member:a", "up")!));
+  assert.equal(inSide("side:tab:browser", "up"), null, "the head is the top");
+  // Left from a row's first is no move inside the panel: OverviewRoom takes the ring back to the conversation.
+  assert.equal(inSide("member:b", "left"), null);
+  assert.equal(inSide("side:tab:people", "left"), null);
+});
+
+test("across the two columns the ring goes to the item nearest in height, of those in view", () => {
+  // From the conversation into the panel: a post beside the head and the first member goes to the one it overlaps
+  // most nearly, then the nearest top, then the row's first.
+  assert.equal(nearestInHeight(sidePanel, conversation[0]!)?.element, "side:tab:people");
+  assert.equal(nearestInHeight(sidePanel, conversation[1]!)?.element, "member:b");
+  assert.equal(nearestInHeight(sidePanel, conversation[2]!)?.element, "member:b", "a tall post: the member whose top is nearest its own");
+  assert.equal(nearestInHeight(sidePanel, conversation[3]!)?.element, "member:c", "below every member: the nearest");
+  // Back from the panel: to the post beside it.
+  assert.equal(nearestInHeight(conversation, sidePanel[6]!)?.element, "post:2");
+  assert.equal(nearestInHeight(conversation, sidePanel[7]!)?.element, "post:3");
+  assert.equal(nearestInHeight([], sidePanel[0]!), null);
+});
+
+test("Enter on a button that waits says so: over every place's Enter while it cannot be pressed", () => {
+  assert.ok(bar("overview-other", ["disabled"]).includes("Enter not now"));
+  assert.ok(!bar("overview-other", ["disabled"]).includes("Enter press it"));
+  assert.ok(bar("dialog", ["disabled"]).includes("Enter not now"));
+  assert.ok(bar("room-side-row", ["disabled"]).includes("Enter not now"));
+  assert.ok(bar("overview-other").includes("Enter press it"), "a button that can be pressed");
+  assert.ok(!bar("overview-other").includes("Enter not now"));
 });
 
 test("the bar takes the nearest place's wording, and the one for the moment over the rest of the time", () => {
@@ -327,6 +395,8 @@ test("README.md's Keyboard section is the key table, row for row", () => {
   assert.ok(section.length > 0, "README.md has a Keyboard section");
   const tables = keysMarkdown();
   assert.ok(section.includes(tables), "README.md's Keyboard tables differ from KEYS: node scripts/keys-readme.ts draws them again");
+  // It opens with the four keys, as `?` does (KeyHelp.tsx draws the same FOUR_KEYS).
+  assert.ok(section.startsWith(`## Keyboard\n\n${fourKeysMarkdown()}\n\n`), "README.md's Keyboard section opens with FOUR_KEYS: node scripts/keys-readme.ts draws it again");
   const rows = (text: string) => text.split("\n").filter((line) => line.startsWith("|")).length;
   assert.equal(rows(section), rows(tables), "README.md's Keyboard section has no table rows besides KEYS'");
 });
@@ -346,9 +416,6 @@ test("the turns running now follow the posts: Down from the newest post reaches 
   const fresh: Lane<string>[] = room.map((lane) => (lane.name === "posts" ? { ...lane, items: ["live:a"], landing: "live:a" } : lane));
   assert.equal(inRoom("strip", "last", false, fresh), "live:a");
 });
-
-/** The bar on a place as it reads with the ring on a button of this name (an action strip's). */
-const barNamed = (place: PlaceId, name: string, now: KeyWhen[] = []): string[] => barEntries(place, now).map((entry) => `${entry.keys.join(" ")} ${barDoes(entry, name)}`);
 
 test("on a post Enter opens its actions; in them the bar says choose, Enter and the button's name, Esc close", () => {
   assert.ok(bar("room-post").includes("Enter its actions"));
