@@ -11,7 +11,8 @@ import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
 interface Control {
   element: HTMLElement;
   kind: ActionKind;
-  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel. */
+  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel, a native
+   *  request's id and the choice's place on its card for an approval's or a question's choices. */
   id?: string | undefined;
   label: string;
   name: string;
@@ -57,10 +58,13 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
   if (element.closest(".native-requests")) {
     const input = element instanceof HTMLInputElement ? element : null;
     const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
-    // With several drawn, each is named with what it asks ("Accept 2: run tests").
+    // Each its request's, by the request's id and not its place: answered elsewhere, its buttons go and another
+    // request's never take their keys (the ring is not moved onto them). With several drawn, each is named with what it
+    // asks ("Accept 2: run tests").
     const card = element.closest<HTMLElement>(".native-card");
+    const id = card?.dataset.request ? `${card.dataset.request}:${[...card.querySelectorAll(CONTROLS)].indexOf(element)}` : undefined;
     const subject = card && asking > 1 ? textOf(card.querySelector(".native-detail, legend") ?? card) : "";
-    return { kind: "choice", label: cut(label), name: cut(subject ? `${label}: ${subject}` : label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
+    return { kind: "choice", id, label: cut(label), name: cut(subject ? `${label}: ${subject}` : label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
   }
   if (element.matches(".copy-button")) {
     const label = element.getAttribute("aria-label") === "Copied" ? "Copied" : "Copy";
