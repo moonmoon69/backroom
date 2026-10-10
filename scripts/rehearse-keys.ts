@@ -2617,6 +2617,16 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // Tab goes along the strip's buttons, then off it: the strip closes and the chip folds.
     await tabTo("Tab past the strip's last button", (f) => f.strips === 0, "Tab", 8);
     await expect("Tab off the strip: the chip folded", (f) => f.strips === 0 && !f.chipOpen && inRoom(f));
+    // A click elsewhere with the strip open is delivered: the bar shrinks only once the pointer is released, so the
+    // button pressed (your request's Correct…) stays under it. Then the strip is gone, the chip folded.
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    const correctLine = browser.on("snapshot").split("\n").filter((l) => /button "Correct…"/.test(l)).at(-1);
+    browser.on("click", /uid=(\S+)/.exec(correctLine ?? "")?.[1] ?? fail("the page snapshot has no Correct… on your request"));
+    await expect("a click on your request's Correct…: its box open, the strip gone, the chip folded", (f) => f.correctionOpen && f.strips === 0 && !f.chipOpen && inRoom(f));
+    press("Escape");
+    await expect("Esc: the correction closed", (f) => !f.correctionOpen && inRoom(f));
     await toAskChip("approval");
     press("Enter");
     await expect("Enter: the strip again, on Accept", (f) => f.chipOpen && choiceAt(f.action) === 0);
@@ -2710,6 +2720,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: fromApi, decision: "decline" });
     await answered(fromApi, "Decline through the API");
     await onNewest("answered through the API");
+    // The ring on the chip itself (as a room opens with an approval waiting), the approval answered elsewhere: the ring
+    // lands as the room's does, not on the page.
+    const onTheChip = await fableAsks("approval");
+    await toAskChip("approval");
+    await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: onTheChip, decision: "accept" });
+    await answered(onTheChip, "Accept through the API, the ring on the chip");
+    await onNewest("answered through the API with the ring on the chip itself");
     const [a, b] = [await fableAsks("approval"), await fableAsks("approval")];
     await toAskChip("2 × approval");
     press("Enter");
