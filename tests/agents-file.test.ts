@@ -754,3 +754,31 @@ test("the project's checks: package scripts with its package manager, and make t
   assert.deepEqual(projectChecks(dir({ "package.json": "not json", "README.md": "# hi\n" })), []);
   assert.match(defaultAgentsText([]), /the ones its README or package scripts name/);
 });
+
+test("the default text, with checks and without: the session, scope, shared-checkout, commit, role and report habits, under twenty lines, nothing of a model, a harness, Backroom's own work or another project's", () => {
+  for (const text of [defaultAgentsText(["npm run check"]), defaultAgentsText([])]) {
+    const lines = text.split("\n");
+    assert.ok(lines.length - 1 < 20, `under twenty lines (has ${lines.length - 1})`);
+    assert.equal(lines[0], "# Working in this project");
+    assert.match(lines.at(-2) ?? "", /^Backroom wrote this file .* Backroom never changes it\.$/, "the closing line");
+    for (const [habit, pattern] of [
+      ["keep going without a decision", /Keep going while a step needs no decision from the user/],
+      ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing/],
+      ["read the owner and its tests first", /Read the code that owns a behaviour and its tests before you change it/],
+      ["fix at the owner, keep to the task", /fix a problem at its owner, keep the change to the task/],
+      ["docs made untrue, in the same change", /update in the same change the docs it makes untrue/],
+      ["a worktree of its own in a shared checkout", /When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need/],
+      ["commits", /Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked\. The user releases/],
+      ["the writer", /\n- A writer delivers the change committed, with its tests and the checks it ran\.\n/],
+      ["the reviewer", /\n- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails\.\n/],
+      ["the planner", /\n- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone\.\n/],
+      ["self-review", /Before you report ready, review your own diff and fix what it finds/],
+      ["finding to test", /Turn every review finding into a test that fails without the fix/],
+      ["the checks", /Run the project's checks before you report ready: /],
+      ["no status files", /Write no separate status or report files unless asked/],
+      ["the Handoff", /End every answer with a Handoff/],
+    ] as const) assert.match(text, pattern, habit);
+    assert.doesNotMatch(text, /subagent|sub-agent|\btiers?\b|\bmodels?\b|harness|workflow|Claude|Codex|Cursor|Gemini|GPT|Opus|Sonnet|Haiku|Fable/i, "no model, tier, harness or subagent named");
+    assert.doesNotMatch(text, /build:web|rehears|rooms-board|Consigliere|\bwaves?\b|partition|licen[cs]e|SPDX|Co-Authored-By/i, "nothing of Backroom's own work or Shop's");
+  }
+});

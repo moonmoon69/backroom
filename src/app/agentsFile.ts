@@ -1,7 +1,8 @@
 /**
- * The agents file (A1): the habits every agent working in a project keeps whoever assigned the work (review its own
- * diff before reporting ready, turn review findings into tests, run the project's checks, end with a Handoff), in the
- * project's folder, where every harness reads it. Codex, Cursor and Antigravity read AGENTS.md; Claude Code reads
+ * The agents file (A1): the habits every agent working in a project keeps whoever assigned the work (how far to go
+ * without the user, the scope of a change, a worktree of its own in a shared checkout, commits, what each role delivers,
+ * review its own diff, turn review findings into tests, run the project's checks, end with a Handoff), in the project's
+ * folder, where every harness reads it. Codex, Cursor and Antigravity read AGENTS.md; Claude Code reads
  * CLAUDE.md (AGENTS.md only where no CLAUDE.md is), and follows a line `@AGENTS.md` in it as an import. So one AGENTS.md
  * and a one-line CLAUDE.md importing it reach all four; a copy of the text would drift, and Cursor, which reads both
  * files, would load it twice. README.md ("The agents file") has the table and its evidence.
@@ -242,9 +243,17 @@ export function defaultAgentsText(checks: string[]): string {
     "",
     "The habits of every agent working here, whoever assigned the work.",
     "",
-    "- Before you report ready, review your own diff (with a subagent or a review workflow, if your harness has one) and fix what it finds.",
+    "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
+    "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
+    "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
+    "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
+    "- A writer delivers the change committed, with its tests and the checks it ran.",
+    "- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails.",
+    "- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone.",
+    "- Before you report ready, review your own diff and fix what it finds.",
     "- Turn every review finding into a test that fails without the fix.",
     `- ${run} Say what you ran and what it printed, and name any check you skipped.`,
+    "- Write no separate status or report files unless asked.",
     "- End every answer with a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated.",
     "",
     "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom never changes it.",

@@ -83,7 +83,7 @@ export const ENGINE_CONSIGLIERE_RULES: string[] = [
   "A fresh seat for every review: each gate that needs a reviewer gets a newly seated one, who also checks the fixes it asked for and is retired when the gate is passed. The member who did the work never reviews it.",
   "You route reviews: members never post to each other. When the work is ready, send the reviewer the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.",
   "Seat the reviewer when you seat the writer: it sends you what it will check while the writer builds, and you pass that to the writer.",
-  "Before a writer reports its work ready, it reviews its own diff with a subagent or a review workflow and fixes what that finds.",
+  "Before a writer reports its work ready, it reviews its own diff and fixes what that finds.",
   "Anything that changes or describes behaviour gets a fresh reviewer; wording that changes and describes no behaviour gets your own read and the automated gate.",
   "After two review rounds, rule on the open technical points yourself and bring the user only product questions.",
   "Keep one revision in review at a time: the writer sends the next only after the reviewer's verdict on the last.",
