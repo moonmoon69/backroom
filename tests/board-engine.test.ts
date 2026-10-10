@@ -604,7 +604,7 @@ test("the host's texts reach members with board numbers, never request IDs", asy
   assert.doesNotMatch(refusal.message, /#board:|@[0-9a-f]{8}-/);
   // The reply to a cancel of one of the turn's two requests names the request and its owner: #n and @alias (#2099).
   const shown = await f.cli("c", "cancel", `#${f.num(a!)}`);
-  assert.match(shown, new RegExp(`#${f.num(a!)} is cancelled\\. @w is told in its running turn, which goes on with its other work\\.`));
+  assert.match(shown, new RegExp(`#${f.num(a!)} is cancelled\\. @w is told in its running turn, which goes on with its other work, or when that turn ends if it takes nothing \\(one typed in T3, a keep-alive's, one on Backroom's own request\\)\\.`));
   assert.doesNotMatch(shown, /#board:|@[0-9a-f]{8}-/);
   // A post that is not a request names the request it is about: Backroom's note of a reseat called off, say.
   const note = await f.appended(async () => f.stack.engine!.note(f.roomId, { actor: "$user", id: "reseat-called-off", body: "lexer first", requestIds: [b!] }));

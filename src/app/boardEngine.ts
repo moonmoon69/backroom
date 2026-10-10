@@ -422,7 +422,7 @@ export class BoardEngine {
     const result = await this.act(c, () => this.host.cancel(c.room.id, { actor: c.seatId, id: this.commandId(), requestId: q.id }));
     const owner = this.name(q.owner);
     if (result.deferred) return `${this.label(p, q.id)} is cancelled when ${owner}'s current turn ends, since that turn works on other requests. Nobody is woken now.`;
-    if (result.applied) return `${this.label(p, q.id)} is cancelled. ${owner} is told${result.stopped ? ", and its turn on it is stopped" : this.view(c.room.id).seats.get(q.owner)?.activeRunId ? " in its running turn, which goes on with its other work" : ""}.`;
+    if (result.applied) return `${this.label(p, q.id)} is cancelled. ${owner} is told${result.stopped ? ", and its turn on it is stopped" : this.view(c.room.id).seats.get(q.owner)?.activeRunId ? " in its running turn, which goes on with its other work, or when that turn ends if it takes nothing (one typed in T3, a keep-alive's, one on Backroom's own request)" : ""}.`;
     return `${this.label(p, q.id)} had already closed; nothing changed.`;
   }
 
