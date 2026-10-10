@@ -16,8 +16,8 @@
  * from the API (GET /api/rooms/:id) has the expected fields, and `rooms-browser … wait-for <text>` printed a match in
  * the user's view of it. After each step it reads `rooms-browser … console` and fails on any error-level line. The
  * first failure ends the run with exit code 1; a screenshot of each state goes to --out. The page opens on
- * http://localhost:<port> (REHEARSE_TAB_HOST names another host): a renderer of its own, which a crash in the run
- * takes down alone.
+ * http://rehearse-<port>.localhost:<port> (REHEARSE_TAB_HOST names another host): a site of the run's own, so a
+ * renderer of its own, which a crash in the run takes down alone.
  *
  * How the room is played:
  * - The user's messages and controls go through /api/commands, the members' through `rooms-board` (bin/rooms-board.mjs,
@@ -2674,11 +2674,14 @@ function stepSections(step: Step): string[] {
 }
 
 /**
- * The service's address as our tab opens it: on localhost, not 127.0.0.1, a site of its own, so a renderer of its own,
- * and a crash in a run takes no other agent's 127.0.0.1 tab with it (C1). REHEARSE_TAB_HOST names another host.
+ * The service's address as our tab opens it: on rehearse-<port>.localhost (Chrome takes any *.localhost to this
+ * machine), not 127.0.0.1, a site of the run's own, so a renderer of its own, and a crash in the run takes no other
+ * tab with it, another run's or anyone's on 127.0.0.1 (C1). REHEARSE_TAB_HOST names another host.
  */
 function tabUrl(base: string): string {
-  return base.replace("127.0.0.1", process.env.REHEARSE_TAB_HOST ?? "localhost");
+  const url = new URL(base);
+  url.hostname = process.env.REHEARSE_TAB_HOST || `rehearse-${url.port}.localhost`;
+  return url.origin;
 }
 
 /**

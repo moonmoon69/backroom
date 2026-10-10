@@ -3327,7 +3327,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`  page: "${c.label}" in ${c.color} on ${c.background}, contrast ${c.contrast}`);
     return c;
   };
-  /** Whether the focused item's brackets show: drawn, and not outside a box that clips what it draws (a chat row). */
+  /** Whether the focused item's brackets show: drawn, and not outside a box that clips what it draws. */
   const BRACKETS = "() => { const e = document.activeElement; const cs = getComputedStyle(e); const after = getComputedStyle(e, '::after'); const clips = cs.contentVisibility === 'auto' || /paint|strict|content/.test(cs.contain); const inset = ['top', 'right', 'bottom', 'left'].map((side) => parseFloat(after[side])); return { row: e.className, nav: e.dataset.nav ?? null, drawn: after.backgroundImage.includes('gradient'), clips, inset, shown: after.backgroundImage.includes('gradient') && !(clips && inset.some((v) => v < 0)) }; }";
   type Brackets = { row: string; nav: string | null; drawn: boolean; clips: boolean; inset: number[]; shown: boolean };
 
@@ -3375,6 +3375,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await room.message("Tag the release.");
     await room.live("fable");
     await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+    // Once the page draws it: its posts arriving push the oldest drawn post, where Home puts the ring, off the board.
+    browser.poll<boolean>("the page to draw the failed turn's chip", `() => Boolean(document.querySelector('[data-nav-key^="chip:notice:"]'))`, (drawn) => drawn === true);
     await abovePosts("@fable's failed turn's chip", (f) => f.key?.startsWith("chip:notice:") === true);
     press("Enter");
     await expect("Enter: its choices, the ring on Retry", (f) => f.chipOpen && f.label === "Retry" && f.ring);

@@ -7086,8 +7086,7 @@ button.work-chip:hover,
   max-width: var(--sheet-col);
 }
 
-/* Both views are one reading column. Rows are not faded in one by one (sixty at once is a stutter), and rows out
-   of view are not laid out until they scroll near. */
+/* Both views are one reading column. Rows are not faded in one by one (sixty at once is a stutter). */
 .sheet .timeline {
   padding: 14px 24px 28px;
   --bubble-max: 100%;
