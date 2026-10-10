@@ -162,15 +162,21 @@ export function WorkBar() {
   const room = useRef<HTMLElement | null>(null);
   /** A post the open view draws, by its number (the chat leaves some out; a long board draws only its latest). */
   const post = (n: number) => room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`) ?? null;
-  // The chip gone with its strip open (its request answered, its turn retried, dismissed or ended): after a key, the
-  // ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved: the first chip
-  // that needs you, else the newest post if it shows, else a running turn's chip, else the composer's strip.
+  // The chip the ring is on, or in its strip or choices, by its key (focus events on the bar, below).
+  const holding = useRef<string | null>(null);
+  // The chip gone with the ring on it or in its strip (its request answered, its turn retried, dismissed or ended):
+  // after a key, the ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved:
+  // the first chip that needs you, else the newest post if it shows, else a running turn's chip, else the composer's
+  // strip. Its strip, if open, goes with it.
   const gone = strip !== null && !items.some((item) => item.key === strip);
   useLayoutEffect(() => {
     if (bar.current) room.current = bar.current.parentElement;
-    if (!gone) return;
-    setStrip(null);
-    setOpen(null);
+    if (gone) {
+      setStrip(null);
+      setOpen(null);
+    }
+    if (holding.current === null || items.some((item) => item.key === holding.current)) return;
+    holding.current = null;
     const now = document.activeElement;
     if (!lastInputWasKey() || (now && now !== document.body && now.isConnected)) return;
     const root = room.current;
@@ -207,7 +213,21 @@ export function WorkBar() {
   /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
   const whereOf = (item: Item) => `${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`;
   return (
-    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar} data-nav-lane="status">
+    <div
+      className="work-bar"
+      role="status"
+      aria-label="What is going on in this room"
+      ref={bar}
+      data-nav-lane="status"
+      onFocus={(event) => {
+        const chip = (event.target as HTMLElement).closest<HTMLElement>('[data-nav="chip"]');
+        holding.current = chip ? (chip.dataset.navKey ?? "").replace(/^chip:/, "") : (event.target as HTMLElement).closest(".action-strip, .work-open") ? open : null;
+      }}
+      onBlur={(event) => {
+        // Off to somewhere else in the page (not lost with its chip, which leaves it nowhere).
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) holding.current = null;
+      }}
+    >
       <div className="work-groups">
         {GROUPS.map((group) => {
           const list = items.filter((item) => item.group === group.key);
