@@ -772,7 +772,7 @@ test("R3 review speed: the engine's briefing for the Consigliere carries the sev
   const route = "You route reviews: members never post to each other. When the work is ready, send the reviewer the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.";
   const speed = [
     "Seat the reviewer when you seat the writer: it sends you what it will check while the writer builds, and you pass that to the writer.",
-    "Before a writer reports its work ready, it reviews its own diff with a subagent or a review workflow and fixes what that finds.",
+    "Before a writer reports its work ready, it reviews its own diff and fixes what that finds.",
     "Anything that changes or describes behaviour gets a fresh reviewer; wording that changes and describes no behaviour gets your own read and the automated gate.",
     "After two review rounds, rule on the open technical points yourself and bring the user only product questions.",
     "Keep one revision in review at a time: the writer sends the next only after the reviewer's verdict on the last.",
@@ -788,6 +788,8 @@ test("R3 review speed: the engine's briefing for the Consigliere carries the sev
   assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, new RegExp(`\\n- Reseat long work before the harness compacts it[^\\n]*\\n- ${reseatSelf}\\n- Keep the room state current`));
   // The old wording of the two reworded rules is gone.
   assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /each gate gets a newly seated reviewer|When the work is ready, seat the reviewer/);
+  // How a writer reviews its own diff is its own business (the user's #66): no subagent, no workflow named.
+  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /reviews its own diff with|subagent or a review workflow/);
 
   // The briefing the engine sends a Consigliere carries all nine.
   const h = await Seats.create();
