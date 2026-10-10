@@ -286,19 +286,20 @@ test("1. each command appends exactly the expected events, and reads append noth
   assert.deepEqual(kinds(events), ["cancel"], "the host interrupts the turn through T3; the journal holds the cancel only");
   await f.tick();
 
-  // cancel of one of two requests of a live turn: a visible note; it applies when the turn ends.
+  // cancel of one of two requests of a live turn (#2099): applied at once, and into the running turn, which goes on.
   const [g1] = f.posted(await f.cli("c", "post", "@w port the lexer"));
   const [g2] = f.posted(await f.cli("c", "post", "@w port the printer"));
   await f.tick();
   events = await f.appended(() => f.cli("c", "cancel", `#${f.num(g1!)}`));
-  assert.deepEqual(kinds(events), ["note"]);
-  assert.match(await f.cli("c", "read", String(events[0]!.seq)), new RegExp(`Cancel of #${f.num(g1!)} requested`));
+  assert.deepEqual(kinds(events), ["cancel"]);
+  assert.equal(f.request(g1!).state, "cancelled", "at once");
+  await f.tick();
   f.complete("w", "printer ported");
   await f.tick();
   assert.deepEqual([f.request(g1!).state, f.request(g2!).state], ["cancelled", "answered"]);
 
-  // retry: a failed turn runs again, by the Consigliere. (The cancels above woke their owners once more with the
-  // cancel itself, as §4 says a cancel does; those turns end first.)
+  // retry: a failed turn runs again, by the Consigliere. (The first cancel above, of a turn's only request, woke its
+  // owner once more with the cancel itself, as §4 says a cancel does; that turn ends first.)
   await f.quiet();
   const [h] = f.posted(await f.cli("c", "post", "@v run the benchmark"));
   await f.tick();
@@ -601,11 +602,9 @@ test("the host's texts reach members with board numbers, never request IDs", asy
   await f.tick();
   const refusal = await f.refused("w", ["post", "@v review it"], MEMBERS);
   assert.doesNotMatch(refusal.message, /#board:|@[0-9a-f]{8}-/);
-  // The host's note of a cancel held to the turn's end names the request and its owner: read shows #n and @alias.
-  const held = await f.appended(() => f.cli("c", "cancel", `#${f.num(a!)}`));
-  assert.deepEqual(kinds(held), ["note"]);
-  const shown = await f.cli("w", "read", String(held[0]!.seq));
-  assert.match(shown, new RegExp(`Cancel of #${f.num(a!)} requested; it applies when @w's current turn ends\\.`));
+  // The reply to a cancel of one of the turn's two requests names the request and its owner: #n and @alias (#2099).
+  const shown = await f.cli("c", "cancel", `#${f.num(a!)}`);
+  assert.match(shown, new RegExp(`#${f.num(a!)} is cancelled\\. @w is told in its running turn, which goes on with its other work\\.`));
   assert.doesNotMatch(shown, /#board:|@[0-9a-f]{8}-/);
   // A post that is not a request names the request it is about: Backroom's note of a reseat called off, say.
   const note = await f.appended(async () => f.stack.engine!.note(f.roomId, { actor: "$user", id: "reseat-called-off", body: "lexer first", requestIds: [b!] }));

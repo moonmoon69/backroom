@@ -13,7 +13,8 @@
  * - When background work a member's latest post named has ended with no further turn, one follow-up says so after
  *   `quietMs` of quiet.
  * - Only the orchestrator, the user and Backroom (a seat's briefing, a reseat's checkpoint or call-off) post requests.
- * - A cancel stops the member's turn only when that turn works on nothing else; otherwise it applies when the turn ends.
+ * - A cancel applies at once: it stops the member's turn when that turn has nothing else to work on, and otherwise goes
+ *   into the running turn like any message.
  *   What a stopped turn said is on the board and wakes nobody.
  * - A run T3 never takes fails visibly, with one notice, after its bounds.
  * - An idle seat with work in flight (a member it asked still working, background work or a subagent of its own) that
@@ -1128,30 +1129,25 @@ export class EngineHost {
   }
 
   /**
-   * Withdraw a request (§6). Its owner not in a turn: the cancel applies now. In a turn whose only request is this one:
-   * it applies now and the turn is interrupted. In a turn that also works on other requests: it is recorded as a
-   * visible note and applies when that turn ends, so the seat is never left stopping (its posts refused) while it
-   * works on the rest.
+   * Withdraw a request (§6). The cancel applies at once. When it leaves the owner's turn nothing to work on, the turn is
+   * interrupted (`stopped`); when the turn works on other requests too, the cancel goes into it like any message (M1):
+   * the member is told mid-turn, and the turn's reply answers the rest. (Journals from before M1 hold cancels held to
+   * the turn's end, as notes: a replay of one still says so.)
    */
-  async cancel(roomId: string, input: { actor: string; id: string; requestId: string }): Promise<{ applied: boolean; deferred: boolean }> {
+  async cancel(roomId: string, input: { actor: string; id: string; requestId: string }): Promise<{ applied: boolean; deferred: boolean; stopped: boolean }> {
     const p = this.project(roomId);
     const q = p.requests.get(input.requestId);
     if (!q) throw new HostRefusal(`#${input.requestId} is not a request in this room.`);
     if (input.actor !== "$user" && input.actor !== q.returnTo && input.actor !== p.orchestrator) throw new HostRefusal(`Only whoever asked #${q.id} can cancel it.`);
     const noteId = `${DEFERRED_CANCEL}${JSON.stringify([q.id, input.id])}`;
-    if (committed(p, input.actor, noteId) && !committed(p, input.actor, input.id)) return { applied: false, deferred: true };
+    if (committed(p, input.actor, noteId) && !committed(p, input.actor, input.id)) return { applied: false, deferred: true, stopped: false };
     const owner = p.seats.get(q.owner);
     const run = owner?.activeRunId ? p.runs.get(owner.activeRunId)! : null;
-    if (run && run.phase !== "rejected" && q.state === "open" && !committed(p, input.actor, input.id)) {
-      const turn = finalTargets(p, run);
-      if (!(turn.length === 1 && turn[0] === q.id)) {
-        this.member(roomId, { type: "post", actor: input.actor, id: noteId, intent: "note", body: `Cancel of #${q.id} requested; it applies when @${q.owner}'s current turn ends.` });
-        return { applied: false, deferred: true };
-      }
-    }
     const receipt = this.member(roomId, { type: "cancel", actor: input.actor, id: input.id, requestId: q.id });
     const applied = receipt.events.some((e) => e.data.kind === "cancel" && e.data.applied);
-    if (run && owner) {
+    const live = run ? this.project(roomId).runs.get(run.id)! : null;
+    const stopped = live !== null && live.phase !== "terminal" && live.phase !== "rejected" && stoppingCancel(this.project(roomId), live) !== null;
+    if (run && owner && stopped) {
       // The cancel is recorded; sending the interrupt is best effort here, and the tick sends it otherwise.
       try {
         const detail = await this.adapter.getThreadDetail(owner.threadId);
@@ -1162,7 +1158,7 @@ export class EngineHost {
       }
     }
     this.hint();
-    return { applied, deferred: false };
+    return { applied, deferred: false, stopped };
   }
 
   /**

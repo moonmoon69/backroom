@@ -35,7 +35,7 @@ test("§6: cancelling a run's only request interrupts it, once; the stopped turn
   assert.equal(room.state(u), "answered", "C's hand-off answered U: nothing is held since H5");
   const cWakes = room.wakes("C");
   const result = await room.cancel("C", a);
-  assert.deepEqual(result, { applied: true, deferred: false });
+  assert.deepEqual(result, { applied: true, deferred: false, stopped: true });
   assert.equal(room.running("W"), false, "the turn was interrupted");
   assert.equal(interrupts(room).length, 1);
   await room.tick();
@@ -62,41 +62,35 @@ test("§6: cancelling a run's only request interrupts it, once; the stopped turn
   room.assertQuiet();
 });
 
-test("hunt 1: cancelling one of several requests in a run defers to the turn's end; nothing is interrupted and B's answer is not lost", async () => {
+test("hunt 1 (M1): cancelling one of several requests in a run applies at once and goes into the running turn; nothing is interrupted, B's answer is not lost, and no turn of its own follows", async () => {
   room = await Room.create();
   const a = room.host.request(room.room, { actor: "C", id: "A", to: "W", body: "A: fix dates.ts." }).events[0]!.id;
   const b = room.host.request(room.room, { actor: "C", id: "B", to: "W", body: "B: fix text.ts." }).events[0]!.id;
   await room.tick();
   assert.match(room.prompt("W"), /A: fix dates[\s\S]*B: fix text/);
   const result = await room.cancel("C", a);
-  assert.deepEqual(result, { applied: false, deferred: true });
-  assert.equal(room.state(a), "open", "applies when the turn ends");
+  assert.deepEqual(result, { applied: true, deferred: false, stopped: false });
+  assert.equal(room.state(a), "cancelled", "at once");
   assert.equal(room.running("W"), true, "B's work is not interrupted");
-  assert.ok(room.p.events.some((e) => e.data.kind === "note" && /Cancel of #A requested; it applies when @W's current turn ends/.test(e.data.body)));
+  await room.tick();
+  const told = room.fake.thread(room.threadOf("W")).turnItems.flatMap((i) => (i.type === "user_message" && i.inputIntent === "steer" ? [i.text] : []));
+  assert.equal(told.length, 1, "the cancel went into W's running turn");
+  assert.match(told[0]!, /\[#\d+ cancel from @C: #\d+ is withdrawn; stop any work on it\]\nRequest cancelled/);
   // W's own notes still go through: the seat is not left stopping while it works on B.
   room.host.note(room.room, { actor: "W", id: room.id("note"), body: "Dropping A as asked." });
   room.complete("W", "B fixed. A dropped.");
   await room.tick();
-  assert.equal(room.state(a), "cancelled");
   assert.equal(room.state(b), "answered", "the turn's final answers B (nothing holds it since H5)");
   assert.deepEqual(room.outputs().filter((o) => o.author === "W").at(-1)!.disposition, { kind: "answer", requestIds: [b] });
-  assert.deepEqual(interrupts(room), [], "the cancel applied as the turn ended interrupts nothing");
+  assert.deepEqual(interrupts(room), [], "the cancel interrupts nothing");
   assert.deepEqual(room.notices(), [], "no late-output notice");
   assert.ok(room.outputs().every((o) => o.claims.every((c) => c.outcome !== "late")));
   assert.equal(room.wakes("C"), 1, "C is woken once, by B's answer");
   room.complete("C", "Ok.");
-  // The cancel, applied as the turn ended, reaches W once in its next run (§4: a cancel wakes its owner).
-  assert.match(room.prompt("W"), /\[#\d+ cancel from @C: #\d+ is withdrawn\]\nRequest cancelled/);
-  room.complete("W", "Noted: A is dropped.");
-  await room.tick(2);
-  // H5: W's reply to the cancel answers nothing: a follow-up on A, which wakes C once more.
-  assert.deepEqual(room.outputs().filter((o) => o.author === "W").at(-1)!.disposition, { kind: "progress", requestIds: [a], milestone: "follow-up" });
-  assert.equal(room.wakes("C"), 2, "C is woken by B's answer and by W's follow-up, once each");
-  room.complete("C", "Ok.");
   await room.tick(2);
   assert.equal(room.answeredClaims(b).length, 1);
-  assert.equal(room.wakes("W"), 2);
-  assert.equal(room.wakes("C"), 2);
+  assert.equal(room.wakes("W"), 1, "no turn of its own to be told of the cancel");
+  assert.equal(room.wakes("C"), 1, "and no second wake for C");
   room.assertQuiet();
 });
 
@@ -108,7 +102,7 @@ test("a cancel of the only request while the run is still being sent interrupts 
   const run = [...room.p.runs.values()].find((x) => x.seatId === "W")!;
   assert.equal(run.phase, "sending");
   assert.equal(room.fake.runsOf(room.threadOf("W")).length, 0, "T3 does not have it yet");
-  assert.deepEqual(await room.cancel("C", a), { applied: true, deferred: false });
+  assert.deepEqual(await room.cancel("C", a), { applied: true, deferred: false, stopped: true });
   assert.deepEqual(interrupts(room), [], "the interrupt waits for the T3 run");
   await room.tick();
   assert.equal(interrupts(room).length, 1);
@@ -132,7 +126,7 @@ test("an interrupt T3 could not take (unreachable) is sent again on a later tick
     }
     return interrupt(input);
   };
-  assert.deepEqual(await room.cancel("C", a), { applied: true, deferred: false });
+  assert.deepEqual(await room.cancel("C", a), { applied: true, deferred: false, stopped: true });
   assert.equal(room.running("W"), true, "not interrupted yet");
   await room.tick();
   assert.equal(room.running("W"), false);
@@ -193,7 +187,7 @@ test("a cancel after the final is recorded is simply not applied, and wakes nobo
   room.complete("W", "A is done.");
   await room.tick();
   assert.equal(room.state(a), "answered");
-  assert.deepEqual(await room.cancel("C", a), { applied: false, deferred: false });
+  assert.deepEqual(await room.cancel("C", a), { applied: false, deferred: false, stopped: false });
   assert.deepEqual(room.notices(), []);
 });
 

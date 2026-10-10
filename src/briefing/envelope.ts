@@ -260,7 +260,7 @@ export function renderEnvelopeBriefing(input: EnvelopeBriefingInput): EnvelopeBr
       case "correction":
         return `correction from ${by} to ${refs(item.requestIds)}`;
       case "cancel":
-        return `cancel from ${by}: ${refs(item.requestIds)} is withdrawn`;
+        return `cancel from ${by}: ${refs(item.requestIds)} is withdrawn; stop any work on it`;
       case "retry":
         return `retry from ${by} of your failed run${on(item.requestIds)}`;
       case "transfer": {

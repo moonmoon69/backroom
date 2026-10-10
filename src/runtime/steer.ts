@@ -2,7 +2,7 @@
  * Messages into a running turn (stage 4/5 plan, item L4a; M1: every message): which inputs go into their seat's running
  * turn, and the T3 messages that carried them there. Pure reads of a projection, like work.ts.
  *
- * A request, a correction or a retry from the user or the orchestrator goes into its owner's running turn, as a harness
+ * A request, a correction, a retry or a cancel from the user or the orchestrator goes into its owner's running turn, as a harness
  * takes a message typed while it works: while the owner has a live host run that T3 is running, the host offers that run
  * a sync receipt over every unread input since the run's watermark and sends them with T3's `steer_active`; the receipt
  * is confirmed once T3 shows the member working after the message in that run. The receipt ID carries the T3 command and
@@ -17,11 +17,12 @@ import { deliveredInputs, inputTree } from "../engine/index.ts";
 import { TARGETING, backroomRequest, deferredCancels, keepAliveRun, runRecords, reservedSeq } from "./work.ts";
 
 const RECEIPT = "t3steer:";
-/** The inputs a person sends: they go into a running turn. Results, follow-ups, notices, cancels and keep-alives ride along. */
-const MESSAGES: ReadonlySet<string> = new Set(["request", "correction", "retry"]);
+/** The inputs a person sends: they go into a running turn. Results, follow-ups, notices and keep-alives ride along. */
+const MESSAGES: ReadonlySet<string> = new Set(["request", "correction", "retry", "cancel"]);
 
 /**
- * An input that goes into its seat's running turn: a request, correction or retry from the user or the orchestrator.
+ * An input that goes into its seat's running turn: a request, correction, retry or cancel from the user or the
+ * orchestrator (a cancel that leaves the turn nothing to work on stops it instead: the host's `ending`).
  * Backroom's own requests (a seat briefing, a reseat's checkpoint or call-off; journals from before B1 hold them as the
  * user's) wait for the turn's end, as every other input does unless a message carries it along.
  */

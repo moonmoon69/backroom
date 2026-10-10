@@ -412,7 +412,7 @@ export class BoardEngine {
     }
   }
 
-  /** `cancel #n`, for the requester (§6: the host interrupts or defers as the owner's turn requires). */
+  /** `cancel #n`, for the requester (§6: applied at once; it stops the owner's turn when that has nothing else to do, else goes into it). */
   private async cancel(c: Caller, args: string[]): Promise<string> {
     if (args.length !== 1) throw new BoardError("rooms-board: cancel needs one request: cancel #n.");
     const p = this.view(c.room.id);
@@ -422,7 +422,7 @@ export class BoardEngine {
     const result = await this.act(c, () => this.host.cancel(c.room.id, { actor: c.seatId, id: this.commandId(), requestId: q.id }));
     const owner = this.name(q.owner);
     if (result.deferred) return `${this.label(p, q.id)} is cancelled when ${owner}'s current turn ends, since that turn works on other requests. Nobody is woken now.`;
-    if (result.applied) return `${this.label(p, q.id)} is cancelled. ${owner} is told${this.view(c.room.id).seats.get(q.owner)?.activeRunId ? ", and its turn on it is stopped" : ""}.`;
+    if (result.applied) return `${this.label(p, q.id)} is cancelled. ${owner} is told${result.stopped ? ", and its turn on it is stopped" : this.view(c.room.id).seats.get(q.owner)?.activeRunId ? " in its running turn, which goes on with its other work" : ""}.`;
     return `${this.label(p, q.id)} had already closed; nothing changed.`;
   }
 
