@@ -2622,6 +2622,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await toAskChip("approval");
     press("Enter");
     await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    // The board scrolled up a little (not following its bottom), your request still in view: the posts move under the
+    // pointer if the bar shrinks while it is pressed.
+    browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); const p = document.querySelector('[data-nav-key="post:${turn.seq}"]'); t.scrollTop += p.getBoundingClientRect().top - t.getBoundingClientRect().top - 60; return t.scrollTop; }`);
+    await sleep(300);
     const correctLine = browser.on("snapshot").split("\n").filter((l) => /button "Correct…"/.test(l)).at(-1);
     browser.on("click", /uid=(\S+)/.exec(correctLine ?? "")?.[1] ?? fail("the page snapshot has no Correct… on your request"));
     await expect("a click on your request's Correct…: its box open, the strip gone, the chip folded", (f) => f.correctionOpen && f.strips === 0 && !f.chipOpen && inRoom(f));
