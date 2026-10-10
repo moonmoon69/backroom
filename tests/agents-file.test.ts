@@ -763,7 +763,7 @@ test("the default text, with checks and without: the session, scope, shared-chec
     assert.match(lines.at(-2) ?? "", /^Backroom wrote this file .* Backroom never changes it\.$/, "the closing line");
     for (const [habit, pattern] of [
       ["keep going without a decision", /Keep going while a step needs no decision from the user/],
-      ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging to the default branch, tagging or releasing/],
+      ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing/],
       ["read the owner and its tests first", /Read the code that owns a behaviour and its tests before you change it/],
       ["fix at the owner, keep to the task", /fix a problem at its owner, keep the change to the task/],
       ["docs made untrue, in the same change", /update in the same change the docs it makes untrue/],

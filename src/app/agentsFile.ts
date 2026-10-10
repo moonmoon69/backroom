@@ -243,7 +243,7 @@ export function defaultAgentsText(checks: string[]): string {
     "",
     "The habits of every agent working here, whoever assigned the work.",
     "",
-    "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging to the default branch, tagging or releasing.",
+    "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
     "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
     "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
     "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
