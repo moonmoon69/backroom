@@ -557,6 +557,12 @@
   animation: px-blink 1.2s steps(1) infinite;
 }
 
+/* A chat row (a message, a reply, a running turn) is drawn only while in view (styles.css, content-visibility: auto),
+   which clips what it draws outside its box: its brackets go just inside it. */
+[data-skin="pixel"] .sheet .chat-row:focus-visible::after {
+  inset: 0;
+}
+
 /* An action strip (ActionStrip.tsx: a post's, a status chip's, a member's): a well of plates under its item; the
    button the ring is on is raised in the window's colour with the action colour under it, as the view's tab is. */
 [data-skin="pixel"] .action-strip {
@@ -572,6 +578,7 @@
 
 [data-skin="pixel"] .action-strip > button:focus-visible {
   background: var(--px-window);
+  color: var(--px-text);
   box-shadow: inset 0 calc(var(--u) * -2) 0 var(--px-action), inset var(--u) var(--u) 0 0 var(--px-bevel-hi);
 }
 

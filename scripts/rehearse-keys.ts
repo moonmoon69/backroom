@@ -2994,9 +2994,12 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
 
   if (
     await section("a running turn's chip: Stop by keys stops it through T3", {
+      // @fable's turn made before the page opens: a post arriving with the room open would push the oldest drawn post,
+      // the ring on it, out of the chat's window.
       replay: async () => {
         await secondApproval();
         await listsRead();
+        await chipTurn();
       },
       place: async () => {
         await goTo(`room:${R}`);
@@ -3313,6 +3316,71 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("Backspace");
     press("Backspace");
     await expect("Esc, Backspace ×2: back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${roomId}`);
+  }
+
+  /** The focused button's text against its background: their colours and the contrast between them (WCAG's ratio). */
+  const CONTRAST = "() => { const e = document.activeElement; const cs = getComputedStyle(e); const rgb = (c) => c.match(/[\\d.]+/g).map(Number); const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); }; const bg = rgb(cs.backgroundColor); const a = lum(rgb(cs.color)); const b = lum(bg); return { label: e.textContent.trim(), color: cs.color, background: cs.backgroundColor, opaque: bg.length < 4 || bg[3] === 1, contrast: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100 }; }";
+  type Contrast = { label: string; color: string; background: string; opaque: boolean; contrast: number };
+  const readable = (what: string): Contrast => {
+    const c = browser.eval<Contrast>(CONTRAST);
+    if (!c.opaque || c.contrast < 3) fail(`${what}: "${c.label}" in ${c.color} on ${c.background}, contrast ${c.contrast}; expected at least 3 on an opaque background`);
+    log(`  page: "${c.label}" in ${c.color} on ${c.background}, contrast ${c.contrast}`);
+    return c;
+  };
+  /** Whether the focused item's brackets show: drawn, and not outside a box that clips what it draws (a chat row). */
+  const BRACKETS = "() => { const e = document.activeElement; const cs = getComputedStyle(e); const after = getComputedStyle(e, '::after'); const clips = cs.contentVisibility === 'auto' || /paint|strict|content/.test(cs.contain); const inset = ['top', 'right', 'bottom', 'left'].map((side) => parseFloat(after[side])); return { row: e.className, nav: e.dataset.nav ?? null, drawn: after.backgroundImage.includes('gradient'), clips, inset, shown: after.backgroundImage.includes('gradient') && !(clips && inset.some((v) => v < 0)) }; }";
+  type Brackets = { row: string; nav: string | null; drawn: boolean; clips: boolean; inset: number[]; shown: boolean };
+
+  if (await section("pixel look: an approval's Accept keeps its label with the ring on it")) {
+    // ---------------- 9. the pixel look's strip buttons and chat rows (review #1842) ----------------
+
+    // @fable's turn running on a request, asking an approval, made before the room opens.
+    const turn = await chipTurn();
+    await fableAsks("approval");
+    await expect("on the overview", (f) => f.drawers.length === 0);
+    await setLook("Pixel");
+    await goTo(`room:${R}`);
+    press("Enter");
+    await expect("Enter: the room, the ring on @fable's approval chip", (f) => f.key?.startsWith("chip:ask:") === true && f.ring, 10_000);
+    press("Enter");
+    await expect("Enter: its choices, the ring on Accept", (f) => f.chipOpen && f.label === "Accept" && f.ring);
+    readable("the approval's Accept with the ring on it");
+    await state("pixel look: an approval's Accept keeps its label with the ring on it", /^Accept · /);
+
+    // Accept: the turn runs on. A message, a reply and the running turn are chat rows: their brackets show.
+    press("Enter");
+    await until("the API to show the approval answered", async () => ((await room.snapshot()).nativeRequests as unknown[]).length === 0);
+    press("End");
+    await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true && f.ring);
+    const seen = new Map<string, Brackets>();
+    for (let i = 0; i < 16 && !(seen.has("from-user") && seen.has("from-agent")); i += 1) {
+      const b = browser.eval<Brackets>(BRACKETS);
+      const kind = /\bchat-row\b/.test(b.row) ? (/\bfrom-user\b/.test(b.row) ? "from-user" : "from-agent") : null;
+      if (kind && !seen.has(kind)) seen.set(kind, b);
+      press("ArrowUp");
+      await sleep(150);
+    }
+    press("End");
+    press("ArrowDown");
+    await expect(`End, Down: @fable's running turn on #${turn.number}, its live bubble`, (f) => f.key === `live:${turn.id}` && f.ring);
+    seen.set("live", browser.eval<Brackets>(BRACKETS));
+    for (const [kind, what] of [["from-user", "your message"], ["from-agent", "a reply"], ["live", "the running turn"]] as const) {
+      const b = seen.get(kind);
+      if (!b) fail(`no ${what} reached from the newest post`);
+      if (!b!.shown) fail(`${what}'s ring does not show: ${JSON.stringify(b)}`);
+      log(`  page: ${what} (${b!.row.split(" ").slice(0, 3).join(" ")}): brackets drawn at ${b!.inset.join(" ")}${b!.clips ? ", inside its clipped box" : ""}`);
+    }
+    await state("pixel look: a message, a reply and a running turn show their brackets", /@fable/);
+
+    // The turn fails: its notice's chip; Enter, the ring on Retry, readable.
+    await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+    await abovePosts("@fable's failed turn's chip", (f) => f.key?.startsWith("chip:notice:") === true);
+    press("Enter");
+    await expect("Enter: its choices, the ring on Retry", (f) => f.chipOpen && f.label === "Retry" && f.ring);
+    readable("the failed turn's Retry with the ring on it");
+    await state("pixel look: a failed turn's Retry keeps its label with the ring on it", /^Retry · /);
+    press("Escape");
+    await expect("Esc: the choices folded", (f) => !f.chipOpen);
   }
 
   return passed;
