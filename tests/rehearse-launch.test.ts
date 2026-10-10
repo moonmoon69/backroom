@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
-import { parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone } from "../scripts/rehearse-launch.ts";
+import { clearRecord, ourTabs, parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone } from "../scripts/rehearse-launch.ts";
 
 describe("rehearsal command line and launcher (T2)", () => {
   it("reads the flags, --only as often as given", () => {
@@ -56,5 +59,33 @@ describe("rehearsal command line and launcher (T2)", () => {
     assert.equal(recordOf(record, undefined, 4521), false);
     assert.equal(recordOf(serviceRecord("4100\n"), 4000, 4521), false);
     assert.equal(serviceRecord("not a record"), null);
+  });
+
+  it("finds our tabs on the service's own address, not on a port it is the start of", () => {
+    const listing = [
+      "## Pages",
+      "7: Backroom (http://127.0.0.1:4521/) [yours]",
+      "8: Backroom (http://127.0.0.1:45210/) [yours]",
+      "9: Backroom (http://127.0.0.1:4521/#room) [sol.2fa05e45's]",
+      "10: Backroom (http://127.0.0.1:4521/api/status) [yours]",
+    ].join("\n");
+    assert.deepEqual(ourTabs(listing, "http://127.0.0.1:4521"), ["7", "10"]);
+    assert.deepEqual(ourTabs(listing, "http://127.0.0.1:45210"), ["8"]);
+    assert.deepEqual(ourTabs(listing, "http://127.0.0.1:4522"), []);
+  });
+
+  it("takes the service's record out of its folder once it is gone, only if the record is this run's", () => {
+    const data = mkdtempSync(join(tmpdir(), "rehearse-record-"));
+    try {
+      const file = join(data, "service.pid");
+      writeFileSync(file, recordText({ service: 4100, owner: 4000, port: 4521 }));
+      assert.equal(clearRecord(data, 4999), false);
+      assert.equal(existsSync(file), true);
+      assert.equal(clearRecord(data, 4000), true);
+      assert.equal(existsSync(file), false);
+      assert.equal(clearRecord(data, 4000), false);
+    } finally {
+      rmSync(data, { recursive: true, force: true });
+    }
   });
 });

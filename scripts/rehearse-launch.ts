@@ -4,6 +4,9 @@
  * gone; and whether a step the launcher started passed.
  */
 
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+
 /** The flags that take a value (--only as often as wanted), and those that stand alone. */
 const VALUES = new Set(["--step", "--as", "--browser", "--keys-browser", "--port", "--data", "--out", "--browser-cli", "--only", "--until"]);
 const REPEATED = new Set(["--only"]);
@@ -63,6 +66,26 @@ export function recordText(record: ServiceRecord): string {
 /** Whether a record found after a launcher's child ended is that child's, for its port. */
 export function recordOf(record: ServiceRecord | null, child: number | undefined, port: number): record is ServiceRecord {
   return record !== null && record.owner === child && record.port === port;
+}
+
+/**
+ * The tabs rooms-browser's `tabs` listing marks as ours on a service's address, in order: its URL followed by a slash,
+ * so the service on :4521 is not taken for one on :45210.
+ */
+export function ourTabs(listing: string, url: string): string[] {
+  return [...listing.matchAll(/^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/gm)].filter((m) => m[2]!.startsWith(`${url}/`)).map((m) => m[1]!);
+}
+
+/**
+ * The service's record taken out of its data folder once the service is gone (stopped, or killed to start again), if
+ * it is this run's (`owner`): a record left behind would name a dead service, or another run's. Returns whether it did.
+ */
+export function clearRecord(data: string, owner: number): boolean {
+  const file = join(data, "service.pid");
+  const record = existsSync(file) ? serviceRecord(readFileSync(file, "utf8")) : null;
+  if (record?.owner !== owner) return false;
+  rmSync(file, { force: true });
+  return true;
 }
 
 /** A port for a throwaway service: a whole number from 1024 to 65535. */

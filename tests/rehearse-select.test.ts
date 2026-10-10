@@ -133,6 +133,24 @@ describe("rehearsal state selection (T2: --only, --until)", () => {
     assert.throws(() => selection.leave(index), (error: unknown) => error instanceof SelectionDone && /1 state checked .*; 1 set up silently, 2 not played; stopped after state 4 of 5/.test(error.message));
   });
 
+  it("after a jump, every section played runs its replay: a later one may read what the skipped ones would have made", () => {
+    const states = ["a1", "a2", "b1", "b2", "c1", "c2", "d1", "d2", "e1"];
+    const sections = ["a1", "b1", "c1", "d1", "e1"];
+    // Jump into b (b2), play on to d (d2): b, c and d replay; a is skipped; e is never reached.
+    const selection = new Selection(states, ["b2", "d2"], null, sections);
+    assert.equal(selection.section("a1"), "skip");
+    assert.deepEqual(sections.slice(1, 4).map((first) => selection.replays(first)), [true, true, true]);
+    assert.equal(selection.section("b1"), "jump");
+    for (const name of ["b1", "b2"]) selection.enter(name);
+    assert.equal(selection.section("c1"), "play");
+    assert.equal(selection.replays("c1"), true);
+    // A run from the start replays nothing, whatever it checks.
+    for (const plain of [new Selection(states, [], null, sections), new Selection(states, ["a2", "d2"], null, sections), new Selection(states, [], "c2", sections)]) {
+      assert.deepEqual(sections.map((first) => plain.replays(first)), [false, false, false, false, false]);
+    }
+    assert.throws(() => selection.replays("b2"), /no section starts at "b2"/);
+  });
+
   it("a step in sections plays them all from the start when the first state checked is in the first one", () => {
     const sections = [names[0]!, names[2]!];
     for (const selection of [new Selection(names, [], null, sections), new Selection(names, ["2"], null, sections), new Selection(names, [], "4", sections)]) {

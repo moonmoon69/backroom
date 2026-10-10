@@ -72,7 +72,7 @@ import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
 import { forSteps, sectionNames, Selection, SelectionDone, stateNames, stepSource } from "./rehearse-select.ts";
-import { parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
+import { clearRecord, ourTabs, parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -264,13 +264,15 @@ class Service {
   async stop(): Promise<void> {
     const child = this.child;
     this.child = null;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = new Promise((done) => child.once("exit", done));
-    child.kill("SIGTERM");
-    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
-    await exited;
-    clearTimeout(timer);
-    rmSync(join(this.o.data, "service.pid"), { force: true });
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((done) => child.once("exit", done));
+      child.kill("SIGTERM");
+      const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      await exited;
+      clearTimeout(timer);
+    }
+    // Also when there was nothing to stop (stopped between the room step's kill and its restart).
+    clearRecord(this.o.data, process.pid);
   }
 
   /** The service dies as in a crash (SIGKILL: no shutdown of any kind), and nothing answers on its port any more. */
@@ -281,6 +283,7 @@ class Service {
     const exited = new Promise((done) => child.once("exit", done));
     child.kill("SIGKILL");
     await exited;
+    clearRecord(this.o.data, process.pid);
     await until("the port to be free", () => fetch(`${this.base}/api/status`).then(() => false, () => true), 10_000);
   }
 
@@ -365,8 +368,7 @@ class Browser {
   }
   private lookup(): string {
     const listing = this.run(["tabs"]).out;
-    const mine = listing.split("\n").map((line) => /^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/.exec(line)).filter((m): m is RegExpExecArray => m !== null && m[2]!.startsWith(this.url));
-    const id = mine.at(-1)?.[1];
+    const id = ourTabs(listing, this.url).at(-1);
     if (!id) fail(`no tab of ours on ${this.url}:\n${listing}`);
     this.tabId = id;
     return id;
@@ -2700,11 +2702,10 @@ async function leftBehind(data: string, port: number, browser: string, child: nu
   } catch {
     // rooms-browser unreachable: nothing more to do here
   }
-  for (const m of listing.matchAll(/^(\d+): .*\((https?:\/\/[^)]*)\) \[yours\]/gm)) {
-    if (!m[2]!.startsWith(`${base}/`)) continue;
+  for (const tab of ourTabs(listing, base)) {
     try {
-      execFileSync(o.cli, [browser, m[1]!, "close", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
-      done.push(`its tab ${m[1]} closed`);
+      execFileSync(o.cli, [browser, tab, "close", "--as", o.as], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+      done.push(`its tab ${tab} closed`);
     } catch {
       // closed meanwhile
     }
@@ -2836,6 +2837,8 @@ async function main(): Promise<void> {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       stoppedBy = signal;
+      // Said at once: the step may be ended before its stopped flow gets to say anything (the launcher reads this line).
+      console.error(`[rehearse] FAILED: stopped by ${signal}`);
       log(`${signal}: closing our tab${o.keep ? "; --keep: the service stays" : " and stopping the service"}`);
       browser.close();
       void (o.keep ? Promise.resolve() : service.stop()).finally(() => process.exit(1));
@@ -2867,7 +2870,7 @@ let stoppedBy: string | null = null;
 main().then(
   () => process.exit(0),
   (error: unknown) => {
-    if (stoppedBy) return console.error(`[rehearse] FAILED: stopped by ${stoppedBy}`);
+    if (stoppedBy) return; // said by the signal's handler
     console.error(`[rehearse] FAILED: ${error instanceof RehearsalFailure ? error.message : error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
     process.exit(1);
   },

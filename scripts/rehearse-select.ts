@@ -150,6 +150,17 @@ export class Selection {
     return this.target > 0;
   }
 
+  /**
+   * Whether a section played runs its setup's replay: in a run that jumps, the section it jumps into and every one played
+   * after it, since a later one may read what the skipped sections would have made (a replay makes only what is still
+   * missing); never in a run that plays from the start.
+   */
+  replays(first: string): boolean {
+    const k = this.starts.findIndex((start) => this.names[start] === first);
+    if (k < 0) throw new Error(`no section starts at ${JSON.stringify(first)}`);
+    return this.jumps && k >= this.target;
+  }
+
   /** The section the first state checked is in: a run jumps there. */
   private get target(): number {
     return this.starts.findLastIndex((start) => start <= this.first);

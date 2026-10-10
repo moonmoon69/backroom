@@ -620,11 +620,17 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   /**
    * A section of the story begins, named by its first state (scripts/rehearse-select.ts): false when a run jumps past it.
    * A run that jumps into it first makes through the API what the sections before it made and this one reads (`replay`),
-   * then opens the page, and brings it to where the section starts (`place`).
+   * then opens the page, and brings it to where the section starts (`place`). Every section played after the jump runs
+   * its replay too, for what the skipped sections would have made: a replay makes only what is still missing (each
+   * helper below makes its thing once) and sets only the values not set yet.
    */
   const section = async (first: string, setup: { replay?: () => Promise<void>; place?: () => Promise<void> } = {}): Promise<boolean> => {
     const how = selection.section(first);
     if (how === "skip") return false;
+    if (how === "play" && selection.replays(first) && setup.replay) {
+      log(`  (the section of "${first}", played after a jump: its replay makes what is still missing)`);
+      await setup.replay();
+    }
     if (how === "jump") {
       log(`JUMP to the section of "${first}": its setup`);
       await setup.replay?.();
@@ -692,27 +698,32 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     apiRooms = await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms");
     apiPresets = await service.call<Array<{ id: string; name: string }>>("GET", "/api/presets");
   };
-  /** @alpha asked in the second room, his turn running with an approval waiting: the API says the room needs you. */
+  /** @alpha asked in the second room, his turn running with an approval waiting: the API says the room needs you. Once. */
+  let secondNeeds: { id: string; counts: { needsYou: number } } | undefined;
   const secondApproval = async () => {
+    if (secondNeeds) return secondNeeds;
     const bindings = (await second.snapshot()).bindings as Array<{ participantId: string; threadId: string }>;
     const alphaThread = bindings.find((b) => b.participantId === second.participant.alpha)!.threadId;
     await service.command({ type: "message.create", roomId: second.roomId, sourceText: "@alpha check the logs", clientMessageId: crypto.randomUUID(), attachmentIds: [], assignments: [{ recipients: [second.participant.alpha], instruction: "check the logs" }] });
     await until("alpha's turn to run", async () => ((await second.snapshot()).runs as Array<{ phase: string }>).some((r) => r.phase === "running"));
     await service.fake("approval", { threadId: alphaThread });
-    return until("the API to say the second room needs you", async () => {
+    secondNeeds = await until("the API to say the second room needs you", async () => {
       const list = await service.call<Array<{ id: string; counts: { needsYou: number } }>>("GET", "/api/rooms");
       return list.find((r) => r.id === second.roomId && r.counts.needsYou > 0);
     });
+    return secondNeeds;
   };
-  /** Your message to @fable, made through the API, his turn on it held open (until section 10 stops it). */
+  /** Your message to @fable, made through the API, his turn on it held open (until section 10 stops it). Once. */
   const openRequest = async (): Promise<void> => {
+    if (open !== undefined) return;
     open = await room.message("Draft the release notes.");
     await room.live("fable");
     openPost = room.post(await room.snapshot(), open);
   };
   const fileText = "# Release v1.2\n\nThe parser fix, then the tag, then these notes.\n";
-  /** A project of the run's own (its data folder) holding the file his replies name. */
+  /** A project of the run's own (its data folder) holding the file his replies name. Once. */
   const makeProject = async (): Promise<void> => {
+    if (project !== undefined) return;
     project = join(room.dataDir, "k1-5-project");
     mkdirSync(join(project, "notes"), { recursive: true });
     writeFileSync(join(project, "notes", "release.md"), fileText);
@@ -728,6 +739,16 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const parserFine = async (): Promise<void> => {
     for (const name of ["parser.png", "parser-2.png"]) copyFileSync(new URL("../web/dist/logo.png", import.meta.url), join(project, "notes", name));
     await room.finish("fable", `The parser is fine.\n\n![a diagram](${join(project, "notes", "parser.png")}) ![](${join(project, "notes", "parser-2.png")})`);
+  };
+  /** A replay's: the parser asked and answered (section 12 makes both), unless that was done. */
+  const parserAnswered = async (): Promise<void> => {
+    if (clickAsk !== undefined) return;
+    await askParser();
+    await parserFine();
+  };
+  /** A replay's: the API's lists, unless read already (section 1 reads them). */
+  const listsRead = async (): Promise<void> => {
+    if (apiRooms === undefined) await readLists();
   };
   /** A jump's setup: the room opened from its tile, the ring placed where `ok` says. */
   const enterRoom = async (what: string, ok: (f: Focus) => boolean): Promise<void> => {
@@ -1167,7 +1188,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await section("Correct… takes the focus; Esc goes back to it", {
       replay: async () => {
         await secondApproval();
-        stateWhere = `room state · ${(await room.snapshot()).state.line}`;
+        stateWhere ??= `room state · ${(await room.snapshot()).state.line}`;
       },
       // The board shown, as section 4 leaves it: Up from the posts comes back to its tab.
       place: async () => {
@@ -1313,7 +1334,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        apiRoom = s1 = await room.snapshot();
+        if (s1 === undefined) apiRoom = s1 = await room.snapshot();
       },
       // On the board, the ring on #openPost, as section 5 leaves it: Left comes back to the board.
       place: async () => {
@@ -1457,8 +1478,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        apiRoom = s1 = await room.snapshot();
-        members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+        if (s1 === undefined) apiRoom = s1 = await room.snapshot();
+        members ??= (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
       },
       place: async () => void (await goTo(`room:${R}`)),
     })
@@ -1530,8 +1551,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
         await secondApproval();
         await openRequest();
         const runs = ((await room.snapshot()).runs as Array<{ id: string; phase: string }>).filter((r) => r.phase !== "terminal");
-        chipKey = `chip:run:${runs[0]!.id}`;
-        chipWhere = `status · @fable working: on #${openPost.number}`;
+        chipKey ??= `chip:run:${runs[0]!.id}`;
+        chipWhere ??= `status · @fable working: on #${openPost.number}`;
       },
     })
   ) {
@@ -1671,7 +1692,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        turns = ((await room.snapshot()).runs as Array<{ id: string; phase: string }>).filter((r) => r.phase !== "terminal");
+        turns ??= ((await room.snapshot()).runs as Array<{ id: string; phase: string }>).filter((r) => r.phase !== "terminal");
       },
     })
   ) {
@@ -1790,10 +1811,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        fableRun = ((await room.snapshot()).runs as Array<{ id: string; phase: string }>).find((r) => r.phase !== "terminal")!;
-        mine = `#${openPost.number} · you to @fable, open`;
-        correct = `correct:${openPost.number}`;
-        liveKey = `live:${fableRun.id}`;
+        fableRun ??= ((await room.snapshot()).runs as Array<{ id: string; phase: string }>).find((r) => r.phase !== "terminal")!;
+        mine ??= `#${openPost.number} · you to @fable, open`;
+        correct ??= `correct:${openPost.number}`;
+        liveKey ??= `live:${fableRun.id}`;
       },
       // The ring on his running turn, as section 9 leaves it.
       place: async () => {
@@ -2035,7 +2056,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await makeProject();
-        await readLists();
+        await listsRead();
       },
       place: () => enterRoom("the ring on a post", (f) => f.key?.startsWith("post:") === true),
     })
@@ -2216,8 +2237,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await makeProject();
-        await askParser();
-        await parserFine();
+        await parserAnswered();
       },
       place: () => enterRoom("the ring on a post", (f) => f.key?.startsWith("post:") === true),
     })
@@ -2356,8 +2376,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await section("a running turn with an approval waiting: its actions offer the approval's choices", {
       replay: async () => {
         await secondApproval();
-        await readLists();
-        alphaRun = ((await second.snapshot()).runs as Array<{ id: string; phase: string; seatId: string }>).filter((r) => r.phase !== "terminal");
+        await listsRead();
+        alphaRun ??= ((await second.snapshot()).runs as Array<{ id: string; phase: string; seatId: string }>).filter((r) => r.phase !== "terminal");
       },
     })
   ) {
@@ -2453,8 +2473,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await section("pixel look: from the foot, Up brings the first row and its + into sight below the header", {
       replay: async () => {
         await secondApproval();
-        await readLists();
-        sol = apiPresets.find((p) => p.name === "sol")!;
+        await listsRead();
+        sol ??= apiPresets.find((p) => p.name === "sol")!;
       },
     })
   ) {
