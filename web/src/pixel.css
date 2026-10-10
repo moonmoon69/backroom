@@ -557,8 +557,7 @@
   animation: px-blink 1.2s steps(1) infinite;
 }
 
-/* A chat row (a message, a reply, a running turn) is drawn only while in view (styles.css, content-visibility: auto),
-   which clips what it draws outside its box: its brackets go just inside it. */
+/* A chat row (a message, a reply, a running turn): its brackets just inside its box. */
 [data-skin="pixel"] .sheet .chat-row:focus-visible::after {
   inset: 0;
 }

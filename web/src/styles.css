@@ -7098,11 +7098,11 @@ button.work-chip:hover,
   margin: 0 auto;
 }
 
+/* Drawn in full, never content-visibility: auto. With the board scrolled up, its rows out of view skipped, a turn
+   that ends stopped or failed crashes Chrome's renderer (Chrome 155: a CHECK, the tab gone; C1). */
 .sheet .chat-row,
 .sheet .turn-row {
   animation: none;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 72px;
 }
 
 .sheet .chat-row {

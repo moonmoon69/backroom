@@ -1447,8 +1447,8 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
   const where = `@${alias}'s turn · ${label}${numbers.length > 0 ? ` on ${numbers.map((n) => `#${n}`).join(", ")}` : ""}`;
   // A stop only while it has something to press: a sent turn has "sent to T3" (and Stop while it runs), and any turn
   // what it works on and what it asks. A turn still being prepared, on no request, has only what its feed shows (a
-  // file chip, a link): that is read from the page once drawn. No reading otherwise: the bubble is a lazily drawn row
-  // (content-visibility), and reading its layout as a room opens kept the board from its bottom.
+  // file chip, a link): that is read from the page once drawn. No reading otherwise: reading the bubble's layout as a
+  // room opens kept the board from its bottom.
   const maybeBare = run.phase === "prepared" && numbers.length === 0 && requests.length === 0;
   const bubble = useRef<HTMLDivElement | null>(null);
   const [feedOffers, setFeedOffers] = useState(false);

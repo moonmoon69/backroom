@@ -124,9 +124,8 @@ export function OverviewRoom({
   };
 
   // Where the ring lands when the room opens (keyOrder.ts, openLanding: a chip that needs you, else the newest post if it
-  // shows, else the running turn's chip, else the strip), once the room's first desk read is drawn and its running
-  // turns' rows are laid out at their size (rows are content-visibility: auto, drawn at a placeholder height at first):
-  // a running turn's live feed comes with the desk, and its bubble can push the newest post out of the board's view.
+  // shows, else the running turn's chip, else the strip), once the room's first desk read is drawn: a running turn's
+  // live feed comes with the desk, and its bubble can push the newest post out of the board's view.
   // Whether it shows is judged with the board at its bottom, where it opens and stays. Focused without scrolling, so
   // the board stays at its bottom and keeps following the turn. Typing anywhere still opens the composer; a ring
   // already moved into the room (a key pressed while it opened) stays where it is. A desk read slower than the wait
@@ -142,7 +141,6 @@ export function OverviewRoom({
   useEffect(() => () => opening.current?.cancel(), []);
   /** Land the ring, tried each frame. A ring in the room stays, unless it is on the item this landing put it on before. */
   const land = (record: Opening): (() => void) => {
-    const since = performance.now();
     const ours = record.landed;
     return focusWhen(() => {
       const root = sheet.current;
@@ -152,9 +150,6 @@ export function OverviewRoom({
       const all = lanesRef.current();
       const chips = all.find((lane) => lane.name === "status")?.items ?? [];
       const newest = all.find((lane) => lane.name === "posts")?.newest ?? null;
-      const live = [...(root?.querySelectorAll<HTMLElement>(".timeline .live-turn") ?? [])];
-      // A row's own box is drawn while its contents are skipped: the check is on what is in it (for up to a second).
-      if (performance.now() - since < 1000 && live.some((row) => row.firstElementChild?.checkVisibility({ contentVisibilityAuto: true }) === false)) return null;
       const chosen = openLanding({
         needs: chips.find((item) => item.closest(".work-needs")) ?? null,
         newest,
