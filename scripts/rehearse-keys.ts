@@ -2567,23 +2567,24 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const turn = await chipTurn();
     const first = await fableAsks("approval");
     await toAskChip("approval");
-    // Opening chips' choices by keys keeps the board at its bottom, following: the running turn's, folded, then the
-    // approval's (each grows the bar above the board, and the browser's scroll anchoring moves the board meanwhile).
+    // Opening a chip's choices keeps the board at its bottom, following, also after a click opened and folded them (the
+    // bar grows above the board, and the browser's scroll anchoring moves the board down by what folding took off: not
+    // the reader leaving the bottom). Clicks with a pointer behind them (detail 1), as a mouse's.
     const distance = () => browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); return Math.round(t.scrollHeight - t.scrollTop - t.clientHeight); }`);
     await until("the room to open at the board's bottom", () => (distance() < 40 ? true : null), 4000, 150);
-    press("ArrowRight");
-    await expect("Right: @fable's working chip", (f) => f.key === `chip:run:${turn.id}`);
-    press("Enter");
-    await expect("Enter: its strip, on Stop", (f) => f.chipOpen && f.action === "stop:0");
-    press("Escape");
-    press("ArrowLeft");
-    await expect("Esc, Left: back on the approval's chip, folded", (f) => f.key === askChip() && !f.chipOpen);
+    const mouseOnChip = () => browser.eval<boolean>(`() => { const c = document.querySelector('[data-nav-key="${askChip()}"]'); c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })); return true; }`);
+    mouseOnChip();
+    await expect("a click: the choices open, no strip", (f) => f.chipOpen && f.strips === 0);
+    await sleep(400);
+    mouseOnChip();
+    await expect("a click again: folded", (f) => !f.chipOpen);
+    await sleep(400);
     press("Enter");
     await expect("Enter: the approval's strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
-    await sleep(500);
+    await sleep(600);
     const short = distance();
-    if (short >= 40) fail(`opening the chips' choices left the board ${short}px short of its bottom: it no longer follows`);
-    log(`  page: the board ${short}px from its bottom after the chips' choices opened and folded, following`);
+    if (short >= 40) fail(`opening the chip's choices left the board ${short}px short of its bottom: it no longer follows`);
+    log(`  page: the board ${short}px from its bottom after its choices opened by a click, folded, and opened by Enter: following`);
     press("Escape");
     await expect("Esc: the chip folded", (f) => f.key === askChip() && !f.chipOpen);
     press("Enter");
@@ -2645,6 +2646,17 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // pointer if the bar shrinks while it is pressed.
     browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); const p = document.querySelector('[data-nav-key="post:${turn.seq}"]'); t.scrollTop += p.getBoundingClientRect().top - t.getBoundingClientRect().top - 60; return t.scrollTop; }`);
     await sleep(300);
+    // While the pointer is pressed there, the bar keeps its size (the strip and the choices stay); released, they go.
+    const press0 = browser.eval<number>(`() => { const b = [...document.querySelectorAll('[data-nav-key="post:${turn.seq}"] button')].find((x) => x.textContent.trim() === 'Correct…'); window.__barBefore = document.querySelector('.work-bar').getBoundingClientRect().height; b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 })); return window.__barBefore; }`);
+    await sleep(400);
+    const pressed = browser.eval<{ height: number; strips: number; open: boolean }>(`() => ({ height: document.querySelector('.work-bar').getBoundingClientRect().height, strips: document.querySelectorAll('.work-bar .action-strip').length, open: Boolean(document.querySelector('.work-open')) })`);
+    if (pressed.height !== press0 || pressed.strips !== 1 || !pressed.open) fail(`the pointer pressed on Correct…, the bar changed under it: ${JSON.stringify({ before: press0, ...pressed })}`);
+    browser.eval<boolean>(`() => { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0 })); return true; }`);
+    await expect("the pointer released: the strip gone, the chip folded", (f) => f.strips === 0 && !f.chipOpen && inRoom(f));
+    log(`  page: the bar kept its ${press0}px while the pointer was pressed on Correct…; released, the strip and the choices went`);
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
     const correctLine = browser.on("snapshot").split("\n").filter((l) => /button "Correct…"/.test(l)).at(-1);
     browser.on("click", /uid=(\S+)/.exec(correctLine ?? "")?.[1] ?? fail("the page snapshot has no Correct… on your request"));
     await expect("a click on your request's Correct…: its box open, the strip gone, the chip folded", (f) => f.correctionOpen && f.strips === 0 && !f.chipOpen && inRoom(f));
