@@ -139,7 +139,7 @@ describe("rehearsal state selection (T2: --only, --until)", () => {
     // Jump into b (b2), play on to d (d2): b, c and d replay; a is skipped; e is never reached.
     const selection = new Selection(states, ["b2", "d2"], null, sections);
     assert.equal(selection.section("a1"), "skip");
-    assert.deepEqual(sections.slice(1, 4).map((first) => selection.replays(first)), [true, true, true]);
+    assert.deepEqual(sections.map((first) => selection.replays(first)), [false, true, true, true, true]);
     assert.equal(selection.section("b1"), "jump");
     for (const name of ["b1", "b2"]) selection.enter(name);
     assert.equal(selection.section("c1"), "play");

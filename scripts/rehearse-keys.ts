@@ -1079,7 +1079,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await section("in a room: Left and Right along the header; Enter on the Board tab shows the board", {
       replay: async () => {
         await secondApproval();
-        s1 = await room.snapshot();
+        if (s1 === undefined) apiRoom = s1 = await room.snapshot();
       },
       place: toChatTab,
     })
@@ -1334,7 +1334,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        if (s1 === undefined) apiRoom = s1 = await room.snapshot();
+        s1 ??= await room.snapshot();
+        apiRoom ??= s1;
       },
       // On the board, the ring on #openPost, as section 5 leaves it: Left comes back to the board.
       place: async () => {
@@ -1478,7 +1479,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       replay: async () => {
         await secondApproval();
         await openRequest();
-        if (s1 === undefined) apiRoom = s1 = await room.snapshot();
+        s1 ??= await room.snapshot();
+        apiRoom ??= s1;
         members ??= (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
       },
       place: async () => void (await goTo(`room:${R}`)),

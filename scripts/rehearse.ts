@@ -272,7 +272,7 @@ class Service {
       clearTimeout(timer);
     }
     // Also when there was nothing to stop (stopped between the room step's kill and its restart).
-    clearRecord(this.o.data, process.pid);
+    clearRecord(this.o.data, process.pid, isService);
   }
 
   /** The service dies as in a crash (SIGKILL: no shutdown of any kind), and nothing answers on its port any more. */
@@ -283,7 +283,7 @@ class Service {
     const exited = new Promise((done) => child.once("exit", done));
     child.kill("SIGKILL");
     await exited;
-    clearRecord(this.o.data, process.pid);
+    clearRecord(this.o.data, process.pid, isService);
     await until("the port to be free", () => fetch(`${this.base}/api/status`).then(() => false, () => true), 10_000);
   }
 
@@ -2868,7 +2868,8 @@ async function main(): Promise<void> {
 let stoppedBy: string | null = null;
 
 main().then(
-  () => process.exit(0),
+  // Stopped by a signal, a run that ends by itself meanwhile is still a stopped one.
+  () => process.exit(stoppedBy ? 1 : 0),
   (error: unknown) => {
     if (stoppedBy) return; // said by the signal's handler
     console.error(`[rehearse] FAILED: ${error instanceof RehearsalFailure ? error.message : error instanceof Error ? (error.stack ?? error.message) : String(error)}`);

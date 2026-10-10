@@ -78,12 +78,14 @@ export function ourTabs(listing: string, url: string): string[] {
 
 /**
  * The service's record taken out of its data folder once the service is gone (stopped, or killed to start again), if
- * it is this run's (`owner`): a record left behind would name a dead service, or another run's. Returns whether it did.
+ * it is this run's (`owner`) and its service no longer runs (`running`; a second stop while the first still waits for
+ * the service to end leaves it for the launcher): a record left behind would name a dead service, or another run's.
+ * Returns whether it did.
  */
-export function clearRecord(data: string, owner: number): boolean {
+export function clearRecord(data: string, owner: number, running: (pid: number) => boolean): boolean {
   const file = join(data, "service.pid");
   const record = existsSync(file) ? serviceRecord(readFileSync(file, "utf8")) : null;
-  if (record?.owner !== owner) return false;
+  if (record?.owner !== owner || running(record.service)) return false;
   rmSync(file, { force: true });
   return true;
 }

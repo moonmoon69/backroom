@@ -79,11 +79,15 @@ describe("rehearsal command line and launcher (T2)", () => {
     try {
       const file = join(data, "service.pid");
       writeFileSync(file, recordText({ service: 4100, owner: 4000, port: 4521 }));
-      assert.equal(clearRecord(data, 4999), false);
+      const gone = () => false;
+      assert.equal(clearRecord(data, 4999, gone), false);
       assert.equal(existsSync(file), true);
-      assert.equal(clearRecord(data, 4000), true);
+      // A second stop while the first still waits for the service to end: the record stays, for the launcher.
+      assert.equal(clearRecord(data, 4000, (pid) => pid === 4100), false);
+      assert.equal(existsSync(file), true);
+      assert.equal(clearRecord(data, 4000, gone), true);
       assert.equal(existsSync(file), false);
-      assert.equal(clearRecord(data, 4000), false);
+      assert.equal(clearRecord(data, 4000, gone), false);
     } finally {
       rmSync(data, { recursive: true, force: true });
     }
