@@ -265,11 +265,11 @@
 
 /* The machine's voice: monospace for titles, names, numbers, states, buttons and labels. Replies, what members are
    doing and what you type keep the reading face. */
-[data-skin="pixel"] :is(button, label, .mono, .pill, .tag, .menu, .menu-heading, .hint, .brand, .overview-title, .ov-project-title, .ov-room-title, .ov-alias, .ov-state, .ov-when, .page-title, .sheet-title, .sheet-tabs, .sheet-head, .room-header, .thread-bar, .inspector-head, .dialog-header, .work-bar, .chat-head, .speaker, .composer-strip, .composer-hint, .composer-nameplate, .mention-chips, .plan-to, .plan-num, .plan-pill, .thread-section-toggle, .arrange-row) {
+[data-skin="pixel"] :is(button, label, .mono, .pill, .tag, .menu, .menu-heading, .hint, .brand, .overview-title, .ov-project-title, .ov-room-title, .ov-alias, .ov-state, .ov-when, .page-title, .sheet-title, .sheet-tabs, .sheet-head, .room-header, .thread-bar, .inspector-head, .dialog-header, .work-bar, .chat-head, .speaker, .composer-strip, .composer-hint, .composer-nameplate, .mention-chips, .plan-to, .plan-num, .plan-pill, .thread-section-toggle, .arrange-row, .key-bar kbd, .key-help kbd) {
   font-family: var(--px-mono);
 }
 
-[data-skin="pixel"] :is(.brand, .ov-room-title, .ov-project-name, .sheet-title h1, .page-title, .dialog-header h2, .inspector-head h2) {
+[data-skin="pixel"] :is(.brand, .ov-room-title, .ov-project-name, .sheet-title h1, .page-title, .dialog-header h2, .inspector-head h2, .inspector-tab.on) {
   font-weight: 700;
   letter-spacing: 0.01em;
 }
@@ -535,6 +535,84 @@
   50% {
     opacity: 0.35;
   }
+}
+
+/* A room's items (K1-8): a post, a running turn's live bubble and a member are the room's tiles, in the blinking
+   brackets, just outside their box; the header's buttons, the status chips, the panel's tabs and rows and an action
+   strip's buttons are smaller things, in the dashed ring. */
+[data-skin="pixel"] :is(.timeline [data-nav="post"], .timeline [data-nav="live"], .participant-chip) {
+  position: relative;
+}
+
+[data-skin="pixel"] :is(.timeline [data-nav="post"], .timeline [data-nav="live"], .participant-chip):focus-visible {
+  outline: none;
+}
+
+[data-skin="pixel"] :is(.timeline [data-nav="post"], .timeline [data-nav="live"], .participant-chip):focus-visible::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * -1);
+  background: var(--px-brackets);
+  pointer-events: none;
+  animation: px-blink 1.2s steps(1) infinite;
+}
+
+/* A chat row (a message, a reply, a running turn) is drawn only while in view (styles.css, content-visibility: auto),
+   which clips what it draws outside its box: its brackets go just inside it. */
+[data-skin="pixel"] .sheet .chat-row:focus-visible::after {
+  inset: 0;
+}
+
+/* An action strip (ActionStrip.tsx: a post's, a status chip's, a member's): a well of plates under its item; the
+   button the ring is on is raised in the window's colour with the action colour under it, as the view's tab is. */
+[data-skin="pixel"] .action-strip {
+  background: var(--px-well);
+  border: var(--u) solid var(--px-outline);
+  border-radius: 0;
+  box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
+}
+
+[data-skin="pixel"] .action-strip > button:is([aria-pressed="true"], [aria-expanded="true"]) {
+  background: var(--px-well);
+}
+
+[data-skin="pixel"] .action-strip > button:focus-visible {
+  background: var(--px-window);
+  color: var(--px-text);
+  box-shadow: inset 0 calc(var(--u) * -2) 0 var(--px-action), inset var(--u) var(--u) 0 0 var(--px-bevel-hi);
+}
+
+/* The key bar: a raised strip along the foot of the window, its keys on small plates; the place in the text colour. */
+[data-skin="pixel"] .key-bar {
+  background: var(--px-raised);
+  border-top: var(--u) solid var(--px-outline);
+  box-shadow: inset 0 var(--u) 0 0 var(--px-bevel-hi);
+  color: var(--px-muted);
+}
+
+[data-skin="pixel"] .key-bar-where {
+  color: var(--px-text);
+}
+
+[data-skin="pixel"] :is(.key-bar, .key-help) kbd {
+  background: var(--px-window);
+  border: var(--u) solid var(--px-outline);
+  border-radius: 0;
+  box-shadow: inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--px-bevel-lo);
+  color: var(--px-text);
+}
+
+/* The side panel's tabs (K1-7): the one showing is its title, the action colour under it. */
+[data-skin="pixel"] .inspector-head .inspector-tab {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--px-muted);
+}
+
+[data-skin="pixel"] .inspector-head .inspector-tab.on {
+  color: var(--px-text);
+  box-shadow: inset 0 calc(var(--u) * -1) 0 var(--px-action);
 }
 
 /* The glove points at the hovered or focused choice in a menu or a list. */

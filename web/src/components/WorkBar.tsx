@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
-import { NativeRequestsPanel } from "./NativeRequests.tsx";
-import { NoticeActions } from "./Timeline.tsx";
-import { navProps } from "../keys.ts";
+import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
+import { flashPost, NoticeActions } from "./Timeline.tsx";
+import { ControlsStrip } from "./ControlsStrip.tsx";
+import type { StripAction } from "./ActionStrip.tsx";
+import { lastInputWasKey, navProps, showsNow } from "../keys.ts";
+import { chipOffers, openLanding, runCanStop } from "../keyOrder.ts";
 
 type Group = "needs" | "working" | "waiting";
 
@@ -21,6 +24,8 @@ interface Item {
   tone?: "warn";
   /** Opens under the bar: a notice's actions, or the approvals and questions. */
   open?: { notice: EnginePost } | { asking: true } | { run: EngineRunView };
+  /** The posts it is about, which its action strip shows ("show #33"): a failed turn's notice, what a turn works on. */
+  posts?: number[];
 }
 
 const GROUPS: Array<{ key: Group; title: string }> = [
@@ -45,11 +50,42 @@ const PHASE: Record<EngineRunView["phase"], string> = {
  * question T3 is waiting on; "Working" is a run (an uncertain one says so), a turn the room did not start, and
  * background work a member holds open ("working since"); "Waiting" is a member with posts it has not been given yet
  * (its unread backlog), or a delivery that cannot be made. Clicking a chip opens what can be done about it. The chips
- * with something to open are a lane of the room's keys (keys.ts): Left and Right between them, Enter opens one.
+ * with something to open are a lane of the room's keys (keys.ts): Left and Right between them, Enter opens one with its
+ * choices as an action strip under the bar (K1-6), the ring on the first: the strip's buttons press the choices' own.
  */
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
   const [open, setOpen] = useState<string | null>(null);
+  // The chip whose choices the keys opened, as an action strip: folded with the strip (Esc, Backspace, the ring or a
+  // click elsewhere), except by a click on the chip itself, which then folds it as it always has.
+  const [strip, setStrip] = useState<string | null>(null);
+  // What was chosen on an approval or question goes once it no longer waits.
+  useEffect(() => keepAnswers(snapshot.nativeRequests), [snapshot.nativeRequests]);
+  // A strip closed by the pointer (pressed on something else) goes once the pointer is released, its click delivered:
+  // the bar shrinks only then, so what was pressed stays under the pointer and gets its click.
+  const pressing = useRef(false);
+  const released = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    // The main button only: another opens a menu (the page's, a select's), which may keep its release from the page.
+    const down = (event: PointerEvent) => {
+      if (event.button === 0) pressing.current = true;
+    };
+    const up = () => {
+      pressing.current = false;
+      const then = released.current.splice(0);
+      if (then.length > 0) setTimeout(() => then.forEach((done) => done()), 0);
+    };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+    };
+  }, []);
   // Esc folds the open chip (keys.ts), once a menu, a dialog, a post's action strip or the composer in front of it has
   // closed; the focus, if it was in the choices or nowhere, goes back to the chip.
   const bar = useRef<HTMLDivElement>(null);
@@ -70,10 +106,9 @@ export function WorkBar() {
   }, [open]);
   const items: Item[] = [];
   const numberOf = (requestId: string) => snapshot.requests.find((q) => q.id === requestId)?.number ?? snapshot.posts.find((p) => p.request?.id === requestId)?.number ?? null;
+  const numbers = (ids: readonly string[]) => ids.map(numberOf).filter((n): n is number => n !== null);
   const refs = (ids: readonly string[]) =>
-    ids
-      .map(numberOf)
-      .filter((n): n is number => n !== null)
+    numbers(ids)
       .map((n) => `#${n}`)
       .join(" ");
 
@@ -83,7 +118,8 @@ export function WorkBar() {
   for (const [participantId, count] of asking) {
     const kinds = snapshot.nativeRequests.filter((r) => r.participantId === participantId).map((r) => r.kind);
     const what = kinds.every((kind) => kind === "approval") ? "approval" : kinds.every((kind) => kind !== "approval") ? "question" : "approval and question";
-    items.push({ key: `ask:${participantId}`, group: "needs", participant: participantById(participantId), what: count > 1 ? `${count} × ${what}` : what, text: "waiting for you", open: { asking: true } });
+    const on = snapshot.runs.filter((run) => run.phase !== "terminal" && seatOf(run.seatId).participant?.id === participantId).flatMap((run) => numbers(run.requestIds));
+    items.push({ key: `ask:${participantId}`, group: "needs", participant: participantById(participantId), what: count > 1 ? `${count} × ${what}` : what, text: "waiting for you", open: { asking: true }, posts: on });
   }
   // Notices that wait on you: a failed turn, an undeliverable post. Retry or Dismiss.
   for (const notice of snapshot.needsYou) {
@@ -95,6 +131,7 @@ export function WorkBar() {
       what: notice.notice?.intent === "error" ? "failed" : "attention",
       text: `#${notice.number} ${notice.body}`,
       open: { notice },
+      posts: [notice.number],
     });
   }
 
@@ -113,6 +150,7 @@ export function WorkBar() {
       text: on ? `on ${on}` : "",
       ...(run.phase === "uncertain" || run.phase === "rejected" ? { tone: "warn" as const } : {}),
       open: { run },
+      posts: numbers(run.requestIds),
     });
   }
   // Busy without a room run: a turn someone typed in T3, or the agent continued on its own.
@@ -145,11 +183,84 @@ export function WorkBar() {
     }
   }
 
-  if (items.length === 0) return null;
+  // The room around the bar, kept for when the bar goes (nothing left going on).
+  const room = useRef<HTMLElement | null>(null);
+  /** A post the open view draws, by its number (the chat leaves some out; a long board draws only its latest). */
+  const post = (n: number) => room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`) ?? null;
+  // The chip the ring is on, or in its strip or choices, by its key (focus events on the bar, below).
+  const holding = useRef<string | null>(null);
+  // The chip gone with the ring on it or in its strip (its request answered, its turn retried, dismissed or ended):
+  // after a key, the ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved:
+  // the first chip that needs you, else the newest post if it shows, else a running turn's chip, else the composer's
+  // strip. Its strip, if open, goes with it.
+  const gone = strip !== null && !items.some((item) => item.key === strip);
+  useLayoutEffect(() => {
+    if (bar.current) room.current = bar.current.parentElement;
+    if (gone) {
+      setStrip(null);
+      setOpen(null);
+    }
+    if (holding.current === null || items.some((item) => item.key === holding.current)) return;
+    holding.current = null;
+    const now = document.activeElement;
+    if (!lastInputWasKey() || (now && now !== document.body && now.isConnected)) return;
+    const root = room.current;
+    const newest = [...(root?.querySelectorAll<HTMLElement>('.timeline [data-nav="post"]') ?? [])].at(-1) ?? null;
+    openLanding({
+      needs: root?.querySelector<HTMLElement>('.work-needs [data-nav="chip"]') ?? null,
+      newest,
+      newestInView: newest !== null && showsNow(newest),
+      running: root?.querySelector<HTMLElement>('[data-nav-key^="chip:run:"]') ?? null,
+      strip: root?.querySelector<HTMLElement>(".composer-strip") ?? null,
+    })?.focus({ preventScroll: true });
+  });
+
   const opened = items.find((item) => item.key === open) ?? null;
+  // "show #n" for each post the chip is about that the open view draws (a click on a #ref shows only those; a post
+  // the chat leaves out, or older than the posts drawn, is not offered): the ring goes to the post, brought into view.
+  // Whether it is drawn is read as the bar draws, which it does at every poll.
+  // Kept while the same posts are drawn: a poll redrawing the bar leaves the strip as it is.
+  const drawn = (opened?.posts ?? []).filter((n) => post(n) !== null).join(" ");
+  const shows = useMemo<StripAction[]>(
+    () =>
+      drawn
+        .split(" ")
+        .filter(Boolean)
+        .map(Number)
+        .map((n) => ({
+          key: `show:${n}`,
+          label: `show #${n}`,
+          name: `show #${n}`,
+          title: `Show #${n}`,
+          press: () => {
+            const shown = room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`);
+            if (!shown) return;
+            flashPost(shown);
+            shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
+          },
+        })),
+    [drawn],
+  );
+  if (items.length === 0) return null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+  /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
+  const whereOf = (item: Item) => `${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`;
   return (
-    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar} data-nav-lane="status">
+    <div
+      className="work-bar"
+      role="status"
+      aria-label="What is going on in this room"
+      ref={bar}
+      data-nav-lane="status"
+      onFocus={(event) => {
+        const chip = (event.target as HTMLElement).closest<HTMLElement>('[data-nav="chip"]');
+        holding.current = chip ? (chip.dataset.navKey ?? "").replace(/^chip:/, "") : (event.target as HTMLElement).closest(".action-strip, .work-open") ? open : null;
+      }}
+      onBlur={(event) => {
+        // Off to somewhere else in the page (not lost with its chip, which leaves it nowhere).
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) holding.current = null;
+      }}
+    >
       <div className="work-groups">
         {GROUPS.map((group) => {
           const list = items.filter((item) => item.group === group.key);
@@ -170,8 +281,31 @@ export function WorkBar() {
                 );
                 const style = identityStyle(item.participant ? colorOf(item.participant.id) : "var(--fg-muted)");
                 const title = `${item.participant?.alias ?? ""} · ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 400)}` : ""}`;
+                // A chip is a stop only with something to press (keyOrder.ts, chipOffers); a click opens any.
+                const stop =
+                  item.open !== undefined &&
+                  chipOffers("asking" in item.open ? { kind: "ask" } : "notice" in item.open ? { kind: "notice" } : { kind: "run", phase: item.open.run.phase, member: item.participant !== undefined, posts: (item.posts ?? []).filter((n) => post(n) !== null).length });
                 return item.open ? (
-                  <button key={item.key} type="button" className={`work-chip${open === item.key ? " open" : ""}`} style={style} title={title} aria-expanded={open === item.key} onClick={() => setOpen(open === item.key ? null : item.key)} {...navProps("chip", `chip:${item.key}`, `status · ${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`)}>
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`work-chip${open === item.key ? " open" : ""}`}
+                    style={style}
+                    title={title}
+                    aria-expanded={open === item.key}
+                    onClick={(event) => {
+                      // Enter (a click with no pointer behind it): its choices, as a strip with the ring in it. A click
+                      // opens or folds them, as before.
+                      if (event.detail === 0) {
+                        setOpen(item.key);
+                        setStrip(item.key);
+                        return;
+                      }
+                      setStrip(null);
+                      setOpen(open === item.key ? null : item.key);
+                    }}
+                    {...(stop ? navProps("chip", `chip:${item.key}`, `status · ${whereOf(item)}`) : {})}
+                  >
                     {body}
                   </button>
                 ) : (
@@ -200,6 +334,35 @@ export function WorkBar() {
           )}
         </div>
       ) : null}
+      {opened && strip === opened.key ? (
+        <ControlsStrip
+          key={opened.key}
+          item={(element) => element.parentElement?.querySelector<HTMLElement>(`[data-nav-key="chip:${opened.key}"]`) ?? null}
+          from={(element) => element.parentElement?.querySelector<HTMLElement>(".work-open") ?? null}
+          // An approval's or a question's chip is its member's: the choices drawn are every member's.
+          within={opened.open && "asking" in opened.open ? (control) => control.closest<HTMLElement>(".native-card")?.dataset.participant === opened.participant?.id : undefined}
+          extra={shows}
+          where={whereOf(opened)}
+          // An answer of your own, which Custom answer focuses, is in the choices: the strip stays.
+          keeps={(element) => Boolean(bar.current?.contains(element) && element.closest(".work-open"))}
+          onClose={(cause) => {
+            const key = opened.key;
+            // Closed by the pointer pressed elsewhere (not by a key meanwhile): once it is released. Pressed on the chip
+            // itself: its click folds it, as a click on an open chip does (↑ onto it folds it here).
+            const byPointer = pressing.current && !lastInputWasKey();
+            const onChip = byPointer && cause?.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${key}"]`) !== null;
+            // Only what is still this chip's: a click meanwhile may have opened another chip.
+            const close = () => {
+              setStrip((now) => (now === key ? null : now));
+              if (!onChip) setOpen((now) => (now === key ? null : now));
+            };
+            if (byPointer) released.current.push(close);
+            else close();
+          }}
+          // Nothing to press (a turn being prepared, or refused): the choices stay open, the ring on the chip.
+          onEmpty={() => setStrip(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -209,7 +372,7 @@ function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantI
   const { seatOf } = useRoom();
   const participant = seatOf(run.seatId).participant;
   return (
-    <div className="work-actions">
+    <div className="work-actions run-actions">
       <span className="work-open-text">
         {run.phase === "uncertain"
           ? "Uncertain: Backroom cannot tell whether T3 received this turn. It keeps checking and never sends it twice."
@@ -217,7 +380,7 @@ function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantI
             ? `T3 refused this turn${run.failure ? `: ${run.failure}` : ""}.`
             : `${PHASE[run.phase]}${run.startedAt ? ` since ${new Date(run.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`}
       </span>
-      {participant && run.phase !== "prepared" && run.phase !== "rejected" ? (
+      {participant && runCanStop(run.phase) ? (
         <button type="button" className="small danger" title="Stop the turn through T3" onClick={() => onStop(participant.id)}>
           Stop
         </button>

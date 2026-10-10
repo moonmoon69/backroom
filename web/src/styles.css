@@ -5252,6 +5252,36 @@ body.sorting * {
   font-weight: 600;
 }
 
+/* The panel's tabs (K1-7): the one showing reads as the panel's title, the other two beside it, muted. */
+.inspector-tabs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-left: -6px;
+}
+
+.inspector-head .inspector-tab {
+  align-self: baseline;
+  padding: 1px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.inspector-head .inspector-tab:hover {
+  color: var(--fg);
+}
+
+.inspector-head .inspector-tab.on {
+  color: var(--fg);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
 .inspector-head button {
   align-self: center;
 }
@@ -7956,6 +7986,17 @@ span.reply-to {
   justify-content: center;
 }
 
+/* A status chip's choices opened by the keys (WorkBar.tsx): their strip under them, in the same column. */
+.work-bar > .action-strip {
+  max-width: 720px;
+  margin-bottom: 4px;
+}
+
+.sheet .work-bar > .action-strip {
+  margin: 6px auto 4px;
+  max-width: var(--sheet-col);
+}
+
 .action-strip > button {
   max-width: 24rem;
   overflow: hidden;
@@ -7980,6 +8021,15 @@ span.reply-to {
 }
 
 /* The keys, shown by ? (KeyHelp.tsx): by area, each place with what each key does there. */
+/* The four keys, above the tables: one line each. */
+.key-help-four {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
 .key-help section + section {
   margin-top: 14px;
 }

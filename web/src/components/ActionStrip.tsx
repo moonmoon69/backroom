@@ -29,7 +29,9 @@ const OVER = ".dialog, .dialog-backdrop, [role='menu'], .menu, .popover";
  * the strip is in front, keys.ts, inFront). ↑ ↓ are the page's: they move the ring off the item, and the strip closes
  * once the focus is somewhere else, unless that is in a layer over the page (a dialog a button opened, whose closing
  * gives the focus back here) or where `keeps` says (a box a button opened in place). A button that goes away with the
- * ring on it (its work done: a request cancelled, a notice dismissed) closes the strip, the ring back on the item.
+ * ring on it (its work done: a request cancelled, a notice dismissed) closes the strip, the ring back on the item. A held
+ * Enter (its key repeating) presses nothing: the Enter that opened the strip, held, never presses the button the ring
+ * lands on.
  */
 export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
   actions: StripAction[];
@@ -37,7 +39,8 @@ export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
   where: string;
   /** The item the strip is on: the ring goes back to it. */
   item: () => HTMLElement | null;
-  onClose: () => void;
+  /** The strip closes: with what took the focus or the pointer elsewhere, if that closed it. */
+  onClose: (cause?: Event) => void;
   keeps?: ((element: Element) => boolean) | undefined;
   ref?: Ref<HTMLDivElement | null> | undefined;
 }) {
@@ -102,10 +105,10 @@ export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
     const away = (target: EventTarget | null) =>
       target instanceof Element && !root.contains(target) && !target.closest(OVER) && !keepsRef.current?.(target);
     const onFocus = (event: FocusEvent) => {
-      if (away(event.target)) close.current();
+      if (away(event.target)) close.current(event);
     };
     const onPointer = (event: PointerEvent) => {
-      if (away(event.target)) close.current();
+      if (away(event.target)) close.current(event);
     };
     document.addEventListener("keydown", onKey);
     document.addEventListener("focusin", onFocus);
@@ -129,6 +132,10 @@ export function ActionStrip({ actions, where, item, onClose, keeps, ref }: {
         if (key) ringOn.current = key;
       }}
       onKeyDown={(event) => {
+        if (event.key === "Enter" && event.repeat) {
+          event.preventDefault();
+          return;
+        }
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
         // The arrows only move the ring, along the strip, stopping at its ends; the room's ← → never see them.

@@ -59,6 +59,7 @@
  * are played silently.
  */
 import { ROOM_NOTE } from "../src/briefing/envelope.ts";
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { barDoes, barEntries, gridTarget, KEYS, type Boxed, type KeyWhen, type NavKey, type Span } from "../web/src/keyOrder.ts";
@@ -288,7 +289,7 @@ const BAR = `() => {
  * has. Returns the places whose keys do not fit.
  */
 function everyBarFits(): string {
-  const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "panel-open", "help"];
+  const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "asking", "panel-open", "help", "disabled"];
   const mixes = Array.from({ length: 1 << conditions.length }, (_, mask) => conditions.filter((_, i) => mask & (1 << i)));
   const bars = new Map<string, { id: string; keys: Array<{ k: string[]; d: string }>; end: { k: string[]; d: string } | null }>();
   for (const place of KEYS.flatMap((area) => area.places)) {
@@ -590,6 +591,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (JSON.stringify(got?.names) !== JSON.stringify(want)) fail(`${what}: the strip offers ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
     log(`  page: "${got!.label}": ${got!.names.join(" · ")}`);
   };
+  /** A strip's choice of an approval or a question, by its place on its request's card ("choice:<request id>:<n>"). */
+  const choiceAt = (action: string | null): number | null => (action?.startsWith("choice:") ? Number(action.split(":").at(-1)) : null);
   /** The arrows to a post, once the page draws it: End, then Up until it has the ring. */
   const toPost = async (seq: number, what: string): Promise<void> => {
     browser.poll<boolean>(`the page to draw ${what}`, `() => Boolean(document.querySelector('[data-nav-key="post:${seq}"]'))`, (drawn) => drawn === true);
@@ -1032,7 +1035,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await barSays(`#${notes.at(-1).number}`, {
       place: "room-post",
       where: `#${notes.at(-1).number} · note from you`,
-      keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
+      keys: ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
       end: "? all keys",
     });
     await state("key bar: a post's keys, each by what it does there", `#${notes.at(-1).number} · note from you`);
@@ -1057,7 +1060,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await abovePosts("the room state", (f) => f.key === "state");
     await expect("the room state's line has the ring", (f) => f.key === "state" && f.ring && f.tag === "BUTTON");
     announced(/^button$/, /^Room state/);
-    await barSays("the room state", { place: "room-state", where: stateWhere, keys: ["↑ ↓ the lane above or below", "← → between the panes", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    await barSays("the room state", { place: "room-state", where: stateWhere, keys: ["↑ ↓ the lane above or below", "→ the side panel", "Enter open or fold it", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
     const folded = focus().expanded;
     press("Enter");
     await expect("Enter opens or folds the room state", (f) => f.key === "state" && f.expanded !== folded);
@@ -1301,26 +1304,30 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowDown");
     await expect("Down ×2: back on the working chip", (f) => f.key === chipKey && f.ring);
     await state("in a room: Up from the first post names the status chips, the room state and the header on the key bar", chipWhere);
+    // Enter: its choices under the bar, as a strip (K1-6) with the ring on Stop, the key bar on a place of its own.
+    const chipChoices = chipWhere.replace(/^status · /, "");
     press("Enter");
-    await expect("Enter: the chip's choices open under the bar", (f) => f.chip && f.expanded === "true" && f.chipOpen);
-    log(`api: ${running} running turn; page: its chip open`);
-    const chipBar = await keyBar(chipWhere);
-    if (!chipBar.keys.includes("Esc Backspace fold the choices")) fail(`with the chip open the key bar reads ${JSON.stringify(chipBar.keys)}: expected Esc and Backspace to fold the chip's choices`);
+    await expect("Enter: the chip's choices open under the bar, as a strip, the ring on Stop", (f) => f.chipOpen && f.strips === 1 && f.action === "stop:0" && f.label === "Stop");
+    log(`api: ${running} running turn; page: its chip open, its strip ${JSON.stringify(strip()?.names)}`);
+    names("the working chip's choices", ["Stop", `show #${openPost.number}`]);
+    const chipBar = await keyBar(`Stop · ${chipChoices}`);
+    if (chipBar.place !== "room-chip-actions" || !chipBar.keys.includes("Esc Backspace fold the choices") || !chipBar.keys.includes("Enter Stop")) fail(`with the chip's strip open the key bar reads ${JSON.stringify(chipBar)}: expected its own place, Enter Stop and Esc and Backspace to fold the chip's choices`);
     log(`  key bar: ${chipBar.keys.join(" · ")}`);
-    // Its choices are reached with Tab (K1-6 makes them a strip); Up from them is back on the chip, the choices still open.
-    await tabTo("Tab to Stop in the chip's choices", (f) => f.label === "Stop" && f.chipOpen, "Tab", 4);
+    // Up from the strip is back on the chip, the choices folded with it.
     press("ArrowUp");
-    await expect("Up from the choices: back on the chip, its choices still open", (f) => f.key === chipKey && f.chipOpen && f.expanded === "true");
+    await expect("Up from the strip: back on the chip, its choices folded", (f) => f.key === chipKey && !f.chipOpen && f.strips === 0 && f.expanded === "false");
+    press("Enter");
+    await expect("Enter: the strip again, on Stop", (f) => f.chipOpen && f.action === "stop:0");
     press("Escape");
-    await expect("Esc: the choices folded, the focus on the chip, the room still open", (f) => f.chip && f.expanded === "false" && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+    await expect("Esc: the choices folded, the focus on the chip, the room still open", (f) => f.chip && f.key === chipKey && f.expanded === "false" && !f.chipOpen && f.strips === 0 && f.drawers.some((d) => d.view === "room" && !d.inert));
     press("Escape");
     await sleep(400);
     await expect("Esc again, nothing in front: the room stays, the focus on the chip", (f) => f.chip && f.drawers.some((d) => d.view === "room" && !d.inert));
     await state("Esc with a chip expanded folds it; the room stays", chipWhere);
     press("Enter");
-    await expect("Enter: the choices again", (f) => f.chip && f.chipOpen);
+    await expect("Enter: the choices again", (f) => f.chipOpen && f.action === "stop:0");
     press("Backspace");
-    await expect("Backspace folds them as Esc does, the room still open", (f) => f.chip && !f.chipOpen && f.drawers.some((d) => d.view === "room" && !d.inert));
+    await expect("Backspace folds them as Esc does, the ring on the chip, the room still open", (f) => f.chip && f.key === chipKey && !f.chipOpen && f.strips === 0 && f.drawers.some((d) => d.view === "room" && !d.inert));
     const foldedBar = await keyBar(chipWhere);
     if (!foldedBar.keys.includes("Backspace back to the overview") || foldedBar.keys.some((key) => key.startsWith("Esc "))) fail(`with the chip folded the key bar reads ${JSON.stringify(foldedBar.keys)}: expected "Backspace back to the overview" and no Esc`);
     await state("Backspace with a chip expanded folds it first", chipWhere);
@@ -1330,7 +1337,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
-    await section("in a room: Left and Right between the board, Members, Browser and Git", {
+    await section("in a room: Right into the side panel at the same height, along its head, down its members, Left back", {
       replay: async () => {
         await secondApproval();
         await openRequest();
@@ -1355,27 +1362,85 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       },
     })
   ) {
-    // ---------------- 4. the panes ----------------
+    // ---------------- 4. the side panel (K1-7) ----------------
 
+    // Right from #openPost goes into the side panel, unfolding Members, to the item there nearest in height; Home, Up and
+    // Down go through its rows (the head, then the members, as the API lists them); Right along its head stops at ×;
+    // Left from a row's first goes back to the board's item nearest in height, the panel left open.
     members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+    /**
+     * Whether the ring is on the item nearest in height to `from` (a key) among `across` (a selector), of those in view:
+     * the items nearer than the ring's, by the gap between their heights and `from`'s.
+     */
+    const nearestAcross = (from: string, across: string) =>
+      browser.eval<{ from: number[]; ring: number[]; nearer: string[] }>(
+        `() => { const box = (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; }; const shows = (e) => { const r = e.getBoundingClientRect(); const v = (e.closest('.timeline, .queue-body') ?? document.documentElement).getBoundingClientRect(); return r.bottom > Math.max(0, v.top) && r.top < Math.min(innerHeight, v.bottom); }; const at = document.querySelector('[data-nav-key="' + ${JSON.stringify(from)} + '"]'); const ring = document.activeElement.closest('[data-nav]') ?? document.activeElement; const [t, b] = box(at); const gap = (e) => { const [et, eb] = box(e); return Math.max(0, Math.max(et, t) - Math.min(eb, b)); }; const nearer = [...document.querySelectorAll(${JSON.stringify(across)})].filter((e) => e !== ring && shows(e) && gap(e) < gap(ring)).map((e) => e.dataset.navKey ?? e.textContent.trim().slice(0, 20)); return { from: box(at), ring: box(ring), nearer }; }`,
+      );
     press("ArrowRight");
-    await expect(`Right: the Members panel opens, the focus on @${members[0]!.alias}`, (f) => f.panel === "people" && f.key === `member:${members[0]!.id}` && f.ring);
+    const beside = await expect("Right: the Members panel unfolds, the ring on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true && f.ring);
+    const heights = nearestAcross(`post:${openPost.seq}`, "[data-nav-side] [data-nav]");
+    if (heights.nearer.length > 0) fail(`Right from #${openPost.number} landed on ${beside.key}, but ${heights.nearer.join(", ")} is nearer in height`);
+    log(`  page: #${openPost.number} at y ${heights.from.join("-")}; the ring on ${beside.key} at y ${heights.ring.join("-")}, none nearer`);
+    // The tabs say which panel shows (a tabpanel the showing tab controls), and the panel keeps its title as a heading.
+    const tabs = browser.eval<{ controls: string | null; panel: string | null; heading: string | null }>(
+      "() => { const tab = document.querySelector('.inspector [role=\"tab\"][aria-selected=\"true\"]'); const id = tab?.getAttribute('aria-controls'); const panel = id ? document.getElementById(id) : null; return { controls: id ?? null, panel: panel?.getAttribute('role') ?? null, heading: document.querySelector('.inspector h2')?.textContent ?? null }; }",
+    );
+    if (tabs.panel !== "tabpanel" || tabs.heading !== "Members") fail(`the panel's tabs: ${JSON.stringify(tabs)}; expected the showing tab to control a tabpanel, and a heading "Members"`);
+    press("Home");
+    await expect(`Home: @${members[0]!.alias}, the first member, as the API lists them`, (f) => f.key === `member:${members[0]!.id}` && f.ring);
     announced(/^group$/, `@${members[0]!.alias}`);
     press("ArrowDown");
     await expect(`Down: @${members[1]!.alias}, as the API lists the members`, (f) => f.key === `member:${members[1]!.id}`);
+    press("ArrowUp");
+    press("ArrowUp");
+    await expect("Up past the first member: the panel's head, on the tab showing (Members)", (f) => f.key === "side:tab:people" && f.role === "tab" && f.ring);
+    for (const [key, what] of [["side:tab:browser", "the Browser tab"], ["side:tab:git", "the Git tab"], ["side:add", "+ Add member"], ["side:close", "×"]] as const) {
+      press("ArrowRight");
+      await expect(`Right: ${what}, the panel still Members`, (f) => f.key === key && f.panel === "people" && f.ring);
+    }
     press("ArrowRight");
-    await expect("Right: the Browser panel", (f) => f.panel === "browser" && f.inLayer === "room");
+    await sleep(300);
+    await expect("Right at the head's right end: the ring stays", (f) => f.key === "side:close" && f.panel === "people");
+    // The panel opens again on the member last visited, not on the head's ×: the head is passed on the way.
+    press("Backspace");
+    await expect(`Backspace: the panel folds, the ring back on #${openPost.number}`, (f) => f.panel === null && f.key === `post:${openPost.seq}`);
+    await abovePosts("@fable's running turn's chip", (f) => f.key?.startsWith("chip:") === true);
+    press("ArrowUp");
+    await expect("Up: the room state", (f) => f.key === "state");
+    press("ArrowUp");
+    await expect("Up: the header", (f) => f.key?.startsWith("head:") === true);
+    for (let i = 0; i < 8 && focus().key !== "head:people"; i += 1) press("ArrowRight");
+    await expect("Right along the header: Members", (f) => f.key === "head:people");
+    press("Enter");
+    await expect(`Enter: the panel opens on @${members[0]!.alias}, the member last visited, not on ×`, (f) => f.panel === "people" && f.key === `member:${members[0]!.id}` && f.ring);
+    press("End");
+    press("ArrowLeft");
+    await expect("End, Left: back on the board", (f) => f.panel === "people" && /^(post|live):|^strip$/.test(f.key ?? ""));
+    press("End");
+    await expect(`End: #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
     press("ArrowRight");
-    await expect("Right: the Git panel", (f) => f.panel === "git" && f.inLayer === "room");
+    await expect(`Right: back in the open panel, on ${beside.key}`, (f) => f.key === beside.key);
+    press("Home");
+    await expect(`Home: @${members[0]!.alias}, the first under the head`, (f) => f.key === `member:${members[0]!.id}`);
     press("ArrowLeft");
-    await expect("Left: the Browser panel", (f) => f.panel === "browser");
-    press("ArrowLeft");
-    await expect(`Left: Members, back on @${members[1]!.alias}`, (f) => f.panel === "people" && f.key === `member:${members[1]!.id}`);
-    press("ArrowLeft");
-    await expect(`Left: the board, back on #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
+    const back = await expect("Left from a member: back on the board, on a post or the strip beside it, the panel left open", (f) => f.panel === "people" && inRoom(f) && /^(post|live):|^strip$/.test(f.key ?? "") && f.ring);
+    const leftHeights = nearestAcross(`member:${members[0]!.id}`, "[data-nav-pane='board'] [data-nav-lane] [data-nav]");
+    if (leftHeights.nearer.length > 0) fail(`Left from @${members[0]!.alias} landed on ${back.key}, but ${leftHeights.nearer.join(", ")} is nearer in height`);
+    log(`  page: @${members[0]!.alias} at y ${leftHeights.from.join("-")}; the ring on ${back.key} at y ${leftHeights.ring.join("-")}, none nearer`);
+    press("End");
+    await expect(`End: #${openPost.number}, the newest post`, (f) => f.key === `post:${openPost.seq}`);
     press("ArrowRight");
-    await expect(`Right: Members, on @${members[1]!.alias}`, (f) => f.key === `member:${members[1]!.id}`);
-    await state("in a room: Left and Right between the board, Members, Browser and Git", new RegExp(`^@${members[1]!.alias} · `));
+    await expect(`Right: back in the open panel, on ${beside.key} again (the nearest in height)`, (f) => f.key === beside.key && f.panel === "people");
+    press("Home");
+    press("ArrowDown");
+    await expect(`Home, Down: @${members[1]!.alias}`, (f) => f.key === `member:${members[1]!.id}` && f.ring);
+    await barSays(`@${members[1]!.alias}`, {
+      place: "room-member",
+      where: (await keyBar(new RegExp(`^@${members[1]!.alias} · `))).where,
+      keys: ["↑ ↓ previous or next member", "← the conversation", "Enter its actions", "Backspace fold the side panel", "a–z start writing", "Home End first or last member"],
+      end: "? all keys",
+    });
+    await state("in a room: Right into the side panel at the same height, along its head, down its members, Left back", new RegExp(`^@${members[1]!.alias} · `));
 
     // Esc in a menu closes the menu only; the focus goes back to the member.
     press("Tab");
@@ -1420,8 +1485,31 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // ---------------- 5. a member's thread, and back out ----------------
 
     const workerThread = (s1.bindings as Array<{ participantId: string; threadId: string; retiredAt: string | null }>).find((b) => b.participantId === members[1]!.id && !b.retiredAt)!.threadId;
+    // Enter on a member opens its action strip under it (K1-7): the menu's items in the design's order, the ring on the
+    // first; ← → choose and stop at the ends.
     press("Enter");
-    await expect(`Enter: @${members[1]!.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.drawers.some((d) => d.view === "room" && d.inert) && f.inLayer === "member");
+    await expect(`Enter: @${members[1]!.alias}'s actions under it, the ring on Open thread`, (f) => f.strips === 1 && f.action === "thread" && f.item === `member:${members[1]!.id}` && f.ring);
+    const memberStrip = browser.eval<string[]>("() => [...document.querySelectorAll('.participant-chip .action-strip > button')].map((b) => b.getAttribute('aria-label'))");
+    const consigliereAction = members[1]!.id === apiRoom.room.consigliereId ? "Remove as Consigliere" : "Make Consigliere";
+    if (JSON.stringify(memberStrip) !== JSON.stringify(["Open thread", "Settings…", "Thread details…", "Open in T3", consigliereAction, "Remove from room…"])) fail(`@${members[1]!.alias}'s actions read ${JSON.stringify(memberStrip)}`);
+    log(`  page: @${members[1]!.alias}'s actions: ${memberStrip.join(" · ")}`);
+    for (let i = 0; i < 6; i += 1) press("ArrowRight");
+    await expect("Right to the strip's end: Remove from room…, where it stops", (f) => f.action === "remove");
+    for (let i = 0; i < 5; i += 1) press("ArrowLeft");
+    await expect("Left back to Open thread", (f) => f.action === "thread");
+    await barSays(`@${members[1]!.alias}'s actions`, {
+      place: "room-member-actions",
+      where: `Open thread · ${(await keyBar(new RegExp(`^Open thread · @${members[1]!.alias} · `))).where.replace(/^Open thread · /, "")}`,
+      keys: ["↑ ↓ previous or next member", "← → choose", "Enter Open thread", "Esc Backspace close", "a–z start writing"],
+      end: "? all keys",
+    });
+    await state("a member's actions: Enter opens them under it, the ring on Open thread", new RegExp(`^Open thread · @${members[1]!.alias} · `));
+    press("Escape");
+    await expect(`Esc: the actions closed, the ring back on @${members[1]!.alias}`, (f) => f.strips === 0 && f.key === `member:${members[1]!.id}` && f.panel === "people");
+    press("Enter");
+    await expect("Enter: the actions again, on Open thread", (f) => f.action === "thread");
+    press("Enter");
+    await expect(`Enter on Open thread: @${members[1]!.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.drawers.some((d) => d.view === "room" && d.inert) && f.inLayer === "member");
     log(`api: @${members[1]!.alias}'s binding is thread ${workerThread.slice(0, 8)}; page: the layer shows data-id ${workerThread.slice(0, 8)}, the room under it inert`);
     browser.waitFor("This thread is now a member in a room");
     // Read only: what is typed here goes nowhere, not into the room's composer under it; Enter opens nothing.
@@ -1436,7 +1524,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     );
     if (controls.menu + controls.browser + controls.settings + controls.composer > 0 || !controls.note.includes("read only")) fail(`the member's thread offers what T3 refuses for a seated thread: ${JSON.stringify(controls)}`);
     log(`  page: the member's thread has no thread menu, browser, settings or composer ("${controls.note}")`);
-    await state("Enter on a member opens its thread", `@${members[1]!.alias}'s thread, read only`);
+    await state("Open thread from a member's actions opens its thread", `@${members[1]!.alias}'s thread, read only`);
     press("Escape");
     await sleep(400);
     await expect("Esc in the member's thread closes nothing: the thread stays over the room", (f) => f.drawers.some((d) => d.view === "member" && d.id === workerThread) && f.inLayer === "member");
@@ -1449,25 +1537,30 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Backspace: the panel folds, the room stays, the focus back on #${openPost.number} where it came from`, (f) => f.panel === null && f.drawers.some((d) => d.view === "room" && !d.inert) && f.key === `post:${openPost.seq}` && f.ring);
     await state("Backspace folds the side panel, back to the conversation", await postWhere(`post:${openPost.seq}`));
 
-    // A side panel itself holding the ring: → → from the conversation reaches the Browser panel (it has no items, so the
-    // panel takes the ring). The bar says Enter writes a message, and it does; Backspace folds the panel, then leaves.
+    // The Browser panel by its tab in the panel's head: Right into the panel, Home and Up to the head, Right to Browser,
+    // Enter; Down reaches its first row's control (Browser and Git are rows of the controls drawn there). The bar says
+    // Enter presses it; Backspace folds the panel, the ring back on #openPost.
     press("ArrowRight");
     await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    press("ArrowUp");
+    await expect("Home, Up: the Members tab", (f) => f.key === "side:tab:people");
     press("ArrowRight");
-    await expect("Right: the Browser panel itself holds the ring", (f) => f.panel === "browser" && f.tag === "ASIDE" && f.label === "Browser" && f.inLayer === "room");
-    await barSays("the Browser panel itself", {
-      place: "room-pane",
-      where: "the Browser panel",
-      keys: ["↑ ↓ its buttons and fields", "← → between the panes", "Enter write a message", "Backspace fold the side panel", "a–z start writing"],
+    press("Enter");
+    await expect("Right, Enter: the Browser panel shows, the ring still on its tab", (f) => f.panel === "browser" && f.key === "side:tab:browser" && f.ring);
+    press("ArrowDown");
+    const row = await expect("Down: a control of the Browser panel's first row", (f) => f.panel === "browser" && f.key === null && f.tag !== "ASIDE" && f.inLayer === "room" && f.ring);
+    const rowBar = await keyBar(/ · the Browser panel$/);
+    await barSays("a row of the Browser panel", {
+      place: "room-side-row",
+      where: rowBar.where,
+      keys: ["↑ ↓ row above or below", "← → along the row", "Enter press it", "Backspace fold the side panel", "a–z start writing", "Home End first or last in the panel"],
       end: "? all keys",
     });
-    await state("key bar: the Browser panel itself, Enter writes a message", "the Browser panel");
-    press("Enter");
-    await expect("Enter: the composer, in its field", (f) => f.tag === "TEXTAREA" && f.composerOpen && f.panel === "browser");
-    press("Escape");
-    await expect("Esc: the composer closed, the focus on its strip, the panel still open", (f) => !f.composerOpen && f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && f.panel === "browser");
+    log(`  page: the ring on ${row.tag} "${row.label}"`);
+    await state("key bar: a row of the Browser panel, Enter presses it", / · the Browser panel$/);
     press("Backspace");
-    await expect("Backspace: the panel folds, the focus stays on the strip", (f) => f.panel === null && f.tag === "BUTTON" && /Write a message|draft/.test(f.label) && inRoom(f));
+    await expect(`Backspace: the panel folds, the ring back on #${openPost.number}`, (f) => f.panel === null && f.key === `post:${openPost.seq}` && inRoom(f) && f.ring);
     press("Backspace");
     await expect("Backspace: back on the overview, the focus on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}` && f.ring);
     announced(/^button$/, "Rehearsal");
@@ -1498,7 +1591,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await state("key bar: a room's tile, each key by what it does there", apiRoom.room.title);
 
     // A member is reached in the room (the overview's tiles only show them): the room's tile, Right to Members, the
-    // member, Enter for its thread over the room; Backspace three times comes back to the tile.
+    // member, Enter and Enter on its Open thread for its thread over the room; Backspace three times comes back to the tile.
     const reviewer = members[2]!;
     const reviewerThread = (s1.bindings as Array<{ participantId: string; threadId: string; retiredAt: string | null }>).find((b) => b.participantId === reviewer.id && !b.retiredAt)!.threadId;
     await goTo(`room:${R}`);
@@ -1510,8 +1603,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     for (let i = 0; i < members.length && focus().key !== `member:${reviewer.id}`; i += 1) press("ArrowDown");
     await expect(`Down to @${reviewer.alias}`, (f) => f.key === `member:${reviewer.id}`);
     press("Enter");
-    await expect(`Enter on @${reviewer.alias}: its thread over the room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
-    await state("from the room's tile: Members, a member, Enter opens its thread over the room", `@${reviewer.alias}'s thread, read only`);
+    await expect(`Enter on @${reviewer.alias}: its actions, on Open thread`, (f) => f.action === "thread" && f.item === `member:${reviewer.id}`);
+    press("Enter");
+    await expect(`Enter on Open thread: @${reviewer.alias}'s thread over the room`, (f) => f.drawers.some((d) => d.view === "room" && d.id === R && d.inert) && f.drawers.some((d) => d.view === "member" && d.id === reviewerThread) && f.inLayer === "member", 10_000);
+    await state("from the room's tile: Members, a member, its Open thread opens its thread over the room", `@${reviewer.alias}'s thread, read only`);
     press("Backspace");
     await expect(`Backspace: the room, Members open, the focus on @${reviewer.alias}`, (f) => f.panel === "people" && f.key === `member:${reviewer.id}` && !f.drawers.some((d) => d.view === "member"));
     press("Backspace");
@@ -1534,7 +1629,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await barSays("the room, nothing in it focused", {
       place: "room-itself",
       where: apiRoom.room.title,
-      keys: ["↑ ↓ to the posts", "← → between the panes", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
+      keys: ["↑ ↓ to the posts", "→ the side panel", "Enter write a message", "Backspace back to the overview", "a–z start writing", "Home End first or last post"],
       end: "? all keys",
     });
     await state("key bar: a room with nothing in it focused, Enter writes a message", apiRoom.room.title);
@@ -2287,7 +2382,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Up from the strip: the newest post", (f) => f.key?.startsWith("post:") === true);
     press("ArrowDown");
     await expect("Down: his turn being prepared", (f) => f.key === "live:rehearse-prepared" && f.ring);
-    await barSays("his turn being prepared, on a request", { place: "room-post", where: preparedWhere, keys: ["↑ ↓ previous or next post", "← → between the panes", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    await barSays("his turn being prepared, on a request", { place: "room-post", where: preparedWhere, keys: ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
     press("Enter");
     await expect("Enter: its actions, on what it works on", (f) => f.strips === 1 && f.action === "ref:0");
     names("his turn being prepared, on a request", [`show #${clickAsked.number}`]);
@@ -2325,29 +2420,29 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowDown");
     await expect("Down: the worker's turn, a stop now", (f) => f.key === liveT3 && f.ring);
     press("Enter");
-    await expect("Enter: its actions, the ring on yes", (f) => f.strips === 1 && f.item === liveT3 && f.action === "choice:0" && f.ring);
+    await expect("Enter: its actions, the ring on yes", (f) => f.strips === 1 && f.item === liveT3 && choiceAt(f.action) === 0 && f.ring);
     names("the worker's turn asking", ["yes", "no", "the answer of your own", "Custom answer", "Submit answers", "Dismiss"]);
-    const pressedOf = (key: string) => browser.eval<string | null>(`() => document.querySelector('.action-strip [data-action="${key}"]')?.getAttribute('aria-pressed') ?? null`);
+    const pressedOf = (n: number) => browser.eval<string | null>(`() => document.querySelector('.action-strip [data-action^="choice:"][data-action$=":${n}"]')?.getAttribute('aria-pressed') ?? null`);
     press("Enter");
-    await expect("Enter on yes: chosen", (f) => f.action === "choice:0" && f.pressed === "true");
+    await expect("Enter on yes: chosen", (f) => choiceAt(f.action) === 0 && f.pressed === "true");
     press("ArrowRight");
-    await expect("Right: no, not chosen", (f) => f.action === "choice:1" && f.pressed === "false");
+    await expect("Right: no, not chosen", (f) => choiceAt(f.action) === 1 && f.pressed === "false");
     press("Enter");
-    await expect("Enter on no: chosen", (f) => f.action === "choice:1" && f.pressed === "true");
-    await until("yes shown as no longer chosen", () => pressedOf("choice:0") === "false" || null, 3000, 100);
+    await expect("Enter on no: chosen", (f) => choiceAt(f.action) === 1 && f.pressed === "true");
+    await until("yes shown as no longer chosen", () => pressedOf(0) === "false" || null, 3000, 100);
     await state("a turn typed in T3 asking a question: its actions are the choices, each shown as chosen", "no · @worker's turn · needs you, typed in T3");
     press("ArrowRight");
     press("ArrowRight");
-    await expect("Right ×2: Custom answer", (f) => f.action === "choice:3");
+    await expect("Right ×2: Custom answer", (f) => choiceAt(f.action) === 3);
     press("Enter");
     await expect("Enter on Custom answer: its field focused, the actions still open", (f) => f.tag === "INPUT" && f.strips === 1);
     for (const key of ["m", "a", "y", "b", "e"]) press(key);
     await expect("typed: maybe", (f) => f.tag === "INPUT" && f.value === "maybe");
-    await until("the answer of your own shown as chosen once typed", () => pressedOf("choice:2") === "true" || null, 3000, 100);
+    await until("the answer of your own shown as chosen once typed", () => pressedOf(2) === "true" || null, 3000, 100);
     press("Escape");
-    await expect("Esc in the field: the ring back on Custom answer in the actions", (f) => f.action === "choice:3" && f.strips === 1 && f.ring);
+    await expect("Esc in the field: the ring back on Custom answer in the actions", (f) => choiceAt(f.action) === 3 && f.strips === 1 && f.ring);
     press("ArrowRight");
-    await expect("Right: Submit answers", (f) => f.action === "choice:4");
+    await expect("Right: Submit answers", (f) => choiceAt(f.action) === 4);
     press("Enter");
     await until("the API to show the question answered", async () => !((await room.snapshot()).nativeRequests as Array<{ participantId: string }>).some((r) => r.participantId === room.participant.worker) || null);
     log("api: the worker's question answered, nothing asks you");
@@ -2441,6 +2536,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`  page: Seat in a room… waits, its reason shown: "${waiting!.why}"`);
     await tabTo("Shift+Tab reaches the waiting Seat in a room…", (f) => f.inDialog && f.label === "Seat in a room…", "Shift+Tab", 6);
     announced(/^button$/, "Seat in a room…");
+    // The key bar does not promise what Enter will not do there (#1025, K1-9).
+    const waitBar = await keyBar("Edit sol");
+    if (!waitBar.keys.includes("Enter not now") || waitBar.keys.includes("Enter press it")) fail(`on the waiting Seat in a room… the key bar reads ${JSON.stringify(waitBar.keys)}: expected "Enter not now"`);
+    log(`  key bar on the waiting button: ${waitBar.keys.join(" · ")}`);
     press("Enter");
     await sleep(400);
     await expect("Enter on it while it waits opens nothing; the dialog stays", (f) => !f.menu && f.dialog === "Edit sol" && f.label === "Seat in a room…");
@@ -2469,6 +2568,512 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const seatToast = browser.poll<string | null>("the toast for the seat", "() => [...document.querySelectorAll('.toast-stack .toast')].map((t) => t.textContent.trim()).find((t) => t.includes('is seated')) ?? null", (t) => t !== null);
     log(`api: Third has @${seated.alias} (${seated.id.slice(0, 8)}), ${thirdBefore.length + 1} members; page: "${seatToast}"`);
     await state("a crew member seated in a room by keys alone", "sol · crew member");
+  }
+
+  // ---------------- 7. a status chip's choices (K1-6) ----------------
+
+  // @fable's turn on a request of yours, held running, which T3's fake asks approvals and questions on. Once.
+  let chipRun: { id: string; request: string; seq: number; number: number } | undefined;
+  const chipTurn = async () => {
+    if (chipRun) return chipRun;
+    await room.settle("fable");
+    const request = await room.message("Build the release.");
+    const run = await room.live("fable");
+    const post = room.post(await room.snapshot(), request);
+    chipRun = { id: run.id, request, seq: post.seq, number: post.number };
+    return chipRun;
+  };
+  /** T3's fake asks @fable an approval or a question; the API shows it. */
+  const fableAsks = async (kind: "approval" | "question", body: Record<string, unknown> = {}): Promise<string> => {
+    const { requestId } = (await service.fake(kind, { threadId: room.thread.fable, ...body })) as { requestId: string };
+    await until(`the API to show @fable's ${kind}`, async () => ((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === requestId));
+    return requestId;
+  };
+  /** What T3's fake keeps of it: pending, or resolved with the decision or the answers it got, or cancelled. */
+  const t3Record = (requestId: string) => service.call<{ status: string; decision: string | null; answers: Record<string, unknown> | null }>("GET", `/api/fake/request?threadId=${encodeURIComponent(room.thread.fable)}&requestId=${encodeURIComponent(requestId)}`);
+  const answered = async (requestId: string, what: string) => {
+    const got = await until(`T3's fake to record ${what}`, async () => {
+      const r = await t3Record(requestId);
+      return r.status === "pending" ? null : r;
+    });
+    await until("the API to show it answered", async () => !((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === requestId));
+    return got;
+  };
+  const askChip = () => `chip:ask:${room.participant.fable}`;
+  /** The bar where the ring lands once a chip goes (onNewest): a post, the running turn's chip, or the composer's strip. */
+  const landed = /^(#\d+ · |status · @fable working|Continue your draft|Write a message)/;
+  /** The newest post the board draws, by its key. */
+  const newestDrawn = () => browser.eval<string>(`() => [...document.querySelectorAll('.timeline [data-nav="post"]')].at(-1)?.dataset.navKey ?? ''`);
+  /**
+   * The chip gone with the ring in its strip: the ring where a room lands (no other chip needs you), in view, the board
+   * not moved: on the newest post if it shows, else on the running turn's chip, else on the composer's strip.
+   */
+  const onNewest = async (what: string) => {
+    const f = await expect(`${what}: the chip gone, the ring on the newest post, the running turn's chip or the composer's strip`, (f) => (f.key?.startsWith("post:") === true || f.key?.startsWith("chip:run:") === true || f.key === "strip") && f.ring && inRoom(f) && f.strips === 0 && !f.chipOpen);
+    const seen = browser.eval<{ shows: boolean; newestShows: boolean }>(`() => {
+      const shows = (e) => { const r = e.getBoundingClientRect(); const v = e.closest('.timeline')?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight }; return Math.min(r.bottom, v.bottom) - Math.max(r.top, v.top) >= Math.min(r.height, 48); };
+      const newest = [...document.querySelectorAll('.timeline [data-nav="post"]')].at(-1);
+      return { shows: shows(document.activeElement), newestShows: Boolean(newest && shows(newest)) };
+    }`);
+    const run = browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key^="chip:run:"]'))`);
+    const expected = seen.newestShows ? newestDrawn() : run ? "chip:run:" : "strip";
+    if (!seen.shows || !f.key!.startsWith(expected)) fail(`the ring is on ${f.key} (${seen.shows ? "in view" : "out of view"}), expected ${expected} (the newest post ${seen.newestShows ? "shows" : "does not show"}; ${run ? "a" : "no"} running turn's chip)`);
+    log(`  page: the ring on ${f.key!.startsWith("post:") ? "the newest post" : f.key === "strip" ? "the composer's strip (the newest post out of view, no turn running)" : "the running turn's chip (the newest post out of view)"}, in view`);
+    return f;
+  };
+  /** Out to the room's card and in again: the room opens with the ring on the chip that needs you. */
+  const toAskChip = async (what: string) => {
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect(`Enter: the room, the ring on @fable's ${what} chip`, (f) => f.key === askChip() && inRoom(f) && f.ring, 10_000);
+  };
+  const DECISIONS = [
+    ["accept", "Accept"],
+    ["acceptForSession", "Accept for session"],
+    ["acceptAlways", "Always accept"],
+    ["decline", "Decline"],
+    ["cancel", "Cancel turn"],
+  ] as const;
+  const QUESTION = { questions: [{ id: "Which build?", header: "Build", question: "Which build?", options: [{ label: "debug", description: "With symbols" }, { label: "release", description: "Optimised" }], allowCustomAnswer: true }] };
+  const questionChoices = (on: number) => ["debug", "release", "the answer of your own", "Custom answer", "Submit answers", "Dismiss", `show #${on}`];
+  /** The choices checked on @fable's question where the page draws it: under the bar, and in his turn's bubble. */
+  const checked = () => browser.eval<{ bar: string[]; bubble: string[] }>(`() => {
+    const of = (root) => [...document.querySelectorAll(root + ' .native-card input[type=radio]')].filter((i) => i.checked).map((i) => (i.closest('label')?.textContent ?? '').trim() || 'the answer of your own');
+    return { bar: of('.work-open'), bubble: of('.live-turn') };
+  }`);
+
+  if (
+    await section("a status chip's choices: Enter on an approval's chip opens them as a strip under the bar, the ring on Accept", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+    })
+  ) {
+    // @fable's turn runs on a request of yours and T3 asks an approval of it: the room opens with the ring on its chip;
+    // Enter opens its choices under the bar as a strip, the ring on Accept, then the request it is about. (Into the room
+    // first: the turn and the approval rank its tile anew, which would move the overview under the arrows.)
+    await goTo(`room:${R}`);
+    press("Enter");
+    await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+    const turn = await chipTurn();
+    const first = await fableAsks("approval");
+    await toAskChip("approval");
+    // Opening a chip's choices keeps the board at its bottom, following, also after a click opened and folded them (the
+    // bar grows above the board, and the browser's scroll anchoring moves the board down by what folding took off: not
+    // the reader leaving the bottom). Clicks with a pointer behind them (detail 1), as a mouse's.
+    const distance = () => browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); return Math.round(t.scrollHeight - t.scrollTop - t.clientHeight); }`);
+    await until("the room to open at the board's bottom", () => (distance() < 40 ? true : null), 4000, 150);
+    const mouseOnChip = () => browser.eval<boolean>(`() => { const c = document.querySelector('[data-nav-key="${askChip()}"]'); c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })); return true; }`);
+    mouseOnChip();
+    await expect("a click: the choices open, no strip", (f) => f.chipOpen && f.strips === 0);
+    await sleep(400);
+    mouseOnChip();
+    await expect("a click again: folded", (f) => !f.chipOpen);
+    await sleep(400);
+    press("Enter");
+    await expect("Enter: the approval's strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    await sleep(600);
+    const short = distance();
+    if (short >= 40) fail(`opening the chip's choices left the board ${short}px short of its bottom: it no longer follows`);
+    log(`  page: the board ${short}px from its bottom after its choices opened by a click, folded, and opened by Enter: following`);
+    press("Escape");
+    await expect("Esc: the chip folded", (f) => f.key === askChip() && !f.chipOpen);
+    press("Enter");
+    await expect("Enter: the chip's choices under the bar as a strip, the ring on Accept", (f) => f.chipOpen && f.strips === 1 && choiceAt(f.action) === 0 && f.label === "Accept" && f.ring);
+    names("@fable's approval", [...DECISIONS.map(([, label]) => label), `show #${turn.number}`]);
+    // A held Enter (its key repeating: the Enter that opened the strip, held) presses nothing: the strip stops its
+    // keydown, so the browser never clicks Accept.
+    const held = browser.eval<boolean>(`() => { const e = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', repeat: true, bubbles: true, cancelable: true }); document.activeElement.dispatchEvent(e); return e.defaultPrevented; }`);
+    if (!held) fail("a held Enter (a keydown with repeat) on Accept was let through: the browser would press Accept");
+    log("  page: a held Enter on Accept is stopped (defaultPrevented)");
+    // A poll (every 5 s) redraws the bar: the ring stays on the same button, the strip open.
+    await sleep(5_500);
+    await expect("a poll later: the ring still on Accept, the strip open", (f) => f.chipOpen && f.strips === 1 && choiceAt(f.action) === 0 && f.ring);
+    if (strip()?.item !== null) fail(`the chip's strip is under the bar, on no post: ${JSON.stringify(strip())}`);
+    await barSays("the approval's strip", { place: "room-chip-actions", where: "Accept · @fable approval: waiting for you", keys: ["↑ ↓ chip or posts", "← → choose", "Enter Accept", "Esc Backspace leave it waiting", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    press("ArrowLeft");
+    await sleep(300);
+    await expect("Left at the start: the ring stays on Accept", (f) => choiceAt(f.action) === 0);
+    for (let i = 1; i < DECISIONS.length; i += 1) press("ArrowRight");
+    await expect("Right ×4: Cancel turn", (f) => choiceAt(f.action) === 4 && f.label === "Cancel turn");
+    press("ArrowRight");
+    await expect("Right: show #n", (f) => f.action === `show:${turn.number}`);
+    press("ArrowRight");
+    await sleep(300);
+    await expect("Right at the end: the ring stays", (f) => f.action === `show:${turn.number}` && f.panel === null);
+    for (let i = 0; i < DECISIONS.length; i += 1) press("ArrowLeft");
+    await expect("Left ×5: back on Accept", (f) => choiceAt(f.action) === 0);
+    if ((await t3Record(first)).status !== "pending") fail("the approval was answered by moving along its choices");
+    log("api: the approval still waits in T3's fake");
+    await state("a status chip's choices: Enter on an approval's chip opens them as a strip under the bar, the ring on Accept", "Accept · @fable approval: waiting for you");
+
+    // Esc folds the chip, the ring back on it, the approval left waiting; Backspace the same; ↑ too. show #n takes the
+    // ring to the request, the chip folded, the approval still waiting.
+    press("Escape");
+    await expect("Esc: the chip folded, the ring back on it", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0 && f.expanded === "false" && f.ring && inRoom(f));
+    await barSays("the folded chip", { place: "room-chip", where: "status · @fable approval: waiting for you", keys: ["↑ ↓ the lane above or below", "← → between the chips", "Enter its choices", "Backspace back to the overview", "a–z start writing", "Home End first or last post"], end: "? all keys" });
+    // A letter: the composer opens with it, the chip folded; Esc then closes only the composer. Tab: off the strip, folded.
+    press("Enter");
+    await expect("Enter: the strip again", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    const heldDraft = focus().roomDraft ?? "";
+    press("q");
+    await expect(`a letter: the composer opens with it after the draft ${JSON.stringify(heldDraft)}, the chip folded`, (f) => f.tag === "TEXTAREA" && f.value === `${heldDraft}q` && f.composerOpen && f.strips === 0 && !f.chipOpen);
+    press("Backspace");
+    await expect("Backspace in the composer: the letter gone", (f) => f.tag === "TEXTAREA" && f.value === heldDraft);
+    press("Escape");
+    await expect("Esc closes only the composer: the room open, the chip still folded", (f) => !f.composerOpen && f.strips === 0 && !f.chipOpen && inRoom(f));
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    // Tab goes along the strip's buttons, then off it: the strip closes and the chip folds.
+    await tabTo("Tab past the strip's last button", (f) => f.strips === 0, "Tab", 8);
+    await expect("Tab off the strip: the chip folded", (f) => f.strips === 0 && !f.chipOpen && inRoom(f));
+    // A click elsewhere with the strip open is delivered: the bar shrinks only once the pointer is released, so the
+    // button pressed (your request's Correct…) stays under it. Then the strip is gone, the chip folded.
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    // The board scrolled up a little (not following its bottom), your request still in view: the posts move under the
+    // pointer if the bar shrinks while it is pressed.
+    browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); const p = document.querySelector('[data-nav-key="post:${turn.seq}"]'); t.scrollTop += p.getBoundingClientRect().top - t.getBoundingClientRect().top - 60; return t.scrollTop; }`);
+    await sleep(300);
+    // While the pointer is pressed there, the bar keeps its size (the strip and the choices stay); released, they go.
+    const press0 = browser.eval<number>(`() => { const b = [...document.querySelectorAll('[data-nav-key="post:${turn.seq}"] button')].find((x) => x.textContent.trim() === 'Correct…'); window.__barBefore = document.querySelector('.work-bar').getBoundingClientRect().height; b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 })); return window.__barBefore; }`);
+    await sleep(400);
+    const pressed = browser.eval<{ height: number; strips: number; open: boolean }>(`() => ({ height: document.querySelector('.work-bar').getBoundingClientRect().height, strips: document.querySelectorAll('.work-bar .action-strip').length, open: Boolean(document.querySelector('.work-open')) })`);
+    if (pressed.height !== press0 || pressed.strips !== 1 || !pressed.open) fail(`the pointer pressed on Correct…, the bar changed under it: ${JSON.stringify({ before: press0, ...pressed })}`);
+    browser.eval<boolean>(`() => { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0 })); return true; }`);
+    await expect("the pointer released: the strip gone, the chip folded", (f) => f.strips === 0 && !f.chipOpen && inRoom(f));
+    log(`  page: the bar kept its ${press0}px while the pointer was pressed on Correct…; released, the strip and the choices went`);
+    // Pressed and clicked on another chip with the strip open: that chip's choices open, and stay open (the strip's
+    // close, once the pointer is released, takes only what is still its own chip's).
+    const runChip = `chip:run:${turn.id}`;
+    const clickChip = (key: string) => browser.eval<boolean>(`() => { const c = document.querySelector('[data-nav-key="${key}"]'); const o = { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 }; c.dispatchEvent(new PointerEvent('pointerdown', o)); c.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })); return true; }`);
+    const expanded = (key: string) => browser.eval<string | null>(`() => document.querySelector('[data-nav-key="${key}"]')?.getAttribute('aria-expanded') ?? null`);
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    clickChip(runChip);
+    await sleep(500);
+    await expect("a click on @fable's working chip: its choices open, the strip gone", (f) => f.strips === 0 && f.chipOpen && expanded(runChip) === "true" && expanded(askChip()) === "false");
+    clickChip(runChip);
+    await expect("a click on it again: folded", (f) => !f.chipOpen && expanded(runChip) === "false");
+    // A press whose release never reaches the page (a menu opened on it): Esc still folds the chip at once.
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    browser.eval<boolean>(`() => { document.querySelector('.ov-drawer[data-view=room] .timeline').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', button: 0, buttons: 1 })); return true; }`);
+    await sleep(300);
+    press("Escape");
+    await expect("Esc with the pointer still pressed elsewhere: the chip folded at once, the ring on it", (f) => f.key === askChip() && f.strips === 0 && !f.chipOpen);
+    browser.eval<boolean>(`() => { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'mouse', button: 0 })); return true; }`);
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    const correctLine = browser.on("snapshot").split("\n").filter((l) => /button "Correct…"/.test(l)).at(-1);
+    browser.on("click", /uid=(\S+)/.exec(correctLine ?? "")?.[1] ?? fail("the page snapshot has no Correct… on your request"));
+    await expect("a click on your request's Correct…: its box open, the strip gone, the chip folded", (f) => f.correctionOpen && f.strips === 0 && !f.chipOpen && inRoom(f));
+    press("Escape");
+    await expect("Esc: the correction closed", (f) => !f.correctionOpen && inRoom(f));
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip again, on Accept", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    press("Backspace");
+    await expect("Backspace: the chip folded as Esc does, the room still open", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0 && inRoom(f));
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: the strip on Accept for session", (f) => f.chipOpen && choiceAt(f.action) === 1);
+    press("ArrowUp");
+    await expect("Up: back on the chip, folded", (f) => f.key === askChip() && !f.chipOpen && f.strips === 0);
+    press("Enter");
+    press("ArrowDown");
+    await expect("Enter, Down: on the posts, the chip folded", (f) => f.key?.startsWith("post:") === true && !f.chipOpen && f.strips === 0);
+    await toAskChip("approval");
+    press("Enter");
+    for (let i = 0; i < DECISIONS.length; i += 1) press("ArrowRight");
+    await expect(`Enter, Right ×5: show #${turn.number}`, (f) => f.action === `show:${turn.number}`);
+    press("Enter");
+    await expect(`Enter: the ring on your request #${turn.number}, the chip folded`, (f) => f.key === `post:${turn.seq}` && !f.chipOpen && f.strips === 0 && f.ring);
+    await until(`#${turn.number} in the board's view`, () => browser.eval<boolean>(`() => { const p = document.querySelector('[data-nav-key="post:${turn.seq}"]').getBoundingClientRect(); const v = document.querySelector('.timeline').getBoundingClientRect(); return p.top >= v.top - 1 && p.bottom <= v.bottom + 1; }`) || null, 4000, 150);
+    const waiting = await t3Record(first);
+    if (waiting.status !== "pending" || !((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === first)) fail(`the approval should still wait: ${JSON.stringify(waiting)}`);
+    log("api: the approval still waits, in the API and in T3's fake");
+    await state("a status chip's choices: Esc and Backspace fold the chip and leave the approval waiting; show #n takes the ring to its request", await postWhere(`post:${turn.seq}`));
+
+    // Each choice by keys alone: the room opens on the approval's chip, Enter, Right to the choice, Enter; T3's fake
+    // records that decision, and the chip gone, the ring is on the newest post.
+    for (const [index, [decision, label]] of DECISIONS.entries()) {
+      const requestId = index === 0 ? first : await fableAsks("approval");
+      await toAskChip("approval");
+      press("Enter");
+      for (let i = 0; i < index; i += 1) press("ArrowRight");
+      await expect(`Enter${index > 0 ? `, Right ×${index}` : ""}: ${label}`, (f) => choiceAt(f.action) === index && f.label === label);
+      await keyBar(`${label} · @fable approval: waiting for you`);
+      press("Enter");
+      const got = await answered(requestId, label);
+      if (got.status !== "resolved" || got.decision !== decision) fail(`T3's fake got ${JSON.stringify(got)} for ${label}, expected the decision ${decision}`);
+      log(`api: T3's fake recorded ${requestId.slice(0, 8)} ${got.status}, decision ${got.decision}`);
+      await onNewest(label);
+    }
+    await state("a status chip's choices: each of an approval's choices by keys alone reaches T3", landed);
+
+    // With another member's approval drawn under the same bar (the second room: @beta asks too), a chip's strip offers its
+    // own member's choices, unnumbered and named as one request's.
+    const betaThread = ((await second.snapshot()).bindings as Array<{ participantId: string; threadId: string }>).find((x) => x.participantId === second.participant.beta)!.threadId;
+    if (!((await second.snapshot()).nativeRequests as Array<{ participantId: string }>).some((r) => r.participantId === second.participant.beta)) {
+      await service.command({ type: "message.create", roomId: second.roomId, sourceText: "@beta check the build", clientMessageId: crypto.randomUUID(), attachmentIds: [], assignments: [{ recipients: [second.participant.beta], instruction: "check the build" }] });
+      await until("beta's turn to run", async () => ((await second.snapshot()).runs as Array<{ phase: string; seatId: string }>).filter((r) => r.phase === "running").length >= 2);
+      await service.fake("approval", { threadId: betaThread });
+    }
+    await until("the second room to show @alpha's and @beta's approvals", async () => (((await second.snapshot()).nativeRequests as unknown[]).length === 2 ? true : null));
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    await goTo(`room:${second.roomId}`);
+    press("Enter");
+    await expect("Enter: the second room, the ring on @alpha's approval chip", (f) => f.key === `chip:ask:${second.participant.alpha}` && inRoom(f), 10_000);
+    press("Enter");
+    await expect("Enter: @alpha's choices, the ring on Accept", (f) => f.chipOpen && choiceAt(f.action) === 0 && f.label === "Accept");
+    const alphaNames = strip()?.names ?? [];
+    if (JSON.stringify(alphaNames.slice(0, DECISIONS.length)) !== JSON.stringify(DECISIONS.map(([, label]) => label)) || alphaNames.slice(DECISIONS.length).some((n) => !/^show #\d+$/.test(n))) fail(`@alpha's chip, @beta's approval drawn beside his, offers ${JSON.stringify(alphaNames)}: expected his five choices alone, unnumbered, then show #n`);
+    log(`  page: @alpha's chip with @beta's approval drawn beside: ${alphaNames.join(" · ")}`);
+    press("Escape");
+    await expect("Esc: back on @alpha's chip, his approval left waiting", (f) => f.key === `chip:ask:${second.participant.alpha}` && !f.chipOpen);
+    if (((await second.snapshot()).nativeRequests as unknown[]).length !== 2) fail("an approval in the second room was answered");
+    press("Backspace");
+    await expect("Backspace: back on the second room's card", (f) => f.drawers.length === 0 && f.key === `room:${second.roomId}`);
+    await goTo(`room:${R}`);
+    press("Enter");
+    await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+
+    // Answered elsewhere. One approval answered from the turn's own actions (its bubble): the chip goes too. One answered
+    // through the API while the chip's strip is open on it: the strip goes, the ring lands in view. Two at once: the
+    // ring on the first's Accept, the first answered through the API: the ring is put back on the chip, never on the
+    // second's Accept, and Enter then offers the second's choices alone.
+    const fromBubble = await fableAsks("approval");
+    press("End");
+    press("ArrowDown");
+    await expect(`End, Down: @fable's running turn (run ${turn.id.slice(0, 8)})`, (f) => f.key === `live:${turn.id}`);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: the turn's actions on Accept", (f) => f.item === `live:${turn.id}` && choiceAt(f.action) === 0 && f.label === "Accept");
+    press("Enter");
+    const bubbleGot = await answered(fromBubble, "Accept from the turn's actions");
+    if (bubbleGot.decision !== "accept") fail(`T3's fake got ${JSON.stringify(bubbleGot)} from the turn's actions, expected accept`);
+    await until("the chip gone with it", () => (browser.eval<boolean>(`() => !document.querySelector('[data-nav-key="${askChip()}"]')`) ? true : null));
+    log(`api: T3's fake recorded ${fromBubble.slice(0, 8)} ${bubbleGot.status}, decision ${bubbleGot.decision}, from the turn's actions; the chip gone`);
+    const fromApi = await fableAsks("approval");
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the strip on Accept", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: fromApi, decision: "decline" });
+    await answered(fromApi, "Decline through the API");
+    await onNewest("answered through the API");
+    // The ring on the chip itself (as a room opens with an approval waiting), the approval answered elsewhere: the ring
+    // lands as the room's does, not on the page.
+    const onTheChip = await fableAsks("approval");
+    await toAskChip("approval");
+    await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: onTheChip, decision: "accept" });
+    await answered(onTheChip, "Accept through the API, the ring on the chip");
+    await onNewest("answered through the API with the ring on the chip itself");
+    const [a, b] = [await fableAsks("approval"), await fableAsks("approval")];
+    await toAskChip("2 × approval");
+    press("Enter");
+    await expect("Enter: the strip on the first approval's Accept", (f) => f.chipOpen && choiceAt(f.action) === 0 && f.label === "Accept 1: run tests");
+    names("two approvals", [...DECISIONS.map(([, label]) => `${label} 1: run tests`), ...DECISIONS.map(([, label]) => `${label} 2: run tests`), `show #${turn.number}`]);
+    await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: a, decision: "accept" });
+    await answered(a, "the first approval, through the API");
+    const after = await expect("the first answered: its buttons gone, the strip closed, the ring on the chip", (f) => f.key === askChip() && f.strips === 0 && !f.chipOpen && f.ring);
+    if (after.action !== null) fail(`the ring is on ${after.action}, not on the chip`);
+    if ((await t3Record(b)).status !== "pending") fail("the second approval was answered too");
+    press("Enter");
+    await expect("Enter: the second approval's choices alone, the ring on its Accept", (f) => f.chipOpen && f.action === `choice:${b}:0` && f.label === "Accept");
+    names("the second approval", [...DECISIONS.map(([, label]) => label), `show #${turn.number}`]);
+    press("Enter");
+    const bGot = await answered(b, "the second approval");
+    if (bGot.decision !== "accept") fail(`T3's fake got ${JSON.stringify(bGot)}, expected accept`);
+    await onNewest("Accept");
+    await state("a status chip's choices: a request answered elsewhere takes its buttons with it, the ring never on another request's", landed);
+  }
+
+  if (
+    await section("a status chip's choices: a question's option chosen by keys shows in the turn's bubble too; Submit reaches T3", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // A question with two options and an answer of your own: the chip's strip offers its options, the answer of your own,
+    // Custom answer, Submit answers and Dismiss; an option chosen there is chosen in @fable's turn's bubble too (one
+    // request, drawn twice), and Submit sends it to T3.
+    const turn = await chipTurn();
+    const first = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    await expect("Enter: the question's choices, the ring on its first option", (f) => f.chipOpen && choiceAt(f.action) === 0 && f.label === "debug");
+    names("@fable's question", questionChoices(turn.number));
+    press("ArrowRight");
+    await expect("Right: release", (f) => choiceAt(f.action) === 1 && f.label === "release");
+    press("Enter");
+    await expect("Enter: release chosen", (f) => choiceAt(f.action) === 1 && f.pressed === "true");
+    const both = await until("release to be chosen under the bar and in the turn's bubble", async () => {
+      const now = checked();
+      return JSON.stringify(now) === JSON.stringify({ bar: ["release"], bubble: ["release"] }) ? now : null;
+    });
+    log(`  page: chosen under the bar ${JSON.stringify(both.bar)}, in the bubble ${JSON.stringify(both.bubble)}`);
+    // Folded, the choice is kept: the turn's own actions show it pressed.
+    press("Escape");
+    await expect("Esc: the chip folded, the question still waiting", (f) => f.key === askChip() && !f.chipOpen);
+    press("End");
+    press("ArrowDown");
+    await expect(`End, Down: @fable's running turn (run ${turn.id.slice(0, 8)})`, (f) => f.key === `live:${turn.id}`);
+    press("Enter");
+    await expect("Enter: the turn's actions", (f) => f.strips === 1 && f.item === `live:${turn.id}`);
+    const bubble = browser.eval<Array<{ name: string; pressed: string | null }>>(`() => [...document.querySelectorAll('.action-strip > button')].map((b) => ({ name: b.getAttribute('aria-label'), pressed: b.getAttribute('aria-pressed') }))`);
+    const offered = bubble.map((b) => b.name);
+    const same = questionChoices(turn.number).slice(0, -1);
+    if (JSON.stringify(offered.filter((n) => same.includes(n))) !== JSON.stringify(same) || bubble.find((b) => b.name === "release")?.pressed !== "true" || bubble.find((b) => b.name === "debug")?.pressed !== "false") fail(`the turn's actions should offer the chip's choices, release pressed: ${JSON.stringify(bubble)}`);
+    log(`  page: the turn's actions ${offered.join(" · ")}; release pressed`);
+    press("Escape");
+    await expect("Esc: the turn's actions closed", (f) => f.strips === 0 && f.key === `live:${turn.id}`);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 4; i += 1) press("ArrowRight");
+    await expect("Enter, Right ×4: Submit answers, release still chosen", (f) => choiceAt(f.action) === 4 && f.label === "Submit answers" && checked().bar.join() === "release");
+    press("Enter");
+    const got = await answered(first, "the question's answer");
+    if (got.status !== "resolved" || JSON.stringify(got.answers) !== JSON.stringify({ "Which build?": "release" })) fail(`T3's fake got ${JSON.stringify(got)}, expected the answer release`);
+    log(`api: T3's fake recorded ${first.slice(0, 8)} ${got.status}, answers ${JSON.stringify(got.answers)}`);
+    await onNewest("Submit answers");
+    await state("a status chip's choices: a question's option chosen by keys shows in the turn's bubble too; Submit reaches T3", landed);
+
+    // Custom answer: Enter goes into its field, the keys type the answer, Esc comes back to Custom answer; Submit sends it.
+    // Then Dismiss drops the next question: T3's fake records it cancelled.
+    const custom = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 3; i += 1) press("ArrowRight");
+    await expect("Enter, Right ×3: Custom answer", (f) => choiceAt(f.action) === 3 && f.label === "Custom answer");
+    if (!browser.eval<boolean>(`() => document.querySelector('.work-bar .action-strip button[aria-label="Submit answers"]').disabled`)) fail("Submit answers can be pressed before there is an answer");
+    log("  page: Submit answers waits for an answer (disabled)");
+    await keyBar("Custom answer · @fable question: waiting for you");
+    press("Enter");
+    await expect("Enter: in the Custom answer field, the strip still open", (f) => f.tag === "INPUT" && f.strips === 1 && f.chipOpen);
+    for (const key of ["n", "i", "g", "h", "t", "l", "y"]) press(key);
+    await expect("typed: nightly, the composer shut", (f) => f.tag === "INPUT" && f.value === "nightly" && !f.composerOpen);
+    press("Escape");
+    await expect("Esc: back on Custom answer, the answer kept", (f) => choiceAt(f.action) === 3 && f.strips === 1);
+    if (browser.eval<boolean>(`() => document.querySelector('.work-bar .action-strip button[aria-label="Submit answers"]').disabled`)) fail("Submit answers can still not be pressed with an answer typed");
+    press("ArrowRight");
+    await expect("Right: Submit answers, which can be pressed now", (f) => choiceAt(f.action) === 4);
+    press("Enter");
+    const typed = await answered(custom, "the typed answer");
+    if (typed.status !== "resolved" || JSON.stringify(typed.answers) !== JSON.stringify({ "Which build?": "nightly" })) fail(`T3's fake got ${JSON.stringify(typed)}, expected the answer nightly`);
+    log(`api: T3's fake recorded ${custom.slice(0, 8)} ${typed.status}, answers ${JSON.stringify(typed.answers)}`);
+    await onNewest("Submit answers");
+    const dropped = await fableAsks("question", QUESTION);
+    await toAskChip("question");
+    press("Enter");
+    for (let i = 0; i < 4; i += 1) press("ArrowRight");
+    // Submit answers can be pressed only once there is an answer: until then the ring passes over it.
+    await expect("Enter, Right ×4, past Submit answers (nothing chosen yet): Dismiss", (f) => choiceAt(f.action) === 5 && f.label === "Dismiss");
+    press("Enter");
+    const gone = await answered(dropped, "the question dismissed");
+    if (gone.status !== "cancelled" || gone.answers !== null) fail(`T3's fake got ${JSON.stringify(gone)}, expected the question cancelled`);
+    log(`api: T3's fake recorded ${dropped.slice(0, 8)} ${gone.status}`);
+    await onNewest("Dismiss");
+    await state("a status chip's choices: a question's Custom answer typed by keys reaches T3; Dismiss drops the next", landed);
+  }
+
+  if (
+    await section("a running turn's chip: Stop by keys stops it through T3", {
+      // @fable's turn made before the page opens: a post arriving with the room open would push the oldest drawn post,
+      // the ring on it, out of the chat's window.
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+        await chipTurn();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // @fable's turn runs, nothing asked: its chip's strip holds Stop and the request it works on. Stop stops it through
+    // T3; the chip gone, the ring goes to the stopped turn's notice, which needs you, or to the newest post.
+    const turn = await chipTurn();
+    const runKey = `chip:run:${turn.id}`;
+    await abovePosts(`@fable's working chip`, (f) => f.key === runKey);
+    press("Enter");
+    await expect("Enter: the turn's choices, the ring on Stop", (f) => f.chipOpen && f.action === "stop:0" && f.label === "Stop");
+    names("@fable's running turn", ["Stop", `show #${turn.number}`]);
+    await keyBar(`Stop · @fable working: on #${turn.number}`);
+    press("Enter");
+    const stopped = await until("the API to show @fable's turn stopped", async () => {
+      const s = await room.snapshot();
+      const desk = await service.call<{ participants: Record<string, { runningRun?: unknown }> }>("GET", `/api/rooms/${R}/desk`);
+      const notice = s.needsYou.find((p: any) => p.notice?.retryRunId === turn.id);
+      return s.runs.find((r: any) => r.id === turn.id)?.phase === "terminal" && !desk.participants[room.participant.fable]?.runningRun && notice ? notice : null;
+    });
+    log(`api: run ${turn.id.slice(0, 8)} terminal, T3's thread runs nothing; #${stopped.number} needs you`);
+    const noticeChip = `chip:notice:${stopped.id}`;
+    // The notice's chip if it came with the turn's end; else, as a room lands, the newest post if it shows, else the
+    // composer's strip.
+    const stopLanded = await expect("the chip gone: the ring on the notice's chip, the newest post or the composer's strip", (f) => (f.key === noticeChip || f.key?.startsWith("post:") === true || f.key === "strip") && f.ring && f.strips === 0 && inRoom(f));
+    await state("a running turn's chip: Stop by keys stops it through T3", stopLanded.key === noticeChip ? /^status · @fable failed: / : stopLanded.key === "strip" ? /^(Continue your draft|Write a message)/ : await postWhere(stopLanded.key));
+
+    // The failed turn's chip: Retry sends it again (a new run on the request, the notice retried); that turn fails in T3
+    // and Dismiss on its chip takes it off your list.
+    if (focus().key !== noticeChip) {
+      press("Backspace");
+      await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+      press("Enter");
+      await expect("Enter: the room, the ring on the notice's chip", (f) => f.key === noticeChip && inRoom(f), 10_000);
+    }
+    press("Enter");
+    await expect("Enter: the failed turn's choices, the ring on Retry", (f) => f.chipOpen && f.action === "retry:0" && f.ring);
+    names(`#${stopped.number}, a failed turn`, ["Retry", "Dismiss", `show #${stopped.number}`]);
+    await keyBar(/^Retry · @fable failed: /);
+    press("Enter");
+    const retried = await until("the API to show the turn sent again", async () => {
+      const s = await room.snapshot();
+      const notice = s.posts.find((p: any) => p.id === stopped.id);
+      const run = s.runs.find((r: any) => r.id !== turn.id && r.phase !== "terminal" && r.requestIds.includes(turn.request));
+      return notice?.notice.retried && !s.needsYou.some((p: any) => p.id === stopped.id) && run ? run : null;
+    });
+    log(`api: #${stopped.number} retried, run ${retried.id.slice(0, 8)} on #${turn.number}`);
+    await onNewest("Retry");
+    await room.live("fable");
+    await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+    const failed = await until("the API to show the new turn failed, needing you", async () => (await room.snapshot()).needsYou.find((p: any) => p.notice?.retryRunId === retried.id) ?? null);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect("Enter: the room, the ring on the new notice's chip", (f) => f.key === `chip:notice:${failed.id}` && inRoom(f), 10_000);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Dismiss", (f) => f.action === "dismiss:0" && f.label === "Dismiss");
+    press("Enter");
+    await until("the API to show the notice dismissed", async () => {
+      const s = await room.snapshot();
+      const notice = s.posts.find((p: any) => p.id === failed.id);
+      return notice?.notice.dismissed && !notice.notice.needsYou && s.needsYou.length === 0 ? true : null;
+    });
+    log(`api: #${failed.number} dismissed, nothing needs you`);
+    await onNewest("Dismiss");
+    chipRun = undefined;
+    await state("a failed turn's chip: Retry by keys sends it again, Dismiss by keys takes the next off your list", landed);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   }
 
   if (
@@ -2510,6 +3115,273 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await state("pixel look: the room's focus ring", await postWhere(pixelPost.key));
     press("Backspace");
     await expect("pixel look: Backspace back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  }
+
+  /** A room of the run's own in a git folder of its own (a.txt changed since its commit), with @alpha and @beta. Once. */
+  type Member = { id: string; alias: string; retiredAt: string | null; modelSelection: { model: string } };
+  let side: { roomId: string; members: () => Promise<Member[]> } | undefined;
+  const sideRoom = async (): Promise<{ roomId: string; members: () => Promise<Member[]> }> => {
+    if (side) return side;
+    const folder = join(room.dataDir, "k1-rest-git");
+    mkdirSync(folder, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", folder, ...args], { encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    for (const [name, value] of [["user.name", "Rehearsal"], ["user.email", "rehearsal@example.com"], ["commit.gpgsign", "false"]] as const) git("config", name, value);
+    writeFileSync(join(folder, "a.txt"), "a\n");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "First commit");
+    writeFileSync(join(folder, "a.txt"), "a\nb\n");
+    const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title: "k1-rest-git" });
+    const roomId = (await service.command<{ roomId: string }>({ type: "room.create", projectId, title: "Side panel", consigliere: false })).roomId;
+    for (const alias of ["alpha", "beta"]) await service.command({ type: "participant.create", roomId, alias, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, thread: { mode: "create" } });
+    const snapshot = () => service.call<{ participants: Member[]; bindings: Array<{ threadId: string }> }>("GET", `/api/rooms/${roomId}`);
+    for (const binding of (await snapshot()).bindings) await service.fake("hold", { threadId: binding.threadId, hold: true });
+    log(`room ${roomId}: Side panel, in ${folder} (a.txt changed), @alpha and @beta`);
+    side = { roomId, members: async () => (await snapshot()).participants.filter((p) => !p.retiredAt) };
+    return side;
+  };
+  /** The look by keys (Settings → Look in the overview's header), from the overview; nothing when it is so already. */
+  const setLook = async (look: "Plain" | "Pixel") => {
+    const skin = () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''");
+    if ((skin() === "pixel") === (look === "Pixel")) return;
+    await goTo("head:settings");
+    press("Enter");
+    await expect("Enter: the Settings menu", (f) => f.menu && (f.role ?? "").startsWith("menuitem"));
+    for (let i = 0; i < 30 && !focus().label.startsWith(look); i += 1) press("ArrowDown");
+    await expect(`Down to Look → ${look}`, (f) => f.menu && f.label.startsWith(look));
+    press("Enter");
+    await until(`the ${look.toLowerCase()} look`, () => (skin() === "pixel") === (look === "Pixel"));
+  };
+
+  if (
+    await section("side panel: + Add member by keys seats a member, the API shows it", {
+      replay: async () => {
+        await sideRoom();
+      },
+    })
+  ) {
+    // ---------------- 7. the side panel's dialogs and Git by keys (K1-7); the composer's lists (K1-9) ----------------
+
+    const { roomId, members: sideMembers } = await sideRoom();
+    await setLook("Plain");
+    await goTo(`room:${roomId}`);
+    press("Enter");
+    await expect("Enter: the Side panel room is open", (f) => f.inLayer === "room");
+    press("ArrowRight");
+    await expect("Right: Members unfolds, the ring on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    press("ArrowUp");
+    await expect("Home, Up: the Members tab", (f) => f.key === "side:tab:people");
+    for (let i = 0; i < 3; i += 1) press("ArrowRight");
+    await expect("Right ×3: + Add member", (f) => f.key === "side:add" && f.ring);
+    press("Enter");
+    await expect("Enter: the Add member dialog", (f) => f.dialog === "Add member" && f.inDialog);
+    await tabTo("Tab to its name field", (f) => f.inDialog && f.tag === "INPUT" && f.value === "");
+    for (const letter of "gamma") press(letter);
+    await expect("typed: gamma", (f) => f.value === "gamma");
+    await tabTo("Tab to Add member", (f) => f.inDialog && f.label === "Add member", "Tab", 12);
+    press("Enter");
+    await expect("Enter: the dialog closed, the ring back on + Add member", (f) => f.dialog === null && f.key === "side:add" && f.ring);
+    const gamma = await until("the API to show @gamma seated", async () => (await sideMembers()).find((p) => p.alias === "gamma") ?? null);
+    log(`api: @gamma seated (${gamma.id.slice(0, 8)})`);
+    await state("side panel: + Add member by keys seats a member, the API shows it", "the panel's head · + Add member");
+
+    // Settings… from @alpha's actions: the model list by keys, Save; the API has the new model.
+    const [alpha, beta] = await sideMembers();
+    press("Home");
+    await expect(`Home: @${alpha!.alias}`, (f) => f.key === `member:${alpha!.id}`);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Settings… in @alpha's actions", (f) => f.action === "settings" && f.ring);
+    press("Enter");
+    await expect("Enter: @alpha's settings", (f) => f.dialog === "@alpha settings" && f.inDialog);
+    await tabTo("Tab to the model's button", (f) => f.inDialog && f.label.startsWith("Claude Opus 5.5"));
+    press("Enter");
+    await expect("Enter: the model list", (f) => f.label === "Search models");
+    const chosen = () => browser.eval<string>("() => { const id = document.activeElement?.getAttribute('aria-activedescendant'); return (id && document.getElementById(id)?.textContent) ?? ''; }");
+    for (let i = 0; i < 5 && !chosen().startsWith("Claude Fable"); i += 1) press("ArrowUp");
+    if (!chosen().startsWith("Claude Fable")) fail(`Up in the model list reached "${chosen()}", not Claude Fable`);
+    press("Enter");
+    await expect("Enter: Fable chosen, the list closed", (f) => f.inDialog && f.label.startsWith("Claude Fable"));
+    await tabTo("Tab to Save", (f) => f.inDialog && f.label === "Save", "Tab", 6);
+    press("Enter");
+    await expect("Enter: saved, the dialog closed, the ring back on Settings…", (f) => f.dialog === null && f.action === "settings" && f.ring);
+    const model = await until("the API to show @alpha on claude-fable-5-1", async () => ((await sideMembers()).find((p) => p.id === alpha!.id)?.modelSelection.model === "claude-fable-5-1" ? "claude-fable-5-1" : null));
+    log(`api: @alpha's model is ${model}`);
+    await state("side panel: a member's Settings… by keys changes its model in the API", /^Settings… · @alpha · /);
+
+    // Remove from room… from @beta's actions: the API retires it, and the ring goes to the member after it.
+    press("ArrowDown");
+    await expect(`Down: @${beta!.alias}, the actions closed`, (f) => f.key === `member:${beta!.id}` && f.strips === 0);
+    press("Enter");
+    for (let i = 0; i < 6; i += 1) press("ArrowRight");
+    await expect("Enter, Right to the end: Remove from room…", (f) => f.action === "remove");
+    press("Enter");
+    await expect("Enter: the Remove dialog", (f) => f.dialog === `Remove ${beta!.alias} from the room` && f.inDialog);
+    // Its thread deleted in T3: the dialog's own checkbox, ticked with Space. Enter on it is the dialog's (its form is
+    // sent, as Enter in a form's field sends it), not the panel's, which clicks its own switches and would untick it.
+    await tabTo("Tab to the thread's choice", (f) => f.inDialog && f.tag === "SELECT");
+    for (let i = 0; i < 4 && browser.eval<string>("() => document.activeElement.value") !== "delete"; i += 1) press("ArrowDown");
+    const understood = "() => document.querySelector('.dialog input[type=\"checkbox\"]')?.checked ?? null";
+    await tabTo("Tab to I understand…", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<boolean | null>(understood) === false);
+    press(" ");
+    browser.poll<boolean | null>("Space: I understand… ticked", understood, (ticked) => ticked === true);
+    press("Enter");
+    await sleep(400);
+    const afterEnter = browser.eval<boolean | null>(understood);
+    if (afterEnter === false) fail("Enter on the Remove dialog's I understand… unticked it: the panel's Enter-clicks-a-switch reached into the dialog");
+    log(`  page: Enter on the dialog's own checkbox ${afterEnter === null ? "sent the form (the dialog closed)" : "left it ticked"}`);
+    if (afterEnter === true) {
+      await tabTo(`Tab to Remove @${beta!.alias}`, (f) => f.inDialog && f.label === `Remove @${beta!.alias}`, "Tab", 10);
+      press("Enter");
+    }
+    await until(`the API to show @${beta!.alias} retired`, async () => !(await sideMembers()).some((p) => p.id === beta!.id));
+    await expect("the ring on the next member, @gamma, not on the page", (f) => f.dialog === null && f.key === `member:${gamma.id}` && f.ring);
+    await state("side panel: a member's Remove from room… by keys retires it, the ring on the next member", /^@gamma · /);
+
+    // Git: its tab in the panel's head; a.txt's row, Enter, its diff.
+    press("Home");
+    press("ArrowUp");
+    press("ArrowRight");
+    press("ArrowRight");
+    await expect("Home, Up, Right ×2: the Git tab", (f) => f.key === "side:tab:git");
+    press("Enter");
+    await expect("Enter: the Git panel, the ring on its tab", (f) => f.panel === "git" && f.key === "side:tab:git");
+    browser.poll<boolean>("a.txt's row in the Git panel", "() => [...document.querySelectorAll('.inspector .git-row')].some((row) => row.textContent.includes('a.txt'))", (drawn) => drawn);
+    for (let i = 0; i < 8 && !/a\.txt/.test(focus().label); i += 1) press("ArrowDown");
+    await expect("Down to a.txt, the uncommitted file", (f) => f.panel === "git" && /a\.txt/.test(f.label) && f.ring);
+    press("Enter");
+    await expect("Enter: a.txt's diff", (f) => f.dialog === "a.txt");
+    const diff = browser.poll<string>("the diff to be read", "() => document.querySelector('.dialog')?.textContent ?? ''", (text) => text.includes("+b"));
+    log(`  page: the diff reads "${diff.replace(/\s+/g, " ").slice(0, 80)}"`);
+    await state("side panel: a Git row's Enter opens its diff", "a.txt");
+    press("Escape");
+    await expect("Esc: the diff closed, the ring back on a.txt's row", (f) => f.dialog === null && /a\.txt/.test(f.label) && f.ring);
+
+    // The composer's @ list: the field names the option chosen (aria-activedescendant), which the arrows move.
+    press("@");
+    await expect("@: the composer with the members' list", (f) => f.composerOpen && f.tag === "TEXTAREA");
+    const named = "() => { const t = document.activeElement; const chosen = document.querySelector('.mention-menu [aria-selected=\"true\"]'); return { active: t.getAttribute('aria-activedescendant'), chosen: chosen?.id ?? null, text: chosen?.textContent ?? null, controls: t.getAttribute('aria-controls'), list: document.querySelector('.mention-menu')?.id ?? null }; }";
+    type Named = { active: string | null; chosen: string | null; text: string | null; controls: string | null; list: string | null };
+    const agrees = (n: Named | null) => Boolean(n && n.active && n.active === n.chosen && n.controls && n.controls === n.list);
+    const firstNamed = browser.poll<Named>("the field to name the list's option", named, agrees)!;
+    press("ArrowDown");
+    const nextNamed = browser.poll<Named>("Down: the field to name the next option", named, (n) => agrees(n) && n!.active !== firstNamed.active)!;
+    log(`  page: the field names ${firstNamed.active} ("${firstNamed.text}"), then after Down ${nextNamed.active} ("${nextNamed.text}")`);
+    await state("the composer's @ list: the field names the option chosen", "choosing a member");
+    press("Escape");
+    press("Backspace");
+    await expect("Esc, Backspace: the list closed, the @ deleted", (f) => f.tag === "TEXTAREA" && f.value === "");
+    press("Backspace");
+    await expect("Backspace on the empty field: the composer closed", (f) => !f.composerOpen && inRoom(f));
+  }
+
+  if (
+    await section("pixel look: a member's actions, the key bar and the side panel's tabs", {
+      replay: async () => {
+        await sideRoom();
+      },
+    })
+  ) {
+    // ---------------- 8. the pixel look draws the strip, the key bar and the room's rings (K1-8) ----------------
+
+    const { roomId } = await sideRoom();
+    if (focus().inLayer === "room") {
+      press("Backspace");
+      press("Backspace");
+    }
+    await expect("on the overview", (f) => f.drawers.length === 0);
+    await setLook("Pixel");
+    await goTo(`room:${roomId}`);
+    press("Enter");
+    await expect("Enter: the Side panel room is open", (f) => f.inLayer === "room");
+    press("ArrowRight");
+    await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
+    press("Home");
+    const first = await expect("Home: the first member, in the pixel look's brackets", (f) => f.key?.startsWith("member:") === true && f.ring);
+    const brackets = browser.eval<{ animation: string; image: string }>("() => { const after = getComputedStyle(document.activeElement, '::after'); return { animation: after.animationName, image: after.backgroundImage }; }");
+    if (brackets.animation !== "px-blink" || !brackets.image.includes("linear-gradient")) fail(`the member's ring is not the pixel look's blinking brackets: ${JSON.stringify(brackets)}`);
+    press("Enter");
+    press("ArrowRight");
+    await expect("Enter, Right: Settings… in its actions, its dashed ring", (f) => f.action === "settings" && f.item === first.key && f.ring);
+    // Each in the pixel look's colours: the strip a well, the key bar raised, its keys on the window's colour; the tab
+    // showing underlined.
+    const drawn = browser.eval<Record<string, boolean | string>>(
+      "() => { const colour = (value) => { const probe = document.createElement('div'); probe.style.background = value; document.body.append(probe); const c = getComputedStyle(probe).backgroundColor; probe.remove(); return c; }; const bg = (selector) => { const e = document.querySelector(selector); return e ? getComputedStyle(e).backgroundColor : null; }; return { strip: bg('.participant-chip .action-strip') === colour('var(--px-well)'), bar: bg('.key-bar') === colour('var(--px-raised)'), kbd: bg('.key-bar kbd') === colour('var(--px-window)'), tab: getComputedStyle(document.querySelector('.inspector-tab.on')).boxShadow }; }",
+    );
+    if (drawn.strip !== true || drawn.bar !== true || drawn.kbd !== true || !String(drawn.tab).includes("inset")) fail(`the pixel look does not draw the strip, the key bar or the panel's tab: ${JSON.stringify(drawn)}`);
+    log("  page: the strip in the well's colour, the key bar raised, its keys on the window's colour, the tab showing underlined");
+    await state("pixel look: a member's actions, the key bar and the side panel's tabs", /^Settings… · @/);
+    press("Escape");
+    press("Backspace");
+    press("Backspace");
+    await expect("Esc, Backspace ×2: back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${roomId}`);
+  }
+
+  /** The focused button's text against its background: their colours and the contrast between them (WCAG's ratio). */
+  const CONTRAST = "() => { const e = document.activeElement; const cs = getComputedStyle(e); const rgb = (c) => c.match(/[\\d.]+/g).map(Number); const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); }; const bg = rgb(cs.backgroundColor); const a = lum(rgb(cs.color)); const b = lum(bg); return { label: e.textContent.trim(), color: cs.color, background: cs.backgroundColor, opaque: bg.length < 4 || bg[3] === 1, contrast: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100 }; }";
+  type Contrast = { label: string; color: string; background: string; opaque: boolean; contrast: number };
+  const readable = (what: string): Contrast => {
+    const c = browser.eval<Contrast>(CONTRAST);
+    if (!c.opaque || c.contrast < 3) fail(`${what}: "${c.label}" in ${c.color} on ${c.background}, contrast ${c.contrast}; expected at least 3 on an opaque background`);
+    log(`  page: "${c.label}" in ${c.color} on ${c.background}, contrast ${c.contrast}`);
+    return c;
+  };
+  /** Whether the focused item's brackets show: drawn, and not outside a box that clips what it draws (a chat row). */
+  const BRACKETS = "() => { const e = document.activeElement; const cs = getComputedStyle(e); const after = getComputedStyle(e, '::after'); const clips = cs.contentVisibility === 'auto' || /paint|strict|content/.test(cs.contain); const inset = ['top', 'right', 'bottom', 'left'].map((side) => parseFloat(after[side])); return { row: e.className, nav: e.dataset.nav ?? null, drawn: after.backgroundImage.includes('gradient'), clips, inset, shown: after.backgroundImage.includes('gradient') && !(clips && inset.some((v) => v < 0)) }; }";
+  type Brackets = { row: string; nav: string | null; drawn: boolean; clips: boolean; inset: number[]; shown: boolean };
+
+  if (await section("pixel look: an approval's Accept keeps its label with the ring on it")) {
+    // ---------------- 9. the pixel look's strip buttons and chat rows (review #1842) ----------------
+
+    // @fable's turn running on a request, asking an approval, made before the room opens.
+    const turn = await chipTurn();
+    await fableAsks("approval");
+    await expect("on the overview", (f) => f.drawers.length === 0);
+    await setLook("Pixel");
+    await goTo(`room:${R}`);
+    press("Enter");
+    await expect("Enter: the room, the ring on @fable's approval chip", (f) => f.key?.startsWith("chip:ask:") === true && f.ring, 10_000);
+    press("Enter");
+    await expect("Enter: its choices, the ring on Accept", (f) => f.chipOpen && f.label === "Accept" && f.ring);
+    readable("the approval's Accept with the ring on it");
+    await state("pixel look: an approval's Accept keeps its label with the ring on it", /^Accept · /);
+
+    // Accept: the turn runs on. Your message and the running turn are chat rows, and so is the reply the turn ends with:
+    // their brackets show.
+    press("Enter");
+    await until("the API to show the approval answered", async () => ((await room.snapshot()).nativeRequests as unknown[]).length === 0);
+    const seen = new Map<string, Brackets>();
+    press("End");
+    for (let i = 0; i < 6 && focus().key !== `post:${turn.seq}`; i += 1) press("ArrowUp");
+    await expect(`End, Up: your request #${turn.number}`, (f) => f.key === `post:${turn.seq}` && f.ring);
+    seen.set("your message", browser.eval<Brackets>(BRACKETS));
+    press("End");
+    press("ArrowDown");
+    await expect(`Down: @fable's running turn on #${turn.number}, its live bubble`, (f) => f.key === `live:${turn.id}` && f.ring);
+    seen.set("the running turn", browser.eval<Brackets>(BRACKETS));
+    await room.finish("fable", "The release is built.");
+    const reply = await until("the API to show @fable's reply", async () => (await room.snapshot()).posts.find((p: any) => p.kind === "output" && p.seq > turn.seq) ?? null);
+    await expect(`the turn ended: the ring on its reply #${reply.number}`, (f) => f.key === `post:${reply.seq}` && f.ring, 10_000);
+    seen.set("a reply", browser.eval<Brackets>(BRACKETS));
+    for (const [what, b] of seen) {
+      if (!/\bchat-row\b/.test(b.row) || !b.shown) fail(`${what}'s ring does not show: ${JSON.stringify(b)}`);
+      log(`  page: ${what} (${b.row.split(" ").slice(0, 3).join(" ")}): brackets drawn at ${b.inset.join(" ")}${b.clips ? ", inside its clipped box" : ""}`);
+    }
+    await state("pixel look: a message, a reply and a running turn show their brackets", /@fable/);
+
+    // A turn that fails: its notice's chip; Enter, the ring on Retry, readable.
+    await room.settle("fable");
+    await room.message("Tag the release.");
+    await room.live("fable");
+    await room.finish("fable", "The model is overloaded.", { outcome: "error" });
+    await abovePosts("@fable's failed turn's chip", (f) => f.key?.startsWith("chip:notice:") === true);
+    press("Enter");
+    await expect("Enter: its choices, the ring on Retry", (f) => f.chipOpen && f.label === "Retry" && f.ring);
+    readable("the failed turn's Retry with the ring on it");
+    await state("pixel look: a failed turn's Retry keeps its label with the ring on it", /^Retry · /);
+    press("Escape");
+    await expect("Esc: the choices folded", (f) => !f.chipOpen);
   }
 
   return passed;

@@ -6,7 +6,7 @@
  */
 
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
-export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "panel-open" | "help";
+export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "asking" | "panel-open" | "help" | "disabled";
 
 /** What the conditions are called in `?` and README. */
 const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
@@ -15,8 +15,10 @@ const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
   correcting: ["while a correction is open", "while no correction is open"],
   "composer-open": ["while the composer is open", "while the composer is closed"],
   "chip-open": ["while a status chip's choices are open", "while no chip's choices are open"],
+  asking: ["on an approval's or a question's choices", "on a failed or running turn's choices"],
   "panel-open": ["while the side panel is open", "while the side panel is folded"],
   help: ["while this list is open", "while this list is closed"],
+  disabled: ["on a button that cannot be pressed now", "on a button that can be pressed"],
 };
 
 export interface KeyEntry {
@@ -32,6 +34,8 @@ export interface KeyEntry {
   /** Only while this holds: it goes before an entry for the same key without it, which is the rest of the time. */
   when?: KeyWhen;
   unless?: KeyWhen;
+  /** While its `when` holds it wins over every place's entry for the same key, wherever it is listed (Enter on a button that waits). */
+  over?: true;
 }
 
 /** Every place the ring (the focus) can be, as keys.ts tells them apart. */
@@ -47,6 +51,7 @@ export type PlaceId =
   | "overview-other"
   | "overview-page"
   | "room"
+  | "room-talk"
   | "room-header"
   | "room-head-close"
   | "room-head-tab"
@@ -56,12 +61,18 @@ export type PlaceId =
   | "room-chip"
   | "room-post"
   | "room-actions"
+  | "room-chip-actions"
   | "room-strip"
+  | "room-side"
+  | "room-side-panel"
+  | "room-side-head"
+  | "room-side-tab"
+  | "room-side-add"
+  | "room-side-close"
   | "room-member"
-  | "room-pane"
-  | "room-pane-button"
-  | "room-members"
-  | "room-members-button"
+  | "room-member-actions"
+  | "room-side-row"
+  | "room-side-other"
   | "room-button"
   | "room-other"
   | "room-itself"
@@ -105,6 +116,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["?"], does: "all keys", unless: "typing" },
           { keys: ["Tab", "Shift+Tab"], does: "every button, link and field, in order", bar: false },
+          { keys: ["Enter"], does: "not now", when: "disabled", over: true, more: "the button waits for something, said beside it" },
         ],
       },
     ],
@@ -149,7 +161,6 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "anywhere in it",
         within: "everywhere",
         entries: [
-          { keys: ["←", "→"], does: "between the panes", more: "the board, Members, Browser and Git; → opens the side panel; along the header and the status chips they move along them instead" },
           { keys: ["Esc", "Backspace"], does: "close composer", when: "composer-open", more: "the draft kept" },
           { keys: ["Esc", "Backspace"], does: "fold the choices", when: "chip-open", more: "a status chip's" },
           { keys: ["Esc", "Backspace"], does: "close correction", when: "correcting", more: "Correct…'s box, its text kept" },
@@ -159,9 +170,15 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         ],
       },
       {
+        id: "room-talk",
+        on: "the conversation (its lanes)",
+        within: "room",
+        entries: [{ keys: ["→"], does: "the side panel", more: "its item nearest in height; folded, Members unfolds; along the header and the status chips → moves along them instead" }],
+      },
+      {
         id: "room-header",
         on: "the header (any of its buttons)",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["←", "→"], does: "along the header", more: "×, the chat and the board, Members, Browser, Git, the room's options; it stops at its ends" },
           { keys: ["↓"], does: "the lane below", more: "the room state, the status chips or the posts, the first there is" },
@@ -175,7 +192,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       {
         id: "room-state",
         on: "the room state",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "the lane above or below" },
           { keys: ["Home", "End"], does: "first or last post" },
@@ -185,18 +202,18 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       {
         id: "room-chip",
         on: "a status chip",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "the lane above or below" },
           { keys: ["←", "→"], does: "between the chips", more: "those with choices; it stops at the ends" },
           { keys: ["Home", "End"], does: "first or last post" },
-          { keys: ["Enter"], does: "its choices", more: "again to fold them" },
+          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a failed turn's Retry, a running turn's Stop, then the posts it is about" },
         ],
       },
       {
         id: "room-post",
         on: "a post, or a turn running (its live bubble)",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "previous or next post", more: "past the first, the earlier posts load, then the status chips, the room state and the header; past the newest, the turns running now, then the composer's strip" },
           { keys: ["Home", "End"], does: "first or last post" },
@@ -206,7 +223,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       {
         id: "room-actions",
         on: "a post's actions",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "previous or next post", more: "the actions close" },
           { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
@@ -216,9 +233,22 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         ],
       },
       {
+        id: "room-chip-actions",
+        on: "a status chip's choices",
+        within: "room-talk",
+        entries: [
+          { keys: ["↑", "↓"], does: "chip or posts", more: "↑ back to the chip, ↓ on to the posts; the choices fold" },
+          { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back; a held Enter presses nothing" },
+          { keys: ["Esc", "Backspace"], does: "leave it waiting", when: "asking", more: "the choices fold, the ring back on the chip; the approval or question still waits for you" },
+          { keys: ["Esc", "Backspace"], does: "fold the choices", more: "the ring back on the chip" },
+          { keys: ["Home", "End"], does: "first or last post" },
+        ],
+      },
+      {
         id: "room-strip",
         on: "the composer's strip",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑"], does: "the posts", more: "the post you were on, else the newest" },
           { keys: ["Home", "End"], does: "first or last post" },
@@ -226,64 +256,68 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         ],
       },
       {
+        id: "room-side",
+        on: "anywhere in the side panel",
+        within: "room",
+        entries: [
+          { keys: ["↑", "↓"], does: "row above or below", more: "its head (its tabs, + Add member, ×), then its members or rows; it stops at the ends" },
+          { keys: ["←", "→"], does: "along the row", more: "it stops at the right end; ← from the row's first: back to the conversation, to its item nearest in height, the panel left open" },
+          { keys: ["Home", "End"], does: "first or last in the panel", more: "under its head" },
+        ],
+      },
+      { id: "room-side-panel", on: "the side panel itself", within: "room-side", entries: [{ keys: ["Enter"], does: "write a message" }] },
+      {
+        id: "room-side-head",
+        on: "the side panel's head",
+        within: "room-side",
+        entries: [{ keys: ["←", "→"], does: "along its head", more: "Members, Browser, Git, + Add member (on Members), ×; ← from Members: back to the conversation" }],
+      },
+      { id: "room-side-tab", on: "Members, Browser or Git in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "show its panel" }] },
+      { id: "room-side-add", on: "+ Add member in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "add a member", more: "its dialog: Tab between the fields, Enter adds" }] },
+      { id: "room-side-close", on: "× in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "fold the panel", more: "the ring back on the conversation" }] },
+      {
         id: "room-member",
         on: "a member, in Members",
-        within: "room",
+        within: "room-side",
         entries: [
-          { keys: ["↑", "↓"], does: "previous or next member" },
+          { keys: ["↑", "↓"], does: "previous or next member", more: "↑ from the first: the panel's head" },
+          { keys: ["←"], does: "the conversation", more: "back to its item nearest in height, the panel left open" },
           { keys: ["Home", "End"], does: "first or last member" },
-          { keys: ["Enter"], does: "its thread", more: "over the room, read only; Backspace comes back to the member" },
+          { keys: ["Enter"], does: "its actions", more: "in a row under it, the ring on the first: Open thread, Settings…, Thread details…, Open in T3, Make or Remove as Consigliere, Remove from room…" },
         ],
       },
       {
-        id: "room-pane",
-        on: "the Browser or Git panel itself",
-        within: "room",
+        id: "room-member-actions",
+        on: "a member's actions",
+        within: "room-side",
         entries: [
-          { keys: ["↑", "↓"], does: "its buttons and fields" },
-          { keys: ["Enter"], does: "write a message" },
+          { keys: ["↑", "↓"], does: "previous or next member", more: "the actions close" },
+          { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Open thread opens it over the room, Backspace there comes back to the member" },
+          { keys: ["Esc", "Backspace"], does: "close", more: "the ring back on the member" },
+          { keys: ["Home", "End"], does: "first or last member", bar: false },
         ],
       },
       {
-        id: "room-pane-button",
-        on: "a button in the Browser or Git panel",
-        within: "room",
-        entries: [
-          { keys: ["↑", "↓"], does: "its buttons and fields, in order" },
-          { keys: ["Enter"], does: "press it" },
-        ],
+        id: "room-side-row",
+        on: "a row of the Browser or Git panel",
+        within: "room-side",
+        entries: [{ keys: ["Enter"], does: "press it", more: "Browser: a switch, a browser's allow, make default, Edit, Page, Start or Stop; Git: a folder shows its state, a file its diff, a commit its files" }],
       },
-      {
-        id: "room-members",
-        on: "the Members panel itself",
-        within: "room",
-        entries: [
-          { keys: ["↑", "↓"], does: "to the members" },
-          { keys: ["Enter"], does: "write a message" },
-        ],
-      },
-      {
-        id: "room-members-button",
-        on: "a button in the Members panel's head",
-        within: "room",
-        entries: [
-          { keys: ["↑", "↓"], does: "to the members" },
-          { keys: ["Enter"], does: "press it" },
-        ],
-      },
+      { id: "room-side-other", on: "another button in the side panel", within: "room-side", entries: [{ keys: ["Enter"], does: "press it" }] },
       {
         id: "room-button",
-        on: "a button on a post or a member",
-        within: "room",
+        on: "a button on a post",
+        within: "room-talk",
         entries: [
-          { keys: ["↑", "↓"], does: "previous or next item", more: "from the post or member it is on" },
+          { keys: ["↑", "↓"], does: "previous or next item", more: "from the post it is on" },
           { keys: ["Enter"], does: "press it" },
         ],
       },
       {
         id: "room-other",
         on: "another button",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "the item above or below", more: "in its lane, else the lane above or below; outside the lanes, the posts" },
           { keys: ["Home", "End"], does: "first or last post" },
@@ -293,7 +327,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
       {
         id: "room-itself",
         on: "nothing in it",
-        within: "room",
+        within: "room-talk",
         entries: [
           { keys: ["↑", "↓"], does: "to the posts" },
           { keys: ["Home", "End"], does: "first or last post" },
@@ -404,6 +438,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["Tab", "Shift+Tab"], does: "next or previous button or field", more: "round inside the dialog" },
           { keys: ["Enter"], does: "press it", unless: "typing" },
+          { keys: ["Enter"], does: "not now", when: "disabled", more: "the button waits for something, said beside it" },
           { keys: ["Esc"], does: "close it", more: "the ring back where it was" },
           { keys: ["Backspace"], does: "close it", unless: "typing" },
           { keys: ["?"], does: "close the keys", when: "help" },
@@ -437,6 +472,20 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
   },
 ];
 
+/**
+ * The four keys, as `?` and README's Keyboard section open with them (the design's key map, K1-Fable section 2): the
+ * arrows move, Enter goes in, Backspace goes back, Esc closes what is in front.
+ */
+export const FOUR_KEYS: Array<{ keys: string[]; does: string }> = [
+  { keys: ["↑", "↓", "←", "→"], does: "move the ring to the nearest item that way; they press nothing (an action strip or a chip's choices the ring leaves fold, and → off a room's conversation unfolds the side panel to go into it)" },
+  { keys: ["Enter"], does: "go in: open what the ring is on (a tile, a status chip's choices, a post's or a member's actions), press a button" },
+  { keys: ["Backspace"], does: "back out one step: what is in front, then a member's thread, the side panel, the room; the one key that leaves a room (in a text field it deletes)" },
+  { keys: ["Esc"], does: "close what is in front (a menu, an action strip, a dialog, the composer with its draft kept, these keys), and nothing else" },
+];
+
+/** README's list of the four keys (scripts/keys-readme.ts draws it at the top of the Keyboard section). */
+export const fourKeysMarkdown = (): string => FOUR_KEYS.map(({ keys, does }) => `- ${keys.map((key) => `\`${key}\``).join(" ")}: ${does}.`).join("\n");
+
 const PLACES = new Map(KEYS.flatMap((area) => area.places).map((place) => [place.id, place]));
 
 export const placeById = (id: PlaceId): KeyPlace => PLACES.get(id)!;
@@ -457,7 +506,15 @@ export function barEntries(id: PlaceId, now: Iterable<KeyWhen> = []): KeyEntry[]
   const holds = new Set(now);
   const taken = new Set<string>();
   const shown: KeyEntry[] = [];
-  for (let place: KeyPlace | undefined = placeById(id); place; place = place.within ? placeById(place.within) : undefined) {
+  const chain: KeyPlace[] = [];
+  for (let place: KeyPlace | undefined = placeById(id); place; place = place.within ? placeById(place.within) : undefined) chain.push(place);
+  // An entry that wins wherever it is listed (Enter on a button that waits) while its condition holds, taken first.
+  for (const entry of chain.flatMap((place) => place.entries)) {
+    if (!entry.over || !entry.when || !holds.has(entry.when) || entry.keys.some((key) => taken.has(key))) continue;
+    for (const key of entry.keys) taken.add(key);
+    if (entry.bar !== false) shown.push(entry);
+  }
+  for (const place of chain) {
     for (const entry of [...place.entries].sort((a, b) => Number(Boolean(b.when)) - Number(Boolean(a.when)))) {
       if ((entry.when && !holds.has(entry.when)) || (entry.unless && holds.has(entry.unless))) continue;
       if (entry.keys.some((key) => taken.has(key))) continue;
@@ -552,6 +609,20 @@ export function gridTarget<T>(items: Boxed<T>[], at: number, key: NavKey, column
   );
 }
 
+/**
+ * Across a room's two columns (the conversation, the side panel): the item of the other column nearest in height to the
+ * one the ring is on (`from`, its top and bottom), of those in view: in the row nearest it (the least gap, then the
+ * nearest top), the row's first.
+ */
+export function nearestInHeight<T>(items: Boxed<T>[], from: { top: number; bottom: number }): Boxed<T> | null {
+  const nearest = first(
+    items,
+    (item) => apart(item.top, item.bottom, from.top, from.bottom),
+    (item) => Math.abs(item.top - from.top),
+  );
+  return nearest && first(items.filter((item) => item === nearest || overlap(item.top, item.bottom, nearest.top, nearest.bottom)), (item) => item.left);
+}
+
 /** Where the ring starts with nothing focused: the first tile that needs you, else the first tile, else the first item. */
 export function gridStart<T>(items: Boxed<T>[]): Boxed<T> | null {
   return items.find((item) => item.tile && item.needs) ?? items.find((item) => item.tile) ?? items[0] ?? null;
@@ -579,7 +650,7 @@ export type LaneAt = { lane: number; item: number } | { lane: number; before: nu
 /** A lane move: to an item; on past the first post into the earlier ones (drawn first); nowhere (the key is taken); not a lane key (null). */
 export type LaneMove<T> = { to: T } | { earlier: true } | "stay" | null;
 
-/** The lanes ← → move along; elsewhere they are the room's (between the panes). */
+/** The lanes ← → move along; elsewhere → goes into the side panel (OverviewRoom). */
 const ACROSS = new Set<Lane<unknown>["name"]>(["header", "status"]);
 
 /**
@@ -616,6 +687,20 @@ export function laneTarget<T>(lanes: Lane<T>[], at: LaneAt | null, key: NavKey, 
   }
   const beyond = lanes[at.lane + step];
   return beyond ? { to: beyond.landing } : "stay";
+}
+
+/** Whether a turn in this phase can be stopped from its status chip (its choices show Stop): not one still being
+ * prepared, one T3 refused, or one that has ended. */
+export const runCanStop = (phase: string): boolean => phase !== "prepared" && phase !== "rejected" && phase !== "terminal";
+
+/**
+ * Whether a status chip is a stop of the room's status lane: its choices offer something to press (as a running turn's
+ * bubble is a stop only then, K1-5), so Enter on it never does nothing. An approval or a question always; a notice that
+ * needs you always (Dismiss at least); a running turn its Stop, in the phases its choices show it, or a post it is about
+ * ("show #n").
+ */
+export function chipOffers(chip: { kind: "ask" | "notice" } | { kind: "run"; phase: string; member: boolean; posts: number }): boolean {
+  return chip.kind !== "run" || (chip.member && runCanStop(chip.phase)) || chip.posts > 0;
 }
 
 /** What a room offers the ring as it opens, read off the page (OverviewRoom). */
