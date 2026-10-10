@@ -3347,32 +3347,33 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     readable("the approval's Accept with the ring on it");
     await state("pixel look: an approval's Accept keeps its label with the ring on it", /^Accept · /);
 
-    // Accept: the turn runs on. A message, a reply and the running turn are chat rows: their brackets show.
+    // Accept: the turn runs on. Your message and the running turn are chat rows, and so is the reply the turn ends with:
+    // their brackets show.
     press("Enter");
     await until("the API to show the approval answered", async () => ((await room.snapshot()).nativeRequests as unknown[]).length === 0);
-    press("End");
-    await expect("End: the newest post", (f) => f.key?.startsWith("post:") === true && f.ring);
     const seen = new Map<string, Brackets>();
-    for (let i = 0; i < 16 && !(seen.has("from-user") && seen.has("from-agent")); i += 1) {
-      const b = browser.eval<Brackets>(BRACKETS);
-      const kind = /\bchat-row\b/.test(b.row) ? (/\bfrom-user\b/.test(b.row) ? "from-user" : "from-agent") : null;
-      if (kind && !seen.has(kind)) seen.set(kind, b);
-      press("ArrowUp");
-      await sleep(150);
-    }
+    press("End");
+    for (let i = 0; i < 6 && focus().key !== `post:${turn.seq}`; i += 1) press("ArrowUp");
+    await expect(`End, Up: your request #${turn.number}`, (f) => f.key === `post:${turn.seq}` && f.ring);
+    seen.set("your message", browser.eval<Brackets>(BRACKETS));
     press("End");
     press("ArrowDown");
-    await expect(`End, Down: @fable's running turn on #${turn.number}, its live bubble`, (f) => f.key === `live:${turn.id}` && f.ring);
-    seen.set("live", browser.eval<Brackets>(BRACKETS));
-    for (const [kind, what] of [["from-user", "your message"], ["from-agent", "a reply"], ["live", "the running turn"]] as const) {
-      const b = seen.get(kind);
-      if (!b) fail(`no ${what} reached from the newest post`);
-      if (!b!.shown) fail(`${what}'s ring does not show: ${JSON.stringify(b)}`);
-      log(`  page: ${what} (${b!.row.split(" ").slice(0, 3).join(" ")}): brackets drawn at ${b!.inset.join(" ")}${b!.clips ? ", inside its clipped box" : ""}`);
+    await expect(`Down: @fable's running turn on #${turn.number}, its live bubble`, (f) => f.key === `live:${turn.id}` && f.ring);
+    seen.set("the running turn", browser.eval<Brackets>(BRACKETS));
+    await room.finish("fable", "The release is built.");
+    const reply = await until("the API to show @fable's reply", async () => (await room.snapshot()).posts.find((p: any) => p.kind === "output" && p.seq > turn.seq) ?? null);
+    await expect(`the turn ended: the ring on its reply #${reply.number}`, (f) => f.key === `post:${reply.seq}` && f.ring, 10_000);
+    seen.set("a reply", browser.eval<Brackets>(BRACKETS));
+    for (const [what, b] of seen) {
+      if (!/\bchat-row\b/.test(b.row) || !b.shown) fail(`${what}'s ring does not show: ${JSON.stringify(b)}`);
+      log(`  page: ${what} (${b.row.split(" ").slice(0, 3).join(" ")}): brackets drawn at ${b.inset.join(" ")}${b.clips ? ", inside its clipped box" : ""}`);
     }
     await state("pixel look: a message, a reply and a running turn show their brackets", /@fable/);
 
-    // The turn fails: its notice's chip; Enter, the ring on Retry, readable.
+    // A turn that fails: its notice's chip; Enter, the ring on Retry, readable.
+    await room.settle("fable");
+    await room.message("Tag the release.");
+    await room.live("fable");
     await room.finish("fable", "The model is overloaded.", { outcome: "error" });
     await abovePosts("@fable's failed turn's chip", (f) => f.key?.startsWith("chip:notice:") === true);
     press("Enter");
