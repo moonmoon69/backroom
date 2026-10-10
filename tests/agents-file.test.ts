@@ -463,12 +463,13 @@ test("consigliere.start creates its room the same way, and writes the same files
   assert.deepEqual(stack.service.agentsFiles!.record(projectId)?.written, ["AGENTS.md", "CLAUDE.md"]);
 });
 
-test("Backroom's own repository has both files, committed: a room in it writes nothing", async (t) => {
+test("Backroom's own repository keeps both files out of git, as every project does (the user's #1119, #1814): a room in it writes nothing", async (t) => {
   const { project, room, stack } = stackFor(t);
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(git(repo, "ls-files", "--", "AGENTS.md", "CLAUDE.md").trim(), "", "never committed");
+  // A checkout without them (a fresh clone) has nothing to say about a room in it.
+  if (!existsSync(join(repo, "AGENTS.md"))) return t.skip("this checkout has no agents files");
   assert.equal(read(join(repo, "CLAUDE.md")), "@AGENTS.md\n");
-  assert.ok(existsSync(join(repo, "AGENTS.md")));
-  assert.equal(git(repo, "ls-files", "--", "AGENTS.md", "CLAUDE.md").trim(), "AGENTS.md\nCLAUDE.md", "this project's own source");
   const projectId = project(repo);
   assert.equal((await room(projectId)).agentsFile, undefined);
   assert.equal(stack.service.agentsFiles!.record(projectId), null);

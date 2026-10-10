@@ -334,7 +334,7 @@ A worktree that exists already gets nothing: copy the two files into it by hand 
 
 T3 starts Claude with its default setting sources, project files included, and Cursor with its project settings (read in T3 0.0.46's code), so members read these files as they would in T3 Code.
 
-Backroom's own repository has its `AGENTS.md`, with its real checks, and the same one-line `CLAUDE.md`, both committed: they are this project's own source.
+Backroom's own repository keeps its `AGENTS.md`, with its real checks, and the same one-line `CLAUDE.md` out of git like any other project's: listed in its `.git/info/exclude` and copied into new worktrees by the same post-checkout hook.
 
 ## Writing messages
 
