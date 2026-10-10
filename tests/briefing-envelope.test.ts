@@ -117,7 +117,7 @@ test("corrections, cancels and requests no longer open all appear in the assignm
   const nA = numberOf(r, "A"), nB = numberOf(r, "B");
   assert.ok(b.text.includes(`[#${numberOf(r, "fixA")} correction from @Fable to #${nA}]\nAlso cover leap years.`));
   assert.ok(b.text.includes(`[#${nB} request from @Fable, no longer open]\nContent of B`));
-  assert.ok(b.text.includes(`[#${numberOf(r, "stopB")} cancel from @Fable: #${nB} is withdrawn]\nRequest cancelled`));
+  assert.ok(b.text.includes(`[#${numberOf(r, "stopB")} cancel from @Fable: #${nB} is withdrawn; stop any work on it]\nRequest cancelled`));
   assert.ok(b.text.includes(`Your open requests: #${nA} (asked by @Fable).`));
   assertEveryInput(b, run.envelope, (i) => numberOf(r, i.eventId));
 });
@@ -168,7 +168,7 @@ test("a handover's split comes from the transfer event, also when an owned reque
   const nA = numberOf(r, "A"), nB = numberOf(r, "B"), nT = numberOf(r, "reseat");
   assert.ok(b.text.includes(`[#${nT} handover from @Fable: #${nA}, #${nB} (no longer open) now yours to answer]\nCarry on`));
   assert.ok(!b.text.includes("now come to you"), "B is not called awaited");
-  assert.ok(b.text.includes(`[#${numberOf(r, "stopB")} cancel from @Fable: #${nB} is withdrawn]`));
+  assert.ok(b.text.includes(`[#${numberOf(r, "stopB")} cancel from @Fable: #${nB} is withdrawn; stop any work on it]`));
   // A directory that does not know the split names the requests without one.
   const { handover, ...plain } = journalDirectory(r.log, { alias: (seat) => ALIASES[seat] ?? null });
   assert.ok(handover);

@@ -5,7 +5,7 @@
  */
 import type { SeatStanding } from "../briefing/envelope.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
-import type { Activity, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
+import type { Activity, Input, Projection, Request, RoomEvent, Run } from "../engine/index.ts";
 
 /** Inputs that give a seat a request to answer: the request itself, a correction, a retry or a handover. */
 export const TARGETING: ReadonlySet<string> = new Set(["request", "correction", "retry", "transfer"]);
@@ -168,16 +168,24 @@ export function committed(p: Projection, actor: string, id: string): boolean {
 
 /**
  * §6: the cancel that stops a run, if any: applied to a request of the run's seat while the run was live (after its
- * reservation, before its end), and not one held to the turn's end (those apply as it ends and stop nothing). The host
- * sends its interrupt to T3 with the command ID `interrupt:<cancel ID>`.
+ * reservation, before its end) that left the run nothing to work on: every request it had been given by then (its
+ * envelope's, and those a confirmed message brought into it) cancelled. A cancel of one request among others goes into
+ * the running turn instead (M1), and so stops nothing; nor does a cancel held to the turn's end (journals from before
+ * M1 have those). The host sends its interrupt to T3 with the command ID `interrupt:<cancel ID>`.
  */
 export function stoppingCancel(p: Projection, run: Run): string | null {
   const deferred = new Set(deferredCancels(p).map((d) => d.cancelId));
   const from = reservedSeq(p, run.id);
+  const asked = (inputs: readonly Input[]) => inputTree(inputs).filter((i) => TARGETING.has(i.intent)).flatMap((i) => i.requestIds).filter((id) => p.requests.get(id)?.owner === run.seatId);
+  const work = new Set(asked(run.envelope.inputs));
+  const cancelled = new Set<string>();
   for (const e of p.events) {
+    const d = e.data;
+    if (d.kind === "cancel" && d.applied) cancelled.add(d.requestId);
     if (e.seq <= from) continue;
-    if (e.data.kind === "run.ended" && e.data.runId === run.id) return null;
-    if (e.data.kind === "cancel" && e.data.applied && !deferred.has(e.id) && p.requests.get(e.data.requestId)?.owner === run.seatId) return e.id;
+    if (d.kind === "run.ended" && d.runId === run.id) return null;
+    if (d.kind === "sync.confirmed" && d.runId === run.id) for (const id of asked(run.receipts.find((r) => r.id === d.receiptId)?.envelope.inputs ?? [])) work.add(id);
+    if (d.kind === "cancel" && d.applied && !deferred.has(e.id) && work.has(d.requestId) && [...work].every((id) => cancelled.has(id))) return e.id;
   }
   return null;
 }
