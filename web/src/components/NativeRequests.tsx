@@ -37,6 +37,15 @@ const subscribe = (listener: () => void) => {
 const NO_ANSWERS: Record<string, string | string[]> = {};
 const NO_CUSTOM: Record<string, string> = {};
 
+/** What a room keeps of its approvals and questions (above) for those still waiting: the rest go (a thread's own stay). */
+export function keepAnswers(waiting: ReadonlyArray<{ participantId: string; requestId: string }>): void {
+  const keep = new Set(waiting.map((request) => `${request.participantId}:${request.requestId}`));
+  for (const key of [...shared.keys()]) {
+    const request = key.slice(key.indexOf(":") + 1);
+    if (!request.startsWith(":") && !keep.has(request)) shared.delete(key);
+  }
+}
+
 function useShared<T>(key: string, empty: T): [T, (update: (previous: T) => T) => void] {
   const read = useCallback(() => (shared.has(key) ? (shared.get(key) as T) : empty), [key, empty]);
   const value = useSyncExternalStore(subscribe, read);
@@ -113,7 +122,8 @@ export function ApprovalRequestCard({
 }: {
   /** Drawn in two places at once, the two are busy together. */
   requestId?: string;
-  /** The member asking, on the card (`data-participant`): a status chip's strip offers its own member's choices. */
+  /** The member asking, on the card (`data-participant`): a status chip's strip offers its own member's choices. Each
+   *  card says its request (`data-request`): a strip's buttons are its request's. */
   participantId?: string;
   payload: unknown;
   speaker: ReactNode;
@@ -133,7 +143,7 @@ export function ApprovalRequestCard({
     }
   };
   return (
-    <article className="native-card" data-participant={participantId}>
+    <article className="native-card" data-participant={participantId} data-request={requestId}>
       <header>
         {speaker}
         <span className="stamp stamp-needs_input">approval · {requestType}</span>
@@ -212,7 +222,7 @@ export function UserInputRequestCard({
   };
 
   return (
-    <article className="native-card" data-participant={participantId}>
+    <article className="native-card" data-participant={participantId} data-request={requestId}>
       <header>
         {speaker}
         <span className="stamp stamp-needs_input">user input</span>

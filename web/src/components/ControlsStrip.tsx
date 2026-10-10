@@ -11,7 +11,8 @@ import { ActionStrip, type StripAction } from "./ActionStrip.tsx";
 interface Control {
   element: HTMLElement;
   kind: ActionKind;
-  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel. */
+  /** Which of its kind, where that is more than its place: a request's number for Correct… and Cancel, a native
+   *  request's id and the choice's place on its card for an approval's or a question's choices. */
   id?: string | undefined;
   label: string;
   name: string;
@@ -34,12 +35,12 @@ export function* drawnControls(item: HTMLElement): Generator<HTMLElement> {
 
 /** Whether an item has anything its strip would offer (it stops at the first). */
 export function offersControls(item: HTMLElement): boolean {
-  for (const element of drawnControls(item)) if (describe(element, 0)) return true;
+  for (const element of drawnControls(item)) if (describe(element, 0, 0)) return true;
   return false;
 }
 
 /** What a control of an item is in its strip, by what it is on the page; null for none of it. */
-function describe(element: HTMLElement, requests: number): Omit<Control, "element" | "disabled"> | null {
+function describe(element: HTMLElement, requests: number, asking: number): Omit<Control, "element" | "disabled"> | null {
   const text = textOf(element);
   const title = element.getAttribute("title")?.split("\n")[0] || undefined;
   const expanded = element.tagName === "SUMMARY" ? Boolean(element.closest("details")?.open) : element.hasAttribute("aria-expanded") ? element.getAttribute("aria-expanded") === "true" : undefined;
@@ -57,7 +58,13 @@ function describe(element: HTMLElement, requests: number): Omit<Control, "elemen
   if (element.closest(".native-requests")) {
     const input = element instanceof HTMLInputElement ? element : null;
     const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
-    return { kind: "choice", label: cut(label), name: cut(label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
+    // Each its request's, by the request's id and not its place: answered elsewhere, its buttons go and another
+    // request's never take their keys (the ring is not moved onto them). With several drawn, each is named with what it
+    // asks ("Accept 2: run tests"), of those the strip offers (`asking`).
+    const card = element.closest<HTMLElement>(".native-card");
+    const id = card?.dataset.request ? `${card.dataset.request}:${[...card.querySelectorAll(CONTROLS)].indexOf(element)}` : undefined;
+    const subject = card && asking > 1 ? textOf(card.querySelector(".native-detail, legend") ?? card) : "";
+    return { kind: "choice", id, label: cut(label), name: cut(subject ? `${label}: ${subject}` : label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
   }
   if (element.matches(".copy-button")) {
     const label = element.getAttribute("aria-label") === "Copied" ? "Copied" : "Copy";
@@ -87,13 +94,16 @@ function describe(element: HTMLElement, requests: number): Omit<Control, "elemen
 /**
  * The controls a mouse finds on an item now, in its strip's order (keyOrder.ts, stripOrder): those drawn (a folded
  * text's are not, until it opens), not the strip's own nor what a button opened in place (a correction's box).
- * Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
+ * Only those `within` keeps (a status chip's own member's, of every member's choices drawn), counted, named and numbered
+ * among themselves. Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
  */
-function itemControls(item: HTMLElement): Control[] {
+function itemControls(item: HTMLElement, within?: (element: Element) => boolean): Control[] {
   const requests = item.querySelectorAll(".req-block").length;
+  const asking = [...item.querySelectorAll(".native-card")].filter((card) => within?.(card) ?? true).length;
   const found: Control[] = [];
   for (const element of drawnControls(item)) {
-    const described = describe(element, requests);
+    if (within && !within(element)) continue;
+    const described = describe(element, requests, asking);
     if (described) found.push({ element, disabled: element.matches(":disabled"), ...described });
   }
   return numberRepeats(stripOrder(found));
@@ -119,12 +129,12 @@ export function ControlsStrip({ item, from = item, within, extra, where, keeps, 
   /** Where its controls are drawn: the item, unless it opened them elsewhere. */
   from?: (strip: HTMLElement) => HTMLElement | null;
   /** Only the controls this keeps, of those drawn there (a status chip's own member's, of every member's choices). */
-  within?: ((control: HTMLElement) => boolean) | undefined;
+  within?: ((element: Element) => boolean) | undefined;
   extra?: StripAction[] | undefined;
   where: string;
   /** What a button opened in place (a correction's box, an answer of your own): the focus there keeps the strip. */
   keeps?: ((element: Element, item: HTMLElement | null) => boolean) | undefined;
-  onClose: () => void;
+  onClose: (cause?: Event) => void;
   onEmpty?: (() => void) | undefined;
 }) {
   const root = useRef<HTMLDivElement | null>(null);
@@ -140,7 +150,7 @@ export function ControlsStrip({ item, from = item, within, extra, where, keeps, 
     const source = strip ? from(strip) : null;
     if (!source) return;
     const read = () => {
-      const next = itemControls(source).filter((control) => withinRef.current?.(control.element) ?? true);
+      const next = itemControls(source, withinRef.current);
       setControls((last) => (last && sameControls(last, next) ? last : next));
     };
     read();

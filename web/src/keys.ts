@@ -214,6 +214,14 @@ export function showsAtBottom(element: HTMLElement, scroller: HTMLElement | null
   return Math.min(top + item.height, scroller.scrollHeight) - Math.max(top, scroller.scrollHeight - scroller.clientHeight) >= Math.min(item.height, 48);
 }
 
+/** Whether enough of an item shows in its scroller now, as it is scrolled, to see the ring around it (all of it, or 48px). */
+export function showsNow(element: HTMLElement, scroller: HTMLElement | null = element.closest<HTMLElement>(".timeline")): boolean {
+  if (!scroller) return false;
+  const item = element.getBoundingClientRect();
+  const view = scroller.getBoundingClientRect();
+  return Math.min(item.bottom, view.bottom) - Math.max(item.top, view.top) >= Math.min(item.height, 48);
+}
+
 /** Where `target` is in the lanes: on an item, or on something of a lane between its items; null outside the lanes. */
 export function laneAt(lanes: Array<Lane<HTMLElement> & { element: HTMLElement }>, target: Element | null): LaneAt | null {
   const lane = lanes.findIndex((l) => target !== null && l.element.contains(target));
@@ -301,6 +309,7 @@ export function keyPlace(): PlaceNow {
     // A button of an action strip: named with the item it is on ("Cancel · #33 · you to @fable, open"; "Accept · @alpha
     // approval: waiting for you"), and by its name for Enter.
     const strip = active?.closest<HTMLElement>(".action-strip");
+    if (strip?.closest(".work-bar") && strip.closest(".work-bar")!.querySelector('.work-chip[aria-expanded="true"][data-nav-key^="chip:ask:"]')) now.push("asking");
     if (strip) return at(strip.closest(".work-bar") ? "room-chip-actions" : strip.closest("[data-nav='member']") ? "room-member-actions" : "room-actions", `${nameOf(active!)} · ${strip.dataset.where ?? ""}`, nameOf(active!));
     // The side panel: its head (its tabs, + Add member, ×), its members, the Browser and Git panes' rows, the panel
     // itself (reached after a click on empty space), where Enter opens the composer, or another button in it.
