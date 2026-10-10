@@ -2567,6 +2567,25 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const turn = await chipTurn();
     const first = await fableAsks("approval");
     await toAskChip("approval");
+    // Opening chips' choices by keys keeps the board at its bottom, following: the running turn's, folded, then the
+    // approval's (each grows the bar above the board, and the browser's scroll anchoring moves the board meanwhile).
+    const distance = () => browser.eval<number>(`() => { const t = document.querySelector('.ov-drawer[data-view=room] .timeline'); return Math.round(t.scrollHeight - t.scrollTop - t.clientHeight); }`);
+    await until("the room to open at the board's bottom", () => (distance() < 40 ? true : null), 4000, 150);
+    press("ArrowRight");
+    await expect("Right: @fable's working chip", (f) => f.key === `chip:run:${turn.id}`);
+    press("Enter");
+    await expect("Enter: its strip, on Stop", (f) => f.chipOpen && f.action === "stop:0");
+    press("Escape");
+    press("ArrowLeft");
+    await expect("Esc, Left: back on the approval's chip, folded", (f) => f.key === askChip() && !f.chipOpen);
+    press("Enter");
+    await expect("Enter: the approval's strip", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    await sleep(500);
+    const short = distance();
+    if (short >= 40) fail(`opening the chips' choices left the board ${short}px short of its bottom: it no longer follows`);
+    log(`  page: the board ${short}px from its bottom after the chips' choices opened and folded, following`);
+    press("Escape");
+    await expect("Esc: the chip folded", (f) => f.key === askChip() && !f.chipOpen);
     press("Enter");
     await expect("Enter: the chip's choices under the bar as a strip, the ring on Accept", (f) => f.chipOpen && f.strips === 1 && choiceAt(f.action) === 0 && f.label === "Accept" && f.ring);
     names("@fable's approval", [...DECISIONS.map(([, label]) => label), `show #${turn.number}`]);
