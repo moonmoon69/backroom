@@ -60,7 +60,7 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
     const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
     // Each its request's, by the request's id and not its place: answered elsewhere, its buttons go and another
     // request's never take their keys (the ring is not moved onto them). With several drawn, each is named with what it
-    // asks ("Accept 2: run tests").
+    // asks ("Accept 2: run tests"), of those the strip offers (`asking`).
     const card = element.closest<HTMLElement>(".native-card");
     const id = card?.dataset.request ? `${card.dataset.request}:${[...card.querySelectorAll(CONTROLS)].indexOf(element)}` : undefined;
     const subject = card && asking > 1 ? textOf(card.querySelector(".native-detail, legend") ?? card) : "";
@@ -94,13 +94,15 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
 /**
  * The controls a mouse finds on an item now, in its strip's order (keyOrder.ts, stripOrder): those drawn (a folded
  * text's are not, until it opens), not the strip's own nor what a button opened in place (a correction's box).
- * Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
+ * Only those `within` keeps (a status chip's own member's, of every member's choices drawn), counted, named and numbered
+ * among themselves. Repeated labels are numbered ("Image 1", "Image 2"; numberRepeats).
  */
-function itemControls(item: HTMLElement): Control[] {
+function itemControls(item: HTMLElement, within?: (element: Element) => boolean): Control[] {
   const requests = item.querySelectorAll(".req-block").length;
-  const asking = item.querySelectorAll(".native-card").length;
+  const asking = [...item.querySelectorAll(".native-card")].filter((card) => within?.(card) ?? true).length;
   const found: Control[] = [];
   for (const element of drawnControls(item)) {
+    if (within && !within(element)) continue;
     const described = describe(element, requests, asking);
     if (described) found.push({ element, disabled: element.matches(":disabled"), ...described });
   }
@@ -148,7 +150,7 @@ export function ControlsStrip({ item, from = item, within, extra, where, keeps, 
     const source = strip ? from(strip) : null;
     if (!source) return;
     const read = () => {
-      const next = itemControls(source).filter((control) => withinRef.current?.(control.element) ?? true);
+      const next = itemControls(source, withinRef.current);
       setControls((last) => (last && sameControls(last, next) ? last : next));
     };
     read();
