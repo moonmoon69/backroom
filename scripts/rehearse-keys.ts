@@ -3338,6 +3338,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const turn = await chipTurn();
     await fableAsks("approval");
     await expect("on the overview", (f) => f.drawers.length === 0);
+    // The overview ranks a card that needs you first, on its next poll: the arrows' route is read once it has moved
+    // (read before, with many rooms on the overview, it led past the card: M1's full keys run).
+    await until("the page to rank the room's card as needing you", () => browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="room:${R}"]')?.closest('article')?.classList.contains('needs'))`) || null, 30_000, 500);
     await setLook("Pixel");
     await goTo(`room:${R}`);
     press("Enter");
