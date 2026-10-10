@@ -373,7 +373,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const canSubmit = plan.ready && !submitting;
   const assignmentCount = draft?.kind === "task" ? draft.assignments.length : 0;
 
-  /** Participants mid-turn (a room run, or a turn in T3): a plain send waits for them; /steer goes into the turn. */
+  /** Participants mid-turn (a room run, or a turn in T3): a message to one goes into its running turn (M1). */
   const isBusy = (id: string): boolean => {
     const status = snapshot.participantStatus[id];
     return Boolean(status && (status.activeRunId !== null || status.externalActivity || isRunActive(status.status)));
@@ -408,8 +408,6 @@ export function Composer({ overlay: asOverlay = false }: Props) {
                   recipients: a.recipients,
                   instruction: a.instruction,
                   slashCommand: Boolean(a.slashCommand),
-                  // Steering is a property of the message (/steer, or the plan row's choice), not of the key pressed.
-                  delivery: a.delivery === "steer" ? ("steer" as const) : ("queue" as const),
                 })),
               })
             : null;
@@ -511,11 +509,21 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   };
 
   const showPlan = text.trim().length > 0 || attachments.length > 0;
-  // Someone addressed (without /steer) is mid-turn: say that the message waits for the turn, and how to steer instead.
-  const busyAddressed =
-    draft?.kind === "task"
-      ? [...new Set(draft.assignments.filter((a) => a.delivery !== "steer" && !a.slashCommand).flatMap((a) => a.recipients.filter(isBusy)))]
-      : [];
+  // A message goes into a working member's running turn (M1), with two exceptions said here: a turn the room did not
+  // start (typed in T3, or the member's own) takes nothing, so the message waits for it; and a T3 command runs as a turn
+  // of its own, after the current one.
+  const status = (id: string) => snapshot.participantStatus[id];
+  const ownTurn = (id: string) => Boolean(status(id)?.externalActivity && status(id)?.activeRunId === null);
+  const tasks = draft?.kind === "task" ? draft.assignments : [];
+  const waitsForTurn = [...new Set(tasks.filter((a) => !a.slashCommand).flatMap((a) => a.recipients.filter(ownTurn)))];
+  const commandWaits = [...new Set(tasks.filter((a) => a.slashCommand).flatMap((a) => a.recipients.filter(isBusy)))];
+  const names = (ids: string[]) => ids.map((id) => `@${aliasOf(id)}`).join(", ");
+  const waitNote =
+    waitsForTurn.length > 0
+      ? `Waits for the turn ${names(waitsForTurn)} ${waitsForTurn.length === 1 ? "is" : "are"} in, which the room did not start`
+      : commandWaits.length > 0
+        ? `${names(commandWaits)} ${commandWaits.length === 1 ? "is" : "are"} working: a T3 command runs after the current turn`
+        : null;
 
   // The strip says who a message goes to: whoever the draft addresses, else who a plain message reaches.
   const addressed = draft?.kind === "task" ? [...new Set(draft.assignments.flatMap((a) => a.recipients))] : [];
@@ -710,10 +718,8 @@ export function Composer({ overlay: asOverlay = false }: Props) {
         />
         <span className="spacer" />
         {/* Keys mean nothing on a touch screen; there the keys hint is hidden (styles.css), the waiting note is not. */}
-        {busyAddressed.length > 0 ? (
-          <span className="muted hint mono composer-hint">
-            Waits for {busyAddressed.map((id) => `@${aliasOf(id)}`).join(", ")} to finish · add /steer to send into the running turn
-          </span>
+        {waitNote ? (
+          <span className="muted hint mono composer-hint">{waitNote}</span>
         ) : (
           <span className="muted hint mono composer-hint composer-keys">{overlay.enabled ? "Enter to send · Shift+Enter new line · Esc to close" : "Enter to send · Shift+Enter new line"}</span>
         )}
@@ -924,7 +930,7 @@ function PlanPreview({
                 <span className="plan-placeholder">{missingWhat?.message ?? "…"}</span>
               )}
             </span>
-            <TimingPill assignment={assignment} aliasOf={aliasOf} edit={edit} />
+            <TimingPill assignment={assignment} edit={edit} />
           </PlanRow>
         );
       })}
@@ -959,53 +965,34 @@ function PlanRow({
 }
 
 /**
- * When an assignment starts, decision D2: "now", or "next" when a recipient is mid-turn (it starts when that turn
- * ends). Nothing waits on other work, so there is no third answer. A busy recipient can instead be sent into its
- * running turn (/steer), which is "now" too.
+ * What D2 and M1 refuse in an assignment's head, with the fix: a retired /hold, /after or /steer is removed, and a wait
+ * the text implies is lifted by /now. Nothing else needs a choice: an assignment goes now, into its recipient's running
+ * turn when it is working (M1), so the row shows no timing otherwise.
  */
-function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment; aliasOf: (id: string) => string; edit: Edit }) {
-  const { snapshot } = useRoom();
+function TimingPill({ assignment, edit }: { assignment: DraftAssignment; edit: Edit }) {
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLSpanElement>(null);
   useDismiss(wrapper, open, () => setOpen(false));
   useMenuFocus(wrapper, open, () => setOpen(false));
 
-  const busy = assignment.recipients.filter((id) => {
-    const status = snapshot.participantStatus[id];
-    return Boolean(status && (status.activeRunId !== null || status.externalActivity || isRunActive(status.status)));
-  });
-  const steering = assignment.delivery === "steer";
-  // A slash command never goes into a running turn: to a busy member it is next too.
-  const next = busy.length > 0 && !steering;
-  const label = next ? "next" : "now";
-  const who = busy.map((id) => `@${aliasOf(id)}`).join(", ");
-  const title = next
-    ? `${who} ${busy.length === 1 ? "is" : "are"} working; this starts when the current turn ends`
-    : steering && busy.length > 0
-      ? `Sent to ${who} now, mid-turn. Cursor, Grok and OpenCode take it into the running turn (one reply answers both); Claude answers it in its own turn right after.`
-      : steering
-        ? "/steer: if the recipient is mid-turn when this is sent, it goes into that turn"
-        : "Starts right away";
-
-  const choose = (timing: "now" | "steer" | null) => {
+  const { remove: retired, sendNow: implied } = timingFixes(assignment);
+  if (!retired && !implied) return null;
+  const title = retired === "steer" ? "/steer is gone: a message to a working member goes into its running turn" : retired ? `/${retired} is gone: nothing waits on other work` : "This waits on other work, which is gone: send it now, or later";
+  const choose = (timing: "now" | null) => {
     setOpen(false);
     edit((source) => setTiming(source, assignment, timing));
   };
-  const offerSteer = busy.length > 0 && !assignment.slashCommand;
-  // The fixes for what D2 refuses: a retired /hold or /after is removed; a wait the text implies is overridden by /now.
-  const { remove: retired, sendNow: implied } = timingFixes(assignment);
-  const menu = offerSteer || steering || retired !== null || implied;
 
   return (
     <span className="plan-timing" ref={wrapper}>
-      <button type="button" className={`plan-pill mono tone-${retired || implied ? "warn" : next ? "next" : steering ? "steer" : "now"}`} title={title} aria-haspopup={menu ? "menu" : undefined} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!menu}>
-        {label}
-        {menu ? <ChevronIcon dir="down" small /> : null}
+      <button type="button" className="plan-pill mono tone-warn" title={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {retired ? `/${retired}` : "waits"}
+        <ChevronIcon dir="down" small />
       </button>
-      {open && menu ? (
+      {open ? (
         <div className="menu menu-up menu-right" role="menu">
           {retired ? (
-            <button type="button" role="menuitem" onClick={() => choose(null)} title={`/${retired} is gone: nothing waits on other work`}>
+            <button type="button" role="menuitem" onClick={() => choose(null)} title={title}>
               Remove /{retired}
             </button>
           ) : null}
@@ -1014,15 +1001,6 @@ function TimingPill({ assignment, aliasOf, edit }: { assignment: DraftAssignment
               Send it now <span className="muted mono">/now</span>
             </button>
           ) : null}
-          {!offerSteer && !steering ? null : steering ? (
-            <button type="button" role="menuitem" onClick={() => choose(null)} title="Removes /steer: wait for the current turn to end">
-              Wait for the turn to end <span className="muted mono">remove /steer</span>
-            </button>
-          ) : (
-            <button type="button" role="menuitem" onClick={() => choose("steer")} title="Adds /steer: sent now, mid-turn. Cursor, Grok and OpenCode take it into the running turn; Claude answers it in its own turn right after">
-              Send into the running turn <span className="muted mono">/steer</span>
-            </button>
-          )}
         </div>
       ) : null}
     </span>
@@ -1215,11 +1193,10 @@ const formatBytes = (bytes: number): string =>
  */
 const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | null }> = [
   { name: "now", description: "Start now", hint: null },
-  { name: "steer", description: "If they are mid-turn, send into the running turn", hint: null },
   { name: "add", description: "Seat a new member on a new T3 thread", hint: "name" },
   { name: "remove", description: "Remove a member from the room", hint: "@name" },
 ];
-const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => ["now", "steer"].includes(c.name));
+const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => c.name === "now");
 
 /** Placeholder examples from the room's own participants (generic names only when the room is empty). */
 function roomPlaceholders(aliases: string[]): string[] {
@@ -1228,16 +1205,16 @@ function roomPlaceholders(aliases: string[]): string[] {
     // One participant: every message is for them, so the examples need no @name.
     return [
       `review the diff  ·  with one member here, no @${a} needed`,
-      `/steer also check the logs`,
+      `also check the logs  ·  sent while ${a} works, it goes into the running turn`,
       `/compact  ·  type / for the room's and ${a}'s commands`,
       `/add new-name  ·  /remove @${a}`,
     ];
   }
   return [
     `@${a} fix the failing test  ·  @${b} review the open pull request`,
-    aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} /steer also check the logs`,
+    aliases.length > 1 ? `@all review the diff  ·  @${a} do this @${b} do that` : `@${a} review the diff  ·  @${a} also check the logs`,
     `@${a} /compact  ·  type / for the room's and ${a}'s commands`,
-    `@${a} /steer also check the logs`,
+    `@${a} also check the logs  ·  sent while ${a} works, it goes into the running turn`,
     `/add new-name  ·  /remove @${b}`,
   ];
 }

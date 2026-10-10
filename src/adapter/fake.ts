@@ -97,6 +97,13 @@ export class FakeT3Adapter implements T3Adapter {
   dropAcks = false;
   /** When set, T3 records the user message and its run, but the provider fails to start: the run fails with this error. */
   startFailure: string | null = null;
+  /**
+   * A message sent into a running run that lands as the run ends (M1 review item 2): T3 records it in the run, the agent
+   * does nothing after it, and when the run completes T3 either moves it to a run of its own ("move", as T3 does when
+   * the provider turn ended before it could be delivered) or leaves it there, after the run's last work ("stay").
+   */
+  lateSteers: "move" | "stay" | null = null;
+  private readonly lateSteered = new Map<string, string[]>();
   /** Threads whose runs are not finished automatically (a script holds the run open; completeRun ends it). */
   readonly held = new Set<string>();
   /**
@@ -352,7 +359,8 @@ export class FakeT3Adapter implements T3Adapter {
   }
 
   private item(thread: FakeThread, runId: string | null, at: string): { id: string; runId: string | null; nodeId: string | null; providerTurnId: string | null; ordinal: number; status: "completed"; title: null; startedAt: string; completedAt: string; updatedAt: string } {
-    return { id: `turn-item:${randomUUID()}`, runId, nodeId: runId ? `node:${runId}:root` : null, providerTurnId: null, ordinal: thread.turnItems.length + 1, status: "completed", title: null, startedAt: at, completedAt: at, updatedAt: at };
+    const ordinal = thread.turnItems.reduce((max, x) => Math.max(max, x.ordinal), 0) + 1;
+    return { id: `turn-item:${randomUUID()}`, runId, nodeId: runId ? `node:${runId}:root` : null, providerTurnId: null, ordinal, status: "completed", title: null, startedAt: at, completedAt: at, updatedAt: at };
   }
 
   async defaultModelSelection(): Promise<ModelSelection | null> {
@@ -465,8 +473,11 @@ export class FakeT3Adapter implements T3Adapter {
   }
 
   /**
-   * A message arrives on a thread, as T3 handles it: steered into the active run when asked and that run is running;
-   * otherwise it gets a run of its own, started now or queued behind the active one. Returns whether it was steered.
+   * A message arrives on a thread, as T3 0.0.46 handles it. Sent into a run (`steer`): into the run when it is running,
+   * the agent carrying on with it (Claude and Codex take it into the turn; Cursor and Antigravity restart the turn with
+   * it, so the run names it as its own message); a run of its own when the target run has completed; refused when the
+   * target is in any other state or unknown. Otherwise it gets a run of its own, started now or queued behind the active
+   * one. Returns whether it went into a running run.
    */
   private dispatchMessage(
     thread: FakeThread,
@@ -484,9 +495,22 @@ export class FakeT3Adapter implements T3Adapter {
       else thread.turnItems.push({ ...this.item(thread, runId, at), type: "other", itemType: "notification" });
       if (typed) thread.shell.latestUserMessageAt = at;
     };
-    if (mode.type === "steer" && active && active.id === mode.runId && active.status === "running") {
-      record(active.id, "steer");
-      return true;
+    if (mode.type === "steer") {
+      const target = thread.runs.find((r) => r.id === mode.runId);
+      if (!target) throw new T3CommandRejected(`Target run ${mode.runId} was not found.`, 409, null);
+      if (target.status === "running" && active?.id === target.id) {
+        record(target.id, "steer");
+        if (this.lateSteers) {
+          this.lateSteered.set(target.id, [...(this.lateSteered.get(target.id) ?? []), message.id]);
+          return true;
+        }
+        // Cursor and Antigravity: T3 stops the turn and starts it again with this message, in the same run.
+        if (["cursor", "antigravity"].includes(thread.shell.providerInstanceId)) target.userMessageId = message.id;
+        // The agent carries on with it: what it does next shows it took the message.
+        thread.turnItems.push({ ...this.item(thread, target.id, this.stamp(thread)), type: "reasoning", text: "(takes the message into the turn)", streaming: false });
+        return true;
+      }
+      if (target.status !== "completed") throw new T3CommandRejected(`Target run ${target.id} is ${target.status} and cannot be steered.`, 409, null);
     }
     const ordinal = thread.runs.length + 1;
     const run: T3Run = {
@@ -607,6 +631,13 @@ export class FakeT3Adapter implements T3Adapter {
     for (const note of completion.progress ?? []) say(note);
     if (outcome === "error") thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), type: "error", message: completion.text, failureClass: "provider_error", retrying: false });
     say(completion.text);
+    // A message that landed as the run ended shows after the run's last assistant message.
+    for (const id of this.lateSteered.get(run.id) ?? []) {
+      const m = thread.messages.findIndex((x) => x.id === id);
+      const i = thread.turnItems.findIndex((x) => x.type === "user_message" && x.messageId === id);
+      if (m >= 0) thread.messages.push(...thread.messages.splice(m, 1));
+      if (i >= 0) thread.turnItems.push({ ...thread.turnItems.splice(i, 1)[0]!, ordinal: Math.max(...thread.turnItems.map((x) => x.ordinal)) + 1 });
+    }
     const at = this.stamp(thread);
     const checkpointId = `checkpoint:${run.id}`;
     const files = completion.files ?? [];
@@ -619,8 +650,26 @@ export class FakeT3Adapter implements T3Adapter {
     // A request the run ended with is no longer waiting.
     for (const request of thread.runtimeRequests) if (request.status === "pending" && request.runId === run.id && request.responseMode !== "message") Object.assign(request, { status: "cancelled", resolvedAt: at });
     Object.assign(thread.shell, { status: run.status, activeRunId: null, latestRunCompletedAt: at, lastError: outcome === "error" ? completion.text : null, pendingRequest: this.shellRequest(thread) });
+    // A message that landed as the run ended: T3 moves it to a run of its own, or leaves it after the run's last work.
+    const late = this.lateSteered.get(run.id) ?? [];
+    this.lateSteered.delete(run.id);
+    if (this.lateSteers === "move") for (const id of late) this.moveToOwnRun(thread, id);
     const next = thread.runs.find((queued) => queued.status === "queued");
     if (next) this.startRun(thread, next);
+  }
+
+  /** T3's follow-up for a message the provider turn ended before taking: the same message, in a run of its own (queued). */
+  private moveToOwnRun(thread: FakeThread, messageId: string): void {
+    const message = thread.messages.find((m) => m.id === messageId);
+    const item = thread.turnItems.find((x) => x.type === "user_message" && x.messageId === messageId);
+    if (!message) return;
+    const ordinal = thread.runs.length + 1;
+    const at = this.stamp(thread);
+    const run: T3Run = { id: `run:thread:${thread.shell.id}:ordinal:${ordinal}`, threadId: thread.shell.id, ordinal, userMessageId: messageId, status: "queued", queuePosition: thread.runs.filter((r) => r.status === "queued").length + 1, queueHeld: false, requestedAt: at, startedAt: null, completedAt: null, checkpointId: null, providerInstanceId: thread.shell.providerInstanceId, modelSelection: thread.shell.modelSelection };
+    thread.runs.push(run);
+    this.runPrompts.set(run.id, message.text);
+    message.runId = run.id;
+    if (item?.type === "user_message") Object.assign(item, { runId: run.id, inputIntent: "turn_start" });
   }
 
   /** What the shell says is waiting, as the adapter reads T3's: a pending request, while a run is in progress. */

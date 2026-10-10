@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AFTER_GONE, HOLD_GONE, NOTE_GONE, parseExplicit, type Draft, type DraftAssignment } from "../src/parser/explicit.ts";
+import { AFTER_GONE, HOLD_GONE, NOTE_GONE, STEER_GONE, parseExplicit, type Draft, type DraftAssignment } from "../src/parser/explicit.ts";
 
 const participants = [
   { id: "p1", alias: "sol1" },
@@ -235,13 +235,18 @@ test("a leading condition the room waits for is taken out of the instruction; tr
   assert.equal(only(parseExplicit("@grok when the tests pass, deploy", people)).instruction, "when the tests pass, deploy", "an unobservable condition stays");
 });
 
-test("/steer marks an assignment for delivery into a running turn; /hold beside it is refused", () => {
+test("/steer is gone (M1): refused with its hint after an @name and at the start of a message, beside /hold too; in a sentence it is a word", () => {
   const steer = only(parseExplicit("@sol1 /steer also add tests", participants));
-  assert.equal(steer.delivery, "steer");
   assert.equal(steer.instruction, "also add tests");
-  assert.deepEqual(steer.unresolved, []);
-  assert.equal(only(parseExplicit("@sol1 add tests", participants)).delivery, "queue");
-  assert.deepEqual(errorsOf(parseExplicit("@sol1 /hold /steer x", participants)), [HOLD_GONE]);
+  assert.deepEqual(errorsOf(parseExplicit("@sol1 /steer also add tests", participants)), [STEER_GONE]);
+  assert.deepEqual(errorsOf(parseExplicit("/steer @sol1 also add tests", participants)), [STEER_GONE]);
+  assert.deepEqual(errorsOf(parseExplicit("@sol1 /hold /steer x", participants)), [HOLD_GONE, STEER_GONE]);
+  assert.deepEqual(errorsOf(parseExplicit("@sol1 add tests", participants)), []);
+  assert.deepEqual(errorsOf(parseExplicit("@sol1 please /steer clear of the parser", participants)), [], "in the middle of a sentence it is plain text");
+  assert.equal("delivery" in only(parseExplicit("@sol1 add tests", participants)), false);
+  // A directive ends at the word: a T3 command that starts like one is not it.
+  const command = only(parseExplicit("@sol1 /steer-mode on", participants));
+  assert.deepEqual([command.slashCommand, errorsOf(parseExplicit("@sol1 /steer-mode on", participants))], ["steer-mode", []]);
 });
 
 test("quoted text addresses nobody: code blocks, inline code, > quotes, and \\@name", () => {

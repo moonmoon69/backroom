@@ -753,7 +753,7 @@ function UserBubble({ posts, chat }: { posts: EnginePost[]; chat: boolean }) {
             </span>
           ) : null}
           {posts.some((post) => intoRunningTurn(post, snapshot.runs)) ? (
-            <span className="tag mono" title="Taken into the member's running turn (/steer): that turn's reply answers it too">
+            <span className="tag mono" title="Taken into the member's running turn: that turn's reply answers it too">
               into the turn
             </span>
           ) : null}

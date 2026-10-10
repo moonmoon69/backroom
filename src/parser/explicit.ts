@@ -4,7 +4,6 @@
  *   @sol2 review the diff                       -> one assignment for sol2
  *   @sol1 @sol2 independently investigate       -> one assignment, a request each
  *   @alice do this @bob do that                 -> two assignments
- *   @alice /steer also add tests                -> if alice is mid-turn, sent into that turn
  *   @all review the release notes               -> one assignment, every participant
  *   Sol two, review the parser                  -> spoken alias at the start resolves to sol2
  *
@@ -12,10 +11,12 @@
  * the text implies, with the way out: "@alice fix it, then @bob deploy" ("then"), "@alice fix it. @bob check alice's
  * work" (naming an earlier recipient), "when @grok finishes, @fable check it" (a condition). /now on an assignment says
  * it goes now, which takes away the implied wait. Room notes are gone (N1): a message that starts with /note is refused.
+ * /steer is gone too (M1): every message to a member who is working goes into its running turn, so it is refused with
+ * that hint wherever it is written as a directive.
  *
  * In a room that has a Consigliere, every message is for him, whoever it names: he reads the @names as who the user
- * wants on it and hands the work out himself. It is sent into his turn when he is working, so it reaches him while he
- * waits. Only a T3 slash command ("@bob /compact") still goes to the member it names, because a harness runs one only
+ * wants on it and hands the work out himself. Like every message, it goes into his turn when he is working. Only a T3
+ * slash command ("@bob /compact") still goes to the member it names, because a harness runs one only
  * when it is the whole message on its own thread.
  *
  * Only the addressing/command syntax is interpreted; the remaining text of each assignment is its verbatim instruction.
@@ -30,8 +31,8 @@ export interface ParticipantRef {
 }
 
 export interface Unresolved {
-  /** "wait": the assignment waits on other work, which is refused (D2); "delivery": how it reaches a running turn. */
-  field: "recipients" | "wait" | "delivery" | "instruction";
+  /** "wait": the assignment waits on other work, which is refused (D2), or is written with a retired directive. */
+  field: "recipients" | "wait" | "instruction";
   message: string;
   /** "incomplete": still being written (no recipient or no text yet), shown as guidance. "error": cannot be sent as written. */
   severity: "incomplete" | "error";
@@ -63,10 +64,8 @@ export interface DraftAssignment {
   instruction: string;
   /** Earlier assignments in this message that this one's text waits for: a wait that is refused (D2), unless /now. */
   after: DependencyRef[];
-  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold and /after are refused. */
-  timing: "now" | "hold" | "after" | null;
-  /** "/steer": if the recipient is mid-turn, send into that turn instead of waiting for it to end. */
-  delivery: "queue" | "steer";
+  /** The timing directive written for this assignment, if any: /now takes away an implied wait; /hold, /after and /steer are refused. */
+  timing: "now" | "hold" | "after" | "steer" | null;
   /**
    * The instruction starts with a slash command that is not a room command ("@claude /compact …"): it is one of the
    * recipient's T3 commands, run by sending the instruction verbatim. The composer checks the name against T3's list.
@@ -181,10 +180,10 @@ export function parseExplicit(text: string, participants: ParticipantRef[], opti
     return draft;
   }
 
-  // Room notes are gone (N1): a message that starts with /note is refused, not sent.
-  if (NOTE_DIRECTIVE.test(trimmed)) {
+  // Room notes are gone (N1), and /steer (M1): a message that starts with either is refused, not sent.
+  if (NOTE_DIRECTIVE.test(trimmed) || STEER_DIRECTIVE.test(trimmed)) {
     draft.kind = "task";
-    draft.unresolved.push({ severity: "error", field: "instruction", message: NOTE_GONE });
+    draft.unresolved.push({ severity: "error", field: "instruction", message: NOTE_DIRECTIVE.test(trimmed) ? NOTE_GONE : STEER_GONE });
     return draft;
   }
 
@@ -212,21 +211,20 @@ export function parseExplicit(text: string, participants: ParticipantRef[], opti
 
 /**
  * In a room that has a Consigliere, what addresses nobody is his: plain text becomes one assignment to him, and an
- * assignment that only lacks a recipient gets him. It is sent as a steer, which reaches him mid-turn and starts a turn
- * of its own when he is idle; a slash command starts its own turn as always.
+ * assignment that only lacks a recipient gets him. Like every message it goes into his turn when he is working and
+ * starts one when he is idle; a slash command starts its own turn as always.
  */
 function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: string): void {
   // The user's message that names members goes to him whole, names and all. Slash commands keep their own path.
   const named = parsed.assignments.some((assignment) => assignment.recipients.some((id) => id !== consigliereId) || assignment.unresolved.some((u) => u.field === "recipients" && u.severity === "error"));
   if (named && !parsed.assignments.some((assignment) => assignment.slashCommand !== null) && text.trim().length > 0) {
     const start = text.length - text.trimStart().length;
-    parsed.assignments = [{ ...emptyAssignment(start), recipients: [consigliereId], instruction: text.trim(), delivery: "steer", end: text.trimEnd().length }];
+    parsed.assignments = [{ ...emptyAssignment(start), recipients: [consigliereId], instruction: text.trim(), end: text.trimEnd().length }];
     parsed.preamble = "";
     parsed.hints = [];
     for (const mention of parsed.mentions) Object.assign(mention, { role: "reference", assignment: 0 });
     return;
   }
-  const steerable = (assignment: DraftAssignment) => assignment.slashCommand === null && assignment.timing === null && assignment.after.length === 0 && !assignment.unresolved.some((u) => u.field === "wait");
   if (parsed.assignments.length === 0) {
     const instruction = parsed.preamble.trim();
     if (instruction.length === 0) return;
@@ -234,23 +232,16 @@ function routeToConsigliere(parsed: ParsedMessage, consigliereId: string, text: 
     const assignment: DraftAssignment = { ...emptyAssignment(start), recipients: [consigliereId], instruction, end: text.trimEnd().length };
     const command = /^\/([a-z0-9][\w:.-]*)/i.exec(instruction);
     if (command) assignment.slashCommand = command[1] as string;
-    if (steerable(assignment)) assignment.delivery = "steer";
     parsed.assignments.push(assignment);
     parsed.preamble = "";
     return;
   }
-  parsed.assignments.forEach((assignment, index) => {
-    // Alone in the room he gets an unaddressed message already (one member needs no @name); it is sent the same way.
-    const addressed = parsed.mentions.some((mention) => mention.role === "address" && mention.assignment === index);
-    if (!addressed && assignment.recipients.length === 1 && assignment.recipients[0] === consigliereId && assignment.delivery === "queue" && steerable(assignment)) assignment.delivery = "steer";
-  });
   for (const assignment of parsed.assignments) {
     if (assignment.recipients.length > 0) continue;
     const others = assignment.unresolved.filter((u) => !(u.field === "recipients" && u.severity === "incomplete"));
     if (others.some((u) => u.field === "recipients")) continue;
     assignment.recipients.push(consigliereId);
     assignment.unresolved = others;
-    if (assignment.delivery === "queue" && steerable(assignment)) assignment.delivery = "steer";
   }
 }
 
@@ -259,6 +250,9 @@ export const NOTE_DIRECTIVE = /^\/note(?![\w:.-])/i;
 export const NOTE_GONE = "/note is gone: there are no room notes, so send it as a message.";
 export const AFTER_GONE = "/after is gone: Backroom no longer waits on other work. Send this once that work is done, or have the Consigliere sequence it.";
 export const HOLD_GONE = "/hold is gone: keep this as a draft and send it when it should start.";
+/** The retired /steer directive at the start of a message (M1); a T3 command such as /steering is not it. */
+export const STEER_DIRECTIVE = /^\/steer(?![\w:.-])/i;
+export const STEER_GONE = "/steer is gone: a message to a member who is working goes into its running turn, so send it without /steer.";
 
 /**
  * Decision D2: nothing waits on other work. A /after or /hold directive is refused wherever it is written. A wait the
@@ -271,6 +265,7 @@ function retireDependencies(parsed: ParsedMessage, written: DraftAssignment[], p
   const directives = (assignment: DraftAssignment): Unresolved[] => [
     ...(used(assignment, "after") ? [{ field: "wait" as const, severity: "error" as const, message: AFTER_GONE }] : []),
     ...(used(assignment, "hold") ? [{ field: "wait" as const, severity: "error" as const, message: HOLD_GONE }] : []),
+    ...(used(assignment, "steer") ? [{ field: "wait" as const, severity: "error" as const, message: STEER_GONE }] : []),
   ];
   const alias = (id: string) => `@${participants.find((p) => p.id === id)?.alias ?? id}`;
   const kept = new Set(parsed.assignments);
@@ -527,18 +522,15 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
           continue;
         }
       }
-      const directive = /^\/(after|hold|now|steer)\b\s*/i.exec(rest);
+      // A directive ends at the word: "/steer-mode" or "/now:x" is a T3 command, not /steer or /now.
+      const directive = /^\/(after|hold|now|steer)(?![\w:.-])\s*/i.exec(rest);
       if (directive) {
         const name = (directive[1] as string).toLowerCase();
         assignment.consumed.push(directive[0].trim());
         position += directive[0].length;
         lastWasAddress = false;
-        if (name === "steer") {
-          assignment.delivery = "steer";
-          continue;
-        }
-        // /hold and /after are refused (retireDependencies); /now takes away a wait the text implies.
-        assignment.timing = name as "hold" | "now" | "after";
+        // /hold, /after and /steer are refused (retireDependencies); /now takes away a wait the text implies.
+        assignment.timing = name as "hold" | "now" | "after" | "steer";
         if (name !== "after") continue;
         // What /after names is consumed with it, so the instruction is the text that follows.
         const refs = /^((?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*)(?:\s*,\s*(?:(?:task|#)\d+|@[a-z0-9][a-z0-9_-]*))*)[\s,]*/i.exec(text.slice(position));
@@ -724,14 +716,10 @@ function parseAssignments(text: string, participants: ParticipantRef[], consigli
       assignment.unresolved.push({ field: "instruction", severity: "incomplete", message: who ? `what should ${who} do?` : "nothing to send yet" });
     }
     const leadingCommand = /^\/([a-z0-9][\w:.-]*)/i.exec(assignment.instruction);
-    if (leadingCommand) {
-      assignment.slashCommand = leadingCommand[1] as string;
-      if (assignment.delivery === "steer") {
-        assignment.unresolved.push({ field: "delivery", severity: "error", message: `/${assignment.slashCommand} starts its own turn; it cannot be sent into a running one` });
-      }
-    }
-    // A directive is syntax only right after the @name; /after and /hold are refused wherever they are written, with no hint.
-    const directiveInside = /(?<!\S)\/(after|hold|now|steer)\b/i.exec(assignment.instruction);
+    if (leadingCommand) assignment.slashCommand = leadingCommand[1] as string;
+    // A directive is syntax only right after the @name; /after and /hold are refused wherever they are written, with no
+    // hint, and /steer is gone (in the middle of a sentence it is plain text, as any word).
+    const directiveInside = /(?<!\S)\/(after|hold|now)\b/i.exec(assignment.instruction);
     if (directiveInside && !/^\/(?:after|hold)$/i.test(directiveInside[0])) {
       hints.push(`"${directiveInside[0]}" in the middle of a sentence is plain text; put it right after the @name.`);
     }
@@ -758,7 +746,7 @@ function unmask(text: string): string {
 }
 
 function emptyAssignment(start: number): DraftAssignment {
-  return { recipients: [], instruction: "", after: [], timing: null, delivery: "queue", slashCommand: null, start, end: start, insertAt: start, unresolved: [], consumed: [] };
+  return { recipients: [], instruction: "", after: [], timing: null, slashCommand: null, start, end: start, insertAt: start, unresolved: [], consumed: [] };
 }
 
 function addAfter(assignment: DraftAssignment, index: number, because: DependencyRef["because"]): void {

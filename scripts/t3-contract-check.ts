@@ -6,7 +6,8 @@
  *   npm run t3:check -- --write --project <projectId> [--model instanceId/model]
  *                                    also launches one thread, sends one short message, follows its run to the end
  *                                    by the message id, reads the reply, queues a message behind a running run,
- *                                    steers one into it, and interrupts a run.
+ *                                    steers one into it (and waits for the agent to work after it, which is
+ *                                    when Backroom confirms such a message in the run), and interrupts a run.
  *
  * Exit code 0 when every executed check passed. Nothing is deleted; created threads are titled "Backroom contract check".
  */
@@ -15,6 +16,7 @@ import { readStoredAuth } from "../src/adapter/auth.ts";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
 import { ORCHESTRATION_PROTOCOL_VERSION, isRunActive, runForMessage, runReplies } from "../src/adapter/types.ts";
 import { loadConfig } from "../src/config.ts";
+import { takenInRun } from "../src/runtime/steer.ts";
 
 const args = process.argv.slice(2);
 const flag = (name: string): string | null => {
@@ -228,6 +230,16 @@ try {
   else fail("queue", `queued message → ${queuedRun?.id ?? "no run"}`);
   if (steeredRun?.id === running) ok("steer", "a steered message joined the running run");
   else fail("steer", `steered message → ${steeredRun?.id ?? "no run"}; expected ${running}`);
+  // M1: Backroom confirms a message in the run it was sent into once T3 shows the agent working after it there.
+  let taken: ReturnType<typeof takenInRun> = null;
+  const t1 = Date.now();
+  while (Date.now() - t1 < 60_000 && !taken) {
+    await sleep(500);
+    const detail = await adapter.getThreadDetail(threadId);
+    taken = detail ? takenInRun(detail, steeredMessage, running) : null;
+  }
+  if (taken) ok("steer taken", `the agent worked after the message in the running run (intent ${taken.inputIntent}, after ${Math.round((Date.now() - t1) / 1000)} s): Backroom confirms it there`);
+  else fail("steer taken", "T3 showed no work after the steered message in the running run within 60 s: Backroom would not confirm it");
   await adapter.interruptRun({ commandId: randomUUID(), threadId, runId: running });
   const long = await finished(longMessage, 60_000);
   if (long?.status === "interrupted") ok("run.interrupt", "observed status=interrupted");

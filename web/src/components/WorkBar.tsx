@@ -179,7 +179,7 @@ export function WorkBar() {
       continue;
     }
     if (seat.activeRunId === null && seat.unread > 0) {
-      items.push({ key: `waiting:${seat.seatId}`, group: "waiting", participant, what: `${seat.unread} unread`, text: `waiting for ${nameOf(seat.seatId)}'s next turn` });
+      items.push({ key: `waiting:${seat.seatId}`, group: "waiting", participant, what: `${seat.unread} unread`, text: `not given to ${nameOf(seat.seatId)} yet` });
     }
   }
 

@@ -307,7 +307,7 @@ export function journalView(input: ViewInput): JournalView {
   const turns = turnPosts(p);
   const messageRef = (requestId: string) => {
     const ref3 = messageOf(requestId);
-    return ref3 ? { id: ref3.messageId, index: ref3.index, steer: ref3.steer, attachmentIds: input.attachments?.(ref3.messageId) ?? [] } : null;
+    return ref3 ? { id: ref3.messageId, index: ref3.index, attachmentIds: input.attachments?.(ref3.messageId) ?? [] } : null;
   };
 
   const eventById = (eventId: string | null | undefined): RoomEvent | undefined => {

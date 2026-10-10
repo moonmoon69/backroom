@@ -4,10 +4,10 @@
  *
  * - a message makes one request per recipient per assignment, from the user, each carrying the message's preamble as
  *   context; the requests share the message's ID (in their IDs, `messageIdOf`) so the room can show them as one message;
- * - `/steer` makes the request a steered one (`steer:` ID): the host sends it into the recipient's running turn, or it
- *   waits for the turn to end like any other; in a room with a Consigliere every message is his, and steered;
+ * - the host sends each request into its recipient's running turn (M1), or it starts a turn of its own; in a room with a
+ *   Consigliere every message is his;
  * - a T3 slash command goes to the member's thread exactly as typed, and is recorded as a note;
- * - a message that starts with `/note` is refused: room notes are gone (N1);
+ * - a message that starts with `/note` is refused: room notes are gone (N1); so is `/steer`, which every message is now;
  * - the user cancels or corrects a request, retries a failed run, and stops what a member runs in T3.
  *
  * Decision D2: nothing waits on other work. The parser refuses held or chained assignments, and the command has no field
@@ -24,18 +24,17 @@ import type { Repos } from "../db/repos.ts";
 import type { Assignment, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_TOTAL_BYTES, type Participant, type Room } from "../domain/types.ts";
-import { NOTE_DIRECTIVE, NOTE_GONE, parseExplicit } from "../parser/explicit.ts";
+import { NOTE_DIRECTIVE, NOTE_GONE, STEER_DIRECTIVE, STEER_GONE, parseExplicit } from "../parser/explicit.ts";
 import type { EngineHost } from "../runtime/index.ts";
-import { STEER_REQUEST } from "../runtime/steer.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
 
 const USER = "$user";
 /** §7: the message API refuses a post over 1 MiB. */
 export const MAX_POST_BYTES = 1024 * 1024;
 
-/** A request made from a user message: `msg:` or `steer:`, the message ID, the assignment's index, the recipient's seat. */
-export function messageRequestId(delivery: Assignment["delivery"], messageId: string, index: number, seatId: string): string {
-  return `${delivery === "steer" ? STEER_REQUEST : "msg:"}${messageId}:${index}:${seatId}`;
+/** A request made from a user message: `msg:`, the message ID, the assignment's index, the recipient's seat. */
+export function messageRequestId(messageId: string, index: number, seatId: string): string {
+  return `msg:${messageId}:${index}:${seatId}`;
 }
 
 /** The user message a request came from, for showing its requests as one message; null for any other event. */
@@ -43,10 +42,13 @@ export function messageIdOf(eventId: string): string | null {
   return messageOf(eventId)?.messageId ?? null;
 }
 
-/** The user message a request came from, the assignment's index in it, and whether it was steered; null for any other event. */
-export function messageOf(eventId: string): { messageId: string; index: number; steer: boolean } | null {
-  const match = /^(msg|steer):([^:]+):(\d+):/.exec(eventId);
-  return match ? { messageId: match[2]!, index: Number(match[3]), steer: match[1] === "steer" } : null;
+/**
+ * The user message a request came from and the assignment's index in it; null for any other event. Journals from before
+ * M1 hold `steer:` requests too, from messages sent with /steer: they read the same.
+ */
+export function messageOf(eventId: string): { messageId: string; index: number } | null {
+  const match = /^(?:msg|steer):([^:]+):(\d+):/.exec(eventId);
+  return match ? { messageId: match[1]!, index: Number(match[2]) } : null;
 }
 
 const imagesKey = (roomId: string, messageId: string) => `engine.images:${roomId}:${messageId}`;
@@ -138,6 +140,8 @@ export class EngineMessages {
     const room = this.room(input.roomId);
     // N1: a message that starts with /note, or a request that would, is refused; "@bob /note …" is a T3 command, T3's to take.
     if (NOTE_DIRECTIVE.test((input.sourceText ?? "").trim()) || input.assignments.some((a) => !a.slashCommand && NOTE_DIRECTIVE.test(a.instruction.trim()))) throw new RoomError("note_gone", NOTE_GONE);
+    // M1: /steer is gone (every message goes into a working member's turn); never sent to T3 as a command or as text.
+    if (STEER_DIRECTIVE.test((input.sourceText ?? "").trim()) || input.assignments.some((a) => STEER_DIRECTIVE.test(a.instruction.trim()))) throw new RoomError("steer_gone", STEER_GONE);
     const participants = new Map(this.repos.listParticipants(room.id).map((p) => [p.id, p]));
     const consigliere = room.consigliereId ? participants.get(room.consigliereId) ?? null : null;
     for (const assignment of input.assignments) {
@@ -169,7 +173,7 @@ export class EngineMessages {
     for (const { assignment, index, body, seats } of plan) {
       if (assignment.slashCommand) continue;
       for (const seat of seats) {
-        const id = messageRequestId(assignment.delivery, messageId, index, seat.seatId);
+        const id = messageRequestId(messageId, index, seat.seatId);
         await this.journal(async () => this.host.request(room.id, { actor: USER, id, to: seat.seatId, body }));
         requestIds.push(id);
       }

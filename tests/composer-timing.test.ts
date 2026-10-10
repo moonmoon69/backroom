@@ -44,6 +44,11 @@ test("a written /after or /hold offers its removal; a wait the text implies offe
     assert.deepEqual(fixed.offered, { remove: null, sendNow: true }, text);
     assert.deepEqual(errors(fixed.text), [], fixed.text);
   }
+  // M1: a written /steer offers its removal too, and the message then goes as it is (into a running turn, if any).
+  const steer = fix("@grok /steer deploy it", 0);
+  assert.deepEqual(steer.offered, { remove: "steer", sendNow: false });
+  assert.equal(steer.text, "@grok deploy it");
+  assert.deepEqual(errors(steer.text), []);
   assert.deepEqual(timingFixes(parseExplicit("@grok deploy it", members).assignments[0]!), { remove: null, sendNow: false });
   assert.deepEqual(timingFixes(parseExplicit("@claude build it. @grok /now read the notes", members).assignments[1]!), { remove: null, sendNow: false });
 });

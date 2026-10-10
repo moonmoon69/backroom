@@ -143,7 +143,7 @@ test("an interrupt T3 could not take (unreachable) is sent again on a later tick
   assert.deepEqual(room.notices(), [], "the stopped turn is not a failure");
 });
 
-test("'cancel that, do this instead': a steer sent while T3 is still ending the cancelled turn waits for a fresh turn (review P6)", async () => {
+test("'cancel that, do this instead': a message sent while T3 is still ending the cancelled turn waits for a fresh turn (review P6; an old journal's steer: ID)", async () => {
   room = await Room.create();
   const { a } = await wOnA(room);
   // T3 takes the interrupt command, but the turn takes a moment to stop (as a real agent harness does).
@@ -159,7 +159,7 @@ test("'cancel that, do this instead': a steer sent while T3 is still ending the 
   await room.tick(2);
   assert.deepEqual(room.notices().filter((n) => n.intent === "error"), [], "the stopped turn is not a failure");
   assert.equal(room.state("steer:1"), "open");
-  assert.equal(room.running("W"), true, "W's next turn carries the steered request");
+  assert.equal(room.running("W"), true, "W's next turn carries the request");
   assert.match(room.prompt("W"), /fix text\.ts/);
 });
 

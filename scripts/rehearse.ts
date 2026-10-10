@@ -1311,69 +1311,75 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await room.settle("fable");
   }
 
-  if (await section("plan rows: now and next only (D2)")) {
-    // 17. The composer's plan rows (D2: "now" or "next", nothing else): "now" for an idle Consigliere; "next" for a T3
-    // command to a member mid-turn in T3 (it queues behind that turn); "now" into the turn for a busy Consigliere (in his
-    // room a message goes into his running turn); and /hold refused before anything is sent.
+  if (await section("plan rows: no timing, only what is gone (M1)")) {
+    // 17. The composer's plan rows (M1): a message goes now, into the recipient's running turn when it works, so a row
+    // shows no timing: no pill for a message to the idle or the busy Consigliere; a T3 command to a member mid-turn in
+    // T3 is marked "T3 command" and the hint says it runs after the current turn; /steer and /hold are refused, with
+    // their fix on the row's pill, before anything is sent.
     await room.settle("fable");
     await room.settle("worker");
     const pills = () => browser.eval<string[]>("() => [...document.querySelectorAll('.plan-pill')].map((pill) => pill.textContent.trim())");
-    const titles = () => browser.eval<string[]>("() => [...document.querySelectorAll('.plan-pill')].map((pill) => pill.title)");
+    const hint = () => browser.eval<string>("() => document.querySelector('.composer-hint')?.textContent ?? ''");
     /**
-     * The plan row for what was just typed reads `expected` (and its title says `title`), polled on the pill itself: the
-     * page learns of a member's state on its next read of the room (a turn typed in T3 appends nothing to the journal,
-     * so only the room's timer brings it), and the words "now" and "next" also occur elsewhere on the page.
+     * The plan for what was just typed shows `expected` pills (and the composer's hint says `said`), polled: the page
+     * learns of a member's state on its next read of the room (a turn typed in T3 appends nothing to the journal, so
+     * only the room's timer brings it).
      */
-    const pillReads = (typed: string, expected: string, what: string, title?: string) => {
+    const planReads = (typed: string, expected: string[], what: string, said?: string) => {
       browser.waitFor(typed);
-      const ok = () => JSON.stringify(pills()) === JSON.stringify([expected]) && (title === undefined || (titles()[0] ?? "").includes(title));
+      const ok = () => JSON.stringify(pills()) === JSON.stringify(expected) && (said === undefined || hint().includes(said));
       const end = Date.now() + 15_000;
       while (!ok() && Date.now() < end) execFileSync("sleep", ["0.5"]);
-      if (!ok()) fail(`plan rows for ${what}: ${JSON.stringify(pills())} ${JSON.stringify(titles())}`);
+      if (!ok()) fail(`plan rows for ${what}: ${JSON.stringify(pills())} ${JSON.stringify(hint())}`);
     };
     browser.click(/button "(Write a message|Continue your draft)"/);
     browser.compose("Thanks for the report.");
-    pillReads("Thanks for the report.", "now", "an idle Consigliere");
+    planReads("Thanks for the report.", [], "an idle Consigliere");
     await service.fake("external-run", { threadId: room.thread.worker, text: "Looking at something in T3." });
     const notes = await room.message("Draft the release notes.");
     await room.live("fable");
-    await check.state("plan rows: now and next only (D2)", (x) => {
+    await check.state("plan rows: no timing, only what is gone (M1)", (x) => {
       const run = x.runs.find((r) => r.seatId === seat.fable && r.phase === "running" && r.requestIds.includes(notes));
       const worker = (x as unknown as { participantStatus: Record<string, { externalActivity: boolean }> }).participantStatus[room.participant.worker];
       return run && worker?.externalActivity ? `@fable run ${run.id.slice(0, 8)} running; @worker in a turn typed in T3 (externalActivity=true)` : null;
     }, [], {
       extra: () => {
         browser.compose("@worker /compact");
-        pillReads("T3 command", "next", "a T3 command to a member in a turn typed in T3");
-        browser.screenshot("plan-row-next");
+        planReads("T3 command", [], "a T3 command to a member in a turn typed in T3", "a T3 command runs after the current turn");
+        browser.screenshot("plan-row-t3-command");
         browser.compose("Also mention the parser fix.");
-        pillReads("Also mention the parser fix.", "now", "a busy Consigliere (into his running turn)", "running turn");
-        log(`  page: plan rows "now" (idle), "next" (@worker /compact while @worker is in a turn), "now" into @fable's running turn (${titles()[0]})`);
+        planReads("Also mention the parser fix.", [], "a busy Consigliere (it goes into his running turn)");
+        if (/next|steer/i.test(hint())) fail(`the hint for a message to the busy Consigliere: ${hint()}`);
+        log("  page: no pill for a message to the idle or the busy Consigliere; @worker /compact while @worker is in a turn: the hint says it runs after the current turn");
+        browser.compose("@fable /steer also mention the parser fix");
+        browser.waitFor("/steer is gone");
+        planReads("/steer is gone", ["/steer"], "a /steer message");
+        if (browser.eval<boolean>("() => [...document.querySelectorAll('.composer-toolbar button.primary')].every((b) => b.disabled)") !== true) fail("Send is not disabled for a /steer message");
         browser.compose("/hold write it later");
         browser.waitFor("/hold is gone");
         if (browser.eval<boolean>("() => [...document.querySelectorAll('.composer-toolbar button.primary')].every((b) => b.disabled)") !== true) fail("Send is not disabled for a /hold message");
-        log("  page: /hold refused before sending, Send disabled");
+        log("  page: /steer and /hold refused before sending, each with its pill, Send disabled");
       },
     });
     // Its reply is a follow-up (H5), which wakes him after his running turn.
     await room.finish("worker", "Done looking.");
 
-    // 17b. Sent from the composer: in his room every message is a steer. To the busy Consigliere it goes into his running
-    // turn ("into the turn"); to him idle it starts a turn of its own (no such tag).
+    // 17b. Sent from the composer: to the busy Consigliere a message goes into his running turn ("into the turn"); to him
+    // idle it starts a turn of its own (no such tag). Both are ordinary msg: requests (M1).
     const rowSays = (body: string, words: string) =>
       browser.eval<boolean>(`() => [...document.querySelectorAll('.timeline .chat-row.from-user')].some((row) => row.textContent.includes(${JSON.stringify(body)}) && row.textContent.includes(${JSON.stringify(words)}))`);
     const sent = (body: string) => async () => (await room.snapshot()).posts.find((p) => p.kind === "request" && p.author === "$user" && p.body === body);
     browser.compose("Also mention the parser fix.");
     browser.send();
-    await check.state("a message steered into the running turn", (x) => {
+    await check.state("a message into the running turn", (x) => {
       const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Also mention the parser fix.");
       const run = p && x.runs.find((r) => r.reservedSeq < p.seq && r.inputs.includes(p.seq));
-      return p && p.request.message?.steer && run ? `#${p.number} request.message.steer=true, delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (before it)` : null;
+      return p && String(p.request.id).startsWith("msg:") && run ? `#${p.number} (${String(p.request.id).slice(0, 4)}) delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (before it)` : null;
     }, ["into the turn"], {
       focus: (x) => x.posts.find((q) => q.kind === "request" && q.body === "Also mention the parser fix.")?.number,
       extra: () => {
-        if (!rowSays("Also mention the parser fix.", "into the turn")) fail("the steered message's row does not say 'into the turn'");
-        log("  page: the steered message's own row says into the turn");
+        if (!rowSays("Also mention the parser fix.", "into the turn")) fail("the message's row does not say 'into the turn'");
+        log("  page: the message's own row says into the turn");
       },
     });
     await room.finish("fable", "Release notes drafted, with the parser fix.");
@@ -1385,7 +1391,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await check.state("a message to the idle Consigliere starts a turn of its own", (x) => {
       const p = x.posts.find((q) => q.kind === "request" && q.author === "$user" && q.body === "Please also tag v1.2.");
       const run = p && x.runs.find((r) => r.inputs.includes(p.seq));
-      return p && p.request.message?.steer && run && run.reservedSeq > p.seq ? `#${p.number} request.message.steer=true, delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (after it)` : null;
+      return p && String(p.request.id).startsWith("msg:") && run && run.reservedSeq > p.seq ? `#${p.number} delivered by run ${run.id.slice(0, 8)} reserved at #${run.reservedSeq} (after it)` : null;
     }, ["Please also tag v1.2."], {
       focus: (x) => x.posts.find((q) => q.kind === "request" && q.body === "Please also tag v1.2.")?.number,
       extra: () => {
@@ -2188,25 +2194,20 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room, sele
         : null;
     }, [userCorrection, "open · @fable working"], { show: C });
 
-    // 8. He passes it on with rooms-board correct while the worker's turn runs: that turn had not seen it, so its final
-    // comes out superseded (and wakes nobody); #A2 stays open for the next turn.
+    // 8. He passes it on with rooms-board correct while the worker's turn runs: it goes into that turn (M1), confirmed
+    // once T3 shows the worker working after it; no turn of its own.
     room.board("fable", "correct", `#${A2}`, `Also refuse 30 February in every year (the user's #${C}).`);
-    await room.finish("worker", "Fixed the finding: 1900-02-29 is refused now.");
-    await check.state("the correction came in during the worker's turn: its final is superseded", (x) => {
+    await check.state("the correction goes into the worker's running turn", (x) => {
       const relayed = x.posts.find((p) => p.kind === "correction" && p.author === seat.fable && p.about.some((r: any) => r.requestId === fix2));
-      const out = finalOf(x, findingRun.id)[0];
-      const claim = out?.output.claims.find((c: any) => c.requestId === fix2);
-      return relayed && claim?.outcome === "superseded" && out.to.length === 0 && room.post(x, fix2).request.state === "open" && room.post(x, fix2).request.corrections === 1
-        ? `#${relayed.number} @fable corrects #${A2}; @worker's final #${out.number} claims #${A2}: superseded, to nobody; #${A2} open, corrected 1×`
+      const w = runOf(x, "worker");
+      return relayed && w?.id === findingRun.id && w.phase === "running" && w.inputs.includes(relayed.seq) && room.post(x, fix2).request.state === "open" && room.post(x, fix2).request.corrections === 1
+        ? `#${relayed.number} @fable corrects #${A2}; delivered into @worker's running run ${w.id.slice(0, 8)} (no turn of its own); #${A2} open, corrected 1×`
         : null;
-    }, [`@fable corrected #${A2}`, `#${A2} stays open: input it had not seen came in`], { focus: (x) => finalOf(x, findingRun.id)[0]?.number });
+    }, [`@fable corrected #${A2}`], { show: A2 });
 
-    // 9. The worker's next turn takes the correction while his turn on the user's message still runs: both are running
-    // when the service is killed (SIGKILL) and started again. T3 (the fake, kept in its file) still runs both meanwhile.
-    const correctionRun = await until("@worker's turn on the correction", async () => {
-      const run = runOf(await room.snapshot(), "worker");
-      return run && run.id !== findingRun.id && run.phase === "running" ? run : null;
-    });
+    // 9. Both turns run when the service is killed (SIGKILL) and started again: the worker's, with the correction in it,
+    // and his on the user's message. T3 (the fake, kept in its file) still runs both meanwhile.
+    const correctionRun = findingRun;
     const before = await check.state("two turns running before the kill", (x) => {
       const w = runOf(x, "worker");
       const f = runOf(x, "fable");
@@ -2239,8 +2240,8 @@ async function rehearseRoom(service: Service, browser: Browser, room: Room, sele
       },
     });
 
-    // 10. After the restart the worker's turn ends: imported once, it answers #A2 (the page, never reloaded, shows it);
-    // then his reply to the user's message answers it.
+    // 10. After the restart the worker's turn ends: imported once, it answers #A2 with the correction seen (the page,
+    // never reloaded, shows it); then his reply to the user's message answers it.
     await room.finish("worker", "1900-02-29 and 30 February are refused in every year now.");
     let W3 = 0;
     await check.state("after the restart the worker's turn is imported once and answers", (x) => {

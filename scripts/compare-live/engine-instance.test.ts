@@ -453,7 +453,7 @@ describe("a new-side checkout that holds the harness is refused", () => {
 
 // ---------------- the prompts ----------------
 
-test("each task's prompt goes to the Consigliere verbatim through the engine's parser, as one steered request", () => {
+test("each task's prompt goes to the Consigliere verbatim through the engine's parser, as one request (it goes into his running turn, or starts one)", () => {
   const participants = [{ id: "p-c", alias: "Fable" }, { id: "p-w1", alias: "W1" }, { id: "p-v", alias: "V" }, { id: "p-w2", alias: "W2" }];
   for (const task of TASK_IDS) {
     const draft = parseExplicit(TASKS[task].prompt, participants, { consigliereId: "p-c" });
@@ -462,7 +462,6 @@ test("each task's prompt goes to the Consigliere verbatim through the engine's p
     assert.deepEqual(draft.assignments[0]!.recipients, ["p-c"], task);
     assert.equal(draft.assignments[0]!.instruction, TASKS[task].prompt, task);
     assert.equal(draft.preamble, "", task);
-    assert.equal(draft.assignments[0]!.delivery, "steer", `${task}: every message is his, steered (an idle Consigliere starts an ordinary run)`);
   }
 });
 

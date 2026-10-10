@@ -22,7 +22,7 @@ const request = (id: string, number: number, author: string, state: "open" | "an
   at: null,
   after: null,
   turn: false,
-  request: { id, parentId: null, rootId: id, owner: "W", returnTo: author, state, answer: null, corrections: 0, message: fromMessage ? { id: `m-${id}`, index: 0, steer: false, attachmentIds: [] } : null },
+  request: { id, parentId: null, rootId: id, owner: "W", returnTo: author, state, answer: null, corrections: 0, message: fromMessage ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null },
 });
 
 const context = (posts: EnginePost[]): ReplyContext => ({
