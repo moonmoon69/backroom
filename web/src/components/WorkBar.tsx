@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
@@ -66,7 +66,10 @@ export function WorkBar() {
   const pressing = useRef(false);
   const released = useRef<Array<() => void>>([]);
   useEffect(() => {
-    const down = () => (pressing.current = true);
+    // The main button only: another opens a menu (the page's, a select's), which may keep its release from the page.
+    const down = (event: PointerEvent) => {
+      if (event.button === 0) pressing.current = true;
+    };
     const up = () => {
       pressing.current = false;
       const then = released.current.splice(0);
@@ -75,10 +78,12 @@ export function WorkBar() {
     document.addEventListener("pointerdown", down, true);
     document.addEventListener("pointerup", up, true);
     document.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
     return () => {
       document.removeEventListener("pointerdown", down, true);
       document.removeEventListener("pointerup", up, true);
       document.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
     };
   }, []);
   // Esc folds the open chip (keys.ts), once a menu, a dialog, a post's action strip or the composer in front of it has
@@ -214,20 +219,28 @@ export function WorkBar() {
   // "show #n" for each post the chip is about that the open view draws (a click on a #ref shows only those; a post
   // the chat leaves out, or older than the posts drawn, is not offered): the ring goes to the post, brought into view.
   // Whether it is drawn is read as the bar draws, which it does at every poll.
-  const shows: StripAction[] = (opened?.posts ?? [])
-    .filter((n) => post(n) !== null)
-    .map((n) => ({
-      key: `show:${n}`,
-      label: `show #${n}`,
-      name: `show #${n}`,
-      title: `Show #${n}`,
-      press: () => {
-        const shown = post(n);
-        if (!shown) return;
-        flashPost(shown);
-        shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
-      },
-    }));
+  // Kept while the same posts are drawn: a poll redrawing the bar leaves the strip as it is.
+  const drawn = (opened?.posts ?? []).filter((n) => post(n) !== null).join(" ");
+  const shows = useMemo<StripAction[]>(
+    () =>
+      drawn
+        .split(" ")
+        .filter(Boolean)
+        .map(Number)
+        .map((n) => ({
+          key: `show:${n}`,
+          label: `show #${n}`,
+          name: `show #${n}`,
+          title: `Show #${n}`,
+          press: () => {
+            const shown = room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`);
+            if (!shown) return;
+            flashPost(shown);
+            shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
+          },
+        })),
+    [drawn],
+  );
   if (items.length === 0) return null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
@@ -333,13 +346,17 @@ export function WorkBar() {
           // An answer of your own, which Custom answer focuses, is in the choices: the strip stays.
           keeps={(element) => Boolean(bar.current?.contains(element) && element.closest(".work-open"))}
           onClose={(cause) => {
-            // Pressed on the chip itself: its click folds it, as a click on an open chip does. (↑ onto it folds it here.)
-            const onChip = pressing.current && cause?.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${opened.key}"]`) !== null;
+            const key = opened.key;
+            // Closed by the pointer pressed elsewhere (not by a key meanwhile): once it is released. Pressed on the chip
+            // itself: its click folds it, as a click on an open chip does (↑ onto it folds it here).
+            const byPointer = pressing.current && !lastInputWasKey();
+            const onChip = byPointer && cause?.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${key}"]`) !== null;
+            // Only what is still this chip's: a click meanwhile may have opened another chip.
             const close = () => {
-              setStrip(null);
-              if (!onChip) setOpen(null);
+              setStrip((now) => (now === key ? null : now));
+              if (!onChip) setOpen((now) => (now === key ? null : now));
             };
-            if (pressing.current) released.current.push(close);
+            if (byPointer) released.current.push(close);
             else close();
           }}
           // Nothing to press (a turn being prepared, or refused): the choices stay open, the ring on the chip.
