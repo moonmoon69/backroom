@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { byKey, itemOf, lastInputWasKey, navProps, sideItems, type NavProps } from "../keys.ts";
 import { useRoom } from "../context.tsx";
 import { AddParticipantButton, CrewPanel } from "./Crew.tsx";
@@ -69,6 +69,7 @@ export function Inspector({ tab, onTab, onClose, onManageBrowser }: Props) {
   // The ring never falls to the page: a stop that goes away with the ring on it (a member removed, a browser stopped)
   // puts it on the stop that took its place, else the one before it, else the panel's head. After a click nothing moves.
   const aside = useRef<HTMLElement>(null);
+  const panelId = useId();
   useEffect(() => {
     const root = aside.current;
     if (!root) return;
@@ -103,14 +104,17 @@ export function Inspector({ tab, onTab, onClose, onManageBrowser }: Props) {
       data-nav-side=""
       tabIndex={-1}
       onKeyDown={(event) => {
-        // Enter presses a row's switch as it presses a button (a checkbox takes only Space of its own).
+        // Enter presses a row's switch as it presses a button (a checkbox takes only Space of its own). Only the panel's
+        // own: a dialog it opened (drawn elsewhere in the page, its events still bubble here) keeps its checkboxes' keys.
         const target = event.target as HTMLElement;
         if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
+        if (!event.currentTarget.contains(target)) return;
         event.preventDefault();
         target.click();
       }}
     >
       <div className="inspector-head">
+        <h2 className="sr-only">{TITLES[tab]}</h2>
         <div className="inspector-tabs" role="tablist" aria-label="Panel">
           {TABS.map((each) => (
             <button
@@ -118,6 +122,8 @@ export function Inspector({ tab, onTab, onClose, onManageBrowser }: Props) {
               type="button"
               role="tab"
               aria-selected={each === tab}
+              aria-controls={each === tab ? `${panelId}-body` : undefined}
+              id={`${panelId}-${each}`}
               tabIndex={each === tab ? 0 : -1}
               className={`inspector-tab${each === tab ? " on" : ""}`}
               onClick={() => onTab(each)}
@@ -133,7 +139,7 @@ export function Inspector({ tab, onTab, onClose, onManageBrowser }: Props) {
           <CloseIcon />
         </button>
       </div>
-      <div className="queue-body">
+      <div className="queue-body" id={`${panelId}-body`} role="tabpanel" aria-labelledby={`${panelId}-${tab}`}>
         {tab === "people" ? <CrewPanel /> : null}
         {tab === "browser" ? <RoomBrowserPanel onManage={onManageBrowser} /> : null}
         {tab === "git" ? <GitTab /> : null}

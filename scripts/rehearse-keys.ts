@@ -1368,13 +1368,24 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // Down go through its rows (the head, then the members, as the API lists them); Right along its head stops at ×;
     // Left from a row's first goes back to the board's item nearest in height, the panel left open.
     members = (s1.participants as Array<{ id: string; alias: string; retiredAt: string | null }>).filter((p) => !p.retiredAt);
+    /**
+     * Whether the ring is on the item nearest in height to `from` (a key) among `across` (a selector), of those in view:
+     * the items nearer than the ring's, by the gap between their heights and `from`'s.
+     */
+    const nearestAcross = (from: string, across: string) =>
+      browser.eval<{ from: number[]; ring: number[]; nearer: string[] }>(
+        `() => { const box = (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; }; const shows = (e) => { const r = e.getBoundingClientRect(); const v = (e.closest('.timeline, .queue-body') ?? document.documentElement).getBoundingClientRect(); return r.bottom > Math.max(0, v.top) && r.top < Math.min(innerHeight, v.bottom); }; const at = document.querySelector('[data-nav-key="' + ${JSON.stringify(from)} + '"]'); const ring = document.activeElement.closest('[data-nav]') ?? document.activeElement; const [t, b] = box(at); const gap = (e) => { const [et, eb] = box(e); return Math.max(0, Math.max(et, t) - Math.min(eb, b)); }; const nearer = [...document.querySelectorAll(${JSON.stringify(across)})].filter((e) => e !== ring && shows(e) && gap(e) < gap(ring)).map((e) => e.dataset.navKey ?? e.textContent.trim().slice(0, 20)); return { from: box(at), ring: box(ring), nearer }; }`,
+      );
     press("ArrowRight");
     const beside = await expect("Right: the Members panel unfolds, the ring on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true && f.ring);
-    const heights = browser.eval<{ post: number[]; ring: number[]; nearer: string[] }>(
-      `() => { const box = (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; }; const post = document.querySelector('[data-nav-key="post:${openPost.seq}"]'); const ring = document.activeElement; const [t, b] = box(post); const gap = (e) => { const [et, eb] = box(e); return Math.max(0, Math.max(et, t) - Math.min(eb, b)); }; const nearer = [...document.querySelectorAll('[data-nav-side] [data-nav]')].filter((e) => e !== ring && gap(e) < gap(ring)).map((e) => e.dataset.navKey); return { post: box(post), ring: box(ring), nearer }; }`,
-    );
+    const heights = nearestAcross(`post:${openPost.seq}`, "[data-nav-side] [data-nav]");
     if (heights.nearer.length > 0) fail(`Right from #${openPost.number} landed on ${beside.key}, but ${heights.nearer.join(", ")} is nearer in height`);
-    log(`  page: #${openPost.number} at y ${heights.post.join("-")}; the ring on ${beside.key} at y ${heights.ring.join("-")}, none nearer`);
+    log(`  page: #${openPost.number} at y ${heights.from.join("-")}; the ring on ${beside.key} at y ${heights.ring.join("-")}, none nearer`);
+    // The tabs say which panel shows (a tabpanel the showing tab controls), and the panel keeps its title as a heading.
+    const tabs = browser.eval<{ controls: string | null; panel: string | null; heading: string | null }>(
+      "() => { const tab = document.querySelector('.inspector [role=\"tab\"][aria-selected=\"true\"]'); const id = tab?.getAttribute('aria-controls'); const panel = id ? document.getElementById(id) : null; return { controls: id ?? null, panel: panel?.getAttribute('role') ?? null, heading: document.querySelector('.inspector h2')?.textContent ?? null }; }",
+    );
+    if (tabs.panel !== "tabpanel" || tabs.heading !== "Members") fail(`the panel's tabs: ${JSON.stringify(tabs)}; expected the showing tab to control a tabpanel, and a heading "Members"`);
     press("Home");
     await expect(`Home: @${members[0]!.alias}, the first member, as the API lists them`, (f) => f.key === `member:${members[0]!.id}` && f.ring);
     announced(/^group$/, `@${members[0]!.alias}`);
@@ -1390,10 +1401,32 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowRight");
     await sleep(300);
     await expect("Right at the head's right end: the ring stays", (f) => f.key === "side:close" && f.panel === "people");
+    // The panel opens again on the member last visited, not on the head's ×: the head is passed on the way.
+    press("Backspace");
+    await expect(`Backspace: the panel folds, the ring back on #${openPost.number}`, (f) => f.panel === null && f.key === `post:${openPost.seq}`);
+    await abovePosts("@fable's running turn's chip", (f) => f.key?.startsWith("chip:") === true);
+    press("ArrowUp");
+    await expect("Up: the room state", (f) => f.key === "state");
+    press("ArrowUp");
+    await expect("Up: the header", (f) => f.key?.startsWith("head:") === true);
+    for (let i = 0; i < 8 && focus().key !== "head:people"; i += 1) press("ArrowRight");
+    await expect("Right along the header: Members", (f) => f.key === "head:people");
+    press("Enter");
+    await expect(`Enter: the panel opens on @${members[0]!.alias}, the member last visited, not on ×`, (f) => f.panel === "people" && f.key === `member:${members[0]!.id}` && f.ring);
+    press("End");
+    press("ArrowLeft");
+    await expect("End, Left: back on the board", (f) => f.panel === "people" && /^(post|live):|^strip$/.test(f.key ?? ""));
+    press("End");
+    await expect(`End: #${openPost.number}`, (f) => f.key === `post:${openPost.seq}`);
+    press("ArrowRight");
+    await expect(`Right: back in the open panel, on ${beside.key}`, (f) => f.key === beside.key);
     press("Home");
     await expect(`Home: @${members[0]!.alias}, the first under the head`, (f) => f.key === `member:${members[0]!.id}`);
     press("ArrowLeft");
-    await expect("Left from a member: back on the board, on a post or the strip beside it, the panel left open", (f) => f.panel === "people" && inRoom(f) && /^(post|live):|^strip$/.test(f.key ?? "") && f.ring);
+    const back = await expect("Left from a member: back on the board, on a post or the strip beside it, the panel left open", (f) => f.panel === "people" && inRoom(f) && /^(post|live):|^strip$/.test(f.key ?? "") && f.ring);
+    const leftHeights = nearestAcross(`member:${members[0]!.id}`, "[data-nav-pane='board'] [data-nav-lane] [data-nav]");
+    if (leftHeights.nearer.length > 0) fail(`Left from @${members[0]!.alias} landed on ${back.key}, but ${leftHeights.nearer.join(", ")} is nearer in height`);
+    log(`  page: @${members[0]!.alias} at y ${leftHeights.from.join("-")}; the ring on ${back.key} at y ${leftHeights.ring.join("-")}, none nearer`);
     press("End");
     await expect(`End: #${openPost.number}, the newest post`, (f) => f.key === `post:${openPost.seq}`);
     press("ArrowRight");
@@ -3106,6 +3139,18 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Enter, Right to the end: Remove from room…", (f) => f.action === "remove");
     press("Enter");
     await expect("Enter: the Remove dialog", (f) => f.dialog === `Remove ${beta!.alias} from the room` && f.inDialog);
+    // Its thread deleted in T3: the dialog's own checkbox, ticked with Space; Enter on it is the dialog's, not the
+    // panel's (which clicks its switches): it stays ticked.
+    await tabTo("Tab to the thread's choice", (f) => f.inDialog && f.tag === "SELECT");
+    for (let i = 0; i < 4 && browser.eval<string>("() => document.activeElement.value") !== "delete"; i += 1) press("ArrowDown");
+    const understood = "() => document.querySelector('.dialog input[type=\"checkbox\"]')?.checked ?? null";
+    await tabTo("Tab to I understand…", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<boolean | null>(understood) === false);
+    press(" ");
+    browser.poll<boolean | null>("Space: I understand… ticked", understood, (ticked) => ticked === true);
+    press("Enter");
+    await sleep(300);
+    if (browser.eval<boolean | null>(understood) !== true) fail("Enter on the Remove dialog's I understand… unticked it: the panel's Enter-clicks-a-switch reached into the dialog");
+    log("  page: Enter on the dialog's own checkbox left it ticked");
     await tabTo(`Tab to Remove @${beta!.alias}`, (f) => f.inDialog && f.label === `Remove @${beta!.alias}`, "Tab", 10);
     press("Enter");
     await until(`the API to show @${beta!.alias} retired`, async () => !(await sideMembers()).some((p) => p.id === beta!.id));
@@ -3120,6 +3165,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Home, Up, Right ×2: the Git tab", (f) => f.key === "side:tab:git");
     press("Enter");
     await expect("Enter: the Git panel, the ring on its tab", (f) => f.panel === "git" && f.key === "side:tab:git");
+    browser.poll<boolean>("a.txt's row in the Git panel", "() => [...document.querySelectorAll('.inspector .git-row')].some((row) => row.textContent.includes('a.txt'))", (drawn) => drawn);
     for (let i = 0; i < 8 && !/a\.txt/.test(focus().label); i += 1) press("ArrowDown");
     await expect("Down to a.txt, the uncommitted file", (f) => f.panel === "git" && /a\.txt/.test(f.label) && f.ring);
     press("Enter");
@@ -3171,14 +3217,18 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Right: Members, on a member", (f) => f.panel === "people" && f.key?.startsWith("member:") === true);
     press("Home");
     const first = await expect("Home: the first member, in the pixel look's brackets", (f) => f.key?.startsWith("member:") === true && f.ring);
+    const brackets = browser.eval<{ animation: string; image: string }>("() => { const after = getComputedStyle(document.activeElement, '::after'); return { animation: after.animationName, image: after.backgroundImage }; }");
+    if (brackets.animation !== "px-blink" || !brackets.image.includes("linear-gradient")) fail(`the member's ring is not the pixel look's blinking brackets: ${JSON.stringify(brackets)}`);
     press("Enter");
     press("ArrowRight");
     await expect("Enter, Right: Settings… in its actions, its dashed ring", (f) => f.action === "settings" && f.item === first.key && f.ring);
-    const drawn = browser.eval<{ strip: string; bar: string; kbd: string; tab: string }>(
-      "() => { const css = (e, p) => (e ? getComputedStyle(e).getPropertyValue(p) : ''); return { strip: css(document.querySelector('.participant-chip .action-strip'), 'border-radius'), bar: css(document.querySelector('.key-bar'), 'border-top-style'), kbd: css(document.querySelector('.key-bar kbd'), 'border-radius'), tab: css(document.querySelector('.inspector-tab.on'), 'box-shadow') }; }",
+    // Each in the pixel look's colours: the strip a well, the key bar raised, its keys on the window's colour; the tab
+    // showing underlined.
+    const drawn = browser.eval<Record<string, boolean | string>>(
+      "() => { const colour = (value) => { const probe = document.createElement('div'); probe.style.background = value; document.body.append(probe); const c = getComputedStyle(probe).backgroundColor; probe.remove(); return c; }; const bg = (selector) => { const e = document.querySelector(selector); return e ? getComputedStyle(e).backgroundColor : null; }; return { strip: bg('.participant-chip .action-strip') === colour('var(--px-well)'), bar: bg('.key-bar') === colour('var(--px-raised)'), kbd: bg('.key-bar kbd') === colour('var(--px-window)'), tab: getComputedStyle(document.querySelector('.inspector-tab.on')).boxShadow }; }",
     );
-    if (drawn.strip !== "0px" || drawn.kbd !== "0px" || drawn.bar !== "solid" || !drawn.tab.includes("inset")) fail(`the pixel look does not draw the strip, the key bar or the panel's tab: ${JSON.stringify(drawn)}`);
-    log(`  page: pixel strip and keys square (${drawn.strip}, ${drawn.kbd}), the bar ruled, the tab showing underlined`);
+    if (drawn.strip !== true || drawn.bar !== true || drawn.kbd !== true || !String(drawn.tab).includes("inset")) fail(`the pixel look does not draw the strip, the key bar or the panel's tab: ${JSON.stringify(drawn)}`);
+    log("  page: the strip in the well's colour, the key bar raised, its keys on the window's colour, the tab showing underlined");
     await state("pixel look: a member's actions, the key bar and the side panel's tabs", /^Settings… · @/);
     press("Escape");
     press("Backspace");

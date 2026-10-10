@@ -566,13 +566,13 @@
   box-shadow: inset var(--u) var(--u) 0 0 var(--px-bevel-lo);
 }
 
+[data-skin="pixel"] .action-strip > button:is([aria-pressed="true"], [aria-expanded="true"]) {
+  background: var(--px-well);
+}
+
 [data-skin="pixel"] .action-strip > button:focus-visible {
   background: var(--px-window);
   box-shadow: inset 0 calc(var(--u) * -2) 0 var(--px-action), inset var(--u) var(--u) 0 0 var(--px-bevel-hi);
-}
-
-[data-skin="pixel"] .action-strip > button:is([aria-pressed="true"], [aria-expanded="true"]) {
-  background: var(--px-well);
 }
 
 /* The key bar: a raised strip along the foot of the window, its keys on small plates; the place in the text colour. */

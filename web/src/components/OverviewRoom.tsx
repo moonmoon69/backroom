@@ -76,8 +76,9 @@ export function OverviewRoom({
       const item = itemOf(event.target as Element);
       const key = item?.dataset.navKey;
       if (!item || !key) return;
-      // The conversation's lanes are the board's pane; the side panel's are its own.
-      lastIn.current[(item.closest<HTMLElement>("[data-nav-pane]")?.dataset.navPane as Pane | undefined) ?? "board"] = key;
+      // The conversation's lanes are the board's pane; the side panel's are its own, under its head (its tabs, + and ×
+      // are passed on the way, not where the panel opens again).
+      if (!item.closest(".inspector-head")) lastIn.current[(item.closest<HTMLElement>("[data-nav-pane]")?.dataset.navPane as Pane | undefined) ?? "board"] = key;
       const lane = item.closest<HTMLElement>("[data-nav-lane]")?.dataset.navLane as Lane<HTMLElement>["name"] | undefined;
       if (lane) lastInLane.current[lane] = key;
     };
@@ -235,8 +236,9 @@ export function OverviewRoom({
         }
       }
       event.preventDefault();
-      // The ring's item, or what it is on (the room itself: the board's view), for the item nearest in height across.
-      const from = ((target && root.contains(target) && target !== root ? (itemOf(target) ?? target) : null) ?? root.querySelector<HTMLElement>(".timeline") ?? root).getBoundingClientRect();
+      // The ring's item, or what it is on (the room itself: the board's view), for the item nearest in height across:
+      // measured where it is drawn when the move is made (a panel unfolding narrows the board, and its posts grow).
+      const fromElement = (target && root.contains(target) && target !== root ? (itemOf(target) ?? target) : null) ?? root.querySelector<HTMLElement>(".timeline") ?? root;
       if (pane === "board") {
         // Not a lane key: Right off the conversation goes into the side panel, unfolding Members if it is folded; Left
         // stays (the conversation is the room's left edge).
@@ -244,7 +246,7 @@ export function OverviewRoom({
         if (!panelRef.current) onPanel("people");
         focusWhen(() => {
           const side = root.querySelector<HTMLElement>("[data-nav-side]");
-          return side ? (nearestInHeight(boxed(sideItems(side).filter(inView)), from)?.element ?? landing(side.dataset.navPane as Pane)) : null;
+          return side ? (nearestInHeight(boxed(sideItems(side).filter(inView)), fromElement.getBoundingClientRect())?.element ?? landing(side.dataset.navPane as Pane)) : null;
         });
         return;
       }

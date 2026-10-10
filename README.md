@@ -747,7 +747,7 @@ Backroom opens on one page of everything: a section per project, its rooms as ti
 
 ## Keyboard
 
-- `↑` `↓` `←` `→`: move the ring to the nearest item that way, and open, close or press nothing; → off a room's conversation goes into its side panel, unfolding it.
+- `↑` `↓` `←` `→`: move the ring to the nearest item that way; they press nothing (an action strip or a chip's choices the ring leaves fold, and → off a room's conversation unfolds the side panel to go into it).
 - `Enter`: go in: open what the ring is on (a tile, a status chip's choices, a post's or a member's actions), press a button.
 - `Backspace`: back out one step: what is in front, then a member's thread, the side panel, the room; the one key that leaves a room (in a text field it deletes).
 - `Esc`: close what is in front (a menu, an action strip, a dialog, the composer with its draft kept, these keys), and nothing else.

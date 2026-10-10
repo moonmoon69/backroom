@@ -477,7 +477,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
  * arrows move, Enter goes in, Backspace goes back, Esc closes what is in front.
  */
 export const FOUR_KEYS: Array<{ keys: string[]; does: string }> = [
-  { keys: ["↑", "↓", "←", "→"], does: "move the ring to the nearest item that way, and open, close or press nothing; → off a room's conversation goes into its side panel, unfolding it" },
+  { keys: ["↑", "↓", "←", "→"], does: "move the ring to the nearest item that way; they press nothing (an action strip or a chip's choices the ring leaves fold, and → off a room's conversation unfolds the side panel to go into it)" },
   { keys: ["Enter"], does: "go in: open what the ring is on (a tile, a status chip's choices, a post's or a member's actions), press a button" },
   { keys: ["Backspace"], does: "back out one step: what is in front, then a member's thread, the side panel, the room; the one key that leaves a room (in a text field it deletes)" },
   { keys: ["Esc"], does: "close what is in front (a menu, an action strip, a dialog, the composer with its draft kept, these keys), and nothing else" },
