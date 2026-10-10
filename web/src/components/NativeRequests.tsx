@@ -169,6 +169,10 @@ export function UserInputRequestCard({
   onDismiss?: () => Promise<void>;
 }) {
   const key = `${participantId ?? ""}:${requestId}`;
+  // Each card's options are a radio group of its own: one named by the request alone would be one group across the
+  // places it is drawn (the status chip's choices and the turn's bubble), so checking an option in both would leave it
+  // checked in only one of them.
+  const group = useId();
   const [busy, setBusy] = useShared(`busy:${key}`, false);
   const payload = asRecord(raw);
   const questions = (Array.isArray(payload.questions) ? payload.questions : []) as Question[];
@@ -232,7 +236,7 @@ export function UserInputRequestCard({
             }
             return (
               <label key={inputId} className="radio">
-                <input type="radio" name={`${requestId}-${q.id}`} checked={answers[q.id] === label} onChange={() => setAnswer(q.id, label)} />
+                <input type="radio" name={`${group}-${q.id}`} checked={answers[q.id] === label} onChange={() => setAnswer(q.id, label)} />
                 {label}
               </label>
             );
@@ -242,7 +246,7 @@ export function UserInputRequestCard({
               {!q.multiSelect && (q.options ?? []).length > 0 ? (
                 <input
                   type="radio"
-                  name={`${requestId}-${q.id}`}
+                  name={`${group}-${q.id}`}
                   checked={answers[q.id] === "__custom__"}
                   onChange={() => setAnswer(q.id, "__custom__")}
                 />
