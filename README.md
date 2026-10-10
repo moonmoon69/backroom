@@ -1050,17 +1050,19 @@ Tests never touch a real T3 server, and write no agents file outside folders the
 The browser rehearsal (`scripts/rehearse.ts`) plays the page in one of the shared browsers against a throwaway service of its own (the fake T3, its own data folder, the page last built with `npm run build:web`), and checks each state in the API and on the page:
 
 ```bash
-node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key> --port 4511   # one step
+node scripts/rehearse.ts --step ui|room|keys --as <rooms-browser key> --port 4511   # one step, on a free port
 node scripts/rehearse.ts --step all --as <rooms-browser key> --port 4511            # the three at once, on 4511-4513
 node scripts/rehearse.ts --step keys --list                                         # a step's states, numbered
 node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Esc closes"
 ```
 
 - **Its tab** opens on `http://rehearse-<port>.localhost:<port>` (Chrome takes any `*.localhost` to this machine), not `127.0.0.1`: a site of the run's own gets a renderer of its own, so a crash in a run takes no other tab with it, another run's or anyone's (`REHEARSE_TAB_HOST` names another host).
-- **The steps:** `ui` and `room` play a room's story (the turn relay, notices, the Browser panel); `keys` drives the page by keys alone (focus, scrolling, layout, the key bar).
+- **The steps:** `ui` and `room` play a room's story (the turn relay, notices, the Browser panel); `keys` drives the page by keys alone (focus, scrolling, layout, the key bar). Run the step that covers the change: keys for keyboard, focus, scroll and layout; ui and room for what the engine and the page show.
 - **`--step all`** starts the three together, each on a port of its own (`--port` and the next two) with its data under `--data` (default `data/rehearse-all-<port>/<step>`; one step's is `data/rehearse-<step>-<port>`, so runs side by side never share a folder), keys in a browser of its own (`--keys-browser`, default backroom-dev; ui and room in `--browser`, default general). It prints each step's result and exits non-zero if any failed; each step's output is in `<step>.log` there (or under `--out`). A step that fails or is stopped (Ctrl-C stops them all) has its service and tabs cleaned up after it.
 - **`--only <state>`** (as often as wanted) checks just the states it names: a number from `--list` (under `--step all`, that number in each step), a range (`12-15`), a `/pattern/` or part of a name. Each step is cut into sections that stand on their own (the room quiet, the page at a known place); a run jumps to the section of the first state named, its setup makes through the API what the section reads (and checks it is there) and brings the page to where the section starts (every section played after it makes too what it reads that the skipped ones would have made, nothing twice), the states before the one named are played without their screenshots and console reads, and the step stops after the last state named. The states of each step's first section need the whole story before them: ui 1-12 and room 1-14 (keys' first section is its start). For those, `--until <state>` plays the step up to the state with every check on, in the same time. **`--until <state>`** plays a step as always and stops after the state it names. `--help` prints every flag.
 - **A fails-without-the-fix proof on the page** (where no unit test can show it): in a worktree of the fix's commit (whose scripts have the flags and the state), take the fix out of the product with `git checkout <the commit before the fix> -- <the files of web/ or src/ the fix changed>` when the fix is the last change to those files, else with `git show <the fix's commit> -- <those files> | git apply -R --3way` (a later change to the same files needs the three-way merge), and delete a file the fix adds. Then `npm install`, `npm run build:web` and the state with `--only`: it must fail at that state.
+
+### Where the code is
 
 | Path | Purpose |
 | --- | --- |

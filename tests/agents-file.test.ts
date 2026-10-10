@@ -767,7 +767,7 @@ test("the default text: the session, scope, shared-checkout, commit, role and re
     ["read the owner and its tests first", /Read the code that owns a behaviour and its tests before you change it/],
     ["fix at the owner, keep to the task", /fix a problem at its owner, keep the change to the task/],
     ["docs made untrue, in the same change", /update in the same change the docs it makes untrue/],
-    ["a worktree of its own in a shared checkout", /When another agent works in the same checkout, work in a worktree of your own; merge what you keep into your branch before you finish, and remove the worktrees you no longer need/],
+    ["a worktree of its own in a shared checkout", /When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given \(the default branch only when asked\), and remove the worktrees you no longer need/],
     ["commits", /Commit on your own branch and never merge to the default branch unless asked; the user releases/],
     ["the writer", /A writer delivers the change committed, with its tests and the checks it ran/],
     ["the reviewer", /a reviewer reads the diff, runs the checks and answers pass or fail/],
@@ -778,5 +778,5 @@ test("the default text: the session, scope, shared-checkout, commit, role and re
     ["no status files", /Write no separate status or report files unless asked/],
     ["the Handoff", /End every answer with a Handoff/],
   ] as const) assert.match(text, pattern, habit);
-  assert.doesNotMatch(text, /subagent|sub-agent|tier|model|Claude|Codex|Cursor|Gemini|GPT|Opus|Sonnet|Haiku|Fable/i, "no model, harness or subagent named");
+  assert.doesNotMatch(text, /subagent|sub-agent|\btiers?\b|\bmodels?\b|harness|workflow|Claude|Codex|Cursor|Gemini|GPT|Opus|Sonnet|Haiku|Fable/i, "no model, tier, harness or subagent named");
 });
