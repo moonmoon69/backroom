@@ -3141,8 +3141,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Enter, Right to the end: Remove from room…", (f) => f.action === "remove");
     press("Enter");
     await expect("Enter: the Remove dialog", (f) => f.dialog === `Remove ${beta!.alias} from the room` && f.inDialog);
-    // Its thread deleted in T3: the dialog's own checkbox, ticked with Space; Enter on it is the dialog's, not the
-    // panel's (which clicks its switches): it stays ticked.
+    // Its thread deleted in T3: the dialog's own checkbox, ticked with Space. Enter on it is the dialog's (its form is
+    // sent, as Enter in a form's field sends it), not the panel's, which clicks its own switches and would untick it.
     await tabTo("Tab to the thread's choice", (f) => f.inDialog && f.tag === "SELECT");
     for (let i = 0; i < 4 && browser.eval<string>("() => document.activeElement.value") !== "delete"; i += 1) press("ArrowDown");
     const understood = "() => document.querySelector('.dialog input[type=\"checkbox\"]')?.checked ?? null";
@@ -3150,11 +3150,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press(" ");
     browser.poll<boolean | null>("Space: I understand… ticked", understood, (ticked) => ticked === true);
     press("Enter");
-    await sleep(300);
-    if (browser.eval<boolean | null>(understood) !== true) fail("Enter on the Remove dialog's I understand… unticked it: the panel's Enter-clicks-a-switch reached into the dialog");
-    log("  page: Enter on the dialog's own checkbox left it ticked");
-    await tabTo(`Tab to Remove @${beta!.alias}`, (f) => f.inDialog && f.label === `Remove @${beta!.alias}`, "Tab", 10);
-    press("Enter");
+    await sleep(400);
+    const afterEnter = browser.eval<boolean | null>(understood);
+    if (afterEnter === false) fail("Enter on the Remove dialog's I understand… unticked it: the panel's Enter-clicks-a-switch reached into the dialog");
+    log(`  page: Enter on the dialog's own checkbox ${afterEnter === null ? "sent the form (the dialog closed)" : "left it ticked"}`);
+    if (afterEnter === true) {
+      await tabTo(`Tab to Remove @${beta!.alias}`, (f) => f.inDialog && f.label === `Remove @${beta!.alias}`, "Tab", 10);
+      press("Enter");
+    }
     await until(`the API to show @${beta!.alias} retired`, async () => !(await sideMembers()).some((p) => p.id === beta!.id));
     await expect("the ring on the next member, @gamma, not on the page", (f) => f.dialog === null && f.key === `member:${gamma.id}` && f.ring);
     await state("side panel: a member's Remove from room… by keys retires it, the ring on the next member", /^@gamma · /);
