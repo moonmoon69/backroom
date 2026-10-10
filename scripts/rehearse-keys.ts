@@ -2600,8 +2600,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     return got;
   };
   const askChip = () => `chip:ask:${room.participant.fable}`;
-  /** The bar where the ring lands once a chip goes (onNewest): a post, or the running turn's chip. */
-  const landed = /^(#\d+ · |status · @fable working)/;
+  /** The bar where the ring lands once a chip goes (onNewest): a post, the running turn's chip, or the composer's strip. */
+  const landed = /^(#\d+ · |status · @fable working|Continue your draft|Write a message)/;
   /** The newest post the board draws, by its key. */
   const newestDrawn = () => browser.eval<string>(`() => [...document.querySelectorAll('.timeline [data-nav="post"]')].at(-1)?.dataset.navKey ?? ''`);
   /**
@@ -2806,7 +2806,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const [a, b] = [await fableAsks("approval"), await fableAsks("approval")];
     await toAskChip("2 × approval");
     press("Enter");
-    await expect("Enter: the strip on the first approval's Accept", (f) => f.chipOpen && f.action === `choice:${a}:0`);
+    await expect("Enter: the strip on the first approval's Accept", (f) => f.chipOpen && choiceAt(f.action) === 0 && f.label === "Accept 1: run tests");
     names("two approvals", [...DECISIONS.map(([, label]) => `${label} 1: run tests`), ...DECISIONS.map(([, label]) => `${label} 2: run tests`), `show #${turn.number}`]);
     await service.command({ type: "native.approval.respond", participantId: room.participant.fable, requestId: a, decision: "accept" });
     await answered(a, "the first approval, through the API");
@@ -2949,8 +2949,10 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     });
     log(`api: run ${turn.id.slice(0, 8)} terminal, T3's thread runs nothing; #${stopped.number} needs you`);
     const noticeChip = `chip:notice:${stopped.id}`;
-    const stopLanded = await expect("the chip gone: the ring on the notice's chip, or on the newest post", (f) => (f.key === noticeChip || f.key?.startsWith("post:") === true) && f.ring && f.strips === 0 && inRoom(f));
-    await state("a running turn's chip: Stop by keys stops it through T3", stopLanded.key === noticeChip ? /^status · @fable failed: / : await postWhere(stopLanded.key));
+    // The notice's chip if it came with the turn's end; else, as a room lands, the newest post if it shows, else the
+    // composer's strip.
+    const stopLanded = await expect("the chip gone: the ring on the notice's chip, the newest post or the composer's strip", (f) => (f.key === noticeChip || f.key?.startsWith("post:") === true || f.key === "strip") && f.ring && f.strips === 0 && inRoom(f));
+    await state("a running turn's chip: Stop by keys stops it through T3", stopLanded.key === noticeChip ? /^status · @fable failed: / : stopLanded.key === "strip" ? /^(Continue your draft|Write a message)/ : await postWhere(stopLanded.key));
 
     // The failed turn's chip: Retry sends it again (a new run on the request, the notice retried); that turn fails in T3
     // and Dismiss on its chip takes it off your list.
