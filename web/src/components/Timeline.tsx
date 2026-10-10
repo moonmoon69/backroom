@@ -31,6 +31,7 @@ import { identityStyle, Monogram } from "./Monogram.tsx";
 import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
 import { lastInputWasKey } from "../keys.ts";
+import { followsBottom } from "../boardFollow.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -179,8 +180,6 @@ function OpenActions({ where, detail }: { where: string; detail?: number | undef
 /** Lets a row stop the timeline from following the bottom (expanding a long reply must not jump the view). */
 const ScrollControl = createContext<{ release: () => void }>({ release: () => {} });
 
-/** Distance from the bottom (px) under which the timeline keeps following new content. */
-const STICK_PX = 40;
 /** Distance from the bottom (px) beyond which "Jump to latest" appears. */
 const JUMP_PX = 240;
 
@@ -250,6 +249,8 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // Where the board was scrolled to at its last scroll, to tell a scroll up from one down.
+  const lastTop = useRef(0);
   const [far, setFar] = useState(false);
   const [seenSeq, setSeenSeq] = useState(0);
 
@@ -392,7 +393,9 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     const el = scroller.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottom.current = distance < STICK_PX;
+    // Only the reader leaves the bottom: a scroll the browser makes keeping the view steady does not (boardFollow.ts).
+    stickToBottom.current = followsBottom(stickToBottom.current, lastTop.current, el.scrollTop, distance);
+    lastTop.current = el.scrollTop;
     const isFar = distance > JUMP_PX;
     if (isFar !== far) setFar(isFar);
   };

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
@@ -61,6 +61,31 @@ export function WorkBar() {
   const [strip, setStrip] = useState<string | null>(null);
   // What was chosen on an approval or question goes once it no longer waits.
   useEffect(() => keepAnswers(snapshot.nativeRequests), [snapshot.nativeRequests]);
+  // A strip closed by the pointer (pressed on something else) goes once the pointer is released, its click delivered:
+  // the bar shrinks only then, so what was pressed stays under the pointer and gets its click.
+  const pressing = useRef(false);
+  const released = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    // The main button only: another opens a menu (the page's, a select's), which may keep its release from the page.
+    const down = (event: PointerEvent) => {
+      if (event.button === 0) pressing.current = true;
+    };
+    const up = () => {
+      pressing.current = false;
+      const then = released.current.splice(0);
+      if (then.length > 0) setTimeout(() => then.forEach((done) => done()), 0);
+    };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+    };
+  }, []);
   // Esc folds the open chip (keys.ts), once a menu, a dialog, a post's action strip or the composer in front of it has
   // closed; the focus, if it was in the choices or nowhere, goes back to the chip.
   const bar = useRef<HTMLDivElement>(null);
@@ -162,15 +187,21 @@ export function WorkBar() {
   const room = useRef<HTMLElement | null>(null);
   /** A post the open view draws, by its number (the chat leaves some out; a long board draws only its latest). */
   const post = (n: number) => room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`) ?? null;
-  // The chip gone with its strip open (its request answered, its turn retried, dismissed or ended): after a key, the
-  // ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved: the first chip
-  // that needs you, else the newest post if it shows, else a running turn's chip, else the composer's strip.
+  // The chip the ring is on, or in its strip or choices, by its key (focus events on the bar, below).
+  const holding = useRef<string | null>(null);
+  // The chip gone with the ring on it or in its strip (its request answered, its turn retried, dismissed or ended):
+  // after a key, the ring goes where a room opens (keyOrder.ts, openLanding), on something in view, the board not moved:
+  // the first chip that needs you, else the newest post if it shows, else a running turn's chip, else the composer's
+  // strip. Its strip, if open, goes with it.
   const gone = strip !== null && !items.some((item) => item.key === strip);
   useLayoutEffect(() => {
     if (bar.current) room.current = bar.current.parentElement;
-    if (!gone) return;
-    setStrip(null);
-    setOpen(null);
+    if (gone) {
+      setStrip(null);
+      setOpen(null);
+    }
+    if (holding.current === null || items.some((item) => item.key === holding.current)) return;
+    holding.current = null;
     const now = document.activeElement;
     if (!lastInputWasKey() || (now && now !== document.body && now.isConnected)) return;
     const root = room.current;
@@ -188,26 +219,48 @@ export function WorkBar() {
   // "show #n" for each post the chip is about that the open view draws (a click on a #ref shows only those; a post
   // the chat leaves out, or older than the posts drawn, is not offered): the ring goes to the post, brought into view.
   // Whether it is drawn is read as the bar draws, which it does at every poll.
-  const shows: StripAction[] = (opened?.posts ?? [])
-    .filter((n) => post(n) !== null)
-    .map((n) => ({
-      key: `show:${n}`,
-      label: `show #${n}`,
-      name: `show #${n}`,
-      title: `Show #${n}`,
-      press: () => {
-        const shown = post(n);
-        if (!shown) return;
-        flashPost(shown);
-        shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
-      },
-    }));
+  // Kept while the same posts are drawn: a poll redrawing the bar leaves the strip as it is.
+  const drawn = (opened?.posts ?? []).filter((n) => post(n) !== null).join(" ");
+  const shows = useMemo<StripAction[]>(
+    () =>
+      drawn
+        .split(" ")
+        .filter(Boolean)
+        .map(Number)
+        .map((n) => ({
+          key: `show:${n}`,
+          label: `show #${n}`,
+          name: `show #${n}`,
+          title: `Show #${n}`,
+          press: () => {
+            const shown = room.current?.querySelector<HTMLElement>(`.timeline [data-number="${n}"]`);
+            if (!shown) return;
+            flashPost(shown);
+            shown.closest<HTMLElement>("[data-nav]")?.focus({ preventScroll: true });
+          },
+        })),
+    [drawn],
+  );
   if (items.length === 0) return null;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
   const whereOf = (item: Item) => `${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`;
   return (
-    <div className="work-bar" role="status" aria-label="What is going on in this room" ref={bar} data-nav-lane="status">
+    <div
+      className="work-bar"
+      role="status"
+      aria-label="What is going on in this room"
+      ref={bar}
+      data-nav-lane="status"
+      onFocus={(event) => {
+        const chip = (event.target as HTMLElement).closest<HTMLElement>('[data-nav="chip"]');
+        holding.current = chip ? (chip.dataset.navKey ?? "").replace(/^chip:/, "") : (event.target as HTMLElement).closest(".action-strip, .work-open") ? open : null;
+      }}
+      onBlur={(event) => {
+        // Off to somewhere else in the page (not lost with its chip, which leaves it nowhere).
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) holding.current = null;
+      }}
+    >
       <div className="work-groups">
         {GROUPS.map((group) => {
           const list = items.filter((item) => item.group === group.key);
@@ -293,10 +346,18 @@ export function WorkBar() {
           // An answer of your own, which Custom answer focuses, is in the choices: the strip stays.
           keeps={(element) => Boolean(bar.current?.contains(element) && element.closest(".work-open"))}
           onClose={(cause) => {
-            setStrip(null);
-            // A click on the chip itself: its click folds it, as a click on an open chip does.
-            if (cause?.type === "pointerdown" && cause.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${opened.key}"]`)) return;
-            setOpen(null);
+            const key = opened.key;
+            // Closed by the pointer pressed elsewhere (not by a key meanwhile): once it is released. Pressed on the chip
+            // itself: its click folds it, as a click on an open chip does (↑ onto it folds it here).
+            const byPointer = pressing.current && !lastInputWasKey();
+            const onChip = byPointer && cause?.target instanceof Element && cause.target.closest(`[data-nav-key="chip:${key}"]`) !== null;
+            // Only what is still this chip's: a click meanwhile may have opened another chip.
+            const close = () => {
+              setStrip((now) => (now === key ? null : now));
+              if (!onChip) setOpen((now) => (now === key ? null : now));
+            };
+            if (byPointer) released.current.push(close);
+            else close();
           }}
           // Nothing to press (a turn being prepared, or refused): the choices stay open, the ring on the chip.
           onEmpty={() => setStrip(null)}
