@@ -282,14 +282,19 @@ export class FakeT3Adapter implements T3Adapter {
       { instanceId: "claudeAgent", model: "claude-opus-5-5", label: "Claude Opus 5.5", providerName: "Claude", driver: "claudeAgent", source: "server", badge: "new" },
       { instanceId: "claudeAgent", model: "claude-opus-4-8", label: "Claude Opus 4.8", providerName: "Claude", driver: "claudeAgent", source: "server", isLegacy: true },
       { instanceId: "codex", model: "gpt-6-sol", label: "GPT-6 Sol", source: "server" },
+      { instanceId: "antigravity", model: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", providerName: "Antigravity", driver: "antigravity", source: "server" },
+      { instanceId: "antigravity", model: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", providerName: "Antigravity", driver: "antigravity", source: "server" },
     ];
   }
 
   async listProviders(): Promise<T3ProviderInfo[]> {
     this.guard();
+    const later = (ms: number) => new Date(Date.now() + ms).toISOString();
     return [
-      { instanceId: "claudeAgent", displayName: "Claude", enabled: true, installed: true, status: "ready", version: "2.1.281", authStatus: "authenticated", authLabel: "Claude Max Subscription", message: null, usageWindows: [{ id: "primary", label: "Weekly", usedPercent: 42, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation and reduce context usage", hint: "<optional custom summarization instructions>" }, { name: "review", description: "Review the current changes", hint: null }] },
+      { instanceId: "claudeAgent", displayName: "Claude", enabled: true, installed: true, status: "ready", version: "2.1.281", authStatus: "authenticated", authLabel: "Claude Max Subscription", message: null, usageWindows: [{ id: "five_hour", label: "Session", usedPercent: 10, resetsAt: later(3 * 3600000) }, { id: "seven_day", label: "Weekly", usedPercent: 42, resetsAt: later(3 * 86400000) }, { id: "seven_day_fable", label: "Weekly · Fable", usedPercent: 2, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation and reduce context usage", hint: "<optional custom summarization instructions>" }, { name: "review", description: "Review the current changes", hint: null }] },
       { instanceId: "codex", displayName: "Codex", enabled: true, installed: true, status: "ready", version: "0.155.1", authStatus: "authenticated", authLabel: "ChatGPT Pro", message: null, usageWindows: [{ id: "primary", label: "Weekly", usedPercent: 87, resetsAt: new Date(Date.now() + 2 * 86400000).toISOString() }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation to free context", hint: null }, { name: "review", description: "Review uncommitted changes", hint: null }] },
+      // Antigravity's windows as T3 reports them: two families, interleaved.
+      { instanceId: "antigravity", displayName: "Antigravity", enabled: true, installed: true, status: "ready", version: "1.0.0", authStatus: "authenticated", authLabel: "Google account", message: null, usageWindows: [{ id: "3p-5h", label: "Claude & GPT (shared) · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "gemini-5h", label: "Gemini · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "3p-weekly", label: "Claude & GPT (shared) · Weekly", usedPercent: 0, resetsAt: later(7 * 86400000) }, { id: "gemini-weekly", label: "Gemini · Weekly", usedPercent: 3, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: false, autoCompactWindow: null, slashCommands: [] },
     ];
   }
 
