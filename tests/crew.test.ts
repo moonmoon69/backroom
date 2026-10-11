@@ -92,11 +92,11 @@ test("the migration gives the crew members saved before it an empty description,
   const dir = mkdtempSync(join(tmpdir(), "backroom-crew-migration-"));
   try {
     const path = join(dir, "rooms.sqlite");
-    // A database at the version before: every migration applied up to the description's (later ones apply again on open).
+    // A database where every migration is applied but the description's (as when a branch numbered it otherwise).
     const old = new Database(path);
     const id = MIGRATIONS.findIndex((sql) => sql.includes("ALTER TABLE presets ADD COLUMN description")) + 1;
     assert.ok(id > 0, "the description's migration is in the list");
-    old.raw.exec(`ALTER TABLE presets DROP COLUMN description; DELETE FROM migrations WHERE id >= ${id};`);
+    old.raw.exec(`ALTER TABLE presets DROP COLUMN description; DELETE FROM migrations WHERE id = ${id};`);
     const insert = old.raw.prepare(
       "INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, look_json, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, 'full-access', ?, ?, ?, 't', 't')",
     );

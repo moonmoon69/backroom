@@ -41,7 +41,7 @@ test("the migration adds the table to a database at the schema before it, and le
     // It comes after the crew descriptions' migration, so a database main migrated with that one gets it on open.
     assert.ok(MIGRATIONS.findIndex((sql) => sql.includes("ALTER TABLE presets ADD COLUMN description")) + 1 < id);
     // The schema before this migration (the crew descriptions' applied): its table not there and its number not applied.
-    first.raw.exec(`DROP TABLE project_browsers; DELETE FROM migrations WHERE id >= ${id};`);
+    first.raw.exec(`DROP TABLE project_browsers; DELETE FROM migrations WHERE id = ${id};`);
     first.close();
 
     const second = new Database(path);
@@ -50,7 +50,7 @@ test("the migration adds the table to a database at the schema before it, and le
     assert.equal((second.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n, count);
     assert.equal((second.raw.prepare("SELECT value FROM kv WHERE key = 'kept'").get() as { value: string }).value, "yes");
     // The table there but its number not applied (a database migrated by a branch that numbered it otherwise): no error.
-    second.raw.exec(`DELETE FROM migrations WHERE id >= ${id};`);
+    second.raw.exec(`DELETE FROM migrations WHERE id = ${id};`);
     second.close();
     const third = new Database(path);
     assert.equal((third.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n, count);
