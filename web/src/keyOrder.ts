@@ -460,8 +460,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         on: "a crew member, in Add member",
         within: "dialog",
         entries: [
-          { keys: ["↑", "↓"], does: "the row above or below", more: "↑ back to New and Existing; ↓ on to the fields, Name, or with several picked the buttons" },
-          { keys: ["←", "→"], does: "along the crew", more: "in order, across its lines; it stops at the ends" },
+          { keys: ["↑", "↓"], does: "out of the crew", more: "↑ back to New and Existing; ↓ on to the fields, Name, or with several picked the buttons" },
+          { keys: ["←", "→"], does: "along it", more: "along the crew, in order, across its lines; it stops at the ends" },
           { keys: ["Home", "End"], does: "first or last of the crew", bar: false },
           { keys: ["Enter", "Space"], does: "pick or unpick", more: "as a click does: one picked fills in the settings below, several are added at once; the form is not sent, and a held Enter picks once" },
         ],

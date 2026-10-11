@@ -555,7 +555,7 @@ test("in Add member the crew is one row read in order, however it wraps: ← →
 
 test("the bar names Add member's keys: ↓ to the crew from New and Existing; on a crew member ↑ ↓ ← →, Enter and Space pick", () => {
   assert.deepEqual(bar("dialog-mode"), ["↓ the crew", "← → choose New or Existing", "Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
-  assert.deepEqual(bar("dialog-crew"), ["↑ ↓ the row above or below", "← → along the crew", "Enter Space pick or unpick", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
+  assert.deepEqual(bar("dialog-crew"), ["↑ ↓ out of the crew", "← → along it", "Enter Space pick or unpick", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
   // Home and End are in ? and README, off the bar, which has no room for them in the pixel look.
   assert.ok(placeById("dialog-crew").entries.some((entry) => entry.keys.includes("Home") && entry.bar === false));
   assert.ok(!bar("dialog-crew").some((line) => line.startsWith("?")), "? opens nothing over a dialog");

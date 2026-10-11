@@ -932,8 +932,8 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `?` | Close the keys (while this list is open) |
 | New or Existing, in Add member | `↓` | The crew (the crew member the ring was last on, else the first; under Existing, the threads) |
 |  | `←` `→` | Choose New or Existing (the form under them changes with it) |
-| a crew member, in Add member | `↑` `↓` | The row above or below (↑ back to New and Existing; ↓ on to the fields, Name, or with several picked the buttons) |
-|  | `←` `→` | Along the crew (in order, across its lines; it stops at the ends) |
+| a crew member, in Add member | `↑` `↓` | Out of the crew (↑ back to New and Existing; ↓ on to the fields, Name, or with several picked the buttons) |
+|  | `←` `→` | Along it (along the crew, in order, across its lines; it stops at the ends) |
 |  | `Home` `End` | First or last of the crew |
 |  | `Enter` `Space` | Pick or unpick (as a click does: one picked fills in the settings below, several are added at once; the form is not sent, and a held Enter picks once) |
 | a menu | `↑` `↓` | Previous or next item |
