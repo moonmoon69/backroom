@@ -1704,7 +1704,8 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
 
   browser.click(/button "Back to the overview"/);
   browser.waitFor(title);
-  if ((await setting()) !== null) fail("a new project has a browser setting before any is chosen");
+  // A new project has no setting (null; a service without project settings has no field at all, the globe fails below).
+  if ((await setting()) ?? null) fail("a new project has a browser setting before any is chosen");
   browser.click(globe("off \\(no setting\\)"));
   browser.waitFor("New rooms start with browsers on");
   browser.click(/checkbox "New rooms start with browsers on/);
