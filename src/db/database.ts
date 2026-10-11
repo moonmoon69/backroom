@@ -26,7 +26,7 @@ const NUMBER_EXISTING_POSTS = `
  * runtime's queue (its tasks, their revisions and its runs) is no longer created: a database from before the engine
  * runtime keeps those tables, which nothing reads or writes, and the entries that only changed them do nothing now.
  */
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE rooms (
     id TEXT PRIMARY KEY,
@@ -256,6 +256,16 @@ const MIGRATIONS: string[] = [
   `,
   // A crew member's one-sentence description, read by the Consigliere when he seats; empty for the ones saved before.
   `ALTER TABLE presets ADD COLUMN description TEXT NOT NULL DEFAULT '';`,
+  // What a project's new rooms start with, chosen as a room's browsers are: on or off, the default, the ones they may use.
+  `
+  CREATE TABLE IF NOT EXISTS project_browsers (
+    project_id TEXT PRIMARY KEY,
+    browser_enabled INTEGER NOT NULL DEFAULT 0,
+    default_browser_id TEXT,
+    browser_ids_json TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export class Database {

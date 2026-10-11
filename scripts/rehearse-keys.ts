@@ -839,7 +839,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // its end; Home and End go to its ends.
     grid = await settledGrid();
     const firstRow = projectTiles.filter((p) => Math.abs(p.top - Math.min(...projectTiles.map((t) => t.top))) < 2).sort((a, b) => a.left - b.left);
-    const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !p.element.startsWith("head:room:")).sort((a, b) => a.left - b.left);
+    const header = grid.filter((p) => p.element.startsWith("head:") && p.bottom <= firstRow[0]!.top && !/^head:(room|project-browsers):/.test(p.element)).sort((a, b) => a.left - b.left);
     // The page scrolled down first (the ring on the browser at the foot, where the run above ended): the way up brings each
     // stop into view below the sticky header (scroll-padding-top), the first row's tile and the + both in sight.
     const firstColumn = (await upFromTheFoot(browserTile.element, firstRow[0]!.element)) ?? firstRow[0]!;

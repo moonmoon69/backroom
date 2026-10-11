@@ -53,6 +53,8 @@ export function App() {
   // T3's projects and threads, for the overview. Kept at the last good reading while T3 does not answer.
   const [projects, setProjects] = useState<T3Project[] | null>(null);
   const [threads, setThreads] = useState<T3ThreadShell[]>([]);
+  /** The finish time each thread outside rooms was marked seen up to on this page (see the news effects below). */
+  const [seenThreads, setSeenThreads] = useState<ReadonlyMap<string, string>>(new Map());
   const [t3Error, setT3Error] = useState<string | null>(null);
   // Archive and unarchive switch the view before the next thread-list read confirms them.
   const markThread = useCallback((threadId: string, patch: Partial<T3ThreadShell>) => {
@@ -292,7 +294,11 @@ export function App() {
   useEffect(() => {
     if (!openThreadId || !openThreadAt || !lookingHere) return;
     api.markThreadSeen(openThreadId, openThreadAt).then(
-      () => setThreads((list) => list.map((thread) => (thread.id === openThreadId && thread.news?.at === openThreadAt ? { ...thread, news: null } : thread))),
+      () => {
+        setThreads((list) => list.map((thread) => (thread.id === openThreadId && thread.news?.at === openThreadAt ? { ...thread, news: null } : thread)));
+        // The overview's own read may still carry it: it leaves out what is marked here (seenNews.ts).
+        setSeenThreads((seen) => (seen.get(openThreadId) === openThreadAt ? seen : new Map(seen).set(openThreadId, openThreadAt)));
+      },
       () => undefined,
     );
   }, [openThreadId, openThreadAt, lookingHere]);
@@ -564,6 +570,7 @@ export function App() {
           rooms={sideRooms}
           projects={projects}
           threads={sideThreads}
+          seenThreads={seenThreads}
           t3Error={t3Error}
           browsers={browsers}
           controls={appControls}

@@ -21,6 +21,22 @@ export function effectiveBrowser(repos: Repos, room: Pick<Room, "defaultBrowserI
   return allowed.find((b) => b.id === room.defaultBrowserId) ?? allowed.find((b) => b.id === GENERAL_BROWSER_ID) ?? allowed[0] ?? null;
 }
 
+/**
+ * A room's (or a project's) choices once some browsers are gone (`exists` is false for them): a default among them
+ * falls back to "general" (null), the allowed list loses them, and a list that had only those turns browsers off and
+ * allows every browser again, for when they are turned back on.
+ */
+export function withoutGoneBrowsers<T extends Pick<Room, "browserEnabled" | "defaultBrowserId" | "allowedBrowserIds">>(choice: T, exists: (browserId: string) => boolean): T {
+  const allowed = choice.allowedBrowserIds?.filter(exists) ?? null;
+  const emptied = allowed !== null && allowed.length === 0;
+  return {
+    ...choice,
+    browserEnabled: emptied ? false : choice.browserEnabled,
+    defaultBrowserId: choice.defaultBrowserId && exists(choice.defaultBrowserId) ? choice.defaultBrowserId : null,
+    allowedBrowserIds: emptied ? null : allowed,
+  };
+}
+
 /** An agent's key from its briefing: "<alias>.<first 8 characters of the room id>"; a thread outside rooms uses "thread.<id prefix>". */
 export const agentKey = (alias: string, roomId: string): string => `${alias}.${roomId.slice(0, 8)}`;
 

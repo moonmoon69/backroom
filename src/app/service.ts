@@ -18,7 +18,7 @@ import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
 import type { EngineHost } from "../runtime/host.ts";
 import type { BriefingSource } from "../runtime/render.ts";
-import { effectiveBrowser, roomsMayUseBrowser, roomsUsingBrowser } from "../browser/catalog.ts";
+import { effectiveBrowser, roomsMayUseBrowser, roomsUsingBrowser, withoutGoneBrowsers } from "../browser/catalog.ts";
 import {
   POST_KINDS,
   type Browser,
@@ -39,6 +39,7 @@ export type CommandResult =
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
+  | { type: "project.updated"; projectId: string }
   /**
    * timeout: the action was sent and T3 has not confirmed it, within the limit or before its connection went; it may
    * still apply it (the late outcome is logged).
@@ -241,6 +242,8 @@ export class RoomService {
         return this.setRoomBrowser(command);
       case "thread.browser":
         return this.setThreadBrowser(command);
+      case "project.browser":
+        return this.setProjectBrowser(command);
       case "browser.create":
         return this.createBrowser(command);
       case "browser.update":
@@ -408,15 +411,14 @@ export class RoomService {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       throw error;
     }
+    const browsers = this.newRoomBrowsers(command.projectId);
     const room: Room = {
       id: randomUUID(),
       projectId: command.projectId,
       environmentId,
       title: command.title,
       nextSequence: 1,
-      browserEnabled: false,
-      defaultBrowserId: null,
-      allowedBrowserIds: null,
+      ...browsers,
       consigliereId: null,
       createdAt: now(),
       updatedAt: now(),
@@ -509,6 +511,37 @@ export class RoomService {
     return { type: "room.updated", roomId: room.id };
   }
 
+  /**
+   * What a new room in the project starts with: a copy of the project's setting, without any browser it names that is
+   * gone; browsers off, no default and every browser without one.
+   */
+  private newRoomBrowsers(projectId: string): Pick<Room, "browserEnabled" | "defaultBrowserId" | "allowedBrowserIds"> {
+    const record = this.repos.getProjectBrowsers(projectId);
+    if (!record) return { browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null };
+    const { browserEnabled, defaultBrowserId, allowedBrowserIds } = withoutGoneBrowsers(record, (id) => this.repos.getBrowser(id) !== null);
+    return { browserEnabled, defaultBrowserId, allowedBrowserIds };
+  }
+
+  /** A project's setting for its new rooms, with a room's rules; null removes it. Rooms that exist keep theirs. */
+  private async setProjectBrowser(command: Extract<RoomCommand, { type: "project.browser" }>): Promise<CommandResult> {
+    if (command.enabled === null) {
+      this.db.transaction(() => this.repos.deleteProjectBrowsers(command.projectId));
+      return { type: "project.updated", projectId: command.projectId };
+    }
+    try {
+      if (!(await this.adapter.listProjects()).some((project) => project.id === command.projectId)) {
+        throw new RoomError("unknown_project", `T3 project ${command.projectId} was not found on the connected server`);
+      }
+    } catch (error) {
+      if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
+      throw error;
+    }
+    const current = this.repos.getProjectBrowsers(command.projectId) ?? { projectId: command.projectId, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, updatedAt: now() };
+    const { defaultBrowserId, allowed } = this.browserChoice(current, command, "project");
+    this.db.transaction(() => this.repos.setProjectBrowsers({ ...current, browserEnabled: command.enabled as boolean, defaultBrowserId, allowedBrowserIds: allowed, updatedAt: now() }));
+    return { type: "project.updated", projectId: command.projectId };
+  }
+
   /** A thread outside rooms gets browsers as a room does; a thread without a record has them off. */
   private async setThreadBrowser(command: Extract<RoomCommand, { type: "thread.browser" }>): Promise<CommandResult> {
     const current = this.repos.getThreadBrowsers(command.threadId) ?? { threadId: command.threadId, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, updatedAt: now() };
@@ -543,14 +576,17 @@ export class RoomService {
       throw new RoomError("browser_in_use", `"${browser.name}" is the default browser of ${users.map((r) => `"${r.title}"`).join(", ")}; pick another default there first`, 409);
     }
     this.db.transaction(() => {
+      // A room or a project pointing at it falls back to "general"; one whose allowed list had only this browser has
+      // browsers off (src/browser/catalog.ts).
+      const names = (choice: Pick<Room, "defaultBrowserId" | "allowedBrowserIds">) => choice.defaultBrowserId === browser.id || (choice.allowedBrowserIds?.includes(browser.id) ?? false);
+      const exists = (id: string) => id !== browser.id;
       for (const room of this.repos.listRooms()) {
-        const pointsAt = room.defaultBrowserId === browser.id;
-        const listed = room.allowedBrowserIds?.includes(browser.id) ?? false;
-        if (!pointsAt && !listed) continue;
-        // A room pointing at it falls back to "general"; a room whose allowed list had only this browser has no browser left.
-        const allowed = room.allowedBrowserIds?.filter((id) => id !== browser.id) ?? null;
-        const emptied = allowed !== null && allowed.length === 0;
-        this.repos.setRoomBrowser(room.id, emptied ? false : room.browserEnabled, pointsAt ? null : room.defaultBrowserId, now(), emptied ? null : allowed);
+        if (!names(room)) continue;
+        const next = withoutGoneBrowsers(room, exists);
+        this.repos.setRoomBrowser(room.id, next.browserEnabled, next.defaultBrowserId, now(), next.allowedBrowserIds);
+      }
+      for (const record of this.repos.listProjectBrowsers()) {
+        if (names(record)) this.repos.setProjectBrowsers({ ...withoutGoneBrowsers(record, exists), updatedAt: now() });
       }
       this.repos.deleteBrowser(browser.id);
     });
