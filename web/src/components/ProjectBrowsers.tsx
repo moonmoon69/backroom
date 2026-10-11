@@ -3,7 +3,7 @@
  * the dialog it opens with a room's choices (browsers on or off, the ones they may use, the default). A room made in
  * the project starts with a copy; its own Browser panel then decides for it, and rooms that exist keep theirs.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BrowserListItem, CommandResult, ProjectBrowsersView, RoomCommand, T3Project } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { BrowserChoices, GlobeIcon } from "./RoomBrowser.tsx";
@@ -43,6 +43,15 @@ export function ProjectBrowsersButton({ project, browsers, runCommand, onChanged
 
 function ProjectBrowsersDialog({ project, browsers, runCommand, onChanged, onClose }: { project: T3Project; browsers: BrowserListItem[]; runCommand: RunCommand; onChanged: () => void; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
+  const toggle = useRef<HTMLInputElement>(null);
+  // Clear setting goes with the setting, the focus with it: the toggle takes it, the first thing to choose again, once
+  // it is enabled again (it is disabled while the change is saved).
+  const [refocus, setRefocus] = useState(false);
+  useEffect(() => {
+    if (!refocus || busy) return;
+    toggle.current?.focus();
+    setRefocus(false);
+  }, [refocus, busy]);
   const setting = project.browsers ?? null;
   // Without a setting, what a new room gets today: off, every browser, general (else the first) as its default.
   const enabled = setting?.enabled ?? false;
@@ -51,7 +60,10 @@ function ProjectBrowsersDialog({ project, browsers, runCommand, onChanged, onClo
   const set = async (next: { enabled: boolean | null; browserId?: string | null; allowed?: string[] | null }) => {
     setBusy(true);
     try {
-      if (await runCommand({ type: "project.browser", projectId: project.id, ...next })) onChanged();
+      const done = await runCommand({ type: "project.browser", projectId: project.id, ...next });
+      if (!done) return;
+      onChanged();
+      if (next.enabled === null) setRefocus(true);
     } finally {
       setBusy(false);
     }
@@ -60,7 +72,7 @@ function ProjectBrowsersDialog({ project, browsers, runCommand, onChanged, onClo
     <Dialog title={`Browsers for new rooms in ${project.title}`} onClose={onClose}>
       <div className="browser-panel project-browsers-panel">
         <label className="browser-toggle">
-          <input type="checkbox" checked={enabled} disabled={busy || browsers.length === 0} onChange={() => void set({ enabled: !enabled })} data-autofocus />
+          <input ref={toggle} type="checkbox" checked={enabled} disabled={busy || browsers.length === 0} onChange={() => void set({ enabled: !enabled })} data-autofocus />
           <span>
             New rooms start with browsers on
             <span className="hint">

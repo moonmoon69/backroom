@@ -1831,12 +1831,13 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
       log("  page: the dialog shows preview ticked and the default, general a plain unticked box; the globe says on · default \"preview\" with its check");
     },
   );
+  // Esc is the story's (a state played silently skips its checks, and the dialog must close for what follows).
+  browser.on("press", "Escape");
   await state(
     "Esc closes the project's browsers and gives the focus back to its globe; a reload keeps the setting",
     async () => ((await setting())?.enabled ? "the project's setting is still on" : null),
     [],
     () => {
-      browser.on("press", "Escape");
       browser.poll<GlobeRead>("the dialog closed, the focus back on the globe", `() => document.querySelector('.project-browsers-panel') ? null : (${globeRead})()`, (g) => Boolean(g?.focused));
       log("  page: Esc closed the dialog and the focus is back on the globe");
       browser.on("reload");
@@ -1867,6 +1868,27 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
       browser.poll<string | null>("the room to open", "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
       browser.poll<string | null>("the room's Browser button to say on, preview the default", "() => document.querySelector('.room-browser-button')?.getAttribute('aria-label') ?? null", (label) => Boolean(label?.startsWith("Browser: on for this room's agents · preview (default)")));
       log("  page: the room opened with its Browser button on, preview (default)");
+    },
+  );
+  // Clear setting removes the button that has the focus: the focus goes to the toggle, not the page's body (review #479).
+  // From the room just made (open by now also when state 42 was played silently).
+  browser.poll<string | null>("the new room to be open", "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
+  browser.click(/button "Back to the overview"/);
+  browser.click(globe('on · default "preview"'));
+  browser.waitFor("Clear setting");
+  browser.click(/button "Clear setting"/);
+  const toggleRead = `() => { const box = document.querySelector('.project-browsers-panel input[type=checkbox]'); const active = document.activeElement; return { focused: Boolean(box) && active === box, checked: box?.checked ?? null, clear: [...document.querySelectorAll('.project-browsers-panel button')].some((b) => b.textContent === 'Clear setting'), active: active ? active.tagName + (active.getAttribute('aria-label') ? ' ' + active.getAttribute('aria-label') : '') : null }; }`;
+  type ToggleRead = { focused: boolean; checked: boolean | null; clear: boolean; active: string | null };
+  await state(
+    "Clear setting: the project has no setting again, and the focus is on the toggle",
+    async () => ((await setting()) === null ? `GET /api/t3/projects: ${title} browsers null (no setting)` : null),
+    ["No setting yet"],
+    () => {
+      browser.poll<ToggleRead>("the toggle off and focused, Clear setting gone", toggleRead, (v) => v.focused && v.checked === false && !v.clear);
+      log("  page: Clear setting is gone, the toggle is off and has the focus");
+      browser.on("press", "Escape");
+      browser.poll<GlobeRead>("the globe to say off (no setting), the focus back on it", globeRead, (g) => g?.label === `Browsers for new rooms in ${title}: off (no setting)` && !g.checked && g.focused);
+      log("  page: Esc closed the dialog; the globe says off (no setting) and has the focus");
     },
   );
   return passed;
