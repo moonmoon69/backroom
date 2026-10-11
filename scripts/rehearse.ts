@@ -15,7 +15,8 @@
  * a Consigliere, a worker and a reviewer, and for every state the page must show checks two things: the room snapshot
  * from the API (GET /api/rooms/:id) has the expected fields, and `rooms-browser … wait-for <text>` printed a match in
  * the user's view of it. After each step it reads `rooms-browser … console` and fails on any error-level line. The
- * first failure ends the run with exit code 1; a screenshot of each state goes to --out. The page opens on
+ * first failure ends the run with exit code 1; a screenshot of each state goes to --out, and a failure leaves the page
+ * as it was there too (NN-failure.png and NN-failure-snapshot.txt, the page's text with uids). The page opens on
  * http://rehearse-<port>.localhost:<port> (REHEARSE_TAB_HOST names another host): a site of the run's own, so a
  * renderer of its own, which a crash in the run takes down alone.
  *
@@ -92,7 +93,8 @@ const HELP = `${USAGE}
   --as <key>            your rooms-browser key (from your briefing)
   --browser <name>      the shared browser (default backroom-dev for one step)
   --data <dir>          the run's data (default data/rehearse-<step>-<port>; --step all: data/rehearse-all-<port>/<step>)
-  --out <dir>           screenshots (default <data>/screens; --step all: <out>/<step>, and each step's log beside it)
+  --out <dir>           screenshots, a failure's with the page's snapshot (default <data>/screens; --step all:
+                        <out>/<step>, and each step's log beside it)
   --only <state>        check only this state (as often as wanted): its number from --list (under --step all, that
                         number in each step), a range (12-15), a /pattern/ or part of its name; the run jumps to its
                         section, sets up what the section reads, plays the states before it without screenshots or
@@ -518,6 +520,25 @@ class Browser {
       // rooms-browser's own folder; leaving it is harmless
     }
     log(`  screenshot ${target}`);
+  }
+  /** The page as a failure left it, beside the states' screenshots: a screenshot and its snapshot (the text with uids). */
+  evidence(): void {
+    if (!this.tabId) return;
+    const number = String(this.shots + 1).padStart(2, "0");
+    try {
+      this.screenshot("failure");
+    } catch (error) {
+      log(`  no screenshot of the failure: ${(error as Error).message.split("\n")[0]}`);
+    }
+    try {
+      const target = join(this.o.out, `${number}-failure-snapshot.txt`);
+      const snapshot = this.on("snapshot");
+      mkdirSync(this.o.out, { recursive: true });
+      writeFileSync(target, snapshot);
+      log(`  snapshot ${target}`);
+    } catch (error) {
+      log(`  no snapshot of the failure: ${(error as Error).message.split("\n")[0]}`);
+    }
   }
 }
 
@@ -1903,6 +1924,10 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
   const state = probedStates(browser, selection, passed);
   const folder = join(room.dataDir, "browsers-project");
   mkdirSync(folder, { recursive: true });
+  // The project has instructions of its own, so its room writes no agents file (the agents file's states are A1's above)
+  // wherever --data is: in a folder outside git it would, and its toast at the bottom right covered the globe that the
+  // Clear setting state clicks after Back (#129, #239).
+  writeFileSync(join(folder, "CLAUDE.md"), "The rehearsal's scratch project for a project's browsers.\n");
   const title = "browsers-scratch";
   const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
   const preview = (await service.command<{ browserId: string }>({ type: "browser.create", name: "preview", description: "The preview deploy, logged in as the test user." })).browserId;
@@ -1993,6 +2018,11 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
   // From the room just made (open by now also when state 42 was played silently).
   browser.poll<string | null>("the new room to be open", "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
   browser.click(/button "Back to the overview"/);
+  // rooms-browser clicks the point at the globe's centre: what covers it there takes the click (a toast did, #239).
+  const cover = browser.eval<string | null>(
+    `() => { const g = document.querySelector('[data-nav-key="head:project-browsers:${projectId}"]'); const r = g?.getBoundingClientRect(); const at = r ? document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) : null; return !g ? 'no globe' : g.contains(at) ? null : at ? at.tagName.toLowerCase() + [...at.classList].map((c) => '.' + c).join('') : 'nothing'; }`,
+  );
+  if (cover) fail(`the globe is covered at its centre, where the click lands: ${cover}`);
   browser.click(globe('on · default "preview"'));
   browser.waitFor("Clear setting");
   browser.click(/button "Clear setting"/);
@@ -3241,7 +3271,11 @@ async function main(): Promise<void> {
         step === "ui" ? await rehearseUi(service, browser, room, selection) : step === "keys" ? await rehearseKeys(service, browser, room, { log, fail, until, sleep, selection }) : await rehearseRoom(service, browser, room, selection);
       log(`DONE: ${selection.whole ? `${passed.length} states checked in the API and on the page, console clean` : selection.summary()}`);
     } catch (error) {
-      if (!(error instanceof SelectionDone)) throw error;
+      if (!(error instanceof SelectionDone)) {
+        // A failure leaves its evidence before the tab closes (a run stopped from outside has none to leave).
+        if (!stoppedBy) browser.evidence();
+        throw error;
+      }
       log(`DONE: ${error.message}`);
     }
     if (!selection.whole && selection.checked === 0) fail("no state was checked: --only and --until named states the step never reached");

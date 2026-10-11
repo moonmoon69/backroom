@@ -49,7 +49,7 @@ export function KeyHelp({ onClose }: { onClose: () => void }) {
             </table>
           </section>
         ))}
-        <p className="muted hint">The bar at the foot of the page names the keys for what the ring is on. Arrows keep their own meaning in text fields, lists, menus and dialogs; Alt+← stays the browser&rsquo;s back.</p>
+        <p className="muted hint">The bar at the foot of the page names the keys for what the ring is on. Arrows keep their own meaning in text fields, lists, menus and dialogs, Add member&rsquo;s crew aside; Alt+← stays the browser&rsquo;s back.</p>
       </div>
     </Dialog>
   );

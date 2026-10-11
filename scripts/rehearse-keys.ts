@@ -53,6 +53,12 @@
  * stubbed), a file chip's preview (a file in a project of the run's own) and "turn in T3"; Detail, last, the post's
  * detail, the ring back on Detail when it closes. A live bubble with an approval offers its choices.
  *
+ * Add member's crew (#152), with eight crew members so it wraps onto several lines: ↓ from New reaches the first, ← →
+ * go along it in order onto the next lines and stop at its ends, never picking, the ring drawn whole inside the dialog
+ * in both looks; Space picks one and fills in its settings, ↓ goes on to Name, ↑ back to New and ↓ to the crew member
+ * last on; Enter picks a second without sending the form and Space unpicks and picks it again; Add 2 members seats
+ * both, and the API shows them.
+ *
  * The story is cut into sections, each named by its first state (scripts/rehearse-select.ts). A run with --only jumps
  * into the section of the first state it checks: that section's setup makes through the API what the sections before
  * it made and it reads, opens the page and brings it to where the section starts, and its states before the chosen one
@@ -204,6 +210,34 @@ const STRIP = `() => {
 }`;
 
 /**
+ * The Add member dialog's crew (#152): the chip the ring is on (its index, -1 elsewhere) or New and Existing, each chip
+ * with its line's top and whether it is picked, the Name field's value, the submit button's words, and whether the ring
+ * on the focused chip (its outline, its offset and width out) is drawn inside the dialog's body, which clips it.
+ */
+const CREW = `() => {
+  const a = document.activeElement;
+  const chips = [...document.querySelectorAll('.dialog .preset-chip')];
+  const body = document.querySelector('.dialog .dialog-body');
+  const at = chips.indexOf(a);
+  let ring = null;
+  if (at >= 0 && body) {
+    const cs = getComputedStyle(a);
+    const out = parseFloat(cs.outlineWidth) + parseFloat(cs.outlineOffset);
+    const r = a.getBoundingClientRect();
+    const b = body.getBoundingClientRect();
+    ring = { drawn: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, inside: r.left - out >= b.left - 0.5 && r.right + out <= b.right + 0.5 && r.top - out >= b.top - 0.5 && r.bottom + out <= b.bottom + 0.5 };
+  }
+  return {
+    at,
+    mode: a && a.matches('.add-mode input') ? a.closest('label').textContent.trim() : null,
+    chips: chips.map((c) => ({ name: c.querySelector('.preset-chip-name').textContent, top: Math.round(c.getBoundingClientRect().top), picked: c.getAttribute('aria-pressed') === 'true' })),
+    name: document.querySelector('.dialog input[pattern]')?.value ?? null,
+    submit: document.querySelector('.dialog button[type="submit"]')?.textContent.trim() ?? null,
+    ring,
+  };
+}`;
+
+/**
  * The open room's board: how far it is from its bottom, its newest post (its key, how much of it shows in the board's
  * view, its height), its live bubble's height, and whether a live feed is drawn (it comes with the room's desk read).
  */
@@ -286,24 +320,35 @@ const BAR = `() => {
 /**
  * Every place's whole bar (each place of the key table with each mix of what can hold), drawn in the page with its own
  * CSS at the foot of the window, the where-text past its widest: the width its keys take against the width their line
- * has. Returns the places whose keys do not fit.
+ * has. Returns the places whose keys do not fit. Each key with its words is sent once and the bars name them by number:
+ * the function goes to rooms-browser as one argument, which may not pass 128 KiB (written out in full, the bars had
+ * grown past it).
  */
 function everyBarFits(): string {
   const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "asking", "panel-open", "help", "disabled"];
   const mixes = Array.from({ length: 1 << conditions.length }, (_, mask) => conditions.filter((_, i) => mask & (1 << i)));
-  const bars = new Map<string, { id: string; keys: Array<{ k: string[]; d: string }>; end: { k: string[]; d: string } | null }>();
+  const chips: Array<{ k: string[]; d: string }> = [];
+  const chipAt = new Map<string, number>();
+  const numbered = (chip: { k: string[]; d: string }): number => {
+    const signature = JSON.stringify(chip);
+    if (!chipAt.has(signature)) chipAt.set(signature, chips.push(chip) - 1);
+    return chipAt.get(signature)!;
+  };
+  const bars = new Map<string, { id: string; keys: number[]; end: number | null }>();
   for (const place of KEYS.flatMap((area) => area.places)) {
     for (const now of mixes) {
       const entries = barEntries(place.id, now);
       const help = entries.find((entry) => entry.keys.includes("?"));
       // Enter in an action strip is named by its button, cut on the bar: drawn at its longest.
-      const keys = entries.filter((entry) => entry !== help).map((entry) => ({ k: entry.keys, d: barDoes(entry, "Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm") }));
-      const signature = JSON.stringify([keys, help?.does ?? null]);
-      if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end: help ? { k: help.keys, d: help.does } : null });
+      const keys = entries.filter((entry) => entry !== help).map((entry) => numbered({ k: entry.keys, d: barDoes(entry, "Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm") }));
+      const end = help ? numbered({ k: help.keys, d: help.does }) : null;
+      const signature = JSON.stringify([keys, end]);
+      if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end });
     }
   }
   return `() => {
-    const bars = ${JSON.stringify([...bars.values()])};
+    const chips = ${JSON.stringify(chips)};
+    const bars = ${JSON.stringify([...bars.values()])}.map((b) => ({ id: b.id, keys: b.keys.map((n) => chips[n]), end: b.end === null ? null : chips[b.end] }));
     const text = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const chip = (c, end) => '<span class="key-bar-key' + (end ? ' key-bar-end' : '') + '">' + c.k.map((k) => '<kbd>' + text(k) + '</kbd>').join('') + '<span class="key-bar-does">' + text(c.d) + '</span></span>';
     const over = [];
@@ -3236,6 +3281,36 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     side = { roomId, members: async () => (await snapshot()).participants.filter((p) => !p.retiredAt) };
     return side;
   };
+  /**
+   * Eight crew members (sol and astra, and six more), so Add member's crew wraps onto several lines as the user's does
+   * (#152). Made once; the page reads the crew every 8 seconds.
+   */
+  const CREW_NAMES = ["sol", "astra", "opus", "fable", "grok", "gemini", "haiku", "worker"];
+  const crewOfEight = async (): Promise<void> => {
+    const have = new Set((await service.call<Array<{ name: string }>>("GET", "/api/presets")).map((p) => p.name));
+    for (const name of CREW_NAMES.filter((n) => !have.has(n))) await service.command({ type: "preset.create", name, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
+  };
+  type Crew = { at: number; mode: string | null; chips: Array<{ name: string; top: number; picked: boolean }>; name: string | null; submit: string | null; ring: { drawn: boolean; inside: boolean } | null };
+  const crew = (): Crew => browser.eval<Crew>(CREW);
+  /** Wait until Add member's crew is as `ok` says; fail with what it shows. */
+  const crewIs = async (what: string, ok: (c: Crew) => boolean, ms = 6000): Promise<Crew> => {
+    let last: Crew | null = null;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      last = crew();
+      if (ok(last)) {
+        const picked = last.chips.filter((c) => c.picked).map((c) => c.name);
+        log(`  crew: ${what} (${last.mode !== null ? `on ${last.mode}` : last.at >= 0 ? `on ${last.chips[last.at]!.name}, line at ${last.chips[last.at]!.top}px${last.ring ? `, ring ${last.ring.drawn ? "drawn" : "not drawn"}${last.ring.inside ? " inside the body" : " cut by the body"}` : ""}` : "elsewhere"}; picked: ${picked.join(", ") || "none"})`);
+        return last;
+      }
+      await sleep(150);
+    }
+    return fail(`expected ${what}; Add member's crew shows ${JSON.stringify(last)}`);
+  };
+  const picked = (c: Crew): string[] => c.chips.filter((chip) => chip.picked).map((chip) => chip.name);
+  /** The ring on crew member `at`, drawn whole inside the dialog's body, and nobody picked by moving. */
+  const ringOn = (c: Crew, at: number, picks: string[]): boolean => c.at === at && c.ring?.drawn === true && c.ring.inside && JSON.stringify(picked(c)) === JSON.stringify(picks);
+
   /** The look by keys (Settings → Look in the overview's header), from the overview; nothing when it is so already. */
   const setLook = async (look: "Plain" | "Pixel") => {
     const skin = () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''");
@@ -3281,6 +3356,78 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const gamma = await until("the API to show @gamma seated", async () => (await sideMembers()).find((p) => p.alias === "gamma") ?? null);
     log(`api: @gamma seated (${gamma.id.slice(0, 8)})`);
     await state("side panel: + Add member by keys seats a member, the API shows it", "the panel's head · + Add member");
+
+    // Add member's crew by keys (#152): Down from New to the crew, Space picks one and fills in its settings, ← → along
+    // the crew onto its wrapped lines and stopping at its ends, never picking; Enter picks a second without sending the
+    // form, Space unpicks and picks again; Add 2 members seats both, and the API shows them.
+    await crewOfEight();
+    press("Enter");
+    await expect("Enter: the Add member dialog, the ring on New", (f) => f.dialog === "Add member" && f.inDialog);
+    await crewIs("the ring on New, the crew of eight drawn", (c) => c.mode === "New" && c.chips.length === CREW_NAMES.length, 12_000);
+    press("ArrowDown");
+    let seen = await crewIs("Down: the first crew member, nobody picked", (c) => ringOn(c, 0, []));
+    // The crew in the page's order (the order made, or as Arrange left it): the first two are picked.
+    const names = seen.chips.map((c) => c.name);
+    const [one, two] = names as [string, string];
+    if (new Set(seen.chips.map((c) => c.top)).size < 2) fail(`the crew of eight is drawn on one line (${JSON.stringify(seen.chips)}): the check needs it wrapped`);
+    await expect(`the ring drawn on ${one}`, (f) => f.ring && f.pressed === "false");
+    await barSays("a crew member in Add member", {
+      place: "dialog-crew",
+      where: `${one} · crew`,
+      keys: barEntries("dialog-crew").map((entry) => `${entry.keys.join(" ")} ${entry.does}`),
+      end: null,
+    });
+    press(" ");
+    seen = await crewIs(`Space: ${one} picked, the ring still on it, its settings filled in`, (c) => ringOn(c, 0, [one]) && c.name === one && c.submit === "Add member");
+    // Along the crew, in order, onto the next line and on to the end; the ends stay.
+    const lines = seen.chips.map((c) => c.top);
+    for (let i = 1; i < names.length; i += 1) {
+      press("ArrowRight");
+      await crewIs(`Right: ${names[i]}${lines[i] !== lines[i - 1] ? ", on the next line" : ""}, nobody more picked`, (c) => ringOn(c, i, [one]));
+    }
+    press("ArrowRight");
+    await sleep(300);
+    await crewIs("Right at the end: the ring stays on the last", (c) => ringOn(c, names.length - 1, [one]));
+    press("Home");
+    await crewIs("Home: the first", (c) => ringOn(c, 0, [one]));
+    press("ArrowLeft");
+    await sleep(300);
+    await crewIs("Left at the start: the ring stays on the first", (c) => ringOn(c, 0, [one]));
+    press("End");
+    await crewIs("End: the last, on the crew's last line", (c) => ringOn(c, names.length - 1, [one]) && lines.at(-1)! > lines[0]!);
+    await expect("the dialog still open, the ring drawn", (f) => f.dialog === "Add member" && f.ring);
+    await state("Add member's crew: Down from New reaches it, Space picks one, the ring along its wrapped lines", `${names.at(-1)} · crew`);
+
+    // Down to the fields below: Name holds the one picked. Back to the crew, a second picked by Enter.
+    press("ArrowDown");
+    await expect(`Down: the Name field, ${one}'s settings in it`, (f) => f.inDialog && f.tag === "INPUT" && f.value === one);
+    await tabTo("Shift+Tab back to the crew's last", () => crew().at === names.length - 1, "Shift+Tab", 4);
+    press("Home");
+    press("ArrowRight");
+    await crewIs(`Home, Right: ${two}`, (c) => ringOn(c, 1, [one]));
+    press("ArrowUp");
+    await crewIs("Up: back on New", (c) => c.mode === "New");
+    press("ArrowDown");
+    await crewIs(`Down: the crew member the ring was last on, ${two}`, (c) => ringOn(c, 1, [one]));
+    press("Enter");
+    await crewIs(`Enter: ${two} picked too, the form not sent, the ring still on ${two}`, (c) => ringOn(c, 1, [one, two]) && c.submit === "Add 2 members");
+    await expect("the dialog still open", (f) => f.dialog === "Add member" && f.ring);
+    press(" ");
+    await crewIs(`Space: ${two} unpicked, ${one}'s settings back`, (c) => ringOn(c, 1, [one]) && c.name === one && c.submit === "Add member");
+    press(" ");
+    await crewIs(`Space: ${two} picked again`, (c) => ringOn(c, 1, [one, two]) && c.submit === "Add 2 members");
+    press("ArrowDown");
+    await expect("Down: on to the buttons below (several picked: no fields)", (f) => f.inDialog && f.label === "Cancel");
+    press("Tab");
+    await expect("Tab: Add 2 members", (f) => f.inDialog && f.label === "Add 2 members");
+    press("Enter");
+    await expect("Enter: both seated, the dialog closed, the ring back on + Add member", (f) => f.dialog === null && f.key === "side:add" && f.ring, 12_000);
+    const seated = await until(`the API to show @${one} and @${two} seated`, async () => {
+      const members = await sideMembers();
+      return [one, two].every((alias) => members.some((p) => p.alias === alias)) ? members : null;
+    });
+    log(`api: seated ${seated.map((p) => `@${p.alias}`).join(", ")}`);
+    await state("Add member's crew: Enter picks a second, Add 2 members seats both, the API shows them", "the panel's head · + Add member");
 
     // Settings… from @alpha's actions: the model list by keys, Save; the API has the new model.
     const [alpha, beta] = await sideMembers();
@@ -3409,9 +3556,30 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log("  page: the strip in the well's colour, the key bar raised, its keys on the window's colour, the tab showing underlined");
     await state("pixel look: a member's actions, the key bar and the side panel's tabs", /^Settings… · @/);
     press("Escape");
+    await expect("Esc: the actions closed, the ring on the member", (f) => f.key === first.key && f.strips === 0);
+
+    // Add member's crew in the pixel look (#152): the dashed ring on a crew member on a wrapped line, drawn whole.
+    await crewOfEight();
+    press("Home");
+    press("ArrowUp");
+    for (let i = 0; i < 3; i += 1) press("ArrowRight");
+    await expect("Home, Up, Right ×3: + Add member", (f) => f.key === "side:add" && f.ring);
+    press("Enter");
+    await crewIs("Enter: the Add member dialog, the ring on New, the crew of eight", (c) => c.mode === "New" && c.chips.length === CREW_NAMES.length, 12_000);
+    press("ArrowDown");
+    await crewIs("Down: the first crew member", (c) => ringOn(c, 0, []));
+    press("End");
+    const wrapped = await crewIs("End: the last, on a wrapped line, its ring drawn whole", (c) => ringOn(c, CREW_NAMES.length - 1, []) && c.chips.at(-1)!.top > c.chips[0]!.top);
+    const dashed = browser.eval<string>("() => getComputedStyle(document.activeElement).outlineStyle");
+    if (dashed !== "dashed") fail(`the crew member's ring is not the pixel look's dashed ring: outline ${dashed}`);
+    await expect("the ring drawn", (f) => f.ring);
+    log(`  page: ${wrapped.chips.at(-1)!.name}'s ring dashed, on the line at ${wrapped.chips.at(-1)!.top}px (the first at ${wrapped.chips[0]!.top}px)`);
+    await state("pixel look: Add member's crew, the ring on a wrapped line", `${wrapped.chips.at(-1)!.name} · crew`);
+    press("Escape");
+    await expect("Esc: the dialog closed, the ring back on + Add member", (f) => f.dialog === null && f.key === "side:add");
     press("Backspace");
     press("Backspace");
-    await expect("Esc, Backspace ×2: back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${roomId}`);
+    await expect("Backspace ×2: back to the overview", (f) => f.drawers.length === 0 && f.key === `room:${roomId}`);
   }
 
   /** The focused button's text against its background: their colours and the contrast between them (WCAG's ratio). */

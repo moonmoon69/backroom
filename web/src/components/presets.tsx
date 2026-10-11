@@ -132,6 +132,7 @@ export function PresetChips({
               key={preset.id}
               type="button"
               className={`preset-chip${on ? " on" : ""}`}
+              data-preset-id={preset.id}
               aria-pressed={on}
               title={title}
               onClick={() => (clears ? onClear() : onPick(preset))}
