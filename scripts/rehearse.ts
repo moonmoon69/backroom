@@ -2117,7 +2117,7 @@ interface BrowserApi {
  * they get tabs over DevTools and are stopped again at the end, whatever happens. Each state reads the panel's boxes and
  * the room header's Browser button (its count and its words speak for every browser the room may use) from the page and
  * compares them with GET /api/browsers, and the panel's top line, which says the count is the open tabs, with the same
- * number (#526, #533; at the first state general's tabs and staging's together); the Watch link, Copy and Start or Stop are named with the words they show and the
+ * number (#526, #533; at the first state general's six tabs, more than its box lists, and staging's two together); the Watch link, Copy and Start or Stop are named with the words they show and the
  * browser they are for; running is drawn in the look's green, and in the pixel look with a filled square (off: a hollow
  * one); a tab opened in the second browser with the panel closed must reach the room's stream and the button; the
  * panel's own Stop, Start and checkbox are pressed as the user would.
@@ -2277,18 +2277,20 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     } else {
       log("  ports: ROOMS_BROWSER_PORTS_DIR=off, so only this service's own are checked");
     }
-    // Tabs, opened over DevTools as any program on the box may: two in general, one in staging, each beside its blank one.
+    // Tabs, opened over DevTools as any program on the box may: five in general, one in staging, each beside its blank
+    // one. General's six are more than the five the panel lists, so a count of the listed tabs would be short (#575).
     const open = async (cdpUrl: string, url: string) => {
       const response = await fetch(`${cdpUrl}/json/new?${url}`, { method: "PUT" });
       if (!response.ok) fail(`opening ${url} over DevTools: ${response.status}`);
     };
     await open(started[0]!.cdpUrl!, `${service.base}/`);
     await open(started[0]!.cdpUrl!, `${service.base}/api/status`);
+    for (const n of [3, 4, 5]) await open(started[0]!.cdpUrl!, `${service.base}/api/status?tab=${n}`);
     await open(started[1]!.cdpUrl!, `${service.base}/api/browsers`);
-    await until("the service to list the three tabs", async () => {
+    await until("the service to list the six tabs", async () => {
       const api = await listed();
       const count = (name: string) => api.find((b) => b.name === name)?.status.tabs.length ?? 0;
-      return count("general") === 3 && count("staging") === 2;
+      return count("general") === 6 && count("staging") === 2;
     }, 30_000);
     await reachDefault("general");
 
@@ -2305,11 +2307,12 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
         : null;
     }, ["running · virtual screen", "Open the browser screen", "Browsers they can use"]);
     log(`  page: general and staging each show running · virtual screen, Stop, Watch link with Copy, DevTools address, ${first.cards.filter((c) => c.ticked).map((c) => `${c.tabs.length} tab(s)`).join(" and ")}; scratch is a plain line`);
-    // The panel's top line is the button's number, the tabs of both running browsers added up, so more than either's.
+    // The panel's top line is the button's number, the tabs of both running browsers added up, so more than either's, and
+    // every tab of general's, not only the five its box lists.
     const tabsOf = (name: string) => first.api.find((b) => b.name === name)?.status.tabs.length ?? 0;
     const line = browser.eval<BrowserButtonRead>(BROWSER_BUTTON);
     const sum = tabsOf("general") + tabsOf("staging");
-    if (tabsOf("general") === 0 || tabsOf("staging") === 0 || line.count !== String(sum) || !line.panelLine?.startsWith(`${sum} tabs open in all`)) {
+    if (tabsOf("general") <= 5 || tabsOf("staging") === 0 || line.count !== String(sum) || !line.panelLine?.startsWith(`${sum} tabs open in all`)) {
       fail(`the Browser panel's top line ${JSON.stringify(line.panelLine)} and the button's ${line.count} are not the ${sum} tabs of general (${tabsOf("general")}) and staging (${tabsOf("staging")}) together`);
     }
     log(`  page: the panel's top line reads ${JSON.stringify(line.panelLine)}, the button's ${line.count}: general's ${tabsOf("general")} and staging's ${tabsOf("staging")} tabs together`);
