@@ -4,16 +4,14 @@
  */
 import type { ModelSelection, Preset } from "../domain/types.ts";
 
-/**
- * The model option that is a harness's effort level: `effort` (Claude, and Cursor for some models), `reasoning` and
- * `reasoning_effort` (Cursor, by model), `reasoningEffort` (Codex). Matched by the id's letters alone, in any case,
- * so a harness's own spelling of the same word (reasoning_effort, reasoning-effort, ReasoningEffort) counts too.
- */
-export const EFFORT_OPTION_IDS = ["effort", "reasoning", "reasoningEffort", "reasoning_effort"] as const;
-
 const EFFORT_KEYS = new Set(["effort", "reasoning", "reasoningeffort"]);
 
-/** Whether a model option id names the effort level, whatever the harness's spelling. */
+/**
+ * Whether a model option id names the effort level. The harnesses spell it differently: `effort` (Claude, and Cursor for
+ * some models), `reasoning` and `reasoning_effort` (Cursor, by model), `reasoningEffort` (Codex). The id is matched by
+ * its letters alone, in any case, so each of those counts, and so would reasoning-effort or ReasoningEffort; an id that
+ * says something else (thinking, reasoning_summary, effortless) does not.
+ */
 export const isEffortOption = (id: string): boolean => EFFORT_KEYS.has(id.toLowerCase().replace(/[^a-z]/g, ""));
 
 /** The saved effort level of a model selection, or null when it has none. */
