@@ -40,8 +40,8 @@
  * later ones are updates; a member's turn the room did not start is a follow-up that wakes him, and background work
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
- * `--step ui` ends with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
- * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees.
+ * `--step ui` goes on, after the model picker and the effort tile, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
+ * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; and ends with the per-project browser states.
  * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
  * caller's (a scratch git repository, so the steps run where the agents file is written too).
  *
