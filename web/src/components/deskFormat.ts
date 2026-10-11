@@ -64,7 +64,8 @@ export const shortId = (id: string): string => id.slice(0, 8);
 const OPTION_LABELS: Record<string, string> = {
   effort: "effort",
   reasoningEffort: "effort",
-  reasoning: "reasoning",
+  reasoning_effort: "effort",
+  reasoning: "effort",
   contextWindow: "ctx",
   fastMode: "fast",
   thinking: "thinking",

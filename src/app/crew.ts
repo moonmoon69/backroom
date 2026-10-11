@@ -2,24 +2,8 @@
  * The user's saved crew in words, as the Consigliere reads it when he seats: `rooms-board crew` and his "Your crew"
  * standing section (src/briefing/assemble.ts) both take their lines from here, so the two say the same.
  */
-import type { ModelSelection, Preset } from "../domain/types.ts";
-
-const EFFORT_KEYS = new Set(["effort", "reasoning", "reasoningeffort"]);
-
-/**
- * Whether a model option id names the effort level. The harnesses spell it differently: `effort` (Claude, and Cursor for
- * some models), `reasoning` and `reasoning_effort` (Cursor, by model), `reasoningEffort` (Codex). The id is matched by
- * its letters alone, in any case, so each of those counts, and so would reasoning-effort or ReasoningEffort; an id that
- * says something else (thinking, reasoning_summary, effortless) does not.
- */
-export const isEffortOption = (id: string): boolean => EFFORT_KEYS.has(id.toLowerCase().replace(/[^a-z]/g, ""));
-
-/** The saved effort level of a model selection, or null when it has none. */
-export function selectionEffort(selection: ModelSelection): string | null {
-  const option = selection.options?.find((o) => isEffortOption(o.id));
-  const value = option?.value;
-  return (typeof value === "string" && value.trim()) || typeof value === "number" ? String(value).trim() : null;
-}
+import { selectionEffort } from "../domain/effort.ts";
+import type { Preset } from "../domain/types.ts";
 
 /** One crew member: name · model · effort · worktree note when it has one · its sentence when it has one. */
 export function crewLine(preset: Preset): string {

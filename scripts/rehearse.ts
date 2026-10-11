@@ -528,6 +528,7 @@ type Snapshot = {
   /** The room's default browser and its process; null when it has none. */
   browser: { browser: { id: string; name: string }; status: { state: string } } | null;
   bindings: Array<{ id: string; participantId: string; threadId: string }>;
+  participants: Array<{ id: string; alias: string; modelSelection: { instanceId: string; model: string; options?: Array<{ id: string; value: unknown }> } }>;
   /** The journal's length: every event, posts and the board's own records. */
   head: number;
   posts: any[];
@@ -598,11 +599,11 @@ class Room {
   }
 
   /** Another room, without a Consigliere, with these members (seated by L4b) and their runs held. */
-  async second(title: string, aliases: string[]): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<Snapshot>; attach: () => Promise<string> }> {
-    const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+  async second(title: string, aliases: string[], models: Record<string, Snapshot["participants"][number]["modelSelection"]> = {}): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<Snapshot>; attach: () => Promise<string> }> {
+    const claude = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
     const roomId = (await this.service.command<{ roomId: string }>({ type: "room.create", projectId: "project_demo", title, consigliere: false })).roomId;
     const participant: Record<string, string> = {};
-    for (const alias of aliases) participant[alias] = (await this.service.command<{ participantId: string }>({ type: "participant.create", roomId, alias, modelSelection: model, thread: { mode: "create" } })).participantId;
+    for (const alias of aliases) participant[alias] = (await this.service.command<{ participantId: string }>({ type: "participant.create", roomId, alias, modelSelection: models[alias] ?? claude, thread: { mode: "create" } })).participantId;
     const snapshot = () => this.service.call<Snapshot>("GET", `/api/rooms/${roomId}`);
     for (const binding of (await snapshot()).bindings) await this.service.fake("hold", { threadId: binding.threadId, hold: true });
     // A 1×1 PNG, uploaded as the composer uploads an image.
@@ -1664,12 +1665,52 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.pass(usage);
   }
 
-  // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
+  if (await section("a member's tile shows its effort under every harness's spelling of the option")) {
+    // 23. The effort level on a member's tile is found by the rule the crew listing uses (src/domain/effort.ts): Cursor's
+    // reasoning_effort (Grok 4.7) and Codex's reasoningEffort show as Claude's effort does; a member without one shows none.
+    const models: Record<string, Snapshot["participants"][number]["modelSelection"]> = {
+      grok: { instanceId: "cursor", model: "grok-4.7", options: [{ id: "reasoning_effort", value: "high" }] },
+      sol: { instanceId: "codex", model: "gpt-6-sol", options: [{ id: "reasoningEffort", value: "xhigh" }] },
+      opus: { instanceId: "claudeAgent", model: "claude-opus-5-5", options: [{ id: "effort", value: "medium" }] },
+      plain: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+    };
+    const wanted: Record<string, string> = { grok: "grok-4.7 · high", sol: "gpt-6-sol · xhigh", opus: "claude-opus-5-5 · medium", plain: "claude-opus-5-5" };
+    const efforts = await room.second("Rehearsal efforts", Object.keys(models), models);
+    browser.click(/button "Back to the overview"/);
+    browser.openRoom("Rehearsal efforts");
+    // The tiles are in the side panel's Members tab, opened from the room's header (and closed again after).
+    const opened = !browser.eval<boolean>("() => Boolean(document.querySelector('.crew-list'))");
+    if (opened) browser.click(/button "Members \(4\)"/);
+    const tiles = new Checks(efforts, browser, selection);
+    await tiles.state("a member's tile shows its effort under every harness's spelling of the option", (x) => {
+      // The seats' selections carry each spelling, as T3 holds them: the tile has a level to show.
+      const carried = Object.entries(models).map(([alias, model]) => {
+        const p = x.participants.find((q) => q.alias === alias);
+        return p && JSON.stringify(p.modelSelection.options ?? []) === JSON.stringify(model.options ?? []) ? `@${alias} ${(p.modelSelection.options ?? []).map((o) => `${o.id}=${String(o.value)}`).join(",") || "no options"}` : null;
+      });
+      return carried.every(Boolean) ? carried.join("; ") : null;
+    }, ["grok-4.7", "gpt-6-sol"], {
+      extra: () => {
+        const shown = browser.poll<Record<string, string>>(
+          "each member's tile to show its model line",
+          `() => Object.fromEntries([...document.querySelectorAll('.participant-chip')].map((chip) => [chip.querySelector('.alias')?.firstChild?.textContent ?? '', chip.querySelector('.model')?.textContent ?? '']))`,
+          (lines) => Object.keys(wanted).every((alias) => alias in lines),
+        );
+        const wrong = Object.entries(wanted).filter(([alias, line]) => shown[alias] !== line);
+        if (wrong.length > 0) fail(`a tile's model line is not its model and effort: ${wrong.map(([alias, line]) => `@${alias} shows ${JSON.stringify(shown[alias])}, not ${JSON.stringify(line)}`).join("; ")}`);
+        log(`  page: ${Object.entries(wanted).map(([alias, line]) => `@${alias} "${line}"`).join(", ")}`);
+      },
+    });
+    if (opened) browser.click(/button "Members \(4\)"/);
+    check.passed.push(...tiles.passed);
+  }
+
+  // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   if (await section("a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast")) {
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
   }
 
-  // 24. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
+  // 25. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
   check.passed.push(...(await rehearseProjectBrowsers(service, browser, room, selection, section)));
 
   membersOnlyAnswer(await room.snapshot());

@@ -18,6 +18,7 @@ import {
 import { Dialog } from "./Dialog.tsx";
 import { NameInput } from "./NameInput.tsx";
 import { ContextMeterLine, ContextReadout } from "./ContextMeter.tsx";
+import { selectionEffort } from "../../../src/domain/effort.ts";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
@@ -227,6 +228,7 @@ function ParticipantChip({
   const meter = costs?.contexts?.[participant.id];
   const isConsigliere = snapshot.room.consigliereId === participant.id;
   const described = describeStatus(status, desk);
+  const effort = selectionEffort(participant.modelSelection);
   const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
   const pick = (action: MenuAction) => {
     setOpen(false);
@@ -292,7 +294,7 @@ function ParticipantChip({
           ) : null}
           <span className="model">
             {participant.modelSelection.model}
-            {effortOf(participant.modelSelection) ? ` · ${effortOf(participant.modelSelection)}` : ""}
+            {effort ? ` · ${effort}` : ""}
           </span>
           <span className={`status-label mono status-${described.tone}`}>{described.label}</span>
           {described.detail ? <span className={`crew-activity mono status-${described.tone}`}>{described.detail}</span> : null}
@@ -972,8 +974,3 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** The effort option value, when the model selection carries one. */
-export const effortOf = (selection: ModelSelection): string | null => {
-  const value = selection.options?.find((o) => o.id === "effort")?.value;
-  return typeof value === "string" && value.length > 0 ? value : null;
-};
