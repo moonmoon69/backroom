@@ -70,6 +70,22 @@ export interface ThreadBrowsers {
   updatedAt: string;
 }
 
+/**
+ * What a project's new rooms start with: the same choices (on or off, a default, the ones they may use), copied into
+ * each room made in the project, which then decides for itself. A project without a record gives its new rooms browsers
+ * off, with no default and every browser, as before.
+ */
+export interface ProjectBrowsers {
+  /** The T3 project's id. */
+  projectId: string;
+  browserEnabled: boolean;
+  /** Its new rooms' default; null means "general" (when it exists), as for a room. */
+  defaultBrowserId: string | null;
+  /** Browsers its new rooms may use; null means all of them. */
+  allowedBrowserIds: string[] | null;
+  updatedAt: string;
+}
+
 /** The fallback default browser, created with the table. */
 export const GENERAL_BROWSER_ID = "general";
 

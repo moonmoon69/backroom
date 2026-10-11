@@ -6,6 +6,7 @@ import type {
   NativeRequest,
   Participant,
   Preset,
+  ProjectBrowsers,
   Room,
   RoomEvent,
   SessionBinding,
@@ -22,6 +23,16 @@ const ns = (value: unknown): string | null => (value === null || value === undef
 function rowToThreadBrowsers(row: Row): ThreadBrowsers {
   return {
     threadId: s(row.thread_id),
+    browserEnabled: n(row.browser_enabled) === 1,
+    defaultBrowserId: ns(row.default_browser_id),
+    allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
+    updatedAt: s(row.updated_at),
+  };
+}
+
+function rowToProjectBrowsers(row: Row): ProjectBrowsers {
+  return {
+    projectId: s(row.project_id),
     browserEnabled: n(row.browser_enabled) === 1,
     defaultBrowserId: ns(row.default_browser_id),
     allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
@@ -138,10 +149,21 @@ export class Repos {
   insertRoom(room: Room): void {
     this.raw
       .prepare(
-        `INSERT INTO rooms (id, project_id, environment_id, title, next_sequence, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO rooms (id, project_id, environment_id, title, next_sequence, browser_enabled, default_browser_id, browser_ids_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(room.id, room.projectId, room.environmentId, room.title, room.nextSequence, room.createdAt, room.updatedAt);
+      .run(
+        room.id,
+        room.projectId,
+        room.environmentId,
+        room.title,
+        room.nextSequence,
+        room.browserEnabled ? 1 : 0,
+        room.defaultBrowserId,
+        room.allowedBrowserIds === null ? null : JSON.stringify(room.allowedBrowserIds),
+        room.createdAt,
+        room.updatedAt,
+      );
   }
 
   getRoom(id: string): Room | null {
@@ -189,6 +211,31 @@ export class Repos {
            browser_ids_json = excluded.browser_ids_json, updated_at = excluded.updated_at`,
       )
       .run(record.threadId, record.browserEnabled ? 1 : 0, record.defaultBrowserId, record.allowedBrowserIds === null ? null : JSON.stringify(record.allowedBrowserIds), record.updatedAt);
+  }
+
+  // ---- a project's browsers for its new rooms ----
+
+  getProjectBrowsers(projectId: string): ProjectBrowsers | null {
+    const row = this.raw.prepare("SELECT * FROM project_browsers WHERE project_id = ?").get(projectId) as Row | undefined;
+    return row ? rowToProjectBrowsers(row) : null;
+  }
+
+  listProjectBrowsers(): ProjectBrowsers[] {
+    return (this.raw.prepare("SELECT * FROM project_browsers").all() as Row[]).map(rowToProjectBrowsers);
+  }
+
+  setProjectBrowsers(record: ProjectBrowsers): void {
+    this.raw
+      .prepare(
+        `INSERT INTO project_browsers (project_id, browser_enabled, default_browser_id, browser_ids_json, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET browser_enabled = excluded.browser_enabled, default_browser_id = excluded.default_browser_id,
+           browser_ids_json = excluded.browser_ids_json, updated_at = excluded.updated_at`,
+      )
+      .run(record.projectId, record.browserEnabled ? 1 : 0, record.defaultBrowserId, record.allowedBrowserIds === null ? null : JSON.stringify(record.allowedBrowserIds), record.updatedAt);
+  }
+
+  deleteProjectBrowsers(projectId: string): void {
+    this.raw.prepare("DELETE FROM project_browsers WHERE project_id = ?").run(projectId);
   }
 
   // ---- browsers ----

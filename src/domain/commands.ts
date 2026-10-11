@@ -78,6 +78,20 @@ export const ThreadBrowserCommand = z
   })
   .strict();
 
+/**
+ * What a project's new rooms start with, the same choices with the same rules; rooms that exist keep theirs. enabled
+ * null removes the project's setting (its new rooms start with browsers off, as without one).
+ */
+export const ProjectBrowserCommand = z
+  .object({
+    type: z.literal("project.browser"),
+    projectId: nonEmpty,
+    enabled: z.boolean().nullable(),
+    browserId: nonEmpty.nullable().optional(),
+    allowed: z.array(nonEmpty).min(1).nullable().optional(),
+  })
+  .strict();
+
 const BROWSER_NAME = z
   .string()
   .trim()
@@ -427,6 +441,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   RoomUpdateCommand,
   RoomBrowserCommand,
   ThreadBrowserCommand,
+  ProjectBrowserCommand,
   BrowserCreateCommand,
   BrowserUpdateCommand,
   BrowserDeleteCommand,

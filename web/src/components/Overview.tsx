@@ -3,6 +3,7 @@ import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
+import { ProjectBrowsersButton } from "./ProjectBrowsers.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { PlusIcon, StarMark } from "./icons.tsx";
 import { useSkin } from "../skin.ts";
@@ -294,6 +295,7 @@ export function Overview({
                     <PlusIcon />
                   </button>
                 ) : null}
+                {known && browsers ? <ProjectBrowsersButton project={project} browsers={browsers} runCommand={onCommand} onChanged={onT3Changed} /> : null}
               </h2>
               {projectTiles.length === 0 ? <p className="muted ov-empty">Nothing here yet.</p> : null}
               <ProjectTiles>

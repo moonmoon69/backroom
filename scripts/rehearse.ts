@@ -1570,6 +1570,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
   }
 
+  // 24. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
+  check.passed.push(...(await rehearseProjectBrowsers(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -1581,10 +1584,12 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
  * AGENTS.md and a CLAUDE.md importing it, keeps them out of git in the repository's .git/info/exclude, installs the
  * post-checkout hook, opens at once and says so in a toast; a worktree added then holds the two files, copied by the hook.
  */
-async function rehearseAgentsFile(service: Service, browser: Browser, room: Room, selection: Selection): Promise<string[]> {
-  const passed: string[] = [];
-  // As Checks.state: a state --only does not name is set up silently (the service polled, the texts waited for).
-  const state = async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void) => {
+/**
+ * As Checks.state, for states that read the service through a probe of their own rather than a room's snapshot: a state
+ * --only does not name is set up silently (the service polled, the texts waited for). Each state passed goes in `passed`.
+ */
+function probedStates(browser: Browser, selection: Selection, passed: string[]) {
+  return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void): Promise<void> => {
     const { index, loud } = selection.enter(name);
     log(`${loud ? "CHECK" : "SET UP (silently)"} ${selection.label(index)}`);
     log(`  api: ${await until(`the service to show: ${name}`, probe)}`);
@@ -1596,6 +1601,11 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
     passed.push(name);
     log(`PASS ${name}`);
   };
+}
+
+async function rehearseAgentsFile(service: Service, browser: Browser, room: Room, selection: Selection): Promise<string[]> {
+  const passed: string[] = [];
+  const state = probedStates(browser, selection, passed);
   const folder = join(room.dataDir, "agents-project");
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
@@ -1658,6 +1668,106 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
       return `${worktree} holds AGENTS.md and CLAUDE.md as the main checkout has them; its git status is clean`;
     },
     [],
+  );
+  return passed;
+}
+
+/**
+ * A project's browsers for its new rooms (board #74, #123), on a scratch project of its own: the globe on its section of
+ * the overview opens a room's choices; turned on there, with "preview" ticked alone and made the default, the project
+ * reads that back (GET /api/t3/projects), the globe says it, Esc gives the focus back to the globe, and a reload keeps
+ * it. A room made from the section's + then opens with browsers on and "preview" its default, as the API and the room's
+ * own Browser button say. Its section begins here, before its states.
+ */
+async function rehearseProjectBrowsers(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("a project's browsers for new rooms, set on its section: on, preview alone and its default, read back"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const folder = join(room.dataDir, "browsers-project");
+  mkdirSync(folder, { recursive: true });
+  const title = "browsers-scratch";
+  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
+  const preview = (await service.command<{ browserId: string }>({ type: "browser.create", name: "preview", description: "The preview deploy, logged in as the test user." })).browserId;
+  const setting = async () => (await service.call<Array<{ id: string; browsers: { enabled: boolean; defaultBrowserId: string | null; allowedBrowserIds: string[] | null } | null }>>("GET", "/api/t3/projects")).find((p) => p.id === projectId)?.browsers;
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const globe = (words: string) => new RegExp(`button "Browsers for new rooms in ${escaped}: ${words}`);
+  const globeRead = `() => { const b = document.querySelector('[data-nav-key="head:project-browsers:${projectId}"]'); return b ? { label: b.getAttribute('aria-label'), checked: Boolean(b.querySelector('.globe-check')), focused: document.activeElement === b } : null; }`;
+  type GlobeRead = { label: string; checked: boolean; focused: boolean } | null;
+  const boxes = `() => [...document.querySelectorAll('.project-browsers-panel .browser-choice')].map((card) => ({
+    name: card.querySelector('.browser-choice-head .mono')?.textContent ?? '',
+    ticked: card.querySelector('input[type=checkbox]')?.checked === true,
+    isDefault: [...card.querySelectorAll('.browser-choice-head .pill')].some((pill) => pill.textContent === 'default'),
+  }))`;
+  const boxOf = (name: string) => `() => { const card = [...document.querySelectorAll('.project-browsers-panel .browser-choice')].find((c) => c.querySelector('.browser-choice-head .mono')?.textContent === ${JSON.stringify(name)}); return card ?? null; }`;
+  const press = (name: string, what: "checkbox" | "make default") =>
+    browser.on("eval", `() => { const card = (${boxOf(name)})(); const el = ${what === "checkbox" ? "card?.querySelector('input[type=checkbox]')" : "[...(card?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'make default')"}; el?.click(); return Boolean(el); }`);
+
+  browser.click(/button "Back to the overview"/);
+  browser.waitFor(title);
+  if ((await setting()) !== null) fail("a new project has a browser setting before any is chosen");
+  browser.click(globe("off \\(no setting\\)"));
+  browser.waitFor("New rooms start with browsers on");
+  browser.click(/checkbox "New rooms start with browsers on/);
+  await until("the project's setting to be on", async () => (await setting())?.enabled === true);
+  browser.poll("preview's box to offer make default", `() => Boolean([...((${boxOf("preview")})()?.querySelectorAll('button') ?? [])].some((b) => b.textContent === 'make default' && !b.disabled))`, (v) => v === true);
+  press("preview", "make default");
+  await until("preview to be the project's default", async () => (await setting())?.defaultBrowserId === preview);
+  browser.poll("general's box to be enabled", `() => (${boxOf("general")})()?.querySelector('input[type=checkbox]')?.disabled === false`, (v) => v === true);
+  press("general", "checkbox");
+  await state(
+    "a project's browsers for new rooms, set on its section: on, preview alone and its default, read back",
+    async () => {
+      const read = await setting();
+      return read?.enabled && read.defaultBrowserId === preview && JSON.stringify(read.allowedBrowserIds) === JSON.stringify([preview])
+        ? `GET /api/t3/projects: ${title} browsers on, default preview, allowed [preview]`
+        : null;
+    },
+    ["Browsers its new rooms can use"],
+    () => {
+      browser.poll<Array<{ name: string; ticked: boolean; isDefault: boolean }>>("the dialog's boxes: preview ticked and the default, general unticked", boxes, (read) =>
+        read.some((b) => b.name === "preview" && b.ticked && b.isDefault) && read.some((b) => b.name === "general" && !b.ticked && !b.isDefault),
+      );
+      browser.poll<GlobeRead>("the globe to say on, default preview, with its check", globeRead, (g) => g?.label === `Browsers for new rooms in ${title}: on · default "preview"` && g.checked);
+      log("  page: the dialog shows preview ticked and the default, general a plain unticked box; the globe says on · default \"preview\" with its check");
+    },
+  );
+  await state(
+    "Esc closes the project's browsers and gives the focus back to its globe; a reload keeps the setting",
+    async () => ((await setting())?.enabled ? "the project's setting is still on" : null),
+    [],
+    () => {
+      browser.on("press", "Escape");
+      browser.poll<GlobeRead>("the dialog closed, the focus back on the globe", `() => document.querySelector('.project-browsers-panel') ? null : (${globeRead})()`, (g) => Boolean(g?.focused));
+      log("  page: Esc closed the dialog and the focus is back on the globe");
+      browser.on("reload");
+      browser.poll<GlobeRead>("the globe after a reload", globeRead, (g) => g?.label === `Browsers for new rooms in ${title}: on · default "preview"` && g.checked);
+      log("  page: after a reload the globe still says on · default \"preview\"");
+    },
+  );
+  browser.click(new RegExp(`button "New room in ${escaped}"`));
+  browser.waitFor("Create room");
+  browser.poll<boolean>(
+    "the new room dialog to be ready, saying the project gives browsers",
+    `() => { const form = document.getElementById('new-room-form'); return Boolean(form && form.querySelector('input[type="text"]')?.value === ${JSON.stringify(title)} && form.querySelector('.new-room-browsers') && !form.querySelector('button[type="submit"]')?.disabled); }`,
+    (ready) => ready,
+  );
+  browser.click(/button "Create room"/);
+  await state(
+    "a room made from the project's + starts with its browsers: on, preview its default",
+    async () => {
+      const made = (await service.call<Array<{ id: string; title: string; projectId: string }>>("GET", "/api/rooms")).find((r) => r.projectId === projectId);
+      if (!made) return null;
+      const x = await service.call<Snapshot>("GET", `/api/rooms/${made.id}`);
+      return x.room.browserEnabled && JSON.stringify(x.room.allowedBrowserIds) === JSON.stringify([preview]) && x.browser?.browser.name === "preview"
+        ? `room ${made.id.slice(0, 8)}: browsers on, default preview, allowed [preview], as the project's setting`
+        : null;
+    },
+    [],
+    () => {
+      browser.poll<string | null>("the room to open", "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
+      browser.poll<string | null>("the room's Browser button to say on, preview the default", "() => document.querySelector('.room-browser-button')?.getAttribute('aria-label') ?? null", (label) => Boolean(label?.startsWith("Browser: on for this room's agents · preview (default)")));
+      log("  page: the room opened with its Browser button on, preview (default)");
+    },
   );
   return passed;
 }

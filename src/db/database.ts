@@ -254,6 +254,16 @@ const MIGRATIONS: string[] = [
   ${NUMBER_EXISTING_POSTS}
   CREATE UNIQUE INDEX events_post_number ON events(room_id, post_number) WHERE post_number IS NOT NULL;
   `,
+  // What a project's new rooms start with, chosen as a room's browsers are: on or off, the default, the ones they may use.
+  `
+  CREATE TABLE IF NOT EXISTS project_browsers (
+    project_id TEXT PRIMARY KEY,
+    browser_enabled INTEGER NOT NULL DEFAULT 0,
+    default_browser_id TEXT,
+    browser_ids_json TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export class Database {

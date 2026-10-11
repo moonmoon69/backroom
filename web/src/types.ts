@@ -517,6 +517,16 @@ export interface T3Project {
   title: string;
   workspaceRoot: string;
   defaultModelSelection: ModelSelection | null;
+  /** What its new rooms start with (GET /api/t3/projects); null without a setting (browsers off, as before). */
+  browsers?: ProjectBrowsersView | null;
+}
+
+/** A project's setting for its new rooms' browsers, as a room's reads: the default is the one they would use. */
+export interface ProjectBrowsersView {
+  enabled: boolean;
+  defaultBrowserId: string | null;
+  /** Null: every browser. */
+  allowedBrowserIds: string[] | null;
 }
 
 /** What creating a room wrote in its project's folder (room.created's agentsFile; src/app/agentsFile.ts). */
@@ -1206,6 +1216,7 @@ export type RoomCommand =
   /** browserId omitted keeps the room's default; null falls back to "general". */
   | { type: "room.browser"; roomId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
   | { type: "thread.browser"; threadId: string; enabled: boolean; browserId?: string | null; allowed?: string[] | null }
+  | { type: "project.browser"; projectId: string; enabled: boolean | null; browserId?: string | null; allowed?: string[] | null }
   | { type: "browser.create"; name: string; description?: string }
   | { type: "browser.update"; browserId: string; name?: string; description?: string }
   | { type: "browser.delete"; browserId: string }

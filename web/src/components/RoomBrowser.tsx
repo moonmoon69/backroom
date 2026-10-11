@@ -224,7 +224,7 @@ export function BrowserChoices({
   /** The default in use (the effective one). */
   defaultId: string | null;
   busy: boolean;
-  subject: "room" | "thread";
+  subject: "room" | "thread" | "project";
   onChange: (next: { browserId?: string | null; allowed?: string[] | null }) => void;
   /** Edit a browser's name and description; without it there is no Edit link. */
   onEdit?: (browser: BrowserListItem) => void;
@@ -249,7 +249,7 @@ export function BrowserChoices({
   return (
     <div className={`browser-choices${enabled ? "" : " is-off"}`} role="group" aria-labelledby={labelId}>
       <span className="label" id={labelId}>
-        {subject === "room" ? "Browsers they can use" : "Browsers it can use"}
+        {subject === "room" ? "Browsers they can use" : subject === "project" ? "Browsers its new rooms can use" : "Browsers it can use"}
       </span>
       {!list ? <p className="hint">Loading…</p> : null}
       {list?.map((browser) => {
@@ -258,7 +258,7 @@ export function BrowserChoices({
         return (
           <div key={browser.id} className={`browser-choice${allowed ? "" : " unticked"}`}>
             <div className="browser-choice-head">
-              <label className="checkbox" title={allowed && tickedCount === 1 ? `One browser stays ticked; to give this ${subject} none, turn browsers off above` : isDefault ? "Unticking the default makes the next ticked browser the default" : undefined}>
+              <label className="checkbox" title={allowed && tickedCount === 1 ? `One browser stays ticked; to give ${subject === "project" ? "this project's new rooms" : `this ${subject}`} none, turn browsers off above` : isDefault ? "Unticking the default makes the next ticked browser the default" : undefined}>
                 <input type="checkbox" checked={allowed} disabled={busy || (allowed && tickedCount === 1)} onChange={() => toggleAllowed(browser.id)} />
                 <span className="mono">{browser.name}</span>
               </label>
