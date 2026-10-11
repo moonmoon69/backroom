@@ -43,7 +43,7 @@ export function misplacedSections(source: string): string[] {
 
 /** Where each step's states are: a script, and the functions of it that play them, in order (none: the whole file). */
 export const STEP_SOURCES = {
-  ui: { file: "rehearse.ts", functions: ["rehearseUi", "rehearseAgentsFile"] },
+  ui: { file: "rehearse.ts", functions: ["rehearseUi", "rehearseAgentsFile", "rehearseProjectBrowsers"] },
   room: { file: "rehearse.ts", functions: ["rehearseRoom", "rehearseBrowserPanel"] },
   keys: { file: "rehearse-keys.ts", functions: [] },
 } as const;

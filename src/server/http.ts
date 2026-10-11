@@ -158,7 +158,14 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json({ paired: true, scope: auth.scope, expiresAt: auth.expiresAt });
   });
 
-  app.get("/api/t3/projects", async (c) => c.json(orderProjects(stack.repos, await stack.adapter.listProjects())));
+  // A project's setting for its new rooms, as a room's browsers read (the default is the one they would use); null without one.
+  const projectBrowsersView = (projectId: string) => {
+    const record = stack.repos.getProjectBrowsers(projectId);
+    return record ? { enabled: record.browserEnabled, defaultBrowserId: effectiveBrowser(stack.repos, record)?.id ?? null, allowedBrowserIds: record.allowedBrowserIds } : null;
+  };
+  app.get("/api/t3/projects", async (c) =>
+    c.json(orderProjects(stack.repos, await stack.adapter.listProjects()).map((project) => ({ ...project, browsers: projectBrowsersView(project.id) }))),
+  );
   app.get("/api/t3/catalog", async (c) => c.json(await stack.adapter.listCatalog()));
   app.get("/api/t3/providers", async (c) => c.json(await stack.adapter.listProviders()));
   // Ask T3 to check again now: every provider or one, and with `models` look for new models too (T3 opens an agent

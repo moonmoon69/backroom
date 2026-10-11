@@ -94,6 +94,9 @@ export function NewRoomDialog({
             ? `${consigliere.name} is seated as the room's Consigliere: the one you talk to there. He brings in the others.`
             : "No Consigliere is chosen (Settings → Consigliere…), so the room opens empty; add members from Members."}
         </span>
+        {projects?.find((p) => p.id === projectId)?.browsers?.enabled ? (
+          <span className="hint new-room-browsers">Its agents get browsers from the start: the project&rsquo;s setting (the globe on its section). The room&rsquo;s Browser panel changes it for the room.</span>
+        ) : null}
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>
             Cancel

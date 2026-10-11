@@ -3,6 +3,7 @@ import { api } from "../api.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
+import { ProjectBrowsersButton } from "./ProjectBrowsers.tsx";
 import { RoomMenu } from "./RoomActions.tsx";
 import { PlusIcon, StarMark } from "./icons.tsx";
 import { useSkin } from "../skin.ts";
@@ -11,6 +12,7 @@ import { describeStatus } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
+import { overviewThreads } from "../seenNews.ts";
 import type { AgentsFileWritten, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { useToast } from "./Toast.tsx";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
@@ -55,6 +57,7 @@ export function Overview({
   rooms,
   projects,
   threads,
+  seenThreads,
   t3Error,
   browsers,
   onOpenRoom,
@@ -72,6 +75,8 @@ export function Overview({
   projects: T3Project[] | null;
   /** Every T3 thread, archived ones too. */
   threads: T3ThreadShell[];
+  /** The finish time each thread was marked seen up to on this page: its news up to then is left out of the overview's read. */
+  seenThreads: ReadonlyMap<string, string>;
   /** Why projects and threads could not be read from T3, if they could not. */
   t3Error: string | null;
   /** The shared browsers on this machine; null when the service cannot run browsers. */
@@ -227,7 +232,8 @@ export function Overview({
   const standIn: OverviewThread[] = loose
     .filter((thread) => !thread.archivedAt && !thread.settledAt)
     .map((thread) => ({ id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: thread.backgroundLiveness ?? null, latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line: null, news: thread.news ?? null }));
-  const described = looseThreads ? [...looseThreads, ...standIn.filter((thread) => !looseThreads.some((d) => d.id === thread.id))] : standIn;
+  // What this page marked seen leaves them at once, not at the overview's next read (seenNews.ts).
+  const described = overviewThreads(looseThreads, standIn, seenThreads);
   const settledIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.settledAt && !t.archivedAt).sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
   const archivedIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.archivedAt).sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
   const tiles = (projectRooms: RoomListItem[], projectThreads: OverviewThread[]): Tile[] =>
@@ -294,6 +300,7 @@ export function Overview({
                     <PlusIcon />
                   </button>
                 ) : null}
+                {known && browsers ? <ProjectBrowsersButton project={project} browsers={browsers} runCommand={onCommand} onChanged={onT3Changed} /> : null}
               </h2>
               {projectTiles.length === 0 ? <p className="muted ov-empty">Nothing here yet.</p> : null}
               <ProjectTiles>
