@@ -2,7 +2,8 @@
  * Seats are participant bindings: a seat's ID is its binding's ID and its thread the binding's thread, so a reseat (a
  * new binding on a fresh thread) is a new seat. This is the briefing source the app gives the host: the room, the
  * member and the room's members from rooms.sqlite, where each member works (T3 and git), the room's browsers, the
- * engine's wording of the standing facts and the Consigliere's rules (L4b), and which envelope seats a member.
+ * user's saved crew (the Consigliere's section), the engine's wording of the standing facts and the Consigliere's rules
+ * (L4b), and which envelope seats a member.
  */
 import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
 import { openRequests } from "../adapter/types.ts";
@@ -89,6 +90,7 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
         board: { command: options.boardCommand ?? "rooms-board", as: agentKey(participant.alias, roomId) },
         consigliereRules: engineConsigliereRules(repos.getKv(CONSIGLIERE_RULES_KEY)),
         seatFacts: engineSeatFacts,
+        crew: repos.listPresets(),
         roomState: readRoomState(repos, roomId),
         browsers,
         workspaces,

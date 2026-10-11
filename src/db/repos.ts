@@ -505,6 +505,7 @@ export class Repos {
       runtimeMode: s(row.runtime_mode) as Preset["runtimeMode"],
       workspaceMode: s(row.workspace_mode) === "worktree" ? "worktree" : "local",
       look: resolveLook(s(row.id), parseLook(row.look_json)),
+      description: s(row.description),
       createdAt: s(row.created_at),
       updatedAt: s(row.updated_at),
     };
@@ -517,13 +518,13 @@ export class Repos {
   upsertPreset(p: Preset, look?: Look): void {
     this.raw
       .prepare(
-        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, look_json, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
+        `INSERT INTO presets (id, name, name_key, model_selection_json, runtime_mode, workspace_mode, look_json, description, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM presets), ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, name_key = excluded.name_key, model_selection_json = excluded.model_selection_json,
            runtime_mode = excluded.runtime_mode, workspace_mode = excluded.workspace_mode, look_json = COALESCE(excluded.look_json, presets.look_json),
-           updated_at = excluded.updated_at`,
+           description = excluded.description, updated_at = excluded.updated_at`,
       )
-      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.workspaceMode, look ? JSON.stringify(look) : null, p.createdAt, p.updatedAt);
+      .run(p.id, p.name, p.name.toLowerCase(), JSON.stringify(p.modelSelection), p.runtimeMode, p.workspaceMode, look ? JSON.stringify(look) : null, p.description, p.createdAt, p.updatedAt);
   }
 
   getPreset(id: string): Preset | null {

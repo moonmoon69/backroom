@@ -22,6 +22,7 @@ import type { ClaimOutcome, Principal, Projection, Request, RoomEvent, Run } fro
 import { FOLLOW_UP, HostRefusal, MEMBERS_DO_NOT_POST, backroomRequest, type EngineHost } from "../runtime/index.ts";
 import { BOARD_PAGE_CHARS, BoardError, threadOutcome, type RetiredThread } from "./board.ts";
 import { retireThreadChoice } from "./consigliere.ts";
+import { crewListing } from "./crew.ts";
 import { readKeepAlive, writeKeepAlive } from "./keepAlive.ts";
 import { ROOM_STATE_MAX_CHARS, readRoomState, writeRoomState } from "./roomState.ts";
 
@@ -78,7 +79,7 @@ The Consigliere's (the user posts from the page):
   keepalive @name on|off          turns keep-alives on or off for that seat (on for you and off for members by default).
   keepalive every <minutes>       the room's keep-alive interval, 1 to 59 minutes (55 or less leaves the wake time to
                                   reach the model within the cache's hour), or "default".
-  crew                            the user's saved crew, by name, with model.
+  crew                            the user's saved crew: name, model, effort level, worktree note and its description.
   seat <saved crew name>          seats that saved crew member in this room.
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
   retire <alias>                  that member leaves the room; refused while it has work open. A request of
@@ -613,12 +614,7 @@ export class BoardEngine {
   }
 
   private crew(): string {
-    const presets = this.deps.repos.listPresets();
-    if (presets.length === 0) return "The user has no saved crew.";
-    return [
-      "The user's saved crew (seat one with: seat <name>):",
-      ...presets.map((preset) => `${preset.name} · ${preset.modelSelection.model}${preset.workspaceMode === "worktree" ? " · works in its own worktree" : ""}`),
-    ].join("\n");
+    return crewListing(this.deps.repos.listPresets()).join("\n");
   }
 
   private async rules(c: Caller): Promise<string> {

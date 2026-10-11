@@ -36,6 +36,8 @@ test("the migration adds the table to a database at the schema before it, and le
     const first = new Database(path);
     const count = (first.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
     first.raw.prepare("INSERT INTO kv (key, value) VALUES ('kept', 'yes')").run();
+    // The migration before this one (crew descriptions) is applied: this one comes after it.
+    assert.ok((first.raw.prepare("PRAGMA table_info(presets)").all() as Array<{ name: string }>).some((c) => c.name === "description"));
     // The schema before this migration: its table not there and its number not applied.
     first.raw.exec(`DROP TABLE project_browsers; DELETE FROM migrations WHERE id = ${count};`);
     first.close();
