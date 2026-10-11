@@ -3685,6 +3685,31 @@ legend {
   color: var(--fg);
 }
 
+/*
+ * A family of windows (usageFamilies.ts): its name once, then its meters by their short labels, on a row of its own.
+ * Short meters, so the longest family Antigravity reports and two meters at two-digit shares fit the picker's 420px.
+ */
+.usage-family {
+  display: inline-flex;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  gap: 4px 6px;
+  align-items: center;
+  font-size: var(--text-xs);
+}
+
+.usage-family-name {
+  color: var(--fg-muted);
+}
+
+.usage-family .usage-meter {
+  gap: 3px;
+}
+
+.usage-family .usage-meter .meter-bar {
+  width: 20px;
+}
+
 .model-row {
   display: flex;
   align-items: center;
