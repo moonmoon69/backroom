@@ -46,5 +46,5 @@ export function roomBrowserSummary(
  * count of browsers, board #526): the tabs open across the room's running browsers, or nothing when none is open.
  */
 export function roomTabsLine(tabs: number): string | null {
-  return tabs > 0 ? `${plural(tabs, "tab")} open in all across the browsers below: the number on the Browser button.` : null;
+  return tabs > 0 ? `${tabs} open ${tabs === 1 ? "tab" : "tabs"} in all, the number on the Browser button.` : null;
 }

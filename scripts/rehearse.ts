@@ -2177,7 +2177,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     if (read.covered) return "the Browser button's count sits under the globe's badge";
     // The panel's top line names the button's number as the open tabs, the same number, and is not there with none open.
     if (read.panelLine !== undefined) {
-      const wanted = total > 0 ? `${total} tab${total === 1 ? "" : "s"} open in all across the browsers below: the number on the Browser button.` : null;
+      const wanted = total > 0 ? `${total} open tab${total === 1 ? "" : "s"} in all, the number on the Browser button.` : null;
       if (read.panelLine !== wanted) return `the Browser panel's top line is ${JSON.stringify(read.panelLine)}, expected ${JSON.stringify(wanted)} (the button counts ${read.count ?? "nothing"})`;
     }
     return null;
@@ -2312,7 +2312,7 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     const tabsOf = (name: string) => first.api.find((b) => b.name === name)?.status.tabs.length ?? 0;
     const line = browser.eval<BrowserButtonRead>(BROWSER_BUTTON);
     const sum = tabsOf("general") + tabsOf("staging");
-    if (tabsOf("general") <= 5 || tabsOf("staging") === 0 || line.count !== String(sum) || !line.panelLine?.startsWith(`${sum} tabs open in all`)) {
+    if (tabsOf("general") <= 5 || tabsOf("staging") === 0 || line.count !== String(sum) || !line.panelLine?.startsWith(`${sum} open tabs in all,`)) {
       fail(`the Browser panel's top line ${JSON.stringify(line.panelLine)} and the button's ${line.count} are not the ${sum} tabs of general (${tabsOf("general")}) and staging (${tabsOf("staging")}) together`);
     }
     log(`  page: the panel's top line reads ${JSON.stringify(line.panelLine)}, the button's ${line.count}: general's ${tabsOf("general")} and staging's ${tabsOf("staging")} tabs together`);

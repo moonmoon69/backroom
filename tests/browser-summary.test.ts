@@ -44,13 +44,13 @@ test("a room with no browser says so, and counts nothing", () => {
 });
 
 test("the panel's line says the button's number is open tabs, and is not there when none is open (#526, #533)", () => {
-  assert.equal(roomTabsLine(5), "5 tabs open in all across the browsers below: the number on the Browser button.");
-  assert.equal(roomTabsLine(1), "1 tab open in all across the browsers below: the number on the Browser button.");
+  assert.equal(roomTabsLine(5), "5 open tabs in all, the number on the Browser button.");
+  assert.equal(roomTabsLine(1), "1 open tab in all, the number on the Browser button.");
   assert.equal(roomTabsLine(0), null);
 });
 
 test("with the room's browsers switched off the count, and so the panel's line, still has the running browsers' tabs (#581)", () => {
   const summary = roomBrowserSummary(false, [{ browser: { id: "general", name: "general" }, status: running(1, 2, 3, 4, 5, 6) }, { browser: { id: "b2", name: "staging" }, status: running(7) }], "general");
   assert.equal(summary.tabs, 7);
-  assert.equal(roomTabsLine(summary.tabs), "7 tabs open in all across the browsers below: the number on the Browser button.");
+  assert.equal(roomTabsLine(summary.tabs), "7 open tabs in all, the number on the Browser button.");
 });
