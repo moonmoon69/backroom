@@ -320,24 +320,35 @@ const BAR = `() => {
 /**
  * Every place's whole bar (each place of the key table with each mix of what can hold), drawn in the page with its own
  * CSS at the foot of the window, the where-text past its widest: the width its keys take against the width their line
- * has. Returns the places whose keys do not fit.
+ * has. Returns the places whose keys do not fit. Each key with its words is sent once and the bars name them by number:
+ * the function goes to rooms-browser as one argument, which may not pass 128 KiB (written out in full, the bars had
+ * grown past it).
  */
 function everyBarFits(): string {
   const conditions: KeyWhen[] = ["typing", "empty", "correcting", "composer-open", "chip-open", "asking", "panel-open", "help", "disabled"];
   const mixes = Array.from({ length: 1 << conditions.length }, (_, mask) => conditions.filter((_, i) => mask & (1 << i)));
-  const bars = new Map<string, { id: string; keys: Array<{ k: string[]; d: string }>; end: { k: string[]; d: string } | null }>();
+  const chips: Array<{ k: string[]; d: string }> = [];
+  const chipAt = new Map<string, number>();
+  const numbered = (chip: { k: string[]; d: string }): number => {
+    const signature = JSON.stringify(chip);
+    if (!chipAt.has(signature)) chipAt.set(signature, chips.push(chip) - 1);
+    return chipAt.get(signature)!;
+  };
+  const bars = new Map<string, { id: string; keys: number[]; end: number | null }>();
   for (const place of KEYS.flatMap((area) => area.places)) {
     for (const now of mixes) {
       const entries = barEntries(place.id, now);
       const help = entries.find((entry) => entry.keys.includes("?"));
       // Enter in an action strip is named by its button, cut on the bar: drawn at its longest.
-      const keys = entries.filter((entry) => entry !== help).map((entry) => ({ k: entry.keys, d: barDoes(entry, "Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm") }));
-      const signature = JSON.stringify([keys, help?.does ?? null]);
-      if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end: help ? { k: help.keys, d: help.does } : null });
+      const keys = entries.filter((entry) => entry !== help).map((entry) => numbered({ k: entry.keys, d: barDoes(entry, "Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm") }));
+      const end = help ? numbered({ k: help.keys, d: help.does }) : null;
+      const signature = JSON.stringify([keys, end]);
+      if (!bars.has(signature)) bars.set(signature, { id: `${place.id}${now.length > 0 ? ` (${now.join(", ")})` : ""}`, keys, end });
     }
   }
   return `() => {
-    const bars = ${JSON.stringify([...bars.values()])};
+    const chips = ${JSON.stringify(chips)};
+    const bars = ${JSON.stringify([...bars.values()])}.map((b) => ({ id: b.id, keys: b.keys.map((n) => chips[n]), end: b.end === null ? null : chips[b.end] }));
     const text = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     const chip = (c, end) => '<span class="key-bar-key' + (end ? ' key-bar-end' : '') + '">' + c.k.map((k) => '<kbd>' + text(k) + '</kbd>').join('') + '<span class="key-bar-does">' + text(c.d) + '</span></span>';
     const over = [];
