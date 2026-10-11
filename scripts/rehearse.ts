@@ -40,7 +40,7 @@
  * later ones are updates; a member's turn the room did not start is a follow-up that wakes him, and background work
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
- * `--step ui` goes on, after the model picker and the effort tile, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
+ * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
  * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; and ends with the per-project browser states.
  * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
  * caller's (a scratch git repository, so the steps run where the agents file is written too).
@@ -1703,6 +1703,80 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     });
     if (opened) browser.click(/button "Members \(4\)"/);
     check.passed.push(...tiles.passed);
+  }
+
+  if (await section("crew tiles: Good at and Avoid on two lines, each cut by its ellipsis, the tooltip carrying both whole")) {
+    // 23b. A crew member's two lines (#3): Good at and Avoid, each a line of its own on the tile under the model, cut by
+    // its ellipsis; one written, one line; the tooltip carries both whole. Then the tile hovered (#3's cut-off ring): its
+    // button stays clear and the tile carries the hover look, in the pixel look the ring whole in the action colour, on a
+    // browser's tile too.
+    const lines = check.begin("crew tiles: Good at and Avoid on two lines, each cut by its ellipsis, the tooltip carrying both whole");
+    const GOOD = "long multi-step coding in Cursor, or a second opinion from another model family on a hard change";
+    const AVOID = "quick edits or reading long documents, as it is slow to start and wordy in its answers";
+    const scout = (await service.command<{ presetId: string }>({ type: "preset.create", name: "scout", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, goodAt: `  ${GOOD.replace("in Cursor,", "in Cursor,\n")}  `, avoid: AVOID })).presetId;
+    const quill = (await service.command<{ presetId: string }>({ type: "preset.create", name: "quill", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, goodAt: "narrow checks" })).presetId;
+    const saved = (await service.call<Array<{ id: string; goodAt?: string; avoid?: string }>>("GET", "/api/presets")).filter((p) => p.id === scout || p.id === quill);
+    const want = [[scout, GOOD, AVOID], [quill, "narrow checks", ""]];
+    if (JSON.stringify(want.map(([id]) => saved.find((p) => p.id === id)).map((p) => [p?.id, p?.goodAt, p?.avoid])) !== JSON.stringify(want)) fail(`the API keeps the lines as ${JSON.stringify(saved)}`);
+    log(`  api: scout's Good at folded to one line (${GOOD.length} characters), its Avoid (${AVOID.length}); quill's Good at alone`);
+    type Line = { text: string; cut: boolean; ellipsis: boolean; height: number; top: number; inside: boolean };
+    type Tile = { title: string; line: number; what: number; lines: Line[] };
+    const tile = (id: string) =>
+      `() => { const b = document.querySelector('[data-nav-key="preset:${id}"]'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const what = b.querySelector('.ov-shelf-what').getBoundingClientRect(); const box = b.getBoundingClientRect(); return { title: b.title, line: Math.round(what.height), what: Math.round(what.bottom), lines: [...b.querySelectorAll('.ov-shelf-about')].map((l) => { const r = l.getBoundingClientRect(); return { text: l.textContent, cut: l.scrollWidth > l.clientWidth, ellipsis: getComputedStyle(l).textOverflow === 'ellipsis', height: Math.round(r.height), top: Math.round(r.top), inside: r.right <= box.right + 0.5 && r.bottom <= box.bottom + 0.5 }; }) }; }`;
+    browser.click(/button "Back to the overview"/);
+    const both = browser.poll<Tile | null>("scout's tile with its two lines", tile(scout), (t) => t?.lines.length === 2)!;
+    const [good, avoid] = both.lines as [Line, Line];
+    if (good.text !== `Good at ${GOOD}` || avoid.text !== `Avoid ${AVOID}`) fail(`scout's lines read ${JSON.stringify(both.lines.map((l) => l.text))}`);
+    for (const l of both.lines) if (!l.cut || !l.ellipsis || l.height > both.line + 1 || !l.inside) fail(`a line of scout's should be one line cut by its ellipsis inside the tile: ${JSON.stringify(l)}`);
+    if (!(good.top >= both.what - 1 && avoid.top >= good.top + good.height - 1)) fail(`scout's lines are not under the model, Good at above Avoid: ${JSON.stringify(both)}`);
+    if (!both.title.includes(`\nGood at ${GOOD}\nAvoid ${AVOID}\n`)) fail(`scout's tooltip does not carry both lines whole: ${JSON.stringify(both.title)}`);
+    const one = browser.poll<Tile | null>("quill's tile with its one line", tile(quill), (t) => t !== null)!;
+    if (one.lines.map((l) => l.text).join(" | ") !== "Good at narrow checks" || one.title.includes("Avoid")) fail(`quill's tile shows ${JSON.stringify(one)}`);
+    log(`  page: scout's tile reads "Good at …" then "Avoid …", each one line of ${good.height}px under the model, cut by its ellipsis; the tooltip has both whole; quill's has its Good at alone`);
+    browser.on("eval", `() => { document.querySelector('[data-nav-key="preset:${scout}"]').scrollIntoView({ block: 'center' }); return true; }`);
+    browser.screenshot("crew-tiles-good-at-and-avoid-on-two-lines");
+    browser.consoleClean();
+    check.pass(lines);
+
+    const hovered = check.begin("a hovered crew or browser tile: its button stays clear and the tile carries the hover look, in the pixel look its ring whole in the action colour");
+    // What the hover paints: the tile's button (clear), the tile's own background and ring, and anything inside the
+    // tile that paints over the ring's band (none may).
+    type Hover = { hovered: boolean; button: string; tile: string; ring: string | null; action: string; over: string[] };
+    const hoverLook = (key: string) =>
+      `() => { const b = document.querySelector('[data-nav-key="${key}"]'); const li = b.closest('.ov-shelf-item'); const probe = document.createElement('span'); probe.style.color = 'var(--px-action, transparent)'; li.appendChild(probe); const action = getComputedStyle(probe).color; probe.remove(); const u = li.clientLeft; const box = li.getBoundingClientRect(); const inner = { left: box.left + u, top: box.top + u, right: box.right - u, bottom: box.bottom - u }; const clear = (c) => c === 'transparent' || /^rgba\\(.*, 0\\)$/.test(c); const over = [...li.querySelectorAll('*')].filter((el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && (!clear(cs.backgroundColor) || cs.backgroundImage !== 'none') && (r.left < inner.left + u || r.right > inner.right - u || r.top < inner.top + u || r.bottom > inner.bottom - u); }).map((el) => el.className || el.tagName); return { hovered: b.matches(':hover'), button: getComputedStyle(b).backgroundColor, tile: getComputedStyle(li).backgroundColor, ring: /^(rgba?\\([^)]*\\))/.exec(getComputedStyle(li).boxShadow)?.[1] ?? null, action, over }; }`;
+    const browserKey = browser.eval<string | null>("() => document.querySelector('[data-nav-key^=\"browser:\"]')?.dataset.navKey ?? null") ?? fail("the overview has no browser tile");
+    const browserName = browser.eval<string>(`() => document.querySelector('[data-nav-key="${browserKey}"] .ov-shelf-name')?.textContent ?? ''`);
+    const tiles: Array<[string, string, RegExp]> = [["scout's", `preset:${scout}`, /button "scout /], [`the ${browserName} browser's`, browserKey, new RegExp(`button "${browserName} `)]];
+    const hover = (what: string, key: string, pattern: RegExp, look: string): Hover => {
+      browser.on("eval", `() => { document.querySelector('[data-nav-key="${key}"]').scrollIntoView({ block: 'center' }); return true; }`);
+      browser.on("hover", browser.uid(pattern));
+      const seen = browser.poll<Hover>(`${what} tile hovered in the ${look} look`, hoverLook(key), (h) => h.hovered);
+      const clear = seen.button === "transparent" || /^rgba\(.*, 0\)$/.test(seen.button);
+      if (!clear || seen.over.length > 0) fail(`${what} tile, hovered in the ${look} look, has its button painted ${seen.button} over the tile (painting the ring's band: ${JSON.stringify(seen.over)})`);
+      return seen;
+    };
+    const plainRest = browser.eval<string>(`() => getComputedStyle(document.querySelector('[data-nav-key="preset:${quill}"]').closest('.ov-shelf-item')).backgroundColor`);
+    for (const [what, key, pattern] of tiles) {
+      const seen = hover(what, key, pattern, "plain");
+      if (seen.tile === plainRest) fail(`${what} tile, hovered in the plain look, shows no hover look of its own: ${seen.tile}, as a tile at rest`);
+      log(`  page (plain): ${what} tile hovered: its button ${seen.button}, the tile ${seen.tile} (at rest ${plainRest}), nothing painted over its edge`);
+    }
+    browser.on("eval", "() => { localStorage.setItem('backroom.skin', 'pixel'); return true; }");
+    browser.on("reload");
+    await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
+    browser.waitFor("New crew member");
+    for (const [what, key, pattern] of tiles) {
+      const seen = hover(what, key, pattern, "pixel");
+      if (seen.ring !== seen.action) fail(`${what} tile, hovered in the pixel look, has its ring in ${seen.ring}, not the action colour ${seen.action}`);
+      log(`  page (pixel): ${what} tile hovered: its button ${seen.button}, its ring ${seen.ring} (the action colour), nothing painted over the ring`);
+      browser.screenshot(`hovered-${key.split(":")[0]}-tile-ring-whole-in-the-pixel-look`);
+    }
+    browser.on("eval", "() => { localStorage.removeItem('backroom.skin'); return true; }");
+    browser.on("reload");
+    await until("the plain look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") !== "pixel");
+    browser.consoleClean();
+    browser.openRoom(room.title);
+    check.pass(hovered);
   }
 
   // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.

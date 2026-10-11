@@ -79,7 +79,8 @@ The Consigliere's (the user posts from the page):
   keepalive @name on|off          turns keep-alives on or off for that seat (on for you and off for members by default).
   keepalive every <minutes>       the room's keep-alive interval, 1 to 59 minutes (55 or less leaves the wake time to
                                   reach the model within the cache's hour), or "default".
-  crew                            the user's saved crew: name, model, effort level, worktree note and its description.
+  crew                            the user's saved crew: name, model, effort level, worktree note, and what each is
+                                  good at and should avoid.
   seat <saved crew name>          seats that saved crew member in this room.
   reseat <alias> ["<plan>"]       asks that member for a checkpoint, then a fresh seat takes over.
   retire <alias>                  that member leaves the room; refused while it has work open. A request of

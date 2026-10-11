@@ -7403,6 +7403,11 @@ button.work-chip:hover,
   cursor: pointer;
 }
 
+/* Hovered, the tile's button stays clear: the tile (the li) carries the hover look, its ring whole in the pixel look. */
+.ov-shelf-tile:hover:not(:disabled) {
+  background: transparent;
+}
+
 .ov-shelf-tile > :first-child {
   grid-area: mark;
   justify-self: center;
@@ -7425,16 +7430,9 @@ button.work-chip:hover,
   white-space: nowrap;
 }
 
-/* A crew member's sentence, on a third line of its own: only tiles that have one get the row. */
-.ov-shelf-tile.has-about {
-  grid-template-areas:
-    "mark name"
-    ". what"
-    ". about";
-}
-
+/* A crew member's Good at and Avoid, each on a line of its own under the text: a row for each one written. */
 .ov-shelf-about {
-  grid-area: about;
+  grid-column: 2;
   font-size: var(--text-xs);
   color: var(--fg-muted);
   overflow: hidden;

@@ -5,14 +5,15 @@
 import { selectionEffort } from "../domain/effort.ts";
 import type { Preset } from "../domain/types.ts";
 
-/** One crew member: name · model · effort · worktree note when it has one · its sentence when it has one. */
+/** One crew member: name · model · effort · worktree note when it has one · what it is good at and what to avoid, each when set. */
 export function crewLine(preset: Preset): string {
   return [
     preset.name,
     preset.modelSelection.model,
     `effort ${selectionEffort(preset.modelSelection) ?? "none"}`,
     preset.workspaceMode === "worktree" ? "works in its own worktree" : "",
-    preset.description.trim(),
+    preset.goodAt.trim() ? `good at: ${preset.goodAt.trim()}` : "",
+    preset.avoid.trim() ? `avoid: ${preset.avoid.trim()}` : "",
   ].filter(Boolean).join(" · ");
 }
 

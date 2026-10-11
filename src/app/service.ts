@@ -811,7 +811,8 @@ export class RoomService {
       runtimeMode: command.runtimeMode,
       workspaceMode: command.workspaceMode,
       look: {},
-      description: command.description,
+      goodAt: command.goodAt,
+      avoid: command.avoid,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -829,7 +830,8 @@ export class RoomService {
       modelSelection: command.modelSelection ?? preset.modelSelection,
       runtimeMode: command.runtimeMode ?? preset.runtimeMode,
       workspaceMode: command.workspaceMode ?? preset.workspaceMode,
-      description: command.description ?? preset.description,
+      goodAt: command.goodAt ?? preset.goodAt,
+      avoid: command.avoid ?? preset.avoid,
       updatedAt: now(),
     };
     this.db.transaction(() => this.repos.upsertPreset(updated, command.look));

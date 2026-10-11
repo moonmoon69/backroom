@@ -2569,57 +2569,79 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`api: Third has @${seated.alias} (${seated.id.slice(0, 8)}), ${thirdBefore.length + 1} members; page: "${seatToast}"`);
     await state("a crew member seated in a room by keys alone", "sol · crew member");
 
-    // What it is for: one line in the Edit dialog, after the name. Typed and saved by keys, the service keeps it trimmed,
-    // and sol's tile shows it on a third line cut by its ellipsis, the tile no wider; the others keep their height. Opened
-    // again, the field holds it; cleared and saved, the line goes.
-    const SENTENCE = "Careful reviewer for risky changes across the service and the page; slow, so not for quick lookups.";
-    const tiles = `() => [...document.querySelectorAll('.ov-shelf-tile')].filter((b) => b.dataset.navKey?.startsWith('preset:')).map((b) => { const about = b.querySelector('.ov-shelf-about'); const what = b.querySelector('.ov-shelf-what'); return { key: b.dataset.navKey, height: Math.round(b.getBoundingClientRect().height), about: about ? { text: about.textContent, cut: about.scrollWidth > about.clientWidth, ellipsis: getComputedStyle(about).textOverflow === 'ellipsis', height: Math.round(about.getBoundingClientRect().height), line: Math.round(what.getBoundingClientRect().height), inside: about.getBoundingClientRect().right <= b.getBoundingClientRect().right + 0.5 } : null }; })`;
-    type Tile = { key: string; height: number; about: { text: string; cut: boolean; ellipsis: boolean; height: number; line: number; inside: boolean } | null };
+    // Good at and Avoid: two lines in the Edit dialog, after the name. Typed and saved by keys, the service keeps them
+    // trimmed, and sol's tile shows them as two lines under the model, each cut by its ellipsis, the tile no wider; the
+    // others keep their height. Opened again, the fields hold them; Good at cleared and saved, Avoid stays alone; Avoid
+    // cleared too, the tile has its old height.
+    const GOOD = "careful review of risky changes across the service and the page, with tests for each finding";
+    const AVOID = "quick lookups and one-line fixes, as it is slow to start and reads everything first";
+    const tiles = `() => [...document.querySelectorAll('.ov-shelf-tile')].filter((b) => b.dataset.navKey?.startsWith('preset:')).map((b) => { const what = b.querySelector('.ov-shelf-what'); return { key: b.dataset.navKey, height: Math.round(b.getBoundingClientRect().height), lines: [...b.querySelectorAll('.ov-shelf-about')].map((about) => ({ text: about.textContent, cut: about.scrollWidth > about.clientWidth, ellipsis: getComputedStyle(about).textOverflow === 'ellipsis', height: Math.round(about.getBoundingClientRect().height), line: Math.round(what.getBoundingClientRect().height), inside: about.getBoundingClientRect().right <= b.getBoundingClientRect().right + 0.5 })) }; })`;
+    type Line = { text: string; cut: boolean; ellipsis: boolean; height: number; line: number; inside: boolean };
+    type Tile = { key: string; height: number; lines: Line[] };
     const before = browser.eval<Tile[]>(tiles);
-    if (before.some((tile) => tile.about !== null)) fail(`a crew tile shows a sentence before any was written: ${JSON.stringify(before)}`);
-    const field = "() => { const f = [...document.querySelectorAll('.dialog label')].find((l) => l.textContent.trim().startsWith('What it is for'))?.querySelector('input'); return f ? { value: f.value, maxLength: f.maxLength, focused: f === document.activeElement } : null; }";
+    if (before.some((tile) => tile.lines.length > 0)) fail(`a crew tile shows a line before any was written: ${JSON.stringify(before)}`);
+    const field = (label: "Good at" | "Avoid") =>
+      `() => { const f = [...document.querySelectorAll('.dialog label')].find((l) => l.textContent.trim().startsWith(${JSON.stringify(label)}))?.querySelector('input'); return f ? { value: f.value, maxLength: f.maxLength, focused: f === document.activeElement } : null; }`;
     type Field = { value: string; maxLength: number; focused: boolean } | null;
+    const presetLines = async () => {
+      const got = (await service.call<Array<{ id: string; goodAt?: string; avoid?: string }>>("GET", "/api/presets")).find((p) => p.id === sol.id);
+      return [got?.goodAt, got?.avoid];
+    };
+    const solLines = (list: Tile[]) => list.find((tile) => tile.key === `preset:${sol.id}`)?.lines.map((l) => l.text).join(" | ");
     press("Enter");
     await expect("Enter on sol's tile: its Edit dialog again, the focus in its name", (f) => f.dialog === "Edit sol" && f.inDialog && f.value === "sol");
-    await tabTo("Tab to What it is for", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field)?.focused === true, "Tab", 4);
-    const empty = browser.poll<Field>("What it is for to be empty, capped at the service's 300 characters", field, (v) => v?.focused === true && v.value === "" && v.maxLength === 300);
-    log(`  page: What it is for is focused, empty, maxLength ${empty!.maxLength}`);
+    await tabTo("Tab to Good at", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field("Good at"))?.focused === true, "Tab", 4);
+    const empty = browser.poll<Field>("Good at to be empty, capped at the service's 300 characters", field("Good at"), (v) => v?.focused === true && v.value === "" && v.maxLength === 300);
+    log(`  page: Good at is focused, empty, maxLength ${empty!.maxLength}`);
     // The page puts the text in itself (insertText, which React sees), as typing it would.
-    browser.eval(`() => document.execCommand('insertText', false, ${JSON.stringify(`  ${SENTENCE}  `)})`);
-    browser.poll<Field>("the field to hold the sentence as typed", field, (v) => v?.value === `  ${SENTENCE}  `);
-    browser.poll<Seat>("Seat in a room… to wait while the sentence is not saved", seatButton, (b) => b?.waits === true && (b.why ?? "").includes("save or cancel the changes first"));
-    log("  page: the unsaved sentence counts as a change: Seat in a room… waits");
+    browser.eval(`() => document.execCommand('insertText', false, ${JSON.stringify(`  ${GOOD}  `)})`);
+    browser.poll<Field>("Good at to hold the line as typed", field("Good at"), (v) => v?.value === `  ${GOOD}  `);
+    await tabTo("Tab to Avoid", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field("Avoid"))?.focused === true, "Tab", 1);
+    browser.poll<Field>("Avoid to be empty, capped at the service's 300 characters", field("Avoid"), (v) => v?.focused === true && v.value === "" && v.maxLength === 300);
+    browser.eval(`() => document.execCommand('insertText', false, ${JSON.stringify(AVOID)})`);
+    browser.poll<Field>("Avoid to hold the line as typed", field("Avoid"), (v) => v?.value === AVOID);
+    browser.poll<Seat>("Seat in a room… to wait while the lines are not saved", seatButton, (b) => b?.waits === true && (b.why ?? "").includes("save or cancel the changes first"));
+    log("  page: the unsaved lines count as a change: Seat in a room… waits");
     press("Enter");
     await expect("Enter in the field saves: the dialog closed, the ring back on sol's tile", (f) => f.dialog === null && f.key === `preset:${sol.id}` && f.ring);
-    const savedSentence = await until("the API to show sol's sentence, trimmed", async () => {
-      const got = (await service.call<Array<{ id: string; description?: string }>>("GET", "/api/presets")).find((p) => p.id === sol.id)?.description;
-      return got === SENTENCE ? got : null;
-    });
-    log(`api: sol's description is "${savedSentence.slice(0, 40)}…" (${savedSentence.length} characters, trimmed)`);
-    const after = browser.poll<Tile[]>("sol's tile to show the sentence on one line, cut by its ellipsis", tiles, (list) => list.find((tile) => tile.key === `preset:${sol.id}`)?.about?.text === SENTENCE);
+    await until("the API to show sol's two lines, trimmed", async () => (JSON.stringify(await presetLines()) === JSON.stringify([GOOD, AVOID]) ? true : null));
+    log(`api: sol's goodAt is "${GOOD.slice(0, 40)}…" (${GOOD.length} characters, trimmed), its avoid "${AVOID.slice(0, 40)}…"`);
+    const after = browser.poll<Tile[]>("sol's tile to show Good at and Avoid, a line each", tiles, (list) => solLines(list) === `Good at ${GOOD} | Avoid ${AVOID}`);
     const solTile = after.find((tile) => tile.key === `preset:${sol.id}`)!;
-    const about = solTile.about!;
-    if (!about.cut || !about.ellipsis || about.height > about.line + 1 || !about.inside) fail(`sol's sentence should be one line cut by an ellipsis inside the tile: ${JSON.stringify(about)}`);
+    for (const line of solTile.lines) if (!line.cut || !line.ellipsis || line.height > line.line + 1 || !line.inside) fail(`sol's line should be one line cut by an ellipsis inside the tile: ${JSON.stringify(line)}`);
     const others = after.filter((tile) => tile.key !== solTile.key);
-    const changedHeight = others.filter((tile) => tile.height !== before.find((b) => b.key === tile.key)?.height || tile.about !== null);
-    if (changedHeight.length > 0) fail(`tiles without a sentence changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
-    log(`  page: sol's tile ${before.find((b) => b.key === solTile.key)?.height}px → ${solTile.height}px, the sentence one line of ${about.height}px, cut; ${others.length} other tiles as they were`);
+    const changedHeight = others.filter((tile) => tile.height !== before.find((b) => b.key === tile.key)?.height || tile.lines.length > 0);
+    if (changedHeight.length > 0) fail(`tiles without lines changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
+    const oldHeight = before.find((b) => b.key === solTile.key)?.height;
+    log(`  page: sol's tile ${oldHeight}px → ${solTile.height}px, Good at and Avoid one line of ${solTile.lines[0]!.height}px each, cut; ${others.length} other tiles as they were`);
     press("Enter");
     await expect("Enter: the Edit dialog, the focus in its name", (f) => f.dialog === "Edit sol" && f.inDialog && f.value === "sol");
-    await tabTo("Tab to What it is for", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field)?.focused === true, "Tab", 4);
-    browser.poll<Field>("the field to hold the saved sentence", field, (v) => v?.focused === true && v.value === SENTENCE);
-    await state("crew: What it is for is saved from the Edit dialog and shows on the tile, one line cut by its ellipsis", "Edit sol");
+    await tabTo("Tab to Good at", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field("Good at"))?.focused === true, "Tab", 4);
+    browser.poll<Field>("Good at to hold the saved line", field("Good at"), (v) => v?.focused === true && v.value === GOOD);
+    browser.poll<Field>("Avoid to hold the saved line", field("Avoid"), (v) => v?.value === AVOID);
+    await state("crew: Good at and Avoid are saved from the Edit dialog and show on the tile, a line each cut by its ellipsis", "Edit sol");
     press("Control+a");
     press("Backspace");
-    browser.poll<Field>("the field to be empty", field, (v) => v?.value === "");
+    browser.poll<Field>("Good at to be empty", field("Good at"), (v) => v?.value === "");
     press("Enter");
     await expect("Enter: saved, the dialog closed, the ring on sol's tile", (f) => f.dialog === null && f.key === `preset:${sol.id}` && f.ring);
-    await until("the API to show sol's sentence cleared", async () => (await service.call<Array<{ id: string; description?: string }>>("GET", "/api/presets")).find((p) => p.id === sol.id)?.description === "" || null);
-    browser.poll<Tile[]>("sol's tile without the sentence, at its old height", tiles, (list) => {
+    await until("the API to show sol's Good at cleared, its Avoid kept", async () => (JSON.stringify(await presetLines()) === JSON.stringify(["", AVOID]) ? true : null));
+    browser.poll<Tile[]>("sol's tile with its Avoid alone", tiles, (list) => solLines(list) === `Avoid ${AVOID}`);
+    log("api: sol's goodAt cleared, its avoid kept; page: its tile has the Avoid line alone");
+    press("Enter");
+    await expect("Enter: the Edit dialog, the focus in its name", (f) => f.dialog === "Edit sol" && f.inDialog && f.value === "sol");
+    await tabTo("Tab to Avoid", (f) => f.inDialog && f.tag === "INPUT" && browser.eval<Field>(field("Avoid"))?.focused === true, "Tab", 5);
+    press("Control+a");
+    press("Backspace");
+    browser.poll<Field>("Avoid to be empty", field("Avoid"), (v) => v?.value === "");
+    press("Enter");
+    await expect("Enter: saved, the dialog closed, the ring on sol's tile", (f) => f.dialog === null && f.key === `preset:${sol.id}` && f.ring);
+    await until("the API to show both of sol's lines cleared", async () => (JSON.stringify(await presetLines()) === JSON.stringify(["", ""]) ? true : null));
+    browser.poll<Tile[]>("sol's tile without lines, at its old height", tiles, (list) => {
       const tile = list.find((x) => x.key === `preset:${sol.id}`);
-      return tile?.about === null && tile.height === before.find((b) => b.key === tile.key)?.height;
+      return tile?.lines.length === 0 && tile.height === oldHeight;
     });
-    log("api: sol's description cleared; page: its tile has no sentence line and its old height");
+    log("api: sol's lines cleared; page: its tile has no line under the model and its old height");
   }
 
   // ---------------- 7. a status chip's choices (K1-6) ----------------

@@ -266,6 +266,11 @@ export const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // A crew member's two lines instead of its sentence: the sentence becomes what it is good at, and what to avoid starts empty.
+  `
+  ALTER TABLE presets RENAME COLUMN description TO good_at;
+  ALTER TABLE presets ADD COLUMN avoid TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export class Database {

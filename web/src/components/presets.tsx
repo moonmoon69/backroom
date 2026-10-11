@@ -75,6 +75,8 @@ export function PresetIcon({ preset, size = 14 }: { preset: Preset; size?: numbe
 }
 
 const sameSelection = (a: ModelSelection | null, b: ModelSelection | null): boolean => JSON.stringify(a) === JSON.stringify(b);
+/** A crew member's line as the service keeps it: on one line, whitespace folded. */
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 const sameLook = (a: Look, b: Look): boolean => Object.keys({ ...a, ...b }).every((key) => a[key as keyof Look] === b[key as keyof Look]);
 
 /**
@@ -269,11 +271,14 @@ export function PresetDialog({
   const [model, setModel] = useState<ModelSelection | null>(preset?.modelSelection ?? null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(preset?.runtimeMode ?? "full-access");
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "worktree">(preset?.workspaceMode ?? "local");
-  // One sentence for the Consigliere. A service older than descriptions sends presets without one and takes none.
-  const descriptionsSupported = presets.length === 0 || presets.some((p) => p.description !== undefined);
-  const [description, setDescription] = useState(preset?.description ?? "");
-  // Saved as the service keeps it: on one line, whitespace folded.
-  const sentence = description.replace(/\s+/g, " ").trim();
+  // Two lines for the Consigliere: what it is good at, what to avoid. A service older than them sends presets without
+  // them and takes none.
+  const linesSupported = presets.length === 0 || presets.some((p) => p.goodAt !== undefined);
+  const [goodAt, setGoodAt] = useState(preset?.goodAt ?? "");
+  const [avoid, setAvoid] = useState(preset?.avoid ?? "");
+  // Saved as the service keeps them: each on one line, whitespace folded.
+  const goodAtLine = oneLine(goodAt);
+  const avoidLine = oneLine(avoid);
   // Its pixel look: the one it has, or for a new crew member the default of a fresh id, sent with it so what is shown
   // is what it wears. A service older than looks sends presets without one and takes none.
   const looksSupported = presets.length === 0 || presets.some((p) => p.look !== undefined);
@@ -288,7 +293,7 @@ export function PresetDialog({
   // Seated with their saved settings: not while the form says otherwise.
   const changed =
     preset !== null &&
-    (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || sentence !== (preset.description ?? "") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
+    (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || goodAtLine !== (preset.goodAt ?? "") || avoidLine !== (preset.avoid ?? "") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
   const seatWhy = !seat || seat.rooms.length === 0 ? "Seat in a room… waits: there are no rooms yet." : changed ? "Seat in a room… waits: save or cancel the changes first, as they are seated with their saved settings." : null;
   const seatWhyId = useId();
 
@@ -296,7 +301,7 @@ export function PresetDialog({
     event.preventDefault();
     if (!ready || !model) return;
     setBusy(true);
-    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode, ...(looksSupported ? { look } : {}), ...(descriptionsSupported ? { description: sentence } : {}) };
+    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode, ...(looksSupported ? { look } : {}), ...(linesSupported ? { goodAt: goodAtLine, avoid: avoidLine } : {}) };
     const result = preset ? await runCommand({ type: "preset.update", presetId: preset.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     setBusy(false);
     if (result) {
@@ -333,18 +338,18 @@ export function PresetDialog({
             </span>
           )}
         </label>
-        {descriptionsSupported ? (
-          <label>
-            What it is for
-            <input
-              type="text"
-              value={description}
-              maxLength={PRESET_DESCRIPTION_MAX}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Careful reviewer for risky changes; slow, so not for quick lookups."
-            />
-            <span className="hint">One sentence the Consigliere reads with your crew when he picks whom to seat. Rewrite it when the model or your experience changes.</span>
-          </label>
+        {linesSupported ? (
+          <>
+            <label>
+              Good at
+              <input type="text" value={goodAt} maxLength={PRESET_DESCRIPTION_MAX} onChange={(e) => setGoodAt(e.target.value)} placeholder="careful review of risky changes" />
+            </label>
+            <label>
+              Avoid
+              <input type="text" value={avoid} maxLength={PRESET_DESCRIPTION_MAX} onChange={(e) => setAvoid(e.target.value)} placeholder="quick lookups; it is slow to start" />
+              <span className="hint">One line each, which the Consigliere reads with your crew when he picks whom to seat. Rewrite them when the model or your experience changes.</span>
+            </label>
+          </>
         ) : null}
         <div className="form-field">
           <span>Model</span>

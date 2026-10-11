@@ -127,8 +127,10 @@ export interface Preset {
   workspaceMode: "local" | "worktree";
   /** Its pixel look, every part named: the parts chosen, the rest their stable defaults (domain/look.ts). */
   look: Look;
-  /** One sentence in the user's words on what it is for, read by the Consigliere when he seats; empty when none. */
-  description: string;
+  /** What it is good at, one line in the user's words, read by the Consigliere when he seats; empty when none. */
+  goodAt: string;
+  /** What to avoid giving it, one line in the same words; empty when none. */
+  avoid: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -748,13 +748,15 @@ export interface Preset {
   workspaceMode: "local" | "worktree";
   /** Its pixel look, every part named (src/domain/look.ts). Absent from an older service: the look's defaults then. */
   look?: Record<string, string>;
-  /** One sentence on what it is for, read by the Consigliere when he seats; empty when none, absent from an older service. */
-  description?: string;
+  /** What it is good at, one line read by the Consigliere when he seats; empty when none, absent from an older service. */
+  goodAt?: string;
+  /** What to avoid giving it, one line; empty when none, absent from an older service. */
+  avoid?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-/** The longest crew member description the service takes (PRESET_DESCRIPTION_MAX in src/domain/commands.ts). */
+/** The longest of a crew member's two lines the service takes (PRESET_DESCRIPTION_MAX in src/domain/commands.ts). */
 export const PRESET_DESCRIPTION_MAX = 300;
 
 export interface T3ThreadShell {
@@ -1245,8 +1247,8 @@ export type RoomCommand =
   | { type: "participant.model.set"; participantId: string; modelSelection: ModelSelection }
   | { type: "participant.runtimeMode.set"; participantId: string; runtimeMode: RuntimeMode }
   | { type: "participant.retire"; participantId: string; thread?: ThreadLifecycleChoice }
-  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string>; description?: string }
-  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string>; description?: string }
+  | { type: "preset.create"; name: string; modelSelection: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string>; goodAt?: string; avoid?: string }
+  | { type: "preset.update"; presetId: string; name?: string; modelSelection?: ModelSelection; runtimeMode?: RuntimeMode; workspaceMode?: "local" | "worktree"; look?: Record<string, string>; goodAt?: string; avoid?: string }
   | { type: "preset.delete"; presetId: string }
   /** Seat a preset on a new thread; without an alias it takes the preset's name, numbered when taken. */
   | { type: "participant.fromPreset"; roomId: string; presetId: string; alias?: string }
