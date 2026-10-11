@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { crewLine, crewListing, selectionEffort } from "../src/app/crew.ts";
+import { crewLine, crewListing, isEffortOption, selectionEffort } from "../src/app/crew.ts";
 import { changedStanding, crewSection, standingFingerprint, standingText, type StandingInput } from "../src/briefing/assemble.ts";
 import { Database } from "../src/db/database.ts";
 import { Repos } from "../src/db/repos.ts";
@@ -41,6 +41,21 @@ test("the effort level is the effort (Claude), reasoning (Cursor) or reasoningEf
   assert.equal(selectionEffort({ instanceId: "claudeAgent", model: "m", options: [{ id: "fastMode", value: true }, { id: "contextWindow", value: "1m" }] }), null, "other options are not an effort");
   assert.equal(selectionEffort({ instanceId: "claudeAgent", model: "m", options: [{ id: "effort", value: { level: "high" } }] }), null, "nor a value that is not text");
   assert.equal(selectionEffort({ instanceId: "claudeAgent", model: "m", options: [{ id: "effort", value: "  " }] }), null);
+});
+
+test("Cursor's own spellings of the effort option count: reasoning_effort for Grok 4.7, and any case or separator of the same word", () => {
+  // The user's Grok preset after the change to grok-4.7 (2026-10-11): Cursor's option id is reasoning_effort there, and the
+  // listing said "effort none" with a saved effort of high.
+  const grok47: ModelSelection = { instanceId: "cursor", model: "grok-4.7", options: [{ id: "contextWindow", value: "500k" }, { id: "fastMode", value: false }, { id: "reasoning_effort", value: "high" }] };
+  assert.equal(selectionEffort(grok47), "high");
+  assert.equal(crewLine(preset("Grok", grok47)), "Grok · grok-4.7 · effort high");
+  for (const id of ["reasoning-effort", "ReasoningEffort", "REASONING_EFFORT", "Effort"]) {
+    assert.equal(selectionEffort({ instanceId: "cursor", model: "m", options: [{ id, value: "xhigh" }] }), "xhigh", id);
+    assert.equal(isEffortOption(id), true, id);
+  }
+  for (const id of ["effortless", "reasoningMode", "thinking", "serviceTier", "contextWindow", ""]) {
+    assert.equal(isEffortOption(id), false, id);
+  }
 });
 
 test("a crew line is name · model · effort · worktree note · sentence, leaving out what is not there", () => {
