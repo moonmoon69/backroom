@@ -7,7 +7,7 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { resolveLook, type Look } from "../../../src/domain/look.ts";
 import { LookPicker } from "./LookPicker.tsx";
-import type { CatalogEntry, CommandResult, ModelSelection, Preset, RoomCommand, RoomListItem, RuntimeMode, T3Project } from "../types.ts";
+import { PRESET_DESCRIPTION_MAX, type CatalogEntry, type CommandResult, type ModelSelection, type Preset, type RoomCommand, type RoomListItem, type RuntimeMode, type T3Project } from "../types.ts";
 import { defaultOptionValue, useCatalog } from "./catalog.ts";
 import { Dialog } from "./Dialog.tsx";
 import { Popover } from "./Popover.tsx";
@@ -269,6 +269,11 @@ export function PresetDialog({
   const [model, setModel] = useState<ModelSelection | null>(preset?.modelSelection ?? null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(preset?.runtimeMode ?? "full-access");
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "worktree">(preset?.workspaceMode ?? "local");
+  // One sentence for the Consigliere. A service older than descriptions sends presets without one and takes none.
+  const descriptionsSupported = presets.length === 0 || presets.some((p) => p.description !== undefined);
+  const [description, setDescription] = useState(preset?.description ?? "");
+  // Saved as the service keeps it: on one line, whitespace folded.
+  const sentence = description.replace(/\s+/g, " ").trim();
   // Its pixel look: the one it has, or for a new crew member the default of a fresh id, sent with it so what is shown
   // is what it wears. A service older than looks sends presets without one and takes none.
   const looksSupported = presets.length === 0 || presets.some((p) => p.look !== undefined);
@@ -283,7 +288,7 @@ export function PresetDialog({
   // Seated with their saved settings: not while the form says otherwise.
   const changed =
     preset !== null &&
-    (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
+    (trimmed !== preset.name || !sameSelection(model, preset.modelSelection) || runtimeMode !== preset.runtimeMode || workspaceMode !== (preset.workspaceMode ?? "local") || sentence !== (preset.description ?? "") || !sameLook(look, resolveLook(preset.id, preset.look ?? null)));
   const seatWhy = !seat || seat.rooms.length === 0 ? "Seat in a room… waits: there are no rooms yet." : changed ? "Seat in a room… waits: save or cancel the changes first, as they are seated with their saved settings." : null;
   const seatWhyId = useId();
 
@@ -291,7 +296,7 @@ export function PresetDialog({
     event.preventDefault();
     if (!ready || !model) return;
     setBusy(true);
-    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode, ...(looksSupported ? { look } : {}) };
+    const values = { name: trimmed, modelSelection: model, runtimeMode, workspaceMode, ...(looksSupported ? { look } : {}), ...(descriptionsSupported ? { description: sentence } : {}) };
     const result = preset ? await runCommand({ type: "preset.update", presetId: preset.id, ...values }) : await runCommand({ type: "preset.create", ...values });
     setBusy(false);
     if (result) {
@@ -328,6 +333,19 @@ export function PresetDialog({
             </span>
           )}
         </label>
+        {descriptionsSupported ? (
+          <label>
+            What it is for
+            <input
+              type="text"
+              value={description}
+              maxLength={PRESET_DESCRIPTION_MAX}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Careful reviewer for risky changes; slow, so not for quick lookups."
+            />
+            <span className="hint">One sentence the Consigliere reads with your crew when he picks whom to seat. Rewrite it when the model or your experience changes.</span>
+          </label>
+        ) : null}
         <div className="form-field">
           <span>Model</span>
           <ThreadSettingsRow model={model} onModel={setModel} runtimeMode={runtimeMode} onRuntimeMode={setRuntimeMode} />

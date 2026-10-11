@@ -254,6 +254,8 @@ const MIGRATIONS: string[] = [
   ${NUMBER_EXISTING_POSTS}
   CREATE UNIQUE INDEX events_post_number ON events(room_id, post_number) WHERE post_number IS NOT NULL;
   `,
+  // A crew member's one-sentence description, read by the Consigliere when he seats; empty for the ones saved before.
+  `ALTER TABLE presets ADD COLUMN description TEXT NOT NULL DEFAULT '';`,
 ];
 
 export class Database {

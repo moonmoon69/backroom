@@ -1,8 +1,8 @@
 /**
- * A briefing's standing sections: who the reader is, the rules, where everyone works, the browsers, the board and the
- * room's state. They go out in full on a thread's first delivery and again after its context was compacted; in between
- * a delivery carries the work (src/briefing/envelope.ts), one header line that says how to print the standing sections
- * again, and any standing section that changed since the thread last had it.
+ * A briefing's standing sections: who the reader is, the rules, where everyone works, the browsers, the board, the
+ * Consigliere's crew and the room's state. They go out in full on a thread's first delivery and again after its context
+ * was compacted; in between a delivery carries the work (src/briefing/envelope.ts), one header line that says how to
+ * print the standing sections again, and any standing section that changed since the thread last had it.
  */
 import { createHash } from "node:crypto";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
@@ -20,8 +20,9 @@ export interface BrowsersBriefing {
   started: BrowserBriefing;
 }
 import { engineConsigliereRules, engineSeatFacts } from "../app/consigliere.ts";
+import { crewListing } from "../app/crew.ts";
 import type { RoomState } from "../app/roomState.ts";
-import type { Participant, Room } from "../domain/types.ts";
+import type { Participant, Preset, Room } from "../domain/types.ts";
 import type { Workspace } from "../git/workspaces.ts";
 
 /** What the standing sections are made of: the room, the reader, and the live state they describe. */
@@ -39,15 +40,17 @@ export interface StandingInput {
   board?: { command: string; as: string } | null;
   /** The room's state as the Consigliere last wrote it; a thread's first briefing carries it. */
   roomState?: RoomState | null;
+  /** The user's saved crew, which the Consigliere seats from; his section is left out when absent. */
+  crew?: Preset[] | null;
   /** A member's standing facts in a room with a Consigliere; `engineSeatFacts` from consigliere.ts when absent. */
   seatFacts?: ((consigliere: Pick<Participant, "alias">) => string) | null;
 }
 
 /**
  * The standing sections that are sent again when they change: "role" is the "You are" line with the rules line under
- * it (who the reader is: the Consigliere or a member, and of whom).
+ * it (who the reader is: the Consigliere or a member, and of whom); "crew" is the Consigliere's "Your crew".
  */
-export const STANDING_KEYS = ["role", "consigliere", "workspaces", "browsers", "board"] as const;
+export const STANDING_KEYS = ["role", "consigliere", "workspaces", "browsers", "board", "crew"] as const;
 export type StandingKey = (typeof STANDING_KEYS)[number];
 
 /** How much of a condensed post a briefing keeps: its first characters, on one line. */
@@ -149,6 +152,11 @@ export function roomStateSection(state: RoomState): string {
   return `== Room state ==\nWhere this room stands, as ${state.by ? `@${state.by}` : "the Consigliere"} last wrote it${at}; posts after that may have moved on:\n${state.text.trim()}`;
 }
 
+/** The Consigliere's crew as a briefing section: the lines `rooms-board crew` prints (src/app/crew.ts). */
+export function crewSection(presets: Preset[]): string {
+  return ["== Your crew ==", ...crewListing(presets)].join("\n");
+}
+
 /** The standing sections for one reader, as text; null where a section does not apply or cannot be told now. */
 export interface StandingSections {
   /** "You are …": who the reader is and who else is in the room. */
@@ -160,6 +168,8 @@ export interface StandingSections {
   workspaces: string | null;
   browsers: string | null;
   board: string | null;
+  /** The user's saved crew, in the Consigliere's briefings only. */
+  crew: string | null;
   /** What a member of a room with a Consigliere was told at its seat briefing. */
   seat: string | null;
   roomState: string | null;
@@ -194,6 +204,7 @@ export function standingSections(input: StandingInput): StandingSections {
     workspaces,
     browsers: input.browsers ? browserSection(input.browsers) : null,
     board: input.board ? boardLine(input.board) : null,
+    crew: isConsigliere && input.crew ? crewSection(input.crew) : null,
     seat: hisRoom ? (input.seatFacts ?? engineSeatFacts)(hisRoom) : null,
     roomState: input.roomState ? roomStateSection(input.roomState) : null,
   };
@@ -221,6 +232,8 @@ export function standingFingerprint(input: StandingInput): Record<StandingKey, s
     workspaces: shape ? digest(JSON.stringify([where(shape.self), shape.sharing.length > 0, shape.elsewhere.some((w) => w.folder)])) : undefined,
     browsers: !room.browserEnabled ? "off" : browsers ? digest(browserSection({ ...browsers, browsers: browsers.browsers.map((b) => ({ ...b, running: true })) })) : undefined,
     board: input.board ? digest(boardLine(input.board)) : null,
+    // All the section says (names, models, effort, worktree notes, sentences); a look or permission mode is not in it.
+    crew: !isConsigliere ? null : input.crew ? digest(crewSection(input.crew)) : undefined,
   };
 }
 
@@ -251,6 +264,7 @@ export function standingLines(sections: StandingSections, keys: "all" | Standing
     has("workspaces") ? sections.workspaces : null,
     has("browsers") ? (sections.browsers ?? (keys === "all" ? null : BROWSERS_OFF)) : null,
     has("board") ? sections.board : null,
+    has("crew") ? sections.crew : null,
     keys === "all" && options.seat ? sections.seat : null,
     keys === "all" ? sections.roomState : null,
   ].filter((line): line is string => line !== null);

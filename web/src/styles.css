@@ -7400,6 +7400,23 @@ button.work-chip:hover,
   white-space: nowrap;
 }
 
+/* A crew member's sentence, on a third line of its own: only tiles that have one get the row. */
+.ov-shelf-tile.has-about {
+  grid-template-areas:
+    "mark name"
+    ". what"
+    ". about";
+}
+
+.ov-shelf-about {
+  grid-area: about;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ov-shelf-item .room-menu-button {
   margin-right: 8px;
   opacity: 0.35;

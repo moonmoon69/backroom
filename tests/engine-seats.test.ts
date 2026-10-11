@@ -484,6 +484,41 @@ test("the briefing source has where everyone works, the browsers, and the engine
   }
 });
 
+test("the Consigliere's briefings and rooms-board rules carry the saved crew, a member's do not, and an edit reaches him as a change", async () => {
+  const h = await Seats.create();
+  try {
+    const opus = (await h.run({ type: "preset.create", name: "Opus", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5", options: [{ id: "effort", value: "xhigh" }] }, description: "Careful reviewer." })) as { presetId: string };
+    const crew = "== Your crew ==\nThe user's saved crew (seat one with: rooms-board seat <name>):\nOpus · claude-opus-5-5 · effort xhigh · Careful reviewer.";
+    // What rooms-board rules prints (src/server/http.ts): the same standing text a briefing starts with.
+    assert.ok((await h.s.seats.standingText(h.ids.C!)).includes(crew));
+    assert.ok(!(await h.s.seats.standingText(h.ids.W!)).includes("== Your crew =="), "a member is not given the crew");
+    // The seating rule names the descriptions and effort in the sentence that names members and seat.
+    assert.ok((await h.s.seats.standingText(h.ids.C!)).includes("- Work through this room's members only. Find them with `rooms-board members`; seat more with `rooms-board seat <saved crew name>`, picking from `rooms-board crew` by each crew member's description and effort level. Never send work to a thread that is not a member of this room.\n"));
+
+    h.request("$user", "C", "Who should review?");
+    await h.tick();
+    assert.ok(h.prompt("C").includes(crew), "his first briefing has it");
+    h.complete("C", "Opus.");
+    await h.tick();
+
+    await h.run({ type: "preset.update", presetId: opus.presetId, look: { hair: "short" } });
+    h.request("$user", "C", "And now?");
+    await h.tick();
+    assert.ok(!h.prompt("C").includes("== Your crew =="), "a new look is not news");
+    h.complete("C", "Still Opus.");
+    await h.tick();
+
+    await h.run({ type: "preset.update", presetId: opus.presetId, description: "Fast writer; not a reviewer." });
+    h.request("$user", "C", "And now?");
+    await h.tick();
+    assert.ok(h.prompt("C").includes("Changed since your last briefing:\n== Your crew ==\nThe user's saved crew (seat one with: rooms-board seat <name>):\nOpus · claude-opus-5-5 · effort xhigh · Fast writer; not a reviewer."));
+    h.complete("C", "Someone else.");
+    await h.tick();
+  } finally {
+    h.close();
+  }
+});
+
 test("a restart in the middle of a reseat carries on from the journal and the record: one fresh seat, one transfer", async () => {
   const h = await Seats.create();
   try {

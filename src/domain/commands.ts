@@ -164,6 +164,12 @@ export const ParticipantUpdateCommand = z
 /** A pixel look as named parts (domain/look.ts). Names are not checked here: a part or option this version does not know falls back to its default when drawn. */
 export const LookSchema = z.record(z.string().min(1).max(32), z.string().min(1).max(32)).refine((look) => Object.keys(look).length <= 32, "a look has at most 32 parts");
 
+/** The longest crew member description: one sentence. The page's field has the same cap (web/src/types.ts). */
+export const PRESET_DESCRIPTION_MAX = 300;
+
+/** A crew member's one-sentence description, folded to one line: line breaks and runs of whitespace become one space. */
+export const PresetDescriptionSchema = z.string().max(PRESET_DESCRIPTION_MAX).transform((text) => text.replace(/\s+/g, " ").trim());
+
 export const PresetCreateCommand = z
   .object({
     type: z.literal("preset.create"),
@@ -172,6 +178,7 @@ export const PresetCreateCommand = z
     runtimeMode: RuntimeModeSchema.default("full-access"),
     workspaceMode: z.enum(["local", "worktree"]).default("local"),
     look: LookSchema.optional(),
+    description: PresetDescriptionSchema.default(""),
   })
   .strict();
 
@@ -184,6 +191,7 @@ export const PresetUpdateCommand = z
     runtimeMode: RuntimeModeSchema.optional(),
     workspaceMode: z.enum(["local", "worktree"]).optional(),
     look: LookSchema.optional(),
+    description: PresetDescriptionSchema.optional(),
   })
   .strict();
 
