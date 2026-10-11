@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { roomBrowserSummary } from "../web/src/browserSummary.ts";
+import { roomBrowserSummary, roomTabsLine } from "../web/src/browserSummary.ts";
 
 const tab = (n: number) => ({ id: `t${n}`, title: `tab ${n}`, url: `https://example.com/${n}` });
 const running = (...tabs: number[]) => ({ state: "running" as const, mode: "vnc" as const, tabs: tabs.map(tab) });
@@ -41,4 +41,10 @@ test("a browser that failed to start marks the button failed; one that cannot ru
 
 test("a room with no browser says so, and counts nothing", () => {
   assert.deepEqual(roomBrowserSummary(true, [], null), { title: "Browser: on for this room's agents · no browser yet", tabs: 0, failed: false });
+});
+
+test("the panel's line says the button's number is open tabs, and is not there when none is open (#526, #533)", () => {
+  assert.equal(roomTabsLine(5), "5 tabs open in all across the browsers below: the number on the Browser button.");
+  assert.equal(roomTabsLine(1), "1 tab open in all across the browsers below: the number on the Browser button.");
+  assert.equal(roomTabsLine(0), null);
 });

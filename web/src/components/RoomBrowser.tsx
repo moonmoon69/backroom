@@ -3,7 +3,7 @@ import type { NavProps } from "../keys.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import { copyWatchLinkName, powerName, powerText, WATCH_LINK_TEXT, watchLinkName, type PowerPhase } from "../browserLabels.ts";
-import { BROWSER_STATE_LABEL, roomBrowserSummary } from "../browserSummary.ts";
+import { BROWSER_STATE_LABEL, roomBrowserSummary, roomTabsLine } from "../browserSummary.ts";
 import type { BrowserListItem, RoomBrowserStatus } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { CopyButton } from "./pickers.tsx";
@@ -313,7 +313,8 @@ const LIST_POLL_MS = 4000;
  * browsers at all, then which browsers they may use. Each is a box with the name and description agents read
  * (editable here); the ones ticked also show their process, with Start or Stop, the watch link, the DevTools address
  * and the open tabs, the default marked as such, so any of them can be started, watched or logged into from here.
- * Unticked browsers stay a plain line. The browsers themselves are managed on their own pages (Page).
+ * Unticked browsers stay a plain line. The browsers themselves are managed on their own pages (Page). A line on top
+ * says what the room header's Browser button counts, from the same summary as the button so the two never differ.
  */
 export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) => void }) {
   const { snapshot, runCommand, refetch } = useRoom();
@@ -351,10 +352,12 @@ export function RoomBrowserPanel({ onManage }: { onManage: (browserId: string) =
       setBusy(false);
     }
   };
+  const tabsLine = roomTabsLine(roomBrowserSummary(enabled, snapshot.browsers, info?.browser.id ?? null).tabs);
   const ticked = list?.filter((browser) => snapshot.room.allowedBrowserIds === null || snapshot.room.allowedBrowserIds.includes(browser.id)) ?? [];
 
   return (
     <div className="browser-panel">
+      {tabsLine ? <p className="hint browser-panel-tabs">{tabsLine}</p> : null}
       <label className="browser-toggle">
         <input type="checkbox" checked={enabled} disabled={busy || (unavailable && !enabled)} onChange={() => void setBrowser({ enabled: !enabled })} />
         <span>

@@ -2062,18 +2062,24 @@ const BROWSER_CARDS = `() => [...document.querySelectorAll('.browser-panel .brow
   tabs: [...card.querySelectorAll('.browser-tabs li')].map((li) => li.title),
 }))`;
 
-/** The room header's Browser button: what it says and the number beside the globe. */
+/**
+ * The room header's Browser button: what it says and the number beside the globe; and, while the Browser panel is open,
+ * the panel's first line, which says what that number is (#526, #533).
+ */
 const BROWSER_BUTTON = `() => {
   const button = document.querySelector('.room-browser-button');
   const badge = button?.querySelector('.globe-badge');
   const count = button?.querySelector('.panel-count');
+  const panel = document.querySelector('.browser-panel');
+  const first = panel?.firstElementChild;
   return {
     label: button?.getAttribute('aria-label') ?? null,
     count: count?.textContent ?? null,
     covered: Boolean(badge && count && count.getBoundingClientRect().left < badge.getBoundingClientRect().right - 0.5),
+    panelLine: panel ? (first?.matches('p') ? first.textContent : null) : undefined,
   };
 }`;
-type BrowserButtonRead = { label: string | null; count: string | null; covered: boolean };
+type BrowserButtonRead = { label: string | null; count: string | null; covered: boolean; panelLine?: string | null };
 
 /**
  * The colour a state word should have (the CSS variable the look colours running with: --ok in the plain look,
@@ -2110,7 +2116,8 @@ interface BrowserApi {
  * each is recorded as this rehearsal's in the folder all Backrooms share (so two rehearsals at once never share one);
  * they get tabs over DevTools and are stopped again at the end, whatever happens. Each state reads the panel's boxes and
  * the room header's Browser button (its count and its words speak for every browser the room may use) from the page and
- * compares them with GET /api/browsers; the Watch link, Copy and Start or Stop are named with the words they show and the
+ * compares them with GET /api/browsers, and the panel's top line, which says the count is the open tabs, with the same
+ * number (#526, #533; at the first state general's tabs and staging's together); the Watch link, Copy and Start or Stop are named with the words they show and the
  * browser they are for; running is drawn in the look's green, and in the pixel look with a filled square (off: a hollow
  * one); a tab opened in the second browser with the panel closed must reach the room's stream and the button; the
  * panel's own Stop, Start and checkbox are pressed as the user would.
@@ -2168,6 +2175,11 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
     if (read.label !== label) return `the Browser button says ${JSON.stringify(read.label)}, the API ${JSON.stringify(label)}`;
     if ((read.count ?? "0") !== String(total)) return `the Browser button counts ${read.count ?? "nothing"}, the API ${total}`;
     if (read.covered) return "the Browser button's count sits under the globe's badge";
+    // The panel's top line names the button's number as the open tabs, the same number, and is not there with none open.
+    if (read.panelLine !== undefined) {
+      const wanted = total > 0 ? `${total} tab${total === 1 ? "" : "s"} open in all across the browsers below: the number on the Browser button.` : null;
+      if (read.panelLine !== wanted) return `the Browser panel's top line is ${JSON.stringify(read.panelLine)}, expected ${JSON.stringify(wanted)} (the button counts ${read.count ?? "nothing"})`;
+    }
     return null;
   };
   /**
@@ -2293,6 +2305,14 @@ async function rehearseBrowserPanel(service: Service, browser: Browser, room: Ro
         : null;
     }, ["running · virtual screen", "Open the browser screen", "Browsers they can use"]);
     log(`  page: general and staging each show running · virtual screen, Stop, Watch link with Copy, DevTools address, ${first.cards.filter((c) => c.ticked).map((c) => `${c.tabs.length} tab(s)`).join(" and ")}; scratch is a plain line`);
+    // The panel's top line is the button's number, the tabs of both running browsers added up, so more than either's.
+    const tabsOf = (name: string) => first.api.find((b) => b.name === name)?.status.tabs.length ?? 0;
+    const line = browser.eval<BrowserButtonRead>(BROWSER_BUTTON);
+    const sum = tabsOf("general") + tabsOf("staging");
+    if (tabsOf("general") === 0 || tabsOf("staging") === 0 || line.count !== String(sum) || !line.panelLine?.startsWith(`${sum} tabs open in all`)) {
+      fail(`the Browser panel's top line ${JSON.stringify(line.panelLine)} and the button's ${line.count} are not the ${sum} tabs of general (${tabsOf("general")}) and staging (${tabsOf("staging")}) together`);
+    }
+    log(`  page: the panel's top line reads ${JSON.stringify(line.panelLine)}, the button's ${line.count}: general's ${tabsOf("general")} and staging's ${tabsOf("staging")} tabs together`);
     checkColours("plain", { running: 2, off: 0 });
     if (!browser.eval<string>("() => document.querySelector('.browser-panel')?.textContent ?? ''").includes("Watch opens the browser's screen")) fail("the panel does not say once what Watch opens");
     scrollPanel("end");
