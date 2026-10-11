@@ -1565,6 +1565,105 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.passed.push(...talked.passed);
   }
 
+  if (await section("the model picker: Antigravity's windows in two family rows, Claude's three meters whole")) {
+    // 22b. The model picker's provider header (Providers.tsx, usageFamilies.ts): windows whose labels share a family
+    // before " · " are one row, the family named once and its meters by their short labels; the tooltip keeps the whole
+    // label. Antigravity reports four windows in two families, interleaved; Claude's three have no family and stay whole.
+    const usage = check.begin("the model picker: Antigravity's windows in two family rows, Claude's three meters whole");
+    const providers = await service.call<Array<{ instanceId: string; usageWindows: Array<{ id: string; label: string }> }>>("GET", "/api/t3/providers");
+    const reported = providers.find((p) => p.instanceId === "antigravity")?.usageWindows.map((w) => w.id).join(", ");
+    if (reported !== "3p-5h, gemini-5h, 3p-weekly, gemini-weekly") fail(`the fake T3 reports Antigravity's windows as ${reported}`);
+    log(`  api: Antigravity reports ${reported}`);
+    type Head = { account: number; families: Array<{ name: string; top: number; lines: number; meters: Array<{ shown: string; title: string; aria: string }> }>; lone: string[]; rows: number };
+    const head = `() => {
+      const h = document.querySelector('.model-section-head');
+      if (!h) return null;
+      // Lines as the children's middles (each line is centred), apart by more than a few pixels.
+      const lines = (children) => {
+        const middles = children.map((c) => { const r = c.getBoundingClientRect(); return r.top + r.height / 2; }).sort((a, b) => a - b);
+        return middles.filter((m, i) => i === 0 || m - middles[i - 1] > 4).length;
+      };
+      const tops = (el) => lines([...el.children]);
+      const families = [...h.querySelectorAll('.usage-family')].map((f) => ({
+        name: f.querySelector('.usage-family-name')?.textContent ?? '',
+        top: Math.round(f.getBoundingClientRect().top),
+        lines: tops(f),
+        meters: [...f.querySelectorAll('.usage-meter')].map((m) => ({ shown: m.querySelector('.usage-label')?.textContent ?? '', title: m.getAttribute('title') ?? '', aria: m.getAttribute('aria-label') ?? '' })),
+      }));
+      const line = h.querySelector('.provider-line');
+      const lone = [...line.querySelectorAll(':scope > .usage-meter')];
+      const rows = lines([...line.querySelectorAll(':scope > *')]);
+      return { account: line.querySelector('.provider-auth') ? 1 : 0, families, lone: lone.map((m) => m.querySelector('.usage-label')?.textContent ?? ''), rows };
+    }`;
+    const openPicker = () => {
+      browser.click(/button "New crew member"/);
+      browser.waitFor("Add to crew");
+      browser.poll<boolean>("the crew member's model button", "() => Boolean(document.querySelector('.dialog .model-trigger:not(:disabled)'))", (ready) => ready);
+      browser.click(/button "[^"]*" expandable haspopup="dialog"/);
+      browser.poll<boolean>("the model picker to open", "() => Boolean(document.querySelector('.model-menu .model-rail'))", (open) => open);
+    };
+    const showProvider = (name: string) => {
+      browser.click(new RegExp(`button "${name}" description="${name}"`));
+      browser.poll<string | null>(`the picker on ${name}`, "() => document.querySelector('.model-list')?.getAttribute('aria-label') ?? null", (shown) => shown === name);
+    };
+    const families = (look: string) => {
+      const read = browser.poll<Head | null>(`Antigravity's header in the ${look} look`, head, (h) => Boolean(h && h.families.length === 2));
+      const h = read!;
+      const names = h.families.map((f) => f.name);
+      if (names.join(" | ") !== "Claude & GPT (shared) | Gemini") fail(`the family rows are ${JSON.stringify(names)}`);
+      for (const f of h.families) {
+        if (f.meters.map((m) => m.shown).join(" | ") !== "5-hour | Weekly") fail(`${f.name}'s meters are labelled ${JSON.stringify(f.meters.map((m) => m.shown))}`);
+        for (const m of f.meters) {
+          if (!m.title.startsWith(`${f.name} · ${m.shown} `) || m.aria !== m.title) fail(`${f.name}'s ${m.shown} meter lost its whole label: title ${JSON.stringify(m.title)}, aria-label ${JSON.stringify(m.aria)}`);
+        }
+        if (f.lines !== 1) fail(`${f.name}'s row takes ${f.lines} lines in the ${look} look`);
+      }
+      if (h.lone.length > 0) fail(`Antigravity's header has meters outside a family: ${JSON.stringify(h.lone)}`);
+      if (h.rows !== 3) fail(`Antigravity's header takes ${h.rows} rows in the ${look} look, not the account line and two families`);
+      log(`  page (${look}): the account line, then ${h.families.map((f) => `${f.name}: ${f.meters.map((m) => m.shown).join(", ")}`).join("; ")}, each on one line; the tooltips name the whole window (${JSON.stringify(h.families[1]!.meters[1]!.title)})`);
+    };
+    const claudeWhole = (look: string) => {
+      const h = browser.poll<Head | null>(`Claude's header in the ${look} look`, head, (x) => Boolean(x && x.lone.length === 3))!;
+      if (h.families.length > 0 || h.lone.join(" | ") !== "Session | Weekly | Weekly · Fable") fail(`Claude's header changed: families ${JSON.stringify(h.families.map((f) => f.name))}, meters ${JSON.stringify(h.lone)}`);
+      log(`  page (${look}): Claude's three meters whole: ${h.lone.join(", ")}`);
+    };
+    const closePicker = () => {
+      browser.on("press", "Escape");
+      browser.poll<boolean>("the model picker to close", "() => !document.querySelector('.model-menu')", (closed) => closed);
+      browser.click(/button "Cancel"/);
+      browser.poll<boolean>("the New crew member dialog to close", "() => !document.querySelector('.dialog')", (closed) => closed);
+    };
+
+    browser.click(/button "Back to the overview"/);
+    openPicker();
+    showProvider("Antigravity");
+    families("plain");
+    browser.screenshot("the-model-picker-antigravity-two-family-rows");
+    showProvider("Claude");
+    claudeWhole("plain");
+    browser.screenshot("the-model-picker-claude-three-meters-whole");
+    closePicker();
+
+    // The pixel look, the user's (#233): its monospace is wider, and each family still fits on one line.
+    browser.on("eval", "() => { localStorage.setItem('backroom.skin', 'pixel'); return true; }");
+    browser.on("reload");
+    await until("the pixel look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") === "pixel");
+    browser.waitFor("New crew member");
+    openPicker();
+    showProvider("Antigravity");
+    families("pixel");
+    browser.screenshot("the-model-picker-antigravity-in-the-pixel-look");
+    showProvider("Claude");
+    claudeWhole("pixel");
+    closePicker();
+    browser.on("eval", "() => { localStorage.removeItem('backroom.skin'); return true; }");
+    browser.on("reload");
+    await until("the plain look", () => browser.eval<string>("() => document.documentElement.dataset.skin ?? ''") !== "pixel");
+    browser.consoleClean();
+    browser.openRoom(room.title);
+    check.pass(usage);
+  }
+
   // 23. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   if (await section("a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast")) {
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
