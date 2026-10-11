@@ -26,7 +26,7 @@ const NUMBER_EXISTING_POSTS = `
  * runtime's queue (its tasks, their revisions and its runs) is no longer created: a database from before the engine
  * runtime keeps those tables, which nothing reads or writes, and the entries that only changed them do nothing now.
  */
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE rooms (
     id TEXT PRIMARY KEY,

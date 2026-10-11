@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Database } from "../src/db/database.ts";
+import { Database, MIGRATIONS } from "../src/db/database.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { loadConfig } from "../src/config.ts";
 import type { RoomError } from "../src/domain/errors.ts";
@@ -35,11 +35,13 @@ test("the migration adds the table to a database at the schema before it, and le
     const path = join(dir, "rooms.db");
     const first = new Database(path);
     const count = (first.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
+    const id = MIGRATIONS.findIndex((sql) => sql.includes("CREATE TABLE IF NOT EXISTS project_browsers")) + 1;
+    assert.ok(id > 0, "the migration is in the list");
     first.raw.prepare("INSERT INTO kv (key, value) VALUES ('kept', 'yes')").run();
-    // The migration before this one (crew descriptions) is applied: this one comes after it.
-    assert.ok((first.raw.prepare("PRAGMA table_info(presets)").all() as Array<{ name: string }>).some((c) => c.name === "description"));
-    // The schema before this migration: its table not there and its number not applied.
-    first.raw.exec(`DROP TABLE project_browsers; DELETE FROM migrations WHERE id = ${count};`);
+    // It comes after the crew descriptions' migration, so a database main migrated with that one gets it on open.
+    assert.ok(MIGRATIONS.findIndex((sql) => sql.includes("ALTER TABLE presets ADD COLUMN description")) + 1 < id);
+    // The schema before this migration (the crew descriptions' applied): its table not there and its number not applied.
+    first.raw.exec(`DROP TABLE project_browsers; DELETE FROM migrations WHERE id >= ${id};`);
     first.close();
 
     const second = new Database(path);
@@ -48,7 +50,7 @@ test("the migration adds the table to a database at the schema before it, and le
     assert.equal((second.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n, count);
     assert.equal((second.raw.prepare("SELECT value FROM kv WHERE key = 'kept'").get() as { value: string }).value, "yes");
     // The table there but its number not applied (a database migrated by a branch that numbered it otherwise): no error.
-    second.raw.exec(`DELETE FROM migrations WHERE id = ${count};`);
+    second.raw.exec(`DELETE FROM migrations WHERE id >= ${id};`);
     second.close();
     const third = new Database(path);
     assert.equal((third.raw.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n, count);
