@@ -949,6 +949,14 @@ html[data-skin="pixel"] select:not([multiple]) {
   padding: 10px 12px;
 }
 
+/* A crew member's sentence: a third row, under the text. */
+[data-skin="pixel"] .ov-shelf-tile.has-about {
+  grid-template-areas:
+    "mark name"
+    "mark what"
+    ". about";
+}
+
 /* =====================================================================================================
    What opens over the page: the drawer, its room or thread, its panels.
    ===================================================================================================== */

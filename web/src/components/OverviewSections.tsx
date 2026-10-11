@@ -45,12 +45,13 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
       <ul className="ov-shelf-items">
         {presets.map((preset) => {
           const { model, what, detail } = presetText(preset);
+          const about = preset.description?.trim() ?? "";
           return (
             <li key={preset.id} className="ov-shelf-item" draggable onDragStart={(event) => startPresetDrag(event, preset)} data-nav-card>
               <button
                 type="button"
-                className="ov-shelf-tile"
-                title={`${preset.name}: ${model} · ${detail}\nClick to edit them. Drag them onto a room to seat them there.`}
+                className={`ov-shelf-tile${about ? " has-about" : ""}`}
+                title={`${preset.name}: ${model} · ${detail}${about ? `\n${about}` : ""}\nClick to edit them. Drag them onto a room to seat them there.`}
                 onClick={() => setEditing({ preset })}
                 data-nav="ov"
                 data-nav-key={`preset:${preset.id}`}
@@ -59,6 +60,7 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
                 <PresetIcon preset={preset} size={16} />
                 <span className="ov-shelf-name mono">{preset.name}</span>
                 <span className="ov-shelf-what">{what}</span>
+                {about ? <span className="ov-shelf-about">{about}</span> : null}
               </button>
               <PresetMenu preset={preset} rooms={rooms} projects={projects} onSeat={(roomId) => onSeat(roomId, preset.id)} onEdit={() => setEditing({ preset })} />
             </li>
