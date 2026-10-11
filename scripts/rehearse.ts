@@ -41,7 +41,7 @@
  * later ones are updates; a member's turn the room did not start is a follow-up that wakes him, and background work
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
- * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
+ * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' single button, two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
  * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; and ends with the per-project browser states.
  * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
  * caller's (a scratch git repository, so the steps run where the agents file is written too).
@@ -1730,7 +1730,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     // 23b. A crew member's two lines (#3): Good at and Avoid, each a line of its own on the tile under the model, cut by
     // its ellipsis; one written, one line; the tooltip carries both whole. Then the tile hovered (#3's cut-off ring): its
     // button stays clear and the tile carries the hover look, in the pixel look the ring whole in the action colour, on a
-    // browser's tile too.
+    // browser's tile too. Each crew tile has just its Edit button, with no ⋯ or gap where it used to be (#152).
     const lines = check.begin("crew tiles: Good at and Avoid on two lines, each cut by its ellipsis, the tooltip carrying both whole");
     const GOOD = "long multi-step coding in Cursor, or a second opinion from another model family on a hard change";
     const AVOID = "quick edits or reading long documents, as it is slow to start and wordy in its answers";
@@ -1741,9 +1741,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     if (JSON.stringify(want.map(([id]) => saved.find((p) => p.id === id)).map((p) => [p?.id, p?.goodAt, p?.avoid])) !== JSON.stringify(want)) fail(`the API keeps the lines as ${JSON.stringify(saved)}`);
     log(`  api: scout's Good at folded to one line (${GOOD.length} characters), its Avoid (${AVOID.length}); quill's Good at alone`);
     type Line = { text: string; cut: boolean; ellipsis: boolean; height: number; top: number; inside: boolean };
-    type Tile = { title: string; line: number; what: number; lines: Line[] };
+    type Tile = { title: string; line: number; what: number; lines: Line[]; buttons: number; tileOnly: boolean; menu: boolean; fills: boolean };
     const tile = (id: string) =>
-      `() => { const b = document.querySelector('[data-nav-key="preset:${id}"]'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const what = b.querySelector('.ov-shelf-what').getBoundingClientRect(); const box = b.getBoundingClientRect(); return { title: b.title, line: Math.round(what.height), what: Math.round(what.bottom), lines: [...b.querySelectorAll('.ov-shelf-about')].map((l) => { const r = l.getBoundingClientRect(); return { text: l.textContent, cut: l.scrollWidth > l.clientWidth, ellipsis: getComputedStyle(l).textOverflow === 'ellipsis', height: Math.round(r.height), top: Math.round(r.top), inside: r.right <= box.right + 0.5 && r.bottom <= box.bottom + 0.5 }; }) }; }`;
+      `() => { const b = document.querySelector('[data-nav-key="preset:${id}"]'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const item = b.closest('.ov-shelf-item'); const buttons = [...item.querySelectorAll('button')]; const what = b.querySelector('.ov-shelf-what').getBoundingClientRect(); const box = b.getBoundingClientRect(); return { buttons: buttons.length, tileOnly: buttons.length === 1 && buttons[0] === b && b.matches('.ov-shelf-tile'), menu: Boolean(item.querySelector('.room-menu-button, [aria-haspopup="menu"]')), fills: Math.abs(box.width - item.clientWidth) < 0.5, title: b.title, line: Math.round(what.height), what: Math.round(what.bottom), lines: [...b.querySelectorAll('.ov-shelf-about')].map((l) => { const r = l.getBoundingClientRect(); return { text: l.textContent, cut: l.scrollWidth > l.clientWidth, ellipsis: getComputedStyle(l).textOverflow === 'ellipsis', height: Math.round(r.height), top: Math.round(r.top), inside: r.right <= box.right + 0.5 && r.bottom <= box.bottom + 0.5 }; }) }; }`;
     browser.click(/button "Back to the overview"/);
     const both = browser.poll<Tile | null>("scout's tile with its two lines", tile(scout), (t) => t?.lines.length === 2)!;
     const [good, avoid] = both.lines as [Line, Line];
@@ -1752,6 +1752,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     if (!(good.top >= both.what - 1 && avoid.top >= good.top + good.height - 1)) fail(`scout's lines are not under the model, Good at above Avoid: ${JSON.stringify(both)}`);
     if (!both.title.includes(`\nGood at ${GOOD}\nAvoid ${AVOID}\n`)) fail(`scout's tooltip does not carry both lines whole: ${JSON.stringify(both.title)}`);
     const one = browser.poll<Tile | null>("quill's tile with its one line", tile(quill), (t) => t !== null)!;
+    for (const [name, read] of [["scout", both], ["quill", one]] as const) {
+      if (!read.tileOnly || read.menu || !read.fills) fail(`${name}'s crew tile must have only its tile button, no ⋯ and no gap: ${JSON.stringify({ buttons: read.buttons, tileOnly: read.tileOnly, menu: read.menu, fills: read.fills })}`);
+    }
+    log("  page: both crew tiles have exactly one button, the tile itself, with no ⋯ and no reserved gap");
     if (one.lines.map((l) => l.text).join(" | ") !== "Good at narrow checks" || one.title.includes("Avoid")) fail(`quill's tile shows ${JSON.stringify(one)}`);
     log(`  page: scout's tile reads "Good at …" then "Avoid …", each one line of ${good.height}px under the model, cut by its ellipsis; the tooltip has both whole; quill's has its Good at alone`);
     browser.on("eval", `() => { document.querySelector('[data-nav-key="preset:${scout}"]').scrollIntoView({ block: 'center' }); return true; }`);
