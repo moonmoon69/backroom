@@ -90,6 +90,8 @@ export type PlaceId =
   | "correction"
   | "field"
   | "dialog"
+  | "dialog-mode"
+  | "dialog-crew"
   | "menu"
   | "model-list";
 
@@ -273,7 +275,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [{ keys: ["←", "→"], does: "along its head", more: "Members, Browser, Git, + Add member (on Members), ×; ← from Members: back to the conversation" }],
       },
       { id: "room-side-tab", on: "Members, Browser or Git in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "show its panel" }] },
-      { id: "room-side-add", on: "+ Add member in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "add a member", more: "its dialog: Tab between the fields, Enter adds" }] },
+      { id: "room-side-add", on: "+ Add member in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "add a member", more: "its dialog: ↓ from New and Existing to the crew, ← → along it, Enter or Space picks; Tab between the fields, Enter in one adds" }] },
       { id: "room-side-close", on: "× in the panel's head", within: "room-side-head", entries: [{ keys: ["Enter"], does: "fold the panel", more: "the ring back on the conversation" }] },
       {
         id: "room-member",
@@ -445,6 +447,26 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         ],
       },
       {
+        id: "dialog-mode",
+        on: "New or Existing, in Add member",
+        within: "dialog",
+        entries: [
+          { keys: ["↓"], does: "the crew", more: "the crew member the ring was last on, else the first; under Existing, the threads" },
+          { keys: ["←", "→"], does: "choose New or Existing", more: "the form under them changes with it" },
+        ],
+      },
+      {
+        id: "dialog-crew",
+        on: "a crew member, in Add member",
+        within: "dialog",
+        entries: [
+          { keys: ["↑", "↓"], does: "the row above or below", more: "↑ back to New and Existing; ↓ on to the fields, Name, or with several picked the buttons" },
+          { keys: ["←", "→"], does: "along the crew", more: "in order, across its lines; it stops at the ends" },
+          { keys: ["Home", "End"], does: "first or last of the crew", bar: false },
+          { keys: ["Enter", "Space"], does: "pick or unpick", more: "as a click does: one picked fills in the settings below, several are added at once; the form is not sent, and a held Enter picks once" },
+        ],
+      },
+      {
         id: "menu",
         on: "a menu",
         entries: [
@@ -494,7 +516,7 @@ export const placeById = (id: PlaceId): KeyPlace => PLACES.get(id)!;
  * The order keys take on the bar, wherever they are listed: the arrows first, `?` last. A key that does not fit the
  * window is left out from the end (KeyBar.tsx), so the ones needed least come last: Home and End after the letters.
  */
-const KEY_RANK = ["↑", "↓", "←", "→", "Enter", "Shift+Enter", "Tab", "Shift+Tab", "Esc", "Backspace", "a–z", "@", "/", "Home", "End", "Alt+1…9", "Alt+R", "?"];
+const KEY_RANK = ["↑", "↓", "←", "→", "Enter", "Space", "Shift+Enter", "Tab", "Shift+Tab", "Esc", "Backspace", "a–z", "@", "/", "Home", "End", "Alt+1…9", "Alt+R", "?"];
 const rank = (entry: KeyEntry): number => Math.min(...entry.keys.map((key) => (KEY_RANK.includes(key) ? KEY_RANK.indexOf(key) : KEY_RANK.length)));
 
 /**
@@ -607,6 +629,21 @@ export function gridTarget<T>(items: Boxed<T>[], at: number, key: NavKey, column
     // Two in that column (tiles stacked beside a tall one): the nearer.
     (item) => (down ? item.top : -item.bottom),
   );
+}
+
+/**
+ * Where a key goes from crew chip `at` of `count` in the Add member dialog, the crew read in order however its lines
+ * wrap: ← → to the chip beside it, null at the ends (the ring stays); Home and End to the first and last; ↑ back to New
+ * and Existing ("above"); ↓ on to the fields below ("below"). Null from outside the chips.
+ */
+export function chipTarget(count: number, at: number, key: NavKey): number | "above" | "below" | null {
+  if (at < 0 || at >= count) return null;
+  if (key === "up") return "above";
+  if (key === "down") return "below";
+  if (key === "first") return 0;
+  if (key === "last") return count - 1;
+  const next = at + (key === "right" ? 1 : -1);
+  return next >= 0 && next < count ? next : null;
 }
 
 /**

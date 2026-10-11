@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, entryText, fourKeysMarkdown, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, nearestInHeight, numberRepeats, openLanding, placeById, runCanStop, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, chipTarget, entryText, fourKeysMarkdown, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, nearestInHeight, numberRepeats, openLanding, placeById, runCanStop, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
@@ -379,8 +379,8 @@ test("every place but a dialog's and a menu's reaches Everywhere, each key once 
       assert.ok(!chain.includes(at.id), `${place.id} is within itself`);
       chain.push(at.id);
     }
-    // Under a dialog or a menu the page is out of reach, ? included.
-    assert.equal(chain.at(-1), ["dialog", "menu", "model-list"].includes(place.id) ? place.id : "everywhere", `${place.id} reaches Everywhere`);
+    // Under a dialog or a menu the page is out of reach, ? included; a place in a dialog (Add member's crew) reaches the dialog.
+    assert.equal(chain.at(-1), ["dialog", "menu", "model-list"].includes(place.id) ? place.id : chain.includes("dialog") ? "dialog" : "everywhere", `${place.id} reaches Everywhere`);
     const keys = place.entries.flatMap((entry) => entry.keys.map((key) => `${key}:${entry.when ?? ""}:${entry.unless ?? ""}`));
     assert.equal(new Set(keys).size, keys.length, `${place.id} lists a key twice for the same moment`);
     // As the bar says it, in the middle of its line: lower case (`?` and README capitalise it).
@@ -533,4 +533,31 @@ test("a strip's image button is named with the image's alt text, and the bar's E
     { label: "notes.md 1", name: "docs/notes.md 1" },
     { label: "notes.md 2", name: "src/notes.md 2" },
   ]);
+});
+
+test("in Add member the crew is one row read in order, however it wraps: ← → along it to its ends, ↑ back to New and Existing, ↓ on", () => {
+  // Eight crew members, on four lines in the dialog: ← → go through them in order, line to line, and stop at the ends.
+  assert.equal(chipTarget(8, 0, "right"), 1);
+  assert.equal(chipTarget(8, 1, "right"), 2, "on past the end of the first line");
+  assert.equal(chipTarget(8, 2, "left"), 1);
+  assert.equal(chipTarget(8, 7, "right"), null, "the last stays");
+  assert.equal(chipTarget(8, 0, "left"), null, "the first stays");
+  assert.equal(chipTarget(8, 5, "first"), 0);
+  assert.equal(chipTarget(8, 2, "last"), 7);
+  // From any of them, ↑ is New and Existing and ↓ the fields below, whatever line it is on.
+  for (const at of [0, 3, 7]) {
+    assert.equal(chipTarget(8, at, "up"), "above");
+    assert.equal(chipTarget(8, at, "down"), "below");
+  }
+  assert.equal(chipTarget(1, 0, "right"), null, "one alone stays");
+  assert.equal(chipTarget(8, -1, "right"), null, "from outside the crew, nothing");
+});
+
+test("the bar names Add member's keys: ↓ to the crew from New and Existing; on a crew member ↑ ↓ ← →, Enter and Space pick", () => {
+  assert.deepEqual(bar("dialog-mode"), ["↓ the crew", "← → choose New or Existing", "Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
+  assert.deepEqual(bar("dialog-crew"), ["↑ ↓ the row above or below", "← → along the crew", "Enter Space pick or unpick", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
+  // Home and End are in ? and README, off the bar, which has no room for them in the pixel look.
+  assert.ok(placeById("dialog-crew").entries.some((entry) => entry.keys.includes("Home") && entry.bar === false));
+  assert.ok(!bar("dialog-crew").some((line) => line.startsWith("?")), "? opens nothing over a dialog");
+  assert.match(placeById("room-side-add").entries[0]!.more!, /↓ from New and Existing to the crew/);
 });

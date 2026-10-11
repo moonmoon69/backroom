@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
-import type { NavProps } from "../keys.ts";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
+import { arrowKey, focusItem, tabbables, type NavProps } from "../keys.ts";
+import { chipTarget } from "../keyOrder.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
 import {
@@ -733,6 +734,36 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
     setMode(next);
   };
 
+  // The crew member the ring was last on, where ↓ from New and Existing lands again.
+  const lastChip = useRef<string | null>(null);
+  // The arrows of New and Existing and of the crew (keyOrder.ts, chipTarget): ↓ from New or Existing to the crew, ← →
+  // along it, ↑ back, ↓ on to the fields below. ← → on New and Existing stay theirs (they choose). Enter and Space on a
+  // crew member are its click, a held Enter's repeats none.
+  const onFormKey = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+    const target = event.target as HTMLElement;
+    const form = event.currentTarget;
+    const chips = [...form.querySelectorAll<HTMLElement>(".preset-chip")];
+    if (event.key === "Enter" && event.repeat && chips.includes(target)) return event.preventDefault();
+    const key = arrowKey(event.nativeEvent);
+    if (!key) return;
+    // The first control Tab reaches after `from` and outside it.
+    const after = (from: Element | null) => (from ? (tabbables(form).find((element) => !from.contains(element) && from.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) ?? null) : null);
+    if (target.matches(".add-mode input")) {
+      if (key !== "up" && key !== "down") return;
+      // ↑ goes nowhere: New and Existing are the top.
+      event.preventDefault();
+      if (key === "down") focusItem(chips.find((chip) => chip.dataset.presetId === lastChip.current) ?? chips[0] ?? after(target.closest(".composer-row")));
+      return;
+    }
+    const at = chips.indexOf(target);
+    if (at < 0) return;
+    event.preventDefault();
+    const next = chipTarget(chips.length, at, key);
+    if (next === "above") focusItem(form.querySelector<HTMLElement>(".add-mode input:checked"));
+    else if (next === "below") focusItem(after(target.closest(".preset-field")));
+    else if (next !== null) focusItem(chips[next]!);
+  };
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -873,7 +904,14 @@ function AddParticipantDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <Dialog title="Add member" onClose={onClose} wide>
-      <form className="form" onSubmit={submit}>
+      <form
+        className="form"
+        onSubmit={submit}
+        onKeyDown={onFormKey}
+        onFocus={(event) => {
+          if (event.target.matches(".preset-chip")) lastChip.current = event.target.dataset.presetId ?? null;
+        }}
+      >
         <div className="composer-row" role="group" aria-label="Thread">
           <span className="segmented add-mode">
             <label className={`segment${mode === "create" ? " on" : ""}`} title="The member gets a new T3 thread">

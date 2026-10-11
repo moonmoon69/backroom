@@ -21,9 +21,11 @@
  *   a Correct… box, a dialog, the key help), and nothing else: never the room, a member's thread or the side panel.
  * - Backspace outside a text field goes back one step: what is in front first (as Escape), then a member's thread, the
  *   side panel, and the room to its card. In a text field it is the field's.
+ * - In the Add member dialog ↓ from New and Existing goes to the crew, ← → along it and stopping at its ends, ↑ back
+ *   and ↓ on to the fields below (keyOrder.ts, chipTarget; Crew.tsx); Enter or Space on a crew member picks it.
  *
  * The arrows keep their own meaning wherever they already have one: text fields, selects, lists and menus with their own
- * arrows, dialogs, and any key with a modifier (Alt+Left stays the browser's back).
+ * arrows, dialogs (Add member's crew aside), and any key with a modifier (Alt+Left stays the browser's back).
  */
 
 import { useEffect, useRef, type RefObject } from "react";
@@ -61,10 +63,15 @@ const LAYER_SELECTOR = ".dialog-backdrop:not([inert]), [role='menu'], .menu, .po
 export const inFront = (target: Element | null): boolean =>
   [...document.querySelectorAll(LAYER_SELECTOR)].some((element) => !element.closest("[inert]")) || Boolean(target?.closest(".dialog, .menu"));
 
+/** The arrow keys and the two ends, without modifiers, wherever they are pressed. */
+export function arrowKey(event: KeyboardEvent): NavKey | null {
+  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
+  return ({ ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Home: "first", End: "last" } as const)[event.key as "ArrowUp"] ?? null;
+}
+
 /** The arrow keys and the two ends, without modifiers, outside anything that keeps them: a key the page's navigation takes. */
 export function navKey(event: KeyboardEvent): NavKey | null {
-  if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
-  const key = ({ ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Home: "first", End: "last" } as const)[event.key as "ArrowUp"];
+  const key = arrowKey(event);
   if (!key) return null;
   const target = event.target instanceof Element ? event.target : null;
   if (keepsArrows(target)) return null;
@@ -281,6 +288,9 @@ export function keyPlace(): PlaceNow {
   const opener = document.querySelector("[aria-haspopup][aria-expanded='true']");
   if (menu) return at("menu", menu.getAttribute("aria-label") ?? (opener ? nameOf(opener) : "a menu"));
   const dialog = active?.closest<HTMLElement>(".dialog") ?? (active ? null : [...document.querySelectorAll<HTMLElement>(".dialog:not([inert])")].at(-1));
+  // Add member's New and Existing, and its crew, whose arrows are the dialog's own (Crew.tsx, chipTarget).
+  if (dialog && active?.matches(".add-mode input")) return at("dialog-mode", `${nameOf(active.closest("label") ?? active)} · ${dialog.getAttribute("aria-label")}`);
+  if (dialog && active?.matches(".preset-chip")) return at("dialog-crew", `${nameOf(active.querySelector(".preset-chip-name") ?? active)} · crew${active.getAttribute("aria-pressed") === "true" ? ", picked" : ""}`);
   if (dialog) return at("dialog", dialog.getAttribute("aria-label") ?? "a dialog");
 
   if (active?.matches("textarea[aria-label='Message']")) {
