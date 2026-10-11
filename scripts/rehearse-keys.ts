@@ -829,6 +829,23 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await readLists();
     const overview = await service.call<{ rooms: Array<{ id: string; members: Array<{ id: string; alias: string }> }> }>("GET", "/api/overview");
     const apiBrowsers = await service.call<Array<{ id: string; name: string }>>("GET", "/api/browsers");
+    // All section heads show the same bare +. The shelf heads keep their exact names for assistive technology (#152).
+    type AddHead = { key: string; name: string | null; title: string; text: string; plusOnly: boolean; iconOnly: boolean };
+    const addHeads = browser.eval<AddHead[]>(
+      `() => {
+        const projectPlus = document.querySelector('[data-nav-key^="head:room:"] > svg');
+        return ['crew', 'browsers'].map((kind) => {
+          const b = document.querySelector('[data-nav-key="head:' + kind + '"]');
+          const icon = b?.firstElementChild;
+          return { key: kind, name: b?.getAttribute('aria-label') ?? null, title: b?.title ?? '', text: b?.textContent.trim() ?? '', iconOnly: b?.classList.contains('icon-only') ?? false, plusOnly: Boolean(b && b.children.length === 1 && icon?.matches('svg[aria-hidden="true"]') && projectPlus && icon.innerHTML === projectPlus.innerHTML) };
+        });
+      }`,
+    );
+    for (const h of addHeads) {
+      const name = h.key === "crew" ? "New crew member" : "New browser";
+      if (h.name !== name || h.title !== name || h.text !== "" || !h.plusOnly || !h.iconOnly) fail(`${name}'s head must show only + and keep its exact accessible name and title: ${JSON.stringify(h)}`);
+    }
+    log("  page: Crew and Browsers each show + alone, named New crew member and New browser exactly");
     // The stops are the tiles and the buttons of the rows: every room, the thread, every crew member and browser of the API
     // has a tile; nothing else is a stop.
     const tileOf = (key: string) => grid.find((p) => p.element === key && p.tile);
@@ -866,14 +883,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (!crewTile || !browserTile) return fail(`no crew member or browser under the column ${Math.round(span.left)}–${Math.round(span.right)}`);
     const run: Array<[string, string]> = [
       [below.element, `the tile below it, ${short(below.element)}`],
-      ["head:crew", "Crew's head, its + New crew member"],
+      ["head:crew", "Crew's +, named New crew member"],
       [crewTile.element, `the crew member in its column, ${apiPresets.find((p) => `preset:${p.id}` === crewTile.element)?.name}`],
-      ["head:browsers", "Browsers' head, its + New browser"],
+      ["head:browsers", "Browsers' +, named New browser"],
       [browserTile.element, `the browser in its column, ${apiBrowsers.find((b) => `browser:${b.id}` === browserTile.element)?.name}`],
     ];
     for (const [key, what] of run) {
       press("ArrowDown");
       await expect(`Down: ${what}`, (f) => f.key === key && f.ring);
+      if (key === "head:crew" || key === "head:browsers") {
+        const name = key === "head:crew" ? "New crew member" : "New browser";
+        announced(/^button$/, new RegExp(`^${name}$`));
+        await keyBar(name);
+      }
     }
     press("ArrowDown");
     await sleep(300);

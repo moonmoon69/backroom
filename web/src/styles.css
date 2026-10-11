@@ -5603,28 +5603,10 @@ button:has(> .icon):not(.mobile-only) {
   color: var(--fg-muted);
 }
 
-/* A preset's menu: "Add to room" opens the rooms in the menu's place. */
+/* The Edit dialog's Seat in a room… popover. */
 .menu.preset-menu {
   min-width: 220px;
   max-width: 320px;
-}
-
-.menu .menu-more,
-.menu .menu-back {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.menu .menu-more span {
-  flex: 1;
-}
-
-.menu .menu-back {
-  color: var(--fg-muted);
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
-  margin-bottom: 2px;
 }
 
 .menu .menu-room {
@@ -7440,16 +7422,6 @@ button.work-chip:hover,
   white-space: nowrap;
 }
 
-.ov-shelf-item .room-menu-button {
-  margin-right: 8px;
-  opacity: 0.35;
-}
-
-.ov-shelf-item:hover .room-menu-button,
-.room-menu-button:focus-visible {
-  opacity: 1;
-}
-
 /* A crew member dragged over a room's tile (seated there) or a project's heading (a thread starts there). */
 .ov-room.preset-over,
 .ov-project-title.preset-over {
@@ -8038,7 +8010,6 @@ span.reply-to {
 
 /* What the pointer shows on hover, the focus shows too. */
 .ov-room:focus-within .ov-room-menu .room-menu-button,
-.ov-shelf-item:focus-within .room-menu-button,
 .chat-row:focus-within .bubble-side {
   opacity: 1;
 }

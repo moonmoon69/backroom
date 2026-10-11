@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
-import { Popover } from "./Popover.tsx";
-import { ChevronIcon, MoreIcon, PlusIcon } from "./icons.tsx";
-import { PresetDialog, PresetIcon, RoomChoices, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
+import { ChevronIcon, PlusIcon } from "./icons.tsx";
+import { PresetDialog, PresetIcon, startPresetDrag, usePresets, usePresetText } from "./presets.tsx";
 import { useSortable } from "./sortable.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
@@ -23,8 +22,7 @@ function shortAge(iso: string): string {
 
 /**
  * Your crew, under the projects: each saved member with their model and what they are for. A click (or Enter) opens them
- * to edit (settings and look), and the dialog's Seat in a room… seats them; so does their ⋯, or dragging them onto a
- * room's tile.
+ * to edit (settings and look), and the dialog's Seat in a room… seats them, as dragging them onto a room's tile does.
  */
 export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: RoomListItem[]; projects: T3Project[]; onSeat: (roomId: string, presetId: string) => void; runCommand: RunCommand }) {
   const { presets } = usePresets();
@@ -36,9 +34,8 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
         <span className="ov-project-name">Crew</span>
         <span className="ov-project-path muted">who you bring into rooms · drag one onto a room to seat them</span>
         <span className="spacer" />
-        <button type="button" className="small ghost ov-project-new" title="Save a crew member: a name with a model, its options, permission mode and where it works" onClick={() => setEditing({ preset: null })} data-nav="ov" data-nav-key="head:crew">
+        <button type="button" className="small ghost icon-only ov-project-new" aria-label="New crew member" title="New crew member" onClick={() => setEditing({ preset: null })} data-nav="ov" data-nav-key="head:crew">
           <PlusIcon />
-          New crew member
         </button>
       </h2>
       {presets.length === 0 ? <p className="muted ov-empty">Nobody in your crew yet.</p> : null}
@@ -68,7 +65,6 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
                   </span>
                 ))}
               </button>
-              <PresetMenu preset={preset} rooms={rooms} projects={projects} onSeat={(roomId) => onSeat(roomId, preset.id)} onEdit={() => setEditing({ preset })} />
             </li>
           );
         })}
@@ -85,81 +81,6 @@ export function CrewSection({ rooms, projects, onSeat, runCommand }: { rooms: Ro
   );
 }
 
-/** A crew member's menu. "Seat in a room" opens the list of rooms in the menu's place, so they can be seated without dragging (on a phone too). */
-function PresetMenu({ preset, rooms, projects, onSeat, onEdit }: { preset: Preset; rooms: RoomListItem[]; projects: T3Project[]; onSeat: (roomId: string) => void; onEdit: () => void }) {
-  const [level, setLevel] = useState<"closed" | "main" | "rooms">("closed");
-  const anchor = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const open = level !== "closed";
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!anchor.current?.contains(target) && !menuRef.current?.contains(target)) setLevel("closed");
-    };
-    // Escape goes back from the rooms to the menu, then closes it.
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setLevel((current) => (current === "rooms" ? "main" : "closed"));
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  // Moving between the menu and the rooms keeps the keyboard inside it.
-  useEffect(() => {
-    if (!open) return;
-    // A frame later: the menu is hidden until it has been placed, and a hidden button takes no focus.
-    const frame = requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus());
-    return () => cancelAnimationFrame(frame);
-  }, [level, open]);
-
-  const pick = (action: () => void) => {
-    setLevel("closed");
-    action();
-  };
-  return (
-    <>
-      <button
-        ref={anchor}
-        type="button"
-        className="small ghost room-menu-button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`${preset.name} options`}
-        aria-label={`${preset.name} options`}
-        onClick={() => setLevel((current) => (current === "closed" ? "main" : "closed"))}
-      >
-        <MoreIcon />
-      </button>
-      {open ? (
-        // Keyed by level, so the menu is placed again for the list it now holds.
-        <Popover key={level} anchor={anchor} menuRef={menuRef} role="menu" className="preset-menu" onClose={() => setLevel("closed")} menuProps={{ "aria-label": level === "rooms" ? `Seat ${preset.name} in a room` : `${preset.name} options` }}>
-          {level === "main" ? (
-            <>
-              <button type="button" role="menuitem" className="menu-more" aria-haspopup="menu" disabled={rooms.length === 0} title={rooms.length === 0 ? "There are no rooms yet" : undefined} onClick={() => setLevel("rooms")}>
-                <span>Seat in a room</span>
-                <ChevronIcon dir="right" />
-              </button>
-              <button type="button" role="menuitem" onClick={() => pick(onEdit)}>
-                Edit…
-              </button>
-            </>
-          ) : (
-            <>
-              <button type="button" role="menuitem" className="menu-back" onClick={() => setLevel("main")}>
-                <ChevronIcon dir="left" />
-                <span>Seat in a room</span>
-              </button>
-              <RoomChoices rooms={rooms} projects={projects} onPick={(roomId) => pick(() => onSeat(roomId))} />
-            </>
-          )}
-        </Popover>
-      ) : null}
-    </>
-  );
-}
-
 /** The shared browsers on this machine, for agents: a click opens one (start, stop, tabs, profile); + adds one. */
 export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { browsers: BrowserListItem[]; onOpen: (browserId: string) => void; onChanged: () => void; runCommand: RunCommand }) {
   const [adding, setAdding] = useState(false);
@@ -169,9 +90,8 @@ export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { b
         <span className="ov-project-name">Browsers</span>
         <span className="ov-project-path muted">shared Chrome browsers on this machine, for agents</span>
         <span className="spacer" />
-        <button type="button" className="small ghost ov-project-new" title="A new shared browser, named for what it is for" onClick={() => setAdding(true)} data-nav="ov" data-nav-key="head:browsers">
+        <button type="button" className="small ghost icon-only ov-project-new" aria-label="New browser" title="New browser" onClick={() => setAdding(true)} data-nav="ov" data-nav-key="head:browsers">
           <PlusIcon />
-          New browser
         </button>
       </h2>
       <ul className="ov-shelf-items">

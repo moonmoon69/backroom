@@ -15,7 +15,8 @@
  * a Consigliere, a worker and a reviewer, and for every state the page must show checks two things: the room snapshot
  * from the API (GET /api/rooms/:id) has the expected fields, and `rooms-browser … wait-for <text>` printed a match in
  * the user's view of it. After each step it reads `rooms-browser … console` and fails on any error-level line. The
- * first failure ends the run with exit code 1; a screenshot of each state goes to --out. The page opens on
+ * first failure ends the run with exit code 1; a screenshot of each state goes to --out, and a failure leaves the page
+ * as it was there too (NN-failure.png and NN-failure-snapshot.txt, the page's text with uids). The page opens on
  * http://rehearse-<port>.localhost:<port> (REHEARSE_TAB_HOST names another host): a site of the run's own, so a
  * renderer of its own, which a crash in the run takes down alone.
  *
@@ -40,7 +41,7 @@
  * later ones are updates; a member's turn the room did not start is a follow-up that wakes him, and background work
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
- * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
+ * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' single button, two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
  * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; and ends with the per-project browser states.
  * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
  * caller's (a scratch git repository, so the steps run where the agents file is written too).
@@ -92,7 +93,8 @@ const HELP = `${USAGE}
   --as <key>            your rooms-browser key (from your briefing)
   --browser <name>      the shared browser (default backroom-dev for one step)
   --data <dir>          the run's data (default data/rehearse-<step>-<port>; --step all: data/rehearse-all-<port>/<step>)
-  --out <dir>           screenshots (default <data>/screens; --step all: <out>/<step>, and each step's log beside it)
+  --out <dir>           screenshots, a failure's with the page's snapshot (default <data>/screens; --step all:
+                        <out>/<step>, and each step's log beside it)
   --only <state>        check only this state (as often as wanted): its number from --list (under --step all, that
                         number in each step), a range (12-15), a /pattern/ or part of its name; the run jumps to its
                         section, sets up what the section reads, plays the states before it without screenshots or
@@ -518,6 +520,25 @@ class Browser {
       // rooms-browser's own folder; leaving it is harmless
     }
     log(`  screenshot ${target}`);
+  }
+  /** The page as a failure left it, beside the states' screenshots: a screenshot and its snapshot (the text with uids). */
+  evidence(): void {
+    if (!this.tabId) return;
+    const number = String(this.shots + 1).padStart(2, "0");
+    try {
+      this.screenshot("failure");
+    } catch (error) {
+      log(`  no screenshot of the failure: ${(error as Error).message.split("\n")[0]}`);
+    }
+    try {
+      const target = join(this.o.out, `${number}-failure-snapshot.txt`);
+      const snapshot = this.on("snapshot");
+      mkdirSync(this.o.out, { recursive: true });
+      writeFileSync(target, snapshot);
+      log(`  snapshot ${target}`);
+    } catch (error) {
+      log(`  no snapshot of the failure: ${(error as Error).message.split("\n")[0]}`);
+    }
   }
 }
 
@@ -1709,7 +1730,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     // 23b. A crew member's two lines (#3): Good at and Avoid, each a line of its own on the tile under the model, cut by
     // its ellipsis; one written, one line; the tooltip carries both whole. Then the tile hovered (#3's cut-off ring): its
     // button stays clear and the tile carries the hover look, in the pixel look the ring whole in the action colour, on a
-    // browser's tile too.
+    // browser's tile too. Each crew tile has just its Edit button, with no ⋯ or gap where it used to be (#152).
     const lines = check.begin("crew tiles: Good at and Avoid on two lines, each cut by its ellipsis, the tooltip carrying both whole");
     const GOOD = "long multi-step coding in Cursor, or a second opinion from another model family on a hard change";
     const AVOID = "quick edits or reading long documents, as it is slow to start and wordy in its answers";
@@ -1720,9 +1741,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     if (JSON.stringify(want.map(([id]) => saved.find((p) => p.id === id)).map((p) => [p?.id, p?.goodAt, p?.avoid])) !== JSON.stringify(want)) fail(`the API keeps the lines as ${JSON.stringify(saved)}`);
     log(`  api: scout's Good at folded to one line (${GOOD.length} characters), its Avoid (${AVOID.length}); quill's Good at alone`);
     type Line = { text: string; cut: boolean; ellipsis: boolean; height: number; top: number; inside: boolean };
-    type Tile = { title: string; line: number; what: number; lines: Line[] };
+    type Tile = { title: string; line: number; what: number; lines: Line[]; buttons: number; tileOnly: boolean; menu: boolean; fills: boolean };
     const tile = (id: string) =>
-      `() => { const b = document.querySelector('[data-nav-key="preset:${id}"]'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const what = b.querySelector('.ov-shelf-what').getBoundingClientRect(); const box = b.getBoundingClientRect(); return { title: b.title, line: Math.round(what.height), what: Math.round(what.bottom), lines: [...b.querySelectorAll('.ov-shelf-about')].map((l) => { const r = l.getBoundingClientRect(); return { text: l.textContent, cut: l.scrollWidth > l.clientWidth, ellipsis: getComputedStyle(l).textOverflow === 'ellipsis', height: Math.round(r.height), top: Math.round(r.top), inside: r.right <= box.right + 0.5 && r.bottom <= box.bottom + 0.5 }; }) }; }`;
+      `() => { const b = document.querySelector('[data-nav-key="preset:${id}"]'); if (!b) return null; b.scrollIntoView({ block: 'center' }); const item = b.closest('.ov-shelf-item'); const buttons = [...item.querySelectorAll('button')]; const what = b.querySelector('.ov-shelf-what').getBoundingClientRect(); const box = b.getBoundingClientRect(); return { buttons: buttons.length, tileOnly: buttons.length === 1 && buttons[0] === b && b.matches('.ov-shelf-tile'), menu: Boolean(item.querySelector('.room-menu-button, [aria-haspopup="menu"]')), fills: Math.abs(box.width - item.clientWidth) < 0.5, title: b.title, line: Math.round(what.height), what: Math.round(what.bottom), lines: [...b.querySelectorAll('.ov-shelf-about')].map((l) => { const r = l.getBoundingClientRect(); return { text: l.textContent, cut: l.scrollWidth > l.clientWidth, ellipsis: getComputedStyle(l).textOverflow === 'ellipsis', height: Math.round(r.height), top: Math.round(r.top), inside: r.right <= box.right + 0.5 && r.bottom <= box.bottom + 0.5 }; }) }; }`;
     browser.click(/button "Back to the overview"/);
     const both = browser.poll<Tile | null>("scout's tile with its two lines", tile(scout), (t) => t?.lines.length === 2)!;
     const [good, avoid] = both.lines as [Line, Line];
@@ -1731,6 +1752,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     if (!(good.top >= both.what - 1 && avoid.top >= good.top + good.height - 1)) fail(`scout's lines are not under the model, Good at above Avoid: ${JSON.stringify(both)}`);
     if (!both.title.includes(`\nGood at ${GOOD}\nAvoid ${AVOID}\n`)) fail(`scout's tooltip does not carry both lines whole: ${JSON.stringify(both.title)}`);
     const one = browser.poll<Tile | null>("quill's tile with its one line", tile(quill), (t) => t !== null)!;
+    for (const [name, read] of [["scout", both], ["quill", one]] as const) {
+      if (!read.tileOnly || read.menu || !read.fills) fail(`${name}'s crew tile must have only its tile button, no ⋯ and no gap: ${JSON.stringify({ buttons: read.buttons, tileOnly: read.tileOnly, menu: read.menu, fills: read.fills })}`);
+    }
+    log("  page: both crew tiles have exactly one button, the tile itself, with no ⋯ and no reserved gap");
     if (one.lines.map((l) => l.text).join(" | ") !== "Good at narrow checks" || one.title.includes("Avoid")) fail(`quill's tile shows ${JSON.stringify(one)}`);
     log(`  page: scout's tile reads "Good at …" then "Avoid …", each one line of ${good.height}px under the model, cut by its ellipsis; the tooltip has both whole; quill's has its Good at alone`);
     browser.on("eval", `() => { document.querySelector('[data-nav-key="preset:${scout}"]').scrollIntoView({ block: 'center' }); return true; }`);
@@ -1899,6 +1924,10 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
   const state = probedStates(browser, selection, passed);
   const folder = join(room.dataDir, "browsers-project");
   mkdirSync(folder, { recursive: true });
+  // The project has instructions of its own, so its room writes no agents file (the agents file's states are A1's above)
+  // wherever --data is: in a folder outside git it would, and its toast at the bottom right covered the globe that the
+  // Clear setting state clicks after Back (#129, #239).
+  writeFileSync(join(folder, "CLAUDE.md"), "The rehearsal's scratch project for a project's browsers.\n");
   const title = "browsers-scratch";
   const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title });
   const preview = (await service.command<{ browserId: string }>({ type: "browser.create", name: "preview", description: "The preview deploy, logged in as the test user." })).browserId;
@@ -1989,6 +2018,11 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
   // From the room just made (open by now also when state 42 was played silently).
   browser.poll<string | null>("the new room to be open", "() => document.querySelector('.sheet-title h1')?.textContent ?? null", (t) => t === title);
   browser.click(/button "Back to the overview"/);
+  // rooms-browser clicks the point at the globe's centre: what covers it there takes the click (a toast did, #239).
+  const cover = browser.eval<string | null>(
+    `() => { const g = document.querySelector('[data-nav-key="head:project-browsers:${projectId}"]'); const r = g?.getBoundingClientRect(); const at = r ? document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) : null; return !g ? 'no globe' : g.contains(at) ? null : at ? at.tagName.toLowerCase() + [...at.classList].map((c) => '.' + c).join('') : 'nothing'; }`,
+  );
+  if (cover) fail(`the globe is covered at its centre, where the click lands: ${cover}`);
   browser.click(globe('on · default "preview"'));
   browser.waitFor("Clear setting");
   browser.click(/button "Clear setting"/);
@@ -3214,7 +3248,11 @@ async function main(): Promise<void> {
         step === "ui" ? await rehearseUi(service, browser, room, selection) : step === "keys" ? await rehearseKeys(service, browser, room, { log, fail, until, sleep, selection }) : await rehearseRoom(service, browser, room, selection);
       log(`DONE: ${selection.whole ? `${passed.length} states checked in the API and on the page, console clean` : selection.summary()}`);
     } catch (error) {
-      if (!(error instanceof SelectionDone)) throw error;
+      if (!(error instanceof SelectionDone)) {
+        // A failure leaves its evidence before the tab closes (a run stopped from outside has none to leave).
+        if (!stoppedBy) browser.evidence();
+        throw error;
+      }
       log(`DONE: ${error.message}`);
     }
     if (!selection.whole && selection.checked === 0) fail("no state was checked: --only and --until named states the step never reached");
