@@ -2,23 +2,14 @@ import { backroomNote, backroomNotice } from "./replyTo.ts";
 import type { EnginePost, EngineRef, RoomSnapshot } from "./types.ts";
 
 /**
- * The Consigliere's seats: every binding of the member who is the Consigliere now, every seat the journal names
- * orchestrator, and every seat whose work moved to one of his by a reseat (a transfer post: old seat → new seat). A
- * reseat seats a fresh member, so his earlier replies are on seats of a member that has left; they stay his.
+ * The Consigliere's seats: every binding of the member who is the Consigliere now, and every seat the journal says was
+ * ever his (`consigliere`: it held the role, or a reseat moved its work to one that did). A reseat seats a fresh member,
+ * so his earlier replies are on seats of a member that has left; they stay his. The seats carry it from the whole
+ * journal, so it holds on every page of posts: the posts are not read (the parameter stays for the callers).
  */
-export function consigliereSeats(snapshot: Pick<RoomSnapshot, "room" | "bindings" | "seats">, posts: readonly EnginePost[]): { seats: Set<string>; threads: Set<string> } {
+export function consigliereSeats(snapshot: Pick<RoomSnapshot, "room" | "bindings" | "seats">, _posts?: readonly EnginePost[]): { seats: Set<string>; threads: Set<string> } {
   const seats = new Set(snapshot.bindings.filter((b) => b.participantId === snapshot.room.consigliereId).map((b) => b.id));
-  for (const seat of snapshot.seats) if (seat.orchestrator) seats.add(seat.seatId);
-  let grew = seats.size > 0;
-  while (grew) {
-    grew = false;
-    for (const post of posts) {
-      if (post.transfer && seats.has(post.transfer.newSeatId) && !seats.has(post.transfer.oldSeatId)) {
-        seats.add(post.transfer.oldSeatId);
-        grew = true;
-      }
-    }
-  }
+  for (const seat of snapshot.seats) if (seat.orchestrator || seat.consigliere) seats.add(seat.seatId);
   const threads = new Set([
     ...snapshot.seats.filter((s) => seats.has(s.seatId)).map((s) => s.threadId),
     ...snapshot.bindings.filter((b) => seats.has(b.id)).map((b) => b.threadId),

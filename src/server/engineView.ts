@@ -513,6 +513,29 @@ export function journalView(input: ViewInput): JournalView {
   }
   requests.sort((a, b) => a.seq - b.seq);
 
+  // Who held the Consigliere's role at any point of the journal (the fold's own rule), and where each reseat moved a seat's work.
+  const held = new Set<string>();
+  const reseatedTo = new Map<string, string>();
+  let role: string | null = null;
+  for (const event of p.events) {
+    const d = event.data;
+    if (d.kind === "seat.created" && d.orchestrator) role = d.seatId;
+    else if (d.kind === "seat.retired" && role === d.seatId) role = null;
+    else if (d.kind === "orchestrator.set") role = d.seatId;
+    else if (d.kind === "transfer") {
+      reseatedTo.set(d.oldSeatId, d.newSeatId);
+      if (role === d.oldSeatId) role = d.newSeatId;
+    }
+    if (role !== null) held.add(role);
+  }
+  const everHis = (seatId: string): boolean => {
+    for (let id: string | undefined = seatId, seen = new Set<string>(); id !== undefined && !seen.has(id); id = reseatedTo.get(id)) {
+      if (held.has(id)) return true;
+      seen.add(id);
+    }
+    return false;
+  };
+
   const seats: EngineSeatView[] = [];
   let unreadTotal = 0;
   for (const seat of p.seats.values()) {
@@ -520,7 +543,7 @@ export function journalView(input: ViewInput): JournalView {
     unreadTotal += count;
     seats.push({
       seatId: seat.id, participantId: meta.get(seat.id)?.participantId ?? null, alias: meta.get(seat.id)?.alias ?? null, threadId: seat.threadId,
-      status: seat.status, orchestrator: p.orchestrator === seat.id, cursor: seat.cursor, activeRunId: seat.activeRunId, unread: count,
+      status: seat.status, orchestrator: p.orchestrator === seat.id, consigliere: everHis(seat.id), cursor: seat.cursor, activeRunId: seat.activeRunId, unread: count,
       blocked: blocked.find((b) => b.seatId === seat.id) ?? null, activities: activities.filter((a) => a.seatId === seat.id),
       owns: requests.filter((q) => q.owner === seat.id).length, awaits: requests.filter((q) => q.returnTo === seat.id).length,
     });

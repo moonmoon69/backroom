@@ -279,8 +279,8 @@ function snapshot(over: Omit<Partial<EngineRoomSnapshot>, "counts"> & { counts?:
     bindings: [],
     head: 10,
     seats: [
-      { seatId: "s-c", participantId: "p-c", alias: "Fable", threadId: "t-c", status: "active", orchestrator: true, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0 },
-      { seatId: "s-w", participantId: "p-w", alias: "W1", threadId: "t-w", status: "active", orchestrator: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0 },
+      { seatId: "s-c", participantId: "p-c", alias: "Fable", threadId: "t-c", status: "active", orchestrator: true, consigliere: true, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0 },
+      { seatId: "s-w", participantId: "p-w", alias: "W1", threadId: "t-w", status: "active", orchestrator: false, consigliere: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0 },
     ],
     posts: [],
     earlier: false,

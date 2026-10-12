@@ -267,6 +267,8 @@ export interface EngineSeatView {
   threadId: string;
   status: "active" | "retired";
   orchestrator: boolean;
+  /** Ever the Consigliere's, from the whole journal: it held the role at some point, or a reseat moved its work to a seat that did. */
+  consigliere: boolean;
   cursor: number;
   activeRunId: string | null;
   /** Addressed input waiting for its next run. */

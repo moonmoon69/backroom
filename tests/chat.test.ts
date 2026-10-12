@@ -21,7 +21,7 @@ const request = (id: string, author: string, owner: string, extra: Partial<NonNu
 const reply = (author: string, requestId: string, returnTo: string) =>
   post({ kind: "output", author, to: returnTo === "$system" ? [] : [returnTo], turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, owner: author, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
 const seat = (seatId: string, threadId: string, extra: Partial<EngineSeatView> = {}): EngineSeatView => ({
-  seatId, participantId: null, alias: null, threadId, status: "active", orchestrator: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0, ...extra,
+  seatId, participantId: null, alias: null, threadId, status: "active", orchestrator: false, consigliere: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0, ...extra,
 });
 
 test("the chat keeps the Consigliere's replies from before he was reseated, and only what is between the user and him", () => {
@@ -33,7 +33,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
       { id: "B", participantId: "P2", generation: 1, threadId: "tB", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
       { id: "W", participantId: "PW", generation: 1, threadId: "tW", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
     ],
-    seats: [seat("A", "tA", { status: "retired" }), seat("B", "tB", { orchestrator: true }), seat("W", "tW")],
+    seats: [seat("A", "tA", { status: "retired", consigliere: true }), seat("B", "tB", { orchestrator: true, consigliere: true }), seat("W", "tW")],
   } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
   const before = request("u1", "$user", "A");
   const hisOldReply = reply("A", "u1", "$user");
@@ -61,9 +61,9 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const chat = consigliereChat(posts, his).map((p) => p.id);
   assert.deepEqual(chat, [before.id, hisOldReply.id, typedOnHisOldThread.id, roomNote.id, after.id, hisNewReply.id, keepAliveReply.id, hisNote.id]);
 
-  // Without the handover post (older than the page holds), only the current seats are his.
+  // Without the handover post (older than the page holds), his seat before the reseat is still his: the seats say so.
   const shortHis = consigliereSeats(snapshot, posts.filter((p) => p !== handover));
-  assert.deepEqual([...shortHis.seats], ["B"]);
+  assert.deepEqual([...shortHis.seats].sort(), ["A", "B"]);
 });
 
 test("B1: Backroom's briefing of a member, its failure (the Consigliere's notice, from before B1 too) and a recovery failure are not in the user's chat", () => {
@@ -236,4 +236,20 @@ test("D1 review: a post about his former seat's closed request stays in chat whe
   assert.equal(initial.some((p) => p.transfer), false, "the transfer is outside the first page");
   assert.equal(consigliereChat(full, consigliereSeats(snapshot, full)).some((p) => p.id === cancel.id), true, "his former seat is his when the transfer is loaded");
   assert.equal(consigliereChat(initial, consigliereSeats(snapshot, initial)).some((p) => p.id === cancel.id), true, "his former seat must also be his before the transfer loads");
+});
+
+test("D1: the read API marks every seat that was ever the Consigliere's, from the whole journal: the role's holders before and after a reseat, and a seat whose work a reseat moved to a later holder; a plain member and its reseat are not", () => {
+  const room = new EngineRoom();
+  // O is the orchestrator from the start (the helper's seat); a reseat moves his role to O2.
+  room.add({ type: "transfer", actor: "$user", oldSeatId: "O", newSeatId: "O2", threadId: "thread:O2", owned: [], awaited: [], body: "Reseat", evidence: "test" });
+  // X's work moves to X2 by a reseat, and X2 is made the Consigliere after it: X's earlier replies are his too.
+  room.add({ type: "transfer", actor: "$user", oldSeatId: "X", newSeatId: "X2", threadId: "thread:X2", owned: [], awaited: [], body: "Reseat", evidence: "test" });
+  room.add({ type: "designate", actor: "$user", seatId: "X2" });
+  // W is a plain member, reseated as W2.
+  room.add({ type: "transfer", actor: "$user", oldSeatId: "W", newSeatId: "W2", threadId: "thread:W2", owned: [], awaited: [], body: "Reseat", evidence: "test" });
+  const seats = journalView({ p: room.p }).seats;
+  assert.deepEqual(
+    Object.fromEntries(seats.map((s) => [s.seatId, s.consigliere])),
+    { O: true, W: false, V: false, X: true, O2: true, X2: true, W2: false },
+  );
 });
