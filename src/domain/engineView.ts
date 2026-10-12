@@ -48,11 +48,13 @@ export interface EngineTime {
   after: string | null;
 }
 
-/** A request named by a post: its ID and the board number of the post that made it. */
+/** A request named by a post: its ID, the board number of the post that made it, and its owner. */
 export interface EngineRef {
   requestId: string;
   /** Null when the journal has no request with this ID. */
   number: number | null;
+  /** The request's owner (a seat, or the user), from the whole journal so a page without the request post still knows it; null when the journal has no request with this ID. */
+  owner: EnginePrincipal | null;
 }
 
 /** A T3 thing a post came from or names. */

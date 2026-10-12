@@ -293,7 +293,7 @@ export function journalView(input: ViewInput): JournalView {
   const seqOf = new Map(p.events.map((e) => [e.id, e.seq]));
   const ref = (requestId: string): EngineRef => {
     const seq = seqOf.get(requestId);
-    return { requestId, number: seq === undefined ? null : boardNumber(seq) };
+    return { requestId, number: seq === undefined ? null : boardNumber(seq), owner: p.requests.get(requestId)?.owner ?? null };
   };
   const at = (eventId: string | null): { seq: number; number: number } | null => {
     const seq = eventId === null ? undefined : seqOf.get(eventId);

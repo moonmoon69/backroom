@@ -335,7 +335,7 @@ describe("the new side's quiet rule and board", () => {
 
   test("what a member said: every output and T3-turn note, any disposition; a post's time is T3's or first sight", () => {
     const output = (author: string, source: "final" | "answer" | "continuation" | "idle", disposition: "answer" | "yield" | "progress", at: string | null) =>
-      post({ kind: "output", author, body: `${source} ${disposition}`, at, output: { disposition, claims: disposition === "answer" ? [{ requestId: "q", number: 1, outcome: "answered", returnTo: "s-c" }] : [], source, runId: null, activityId: null, t3: null, afterAnswer: false } });
+      post({ kind: "output", author, body: `${source} ${disposition}`, at, output: { disposition, claims: disposition === "answer" ? [{ requestId: "q", number: 1, owner: "s-w", outcome: "answered", returnTo: "s-c" }] : [], source, runId: null, activityId: null, t3: null, afterAnswer: false } });
     const posts = engineBoardPosts(snapshot({ posts: [
       output("s-w", "final", "yield", "2026-10-08T10:00:00.000Z"),
       output("s-w", "answer", "answer", null),

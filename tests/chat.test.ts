@@ -16,10 +16,10 @@ const post = (fields: Partial<EnginePost> & Pick<EnginePost, "kind" | "author">)
 };
 /** A request post, waking its owner; the user's own come from a message, as on the journal (Backroom's in the user's name do not). */
 const request = (id: string, author: string, owner: string, extra: Partial<NonNullable<EnginePost["request"]>> = {}) =>
-  post({ kind: "request", author, to: [owner], about: [{ requestId: id, number: seq + 1 }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null, ...extra } });
-/** An answer, waking the request's return address. */
+  post({ kind: "request", author, to: [owner], about: [{ requestId: id, number: seq + 1, owner }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null, ...extra } });
+/** An answer to a request of the author's, waking the request's return address (Backroom's answers wake nobody). */
 const reply = (author: string, requestId: string, returnTo: string) =>
-  post({ kind: "output", author, to: [returnTo], turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
+  post({ kind: "output", author, to: returnTo === "$system" ? [] : [returnTo], turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, owner: author, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
 const seat = (seatId: string, threadId: string, extra: Partial<EngineSeatView> = {}): EngineSeatView => ({
   seatId, participantId: null, alias: null, threadId, status: "active", orchestrator: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0, ...extra,
 });
@@ -47,7 +47,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const hisNewReply = reply("B", "u2", "$user");
   // The reseat's checkpoint request to him and its call-off note are Backroom's, in the user's name: not the user's words.
   const checkpoint = request("reseat:cp1", "$user", "A", { message: null });
-  const calledOffAboutWorker = post({ kind: "note", author: "$user", about: [{ requestId: "r1", number: 1 }], note: { source: "post", room: false, t3: null, afterAnswer: false } });
+  const calledOffAboutWorker = post({ kind: "note", author: "$user", about: [{ requestId: "r1", number: 1, owner: "W" }], note: { source: "post", room: false, t3: null, afterAnswer: false } });
   const roomNote = post({ kind: "note", author: "$user", note: { source: "post", room: true, t3: null, afterAnswer: false } });
   // A keep-alive to him is on the board; his one-line reply to it is in the chat (#17 dropped H6's exception), like a note of his own.
   const keepAlive = post({ kind: "notice", author: "$system", to: ["B"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, backroom: false, needsYou: false } });
@@ -129,18 +129,19 @@ const d1 = () => {
   };
   return { asked, answer, chat };
 };
-const claim = (requestId: string, returnTo: string, outcome: "answered" | "late" = "answered") => ({ requestId, number: 1, outcome, returnTo });
+/** A claim on a request of his (C's). */
+const claim = (requestId: string, returnTo: string, outcome: "answered" | "late" = "answered") => ({ requestId, number: 1, owner: "C", outcome, returnTo });
 const output = (to: string[], disposition: "answer" | "yield", claims: ReturnType<typeof claim>[]) =>
   post({ kind: "output", author: "C", to, turn: true, output: { disposition, claims, source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
 
 test("D1: the Consigliere's follow-up on your request is in the chat, like his updates and turns of his own: they are addressed to no member", () => {
   const { asked, answer, chat } = d1();
   // A turn his harness started itself (H5), imported as a follow-up on the request his last answer closed: to nobody.
-  const followUp = post({ kind: "progress", author: "C", about: [{ requestId: "u1", number: asked.number }], progress: { milestone: "follow-up", working: false, t3: { threadId: "tC", runId: "t3r", messageId: null } } });
+  const followUp = post({ kind: "progress", author: "C", about: [{ requestId: "u1", number: asked.number, owner: "C" }], progress: { milestone: "follow-up", working: false, t3: { threadId: "tC", runId: "t3r", messageId: null } } });
   const update = output([], "yield", []);
   const t3Turn = post({ kind: "note", author: "C", note: { source: "t3-turn", room: false, t3: { threadId: "tC", runId: "t3s", messageId: null }, afterAnswer: false } });
   // His retry of his own failed turn, on your request: it wakes his own seat and is about his own request, not a member's.
-  const ownRetry = post({ kind: "retry", author: "C", to: ["C"], about: [{ requestId: "u1", number: asked.number }], retry: { runId: "rc" } });
+  const ownRetry = post({ kind: "retry", author: "C", to: ["C"], about: [{ requestId: "u1", number: asked.number, owner: "C" }], retry: { runId: "rc" } });
   assert.deepEqual(chat(followUp, update, t3Turn, ownRetry), [asked.id, answer.id, followUp.id, update.id, t3Turn.id, ownRetry.id]);
 });
 
@@ -154,7 +155,7 @@ test("D1: the Consigliere's reply to a keep-alive is in the chat (#17 dropped H6
 test("D1: what the Consigliere addresses to a member stays on the board: his request, his correction, a late answer that wakes nobody, posts about a member's request that wake nobody, and a post to you and a member at once", () => {
   const { asked, answer, chat } = d1();
   const toWorker = request("r1", "C", "W");
-  const correction = post({ kind: "correction", author: "C", to: ["W"], about: [{ requestId: "r1", number: toWorker.number }] });
+  const correction = post({ kind: "correction", author: "C", to: ["W"], about: [{ requestId: "r1", number: toWorker.number, owner: "W" }] });
   // His answer to the worker's request after it was closed: its claim returns to a seat, and it wakes nobody.
   const lateToWorker = output([], "answer", [claim("w1", "W", "late")]);
   // Addressed to you and to a member at once, in its recipients or only in its claims: a member's, so on the board.
@@ -164,8 +165,8 @@ test("D1: what the Consigliere addresses to a member stays on the board: his req
   // About the worker's request, waking nobody: his cancel of it once it had closed, and a cancel held to its turn's end
   // (a journal from before M1). A word to the member's work, not to you.
   const closed = request("r2", "C", "W");
-  const lateCancel = post({ kind: "cancel", author: "C", body: "Cancel requested", about: [{ requestId: "r2", number: closed.number }], cancel: { applied: false } });
-  const deferredCancel = post({ kind: "note", author: "C", about: [{ requestId: "r1", number: toWorker.number }], note: { source: "deferred-cancel", room: false, t3: null, afterAnswer: false } });
+  const lateCancel = post({ kind: "cancel", author: "C", body: "Cancel requested", about: [{ requestId: "r2", number: closed.number, owner: "W" }], cancel: { applied: false } });
+  const deferredCancel = post({ kind: "note", author: "C", about: [{ requestId: "r1", number: toWorker.number, owner: "W" }], note: { source: "deferred-cancel", room: false, t3: null, afterAnswer: false } });
   assert.deepEqual(chat(toWorker, correction, lateToWorker, bothWoken, bothClaimed, noteToBoth, closed, lateCancel, deferredCancel), [asked.id, answer.id]);
 });
 
@@ -192,4 +193,23 @@ test("D1 review: request-owner filtering is stable across the initial 500-post p
   assert.equal(initialChat.some((p) => p.id === ownCancel.id), true, "his own control post remains in chat without its request post");
   assert.equal(loadedChat.some((p) => p.id === memberCancel.id), false, "a member's control post belongs only on the board");
   assert.equal(initialChat.some((p) => p.id === memberCancel.id), false, "a member's control post stays off chat without its request post");
+});
+
+test("D1: your correction of an old request of his is in the chat on the first page too, of a member's on the board: the ref carries the request's owner", () => {
+  const room = new EngineRoom();
+  const his = { seats: new Set(["O"]), threads: new Set(["thread:O"]) };
+  room.request("yours", "O", "$user");
+  room.request("theirs", "W", "$user");
+  for (let i = 0; i < 500; i++) room.add({ type: "post", actor: "$user", intent: "note", body: `Pagination gap ${i}` });
+  room.add({ type: "correct", actor: "$user", requestId: "yours", body: "Also the notes." });
+  room.add({ type: "correct", actor: "$user", requestId: "theirs", body: "Also the tests." });
+  const full = journalView({ p: room.p }).posts;
+  const initial = full.slice(-500);
+  assert.equal(initial.some((p) => p.request), false, "both request posts are outside the first page");
+  const corrections = full.filter((p) => p.kind === "correction");
+  assert.deepEqual(corrections.map((p) => p.about[0]?.owner), ["O", "W"], "each correction's ref names its request's owner");
+  for (const page of [full, initial]) {
+    const chat = consigliereChat(page, his).map((p) => p.id);
+    assert.deepEqual(corrections.map((p) => chat.includes(p.id)), [true, false], "yours to him in the chat, yours to a member's work on the board");
+  }
 });

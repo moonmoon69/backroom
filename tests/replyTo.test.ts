@@ -18,7 +18,7 @@ const request = (id: string, number: number, author: string, state: "open" | "an
   author,
   to: ["W"],
   body: "do it",
-  about: [{ requestId: id, number }],
+  about: [{ requestId: id, number, owner: "W" }],
   at: null,
   after: null,
   turn: false,
@@ -30,7 +30,7 @@ const context = (posts: EnginePost[]): ReplyContext => ({
   nameOf: (principal) => (principal === "$user" ? "you" : `@${principal}`),
 });
 
-const claim = (requestId: string, number: number, outcome: EngineClaim["outcome"]): EngineClaim => ({ requestId, number, outcome, returnTo: "$user" });
+const claim = (requestId: string, number: number, outcome: EngineClaim["outcome"]): EngineClaim => ({ requestId, number, owner: "W", outcome, returnTo: "$user" });
 
 test("each outcome the engine gives a claim gets its own words, with the request's board number", () => {
   const posts = [request("A", 12, "$user"), request("B", 14, "C"), request("X", 20, "$user", "cancelled"), request("T", 21, "C", "answered")];
@@ -63,7 +63,7 @@ test("a reply that named no request, an update and a failure say so; how it came
     author: "W",
     to: [],
     body: "text",
-    about: disposition === "yield" ? [] : [{ requestId: "A", number: 12 }],
+    about: disposition === "yield" ? [] : [{ requestId: "A", number: 12, owner: "W" }],
     at: null,
     after: null,
     turn: source === "final" || source === "continuation",
