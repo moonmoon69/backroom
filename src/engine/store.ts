@@ -478,6 +478,11 @@ export class EngineStore {
   }
 
   load(room: string): RoomEvent[] { return this.transaction("IMMEDIATE", () => Array.from(this.working(room, false).overlay.p.events)); }
+  /** Every room's journal head (its last sequence), read without projecting: what a change watcher compares. */
+  heads(): Map<string, number> {
+    const rows = this.sql("SELECT room,seq FROM engine_head").all() as { room: string; seq: number }[];
+    return new Map(rows.map((row) => [row.room, row.seq]));
+  }
   project(room: string): Projection {
     return this.transaction("IMMEDIATE", () => {
       const p = this.working(room, false).overlay.p, detached = { ...p, events: Array.from(p.events), commandKeys: new Set(p.commandKeys) };

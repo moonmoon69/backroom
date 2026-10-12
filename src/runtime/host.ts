@@ -1239,6 +1239,11 @@ export class EngineHost {
     return this.project(roomId);
   }
 
+  /** Every room's journal head, from the store without projecting (src/app/changes.ts compares them). */
+  heads(): Map<string, number> {
+    return this.store.heads();
+  }
+
   /** Room IDs the host serves; the read side lists the same. */
   served(): readonly string[] {
     return this.rooms();

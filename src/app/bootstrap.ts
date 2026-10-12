@@ -10,6 +10,7 @@ import type { EngineSeats } from "./engineSeats.ts";
 import { engineMessages, messageImages } from "./engineMessages.ts";
 import { keepAliveSetting } from "./keepAlive.ts";
 import { AgentsFiles, type AgentsFilesOptions } from "./agentsFile.ts";
+import { PageChanges, type PageChangesOptions } from "./changes.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -46,6 +47,8 @@ export interface AppStack {
   adapter: T3Adapter;
   service: RoomService;
   hub: ChangeHub;
+  /** What open pages are told over GET /api/events: rooms changed, T3's shell changed, T3 reachable or not. */
+  changes: PageChanges;
   /** Room browsers, when this service may start them (the server; not the tests). */
   browsers: RoomBrowsers | null;
   /** T3's and its harnesses' updates, started only when asked for. */
@@ -82,6 +85,8 @@ export function createStack(input: {
    * say so, so they write in no folder of the machine.
    */
   agentsFile?: boolean | Pick<AgentsFilesOptions, "onlyUnder">;
+  /** How often the page-push source checks T3's shell and the journal's heads (tests make them short). */
+  changes?: Pick<PageChangesOptions, "shellMs" | "headsMs" | "heartbeatMs">;
 }): AppStack {
   const db = new Database(input.dbPath);
   const repos = new Repos(db);
@@ -122,6 +127,9 @@ export function createStack(input: {
     notify,
     ...(input.log ? { log: input.log } : {}),
   });
+  // Every announced room change, and every append to the journal (an unannounced one too), reaches open pages.
+  const changes = new PageChanges(input.adapter, { ...input.changes, heads: () => engine.heads(), ...(input.log ? { log: input.log } : {}) });
+  hub.subscribeAll((roomId) => changes.roomChanged(roomId));
   const seats: EngineSeats = service.useEngineSeats(engine, briefing, input.log);
   // Seat, reseat, retire and the Consigliere's mark go on the journal (L4b), through the service's handler hook.
   service.useEngine(seats.handler());
@@ -134,12 +142,14 @@ export function createStack(input: {
     adapter: input.adapter,
     service,
     hub,
+    changes,
     browsers,
     updates: new T3Updates(input.adapter, input.latestRelease),
     presence,
     engine,
     seats,
     close() {
+      changes.close();
       engine.close();
       engineStore.close();
       presence.stop();

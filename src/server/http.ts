@@ -142,6 +142,57 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   });
 
+  /**
+   * What changed, pushed to each open page (src/app/changes.ts), one stream per page: `rooms` (a room changed), `room`
+   * with { roomId } (that room's snapshot), `shell` (T3's projects or threads), `status` (T3 reachable or not, as
+   * { up, error, at }; sent at once while T3 is down). A comment every 20 s keeps the stream open; `retry` tells the
+   * browser how soon to reconnect. The page reads again on each event, and everything again on each (re)connect.
+   */
+  app.get("/api/events", (c) => {
+    c.header("X-Accel-Buffering", "no");
+    return streamSSE(c, async (stream) => {
+      let closed = false;
+      // Written one after another: a write is not started before the one before it has gone.
+      let queue: Promise<unknown> = Promise.resolve();
+      const write = (text: string) => {
+        queue = queue.then(() => (closed ? undefined : stream.write(text))).catch(() => undefined);
+        return queue;
+      };
+      const send = (event: string, data: unknown) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      let unsubscribe: (() => void) | null = null;
+      let wake: (() => void) | null = null;
+      // The page went away, or the service is shutting down: the stream ends and stops listening.
+      const end = () => {
+        closed = true;
+        unsubscribe?.();
+        wake?.();
+      };
+      unsubscribe = stack.changes.subscribe((event) => {
+        if (event.type === "rooms") void send("rooms", {});
+        else if (event.type === "room") void send("room", { roomId: event.roomId });
+        else if (event.type === "shell") void send("shell", {});
+        else if (event.type === "status") void send("status", event.status);
+        else end();
+      });
+      stream.onAbort(end);
+      if (closed) return;
+      await write("retry: 3000\n\n");
+      // A page assumes T3 answers until told otherwise: told at once when it does not.
+      const known = stack.changes.status();
+      if (known && !known.up) await send("status", known);
+      while (!closed) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, stack.changes.heartbeatMs);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        if (!closed) await write(`: heartbeat ${Date.now()}\n\n`);
+      }
+    });
+  });
+
   app.post("/api/t3/pair", async (c) => {
     if (!httpAdapter) throw new RoomError("fake_adapter", "pairing is not available with the fake adapter");
     const body = (await c.req.json()) as { pairingUrl?: string };
