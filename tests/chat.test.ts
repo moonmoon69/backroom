@@ -137,8 +137,8 @@ test("D1: the Consigliere's follow-up on your request is in the chat, like his u
   const followUp = post({ kind: "progress", author: "C", about: [{ requestId: "u1", number: asked.number }], progress: { milestone: "follow-up", working: false, t3: { threadId: "tC", runId: "t3r", messageId: null } } });
   const update = output([], "yield", []);
   const t3Turn = post({ kind: "note", author: "C", note: { source: "t3-turn", room: false, t3: { threadId: "tC", runId: "t3s", messageId: null }, afterAnswer: false } });
-  // His retry of his own failed turn wakes his own seat, not a member.
-  const ownRetry = post({ kind: "retry", author: "C", to: ["C"], retry: { runId: "rc" } });
+  // His retry of his own failed turn, on your request: it wakes his own seat and is about his own request, not a member's.
+  const ownRetry = post({ kind: "retry", author: "C", to: ["C"], about: [{ requestId: "u1", number: asked.number }], retry: { runId: "rc" } });
   assert.deepEqual(chat(followUp, update, t3Turn, ownRetry), [asked.id, answer.id, followUp.id, update.id, t3Turn.id, ownRetry.id]);
 });
 
@@ -149,7 +149,7 @@ test("D1: the Consigliere's reply to a keep-alive is in the chat (#17 dropped H6
   assert.deepEqual(chat(keepAlive, keepAliveReply), [asked.id, answer.id, keepAliveReply.id]);
 });
 
-test("D1: what the Consigliere addresses to a member stays on the board: his request, his correction, a late answer that wakes nobody, and a post to you and a member at once", () => {
+test("D1: what the Consigliere addresses to a member stays on the board: his request, his correction, a late answer that wakes nobody, posts about a member's request that wake nobody, and a post to you and a member at once", () => {
   const { asked, answer, chat } = d1();
   const toWorker = request("r1", "C", "W");
   const correction = post({ kind: "correction", author: "C", to: ["W"], about: [{ requestId: "r1", number: toWorker.number }] });
@@ -159,5 +159,10 @@ test("D1: what the Consigliere addresses to a member stays on the board: his req
   const bothWoken = output(["$user", "W"], "answer", [claim("u1", "$user"), claim("w1", "W")]);
   const bothClaimed = output(["$user"], "answer", [claim("u1", "$user"), claim("w1", "W", "late")]);
   const noteToBoth = post({ kind: "note", author: "C", to: ["$user", "W"], note: { source: "t3-message", room: false, t3: { threadId: "tC", runId: null, messageId: "m9" }, afterAnswer: false } });
-  assert.deepEqual(chat(toWorker, correction, lateToWorker, bothWoken, bothClaimed, noteToBoth), [asked.id, answer.id]);
+  // About the worker's request, waking nobody: his cancel of it once it had closed, and a cancel held to its turn's end
+  // (a journal from before M1). A word to the member's work, not to you.
+  const closed = request("r2", "C", "W");
+  const lateCancel = post({ kind: "cancel", author: "C", body: "Cancel requested", about: [{ requestId: "r2", number: closed.number }], cancel: { applied: false } });
+  const deferredCancel = post({ kind: "note", author: "C", about: [{ requestId: "r1", number: toWorker.number }], note: { source: "deferred-cancel", room: false, t3: null, afterAnswer: false } });
+  assert.deepEqual(chat(toWorker, correction, lateToWorker, bothWoken, bothClaimed, noteToBoth, closed, lateCancel, deferredCancel), [asked.id, answer.id]);
 });
