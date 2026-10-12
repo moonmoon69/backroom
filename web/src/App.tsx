@@ -225,6 +225,10 @@ export function App() {
     loadBrowsers();
     loadPresets();
   }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  // Whether the stream is open, on the page's root: the rehearsal waits for it (scripts/rehearse.ts, page push).
+  useEffect(() => {
+    document.documentElement.dataset.stream = streaming ? "open" : "closed";
+  }, [streaming]);
   useEffect(() => {
     // The room list and thread list carry live activity (working, background, needs you) for the overview, and the
     // connection status asks T3 itself. The stream tells their changes as they happen, so while it is open the timers
