@@ -1852,7 +1852,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
-    await section("a post's actions: Enter opens them under it, Left and Right choose and stop at the ends, a poll keeps them", {
+    await section("a post's actions: Enter opens them under it, Left and Right choose and stop at the ends, a fresh read of the room keeps them", {
       replay: async () => {
         await secondApproval();
         await openRequest();
@@ -1864,7 +1864,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
 
     // @fable's turn on #openPost still runs (the fake holds it), the room's only one, and nothing needs you: the room opens
     // on #openPost, your open request, and Enter opens its actions under it (Correct…, Cancel, Copy, Detail), the ring on
-    // Correct…. Left and Right choose, stopping at the ends (the side panel stays folded); a poll keeps them; Esc and
+    // Correct…. Left and Right choose, stopping at the ends (the side panel stays folded); a fresh read of the room keeps them; Esc and
     // Backspace close them, the ring back on the post.
     const s6 = await room.snapshot();
     fableRun = (s6.runs as Array<{ id: string; phase: string }>).find((r) => r.phase !== "terminal")!;
@@ -1893,12 +1893,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowRight");
     await sleep(400);
     await expect("Right at the strip's end: the ring stays on Detail, the panel folded", (f) => f.action === "detail" && f.strips === 1 && f.panel === null);
-    // Past a poll of the room (its snapshot read again): still open, the ring on the same button.
+    // Past a read of the room (its snapshot read again): still open, the ring on the same button. The page reads it when
+    // the service tells of a change (GET /api/events); the room renamed to its own title is one that shows nothing.
     browser.eval<boolean>("() => { performance.clearResourceTimings(); return true; }");
-    await until("a poll of the room (its snapshot read again)", () => browser.eval<number>(`() => performance.getEntriesByType('resource').filter((e) => new URL(e.name).pathname === '/api/rooms/${R}').length`) > 0 || null, 20_000, 500);
+    await service.command({ type: "room.update", roomId: R, title: (await room.snapshot()).room.title as string });
+    await until("a read of the room (its snapshot read again)", () => browser.eval<number>(`() => performance.getEntriesByType('resource').filter((e) => new URL(e.name).pathname === '/api/rooms/${R}').length`) > 0 || null, 20_000, 500);
     await sleep(600);
     await expect("after a poll: the actions still open, the ring still on Detail", (f) => f.strips === 1 && f.action === "detail" && f.ring);
-    await state("a post's actions: Enter opens them under it, Left and Right choose and stop at the ends, a poll keeps them", `Detail · ${mine}`);
+    await state("a post's actions: Enter opens them under it, Left and Right choose and stop at the ends, a fresh read of the room keeps them", `Detail · ${mine}`);
     press("Escape");
     await expect(`Esc: the actions closed, the ring on #${openPost.number}, the room open`, (f) => f.strips === 0 && f.key === `post:${openPost.seq}` && f.ring && inRoom(f));
     press("Enter");
