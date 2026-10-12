@@ -399,6 +399,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const { log, fail, until, sleep, selection } = tools;
   const passed: string[] = [];
   const R = room.roomId;
+  /**
+   * The page reads the room again: it does when the service tells of a change (GET /api/events), and its own timer only
+   * backs the stream up, every 60 s. The room renamed to its own title is a change that shows nothing.
+   */
+  const rereadRoom = async () => {
+    await service.command({ type: "room.update", roomId: R, title: (await room.snapshot()).room.title as string });
+  };
   const short = (key: string | null) => (key ? key.replace(/([0-9a-f]{8})[0-9a-f-]{28}/g, "$1") : String(key));
 
   // ---------------- the page, by keys only ----------------
@@ -1896,7 +1903,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // Past a read of the room (its snapshot read again): still open, the ring on the same button. The page reads it when
     // the service tells of a change (GET /api/events); the room renamed to its own title is one that shows nothing.
     browser.eval<boolean>("() => { performance.clearResourceTimings(); return true; }");
-    await service.command({ type: "room.update", roomId: R, title: (await room.snapshot()).room.title as string });
+    await rereadRoom();
     await until("a read of the room (its snapshot read again)", () => browser.eval<number>(`() => performance.getEntriesByType('resource').filter((e) => new URL(e.name).pathname === '/api/rooms/${R}').length`) > 0 || null, 20_000, 500);
     await sleep(600);
     await expect("after a poll: the actions still open, the ring still on Detail", (f) => f.strips === 1 && f.action === "detail" && f.ring);
@@ -2435,6 +2442,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
         return true;
       }`);
     givePrepared(prepared);
+    await rereadRoom();
     browser.poll<boolean>("the page to draw @fable's turn being prepared", `() => Boolean(document.querySelector('[data-run="rehearse-prepared"]'))`, (drawn) => drawn === true, 25_000);
     if (((await room.snapshot()).runs as any[]).some((r) => r.seatId === room.seat.fable && r.phase !== "terminal")) fail("the API has a turn of @fable's that has not ended: the prepared one is to be the page's only");
     press("End");
@@ -2444,6 +2452,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     if (browser.eval<boolean>("() => document.querySelector('[data-run=\"rehearse-prepared\"]').hasAttribute('data-nav')")) fail("@fable's turn being prepared, on no request, is a stop with nothing to press");
     log("api: no turn of @fable's runs; page: his turn being prepared drawn, no stop");
     givePrepared({ ...prepared, requestIds: [clickAsk] });
+    await rereadRoom();
     const clickAsked = room.post(await room.snapshot(), clickAsk);
     const preparedWhere = `@fable's turn · preparing on #${clickAsked.number}`;
     browser.poll<boolean>("the turn being prepared a stop now it is on a request", `() => Boolean(document.querySelector('[data-nav-key="live:rehearse-prepared"]'))`, (stop) => stop === true, 25_000);
@@ -2459,6 +2468,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Esc: the actions closed, the ring on his turn", (f) => f.strips === 0 && f.key === "live:rehearse-prepared");
     await state("a turn being prepared: no stop with nothing to press; on a request Enter opens its actions", preparedWhere);
     browser.eval<boolean>("() => { window.__rehearseRun = null; return true; }");
+    await rereadRoom();
     browser.poll<boolean>("the page's turn being prepared gone", `() => !document.querySelector('[data-run="rehearse-prepared"]')`, (gone) => gone === true, 25_000);
 
     // A turn typed in T3 (the worker's; the board draws it, the chat only the Consigliere's): no stop while it asks
