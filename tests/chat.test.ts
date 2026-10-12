@@ -12,11 +12,12 @@ const post = (fields: Partial<EnginePost> & Pick<EnginePost, "kind" | "author">)
   seq += 1;
   return { seq, number: seq, id: `e${seq}`, to: [], body: "", about: [], at: null, after: null, turn: false, ...fields };
 };
-/** A request post; the user's own come from a message, as on the journal (Backroom's in the user's name do not). */
+/** A request post, waking its owner; the user's own come from a message, as on the journal (Backroom's in the user's name do not). */
 const request = (id: string, author: string, owner: string, extra: Partial<NonNullable<EnginePost["request"]>> = {}) =>
-  post({ kind: "request", author, about: [{ requestId: id, number: seq + 1 }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null, ...extra } });
+  post({ kind: "request", author, to: [owner], about: [{ requestId: id, number: seq + 1 }], request: { id, parentId: null, rootId: id, owner, returnTo: author, state: "answered", answer: null, corrections: 0, message: author === "$user" ? { id: `m-${id}`, index: 0, attachmentIds: [] } : null, ...extra } });
+/** An answer, waking the request's return address. */
 const reply = (author: string, requestId: string, returnTo: string) =>
-  post({ kind: "output", author, turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
+  post({ kind: "output", author, to: [returnTo], turn: true, output: { disposition: "answer", claims: [{ requestId, number: 1, outcome: "answered", returnTo }], source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
 const seat = (seatId: string, threadId: string, extra: Partial<EngineSeatView> = {}): EngineSeatView => ({
   seatId, participantId: null, alias: null, threadId, status: "active", orchestrator: false, cursor: 0, activeRunId: null, unread: 0, blocked: null, activities: [], owns: 0, awaits: 0, ...extra,
 });
@@ -46,7 +47,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   const checkpoint = request("reseat:cp1", "$user", "A", { message: null });
   const calledOffAboutWorker = post({ kind: "note", author: "$user", about: [{ requestId: "r1", number: 1 }], note: { source: "post", room: false, t3: null, afterAnswer: false } });
   const roomNote = post({ kind: "note", author: "$user", note: { source: "post", room: true, t3: null, afterAnswer: false } });
-  // H6: a keep-alive to him and his one-line reply to it are on the board, never in the chat; a note of his own is.
+  // A keep-alive to him is on the board; his one-line reply to it is in the chat (#17 dropped H6's exception), like a note of his own.
   const keepAlive = post({ kind: "notice", author: "$system", to: ["B"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, backroom: false, needsYou: false } });
   const keepAliveReply = post({ kind: "note", author: "B", note: { source: "keep-alive", room: false, t3: null, afterAnswer: false } });
   const hisNote = post({ kind: "note", author: "B", note: { source: "post", room: false, t3: null, afterAnswer: false } });
@@ -56,7 +57,7 @@ test("the chat keeps the Consigliere's replies from before he was reseated, and 
   assert.deepEqual([...his.seats].sort(), ["A", "B"], "his seat before the reseat is his");
   assert.deepEqual([...his.threads].sort(), ["tA", "tB"]);
   const chat = consigliereChat(posts, his).map((p) => p.id);
-  assert.deepEqual(chat, [before.id, hisOldReply.id, typedOnHisOldThread.id, roomNote.id, after.id, hisNewReply.id, hisNote.id]);
+  assert.deepEqual(chat, [before.id, hisOldReply.id, typedOnHisOldThread.id, roomNote.id, after.id, hisNewReply.id, keepAliveReply.id, hisNote.id]);
 
   // Without the handover post (older than the page holds), only the current seats are his.
   const shortHis = consigliereSeats(snapshot, posts.filter((p) => p !== handover));
@@ -106,3 +107,57 @@ test("B1: the Consigliere's own failed turn on your message is in the chat (the 
   assert.deepEqual(consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id), [asked.id, failed.id, dismissed.id, hisCheckpoint.id]);
 });
 
+
+/** D1: a room whose Consigliere is C (seat C on tC), with a worker W; the posts are his, with your request he answers and W's request to him. */
+const d1 = () => {
+  const snapshot = {
+    room: { consigliereId: "PC" },
+    bindings: [
+      { id: "C", participantId: "PC", generation: 1, threadId: "tC", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
+      { id: "W", participantId: "PW", generation: 1, threadId: "tW", deliveredCursor: 0, bootstrapDeliveredAt: null, createdAt: "", retiredAt: null },
+    ],
+    seats: [seat("C", "tC", { orchestrator: true }), seat("W", "tW")],
+  } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
+  const asked = request("u1", "$user", "C", { state: "answered" });
+  const workerAsks = request("w1", "W", "C");
+  const answer = reply("C", "u1", "$user");
+  const chat = (...his: EnginePost[]) => {
+    const posts = [asked, workerAsks, answer, ...his];
+    return consigliereChat(posts, consigliereSeats(snapshot, posts)).map((p) => p.id);
+  };
+  return { asked, answer, chat };
+};
+const claim = (requestId: string, returnTo: string, outcome: "answered" | "late" = "answered") => ({ requestId, number: 1, outcome, returnTo });
+const output = (to: string[], disposition: "answer" | "yield", claims: ReturnType<typeof claim>[]) =>
+  post({ kind: "output", author: "C", to, turn: true, output: { disposition, claims, source: "final", runId: null, activityId: null, t3: null, afterAnswer: false } });
+
+test("D1: the Consigliere's follow-up on your request is in the chat, like his updates and turns of his own: they are addressed to no member", () => {
+  const { asked, answer, chat } = d1();
+  // A turn his harness started itself (H5), imported as a follow-up on the request his last answer closed: to nobody.
+  const followUp = post({ kind: "progress", author: "C", about: [{ requestId: "u1", number: asked.number }], progress: { milestone: "follow-up", working: false, t3: { threadId: "tC", runId: "t3r", messageId: null } } });
+  const update = output([], "yield", []);
+  const t3Turn = post({ kind: "note", author: "C", note: { source: "t3-turn", room: false, t3: { threadId: "tC", runId: "t3s", messageId: null }, afterAnswer: false } });
+  // His retry of his own failed turn wakes his own seat, not a member.
+  const ownRetry = post({ kind: "retry", author: "C", to: ["C"], retry: { runId: "rc" } });
+  assert.deepEqual(chat(followUp, update, t3Turn, ownRetry), [asked.id, answer.id, followUp.id, update.id, t3Turn.id, ownRetry.id]);
+});
+
+test("D1: the Consigliere's reply to a keep-alive is in the chat (#17 dropped H6's exception)", () => {
+  const { asked, answer, chat } = d1();
+  const keepAlive = post({ kind: "notice", author: "$system", to: ["C"], notice: { intent: "keep-alive", runId: null, retryRunId: null, retried: false, dismissed: false, backroom: false, needsYou: false } });
+  const keepAliveReply = post({ kind: "note", author: "C", note: { source: "keep-alive", room: false, t3: null, afterAnswer: false } });
+  assert.deepEqual(chat(keepAlive, keepAliveReply), [asked.id, answer.id, keepAliveReply.id]);
+});
+
+test("D1: what the Consigliere addresses to a member stays on the board: his request, his correction, a late answer that wakes nobody, and a post to you and a member at once", () => {
+  const { asked, answer, chat } = d1();
+  const toWorker = request("r1", "C", "W");
+  const correction = post({ kind: "correction", author: "C", to: ["W"], about: [{ requestId: "r1", number: toWorker.number }] });
+  // His answer to the worker's request after it was closed: its claim returns to a seat, and it wakes nobody.
+  const lateToWorker = output([], "answer", [claim("w1", "W", "late")]);
+  // Addressed to you and to a member at once, in its recipients or only in its claims: a member's, so on the board.
+  const bothWoken = output(["$user", "W"], "answer", [claim("u1", "$user"), claim("w1", "W")]);
+  const bothClaimed = output(["$user"], "answer", [claim("u1", "$user"), claim("w1", "W", "late")]);
+  const noteToBoth = post({ kind: "note", author: "C", to: ["$user", "W"], note: { source: "t3-message", room: false, t3: { threadId: "tC", runId: null, messageId: "m9" }, afterAnswer: false } });
+  assert.deepEqual(chat(toWorker, correction, lateToWorker, bothWoken, bothClaimed, noteToBoth), [asked.id, answer.id]);
+});

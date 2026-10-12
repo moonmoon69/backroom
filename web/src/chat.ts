@@ -28,10 +28,13 @@ export function consigliereSeats(snapshot: Pick<RoomSnapshot, "room" | "bindings
 
 /**
  * The user's conversation with the room's Consigliere, as a view of the board: what the user posted to him (every
- * message in his room is his), his replies and turns to the user (and to Backroom's requests to him: his reseat's
- * checkpoint, a reseat called off), and the notices that need the user, his own failed turns among them (with Retry and
- * Dismiss, as in the status bar). His answers to members, what the members say to each other, Backroom's requests to
- * them (and their failures, which are his), his replies to keep-alives (H6), and what the user typed in T3 on another
+ * message in his room is his), everything he says that is not addressed to a member, and the notices that need the
+ * user, his own failed turns among them (with Retry and Dismiss, as in the status bar). His posts go by addressing, not
+ * by kind (D1): one that wakes a member, or answers a request that returns to a member, is on the board (his requests,
+ * corrections, cancels and retries to members, his answers to members, a late one that wakes nobody too); the rest is in
+ * the chat (his answers to the user and to Backroom's requests, his updates, follow-ups and notes, his replies to
+ * keep-alives), so a kind of post added later lands in the chat instead of vanishing from it. What the members say to
+ * each other, Backroom's requests to them (and their failures, which are his), and what the user typed in T3 on another
  * member's thread (or sent there as a T3 command) are on the board.
  */
 export function consigliereChat(posts: readonly EnginePost[], his: { seats: ReadonlySet<string>; threads: ReadonlySet<string> }): EnginePost[] {
@@ -47,11 +50,11 @@ export function consigliereChat(posts: readonly EnginePost[], his: { seats: Read
       return post.about.some((ref) => hisRequests.has(ref.requestId));
     }
     if (his.seats.has(post.author)) {
-      if (post.kind === "note") return post.note?.source !== "keep-alive";
-      if (post.kind === "output") return post.output?.claims.length === 0 || post.output?.claims.some((claim) => claim.returnTo === "$user" || claim.returnTo === "$system") === true;
       // His own failed turn on your message: the same notice as the status bar's, with its Retry and Dismiss.
       if (post.kind === "notice") return post.notice?.needsYou === true || post.to.includes("$user");
-      return false;
+      // Addressed to a member: it wakes one, or answers a request that returns to one (a late answer wakes nobody).
+      const member = (principal: string) => principal !== "$user" && principal !== "$system" && !his.seats.has(principal);
+      return !post.to.some(member) && !post.output?.claims.some((claim) => member(claim.returnTo));
     }
     // A member's failure that needs the user or is addressed to the user, unless it is about Backroom's requests alone
     // and reached the Consigliere (a briefing in the user's name from before B1): that one is his.
