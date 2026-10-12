@@ -110,6 +110,10 @@ const shell = {
   threads: [threadShell],
   archivedThreads: [{ ...threadShell, id: "thread-old", archivedAt: "2026-10-01T00:00:00.000Z", status: "completed", activeRunId: null, activityRunStatus: null, pendingRuntimeRequest: null }],
 };
+/** The shell as T3 0.0.46 serves it over HTTP and in its subscribeShell snapshot: the active shell, no archived threads. */
+const activeShell = { ...shell, archivedThreads: [] };
+/** T3's archived shell (getArchivedShellSnapshot, subscribeArchivedShell's snapshot): the archived threads as `threads`. */
+const archivedShell = { schemaVersion: 2, snapshotSequence: 10, projects: shell.projects, threads: shell.archivedThreads };
 
 test("a message is dispatched over the RPC socket with the contract's fields; every request names the protocol", async () => {
   const { fetchImpl, calls } = mockFetch(base);
@@ -266,8 +270,10 @@ test("a thread launched into a new worktree without a first message is returned 
 });
 
 test("shell snapshot maps projects and thread shells: the active run's status, the pending request, archived threads apart", async () => {
-  const { fetchImpl, calls } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }) });
-  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, shellCacheMs: 10_000 });
+  // T3's HTTP shell lists no archived threads (it builds the active shell only): they are read over the RPC.
+  const { fetchImpl, calls } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: activeShell }) });
+  const { Socket, frames } = mockSocket({ "orchestration.getArchivedShellSnapshot": () => archivedShell });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, shellCacheMs: 10_000 });
   const projects = await adapter.listProjects();
   assert.deepEqual(projects, [{ id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: { instanceId: "codex", model: "gpt-6-sol" }, defaultThreadEnvMode: null }]);
   const thread = await adapter.getThreadShell("thread-1");
@@ -278,9 +284,12 @@ test("shell snapshot maps projects and thread shells: the active run's status, t
   const done = adapter["toShell"]({ ...threadShell, status: "completed", activeRunId: null, activityRunStatus: null });
   assert.deepEqual([done.status, done.pendingRequest], ["completed", null]);
   assert.deepEqual((await adapter.listArchivedThreads()).map((t) => t.id), ["thread-old"]);
+  assert.deepEqual((await adapter.listArchivedThreads()).map((t) => t.id), ["thread-old"]);
+  assert.deepEqual(frames.map((f) => f.tag), ["orchestration.getArchivedShellSnapshot"], "the archived shells are cached like the shell");
   assert.equal(calls.filter((c) => c.url.endsWith("/api/orchestration/shell")).length, 1, "shell snapshot is cached within a tick");
   const catalog = await adapter.listCatalog();
   assert.ok(catalog.some((c) => c.instanceId === "codex" && c.model === "gpt-6-sol" && c.source === "observed"));
+  adapter.close();
 });
 
 test("shell reads: callers while one is in flight share it, and a slow read is reused for twice its duration (the live service's 144 reads in 42 s)", async (t) => {
@@ -603,4 +612,567 @@ test("versions read T3's own version and each harness's, offering an update only
   assert.equal(by.opencode!.updatable, false, "T3 flags the newest version as broken");
   assert.equal(by.opencode!.note, "OpenCode 1.3.0 breaks T3's session resume.");
   assert.deepEqual([by.grok!.enabled, by.grok!.status, by.grok!.displayName], [false, "unknown", "grok"]);
+});
+
+// ---------------- the shell feed: T3's shell streams over the RPC socket ----------------
+
+const settle = async () => {
+  for (let i = 0; i < 30; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * T3's WebSocket RPC with its shell streams, as the installed server runs them: a subscription is answered with Chunk
+ * frames, the next sent only once the last is acknowledged (Ack); Interrupt ends it with an Exit Failure; a Ping is
+ * answered with a Pong (unless the socket is `silent`). Other requests are answered from `handlers`, as mockSocket
+ * does. `initial` is what each subscription sends first, chunk by chunk.
+ */
+function streamingT3(initial: () => Record<string, unknown[][]>, handlers: Record<string, (payload: any) => unknown> = {}) {
+  type Subscription = { id: unknown; queue: unknown[][]; awaitingAck: boolean; ended: boolean };
+  const sockets: StreamSocket[] = [];
+  class StreamSocket {
+    readonly url: string;
+    readonly sent: any[] = [];
+    readonly subscriptions = new Map<string, Subscription>();
+    closed = false;
+    silent = false;
+    private readonly listeners = new Map<string, Array<(event: any) => void>>();
+    constructor(url: string) {
+      this.url = url;
+      sockets.push(this);
+      queueMicrotask(() => this.emit("open", {}));
+    }
+    addEventListener(type: string, listener: (event: any) => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+    private emit(type: string, event: unknown): void {
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
+    }
+    /** One WebSocket message: a frame, or a list of frames. */
+    message(value: unknown): void {
+      queueMicrotask(() => {
+        if (!this.closed) this.emit("message", { data: JSON.stringify(value) });
+      });
+    }
+    send(data: string): void {
+      const frame = JSON.parse(data);
+      this.sent.push(frame);
+      const subscription = [...this.subscriptions.values()].find((s) => s.id === frame.requestId);
+      if (frame._tag === "Ping") {
+        if (!this.silent) this.message({ _tag: "Pong" });
+      } else if (frame._tag === "Ack") {
+        if (subscription) {
+          subscription.awaitingAck = false;
+          this.flush(subscription);
+        }
+      } else if (frame._tag === "Interrupt") {
+        if (subscription && !subscription.ended) {
+          subscription.ended = true;
+          this.message({ _tag: "Exit", requestId: frame.requestId, exit: { _tag: "Failure", cause: [{ _tag: "Interrupt", fiberId: 1 }] } });
+        }
+      } else if (frame._tag === "Request" && frame.tag in initial()) {
+        const created = { id: frame.id, queue: [...initial()[frame.tag]!], awaitingAck: false, ended: false };
+        this.subscriptions.set(frame.tag, created);
+        this.flush(created);
+      } else if (frame._tag === "Request") {
+        queueMicrotask(() => {
+          try {
+            const value = handlers[frame.tag]?.(frame.payload) ?? null;
+            if (value instanceof Promise) value.then((late) => this.message({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Success", value: late ?? null } }), () => undefined);
+            else this.message({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Success", value } });
+          } catch (error) {
+            this.message({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "Refused", message: (error as Error).message } }] } });
+          }
+        });
+      }
+    }
+    private flush(subscription: Subscription): void {
+      if (subscription.awaitingAck || subscription.ended || subscription.queue.length === 0) return;
+      subscription.awaitingAck = true;
+      this.message({ _tag: "Chunk", requestId: subscription.id, values: subscription.queue.shift() });
+    }
+    /** T3 streams `values` as one chunk on its subscription to `tag`. */
+    push(tag: string, ...values: unknown[]): void {
+      const subscription = this.subscriptions.get(tag)!;
+      subscription.queue.push(values);
+      this.flush(subscription);
+    }
+    /** T3 ends its subscription to `tag`. */
+    end(tag: string, exit: unknown): void {
+      const subscription = this.subscriptions.get(tag)!;
+      subscription.ended = true;
+      this.message({ _tag: "Exit", requestId: subscription.id, exit });
+    }
+    close(): void {
+      if (this.closed) return;
+      this.closed = true;
+      this.emit("close", {});
+    }
+  }
+  /** The socket subscribed to the shell (the feed's), newest first. */
+  const feedSocket = () => [...sockets].reverse().find((socket) => socket.subscriptions.size > 0)!;
+  return { Socket: StreamSocket, sockets, feedSocket };
+}
+
+const SHELL = "orchestration.subscribeShell";
+const ARCHIVED = "orchestration.subscribeArchivedShell";
+/** T3's two shell streams as they open: a snapshot each. */
+const opening = () => ({ [SHELL]: [[{ kind: "snapshot", snapshot: activeShell }]], [ARCHIVED]: [[{ kind: "snapshot", snapshot: archivedShell }]] });
+
+/** An adapter over `t3`, with its feed's timings short; `shellBody` is what T3's HTTP shell answers. */
+function feedAdapter(t3: ReturnType<typeof streamingT3>, options: { shellBody?: () => unknown; requestTimeoutMs?: number; pingMs?: number } = {}) {
+  let tickets = 0;
+  const { fetchImpl, calls } = mockFetch({
+    ...base,
+    "POST /api/auth/websocket-ticket": () => ({ status: 200, body: { ticket: `tk${++tickets}` } }),
+    "GET /api/orchestration/shell": () => ({ status: 200, body: options.shellBody?.() ?? activeShell }),
+  });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: options.requestTimeoutMs ?? 2_000, feed: { pingMs: options.pingMs ?? 1_000, retryMs: 10, retryMaxMs: 40 } });
+  const gets = () => calls.filter((c) => c.url.endsWith("/api/orchestration/shell")).length;
+  return { adapter, calls, gets };
+}
+
+/** What the adapter's shell reads return, for comparing a feed's with the HTTP snapshot's. */
+async function reads(adapter: HttpT3Adapter) {
+  return {
+    projects: await adapter.listProjects(),
+    threads: await adapter.listThreads(),
+    inProject: await adapter.listThreads("proj"),
+    elsewhere: await adapter.listThreads("other"),
+    archived: await adapter.listArchivedThreads(),
+    thread: await adapter.getThreadShell("thread-1"),
+    archivedOne: await adapter.getThreadShell("thread-old"),
+    missing: await adapter.getThreadShell("nope"),
+  };
+}
+
+test("the shell feed subscribes to both streams on a socket of its own, acknowledges each chunk, and serves the shell reads with no HTTP snapshot", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter, gets, calls } = feedAdapter(t3);
+  assert.deepEqual(adapter.feed().state, "down", "not started");
+  adapter.startFeed();
+  assert.equal(adapter.feed().state, "connecting");
+  await settle();
+  assert.equal(adapter.feed().state, "connected");
+  const socket = t3.feedSocket();
+  assert.deepEqual(socket.sent.filter((f) => f._tag === "Request").map((f) => [f.tag, f.payload, f.headers]), [[SHELL, {}, []], [ARCHIVED, {}, []]]);
+  assert.equal(new URL(socket.url).searchParams.get("wsTicket"), "tk1");
+
+  // The same data as T3's HTTP snapshot reads the same, with no HTTP snapshot.
+  const fromFeed = await reads(adapter);
+  assert.equal(gets(), 0, "no shell GET while the feed is live");
+  const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: activeShell }) });
+  const { Socket } = mockSocket({ "orchestration.getArchivedShellSnapshot": () => archivedShell });
+  const overHttp = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  assert.deepEqual(fromFeed, await reads(overHttp));
+  overHttp.close();
+  assert.deepEqual([fromFeed.archived.map((t) => t.id), fromFeed.archivedOne], [["thread-old"], null]);
+
+  // T3 sends the next chunk only once the last is acknowledged: three chunks in a row all arrive.
+  const later = (thread: Record<string, unknown>, at: string) => ({ ...thread, updatedAt: at });
+  socket.push(SHELL, { kind: "thread.updated", sequence: 11, location: "active", thread: later({ ...threadShell, title: "renamed" }, "2026-10-03T00:00:05.000Z") });
+  socket.push(SHELL, { kind: "project.updated", sequence: 12, project: { ...shell.projects[0], title: "demo 2" } });
+  socket.push(SHELL, { kind: "thread.updated", sequence: 13, location: "active", thread: later({ ...threadShell, id: "thread-2", title: "new" }, "2026-10-03T00:00:06.000Z") });
+  await settle();
+  assert.deepEqual((await adapter.listThreads()).map((t) => [t.id, t.title]), [["thread-1", "renamed"], ["thread-2", "new"]]);
+  assert.equal((await adapter.listProjects())[0]?.title, "demo 2");
+  const shellId = socket.subscriptions.get(SHELL)!.id;
+  assert.equal(socket.sent.filter((f) => f._tag === "Ack" && f.requestId === shellId).length, 4, "the snapshot's chunk and the three after it");
+  // Several frames in one message: each is taken.
+  const archivedId = socket.subscriptions.get(ARCHIVED)!.id;
+  socket.message([
+    { _tag: "Chunk", requestId: shellId, values: [{ kind: "thread.removed", sequence: 14, location: "active", threadId: "thread-2" }] },
+    { _tag: "Chunk", requestId: archivedId, values: [{ kind: "thread.updated", sequence: 14, thread: { ...threadShell, id: "thread-2", title: "new", archivedAt: "2026-10-03T00:00:07.000Z", updatedAt: "2026-10-03T00:00:07.000Z" } }] },
+  ]);
+  await settle();
+  assert.deepEqual([(await adapter.listThreads()).map((t) => t.id), (await adapter.listArchivedThreads()).map((t) => t.id)], [["thread-1"], ["thread-old", "thread-2"]]);
+  assert.equal(gets(), 0);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 1, "one socket");
+  adapter.close();
+});
+
+test("the feed's shell holds each thread once, in T3's order, and no late change overwrites a newer one", async () => {
+  const { ShellState } = await import("../src/adapter/shellFeed.ts");
+  const row = (id: string, updatedAt: string, extra: Record<string, unknown> = {}) => ({ ...threadShell, id, updatedAt, ...extra });
+  const project = (id: string, createdAt: string, extra: Record<string, unknown> = {}) => ({ id, title: id, workspaceRoot: `/w/${id}`, createdAt, updatedAt: createdAt, repositoryIdentity: null, ...extra });
+  const state = new ShellState();
+  const ids = () => {
+    const read = state.read();
+    return { active: read.threads.map((t) => t.id), archived: (read.archivedThreads ?? []).map((t) => t.id), projects: read.projects.map((p) => p.id) };
+  };
+  const both = () => {
+    const read = state.read();
+    const active = new Set(read.threads.map((t) => t.id));
+    return (read.archivedThreads ?? []).filter((t) => active.has(t.id as string)).map((t) => t.id);
+  };
+  // Changes before a stream's snapshot are not taken (T3's client skips them too).
+  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 5, location: "active", thread: row("x", "t0") }), undefined);
+  assert.deepEqual(
+    state.apply("active", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 10, threads: [row("a", "t1"), row("b", "t2"), row("c", "t3")], archivedThreads: [], projects: [project("p2", "c2"), project("p1", "c1")] } }),
+    { threadIds: null },
+  );
+  assert.equal(state.whole, false, "not whole until the archived snapshot is in");
+  state.apply("archive", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 9, projects: [], threads: [row("d", "t0", { archivedAt: "t0" })] } });
+  assert.equal(state.whole, true);
+  assert.deepEqual(ids(), { active: ["a", "b", "c"], archived: ["d"], projects: ["p1", "p2"] }, "threads by updatedAt then id, projects by createdAt then id");
+
+  // An update moves the thread where T3's snapshot would list it; a new thread goes by its updatedAt too.
+  assert.deepEqual(state.apply("active", { kind: "thread.updated", sequence: 11, location: "active", thread: row("a", "t4") }), { threadIds: ["a"] });
+  state.apply("active", { kind: "thread.updated", sequence: 12, location: "active", thread: row("e", "t4") });
+  assert.deepEqual(ids().active, ["b", "c", "a", "e"]);
+  // A change the stream has gone past changes nothing.
+  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 12, location: "active", thread: row("b", "t9") }), undefined);
+  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 3, location: "active", thread: row("b", "t9") }), undefined);
+
+  // Archived: a removal on the active stream and an update on the archived one, at one sequence, in either order.
+  state.apply("archive", { kind: "thread.updated", sequence: 13, thread: row("b", "t5", { archivedAt: "t5" }) });
+  assert.deepEqual([both(), ids().archived], [[], ["d", "b"]], "archived first: moved, never in both");
+  state.apply("active", { kind: "thread.removed", sequence: 13, location: "active", threadId: "b" });
+  assert.deepEqual([ids().active, ids().archived], [["c", "a", "e"], ["d", "b"]], "the active stream's removal does not take it from the archived list");
+  state.apply("active", { kind: "thread.removed", sequence: 14, location: "active", threadId: "c" });
+  state.apply("archive", { kind: "thread.updated", sequence: 14, thread: row("c", "t6", { archivedAt: "t6" }) });
+  assert.deepEqual([ids().active, ids().archived], [["a", "e"], ["d", "b", "c"]], "removed first: then archived");
+  // Unarchived: the active stream's update first, then the archived stream's removal, and the other way round.
+  state.apply("active", { kind: "thread.updated", sequence: 15, location: "active", thread: row("d", "t7") });
+  assert.deepEqual(both(), [], "never in both");
+  state.apply("archive", { kind: "thread.removed", sequence: 15, threadId: "d" });
+  state.apply("archive", { kind: "thread.removed", sequence: 16, threadId: "b" });
+  state.apply("active", { kind: "thread.updated", sequence: 16, location: "active", thread: row("b", "t8") });
+  assert.deepEqual([ids().active, ids().archived], [["a", "e", "d", "b"], ["c"]]);
+  // An update placed outside the active list takes the thread out of it, as T3's client reads it.
+  state.apply("active", { kind: "thread.updated", sequence: 17, location: "archive", thread: row("e", "t9") });
+  assert.deepEqual(ids().active, ["a", "d", "b"]);
+
+  // Projects: updated, removed; an enrichment snapshot only patches the repository identity in.
+  assert.deepEqual(state.apply("active", { kind: "project.updated", sequence: 18, project: project("p0", "c3") }), { threadIds: [] });
+  state.apply("active", { kind: "project.removed", sequence: 19, projectId: "p1" });
+  assert.deepEqual(ids().projects, ["p2", "p0"]);
+  const identity = { canonicalKey: "github.com/x/p2" };
+  assert.deepEqual(state.apply("active", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 19, threads: [], archivedThreads: [], projects: [project("p2", "c2", { repositoryIdentity: identity })] }, resolvedRepositoryIdentityRoots: ["/w/p2"] }), { threadIds: [] });
+  assert.deepEqual([ids().active, state.read().projects.find((p) => p.id === "p2")?.repositoryIdentity], [["a", "d", "b"], identity], "threads kept");
+  assert.equal(state.apply("active", { kind: "synchronized" }), undefined);
+  assert.equal(state.apply("active", { kind: "something.new", sequence: 20 }), undefined);
+  assert.equal(state.sequence, 20);
+
+  // Snapshots from two streams that disagree: the newer one holds, whichever comes first.
+  const late = new ShellState();
+  late.apply("archive", { kind: "snapshot", snapshot: { snapshotSequence: 30, projects: [], threads: [row("z", "t1", { archivedAt: "t1" })] } });
+  late.apply("active", { kind: "snapshot", snapshot: { snapshotSequence: 28, threads: [row("z", "t0")], archivedThreads: [], projects: [] } });
+  assert.deepEqual([late.read().threads.map((t) => t.id), late.read().archivedThreads?.map((t) => t.id)], [[], ["z"]]);
+  // A change on the active stream older than what the archived one holds: past for the active stream, not for z.
+  assert.equal(late.apply("active", { kind: "thread.updated", sequence: 29, location: "active", thread: row("z", "t0") }), undefined);
+  assert.deepEqual([late.read().threads.map((t) => t.id), late.read().archivedThreads?.map((t) => t.id)], [[], ["z"]]);
+  assert.equal(late.apply("active", { kind: "thread.removed", sequence: 29, location: "active", threadId: "z" }), undefined);
+  const early = new ShellState();
+  early.apply("archive", { kind: "snapshot", snapshot: { snapshotSequence: 28, projects: [], threads: [row("z", "t0", { archivedAt: "t0" })] } });
+  early.apply("active", { kind: "snapshot", snapshot: { snapshotSequence: 30, threads: [row("z", "t1")], archivedThreads: [], projects: [] } });
+  assert.deepEqual([early.read().threads.map((t) => t.id), early.read().archivedThreads?.map((t) => t.id)], [["z"], []]);
+});
+
+test("before the feed's first snapshots, and after its subscription fails, the shell reads go over HTTP without waiting for it", async () => {
+  // T3 takes the subscriptions and sends nothing yet.
+  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }), { "orchestration.getArchivedShellSnapshot": () => archivedShell });
+  const { adapter, gets } = feedAdapter(t3);
+  adapter.startFeed();
+  await settle();
+  assert.equal(adapter.feed().state, "connecting");
+  assert.deepEqual((await adapter.listThreads()).map((t) => t.id), ["thread-1"]);
+  assert.deepEqual((await adapter.listArchivedThreads()).map((t) => t.id), ["thread-old"]);
+  assert.equal(gets(), 1);
+  // Only the active snapshot: not whole, still not served.
+  t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
+  await settle();
+  assert.equal(adapter.feed().state, "connecting");
+  // T3 refuses the archived subscription: down, with T3's reason; reads over HTTP; it tries again by itself.
+  t3.feedSocket().end(ARCHIVED, { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "Refused", message: "not now" } }] });
+  await settle();
+  const down = adapter.feed();
+  assert.deepEqual([down.state, down.error], ["down", "T3 refused orchestration.subscribeArchivedShell: not now"]);
+  assert.ok(t3.sockets[0]!.closed, "the failed socket is closed");
+  await adapter.listThreads();
+  await sleep(30);
+  await settle();
+  assert.equal(adapter.feed().state, "down", "a retry that brings no snapshot yet leaves it down");
+  t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
+  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: archivedShell });
+  await settle();
+  assert.equal(adapter.feed().state, "connected");
+  const ticket = (socket: { url: string }) => new URL(socket.url).searchParams.get("wsTicket");
+  assert.notEqual(ticket(t3.feedSocket()), ticket(t3.sockets[0]!), "a fresh ticket");
+  adapter.close();
+});
+
+test("a read waiting on a slow HTTP snapshot is answered from the feed once it is live, not held behind the older read", async () => {
+  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }));
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path === "/api/auth/websocket-ticket") return new Response(JSON.stringify({ ticket: "tk" }), { status: 200 });
+    // A T3 restarting: the HTTP shell takes its time.
+    await new Promise<void>((resolve) => held.push(resolve));
+    return new Response(JSON.stringify(activeShell), { status: 200 });
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 5_000 });
+  adapter.startFeed();
+  await settle();
+  const waiting = adapter.listThreads();
+  const alsoWaiting = adapter.getThreadShell("thread-1");
+  await settle();
+  assert.equal(held.length, 1, "one HTTP read, shared");
+  t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: { ...activeShell, snapshotSequence: 11, threads: [{ ...threadShell, title: "from the feed" }] } });
+  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: archivedShell });
+  await settle();
+  assert.deepEqual((await waiting).map((t) => t.title), ["from the feed"]);
+  assert.equal((await alsoWaiting)?.title, "from the feed");
+  assert.equal(held.length, 1, "the HTTP read is still unanswered");
+  held.shift()!();
+  await settle();
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "from the feed", "the late HTTP read does not displace the feed");
+  adapter.close();
+});
+
+test("a dropped feed reconnects with backoff on a fresh ticket and subscribes again; the shell is heard of once its snapshots are in", async () => {
+  let snapshotTitle = "first";
+  const t3 = streamingT3(() => ({ [SHELL]: [[{ kind: "snapshot", snapshot: { ...activeShell, threads: [{ ...threadShell, title: snapshotTitle }] } }]], [ARCHIVED]: [[{ kind: "snapshot", snapshot: archivedShell }]] }));
+  const { adapter, gets, calls } = feedAdapter(t3);
+  const heard: unknown[] = [];
+  adapter.onShellChange((change) => heard.push(change));
+  // Read over HTTP before the feed starts: that snapshot stays cached for 750 ms.
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "t");
+  adapter.startFeed();
+  await settle();
+  assert.deepEqual([adapter.feed().state, heard], ["connected", [{ threadIds: null }]]);
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "first");
+  const connectedSince = adapter.feed().since;
+  // T3 goes away: its side closes the socket.
+  snapshotTitle = "second";
+  t3.feedSocket().close();
+  await settle();
+  const down = adapter.feed();
+  assert.deepEqual([down.state, down.error], ["down", "T3 closed the connection"]);
+  assert.ok(down.since >= connectedSince);
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "t", "over HTTP meanwhile");
+  assert.equal(gets(), 2, "afresh: the HTTP snapshot cached before the feed was live is not reused");
+  await sleep(40);
+  await settle();
+  assert.deepEqual([adapter.feed().state, adapter.feed().error], ["connected", null]);
+  assert.equal(t3.sockets.filter((s) => s.subscriptions.size > 0).length, 2);
+  assert.deepEqual(t3.feedSocket().sent.filter((f) => f._tag === "Request").map((f) => f.tag), [SHELL, ARCHIVED], "subscribed again");
+  assert.equal(new URL(t3.feedSocket().url).searchParams.get("wsTicket"), "tk2");
+  assert.deepEqual(heard, [{ threadIds: null }, { threadIds: null }], "heard of once per connection, nothing on the drop");
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "second");
+  assert.equal(gets(), 2);
+
+  // T3 stays away: the retries back off (10, 20, 40, 40 ms ...), never a tight loop.
+  const ticketsBefore = calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length;
+  const failing = new Set<string>(["POST /api/auth/websocket-ticket"]);
+  (adapter as unknown as { fetchImpl: typeof fetch }).fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    calls.push({ url: String(input), method: init?.method ?? "GET", headers: {}, body: null });
+    if (failing.has(`${init?.method ?? "GET"} ${path}`)) throw new TypeError("fetch failed (connection refused)");
+    return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+  }) as typeof fetch;
+  t3.feedSocket().close();
+  await sleep(200);
+  const attempts = calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length - ticketsBefore;
+  assert.ok(attempts >= 3 && attempts <= 8, `${attempts} attempts in 200 ms`);
+  assert.match(adapter.feed().error ?? "", /cannot reach T3/);
+  adapter.close();
+});
+
+test("a feed socket T3 has gone silent on is given up after three pings, and opened again", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3, { pingMs: 15 });
+  adapter.startFeed();
+  await settle();
+  const first = t3.feedSocket();
+  assert.equal(adapter.feed().state, "connected");
+  await sleep(40);
+  assert.ok(first.sent.some((f) => f._tag === "Ping"), "pinged");
+  assert.equal(adapter.feed().state, "connected", "T3 answers its pings");
+  first.silent = true;
+  await sleep(120);
+  await settle();
+  assert.ok(first.closed, "the silent socket is closed");
+  assert.notEqual(t3.feedSocket(), first);
+  assert.equal(adapter.feed().state, "connected");
+  adapter.close();
+});
+
+test("closing the adapter stops the feed: its subscriptions are interrupted, its socket closed, and nothing reconnects", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3);
+  adapter.startFeed();
+  await settle();
+  const socket = t3.feedSocket();
+  adapter.close();
+  await settle();
+  assert.deepEqual(socket.sent.filter((f) => f._tag === "Interrupt").map((f) => f.requestId).sort(), [socket.subscriptions.get(SHELL)!.id, socket.subscriptions.get(ARCHIVED)!.id].sort());
+  assert.ok(socket.closed);
+  assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "stopped"]);
+  await sleep(60);
+  assert.equal(t3.sockets.length, 1, "no reconnect after close");
+
+  // Closed while waiting to reconnect: the retry is called off.
+  const again = streamingT3(opening);
+  const second = feedAdapter(again);
+  second.adapter.startFeed();
+  await settle();
+  again.feedSocket().close();
+  await settle();
+  assert.equal(second.adapter.feed().state, "down");
+  second.adapter.close();
+  await sleep(60);
+  assert.equal(again.sockets.length, 1);
+});
+
+test("a new token reopens the feed with a ticket asked for with it", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter, calls } = feedAdapter(t3);
+  adapter.startFeed();
+  await settle();
+  const first = t3.feedSocket();
+  adapter.setAccessToken("tok2");
+  assert.equal(adapter.feed().state, "connecting");
+  await settle();
+  assert.ok(first.closed);
+  assert.equal(adapter.feed().state, "connected");
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).at(-1)?.headers.authorization, "Bearer tok2");
+  adapter.close();
+});
+
+test("a shell change is heard of once it is applied, naming its threads; a listener removed hears nothing more", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3);
+  const seen: Array<{ threadIds: readonly string[] | null; title: string | undefined }> = [];
+  const off = adapter.onShellChange((change) => {
+    // A read made by the listener sees the change; the feed answers it at once.
+    void adapter.getThreadShell("thread-1").then((thread) => seen.push({ threadIds: change.threadIds, title: thread?.title }));
+  });
+  adapter.startFeed();
+  await settle();
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 11, location: "active", thread: { ...threadShell, title: "renamed" } }, { kind: "thread.updated", sequence: 12, location: "active", thread: { ...threadShell, id: "thread-2" } });
+  await settle();
+  t3.feedSocket().push(SHELL, { kind: "project.updated", sequence: 13, project: shell.projects[0] });
+  // Nothing changed: not heard of.
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 9, location: "active", thread: threadShell });
+  await settle();
+  assert.deepEqual(seen, [
+    { threadIds: null, title: "t" },
+    { threadIds: ["thread-1", "thread-2"], title: "renamed" },
+    { threadIds: [], title: "renamed" },
+  ]);
+  off();
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 14, location: "active", thread: { ...threadShell, title: "again" } });
+  await settle();
+  assert.equal(seen.length, 3);
+  adapter.close();
+});
+
+test("after a command the reads go over HTTP until the feed shows T3's sequence for it, then to the feed again", async (t) => {
+  let title = "before";
+  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }), "projects.mutate": () => ({}) });
+  const { adapter, gets } = feedAdapter(t3, { shellBody: () => ({ ...activeShell, snapshotSequence: 15, threads: [{ ...threadShell, title }] }) });
+  adapter.startFeed();
+  await settle();
+  title = "after";
+  await adapter.setThreadTitle({ commandId: "c1", threadId: "thread-1", title: "after" });
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "after", "the read after the command sees it");
+  assert.equal(gets(), 1);
+  // The feed has a change at sequence 14 only: still behind the command.
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 14, location: "active", thread: { ...threadShell, title: "before" } });
+  await settle();
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "after");
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 15, location: "active", thread: { ...threadShell, title: "after" } });
+  await settle();
+  const gotten = gets();
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "after");
+  assert.equal(gets(), gotten, "caught up: from the feed");
+  // A command T3 answers with no sequence: over HTTP for a second at most, then the feed.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  await adapter.createProject({ commandId: "c2", projectId: "p2", title: "p2", workspaceRoot: "/tmp/p2", createIfMissing: false });
+  await adapter.listProjects();
+  assert.equal(gets(), gotten + 1);
+  t.mock.timers.tick(1_001);
+  await adapter.listProjects();
+  assert.equal(gets(), gotten + 1, "past the catch-up limit: from the feed");
+  // A floor past its time holds nothing: a command the feed has already shown reads from the feed at once.
+  await adapter.createProject({ commandId: "c3", projectId: "p3", title: "p3", workspaceRoot: "/tmp/p3", createIfMissing: false });
+  t.mock.timers.tick(1_001);
+  await adapter.setThreadTitle({ commandId: "c4", threadId: "thread-1", title: "after" });
+  await adapter.listProjects();
+  assert.equal(gets(), gotten + 1, "T3's sequence 15 is shown already: no HTTP read");
+  t.mock.timers.reset();
+  adapter.close();
+});
+
+test("a feed socket that fails to open says why", async () => {
+  class Refused {
+    private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+    constructor(_url: string) {
+      queueMicrotask(() => {
+        for (const type of ["error", "close"]) for (const listener of this.listeners.get(type) ?? []) listener({});
+      });
+    }
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+    send(): void {}
+    close(): void {}
+  }
+  const { fetchImpl } = mockFetch(base);
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Refused, feed: { retryMs: 60_000 } });
+  adapter.startFeed();
+  await settle();
+  assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "T3 RPC orchestration.subscribeShell: websocket error"]);
+  adapter.close();
+});
+
+test("T3 reporting a defect on a socket fails what waits on it at once, as unknown", async () => {
+  const { fetchImpl } = mockFetch(base);
+  let socket: { message: (value: unknown) => void } | null = null;
+  const t3 = streamingT3(() => ({}), {
+    "orchestration.dispatchCommand": () => {
+      queueMicrotask(() => socket?.message({ _tag: "Defect", defect: "Invalid request id" }));
+      return new Promise(() => {});
+    },
+  });
+  class Socket extends t3.Socket {
+    constructor(url: string) {
+      super(url);
+      socket = this;
+    }
+  }
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket, requestTimeoutMs: 10_000 });
+  const started = Date.now();
+  const error = await adapter.setThreadLifecycle({ commandId: "c", threadId: "thread-1", action: "settle" }).catch((caught: unknown) => caught);
+  assert.ok(error instanceof T3OutcomeUnknown, String(error));
+  assert.match((error as Error).message, /defect on the connection: "Invalid request id"/);
+  assert.ok(Date.now() - started < 1_000, "not left to the time limit");
+  adapter.close();
+});
+
+test("GET /api/status reports the shell feed under t3", async (t) => {
+  const { createStack } = await import("../src/app/bootstrap.ts");
+  const { createHttpApp } = await import("../src/server/http.ts");
+  const { loadConfig } = await import("../src/config.ts");
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3);
+  const stack = createStack({ dbPath: ":memory:", adapter, briefingBudgetChars: 60_000, latestRelease: async () => null });
+  t.after(() => {
+    stack.close();
+    adapter.close();
+  });
+  const app = createHttpApp(stack, loadConfig({ ROOMS_DATA_DIR: "/nonexistent/rooms-test-feed", ROOMS_PORT: "0", T3_BASE_URL: "http://t3.local:3773" }), "/nonexistent/dist");
+  const status = async () => ((await (await app.request("/api/status")).json()) as { t3: { feed: unknown } }).t3.feed;
+  assert.deepEqual(await status(), adapter.feed());
+  assert.deepEqual((await status()) as { state: string; error: string }, { ...adapter.feed(), state: "down", error: "not started" });
+  adapter.startFeed();
+  await settle();
+  const live = (await status()) as { state: string; since: string; error: string | null };
+  assert.deepEqual([live.state, live.error, live.since], ["connected", null, adapter.feed().since]);
+  t3.feedSocket().close();
+  await settle();
+  assert.deepEqual(((await status()) as { state: string; error: string }).state, "down");
 });

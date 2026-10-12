@@ -28,6 +28,8 @@ import type {
   T3Ref,
   T3Run,
   T3RuntimeRequest,
+  T3ShellChange,
+  T3ShellFeedStatus,
   T3Subagent,
   T3ThreadDetail,
   T3ThreadShell,
@@ -127,6 +129,9 @@ export class FakeT3Adapter implements T3Adapter {
   readonly providerRefreshes: Array<{ instanceId?: string; refreshModels?: boolean }> = [];
   readonly activityReports: Array<ClientActivity | null> = [];
   private readonly options: Required<Omit<FakeAdapterOptions, "projectRoot">>;
+  private readonly shellListeners = new Set<(change: T3ShellChange) => void>();
+  private shellChangeQueued = false;
+  private readonly createdAt = new Date().toISOString();
 
   constructor(options: FakeAdapterOptions = {}) {
     if (options.projectRoot) this.projects[0]!.workspaceRoot = options.projectRoot;
@@ -153,6 +158,31 @@ export class FakeT3Adapter implements T3Adapter {
 
   private guard(): void {
     if (this.outage) throw this.outage;
+  }
+
+  onShellChange(listener: (change: T3ShellChange) => void): () => void {
+    this.shellListeners.add(listener);
+    return () => {
+      this.shellListeners.delete(listener);
+    };
+  }
+
+  /** The fake has no stream to lose: its shell reads are always as current as T3's own state. */
+  feed(): T3ShellFeedStatus {
+    return { state: "connected", since: this.createdAt, error: null };
+  }
+
+  /**
+   * Its state changed: the listeners hear of it once the change in hand is made (after the current call's synchronous
+   * work, as T3's stream reports a change once it is applied). A burst of changes is heard of once, naming no thread.
+   */
+  private changed(): void {
+    if (this.shellChangeQueued) return;
+    this.shellChangeQueued = true;
+    queueMicrotask(() => {
+      this.shellChangeQueued = false;
+      for (const listener of [...this.shellListeners]) listener({ threadIds: null });
+    });
   }
 
   async versions(): Promise<T3Versions> {
@@ -342,6 +372,7 @@ export class FakeT3Adapter implements T3Adapter {
     this.commands.push({ type, commandId, threadId, payload });
     if (this.seenCommands.has(commandId)) return false; // T3 keeps a receipt per command: a replay changes nothing
     this.seenCommands.add(commandId);
+    this.changed();
     return true;
   }
 
@@ -356,6 +387,7 @@ export class FakeT3Adapter implements T3Adapter {
     const last = Math.max(Date.parse(thread.shell.updatedAt) || 0, Date.parse(thread.shell.latestUserMessageAt ?? "") || 0);
     const at = new Date(Math.max(Date.now(), last + 1)).toISOString();
     thread.shell.updatedAt = at;
+    this.changed();
     return at;
   }
 
@@ -586,6 +618,7 @@ export class FakeT3Adapter implements T3Adapter {
   setHeld(threadId: string, held: boolean): void {
     if (held) this.held.add(threadId);
     else this.held.delete(threadId);
+    this.changed();
   }
 
   /** What a restarted T3 would still have (see fakeState.ts). */
@@ -619,6 +652,7 @@ export class FakeT3Adapter implements T3Adapter {
       const run = this.activeRun(thread);
       if (run) this.autoComplete(thread, run);
     }
+    this.changed();
   }
 
   /** Test control: finish the active run on a thread. The next queued run then starts. */
@@ -712,6 +746,7 @@ export class FakeT3Adapter implements T3Adapter {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error("unknown thread");
     thread.shell.pendingBackgroundTasks = taskIds.map((taskId) => ({ taskId, kind: "command" as const, description: `background ${taskId}`, childThreadId: null }));
+    this.changed();
   }
 
   /** Test control: a run the agent starts itself (a background task finished): T3 writes its notice, not a person. */

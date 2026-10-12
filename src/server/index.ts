@@ -153,6 +153,8 @@ if (adapter instanceof FakeT3Adapter) {
 const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
 const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech, credential);
 credential?.start();
+// T3's shell as T3 streams it: the engine's and the page's shell reads come from it while it is live.
+if (adapter instanceof HttpT3Adapter) adapter.startFeed();
 stack.engine.start(config.tickMs);
 
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.

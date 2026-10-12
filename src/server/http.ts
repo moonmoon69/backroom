@@ -134,6 +134,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         pairedAt: stored?.pairedAt ?? null,
         tokenExpiresAt: stored?.expiresAt ?? null,
         credential: t3Credential?.status() ?? null,
+        // Whether T3's shell reaches Backroom as T3 streams it, or by HTTP snapshots while the stream is not live.
+        feed: stack.adapter.feed(),
         environment,
         auth,
         error,

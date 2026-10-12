@@ -52,3 +52,41 @@ test("a run left running and not held still ends by itself after the restart", a
   // And the end was written: a third start sees it.
   assert.equal((await persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file).getThreadDetail("thread-b"))!.runs[0]!.status, "completed");
 });
+
+test("the fake T3 reports each change to its state once it is made, a burst once; its feed is always live", async (t) => {
+  const fake = new FakeT3Adapter({ autoCompleteMs: null });
+  const heard: Array<{ threadIds: readonly string[] | null; status: string | undefined }> = [];
+  const off = fake.onShellChange((change) => heard.push({ threadIds: change.threadIds, status: fake.threads.get("thread:w")?.shell.status }));
+  await launch(fake, "thread:w");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(heard, [{ threadIds: null, status: "idle" }]);
+  // A message starts a run: several changes in one call, heard of once, after the run is recorded.
+  await send(fake, "thread:w", 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(heard.at(-1), { threadIds: null, status: "running" });
+  assert.equal(heard.length, 2);
+  // Test controls too: a run completed, background work listed, a hold.
+  fake.completeRun("thread:w", { text: "done" });
+  await new Promise((resolve) => setImmediate(resolve));
+  fake.setBackground("thread:w", ["watch"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  fake.setHeld("thread:w", true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(heard.slice(2).map((h) => h.status), ["completed", "completed", "completed"]);
+  // A command T3 has a receipt for changes nothing: not heard of.
+  await send(fake, "thread:w", 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(heard.length, 5);
+  off();
+  await send(fake, "thread:w", 2);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(heard.length, 5, "a removed listener hears nothing");
+  assert.deepEqual([fake.feed().state, fake.feed().error], ["connected", null]);
+
+  // Kept in a file: asking for its feed or listening writes nothing.
+  const file = stateFile(t);
+  const kept = persistFake(new FakeT3Adapter({ autoCompleteMs: null }), file);
+  kept.feed();
+  kept.onShellChange(() => {})();
+  assert.equal(existsSync(file), false);
+});

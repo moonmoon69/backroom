@@ -34,7 +34,7 @@
  * was last woken is T3's: the end of the latest turn on its thread, read from the thread itself.
  */
 import { randomUUID } from "node:crypto";
-import type { T3Adapter, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
+import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
 import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
@@ -141,6 +141,10 @@ function message(error: unknown): string {
 function shellKey(shell: T3ThreadShell): string {
   return JSON.stringify([shell.latestRunId, shell.status, shell.latestUserMessageAt, shell.latestRunCompletedAt, shell.pendingBackgroundTasks.length]);
 }
+/** A thread's shell as far as a tick reads it: all of it but `updatedAt`, which T3 moves with every item of a run. */
+function wakeKey(shell: T3ThreadShell | null | undefined): string {
+  return shell ? JSON.stringify({ ...shell, updatedAt: undefined }) : "";
+}
 
 export class EngineHost {
   private readonly store: EngineStore;
@@ -158,6 +162,11 @@ export class EngineHost {
   private readonly log: (message: string, detail?: unknown) => void;
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
+  /** A seat's thread changed in T3 while a tick was running: another one runs when it ends. */
+  private again = false;
+  private unwatchShell: (() => void) | null = null;
+  /** Per seat's thread: its shell as the latest tick listed it (wakeKey), to tell a change T3 streams that a tick would act on. */
+  private listed = new Map<string, string>();
   private halted = false;
   private appends = 0;
   /** Per run: when its message was first sent, and how often T3 refused it. Bounds only; nothing is decided from them. */
@@ -203,15 +212,19 @@ export class EngineHost {
     this.log = options.log ?? (() => {});
   }
 
+  /** Tick every `intervalMs`, and at once when T3 reports a change to a seat's thread (the interval is the fallback). */
   start(intervalMs = 1500): void {
     this.stop();
     this.timer = setInterval(() => void this.tick(), intervalMs);
     this.timer.unref();
+    this.unwatchShell = this.adapter.onShellChange((change) => void this.shellChanged(change));
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.unwatchShell?.();
+    this.unwatchShell = null;
   }
 
   /** Stop for good, before the store is closed: no tick runs after this. */
@@ -232,8 +245,46 @@ export class EngineHost {
     if (this.ticking) return this.ticking;
     this.ticking = this.runTick().finally(() => {
       this.ticking = null;
+      if (this.again) {
+        this.again = false;
+        this.wake();
+      }
     });
     return this.ticking;
+  }
+
+  /** Look again at once; while a tick runs (it may have listed the threads before the change), right after it. */
+  private wake(): void {
+    if (!this.timer || this.halted) return;
+    if (this.ticking) {
+      this.again = true;
+      return;
+    }
+    setImmediate(() => {
+      if (this.timer && !this.halted) void this.tick();
+    });
+  }
+
+  /**
+   * T3 reports a change to its shell: wake when a seat's thread is not as the latest tick listed it. T3 reports every
+   * item of every running thread (each moves its `updatedAt`), and a tick reads its seats' running threads in full, so
+   * the rest is left to the interval.
+   */
+  private async shellChanged(change: T3ShellChange): Promise<void> {
+    if (!this.timer || this.halted) return;
+    const ids = (change.threadIds ?? [...this.listed.keys()]).filter((id) => this.listed.has(id));
+    if (ids.length === 0) return;
+    try {
+      const listed = change.threadIds === null ? new Map((await this.adapter.listThreads()).map((shell) => [shell.id, shell])) : null;
+      for (const id of ids) {
+        const shell = listed ? listed.get(id) : await this.adapter.getThreadShell(id);
+        if (wakeKey(shell) === this.listed.get(id)) continue;
+        this.wake();
+        return;
+      }
+    } catch {
+      // T3 cannot be read now: the next tick finds out.
+    }
   }
 
   // ---------------- the loop ----------------
@@ -257,6 +308,11 @@ export class EngineHost {
       this.stuck.clear();
       return;
     }
+    const listed = new Map<string, string>();
+    for (const roomId of this.rooms()) {
+      for (const seat of this.project(roomId).seats.values()) if (seat.status !== "retired") listed.set(seat.threadId, wakeKey(shells.get(seat.threadId)));
+    }
+    this.listed = listed;
     for (const roomId of this.rooms()) {
       if (this.halted) return;
       const before = this.appends;

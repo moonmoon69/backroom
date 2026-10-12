@@ -2,7 +2,10 @@
  * HTTP and WebSocket adapter for a T3 Code server speaking orchestration protocol 2 (Orchestrator V2; contracts:
  * packages/contracts/src/orchestrationV2.ts, rpc.ts, environmentHttp.ts).
  *
- * Reads:     GET /api/orchestration/shell                   projects, thread shells, archived thread shells
+ * Reads:     orchestration.subscribeShell, subscribeArchivedShell   projects, thread shells, archived thread shells, as
+ *              (WebSocket RPC streams, src/adapter/shellFeed.ts)   T3 streams them, once the feed is started
+ *            GET /api/orchestration/shell                   the same while the feed is not live (archived thread
+ *            orchestration.getArchivedShellSnapshot         shells over the RPC: T3's HTTP shell lists none)
  *            GET /api/orchestration/threads/:id[/bounded]   a thread's projection: runs, messages, items, requests
  *            GET /.well-known/t3/environment                the server and its protocol version
  * Commands:  orchestration.dispatchCommand (WebSocket RPC)  message.dispatch, run.interrupt, runtime-request.respond, thread.*
@@ -16,6 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelSelection } from "../domain/types.ts";
+import { ShellFeed, type FeedConnection, type ShellSnapshot } from "./shellFeed.ts";
 import type {
   ApprovalDecision,
   ThreadLifecycleAction,
@@ -46,6 +50,8 @@ import type {
   T3Run,
   T3RuntimeRequest,
   T3RuntimeRequestKind,
+  T3ShellChange,
+  T3ShellFeedStatus,
   T3Subagent,
   T3ThreadDetail,
   T3ThreadShell,
@@ -77,15 +83,15 @@ export interface HttpAdapterOptions {
   commandLinkIdleMs?: number;
   /** T3 refused the credential (HTTP 401/403); called with the token the request carried. */
   onCredentialRejected?: (token: string | null) => void;
+  /** The shell feed's timings (src/adapter/shellFeed.ts): its ping interval and reconnect backoff. */
+  feed?: { pingMs?: number; retryMs?: number; retryMaxMs?: number };
 }
 
-interface ShellSnapshot {
-  schemaVersion?: number;
-  snapshotSequence: number;
-  projects: Array<Record<string, unknown>>;
-  threads: Array<Record<string, unknown>>;
-  archivedThreads?: Array<Record<string, unknown>>;
-}
+/**
+ * After a command, how long shell reads wait at most for the feed to show T3's sequence for it (the HTTP snapshot
+ * serves them meanwhile). T3 streams a change within some 50 ms; one whose last event no shell shows never reaches it.
+ */
+const FEED_CATCH_UP_MS = 1_000;
 
 /** Minimal typing of the parts of server.getConfig the room reads. */
 interface ServerConfigLike {
@@ -196,11 +202,18 @@ function rpcFailure(cause: unknown): string {
 /**
  * One socket to T3's WebSocket RPC (Effect RPC, JSON frames), for a single request or for several over time. Once it
  * closes or fails, every request still waiting fails and the connection is spent.
+ *
+ * A request is answered by one Exit frame. A stream (a subscription) is answered by Chunk frames, each carrying a list
+ * of values, until its Exit; T3 sends the next chunk only once the last one is acknowledged (Ack), and stops the
+ * stream when the client sends Interrupt. A frame may also come as a list of frames. T3 answers a Ping with a Pong.
  */
-class RpcConnection {
+class RpcConnection implements FeedConnection {
   closed = false;
+  /** When T3 last sent anything on this socket (a Pong included). */
+  heardAt = Date.now();
   private nextId = 1;
   private readonly waiting = new Map<string, (exit: RpcExit | Error) => void>();
+  private readonly streams = new Map<string, (values: unknown[]) => void>();
 
   /** Requests sent and not yet answered (nor timed out). */
   get pending(): number {
@@ -223,17 +236,79 @@ class RpcConnection {
     socket.addEventListener("error", () => this.end("websocket error"));
     socket.addEventListener("close", () => this.end("connection closed"));
     socket.addEventListener("message", (event) => {
-      let message: { _tag?: string; requestId?: string; exit?: RpcExit };
+      let decoded: unknown;
       try {
-        message = JSON.parse(String(event.data));
+        decoded = JSON.parse(String(event.data));
       } catch {
         return;
       }
-      if (message._tag !== "Exit" || !message.requestId || !message.exit) return;
-      const settle = this.waiting.get(message.requestId);
-      this.waiting.delete(message.requestId);
-      settle?.(message.exit);
+      this.heardAt = Date.now();
+      for (const frame of Array.isArray(decoded) ? decoded : [decoded]) this.receive(frame as { _tag?: string; requestId?: string; exit?: RpcExit; values?: unknown; defect?: unknown });
     });
+  }
+
+  private receive(message: { _tag?: string; requestId?: string; exit?: RpcExit; values?: unknown; defect?: unknown }): void {
+    if (this.closed) return;
+    if (message._tag === "Defect") {
+      // T3 could not read a frame of this socket (it names no request): nothing waiting on it will be answered.
+      this.end(`T3 reported a defect on the connection: ${JSON.stringify(message.defect ?? null).slice(0, 200)}`);
+      this.socket.close();
+      return;
+    }
+    if (!message.requestId) return;
+    if (message._tag === "Chunk") {
+      const deliver = this.streams.get(message.requestId);
+      if (!deliver || !Array.isArray(message.values)) return;
+      deliver(message.values);
+      // Still subscribed after the values were applied (a listener may have cancelled): ask for the next chunk.
+      if (this.streams.has(message.requestId)) this.send({ _tag: "Ack", requestId: message.requestId });
+      return;
+    }
+    if (message._tag !== "Exit" || !message.exit) return;
+    this.streams.delete(message.requestId);
+    const settle = this.waiting.get(message.requestId);
+    this.waiting.delete(message.requestId);
+    settle?.(message.exit);
+  }
+
+  private send(frame: Record<string, unknown>): void {
+    if (!this.closed) this.socket.send(JSON.stringify(frame));
+  }
+
+  ping(): void {
+    this.send({ _tag: "Ping" });
+  }
+
+  /**
+   * Subscribe to a stream: `onValues` gets each chunk's values in order, and each is acknowledged once it returns.
+   * `done` settles at the stream's end: resolved when T3 ends it or it is cancelled here, rejected when T3 refuses it or
+   * the socket goes. `cancel` asks T3 to stop it (Interrupt); nothing more is delivered after it.
+   */
+  stream(tag: string, payload: unknown, onValues: (values: unknown[]) => void): { done: Promise<void>; cancel: () => void } {
+    if (this.closed) return { done: Promise.reject(new T3Unavailable(`T3 RPC ${tag}: connection closed`)), cancel: () => {} };
+    const id = String(this.nextId++);
+    let settle: (exit: RpcExit | Error) => void = () => {};
+    const done = new Promise<void>((resolve, reject) => {
+      settle = (exit) => {
+        this.streams.delete(id);
+        this.waiting.delete(id);
+        if (exit instanceof Error) reject(new T3Unavailable(`T3 RPC ${tag}: ${exit.message}`));
+        else if (exit._tag === "Success") resolve();
+        else {
+          const scope = missingPermission(exit.cause);
+          reject(scope ? new T3ScopeMissing(scope, exit) : new T3CommandRejected(`T3 refused ${tag}: ${rpcFailure(exit.cause)}`, 500, exit));
+        }
+      };
+    });
+    this.streams.set(id, onValues);
+    this.waiting.set(id, settle);
+    this.send({ _tag: "Request", id, tag, payload, headers: [] });
+    const cancel = () => {
+      if (!this.waiting.has(id)) return;
+      settle({ _tag: "Success" });
+      this.send({ _tag: "Interrupt", requestId: id });
+    };
+    return { done, cancel };
   }
 
   async opened(tag: string, timeoutMs: number): Promise<void> {
@@ -283,8 +358,9 @@ class RpcConnection {
     this.closed = true;
     const error = new Error(reason);
     this.failOpen(error);
-    for (const settle of this.waiting.values()) settle(error);
+    for (const settle of [...this.waiting.values()]) settle(error);
     this.waiting.clear();
+    this.streams.clear();
     this.onEnd?.();
   }
 }
@@ -466,6 +542,15 @@ export class HttpT3Adapter implements T3Adapter {
   private shellGeneration = 0;
   /** The last protocol check: a server on protocol 2 is trusted for a minute, a mismatch is checked again within seconds. */
   private protocolCheck: { at: number; error: T3ProtocolMismatch | null } | null = null;
+  /** T3's shell as it streams it, once started (startFeed): the shell reads' source while it is live. */
+  private readonly shellFeed: ShellFeed;
+  private readonly shellListeners = new Set<(change: T3ShellChange) => void>();
+  /**
+   * After a command: the sequence T3 gave it (Infinity when it gave none), and until when the shell reads wait for the
+   * feed to reach it, reading over HTTP meanwhile, so a read made after a command sees what it did.
+   */
+  private feedFloor: { sequence: number; until: number } | null = null;
+  private archivedCache: { at: number; value: Array<Record<string, unknown>> } | null = null;
 
   constructor(options: HttpAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -478,17 +563,53 @@ export class HttpT3Adapter implements T3Adapter {
     this.worktreePollMs = options.worktreePollMs ?? 500;
     this.commandLinkIdleMs = options.commandLinkIdleMs ?? 30_000;
     this.onCredentialRejected = options.onCredentialRejected;
+    this.shellFeed = new ShellFeed({
+      connect: (onEnd) => this.connectFeed(onEnd),
+      onChange: (change) => {
+        for (const listener of [...this.shellListeners]) listener(change);
+      },
+      // Read over HTTP from now on: nothing the HTTP cache holds from before the feed went is reused.
+      onDown: () => this.dropShellCache(),
+      timeoutMs: this.requestTimeoutMs,
+      ...options.feed,
+    });
   }
 
   /** Use another token from now on; the sockets opened with the old one are closed, and open again with it when next needed. */
   setAccessToken(token: string | null): void {
     this.accessToken = token;
-    this.invalidateShell();
+    this.dropShellCache();
     this.protocolCheck = null;
     this.dropCommandLink();
     const activity = this.activityLink;
     this.activityLink = null;
     void activity?.then((connection) => connection.close(), () => undefined);
+    this.shellFeed.restart();
+  }
+
+  /**
+   * Keep T3's shell live from its streams (orchestration.subscribeShell and subscribeArchivedShell) on a socket of its
+   * own, open until close(): the shell reads are served from it while it is live, with no HTTP snapshot. It reconnects
+   * by itself after a drop; meanwhile, and before its first snapshots, the reads go over HTTP as before.
+   */
+  startFeed(): void {
+    this.shellFeed.start();
+  }
+
+  feed(): T3ShellFeedStatus {
+    return this.shellFeed.status();
+  }
+
+  onShellChange(listener: (change: T3ShellChange) => void): () => void {
+    this.shellListeners.add(listener);
+    return () => {
+      this.shellListeners.delete(listener);
+    };
+  }
+
+  private async connectFeed(onEnd: () => void): Promise<FeedConnection> {
+    await this.ensureProtocol();
+    return await this.connect("orchestration.subscribeShell", this.requestTimeoutMs, onEnd);
   }
 
   /** Whether T3 takes `token` (its session check), without using it for anything else. */
@@ -643,6 +764,7 @@ export class HttpT3Adapter implements T3Adapter {
   /** Close the sockets this adapter keeps open (a script calls this before it ends). */
   close(): void {
     this.dropCommandLink();
+    this.shellFeed.stop();
     void this.reportActivity(null).catch(() => undefined);
   }
 
@@ -821,14 +943,70 @@ export class HttpT3Adapter implements T3Adapter {
     }
   }
 
-  /** A command changed what T3 serves: drop the cached shell and stop sharing the read in flight. */
-  private invalidateShell(): void {
+  /** Drop the cached shell and stop sharing the read in flight: the next read over HTTP reads afresh. */
+  private dropShellCache(): void {
     this.shellCache = null;
     this.shellInflight = null;
     this.shellGeneration += 1;
+    this.archivedCache = null;
   }
 
+  /**
+   * A command changed what T3 serves: the HTTP cache is dropped, and the feed serves the reads again once it shows the
+   * command's `sequence` (any, when T3 gave none, after FEED_CATCH_UP_MS at most).
+   */
+  private invalidateShell(sequence?: number): void {
+    this.dropShellCache();
+    const now = Date.now();
+    // A floor past its time holds nothing any more, whatever it was waiting for.
+    const held = this.feedFloor && now < this.feedFloor.until ? this.feedFloor.sequence : 0;
+    const target = typeof sequence === "number" ? sequence : Number.POSITIVE_INFINITY;
+    this.feedFloor = { sequence: Math.max(held, target), until: now + FEED_CATCH_UP_MS };
+  }
+
+  /** The feed's shell, when it is live and has caught up with the latest command; otherwise null. */
+  private liveShell(): ShellSnapshot | null {
+    const live = this.shellFeed.live();
+    if (!live) return null;
+    const floor = this.feedFloor;
+    if (floor) {
+      if (live.sequence < floor.sequence && Date.now() < floor.until) return null;
+      this.feedFloor = null;
+    }
+    return live.read();
+  }
+
+  /**
+   * T3's shell: the feed's while it is live, else over HTTP. No read waits for the feed: one made while it is not live
+   * goes over HTTP, and is answered from the feed instead if the feed becomes live before T3 answers it (a T3 that is
+   * restarting can take its time with the HTTP snapshot).
+   */
   private async shell(force = false): Promise<ShellSnapshot> {
+    const live = this.liveShell();
+    if (live) return live;
+    const read = this.readShell(force);
+    if (!this.shellFeed.started) return read;
+    return await new Promise<ShellSnapshot>((resolve, reject) => {
+      const off = this.shellFeed.onLive(() => {
+        const recovered = this.liveShell();
+        if (!recovered) return;
+        off();
+        resolve(recovered);
+      });
+      read.then(
+        (value) => {
+          off();
+          resolve(value);
+        },
+        (error: unknown) => {
+          off();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  private async readShell(force: boolean): Promise<ShellSnapshot> {
     const now = Date.now();
     const ttl = Math.max(this.shellCacheMs, 2 * this.shellLastMs);
     if (!force && this.shellCache && now - this.shellCache.at < ttl) return this.shellCache.value;
@@ -1147,8 +1325,25 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
-    const shell = await this.shell();
-    return (shell.archivedThreads ?? []).map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
+    const live = this.liveShell();
+    const archived = live ? (live.archivedThreads ?? []) : await this.readArchived();
+    return archived.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
+  }
+
+  /**
+   * The archived thread shells without the feed: T3's HTTP shell lists none (it builds the active shell only), so they
+   * are read as T3's own client reads them (orchestration.getArchivedShellSnapshot), cached as briefly as the shell.
+   */
+  private async readArchived(): Promise<Array<Record<string, unknown>>> {
+    const cached = this.archivedCache;
+    if (cached && Date.now() - cached.at < this.shellCacheMs) return cached.value;
+    await this.ensureProtocol();
+    const generation = this.shellGeneration;
+    const started = Date.now();
+    const snapshot = await this.rpc<{ threads?: Array<Record<string, unknown>> } | null>("orchestration.getArchivedShellSnapshot", {});
+    const value = snapshot?.threads ?? [];
+    if (this.shellGeneration === generation) this.archivedCache = { at: started, value };
+    return value;
   }
 
   async getThreadShell(threadId: string): Promise<T3ThreadShell | null> {
@@ -1176,10 +1371,13 @@ export class HttpT3Adapter implements T3Adapter {
   /** Legacy callers manage their own retries; receipt retention/absence is not established here. */
   private async dispatch(command: Record<string, unknown>): Promise<void> {
     await this.ensureProtocol();
+    let sequence: number | undefined;
     try {
-      await this.rpc("orchestration.dispatchCommand", command, this.requestTimeoutMs * 2);
+      // T3 answers with the sequence of the command's last event, the numbering its shell streams carry.
+      const result = await this.rpc<{ sequence?: unknown } | null>("orchestration.dispatchCommand", command, this.requestTimeoutMs * 2);
+      if (typeof result?.sequence === "number") sequence = result.sequence;
     } finally {
-      this.invalidateShell();
+      this.invalidateShell(sequence);
     }
   }
 
@@ -1196,7 +1394,6 @@ export class HttpT3Adapter implements T3Adapter {
 
   async setThreadTitle(input: { commandId: string; threadId: string; title: string }): Promise<void> {
     await this.dispatch({ type: "thread.metadata.update", commandId: input.commandId, threadId: input.threadId, title: input.title, regenerateTitle: false });
-    this.invalidateShell();
   }
 
   async setThreadModel(input: { commandId: string; threadId: string; modelSelection: ModelSelection }): Promise<void> {
@@ -1252,6 +1449,8 @@ export class HttpT3Adapter implements T3Adapter {
         },
         300_000,
       );
+      // The thread exists: reads from here on see it.
+      this.invalidateShell();
       const shell = this.toDetail({ projection: launched.projection }, null).shell;
       // T3 answers once the thread exists and makes a new worktree after that (fetch, checkout, setup script). A
       // thread with a first message waits for it by itself (its run is "preparing"); one without is wanted for
@@ -1267,7 +1466,7 @@ export class HttpT3Adapter implements T3Adapter {
     const deadline = Date.now() + 300_000;
     let missing = 0;
     for (;;) {
-      this.invalidateShell();
+      this.dropShellCache();
       const listed = await this.getThreadShell(threadId);
       if (listed?.worktreePath) return listed;
       // T3 removes a thread whose workspace it could not make.

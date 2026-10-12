@@ -977,7 +977,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `T3_CLI` | the T3 binary of T3's service (`~/.t3/runtime/versions/<active>/t3`) | T3's CLI Backroom keeps its credential with; `off` for none (then pair with a link) |
 | `T3CODE_HOME` | the folder above `T3_USERDATA_DIR` (`~/.t3`) | T3's home, where its service keeps its versions |
 | `T3_USERDATA_DIR` | `~/.t3/userdata` | Where to find T3's runtime file and local model catalog |
-| `ROOMS_TICK_MS` | `1500` | How often the engine host reads the members' threads and sends what is waiting |
+| `ROOMS_TICK_MS` | `1500` | How often, at the latest, the engine host reads the members' threads and sends what is waiting (a change T3 streams to a member's thread wakes it at once) |
 | `ROOMS_WEB_DIST` | `web/dist` | The built UI the service serves (a second instance can serve another build) |
 | `ROOMS_BRIEFING_BUDGET` | `60000` | Characters per delivery before older room context is condensed |
 | `ROOMS_KEEPALIVE_MS` | `3300000` | How long a seat with work in flight may go without a wake before it gets a keep-alive (55 minutes). It must be from 60000 (a minute) to 3599999, under the prompt cache's hour, or the service refuses to start; `0` turns keep-alives off in rooms that set no interval of their own (`rooms-board keepalive every <minutes>`) |
@@ -1100,7 +1100,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 | `src/briefing` | Exact context assembled for each delivery: the standing sections (`assemble.ts`) and the work from the journal (`envelope.ts`) |
 | `src/speech` | Backroom's voice: Kokoro run in the service, one piece at a time, recent pieces kept |
 | `src/git` | Git read with the CLI on this machine: a folder's branch, uncommitted files, commits, worktrees and diffs (`reader.ts`), and where each member works (`workspaces.ts`) |
-| `src/adapter` | T3 boundary (Orchestrator V2): HTTP reads and WebSocket RPC commands with pairing and protocol check, and an in-memory fake |
+| `src/adapter` | T3 boundary (Orchestrator V2): T3's shell as it streams it (`shellFeed.ts`), HTTP reads and WebSocket RPC commands with pairing and protocol check, and an in-memory fake |
 | `src/app/agentsFile.ts` | The agents file: the default text, when it is written in a project's folder, the repository's exclude entries and the worktree hook |
 | `src/app/threadView.ts` | What is shown of a T3 thread, from its projection: one reply per run, the run in progress, requests, context, background work, changed files |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
@@ -1109,6 +1109,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 | `bin/rooms-browser` | The agents' browser command (plain Node; talks to the service over `data/browser-api.json`) |
 | `scripts/t3-pair.ts` | Pair from the command line |
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
+| `scripts/t3-shell-feed.ts` | Read-only check of T3's shell streams and the adapter's feed against a real T3 (`npm run t3:feed`) |
 | `scripts/t3-v2-cutover.ts` | Moves the machine from T3's V1 to V2 together with Backroom (`npm run t3:v2`) |
 | `scripts/rehearse.ts` | The page rehearsed in a browser against a fake-T3 service of its own (`--step ui`, `room`, `keys`, or `all` for the three at once; `--only` and `--until` choose states, `--list` lists them; `rehearse-select.ts` chooses, `rehearse-keys.ts` is the keys step) |
 | `tests/` | Acceptance tests driven through the fake adapter |
@@ -1120,3 +1121,4 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 - **Where everyone works.** Every briefing says which folder and branch are the agent's own (its thread's T3 worktree, or the project folder, read with git when the briefing is made), where each other member works, and who shares its folder. It asks the agent to deliver its work in its own folder and branch, because T3 and Backroom follow changes only there. Extra worktrees are welcome for parallel work (sub-agents, experiments), based on the agent's branch (a harness's own worktrees often start from origin's default branch instead), with what it keeps merged back before it finishes and any it leaves listed in its Handoff. It also asks the agent to read the others' work with git without switching (`git diff <your branch>...<branch>`, `git -C <folder> diff`); never to edit another member's folder; and, when sharing a folder, not to switch branches, stash, reset or clean.
 - **Completion.** In T3 a thread's work is a sequence of runs, each started by one message. T3 names that message on the run, and names the run on a message sent into it while it runs (T3's steer), so Backroom finds each turn's run by the id it gave its message. The engine host reads every seated thread each tick: the run's own status says queued, running, waiting on you, completed, failed or interrupted, and its last assistant message is the member's final reply, which answers the requests the turn was given. A run T3 never takes fails visibly, with one notice. Sending again with the same command id never starts a second run: T3 keeps a receipt for each command.
 - **Turns the room did not start** (typed in T3 Code, or the agent's own continuation) are imported as follow-ups on the member's request, and wake the Consigliere.
+- **T3's shell, as T3 streams it.** Backroom keeps T3's projects, threads and archived threads live from T3's own streams of them (`orchestration.subscribeShell` and `subscribeArchivedShell`, on a WebSocket of its own, reconnected with backoff when T3 goes away). The engine host and the page read them from there with no HTTP snapshot, and a change to a member's thread wakes the host at once rather than at its next tick (a change that only moves the thread's time, which T3 streams for every item of a running turn, does not). While the stream is not live (before its first snapshots, or until T3 is back), reads take T3's HTTP snapshot as before; `GET /api/status` says which, under `t3.feed`.

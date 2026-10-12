@@ -555,9 +555,35 @@ export class T3ProtocolMismatch extends T3Unavailable {
   }
 }
 
+/**
+ * T3's shell as it streams it (orchestration.subscribeShell): "connected" once its first snapshot is in and while the
+ * socket holds, "connecting" until then, "down" after the socket went or the subscription failed (until it is opened
+ * again). `since` is when it entered that state; `error` what took it down, while it is not connected.
+ */
+export interface T3ShellFeedStatus {
+  state: "connected" | "connecting" | "down";
+  since: string;
+  error: string | null;
+}
+
+/**
+ * A change to T3's shell: the threads whose entry changed (added, updated, archived, unarchived or removed), or null
+ * when any may have (a new snapshot, or a source that does not say). A change to projects alone names no thread.
+ */
+export interface T3ShellChange {
+  threadIds: readonly string[] | null;
+}
+
 export interface T3Adapter {
   readonly kind: "fake" | "http";
   describe(): Promise<T3Environment>;
+  /**
+   * Call `listener` after a change to T3's shell (projects, threads, archived threads) has been applied, so that a read
+   * made from then on sees it. Returns the function that removes the listener.
+   */
+  onShellChange(listener: (change: T3ShellChange) => void): () => void;
+  /** Whether the shell reads are served from T3's stream of it, or from its HTTP snapshot. */
+  feed(): T3ShellFeedStatus;
   listProjects(): Promise<T3Project[]>;
   /** Add a project to T3 (projects.mutate project.create). T3 refuses a folder another project already uses. */
   createProject(input: CreateProjectInput): Promise<void>;

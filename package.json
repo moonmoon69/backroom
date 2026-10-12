@@ -21,6 +21,7 @@
     "test": "node --no-warnings=ExperimentalWarning --test --test-timeout=20000 \"tests/**/*.test.ts\"",
     "check": "npm run typecheck && npm test",
     "t3:check": "node --no-warnings=ExperimentalWarning scripts/t3-contract-check.ts",
+    "t3:feed": "node --no-warnings=ExperimentalWarning scripts/t3-shell-feed.ts",
     "t3:pair": "node --no-warnings=ExperimentalWarning scripts/t3-pair.ts",
     "t3:v2": "node --no-warnings=ExperimentalWarning scripts/t3-v2-cutover.ts",
     "build:web": "npm --workspace web run build"

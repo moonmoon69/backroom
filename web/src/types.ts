@@ -1106,6 +1106,11 @@ export interface StatusResponse {
       /** The sentence ahead of expiry when nothing is going to renew it. */
       warning: string | null;
     } | null;
+    /**
+     * Whether T3's shell reaches the service as T3 streams it ("connected"), or by HTTP snapshots while the stream is
+     * connecting or down (src/adapter/shellFeed.ts); `since` is when it entered that state, `error` what took it down.
+     */
+    feed?: { state: "connected" | "connecting" | "down"; since: string; error: string | null };
     environment: T3Environment | null;
     auth: { authenticated: boolean; policy: string; bootstrapMethods: string[] } | null;
     error: string | null;
