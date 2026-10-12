@@ -297,3 +297,17 @@ test("a check that fails then succeeds is status down then up; recovery with a c
   stop();
   changes.close();
 });
+
+test("with no page listening, a room's change reads nothing of the journal", async () => {
+  let reads = 0;
+  const changes = new PageChanges({ listProjects: async () => [], listThreads: async () => [] }, { shellMs: 60_000, headsMs: 60_000, heads: () => {
+    reads += 1;
+    return new Map([["room", 1]]);
+  } });
+  const stop = changes.subscribe(() => undefined);
+  stop();
+  const before = reads;
+  for (let i = 0; i < 5; i += 1) changes.roomChanged("room");
+  assert.equal(reads, before, "no heads read for nobody");
+  changes.close();
+});

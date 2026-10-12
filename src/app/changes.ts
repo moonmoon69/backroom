@@ -181,6 +181,8 @@ export class PageChanges {
 
   private pause(): void {
     this.generation += 1;
+    // No page to tell: the heads are not followed (a page that comes is told everything at its open).
+    this.knownHeads = null;
     if (this.shellTimer) clearTimeout(this.shellTimer);
     if (this.headsTimer) clearInterval(this.headsTimer);
     this.shellTimer = null;
