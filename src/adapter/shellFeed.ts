@@ -23,7 +23,9 @@
  * lists, and a late change never overwrites a newer one.
  *
  * Reads get the lists in the order T3's HTTP snapshot has them (its SQL): threads by updatedAt, then id; projects by
- * createdAt, then id.
+ * createdAt, then id. T3 holds back a thread's update that moves only its updatedAt for up to 5 s (it streams one per
+ * item of a running turn), so a thread's updatedAt, and with it its place in the list, can trail T3's HTTP snapshot by
+ * that much; nothing else in a thread's shell does.
  */
 import type { T3ShellChange, T3ShellFeedStatus } from "./types.ts";
 import { T3Unavailable } from "./types.ts";
@@ -48,6 +50,7 @@ const compare = (a: unknown, b: unknown): number => {
 };
 const threadOrder = (a: Row, b: Row): number => compare(a.updatedAt, b.updatedAt) || compare(a.id, b.id);
 const projectOrder = (a: Row, b: Row): number => compare(a.createdAt, b.createdAt) || compare(a.id, b.id);
+const duration = (ms: number): string => (ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`);
 
 /**
  * The shell built from one connection's two streams. `apply` takes one streamed value and says what it changed: the
@@ -56,6 +59,13 @@ const projectOrder = (a: Row, b: Row): number => compare(a.createdAt, b.createdA
 export class ShellState {
   /** The highest sequence applied, from either stream. */
   sequence = 0;
+  /**
+   * The sequence the active stream has reached. Every change to the shell is told there, an archived thread's as its
+   * removal: the shell has caught up with a command once this has reached the command's sequence.
+   */
+  get activeSequence(): number {
+    return this.reached.active ?? 0;
+  }
   private schemaVersion: number | undefined;
   /** Per stream, the sequence its snapshot and changes have reached; null until its snapshot is in. */
   private readonly reached: Record<Location, number | null> = { active: null, archive: null };
@@ -182,10 +192,8 @@ export interface FeedConnection {
 export interface ShellFeedOptions {
   /** Open a socket of the feed's own; `onEnd` is called when it closes or fails. */
   connect: (onEnd: () => void) => Promise<FeedConnection>;
-  /** A change was applied to the live shell (a reconnect's snapshots count as one, naming no thread). */
+  /** A change was applied to the live shell; becoming live counts as one, naming no thread. */
   onChange: (change: T3ShellChange) => void;
-  /** The shell stopped being live: the socket went, or a subscription failed or ended. */
-  onDown?: () => void;
   /** How long T3 may take, once asked, to send both snapshots. Default 30 s. */
   timeoutMs?: number;
   /** How often the open socket is pinged; one silent for three of these counts as gone. Default 5 s. */
@@ -214,9 +222,9 @@ export class ShellFeed {
   private shell: ShellState | null = null;
   private connection: FeedConnection | null = null;
   private cancels: Array<() => void> = [];
-  private timers: Array<ReturnType<typeof setTimeout>> = [];
+  /** The current attempt's timers not yet run: its deadline for the snapshots, its next ping. */
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private retry: ReturnType<typeof setTimeout> | null = null;
-  private readonly liveListeners = new Set<() => void>();
 
   constructor(options: ShellFeedOptions) {
     this.options = options;
@@ -239,14 +247,6 @@ export class ShellFeed {
     return this.state.state === "connected" ? this.shell : null;
   }
 
-  /** Call `listener` each time the feed becomes live; returns the function that removes it. */
-  onLive(listener: () => void): () => void {
-    this.liveListeners.add(listener);
-    return () => {
-      this.liveListeners.delete(listener);
-    };
-  }
-
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -263,14 +263,12 @@ export class ShellFeed {
   }
 
   stop(): void {
-    const wasLive = this.state.state === "connected";
     this.running = false;
     this.attempt += 1;
     this.teardown();
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
     this.set("down", "stopped");
-    if (wasLive) this.options.onDown?.();
   }
 
   private set(state: T3ShellFeedStatus["state"], error: string | null): void {
@@ -279,18 +277,22 @@ export class ShellFeed {
   }
 
   private later(ms: number, run: () => void): void {
-    const timer = setTimeout(run, ms);
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      run();
+    }, ms);
     timer.unref?.();
-    this.timers.push(timer);
+    this.timers.add(timer);
   }
 
   private open(): void {
     const attempt = ++this.attempt;
     const fail = (error: unknown) => this.fail(attempt, error);
     this.later(this.timeoutMs, () => {
-      if (this.shell === null) fail(new T3Unavailable(`T3 did not send its shell within ${Math.round(this.timeoutMs / 1000)} s`));
+      if (this.shell === null) fail(new T3Unavailable(`T3 did not send its shell within ${duration(this.timeoutMs)}`));
     });
-    // Until the socket is handed over, a failure to open it is told by connect itself (the end comes first, saying less).
+    // Until the socket is handed over, a failure to open it is told by connect itself (the end comes first, saying
+    // less); one that closes before it is handed over fails its subscriptions at once.
     let handed = false;
     this.options.connect(() => {
       if (handed) fail(new T3Unavailable("T3 closed the connection"));
@@ -300,10 +302,6 @@ export class ShellFeed {
         return;
       }
       handed = true;
-      if (connection.closed) {
-        fail(new T3Unavailable("T3 closed the connection"));
-        return;
-      }
       this.connection = connection;
       const state = new ShellState();
       const deliver = (stream: Location) => (values: unknown[]) => {
@@ -322,7 +320,6 @@ export class ShellFeed {
           this.failures = 0;
           this.set("connected", null);
           this.heartbeat(attempt, connection);
-          for (const listener of [...this.liveListeners]) listener();
           this.options.onChange({ threadIds: null });
           return;
         }
@@ -341,7 +338,7 @@ export class ShellFeed {
     const beat = () => {
       if (attempt !== this.attempt) return;
       if (this.now() - connection.heardAt > 3 * this.pingMs) {
-        this.fail(attempt, new T3Unavailable(`T3 has not answered on the shell feed for ${Math.round((3 * this.pingMs) / 1000)} s`));
+        this.fail(attempt, new T3Unavailable(`T3 has not answered on the shell feed for ${duration(3 * this.pingMs)}`));
         return;
       }
       connection.ping();
@@ -352,7 +349,6 @@ export class ShellFeed {
 
   private fail(attempt: number, error: unknown): void {
     if (attempt !== this.attempt || !this.running) return;
-    const wasLive = this.state.state === "connected";
     this.attempt += 1;
     this.teardown();
     this.set("down", error instanceof Error ? error.message : String(error));
@@ -364,14 +360,13 @@ export class ShellFeed {
       this.open();
     }, delay);
     this.retry.unref?.();
-    if (wasLive) this.options.onDown?.();
   }
 
   private teardown(): void {
     for (const cancel of this.cancels) cancel();
     this.cancels = [];
     for (const timer of this.timers) clearTimeout(timer);
-    this.timers = [];
+    this.timers.clear();
     this.connection?.close();
     this.connection = null;
     this.shell = null;

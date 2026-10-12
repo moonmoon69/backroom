@@ -107,3 +107,21 @@ test("start, start again and stop leave one shell listener or none; a stopped or
   room.host.close();
   assert.equal(listeners(room), 0, "closed: no listener left");
 });
+
+test("a change that names its threads is looked at only for the seats' threads among them", async () => {
+  room = await Room.create({ seats: ["W"], orchestrator: null });
+  room.user("W", "Look at dates.ts.");
+  await room.tick();
+  room.host.start(60_000);
+  await room.tick();
+  const ticks = countTicks(room);
+  // The adapter's listener, as T3's feed calls it with the threads a change names.
+  const [listener] = [...(room.fake as unknown as { shellListeners: Set<(change: { threadIds: readonly string[] | null }) => void> }).shellListeners];
+  // W's thread has changed in what a tick reads, but the change reported names another thread only.
+  room.fake.thread(room.threadOf("W")).shell.pendingBackgroundTasks = [{ taskId: "watch", kind: "command", description: "background watch", childThreadId: null }];
+  listener!({ threadIds: ["thread:other"] });
+  await until(() => false, 50);
+  assert.equal(ticks.runs, 0);
+  listener!({ threadIds: ["thread:other", room.threadOf("W")] });
+  assert.ok(await until(() => ticks.runs === 1));
+});

@@ -550,7 +550,10 @@ export class HttpT3Adapter implements T3Adapter {
    * feed to reach it, reading over HTTP meanwhile, so a read made after a command sees what it did.
    */
   private feedFloor: { sequence: number; until: number } | null = null;
+  /** Reads waiting on T3 over HTTP: each takes the feed's shell instead once it is live and caught up. */
+  private readonly feedWaiters = new Set<() => void>();
   private archivedCache: { at: number; value: Array<Record<string, unknown>> } | null = null;
+  private archivedInflight: Promise<Array<Record<string, unknown>>> | null = null;
 
   constructor(options: HttpAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -566,10 +569,13 @@ export class HttpT3Adapter implements T3Adapter {
     this.shellFeed = new ShellFeed({
       connect: (onEnd) => this.connectFeed(onEnd),
       onChange: (change) => {
+        // A read made from here on sees the change: nothing read over HTTP before it is reused (reads go over HTTP
+        // while the feed has not shown the latest command, and once it is down), and a read waiting on HTTP takes the
+        // feed if it can. Becoming live counts as a change, so what was read over HTTP before that is never reused.
+        this.dropShellCache();
+        for (const waiter of [...this.feedWaiters]) waiter();
         for (const listener of [...this.shellListeners]) listener(change);
       },
-      // Read over HTTP from now on: nothing the HTTP cache holds from before the feed went is reused.
-      onDown: () => this.dropShellCache(),
       timeoutMs: this.requestTimeoutMs,
       ...options.feed,
     });
@@ -949,6 +955,7 @@ export class HttpT3Adapter implements T3Adapter {
     this.shellInflight = null;
     this.shellGeneration += 1;
     this.archivedCache = null;
+    this.archivedInflight = null;
   }
 
   /**
@@ -964,46 +971,54 @@ export class HttpT3Adapter implements T3Adapter {
     this.feedFloor = { sequence: Math.max(held, target), until: now + FEED_CATCH_UP_MS };
   }
 
-  /** The feed's shell, when it is live and has caught up with the latest command; otherwise null. */
+  /**
+   * The feed's shell, when it is live and has caught up with the latest command; otherwise null. Caught up is the
+   * active stream's sequence: a change on the archived stream says nothing of the command's on the active one.
+   */
   private liveShell(): ShellSnapshot | null {
     const live = this.shellFeed.live();
     if (!live) return null;
     const floor = this.feedFloor;
     if (floor) {
-      if (live.sequence < floor.sequence && Date.now() < floor.until) return null;
+      if (live.activeSequence < floor.sequence && Date.now() < floor.until) return null;
       this.feedFloor = null;
     }
     return live.read();
   }
 
   /**
-   * T3's shell: the feed's while it is live, else over HTTP. No read waits for the feed: one made while it is not live
-   * goes over HTTP, and is answered from the feed instead if the feed becomes live before T3 answers it (a T3 that is
-   * restarting can take its time with the HTTP snapshot).
+   * A read over HTTP made while the feed's shell could not serve it, answered by whichever comes first: T3's answer,
+   * or the feed once it is live and caught up (a T3 that is restarting can take its time with the HTTP snapshot, and
+   * T3 streams a command's change long before a slow snapshot comes). No read waits for the feed.
    */
-  private async shell(force = false): Promise<ShellSnapshot> {
-    const live = this.liveShell();
-    if (live) return live;
-    const read = this.readShell(force);
+  private orFromFeed<T>(read: Promise<T>, pick: (live: ShellSnapshot) => T): Promise<T> {
     if (!this.shellFeed.started) return read;
-    return await new Promise<ShellSnapshot>((resolve, reject) => {
-      const off = this.shellFeed.onLive(() => {
-        const recovered = this.liveShell();
-        if (!recovered) return;
-        off();
-        resolve(recovered);
-      });
+    return new Promise<T>((resolve, reject) => {
+      const waiter = () => {
+        const live = this.liveShell();
+        if (!live) return;
+        this.feedWaiters.delete(waiter);
+        resolve(pick(live));
+      };
+      this.feedWaiters.add(waiter);
       read.then(
         (value) => {
-          off();
+          this.feedWaiters.delete(waiter);
           resolve(value);
         },
         (error: unknown) => {
-          off();
+          this.feedWaiters.delete(waiter);
           reject(error);
         },
       );
     });
+  }
+
+  /** T3's shell: the feed's while it is live and caught up, else over HTTP (see orFromFeed). */
+  private async shell(force = false): Promise<ShellSnapshot> {
+    const live = this.liveShell();
+    if (live) return live;
+    return await this.orFromFeed(this.readShell(force), (recovered) => recovered);
   }
 
   private async readShell(force: boolean): Promise<ShellSnapshot> {
@@ -1326,24 +1341,33 @@ export class HttpT3Adapter implements T3Adapter {
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
     const live = this.liveShell();
-    const archived = live ? (live.archivedThreads ?? []) : await this.readArchived();
+    const archived = live ? (live.archivedThreads ?? []) : await this.orFromFeed(this.readArchived(), (recovered) => recovered.archivedThreads ?? []);
     return archived.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
   }
 
   /**
    * The archived thread shells without the feed: T3's HTTP shell lists none (it builds the active shell only), so they
-   * are read as T3's own client reads them (orchestration.getArchivedShellSnapshot), cached as briefly as the shell.
+   * are read as T3's own client reads them (orchestration.getArchivedShellSnapshot), shared and cached as the shell is.
    */
-  private async readArchived(): Promise<Array<Record<string, unknown>>> {
+  private readArchived(): Promise<Array<Record<string, unknown>>> {
     const cached = this.archivedCache;
-    if (cached && Date.now() - cached.at < this.shellCacheMs) return cached.value;
-    await this.ensureProtocol();
+    if (cached && Date.now() - cached.at < this.shellCacheMs) return Promise.resolve(cached.value);
+    if (this.archivedInflight) return this.archivedInflight;
     const generation = this.shellGeneration;
-    const started = Date.now();
-    const snapshot = await this.rpc<{ threads?: Array<Record<string, unknown>> } | null>("orchestration.getArchivedShellSnapshot", {});
-    const value = snapshot?.threads ?? [];
-    if (this.shellGeneration === generation) this.archivedCache = { at: started, value };
-    return value;
+    const read = (async () => {
+      await this.ensureProtocol();
+      const started = Date.now();
+      const snapshot = await this.rpc<{ threads?: Array<Record<string, unknown>> } | null>("orchestration.getArchivedShellSnapshot", {});
+      const value = snapshot?.threads ?? [];
+      if (this.shellGeneration === generation) this.archivedCache = { at: started, value };
+      return value;
+    })();
+    this.archivedInflight = read;
+    const done = () => {
+      if (this.archivedInflight === read) this.archivedInflight = null;
+    };
+    read.then(done, done);
+    return read;
   }
 
   async getThreadShell(threadId: string): Promise<T3ThreadShell | null> {

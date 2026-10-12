@@ -1002,12 +1002,15 @@ test("a feed socket T3 has gone silent on is given up after three pings, and ope
 
 test("closing the adapter stops the feed: its subscriptions are interrupted, its socket closed, and nothing reconnects", async () => {
   const t3 = streamingT3(opening);
-  const { adapter } = feedAdapter(t3);
+  const { adapter, gets } = feedAdapter(t3);
+  await adapter.listThreads();
   adapter.startFeed();
   await settle();
   const socket = t3.feedSocket();
   adapter.close();
   await settle();
+  await adapter.listThreads();
+  assert.equal(gets(), 2, "over HTTP afresh: the snapshot cached before the feed was live is not reused");
   assert.deepEqual(socket.sent.filter((f) => f._tag === "Interrupt").map((f) => f.requestId).sort(), [socket.subscriptions.get(SHELL)!.id, socket.subscriptions.get(ARCHIVED)!.id].sort());
   assert.ok(socket.closed);
   assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "stopped"]);
@@ -1175,4 +1178,188 @@ test("GET /api/status reports the shell feed under t3", async (t) => {
   t3.feedSocket().close();
   await settle();
   assert.deepEqual(((await status()) as { state: string; error: string }).state, "down");
+});
+
+// ---------------- review findings (deliverable A review) ----------------
+
+test("the feed's heartbeat holds one timer at a time, however long the socket stays open", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3, { pingMs: 10 });
+  adapter.startFeed();
+  await settle();
+  const timers = () => (adapter as unknown as { shellFeed: { timers: Set<unknown> } }).shellFeed.timers.size;
+  await sleep(300);
+  assert.equal(adapter.feed().state, "connected");
+  assert.ok(t3.feedSocket().sent.filter((f) => f._tag === "Ping").length >= 10, "pinged all along");
+  assert.ok(timers() <= 2, `${timers()} timers held after 300 ms of pings`);
+  adapter.close();
+  assert.equal(timers(), 0);
+});
+
+test("after a command, a change on the archived stream does not count as the feed showing it", async () => {
+  let title = "before";
+  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
+  const { adapter, gets } = feedAdapter(t3, { shellBody: () => ({ ...activeShell, snapshotSequence: 16, threads: [{ ...threadShell, title }] }) });
+  adapter.startFeed();
+  await settle();
+  title = "after";
+  await adapter.setThreadTitle({ commandId: "c1", threadId: "thread-1", title: "after" });
+  // Another thread is archived in T3 at 16; the archived stream tells it before the active stream tells 15.
+  t3.feedSocket().push(ARCHIVED, { kind: "thread.updated", sequence: 16, thread: { ...threadShell, id: "thread-x", archivedAt: "2026-10-03T00:00:09.000Z", updatedAt: "2026-10-03T00:00:09.000Z" } });
+  await settle();
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "after");
+  assert.equal(gets(), 1, "over HTTP");
+  adapter.close();
+});
+
+test("during the wait after a command T3 gave no sequence for, a read made after a change is heard of sees it", async () => {
+  // T3's HTTP snapshot is T3's state: it has the rename by the time T3 streams it.
+  let title = "t";
+  const t3 = streamingT3(opening, { "projects.mutate": () => ({}) });
+  const { adapter } = feedAdapter(t3, { shellBody: () => ({ ...activeShell, threads: [{ ...threadShell, title }] }) });
+  adapter.startFeed();
+  await settle();
+  await adapter.createProject({ commandId: "c2", projectId: "p2", title: "p2", workspaceRoot: "/tmp/p2", createIfMissing: false });
+  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "t", "over HTTP, and cached");
+  const seen: string[] = [];
+  adapter.onShellChange(() => void adapter.getThreadShell("thread-1").then((thread) => seen.push(thread?.title ?? "none")));
+  title = "renamed";
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 11, location: "active", thread: { ...threadShell, title: "renamed", updatedAt: "2026-10-03T00:00:05.000Z" } });
+  await settle();
+  assert.deepEqual(seen, ["renamed"]);
+  adapter.close();
+});
+
+test("a read made after a command is answered from the feed once it shows the command, not held behind a slow HTTP snapshot", async () => {
+  // T3 is slow with its snapshots, the archived one too.
+  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }), "orchestration.getArchivedShellSnapshot": () => new Promise(() => {}) });
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path === "/api/auth/websocket-ticket") return new Response(JSON.stringify({ ticket: "tk" }), { status: 200 });
+    await new Promise<void>((resolve) => held.push(resolve));
+    return new Response(JSON.stringify(activeShell), { status: 200 });
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 5_000 });
+  adapter.startFeed();
+  await settle();
+  await adapter.setThreadTitle({ commandId: "c1", threadId: "thread-1", title: "after" });
+  let answered: string | undefined;
+  const read = adapter.getThreadShell("thread-1").then((thread) => (answered = thread?.title));
+  const archived = adapter.listArchivedThreads();
+  await settle();
+  assert.equal(held.length, 1, "over HTTP while the feed has not shown the command");
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 15, location: "active", thread: { ...threadShell, title: "after" } });
+  await settle();
+  assert.equal(answered, "after", "answered from the feed while the HTTP snapshot is still unanswered");
+  assert.deepEqual((await archived).map((t) => t.id), ["thread-old"], "the archived threads too");
+  held.splice(0).forEach((release) => release());
+  await read;
+  adapter.close();
+});
+
+test("archived thread reads without the feed share one call in flight, and take the feed when it comes live first", async () => {
+  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }), { "orchestration.getArchivedShellSnapshot": () => new Promise(() => {}) });
+  const { adapter } = feedAdapter(t3);
+  adapter.startFeed();
+  await settle();
+  const first = adapter.listArchivedThreads();
+  const second = adapter.listArchivedThreads();
+  await settle();
+  const calls = t3.sockets.flatMap((socket) => socket.sent).filter((f) => f.tag === "orchestration.getArchivedShellSnapshot");
+  assert.equal(calls.length, 1, "one call for both reads");
+  t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
+  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: { ...archivedShell, threads: [{ ...shell.archivedThreads[0], title: "from the feed" }] } });
+  await settle();
+  assert.deepEqual((await Promise.all([first, second])).map((list) => list.map((t) => t.title)), [["from the feed"], ["from the feed"]]);
+  adapter.close();
+});
+
+test("a new token while the feed's first ticket is still coming leaves one feed socket open, the new token's", async () => {
+  const t3 = streamingT3(opening);
+  let tickets = 0;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path === "/api/auth/websocket-ticket") {
+      const n = ++tickets;
+      if (n === 1) await sleep(30);
+      return new Response(JSON.stringify({ ticket: `tk${n}` }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 2_000, feed: { pingMs: 1_000, retryMs: 10, retryMaxMs: 40 } });
+  adapter.startFeed();
+  await sleep(5);
+  adapter.setAccessToken("tok2");
+  await sleep(60);
+  await settle();
+  const open = () => t3.sockets.filter((s) => !s.closed).map((s) => new URL(s.url).searchParams.get("wsTicket"));
+  assert.equal(adapter.feed().state, "connected");
+  assert.deepEqual(open(), ["tk2"]);
+  adapter.close();
+  await settle();
+  assert.deepEqual(open(), []);
+});
+
+test("a T3 that takes the subscriptions and never sends its snapshots is given up at the time limit, and asked again", async () => {
+  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }));
+  const { adapter } = feedAdapter(t3, { requestTimeoutMs: 60 });
+  adapter.startFeed();
+  await settle();
+  assert.equal(adapter.feed().state, "connecting");
+  await sleep(80);
+  await settle();
+  assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "T3 did not send its shell within 60 ms"]);
+  assert.ok(t3.sockets[0]!.closed);
+  await sleep(30);
+  assert.ok(t3.sockets.length >= 2, "asked again");
+  adapter.close();
+});
+
+test("a subscription T3 ends of its own counts as the feed going down, and it is opened again", async () => {
+  const t3 = streamingT3(opening);
+  const { adapter } = feedAdapter(t3);
+  adapter.startFeed();
+  await settle();
+  const first = t3.feedSocket();
+  first.end(SHELL, { _tag: "Success", value: null });
+  await settle();
+  assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "T3 ended orchestration.subscribeShell"]);
+  assert.ok(first.closed);
+  await sleep(30);
+  await settle();
+  assert.equal(adapter.feed().state, "connected");
+  assert.notEqual(t3.feedSocket(), first);
+  adapter.close();
+});
+
+test("the reconnect wait starts again from its shortest once the feed was live", async () => {
+  const t3 = streamingT3(opening);
+  let refusals = 4;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return new Response(JSON.stringify(ENVIRONMENT), { status: 200 });
+    if (path === "/api/auth/websocket-ticket") {
+      if (refusals > 0) {
+        refusals -= 1;
+        return new Response("{}", { status: 503 });
+      }
+      return new Response(JSON.stringify({ ticket: "tk" }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 2_000, feed: { pingMs: 1_000, retryMs: 10, retryMaxMs: 1_000 } });
+  adapter.startFeed();
+  // Four refusals: waits of 10, 20, 40 and 80 ms, then the feed is live.
+  for (let i = 0; i < 100 && adapter.feed().state !== "connected"; i += 1) await sleep(10);
+  assert.equal(adapter.feed().state, "connected");
+  t3.feedSocket().close();
+  const dropped = Date.now();
+  for (let i = 0; i < 100 && adapter.feed().state !== "connected"; i += 1) await sleep(5);
+  const waited = Date.now() - dropped;
+  assert.equal(adapter.feed().state, "connected");
+  assert.ok(waited < 100, `back after ${waited} ms (the fifth wait in a row would be 160 ms)`);
+  adapter.close();
 });
