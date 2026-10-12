@@ -213,3 +213,27 @@ test("D1: your correction of an old request of his is in the chat on the first p
     assert.deepEqual(corrections.map((p) => chat.includes(p.id)), [true, false], "yours to him in the chat, yours to a member's work on the board");
   }
 });
+
+test("D1 review: a post about his former seat's closed request stays in chat when the reseat is outside the loaded page", () => {
+  const room = new EngineRoom();
+  room.request("old-own", "O", "$user");
+  room.finish(room.reserve("O")!, "old-own");
+  room.add({ type: "transfer", actor: "$user", oldSeatId: "O", newSeatId: "O2", threadId: "thread:O2", owned: [], awaited: [], body: "Reseat", evidence: "review" });
+  for (let i = 0; i < 500; i++) room.add({ type: "post", actor: "$user", intent: "note", body: `Pagination gap ${i}` });
+  room.add({ type: "cancel", actor: "O2", requestId: "old-own" });
+  const full = journalView({ p: room.p }).posts;
+  const initial = full.slice(-500);
+  const snapshot = {
+    room: { consigliereId: "P2" },
+    bindings: [
+      { id: "O", participantId: "P1", threadId: "thread:O" },
+      { id: "O2", participantId: "P2", threadId: "thread:O2" },
+    ],
+    seats: journalView({ p: room.p }).seats,
+  } as unknown as Pick<RoomSnapshot, "room" | "bindings" | "seats">;
+  const cancel = full.at(-1)!;
+  assert.equal(cancel.about[0]?.owner, "O", "a closed request keeps its owner across the reseat");
+  assert.equal(initial.some((p) => p.transfer), false, "the transfer is outside the first page");
+  assert.equal(consigliereChat(full, consigliereSeats(snapshot, full)).some((p) => p.id === cancel.id), true, "his former seat is his when the transfer is loaded");
+  assert.equal(consigliereChat(initial, consigliereSeats(snapshot, initial)).some((p) => p.id === cancel.id), true, "his former seat must also be his before the transfer loads");
+});
