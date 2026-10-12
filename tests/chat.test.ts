@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { consigliereChat, consigliereSeats } from "../web/src/chat.ts";
 import type { EnginePost, EngineSeatView, RoomSnapshot } from "../web/src/types.ts";
+import { journalView } from "../src/server/engineView.ts";
+import { Room as EngineRoom } from "./engine/helpers.ts";
 
 let seq = 0;
 const post = (fields: Partial<EnginePost> & Pick<EnginePost, "kind" | "author">): EnginePost => {
@@ -165,4 +167,29 @@ test("D1: what the Consigliere addresses to a member stays on the board: his req
   const lateCancel = post({ kind: "cancel", author: "C", body: "Cancel requested", about: [{ requestId: "r2", number: closed.number }], cancel: { applied: false } });
   const deferredCancel = post({ kind: "note", author: "C", about: [{ requestId: "r1", number: toWorker.number }], note: { source: "deferred-cancel", room: false, t3: null, afterAnswer: false } });
   assert.deepEqual(chat(toWorker, correction, lateToWorker, bothWoken, bothClaimed, noteToBoth, closed, lateCancel, deferredCancel), [asked.id, answer.id]);
+});
+
+/** Review regression: the snapshot returns only the newest 500 posts; older request posts load on demand. */
+test("D1 review: request-owner filtering is stable across the initial 500-post page", () => {
+  const room = new EngineRoom();
+  const his = { seats: new Set(["O"]), threads: new Set(["thread:O"]) };
+  room.request("old-worker", "W", "O");
+  room.finish(room.reserve("W")!, "old-worker");
+  room.request("old-own", "O", "$user");
+  room.finish(room.reserve("O")!, "old-own");
+  for (let i = 0; i < 500; i++) room.add({ type: "post", actor: "$user", intent: "note", body: `Pagination gap ${i}` });
+  room.add({ type: "cancel", actor: "O", requestId: "old-worker" });
+  room.add({ type: "cancel", actor: "O", requestId: "old-own" });
+  const full = journalView({ p: room.p }).posts;
+  const initial = full.slice(-500);
+  const memberCancel = full.find((p) => p.kind === "cancel" && p.about[0]?.requestId === "old-worker")!;
+  const ownCancel = full.find((p) => p.kind === "cancel" && p.about[0]?.requestId === "old-own")!;
+  assert.deepEqual(memberCancel.to, [], "a cancel of a closed request wakes nobody");
+  assert.equal(initial.some((p) => p.request?.id === "old-worker" || p.request?.id === "old-own"), false, "both request posts are outside the initial page");
+  const loadedChat = consigliereChat(full, his);
+  const initialChat = consigliereChat(initial, his);
+  assert.equal(loadedChat.some((p) => p.id === ownCancel.id), true, "his own control post belongs in chat");
+  assert.equal(initialChat.some((p) => p.id === ownCancel.id), true, "his own control post remains in chat without its request post");
+  assert.equal(loadedChat.some((p) => p.id === memberCancel.id), false, "a member's control post belongs only on the board");
+  assert.equal(initialChat.some((p) => p.id === memberCancel.id), false, "a member's control post stays off chat without its request post");
 });
