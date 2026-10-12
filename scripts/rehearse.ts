@@ -2069,15 +2069,15 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
       `() => { clearInterval(window.__pushWatch); window.__pushSeen = null; window.__pushWatch = setInterval(() => { const here = (document.querySelector('.overview')?.textContent ?? document.body.textContent ?? '').includes(${JSON.stringify(text)}); if (here === ${present}) { window.__pushSeen = Date.now(); clearInterval(window.__pushWatch); } }, 20); return true; }`,
     );
   const seenAt = (what: string) => browser.poll<number | null>(what, "() => window.__pushSeen ?? null", (v) => typeof v === "number", 10_000)!;
+  // The story records when each change showed; each state's own checks judge it, so a state played silently (--only of
+  // the other) does not fail on it.
   const lags: number[] = [];
   for (const n of [1, 2, 3]) {
     const title = `push-renamed-${n}`;
     watch(title, true);
     const sent = Date.now();
     await service.command({ type: "room.update", roomId, title });
-    const lag = seenAt(`"${title}" on the overview`) - sent;
-    lags.push(lag);
-    if (lag > 2000) fail(`"${title}" showed on the overview ${lag} ms after the rename: over 2 s, so it waited for a poll`);
+    lags.push(seenAt(`"${title}" on the overview`) - sent);
     execFileSync("sleep", ["1"]);
   }
   await state(
@@ -2085,6 +2085,9 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
     async () => ((await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms")).find((r) => r.id === roomId)?.title === "push-renamed-3" ? "GET /api/rooms: the room is push-renamed-3" : null),
     ["push-renamed-3"],
     () => {
+      lags.forEach((lag, index) => {
+        if (lag > 2000) fail(`"push-renamed-${index + 1}" showed on the overview ${lag} ms after the rename: over 2 s, so it waited for a poll`);
+      });
       browser.poll<string | null>("the page's stream to be open", "() => document.documentElement.dataset.stream ?? null", (v) => v === "open", 2_000);
       log(`  page: each rename showed on the overview ${lags.map((lag) => `${lag} ms`).join(", ")} after it was sent (the stream open; no poll due for 60 s)`);
     },
@@ -2092,23 +2095,35 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
 
   const banner = "T3 is not answering; its projects and threads are not listed.";
   const chipTone = "() => document.querySelector('.connection-chip .dot')?.className ?? null";
+  /** The chip's dot once it has the tone wanted, or as it is after 5 s. */
+  const chipWhen = (tone: string): string | null => {
+    const deadline = Date.now() + 5_000;
+    let read = browser.eval<string | null>(chipTone);
+    while (!read?.includes(tone) && Date.now() < deadline) {
+      execFileSync("sleep", ["0.25"]);
+      read = browser.eval<string | null>(chipTone);
+    }
+    return read;
+  };
   watch(banner, true);
   const down = Date.now();
   await service.call("POST", "/api/fake/outage", { down: true });
   const downLag = seenAt("the T3 banner on the overview") - down;
-  if (downLag > 3500) fail(`the T3 banner showed ${downLag} ms after T3 went down: over one check of T3 (2 s) and a read`);
-  browser.poll<string | null>("the T3 chip to say error, as the banner does", chipTone, (v) => Boolean(v?.includes("dot-err")), 5_000);
+  const chipDown = chipWhen("dot-err");
   watch(banner, false);
   const up = Date.now();
   await service.call("POST", "/api/fake/outage", { down: false });
   const upLag = seenAt("the T3 banner gone from the overview") - up;
-  if (upLag > 3500) fail(`the T3 banner cleared ${upLag} ms after T3 answered again: over one check of T3 (2 s) and a read`);
+  const chipUp = chipWhen("dot-ok");
   await state(
     "push: the T3 banner shows while the fake T3 is down and clears when it is back",
     async () => ((await service.call<{ t3: { error: string | null } }>("GET", "/api/status")).t3.error === null ? "GET /api/status: T3 answers, no error" : null),
     [],
     () => {
-      browser.poll<string | null>("the T3 chip to be green again", chipTone, (v) => Boolean(v?.includes("dot-ok")), 5_000);
+      if (downLag > 3500) fail(`the T3 banner showed ${downLag} ms after T3 went down: over one check of T3 (2 s) and a read`);
+      if (!chipDown?.includes("dot-err")) fail(`the T3 chip did not say error while the banner showed: ${chipDown}`);
+      if (upLag > 3500) fail(`the T3 banner cleared ${upLag} ms after T3 answered again: over one check of T3 (2 s) and a read`);
+      if (!chipUp?.includes("dot-ok")) fail(`the T3 chip is not green again after T3 came back: ${chipUp}`);
       if (browser.eval<boolean>(`() => document.body.textContent.includes(${JSON.stringify(banner)})`)) fail("the T3 banner is still shown");
       log(`  page: the banner showed ${downLag} ms after T3 went down, with the chip saying error; it cleared ${upLag} ms after T3 came back, the chip green again`);
     },
