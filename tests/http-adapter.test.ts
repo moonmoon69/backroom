@@ -1109,13 +1109,13 @@ test("after a command the reads go over HTTP until the feed shows T3's sequence 
 
 test("a feed socket that fails to open says why", async () => {
   class Refused {
-    private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+    private readonly listeners = new Map<string, Array<(event: any) => void>>();
     constructor(_url: string) {
       queueMicrotask(() => {
         for (const type of ["error", "close"]) for (const listener of this.listeners.get(type) ?? []) listener({});
       });
     }
-    addEventListener(type: string, listener: (event: unknown) => void): void {
+    addEventListener(type: string, listener: (event: any) => void): void {
       this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
     }
     send(): void {}
