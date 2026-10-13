@@ -117,11 +117,12 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         error = (caught as Error).message;
         errorAt = new Date().toISOString();
       }
-      // Whether T3 answers is one truth, the one pages are pushed (src/app/changes.ts): its projects and threads read now
-      // (the read shared with the check, from the adapter's cache). T3 answering its descriptor while its shell does not
-      // (a restart half done, #8) is T3 not answering, on the chip as on the banner.
-      await stack.changes.check();
+      // Whether T3 answers is one truth, the one pages are pushed (src/app/changes.ts), as its check last found it: T3
+      // answering its descriptor while its shell does not (a restart half done, #8) is T3 not answering, on the chip as on
+      // the banner. Never waited on: a shell read T3 holds up would hold the chip back as long (review #201). Not known
+      // yet, a check starts, and what it finds is pushed to the pages, which read this again.
       const reach = stack.changes.status();
+      if (!reach) void stack.changes.check();
       if (reach && !reach.up) {
         error = reach.error ?? "T3 is not answering";
         errorAt = reach.at;
