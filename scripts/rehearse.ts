@@ -1815,6 +1815,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 26. Push from the service (B, #48): a change shows on the overview with no poll due; the T3 banner follows T3.
   check.passed.push(...(await rehearsePagePush(service, browser, room, selection, section)));
 
+  // 27. The thread streams (C, #349): a running turn's new item shows in the member's live turn and its thread at once.
+  check.passed.push(...(await rehearseThreadPush(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -2130,6 +2133,97 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
       log(`  page: the banner showed ${downLag} ms after T3 went down, with the chip saying error; it cleared ${upLag} ms after T3 came back, the chip green again`);
     },
   );
+  return passed;
+}
+
+/**
+ * The thread streams (C, board #349): a watched thread's change reaches the page as a `thread` event, and what shows its
+ * detail reads it again at once, its timer only a 60 s fallback while the stream is open. @fable runs a turn (held); a
+ * new item of it (the fake T3's say: a message of the run) shows in his live turn on the board (the room's desk) within
+ * 2 s, after 4 s of the turn standing still in which the page read the desk not once: no poll was due (before, the desk
+ * was read every 2.5 s while a turn ran). The same for his thread opened over the room (the thread view: before, read
+ * every 1.5 s while it ran). The times are taken in the page. Its section begins here, before its states.
+ */
+async function rehearseThreadPush(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("push: a new item of a member's running turn shows in his live turn on the board within 2 s, no poll due"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const sheetTitle = () => browser.eval<string | null>("() => document.querySelector('.sheet-title h1')?.textContent ?? null");
+  // On the room's board, from wherever the page is (the overview, after the page push's section).
+  if (sheetTitle() !== room.title) {
+    if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+    browser.openRoom(room.title);
+  }
+  browser.click(/tab "Board/);
+  browser.poll<string | null>("the page's stream to be open", "() => document.documentElement.dataset.stream ?? null", (v) => v === "open", 10_000);
+  /** In the page: when `text` is first seen under `scope`, in this machine's ms (window.__threadSeen). */
+  const watch = (scope: string, text: string) =>
+    browser.on(
+      "eval",
+      `() => { clearInterval(window.__threadWatch); window.__threadSeen = null; window.__threadWatch = setInterval(() => { if ((document.querySelector(${JSON.stringify(scope)})?.textContent ?? '').includes(${JSON.stringify(text)})) { window.__threadSeen = Date.now(); clearInterval(window.__threadWatch); } }, 20); return true; }`,
+    );
+  const seenAt = (what: string) => browser.poll<number | null>(what, "() => window.__threadSeen ?? null", (v) => typeof v === "number", 10_000)!;
+  /** The page's reads of `path` over `ms` of a turn standing still: none, with the stream open and the thread pushed. */
+  const readsWhileStill = (path: string, ms: number): number => {
+    browser.on("eval", "() => { performance.setResourceTimingBufferSize(100000); performance.clearResourceTimings(); return true; }");
+    execFileSync("sleep", [String(ms / 1000)]);
+    return browser.eval<number>(`() => performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === ${JSON.stringify(path)}).length`);
+  };
+
+  // @fable's turn, held: his live turn shows on the board, read once since it started.
+  await room.message("Count the lines in src/dates.ts, and say how far you are as you go.");
+  await room.live("fable");
+  browser.poll<boolean>("his live turn on the board", "() => Boolean(document.querySelector('.timeline .live-feed-chat'))", (v) => v, 10_000);
+  execFileSync("sleep", ["1"]);
+  const deskPath = `/api/rooms/${room.roomId}/desk`;
+  const deskReads = readsWhileStill(deskPath, 4_000);
+  const said = "Counted 412 lines so far.";
+  watch(".timeline", said);
+  let sent = Date.now();
+  await service.fake("say", { threadId: room.thread.fable, text: said });
+  const liveLag = seenAt(`"${said}" in his live turn`) - sent;
+  await state(
+    "push: a new item of a member's running turn shows in his live turn on the board within 2 s, no poll due",
+    async () => {
+      const live = await service.call<{ liveFeed: Array<{ kind: string; text?: string }> }>("GET", `/api/rooms/${room.roomId}/participants/${room.participant.fable}/live`);
+      return live.liveFeed.some((item) => item.kind === "message" && item.text === said) ? `GET …/participants/@fable/live: his live feed ends with "${said}"` : null;
+    },
+    [said],
+    () => {
+      if (deskReads > 0) fail(`the page read the desk ${deskReads} time(s) in 4 s of his turn standing still: it polled (with the stream open and his thread pushed, its timer is a 60 s fallback)`);
+      if (liveLag > 2000) fail(`"${said}" showed in his live turn ${liveLag} ms after T3 had it: over 2 s`);
+      log(`  page: no read of the desk in 4 s of the turn standing still; the new item showed in his live turn ${liveLag} ms after T3 had it`);
+    },
+  );
+
+  // His thread over the room (the thread view): Members, his tile, Open thread.
+  browser.click(/button "Members \(\d+\)"/);
+  browser.click(/button "fable Consigliere /);
+  browser.click(/menuitem "Open thread"/);
+  browser.poll<boolean>("his thread over the room, with his running turn", `() => (document.querySelector('.ov-layer-member')?.textContent ?? '').includes(${JSON.stringify(said)})`, (v) => v, 10_000);
+  execFileSync("sleep", ["1"]);
+  const threadReads = readsWhileStill(`/api/threads/${encodeURIComponent(room.thread.fable)}`, 4_000);
+  const next = "Counted 820 lines now.";
+  watch(".ov-layer-member", next);
+  sent = Date.now();
+  await service.fake("say", { threadId: room.thread.fable, text: next });
+  const threadLag = seenAt(`"${next}" in his thread over the room`) - sent;
+  await state(
+    "push: a new item of a member's running turn shows in his thread over the room within 2 s, no poll due",
+    async () => {
+      const view = await service.call<{ running: { feed: Array<{ kind: string; text?: string }> } | null; pushed?: boolean }>("GET", `/api/threads/${encodeURIComponent(room.thread.fable)}`);
+      return view.pushed === true && view.running?.feed.some((item) => item.kind === "message" && item.text === next) ? `GET /api/threads/@fable's: pushed, his running turn ends with "${next}"` : null;
+    },
+    [next],
+    () => {
+      if (threadReads > 0) fail(`the page read his thread ${threadReads} time(s) in 4 s of his turn standing still: it polled (pushed, its timer is a 60 s fallback)`);
+      if (threadLag > 2000) fail(`"${next}" showed in his thread ${threadLag} ms after T3 had it: over 2 s`);
+      log(`  page: no read of his thread in 4 s of the turn standing still; the new item showed in it ${threadLag} ms after T3 had it`);
+    },
+  );
+  browser.click(/button "Back to the room"/);
+  await room.finish("fable", "src/dates.ts has 820 lines.");
+  await room.settle("fable");
   return passed;
 }
 
