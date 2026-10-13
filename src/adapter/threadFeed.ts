@@ -473,14 +473,18 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     // never older than a bounded one kept. A late answer never undoes a newer read of either kind (review #393).
     const newer = sequence > thread.kept[kind] || (sequence === thread.kept[kind] && (!held || gen > held.gen));
     if (newer && (kind === "bounded" || sequence >= thread.kept.bounded)) {
+      // Told against the newest bounded read ever kept, not what is held now: one let go meanwhile is still what the
+      // pages last read (review #419).
+      const before = thread.kept.bounded;
       thread.kept[kind] = sequence;
       thread.cache[kind] = { snapshot, sequence, read, gen };
       // A full read older than the bounded one is never served again: it is let go (a long thread's runs to megabytes).
       const full = thread.cache.full;
       if (kind === "bounded" && full && full.sequence < sequence) thread.cache.full = null;
-      if (kind === "bounded" && held && sequence > held.sequence && this.live(thread)) this.options.onChange(id);
+      if (kind === "bounded" && before !== Number.NEGATIVE_INFINITY && sequence > before && this.live(thread)) this.options.onChange(id);
+      // Only a read kept ends the quiet: one discarded (an unchanged read while the feed is down) does not (review #419).
+      this.quiet(id, thread);
     }
-    this.quiet(id, thread);
     if (kind === "bounded" && this.live(thread)) this.owed(id, thread);
     return sequence;
   }
