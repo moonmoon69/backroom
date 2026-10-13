@@ -550,6 +550,8 @@ export class HttpT3Adapter implements T3Adapter {
    * feed to reach it, reading over HTTP meanwhile, so a read made after a command sees what it did.
    */
   private feedFloor: { sequence: number; until: number } | null = null;
+  /** Ends the floor at its time, so reads waiting on HTTP meanwhile take the feed then. */
+  private feedFloorTimer: ReturnType<typeof setTimeout> | null = null;
   /** Reads waiting on T3 over HTTP: each takes the feed's shell instead once it is live and caught up. */
   private readonly feedWaiters = new Set<() => void>();
   private archivedCache: { at: number; value: Array<Record<string, unknown>> } | null = null;
@@ -570,12 +572,13 @@ export class HttpT3Adapter implements T3Adapter {
       connect: (onEnd) => this.connectFeed(onEnd),
       onChange: (change) => {
         // A read made from here on sees the change: nothing read over HTTP before it is reused (reads go over HTTP
-        // while the feed has not shown the latest command, and once it is down), and a read waiting on HTTP takes the
-        // feed if it can. Becoming live counts as a change, so what was read over HTTP before that is never reused.
+        // while the feed has not shown the latest command, and once it is down). Becoming live counts as a change, so
+        // what was read over HTTP before that is never reused.
         this.dropShellCache();
-        for (const waiter of [...this.feedWaiters]) waiter();
         for (const listener of [...this.shellListeners]) listener(change);
       },
+      // The streams may have moved on, a change or not: a read waiting on HTTP takes the feed if it has caught up.
+      onApplied: () => this.releaseFeedWaiters(),
       timeoutMs: this.requestTimeoutMs,
       ...options.feed,
     });
@@ -771,6 +774,8 @@ export class HttpT3Adapter implements T3Adapter {
   close(): void {
     this.dropCommandLink();
     this.shellFeed.stop();
+    if (this.feedFloorTimer) clearTimeout(this.feedFloorTimer);
+    this.feedFloorTimer = null;
     void this.reportActivity(null).catch(() => undefined);
   }
 
@@ -968,22 +973,36 @@ export class HttpT3Adapter implements T3Adapter {
     // A floor past its time holds nothing any more, whatever it was waiting for.
     const held = this.feedFloor && now < this.feedFloor.until ? this.feedFloor.sequence : 0;
     const target = typeof sequence === "number" ? sequence : Number.POSITIVE_INFINITY;
-    this.feedFloor = { sequence: Math.max(held, target), until: now + FEED_CATCH_UP_MS };
+    const floor = { sequence: Math.max(held, target), until: now + FEED_CATCH_UP_MS };
+    this.feedFloor = floor;
+    if (this.feedFloorTimer) clearTimeout(this.feedFloorTimer);
+    this.feedFloorTimer = setTimeout(() => {
+      this.feedFloorTimer = null;
+      if (this.feedFloor === floor) this.feedFloor = null;
+      this.releaseFeedWaiters();
+    }, FEED_CATCH_UP_MS);
+    this.feedFloorTimer.unref?.();
   }
 
   /**
-   * The feed's shell, when it is live and has caught up with the latest command; otherwise null. Caught up is the
-   * active stream's sequence: a change on the archived stream says nothing of the command's on the active one.
+   * The feed's shell, when it is live and has caught up with the latest command; otherwise null. Each list is caught up
+   * by its own stream: the projects and threads by the active one, the archived threads by the archived one (archiving
+   * a thread is a removal on one and an update on the other, in either order). The command is behind both once both
+   * have reached its sequence, or after FEED_CATCH_UP_MS.
    */
-  private liveShell(): ShellSnapshot | null {
+  private liveShell(list: "active" | "archive" = "active"): ShellSnapshot | null {
     const live = this.shellFeed.live();
     if (!live) return null;
     const floor = this.feedFloor;
     if (floor) {
-      if (live.activeSequence < floor.sequence && Date.now() < floor.until) return null;
-      this.feedFloor = null;
+      if (Date.now() >= floor.until || (live.activeSequence >= floor.sequence && live.archiveSequence >= floor.sequence)) this.feedFloor = null;
+      else if ((list === "active" ? live.activeSequence : live.archiveSequence) < floor.sequence) return null;
     }
     return live.read();
+  }
+
+  private releaseFeedWaiters(): void {
+    for (const waiter of [...this.feedWaiters]) waiter();
   }
 
   /**
@@ -991,11 +1010,11 @@ export class HttpT3Adapter implements T3Adapter {
    * or the feed once it is live and caught up (a T3 that is restarting can take its time with the HTTP snapshot, and
    * T3 streams a command's change long before a slow snapshot comes). No read waits for the feed.
    */
-  private orFromFeed<T>(read: Promise<T>, pick: (live: ShellSnapshot) => T): Promise<T> {
+  private orFromFeed<T>(read: Promise<T>, pick: (live: ShellSnapshot) => T, list: "active" | "archive" = "active"): Promise<T> {
     if (!this.shellFeed.started) return read;
     return new Promise<T>((resolve, reject) => {
       const waiter = () => {
-        const live = this.liveShell();
+        const live = this.liveShell(list);
         if (!live) return;
         this.feedWaiters.delete(waiter);
         resolve(pick(live));
@@ -1340,8 +1359,8 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
-    const live = this.liveShell();
-    const archived = live ? (live.archivedThreads ?? []) : await this.orFromFeed(this.readArchived(), (recovered) => recovered.archivedThreads ?? []);
+    const live = this.liveShell("archive");
+    const archived = live ? (live.archivedThreads ?? []) : await this.orFromFeed(this.readArchived(), (recovered) => recovered.archivedThreads ?? [], "archive");
     return archived.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
   }
 

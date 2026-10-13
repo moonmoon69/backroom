@@ -23,9 +23,15 @@
  * lists, and a late change never overwrites a newer one.
  *
  * Reads get the lists in the order T3's HTTP snapshot has them (its SQL): threads by updatedAt, then id; projects by
- * createdAt, then id. T3 holds back a thread's update that moves only its updatedAt for up to 5 s (it streams one per
- * item of a running turn), so a thread's updatedAt, and with it its place in the list, can trail T3's HTTP snapshot by
- * that much; nothing else in a thread's shell does.
+ * createdAt, then id.
+ *
+ * One limit, T3's: its stream drops a thread update that differs from the last one it sent only in updatedAt while
+ * that send is under 5 s old, and sends nothing to catch up afterwards (skipUnchangedThreadShells in its
+ * ShellStream.ts; such updates come with every item of a running turn). So a thread's updatedAt here can be up to 5 s
+ * older than T3's, and stays so until the thread's next change T3 streams or a reconnect; a change to anything else in
+ * a thread's shell always comes. Backroom shows updatedAt only as the minute-rounded age of a thread with no finished
+ * run, and keeps T3's order (by updatedAt) for the loose threads of one kind on the overview, where two threads updated
+ * within the same few seconds can trade places; the engine host does not read it.
  */
 import type { T3ShellChange, T3ShellFeedStatus } from "./types.ts";
 import { T3Unavailable } from "./types.ts";
@@ -65,6 +71,10 @@ export class ShellState {
    */
   get activeSequence(): number {
     return this.reached.active ?? 0;
+  }
+  /** The sequence the archived stream has reached: the archived list has caught up with a command once it is there. */
+  get archiveSequence(): number {
+    return this.reached.archive ?? 0;
   }
   private schemaVersion: number | undefined;
   /** Per stream, the sequence its snapshot and changes have reached; null until its snapshot is in. */
@@ -194,6 +204,11 @@ export interface ShellFeedOptions {
   connect: (onEnd: () => void) => Promise<FeedConnection>;
   /** A change was applied to the live shell; becoming live counts as one, naming no thread. */
   onChange: (change: T3ShellChange) => void;
+  /**
+   * A chunk was applied to the live shell, after onChange when it changed anything: a stream's sequence may have moved
+   * with no change (a removal of what the other stream already moved, a change T3 tells again).
+   */
+  onApplied?: () => void;
   /** How long T3 may take, once asked, to send both snapshots. Default 30 s. */
   timeoutMs?: number;
   /** How often the open socket is pinged; one silent for three of these counts as gone. Default 5 s. */
@@ -321,9 +336,12 @@ export class ShellFeed {
           this.set("connected", null);
           this.heartbeat(attempt, connection);
           this.options.onChange({ threadIds: null });
+          this.options.onApplied?.();
           return;
         }
-        if (this.shell === state && changed) this.options.onChange({ threadIds: threadIds ? [...threadIds] : null });
+        if (this.shell !== state) return;
+        if (changed) this.options.onChange({ threadIds: threadIds ? [...threadIds] : null });
+        this.options.onApplied?.();
       };
       for (const [tag, stream] of [["orchestration.subscribeShell", "active"], ["orchestration.subscribeArchivedShell", "archive"]] as const) {
         const subscription = connection.stream(tag, {}, deliver(stream));
