@@ -14,12 +14,15 @@
  *   POST /api/fake/question      { threadId, questions? }      a question on the running run -> { requestId }
  *                                questions: T3's own shape (options, allowCustomAnswer); T3's "Proceed?" yes/no by default
  *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
+ *   POST /api/fake/outage        { down, message?, shellOnly? } T3 stops answering (every call fails) or answers again;
+ *                                shellOnly: only its projects and threads fail, its descriptor still answers (#8)
  *   GET  /api/fake/request?threadId=…&requestId=…              an approval's or question's record, as T3 keeps it -> { status,
  *                                decision, answers }: what the page answered reached T3 ("resolved" with the decision or
  *                                the answers; a dismissed question "cancelled")
  */
 import { Hono, type Context } from "hono";
 import type { FakeT3Adapter } from "../adapter/fake.ts";
+import { T3Unavailable } from "../adapter/types.ts";
 
 /** The fetch handler to serve: `/api/fake/*` answered here, everything else by the app's own handler, as it was called. */
 export function withFakeControls<F extends (request: Request, ...rest: any[]) => Response | Promise<Response>>(fetch: F, fake: FakeT3Adapter): F {
@@ -65,6 +68,14 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/background", run((input) => {
     fake.setBackground(thread(input), Array.isArray(input.taskIds) ? input.taskIds.filter((id): id is string => typeof id === "string") : []);
     return {};
+  }));
+  controls.post("/api/fake/outage", run((input) => {
+    const shellOnly = input.shellOnly === true;
+    const failure = input.down === true ? new T3Unavailable(typeof input.message === "string" && input.message ? input.message : shellOnly ? "T3 did not answer within 30s (orchestration shell)" : "fetch failed: connect ECONNREFUSED (the fake T3 is down)") : null;
+    // Answering again clears both.
+    fake.outage = shellOnly ? null : failure;
+    fake.shellOutage = shellOnly ? failure : null;
+    return { down: failure !== null, shellOnly: failure !== null && shellOnly };
   }));
   return ((request: Request, ...rest: unknown[]) => (new URL(request.url).pathname.startsWith("/api/fake/") ? controls.fetch(request) : fetch(request, ...rest))) as F;
 }

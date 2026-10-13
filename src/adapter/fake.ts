@@ -95,6 +95,11 @@ export class FakeT3Adapter implements T3Adapter {
   private readonly seenCommands = new Set<string>();
   /** Simulated outage: every call throws until cleared. */
   outage: Error | null = null;
+  /**
+   * A restart half done (#8): T3 answers its descriptor and commands, but its projects and threads (the orchestration
+   * shell) are not served: their reads throw until cleared.
+   */
+  shellOutage: Error | null = null;
   /** When set, dispatched commands are dropped after being recorded (ack lost) to test reconciliation. */
   dropAcks = false;
   /** When set, T3 records the user message and its run, but the provider fails to start: the run fails with this error. */
@@ -238,6 +243,7 @@ export class FakeT3Adapter implements T3Adapter {
 
   async listProjects(): Promise<T3Project[]> {
     this.guard();
+    if (this.shellOutage) throw this.shellOutage;
     return [...this.projects];
   }
 
@@ -332,12 +338,14 @@ export class FakeT3Adapter implements T3Adapter {
 
   async listThreads(projectId?: string): Promise<T3ThreadShell[]> {
     this.guard();
+    if (this.shellOutage) throw this.shellOutage;
     // Like T3's shell snapshot: archived threads are listed apart.
     return [...this.threads.values()].map((t) => structuredClone(t.shell)).filter((t) => t.archivedAt === null && (!projectId || t.projectId === projectId));
   }
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
     this.guard();
+    if (this.shellOutage) throw this.shellOutage;
     return [...this.threads.values()].map((t) => structuredClone(t.shell)).filter((t) => t.archivedAt !== null);
   }
 

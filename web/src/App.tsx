@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 /** How long the overview's drawer takes to slide in (styles.css, ov-slide). */
 const SLIDE_MS = 160;
-import { api, ApiError, useDesk, useGit, useRoomCosts, useRoomStream } from "./api.ts";
+import { api, ApiError, useDesk, useGit, usePageStream, useRoomCosts } from "./api.ts";
+import { Latest, afterRoomGone, shownSnapshot, type T3Reach } from "./pageStream.ts";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { BrowserView } from "./components/BrowserView.tsx";
 import { Dialog } from "./components/Dialog.tsx";
@@ -49,7 +50,9 @@ export function App() {
   const [rooms, setRooms] = useState<RoomListItem[]>([]);
   const [selection, setSelection] = useState<Selection | null>(storedSelection);
   const selectedRoomId = selection?.kind === "room" ? selection.id : null;
-  const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  const [roomRead, setSnapshot] = useState<RoomSnapshot | null>(null);
+  // Only the selected room's snapshot is ever shown: a late answer for the room left a moment ago is not.
+  const snapshot = shownSnapshot(roomRead, selectedRoomId);
   // T3's projects and threads, for the overview. Kept at the last good reading while T3 does not answer.
   const [projects, setProjects] = useState<T3Project[] | null>(null);
   const [threads, setThreads] = useState<T3ThreadShell[]>([]);
@@ -94,65 +97,126 @@ export function App() {
     [toast],
   );
 
+  // Each loader applies an answer only if no newer read of it has been applied (pageStream.ts, Latest): a read that hung
+  // on T3 for 30 s does not put back what a newer one replaced.
+  const order = useRef({ status: new Latest(), rooms: new Latest(), t3: new Latest(), snapshot: new Latest(), browsers: new Latest(), presets: new Latest() }).current;
   const loadStatus = useCallback(() => {
-    api.status().then(setStatus).catch(report);
-  }, [report]);
+    const ticket = order.status.start();
+    api.status().then(
+      (next) => order.status.take(ticket) && setStatus(next),
+      (error) => order.status.take(ticket) && report(error),
+    );
+  }, [report, order]);
 
   const loadRooms = useCallback(() => {
-    api
-      .rooms()
-      .then(setRooms)
-      .catch(report);
-  }, [report]);
+    const ticket = order.rooms.start();
+    api.rooms().then(
+      (next) => order.rooms.take(ticket) && setRooms(next),
+      (error) => order.rooms.take(ticket) && report(error),
+    );
+  }, [report, order]);
 
   // Presets change only from this UI (or another tab of it), so they are read at the start and after a change.
   const [presets, setPresets] = useState<Preset[]>([]);
   const loadPresets = useCallback(() => {
     // The same list stays the same object, so the marks drawn from it are not redrawn every poll.
+    const ticket = order.presets.start();
     api
       .presets()
-      .then((next) => setPresets((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)))
+      .then((next) => order.presets.take(ticket) && setPresets((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)))
       .catch(() => undefined);
-  }, []);
+  }, [order]);
   const presetsValue = useMemo(() => ({ presets, reload: loadPresets }), [presets, loadPresets]);
 
   // Polled with the room list; failures are shown once on the overview, not as a toast every poll.
   // Browsers are local processes: cheap to read, polled with the room list. Null when the service cannot run them.
   const [browsers, setBrowsers] = useState<BrowserListItem[] | null>(null);
   const loadBrowsers = useCallback(() => {
+    const ticket = order.browsers.start();
     api.browsers().then(
-      (list) => setBrowsers(list.length > 0 ? list : null),
+      (list) => order.browsers.take(ticket) && setBrowsers(list.length > 0 ? list : null),
       () => undefined,
     );
-  }, []);
+  }, [order]);
 
   const loadT3 = useCallback(() => {
-    Promise.all([api.projects(), api.allThreads()])
-      .then(([projectList, threadList]) => {
+    const ticket = order.t3.start();
+    Promise.all([api.projects(), api.allThreads()]).then(
+      ([projectList, threadList]) => {
+        if (!order.t3.take(ticket)) return;
         setProjects(projectList);
         setThreads(threadList);
         setT3Error(null);
-      })
-      .catch((error: unknown) => setT3Error(error instanceof Error ? error.message : String(error)));
-  }, []);
+      },
+      (error: unknown) => order.t3.take(ticket) && setT3Error(error instanceof Error ? error.message : String(error)),
+    );
+  }, [order]);
 
   const loadSnapshot = useCallback(() => {
     if (!selectedRoomId) {
       setSnapshot(null);
       return;
     }
-    api
-      .room(selectedRoomId)
-      .then((next) => setSnapshot(next))
-      .catch((error) => {
+    const roomId = selectedRoomId;
+    const ticket = order.snapshot.start();
+    api.room(roomId).then(
+      (next) => order.snapshot.take(ticket) && setSnapshot(next),
+      (error) => {
+        if (!order.snapshot.take(ticket)) return;
         if (error instanceof ApiError && error.status === 404) {
-          setSelection(null);
-          setSnapshot(null);
+          // Gone: closed if it is still the one open, never another room opened since.
+          setSelection((current) => afterRoomGone(current, roomId));
+          setSnapshot((current) => (current?.room.id === roomId ? null : current));
           return;
         }
         report(error);
-      });
-  }, [selectedRoomId, report]);
+      },
+    );
+  }, [selectedRoomId, report, order]);
+
+  // The overview's own read (Overview.tsx) goes again when this changes.
+  const [overviewChanged, setOverviewChanged] = useState(0);
+  const loadAll = useCallback(() => {
+    loadStatus();
+    loadRooms();
+    loadT3();
+    loadBrowsers();
+    loadPresets();
+    loadSnapshot();
+    setOverviewChanged((n) => n + 1);
+  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets, loadSnapshot]);
+  // What the service pushes (GET /api/events): each event reads again what it names; the stream's every (re)open and the
+  // page's every return into view read it all.
+  const streaming = usePageStream({
+    all: loadAll,
+    rooms: () => {
+      loadRooms();
+      // A browser's change is told to the rooms that may use it.
+      loadBrowsers();
+      setOverviewChanged((n) => n + 1);
+    },
+    room: (roomId) => {
+      if (roomId === selectedRoomId) loadSnapshot();
+    },
+    shell: () => {
+      // T3's threads: the overview's, and the members' status in the room list and the open room.
+      loadT3();
+      loadRooms();
+      loadSnapshot();
+      setOverviewChanged((n) => n + 1);
+    },
+    status: (reach: T3Reach) => {
+      if (reach.up) {
+        // The banner goes with the next read that succeeds.
+        loadAll();
+        return;
+      }
+      // Newer than any read of T3's lists still in flight: none of their answers is applied after it.
+      order.t3.supersede();
+      setT3Error(reach.error ?? "T3 is not answering");
+      loadStatus();
+    },
+  });
 
   useEffect(() => {
     loadStatus();
@@ -160,21 +224,34 @@ export function App() {
     loadT3();
     loadBrowsers();
     loadPresets();
-    // The room list and thread list carry live activity (working, background, needs you) for the overview; the crew
-    // comes along, so a look changed on another device shows here too; the connection status asks T3 itself, so it
-    // stays slow.
-    const rooms = setInterval(() => {
-      loadRooms();
-      loadT3();
+  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  // Whether the stream is open, on the page's root: the rehearsal waits for it (scripts/rehearse.ts, page push).
+  useEffect(() => {
+    document.documentElement.dataset.stream = streaming ? "open" : "closed";
+  }, [streaming]);
+  useEffect(() => {
+    // The room list and thread list carry live activity (working, background, needs you) for the overview, and the
+    // connection status asks T3 itself. The stream tells their changes as they happen, so while it is open the timers
+    // only back it up; while it is not they run at their own pace. Browsers and presets are not told by the stream (a
+    // browser no room may use, a preset changed on another device): read every 8 s, from the service only.
+    const covered = setInterval(
+      () => {
+        loadRooms();
+        loadT3();
+      },
+      streaming ? 60000 : 8000,
+    );
+    const local = setInterval(() => {
       loadBrowsers();
       loadPresets();
     }, 8000);
-    const status = setInterval(loadStatus, 30000);
+    const status = setInterval(loadStatus, streaming ? 60000 : 30000);
     return () => {
-      clearInterval(rooms);
+      clearInterval(covered);
+      clearInterval(local);
       clearInterval(status);
     };
-  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  }, [streaming, loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
 
   /** Open something in the drawer over the overview; the focus comes back to the item it was opened from. */
   const openInDrawer = useCallback((next: Selection) => {
@@ -271,7 +348,6 @@ export function App() {
     loadSnapshot();
     loadRooms();
   }, [loadSnapshot, loadRooms]);
-  useRoomStream(selectedRoomId, onRoomChanged);
   // Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while this page is in use.
   usePresence();
 
@@ -329,14 +405,14 @@ export function App() {
     ? Object.values(snapshot.participantStatus).some((s) => isRunActive(s.status) || s.externalActivity)
     : false;
   const deskInterval = deskRunning || snapshotRunning ? 2500 : 10000;
-  // The stream announces the journal's appends; a member's status also comes from T3 (a turn starts or ends there), so
-  // the open room is read again on a timer too: often while anything runs, seldom when all is quiet.
+  // The stream tells the room's changes and T3's (a turn starts or ends there), so while it is open the timer only backs
+  // it up; while it is not, the open room is read often while anything runs, seldom when all is quiet.
   const roomBusy = snapshot ? snapshotRunning || snapshot.runs.some((run) => run.phase !== "terminal") : false;
   useEffect(() => {
     if (!selectedRoomId) return;
-    const timer = setInterval(loadSnapshot, roomBusy ? 4000 : 15000);
+    const timer = setInterval(loadSnapshot, streaming ? 60000 : roomBusy ? 4000 : 15000);
     return () => clearInterval(timer);
-  }, [selectedRoomId, loadSnapshot, roomBusy]);
+  }, [selectedRoomId, loadSnapshot, roomBusy, streaming]);
   const { desk, error: deskError } = useDesk(snapshot ? snapshot.room.id : null, deskInterval);
   // A new reply is priced at once: the nonce is the seq of the newest post that stands for a turn (spend is keyed by those).
   const lastReplySeq = snapshot ? snapshot.posts.reduce((seq, post) => (post.turn ? post.seq : seq), 0) : 0;
@@ -581,6 +657,8 @@ export function App() {
           onCommand={runCommand}
           onT3Changed={loadT3}
           onBrowsersChanged={loadBrowsers}
+          changed={overviewChanged}
+          streaming={streaming}
           active={!open}
           returnTo={returnTo}
         />

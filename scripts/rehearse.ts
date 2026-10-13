@@ -1812,6 +1812,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 25. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
   check.passed.push(...(await rehearseProjectBrowsers(service, browser, room, selection, section)));
 
+  // 26. Push from the service (B, #48): a change shows on the overview with no poll due; the T3 banner follows T3.
+  check.passed.push(...(await rehearsePagePush(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -2038,6 +2041,93 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
       browser.on("press", "Escape");
       browser.poll<GlobeRead>("the globe to say off (no setting), the focus back on it", globeRead, (g) => g?.label === `Browsers for new rooms in ${title}: off (no setting)` && !g.checked && g.focused);
       log("  page: Esc closed the dialog; the globe says off (no setting) and has the focus");
+    },
+  );
+  return passed;
+}
+
+/**
+ * Push from the service to the page (B, board #48): the page keeps one stream of what changed (GET /api/events), and
+ * while it is open its timers only back it up, every 60 s. A room renamed through the API shows on the overview within
+ * 2 s, three times running (no poll is due: the room list's and the overview's timers would take 60 s); the fake T3
+ * serving no projects or threads while its descriptor still answers (a restart half done, #8) puts up the overview's T3
+ * banner, and the T3 chip says error (one truth, the service's), within one check of T3 (2 s) and a read, and both clear
+ * as soon as it answers again. When it is seen is taken in the page (its clock is this machine's),
+ * so the rooms-browser calls' own time does not count. Its section begins here, before its states.
+ */
+async function rehearsePagePush(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("push: a room renamed through the API shows on the overview within 2 s, no poll due"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const { roomId } = await service.command<{ roomId: string }>({ type: "room.create", projectId: "project_demo", title: "push-scratch" });
+  // From the overview, freshly loaded: the stream opens and the page's timers start at the stream's pace.
+  browser.on("reload");
+  browser.waitFor("push-scratch");
+  /** In the page: when `text` is first seen in the overview, in this machine's ms (window.__pushSeen). */
+  const watch = (text: string, present: boolean) =>
+    browser.on(
+      "eval",
+      `() => { clearInterval(window.__pushWatch); window.__pushSeen = null; window.__pushWatch = setInterval(() => { const here = (document.querySelector('.overview')?.textContent ?? document.body.textContent ?? '').includes(${JSON.stringify(text)}); if (here === ${present}) { window.__pushSeen = Date.now(); clearInterval(window.__pushWatch); } }, 20); return true; }`,
+    );
+  const seenAt = (what: string) => browser.poll<number | null>(what, "() => window.__pushSeen ?? null", (v) => typeof v === "number", 10_000)!;
+  // The story records when each change showed; each state's own checks judge it, so a state played silently (--only of
+  // the other) does not fail on it.
+  const lags: number[] = [];
+  for (const n of [1, 2, 3]) {
+    const title = `push-renamed-${n}`;
+    watch(title, true);
+    const sent = Date.now();
+    await service.command({ type: "room.update", roomId, title });
+    lags.push(seenAt(`"${title}" on the overview`) - sent);
+    execFileSync("sleep", ["1"]);
+  }
+  await state(
+    "push: a room renamed through the API shows on the overview within 2 s, no poll due",
+    async () => ((await service.call<Array<{ id: string; title: string }>>("GET", "/api/rooms")).find((r) => r.id === roomId)?.title === "push-renamed-3" ? "GET /api/rooms: the room is push-renamed-3" : null),
+    ["push-renamed-3"],
+    () => {
+      lags.forEach((lag, index) => {
+        if (lag > 2000) fail(`"push-renamed-${index + 1}" showed on the overview ${lag} ms after the rename: over 2 s, so it waited for a poll`);
+      });
+      browser.poll<string | null>("the page's stream to be open", "() => document.documentElement.dataset.stream ?? null", (v) => v === "open", 2_000);
+      log(`  page: each rename showed on the overview ${lags.map((lag) => `${lag} ms`).join(", ")} after it was sent (the stream open; no poll due for 60 s)`);
+    },
+  );
+
+  const banner = "T3 is not answering; its projects and threads are not listed.";
+  const chipTone = "() => document.querySelector('.connection-chip .dot')?.className ?? null";
+  /** The chip's dot once it has the tone wanted, or as it is after 5 s. */
+  const chipWhen = (tone: string): string | null => {
+    const deadline = Date.now() + 5_000;
+    let read = browser.eval<string | null>(chipTone);
+    while (!read?.includes(tone) && Date.now() < deadline) {
+      execFileSync("sleep", ["0.25"]);
+      read = browser.eval<string | null>(chipTone);
+    }
+    return read;
+  };
+  watch(banner, true);
+  const down = Date.now();
+  // A restart half done (#8): T3 answers its descriptor but not its projects and threads.
+  await service.call("POST", "/api/fake/outage", { down: true, shellOnly: true });
+  const downLag = seenAt("the T3 banner on the overview") - down;
+  const chipDown = chipWhen("dot-err");
+  watch(banner, false);
+  const up = Date.now();
+  await service.call("POST", "/api/fake/outage", { down: false });
+  const upLag = seenAt("the T3 banner gone from the overview") - up;
+  const chipUp = chipWhen("dot-ok");
+  await state(
+    "push: the T3 banner and chip say T3 is not answering while it serves no projects or threads (its descriptor still answering), and both clear when it is back",
+    async () => ((await service.call<{ t3: { error: string | null } }>("GET", "/api/status")).t3.error === null ? "GET /api/status: T3 answers, no error" : null),
+    [],
+    () => {
+      if (downLag > 3500) fail(`the T3 banner showed ${downLag} ms after T3 went down: over one check of T3 (2 s) and a read`);
+      if (!chipDown?.includes("dot-err")) fail(`the T3 chip did not say error while the banner showed (T3's descriptor answering, its shell not): ${chipDown}`);
+      if (upLag > 3500) fail(`the T3 banner cleared ${upLag} ms after T3 answered again: over one check of T3 (2 s) and a read`);
+      if (!chipUp?.includes("dot-ok")) fail(`the T3 chip is not green again after T3 came back: ${chipUp}`);
+      if (browser.eval<boolean>(`() => document.body.textContent.includes(${JSON.stringify(banner)})`)) fail("the T3 banner is still shown");
+      log(`  page: the banner showed ${downLag} ms after T3 went down, with the chip saying error; it cleared ${upLag} ms after T3 came back, the chip green again`);
     },
   );
   return passed;

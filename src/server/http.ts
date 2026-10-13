@@ -117,6 +117,16 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         error = (caught as Error).message;
         errorAt = new Date().toISOString();
       }
+      // Whether T3 answers is one truth, the one pages are pushed (src/app/changes.ts), as its check last found it: T3
+      // answering its descriptor while its shell does not (a restart half done, #8) is T3 not answering, on the chip as on
+      // the banner. Never waited on: a shell read T3 holds up would hold the chip back as long (review #201). Not known
+      // yet, a check starts, and what it finds is pushed to the pages, which read this again.
+      const reach = stack.changes.status();
+      if (!reach) void stack.changes.check();
+      if (reach && !reach.up) {
+        error = reach.error ?? "T3 is not answering";
+        errorAt = reach.at;
+      }
     }
     // The built UI's entry script (hashed name). The page compares it with what it loaded to offer a reload.
     let uiBuild: string | null = null;
@@ -141,6 +151,57 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         error,
         errorAt,
       },
+    });
+  });
+
+  /**
+   * What changed, pushed to each open page (src/app/changes.ts), one stream per page: `rooms` (a room changed), `room`
+   * with { roomId } (that room's snapshot), `shell` (T3's projects or threads), `status` (T3 reachable or not, as
+   * { up, error, at }; sent at once while T3 is down). A comment every 20 s keeps the stream open; `retry` tells the
+   * browser how soon to reconnect. The page reads again on each event, and everything again on each (re)connect.
+   */
+  app.get("/api/events", (c) => {
+    c.header("X-Accel-Buffering", "no");
+    return streamSSE(c, async (stream) => {
+      let closed = false;
+      // Written one after another: a write is not started before the one before it has gone.
+      let queue: Promise<unknown> = Promise.resolve();
+      const write = (text: string) => {
+        queue = queue.then(() => (closed ? undefined : stream.write(text))).catch(() => undefined);
+        return queue;
+      };
+      const send = (event: string, data: unknown) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      let unsubscribe: (() => void) | null = null;
+      let wake: (() => void) | null = null;
+      // The page went away, or the service is shutting down: the stream ends and stops listening.
+      const end = () => {
+        closed = true;
+        unsubscribe?.();
+        wake?.();
+      };
+      unsubscribe = stack.changes.subscribe((event) => {
+        if (event.type === "rooms") void send("rooms", {});
+        else if (event.type === "room") void send("room", { roomId: event.roomId });
+        else if (event.type === "shell") void send("shell", {});
+        else if (event.type === "status") void send("status", event.status);
+        else end();
+      });
+      stream.onAbort(end);
+      if (closed) return;
+      await write("retry: 3000\n\n");
+      // A page assumes T3 answers until told otherwise: told at once when it does not.
+      const known = stack.changes.status();
+      if (known && !known.up) await send("status", known);
+      while (!closed) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, stack.changes.heartbeatMs);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        if (!closed) await write(`: heartbeat ${Date.now()}\n\n`);
+      }
     });
   });
 

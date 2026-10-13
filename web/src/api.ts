@@ -1,5 +1,6 @@
-/** Typed fetch helpers for the Backroom HTTP API plus the SSE room-stream hook. */
+/** Typed fetch helpers for the Backroom HTTP API plus the page's stream of changes. */
 import { useEffect, useRef, useState } from "react";
+import { PageStream, type EventSourceLike, type PageStreamDeps, type PageStreamHandlers } from "./pageStream.ts";
 import type {
   FilePreviewResponse,
   UpdatesView,
@@ -381,31 +382,41 @@ export function useLive(
 }
 
 /**
- * Subscribe to a room's SSE stream. `onChange` runs (debounced) whenever the server reports
- * `room.changed`. Reconnects automatically through the browser's EventSource behaviour.
+ * The page's one stream of what changed on the service (pageStream.ts): the handlers run on each event, and `all` on
+ * each (re)open and each return into view. Returns whether the stream is open, so the timers can slow down.
  */
-export function useRoomStream(roomId: string | null, onChange: () => void, debounceMs = 150): void {
-  const callback = useRef(onChange);
-  callback.current = onChange;
+export function usePageStream(handlers: Omit<PageStreamHandlers, "open">): boolean {
+  const current = useRef(handlers);
+  current.current = handlers;
+  const [open, setOpen] = useState(false);
   useEffect(() => {
-    if (!roomId) return;
-    const source = new EventSource(`/api/rooms/${encodeURIComponent(roomId)}/stream`);
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
-        callback.current();
-      }, debounceMs);
-    };
-    source.addEventListener("room.changed", schedule);
-    source.addEventListener("hello", () => callback.current());
-    source.onerror = () => {
-      // EventSource retries on its own; refetch once reconnected via the next "hello".
-    };
-    return () => {
-      if (timer) clearTimeout(timer);
-      source.close();
-    };
-  }, [roomId, debounceMs]);
+    const stream = new PageStream(
+      {
+        all: () => current.current.all(),
+        rooms: () => current.current.rooms(),
+        room: (roomId) => current.current.room(roomId),
+        shell: () => current.current.shell(),
+        status: (reach) => current.current.status(reach),
+        open: setOpen,
+      },
+      browserDeps(),
+    );
+    stream.start();
+    return () => stream.stop();
+  }, []);
+  return open;
+}
+
+/** The browser's own pieces, for the page. */
+function browserDeps(): PageStreamDeps {
+  return {
+    connect: (url) => new EventSource(url) as unknown as EventSourceLike,
+    hidden: () => document.visibilityState === "hidden",
+    onVisibility: (listener) => {
+      document.addEventListener("visibilitychange", listener);
+      return () => document.removeEventListener("visibilitychange", listener);
+    },
+    setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+    clearTimeout: (timer) => window.clearTimeout(timer as number),
+  };
 }

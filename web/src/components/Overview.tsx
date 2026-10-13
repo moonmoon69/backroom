@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { api } from "../api.ts";
+import { Latest } from "../pageStream.ts";
 import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
@@ -67,6 +68,8 @@ export function Overview({
   onCommand,
   onT3Changed,
   onBrowsersChanged,
+  changed,
+  streaming,
   controls,
   active,
   returnTo,
@@ -89,6 +92,10 @@ export function Overview({
   /** Re-read projects from T3 (after one was added). */
   onT3Changed: () => void;
   onBrowsersChanged: () => void;
+  /** Changes when the service tells of a change (App.tsx, the page's stream): the overview reads again at once. */
+  changed: number;
+  /** Whether the page's stream is open: the overview's own timer then only backs it up. */
+  streaming: boolean;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
   /** Nothing covers the page (no room, thread or browser open over it): the arrows are the page's. */
@@ -124,25 +131,32 @@ export function Overview({
   const [error, setError] = useState<string | null>(null);
   // Conversations with unsent text (drafts.ts) carry a mark.
   const drafts = useDraftScopes();
+  // The newest read's answer wins (pageStream.ts, Latest), and none lands after the page is gone.
+  const reads = useRef({ order: new Latest(), stopped: false }).current;
+  const read = useCallback(() => {
+    const ticket = reads.order.start();
+    api.overview().then(
+      (result) => {
+        if (reads.stopped || !reads.order.take(ticket)) return;
+        setDetail(new Map(result.rooms.map((room) => [room.id, room])));
+        setLooseThreads(result.threads);
+        setError(null);
+      },
+      (caught) => !reads.stopped && reads.order.take(ticket) && setError(caught instanceof Error ? caught.message : String(caught)),
+    );
+  }, [reads]);
   useEffect(() => {
-    let stopped = false;
-    const read = () =>
-      api
-        .overview()
-        .then((result) => {
-          if (stopped) return;
-          setDetail(new Map(result.rooms.map((room) => [room.id, room])));
-          setLooseThreads(result.threads);
-          setError(null);
-        })
-        .catch((caught) => !stopped && setError(caught instanceof Error ? caught.message : String(caught)));
-    void read();
-    const timer = setInterval(() => void read(), 5000);
+    reads.stopped = false;
     return () => {
-      stopped = true;
-      clearInterval(timer);
+      reads.stopped = true;
     };
-  }, []);
+  }, [reads]);
+  // At the start and at each change the stream tells of.
+  useEffect(() => read(), [read, changed]);
+  useEffect(() => {
+    const timer = setInterval(read, streaming ? 60000 : 5000);
+    return () => clearInterval(timer);
+  }, [read, streaming]);
 
   // ---- the keys (keys.ts): the arrows move the focus over the page's rows of tiles and buttons ----
   const root = useRef<HTMLDivElement>(null);
