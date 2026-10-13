@@ -2170,7 +2170,10 @@ async function rehearseThreadPush(service: Service, browser: Browser, room: Room
     return browser.eval<number>(`() => performance.getEntriesByType('resource').filter((entry) => new URL(entry.name).pathname === ${JSON.stringify(path)}).length`);
   };
 
-  // @fable's turn, held: his live turn shows on the board, read once since it started.
+  // @fable's turn, held: his live turn shows on the board, read once since it started. After the story's reseat of him
+  // (section 21) his fresh seat is the Consigliere.
+  if ((await room.snapshot()).seats.find((x) => x.seatId === room.seat.fable)?.status === "retired") await room.rebind("fable");
+  await room.settle("fable");
   await room.message("Count the lines in src/dates.ts, and say how far you are as you go.");
   await room.live("fable");
   browser.poll<boolean>("his live turn on the board", "() => Boolean(document.querySelector('.timeline .live-feed-chat'))", (v) => v, 10_000);
@@ -2198,7 +2201,7 @@ async function rehearseThreadPush(service: Service, browser: Browser, room: Room
 
   // His thread over the room (the thread view): Members, his tile, Open thread.
   browser.click(/button "Members \(\d+\)"/);
-  browser.click(/button "fable Consigliere /);
+  browser.click(new RegExp(`button "${room.name.fable} Consigliere `));
   browser.click(/menuitem "Open thread"/);
   browser.poll<boolean>("his thread over the room, with his running turn", `() => (document.querySelector('.ov-layer-member')?.textContent ?? '').includes(${JSON.stringify(said)})`, (v) => v, 10_000);
   execFileSync("sleep", ["1"]);
