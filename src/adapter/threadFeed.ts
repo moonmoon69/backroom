@@ -24,20 +24,24 @@
  *
  * A watched thread's detail while its stream is live (synchronized, on the feed's current socket):
  * - Each kind (bounded, the recent window; full, the whole history) is cached with the sequence its read reflects:
- *   T3's snapshotSequence, or the latest the stream had shown when the read was sent if that is later (T3 streams only
+ *   T3's snapshotSequence, or the latest the streams had shown when the read was sent if that is later (T3 streams only
  *   what it has stored, and a read sees what is stored). A cached read only gives way to a newer one.
  * - The stream showing a sequence past the cached bounded read has it read again: at once after a quiet spell, then at
  *   most once per 2 s per thread while the thread keeps moving, and once more after the last change. An event the
- *   cached read already covers, or one shown again, reads nothing; one that comes during a read is read after it.
- * - Every caller gets the cached detail: during a burst, up to the throttle behind the stream. A full detail is never
- *   older than the bounded one (a caller that saw the bounded detail and asks for the full gets one at least as new):
- *   it is read again once a bounded read has moved past it.
+ *   cached read already covers, or one shown again, reads nothing; one that comes during a read is read after it. An
+ *   owed read that fails is tried again 5 s later, doubling up to a minute, until one is in.
+ * - Every caller gets the cached detail: during a burst, up to the throttle behind the stream. Never older than the
+ *   caller's floor, though: the sequence of the thread's latest change in the shell it reads beside the detail (all T3's
+ *   shell stream tells of the thread but its time: its status, runs, request, background tasks). A cached read below it
+ *   is read again, so a shell and a detail read together agree: the engine host imports from the detail what the shell
+ *   says has happened. A full detail is never older than the bounded one: a newer bounded read lets the full one go.
  * - A command on the thread (one of this adapter's) has the next read of each kind made afresh, at once.
  * - Each newer bounded read is told (onChange) once it is cached: the engine host wakes, open pages read again.
- * Read from T3 as before (shared with a read of the same kind in flight, and cached for later): a thread nobody watches,
- * one whose stream is not live yet (so after a reconnect the cache is trusted again only once T3 has replayed what it
- * missed), one T3 refuses to stream (logged; asked again later; its pages keep their old cadence), every thread while
- * the feed is down, and any thread after a read of it failed, until one succeeds.
+ * Read from T3 on each call, as before (a read of the caller's own, sent after it called; cached for later): a thread
+ * nobody watches (not cached), one whose stream is not live yet (so after a reconnect the cache is trusted again only
+ * once T3 has replayed what it missed), one T3 refuses to stream (logged, and told, so its pages read it again and keep
+ * their old cadence; asked again later), every thread while the feed is down, and any thread after a read of it failed,
+ * until one succeeds.
  */
 import type { FeedConnection } from "./shellFeed.ts";
 
@@ -165,9 +169,16 @@ export interface ThreadFeedOptions<S extends Read = ThreadSnapshot> {
   read: (threadId: string, bounded: boolean) => Promise<S | null>;
   /** A watched thread's cached detail moved on (a newer bounded read is in): told once it is cached. */
   onChange: (threadId: string) => void;
+  /**
+   * The sequence of the thread's latest change in the shell its callers read beside its detail (the shell feed's): no
+   * older detail is served, and a read sent after it is labelled at least with it.
+   */
+  floor?: (threadId: string) => number;
   log?: (message: string, detail?: unknown) => void;
   /** The least time between two reads a thread's events cause. Default 2 s. */
   throttleMs?: number;
+  /** The wait before an owed read that failed is tried again: doubling from it up to a minute. Default 5 s. */
+  readRetryMs?: number;
   leaseMs?: number;
   lingerMs?: number;
   /** The wait before T3 is asked again for a stream it refused or ended: doubling from retryMs up to retryMaxMs (30 s, 5 min). */
@@ -205,12 +216,15 @@ class Thread<S> {
   /** Bumped by each command on the thread: a read sent before it is not served after it. */
   gen = 0;
   readonly cache: Record<Kind, Entry<S> | null> = { bounded: null, full: null };
-  readonly reading: Record<Kind, { promise: Promise<S | null>; gen: number } | null> = { bounded: null, full: null };
+  readonly reading: Record<Kind, { promise: Promise<{ snapshot: S | null; sequence: number }>; gen: number } | null> = { bounded: null, full: null };
   /** The latest read failed: callers read for themselves until one succeeds. */
   failed = false;
   /** When the latest bounded read was sent, and the timer of the next one its events are owed. */
   lastRead = Number.NEGATIVE_INFINITY;
   timer: Timer | null = null;
+  /** Owed reads that failed in a row, and when the next may be sent. */
+  retries = 0;
+  retryAt = 0;
 }
 
 /** Thread details from T3's thread streams, for the threads watched (see the header). */
@@ -282,14 +296,20 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     if (typeof sequence === "number") thread.latest = Math.max(thread.latest, sequence);
   }
 
-  /** The thread's detail, bounded or whole: as the header says, from the cache or from T3. */
+  /** The thread's detail, bounded or whole: as the header says, from the cache or from T3; never older than its floor. */
   async detail(threadId: string, bounded: boolean): Promise<S | null> {
     const kind: Kind = bounded ? "bounded" : "full";
     const thread = this.threads.get(threadId);
     if (!thread) return await this.options.read(threadId, bounded);
+    if (!this.live(thread) || thread.failed) return (await this.read(threadId, thread, kind, false)).snapshot;
+    // The shell stream can be ahead of the thread's: what it shows is a change of the thread all the same.
+    const floor = this.floor(threadId);
+    thread.latest = Math.max(thread.latest, floor);
     const entry = thread.cache[kind];
-    if (this.live(thread) && !thread.failed && entry && entry.gen === thread.gen && (kind === "bounded" || this.fullCurrent(thread, entry))) return entry.snapshot;
-    return await this.read(threadId, thread, kind);
+    if (entry && entry.gen === thread.gen && entry.sequence >= floor) return entry.snapshot;
+    const shared = await this.read(threadId, thread, kind, true);
+    if (shared.sequence >= floor) return shared.snapshot;
+    return (await this.read(threadId, thread, kind, false)).snapshot;
   }
 
   close(): void {
@@ -299,10 +319,8 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     this.connection = null;
   }
 
-  /** A full read may be served while it is not older than the bounded one (of the same commands). */
-  private fullCurrent(thread: Thread<S>, entry: Entry<S>): boolean {
-    const bounded = thread.cache.bounded;
-    return entry.sequence >= thread.latest || !bounded || bounded.gen !== thread.gen || entry.sequence >= bounded.sequence;
+  private floor(threadId: string): number {
+    return this.options.floor?.(threadId) ?? 0;
   }
 
   private live(thread: Thread<S>): boolean {
@@ -359,7 +377,7 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
       );
     };
     if (thread.cache.bounded || thread.cache.full) open();
-    else this.read(id, thread, "bounded").then(open, open);
+    else this.read(id, thread, "bounded", true).then(open, open);
   }
 
   private values(id: string, thread: Thread<S>, stream: Stream, values: unknown[]): void {
@@ -388,6 +406,8 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     thread.refused = error === null ? "T3 ended the thread's stream" : error instanceof Error ? error.message : String(error);
     const delay = Math.min(this.options.retryMaxMs ?? 300_000, (this.options.retryMs ?? 30_000) * 2 ** (thread.refusals - 1));
     this.options.log?.("t3 thread stream refused: its detail is read from T3 directly", { threadId: id, error: thread.refused, retryInMs: delay });
+    // Its pages read it again: they learn its changes are no longer pushed, and keep their own cadence.
+    this.options.onChange(id);
     thread.retry = setTimeout(() => {
       thread.retry = null;
       if (this.threads.get(id) === thread) this.subscribe(id, thread);
@@ -395,12 +415,16 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     thread.retry.unref?.();
   }
 
-  /** A read of the thread, shared with one of the same kind in flight since the latest command; cached once in. */
-  private read(id: string, thread: Thread<S>, kind: Kind): Promise<S | null> {
+  /**
+   * A read of the thread, with the sequence it reflects; cached once in. `shared`: the read of the same kind in flight
+   * since the latest command, if there is one; else (and always without `shared`) a read sent now.
+   */
+  private read(id: string, thread: Thread<S>, kind: Kind, shared: boolean): Promise<{ snapshot: S | null; sequence: number }> {
     const inFlight = thread.reading[kind];
-    if (inFlight && inFlight.gen === thread.gen) return inFlight.promise;
+    if (shared && inFlight && inFlight.gen === thread.gen) return inFlight.promise;
     const gen = thread.gen;
-    const shown = thread.latest;
+    // What the streams have shown of the thread by now: T3 had stored it, so a read sent now reflects it.
+    const shown = Math.max(thread.latest, this.floor(id));
     if (kind === "bounded") thread.lastRead = this.now();
     const done = () => {
       if (thread.reading[kind]?.promise === promise) thread.reading[kind] = null;
@@ -409,8 +433,8 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
       (snapshot) => {
         done();
         thread.failed = false;
-        this.store(id, thread, kind, snapshot, gen, shown);
-        return snapshot;
+        if (kind === "bounded") thread.retries = 0;
+        return { snapshot, sequence: this.store(id, thread, kind, snapshot, gen, shown) };
       },
       (error: unknown) => {
         done();
@@ -422,17 +446,22 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     return promise;
   }
 
-  private store(id: string, thread: Thread<S>, kind: Kind, snapshot: S | null, gen: number, shown: number): void {
-    if (this.threads.get(id) !== thread) return;
+  /** Cache a read (unless a newer one is held), and say what sequence it reflects. */
+  private store(id: string, thread: Thread<S>, kind: Kind, snapshot: S | null, gen: number, shown: number): number {
     const read = typeof snapshot?.snapshotSequence === "number" ? snapshot.snapshotSequence : null;
     const sequence = Math.max(read ?? Number.NEGATIVE_INFINITY, shown);
+    if (this.threads.get(id) !== thread) return sequence;
     thread.latest = Math.max(thread.latest, sequence);
     const held = thread.cache[kind];
     if (!held || sequence > held.sequence || (sequence === held.sequence && gen > held.gen)) {
       thread.cache[kind] = { snapshot, sequence, read, gen };
+      // A full read older than the bounded one is never served again: it is let go (a long thread's runs to megabytes).
+      const full = thread.cache.full;
+      if (kind === "bounded" && full && full.sequence < sequence) thread.cache.full = null;
       if (kind === "bounded" && held && sequence > held.sequence && this.live(thread)) this.options.onChange(id);
     }
     if (kind === "bounded" && this.live(thread)) this.owed(id, thread);
+    return sequence;
   }
 
   /** The stream has shown a sequence past the cached bounded read: read it, throttled. */
@@ -446,9 +475,14 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
       if (this.threads.get(id) !== thread || !this.live(thread)) return;
       const cached = thread.cache.bounded;
       if (cached && cached.sequence >= thread.latest) return;
-      this.read(id, thread, "bounded").catch(() => undefined);
+      this.read(id, thread, "bounded", true).catch(() => {
+        // Tried again later: a page that shows the thread hears of the change once it is read.
+        thread.retries += 1;
+        thread.retryAt = this.now() + Math.min(60_000, (this.options.readRetryMs ?? 5_000) * 2 ** (thread.retries - 1));
+        this.owed(id, thread);
+      });
     };
-    const wait = thread.lastRead + this.throttleMs - this.now();
+    const wait = Math.max(thread.lastRead + this.throttleMs, thread.retries > 0 ? thread.retryAt : 0) - this.now();
     if (wait <= 0) return run();
     thread.timer = setTimeout(run, wait);
     thread.timer.unref?.();

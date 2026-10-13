@@ -33,11 +33,13 @@ function countTicks(r: Room): { runs: number } {
 
 /**
  * The fake T3 with its details served as the HTTP adapter serves them: through the thread feed, its reads of T3 counted,
- * and the fake's own changes to a watched thread as T3's stream of it (an event each, numbered).
+ * the fake's own changes to a watched thread as T3's stream of it (an event each, numbered), and each thread's floor
+ * as the adapter takes it from the shell feed: the sequence at which its listed shell last changed in more than its time.
  */
 class StreamedFake extends RuntimeFake {
   readonly reads: Array<{ threadId: string; bounded: boolean }> = [];
   private sequence = 0;
+  private readonly floors = new Map<string, { key: string; sequence: number }>();
   private readonly told = new Set<(threadId: string) => void>();
   private readonly streams = new Map<string, (values: unknown[]) => void>();
   readonly detailFeed: ThreadFeed<T3ThreadDetail>;
@@ -52,6 +54,15 @@ class StreamedFake extends RuntimeFake {
       },
       onChange: (threadId) => {
         for (const listener of [...this.told]) listener(threadId);
+      },
+      floor: (threadId) => {
+        const shell = this.threads.get(threadId)?.shell;
+        if (!shell) return 0;
+        const key = JSON.stringify({ ...shell, updatedAt: undefined });
+        const known = this.floors.get(threadId);
+        if (known?.key === key) return known.sequence;
+        this.floors.set(threadId, { key, sequence: this.sequence });
+        return this.sequence;
       },
       throttleMs: 0,
     });
@@ -202,4 +213,36 @@ test("keep-alives fall due on the clock while the seat's thread, unchanged, is s
   await room.tick();
   assert.equal(keepAlives(), 1, "due on the clock: posted");
   assert.equal(room.wakes("C"), wakes + 1, "and sent");
+});
+
+test("review #1: a turn the room did not start, whose end the shell shows while the thread's own read is throttled, is imported from a detail read beside that shell", async () => {
+  let fake!: StreamedFake;
+  room = await Room.create({ fake: () => (fake = new StreamedFake()) });
+  const id = room.id("ask-C");
+  room.host.request(room.room, { actor: "C", id, to: "W", body: "First job." });
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) {
+      await room.tick();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  await settle();
+  room.complete("W", "First job done.");
+  await settle();
+  if (room.running("C")) room.complete("C", "ok");
+  await settle();
+  const W = room.threadOf("W");
+  room.fake.startExternalRun(W, "Quick question typed in T3");
+  await room.tick(2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The real throttle from here on: a thread's own reads at most one per 2 s.
+  (fake.detailFeed as unknown as { throttleMs: number }).throttleMs = 2000;
+  room.fake.say(W, "thinking");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await room.tick(2);
+  // The turn ends: the thread's own read of it is owed, throttled; a tick comes meanwhile (the shell's wake, the interval).
+  room.complete("W", "Node 24.");
+  await room.tick(2);
+  const followUps = () => room.p.events.filter((e) => e.data.kind === "progress" && (e.data as { milestone?: string }).milestone === "follow-up");
+  assert.ok(followUps().some((e) => JSON.stringify(e.data).includes("Node 24.")), `imported in the tick that listed its end: ${JSON.stringify(followUps().map((e) => (e.data as { body?: string }).body))}`);
 });

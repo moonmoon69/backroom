@@ -554,6 +554,8 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly feedListeners = new Set<(status: T3ShellFeedStatus) => void>();
   /** The watched threads' details as T3 streams their changes, on the shell feed's socket. */
   private readonly threadFeed: ThreadFeed;
+  /** Per thread, its shell as of its latest detail read (all but its time) and the sequence that set it: the floor. */
+  private readonly detailFloors = new Map<string, { key: string; sequence: number }>();
   private readonly threadListeners = new Set<(threadId: string) => void>();
   /**
    * After a command: the sequence T3 gave it (Infinity when it gave none), and until when the shell reads wait for the
@@ -580,6 +582,7 @@ export class HttpT3Adapter implements T3Adapter {
     this.onCredentialRejected = options.onCredentialRejected;
     this.threadFeed = new ThreadFeed({
       read: (threadId, bounded) => this.readThread(threadId, bounded),
+      floor: (threadId) => this.detailFloor(threadId),
       onChange: (threadId) => {
         for (const listener of [...this.threadListeners]) listener(threadId);
       },
@@ -1458,6 +1461,21 @@ export class HttpT3Adapter implements T3Adapter {
     const shell = await this.shell();
     const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);
     return this.toDetail(snapshot, listed ? this.toShell(listed) : null);
+  }
+
+  /**
+   * The sequence of the thread's latest change in the feed's shell that a reader of its detail can see there (anything
+   * of its shell but its time): its detail is never served older, so a shell and a detail read together agree. 0 while
+   * the feed is not live (the detail is read from T3 then).
+   */
+  private detailFloor(threadId: string): number {
+    const held = this.shellFeed.live()?.held(threadId);
+    if (!held) return 0;
+    const key = JSON.stringify({ ...this.toShell(held.row), updatedAt: undefined });
+    const known = this.detailFloors.get(threadId);
+    if (known?.key === key) return known.sequence;
+    this.detailFloors.set(threadId, { key, sequence: held.sequence });
+    return held.sequence;
   }
 
   /** One read of a thread's projection from T3: its bounded window or its whole history; null when T3 has no such thread. */

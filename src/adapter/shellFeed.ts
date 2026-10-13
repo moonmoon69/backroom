@@ -1,6 +1,7 @@
 /**
  * T3's shell as T3 streams it, kept live so the adapter's shell reads (projects, threads, archived threads) need no
- * HTTP snapshot while the stream holds.
+ * HTTP snapshot while the stream holds. The same socket carries the watched threads' streams once the shell on it is
+ * live (onConnection; src/adapter/threadFeed.ts): the feed's state is theirs, and its reconnect theirs.
  *
  * Over its WebSocket RPC T3 streams the active shell (orchestration.subscribeShell) and the archived one
  * (orchestration.subscribeArchivedShell). Each opens with a snapshot and then sends one change per project or thread
@@ -169,6 +170,12 @@ export class ShellState {
     this.sequence = Math.max(this.sequence, at);
     this.built = null;
     return { threadIds: null };
+  }
+
+  /** A thread as the streams hold it (active or archived), with the sequence of what set it; null when neither lists it. */
+  held(threadId: string): { row: Row; sequence: number } | null {
+    const held = this.threads.get(threadId);
+    return held ? { row: held.row, sequence: held.sequence } : null;
   }
 
   /** The shell as T3's HTTP snapshot has it, its archived threads included. Built once per change. */

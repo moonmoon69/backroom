@@ -149,14 +149,15 @@ test("watched threads are streamed on the shell feed's one socket, a request eac
   assert.equal(fake.count("thread-3/bounded"), 2);
   assert.ok(!socket.subscriptions.some((s) => s.tag === THREAD && s.payload.threadId === "thread-3"));
 
-  // Both threads change, their chunks in one message: each reaches its own thread, each acknowledged on its own id.
-  fake.sequences.set("thread-1", 11);
-  fake.sequences.set("thread-2", 21);
+  // Both threads change after the shell's snapshot (at 30), their chunks in one message: each reaches its own thread,
+  // each acknowledged on its own id.
+  fake.sequences.set("thread-1", 31);
+  fake.sequences.set("thread-2", 32);
   const acks = (id: string) => socket.sent.filter((f) => f._tag === "Ack" && f.requestId === id).length;
   const [ackOne, ackTwo] = [acks(one.id), acks(two.id)];
   socket.message([
-    { _tag: "Chunk", requestId: one.id, values: [{ kind: "event", sequence: 11, event: { type: "thread.turn-item-recorded" } }] },
-    { _tag: "Chunk", requestId: two.id, values: [{ kind: "event", sequence: 21, event: { type: "thread.message-sent" } }] },
+    { _tag: "Chunk", requestId: one.id, values: [{ kind: "event", sequence: 31, event: { type: "thread.turn-item-recorded" } }] },
+    { _tag: "Chunk", requestId: two.id, values: [{ kind: "event", sequence: 32, event: { type: "thread.message-sent" } }] },
   ]);
   await settle();
   assert.deepEqual([acks(one.id) - ackOne, acks(two.id) - ackTwo], [1, 1]);
@@ -232,4 +233,34 @@ test("a thread stream T3 refuses is that thread's fallback only: the feed stays 
   await http.getThreadDetail("thread-1", { bounded: true });
   await http.getThreadDetail("thread-1", { bounded: true });
   assert.equal(fake.count("thread-1/bounded"), before + 2, "read from T3 each time, as before");
+});
+
+test("review #1: a change the shell stream shows (the run ended) is in the detail read beside it, though the thread stream's own read of it waits for the throttle", async (t) => {
+  const fake = t3();
+  const http = adapter(fake, { throttleMs: 60_000 });
+  t.after(() => http.close());
+  http.startFeed();
+  await settle();
+  http.holdThreads("engine", ["thread-1"]);
+  await settle();
+  await http.getThreadDetail("thread-1", { bounded: true });
+  assert.equal(fake.count("thread-1/bounded"), 1, "read once, before its stream");
+  const socket = fake.feedSocket();
+  const shell = socket.subscriptions.find((s) => s.tag === SHELL)!;
+  // The turn ends at 40: T3's shell stream says so, and its thread stream; the thread's read is owed, throttled.
+  fake.sequences.set("thread-1", 40);
+  socket.message({ _tag: "Chunk", requestId: shell.id, values: [{ kind: "thread.updated", sequence: 40, location: "active", thread: { ...row("thread-1"), status: "completed", latestRunId: "run-1", latestRunCompletedAt: "2026-10-13T00:01:00.000Z", updatedAt: "2026-10-13T00:01:00.000Z" } }] });
+  socket.message({ _tag: "Chunk", requestId: socket.thread("thread-1").id, values: [{ kind: "event", sequence: 40, event: { type: "run.completed" } }] });
+  await settle();
+  assert.equal((await http.getThreadShell("thread-1"))?.status, "completed", "the shell says the run ended");
+  assert.equal(fake.count("thread-1/bounded"), 1, "the thread's own read waits for the throttle");
+  await http.getThreadDetail("thread-1", { bounded: true });
+  assert.equal(fake.count("thread-1/bounded"), 2, "the detail read beside that shell is read again, not served from before the end");
+  await http.getThreadDetail("thread-1", { bounded: true });
+  assert.equal(fake.count("thread-1/bounded"), 2, "and then served from that read");
+  // A change of its time alone (each item of a running turn) moves no floor.
+  socket.message({ _tag: "Chunk", requestId: shell.id, values: [{ kind: "thread.updated", sequence: 41, location: "active", thread: { ...row("thread-1"), status: "completed", latestRunId: "run-1", latestRunCompletedAt: "2026-10-13T00:01:00.000Z", updatedAt: "2026-10-13T00:01:05.000Z" } }] });
+  await settle();
+  await http.getThreadDetail("thread-1", { bounded: true });
+  assert.equal(fake.count("thread-1/bounded"), 2);
 });

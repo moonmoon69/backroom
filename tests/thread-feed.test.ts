@@ -298,10 +298,12 @@ test("a full read is served while it is not older than the bounded one; a comman
   assert.equal(f.t3.count("t1", false), 1);
   await f.threads.detail("t1", false);
   assert.equal(f.t3.count("t1", false), 1, "cached");
-  // The thread moves on: the bounded read is read again by its event; the full one then is older than it.
+  // The thread moves on: the bounded read is read again by its event; the full one then is older than it, and let go.
   f.t3.at.set("t1", 8);
   f.connection.send("t1", { kind: "event", sequence: 8, event: {} });
   await settle();
+  const held = (f.threads as unknown as { threads: Map<string, { cache: { full: unknown } }> }).threads.get("t1")!;
+  assert.equal(held.cache.full, null, "a full read older than the bounded one is not kept: it is never served again");
   assert.equal((await f.threads.detail("t1", false))?.snapshotSequence, 8, "a caller that saw the bounded detail at 8 gets a full one as new");
   assert.equal(f.t3.count("t1", false), 2);
   // A command: both kinds are read afresh, at once, whatever the cache holds.
@@ -421,6 +423,7 @@ test("a stream T3 refuses is logged; that thread is read from T3 as before, its 
   assert.match(f.logs[0]!.message, /refused/);
   assert.deepEqual((f.logs[0]!.detail as { threadId: string }).threadId, "t1");
   assert.equal(f.threads.pushed("t1"), false, "its pages keep their own cadence");
+  assert.deepEqual([...f.changes], ["t1"], "review #2: told, so its pages read it again and learn it is no longer pushed");
   assert.equal(f.threads.pushed("t2"), true);
   const before = f.t3.count("t1");
   await f.threads.detail("t1", true);
@@ -495,4 +498,107 @@ test("a thread with no read yet whose first read fails is still subscribed to (T
   threads.close();
   assert.deepEqual(connection.interrupted, [1]);
   assert.deepEqual(threads.status(), { watched: 0, live: 0, refused: 0 });
+});
+
+test("review #1: a detail is never older than its floor (the thread's latest change in the shell read beside it): a cached read below it is read again, and a read is labelled at least with it", async () => {
+  const t3 = t3Reads();
+  let floor = 0;
+  const threads = new ThreadFeed({ read: t3.read, onChange: () => undefined, floor: () => floor, throttleMs: 60_000 });
+  const connection = new FakeConnection();
+  threads.connect(connection);
+  t3.at.set("t1", 50);
+  threads.lease("t1");
+  await settle();
+  connection.send("t1", { kind: "synchronized" });
+  await settle();
+  // T3 ends the turn: its shell says so at 60 (the shell stream), its thread stream's read is owed but throttled.
+  t3.at.set("t1", 60);
+  connection.send("t1", { kind: "event", sequence: 60, event: {} });
+  await settle();
+  assert.equal(t3.count("t1"), 1, "the owed read waits for the throttle");
+  assert.equal((await threads.detail("t1", true))?.snapshotSequence, 50, "with no floor: the cached read, the throttle behind");
+  floor = 60;
+  assert.equal((await threads.detail("t1", true))?.snapshotSequence, 60, "the shell beside it says 60: read again, not served at 50");
+  assert.equal(t3.count("t1"), 2);
+  await threads.detail("t1", true);
+  assert.equal(t3.count("t1"), 2, "then served from that read");
+  // A read sent after the shell showed 70 is labelled 70 even when T3's own number for it is lower (its stream lags).
+  floor = 70;
+  t3.at.set("t1", 65);
+  threads.command("t1");
+  await threads.detail("t1", true);
+  await threads.detail("t1", true);
+  assert.equal(t3.count("t1"), 3, "labelled 70: not read again for the floor");
+  threads.close();
+});
+
+test("review #1: a thread not live is read for each caller with a read of its own, never one sent before the call; two such reads crossing leave the newer cached", async () => {
+  const f = feed();
+  f.threads.connect(f.connection);
+  f.t3.at.set("t1", 7);
+  f.threads.lease("t1");
+  await settle();
+  // Not synchronized yet: each caller's own read.
+  f.t3.hold();
+  f.t3.at.set("t1", 8);
+  const first = f.threads.detail("t1", true);
+  await settle();
+  f.t3.at.set("t1", 9);
+  const second = f.threads.detail("t1", true);
+  await settle();
+  assert.equal(f.t3.count("t1"), 3, "the subscription's first read, then one for each caller");
+  f.t3.release();
+  assert.deepEqual([(await first)?.snapshotSequence, (await second)?.snapshotSequence], [9, 9], "both sent after T3 was at 9 (the test's T3 answers what it holds when released)");
+  // Crossing answers of one command's reads: the later-sent answers first with 11, the earlier then with 10.
+  const answers: Array<(value: ThreadSnapshot) => void> = [];
+  const crossing = new ThreadFeed({ read: () => new Promise<ThreadSnapshot | null>((resolve) => answers.push(resolve)), onChange: () => undefined });
+  const c = new FakeConnection();
+  crossing.connect(c);
+  crossing.lease("t1");
+  await settle();
+  const a = crossing.detail("t1", true);
+  const b = crossing.detail("t1", true);
+  await settle();
+  answers[2]!({ snapshotSequence: 11, projection: {} });
+  answers[1]!({ snapshotSequence: 10, projection: {} });
+  answers[0]!({ snapshotSequence: 9, projection: {} });
+  await Promise.all([a, b]);
+  await settle();
+  c.send("t1", { kind: "synchronized" });
+  await settle();
+  assert.equal((await crossing.detail("t1", true))?.snapshotSequence, 11, "the late answer (10) did not replace the newer (11)");
+  crossing.close();
+  f.threads.close();
+});
+
+test("review #3: an owed read that fails is tried again after a while, and its change told once read", async () => {
+  let fail = false;
+  let reads = 0;
+  const told: string[] = [];
+  const threads = new ThreadFeed({
+    read: async () => {
+      reads += 1;
+      if (fail) throw new T3Unavailable("T3 did not answer within 30s");
+      return { snapshotSequence: reads, projection: {} };
+    },
+    onChange: (threadId) => told.push(threadId),
+    throttleMs: 0,
+    readRetryMs: 40,
+  });
+  const connection = new FakeConnection();
+  threads.connect(connection);
+  threads.lease("t1");
+  await settle();
+  connection.send("t1", { kind: "synchronized" });
+  await settle();
+  fail = true;
+  connection.send("t1", { kind: "event", sequence: 50, event: {} });
+  await settle();
+  assert.equal(reads, 2, "the owed read, failed");
+  fail = false;
+  await sleep(80);
+  await settle();
+  assert.equal(reads, 3, "tried again, with no event to prompt it");
+  assert.deepEqual(told, ["t1"], "and told");
+  threads.close();
 });

@@ -245,6 +245,32 @@ export class PagePush {
   }
 }
 
+/**
+ * The page stream's handlers for the page's own (`handlers`), feeding the thread loaders' PagePush as well: a thread
+ * event is theirs alone; a re-read of everything and a change of T3's status are theirs too (T3 went away or came back:
+ * what shows a thread reads it again, and learns whether its changes are still pushed); the stream's state is theirs.
+ */
+export function withPush(handlers: Omit<PageStreamHandlers, "open" | "thread">, push: PagePush, open: (open: boolean) => void): PageStreamHandlers {
+  return {
+    all: () => {
+      handlers.all();
+      push.all();
+    },
+    rooms: () => handlers.rooms(),
+    room: (roomId) => handlers.room(roomId),
+    shell: () => handlers.shell(),
+    thread: (threadId) => push.thread(threadId),
+    status: (reach) => {
+      handlers.status(reach);
+      push.all();
+    },
+    open: (isOpen) => {
+      push.setOpen(isOpen);
+      open(isOpen);
+    },
+  };
+}
+
 export interface DetailLoaderOptions<T> {
   read(): Promise<T>;
   /** An answer, applied: never one of a loader stopped (the page moved on to another thread, member or room). */

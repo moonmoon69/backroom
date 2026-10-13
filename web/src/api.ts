@@ -1,6 +1,6 @@
 /** Typed fetch helpers for the Backroom HTTP API plus the page's stream of changes. */
 import { useEffect, useRef, useState } from "react";
-import { DetailLoader, FALLBACK_MS, PagePush, PageStream, type EventSourceLike, type LoaderTimers, type PageStreamDeps, type PageStreamHandlers } from "./pageStream.ts";
+import { DetailLoader, FALLBACK_MS, PagePush, PageStream, withPush, type EventSourceLike, type LoaderTimers, type PageStreamDeps, type PageStreamHandlers } from "./pageStream.ts";
 import type {
   FilePreviewResponse,
   UpdatesView,
@@ -422,22 +422,17 @@ export function usePageStream(handlers: Omit<PageStreamHandlers, "open" | "threa
   const [open, setOpen] = useState(false);
   useEffect(() => {
     const stream = new PageStream(
-      {
-        all: () => {
-          current.current.all();
-          pagePush.all();
+      withPush(
+        {
+          all: () => current.current.all(),
+          rooms: () => current.current.rooms(),
+          room: (roomId) => current.current.room(roomId),
+          shell: () => current.current.shell(),
+          status: (reach) => current.current.status(reach),
         },
-        rooms: () => current.current.rooms(),
-        room: (roomId) => current.current.room(roomId),
-        shell: () => current.current.shell(),
-        // A thread's detail: the loaders showing it read it again (the thread view, the desk).
-        thread: (threadId) => pagePush.thread(threadId),
-        status: (reach) => current.current.status(reach),
-        open: (isOpen) => {
-          pagePush.setOpen(isOpen);
-          setOpen(isOpen);
-        },
-      },
+        pagePush,
+        setOpen,
+      ),
       browserDeps(),
     );
     stream.start();
