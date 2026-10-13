@@ -28,10 +28,14 @@ function settingsApp(t: TestContext) {
   return { stack, rules };
 }
 
-test("Settings show Backroom's default rules, the scope line among them, and the user's own once saved", async (t) => {
+test("Settings show the default scope and crew budget, preserve saved rules, and restore the default when cleared", async (t) => {
   const on = settingsApp(t);
-  assert.deepEqual(await on.rules(), { text: ENGINE_DEFAULT_CONSIGLIERE_RULES, custom: false, defaultText: ENGINE_DEFAULT_CONSIGLIERE_RULES });
-  assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, /^- Scope is yours: when a member finds a defect in the code under change, have it fixed before you report unless the user said otherwise; do not ask a member to decide it\.$/m);
+  const defaults = await on.rules();
+  assert.deepEqual(defaults, { text: ENGINE_DEFAULT_CONSIGLIERE_RULES, custom: false, defaultText: ENGINE_DEFAULT_CONSIGLIERE_RULES });
+  assert.match(defaults.text, /Keep at most four other members seated by default, counting writers, reviewers and preparatory work/);
+  assert.match(defaults.text, /report unrelated findings without adding them to the active job/);
   on.stack.repos.setKv(CONSIGLIERE_RULES_KEY, "- Keep reports short.");
   assert.deepEqual(await on.rules(), { text: "- Keep reports short.", custom: true, defaultText: ENGINE_DEFAULT_CONSIGLIERE_RULES });
+  await on.stack.service.execute({ type: "consigliere.rules.set", rules: null });
+  assert.deepEqual(await on.rules(), defaults);
 });

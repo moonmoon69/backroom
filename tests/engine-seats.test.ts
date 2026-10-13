@@ -211,7 +211,7 @@ test("Consigliere: making one briefs every member once, moving him tells them, c
     const rules = h.prompt("V");
     assert.match(rules, /Rules for the Consigliere:/);
     for (const rule of ENGINE_BOARD_RULES) assert.ok(rules.includes(rule), `missing: ${rule.slice(0, 60)}`);
-    assert.ok(rules.includes("- Scope is yours: when a member finds a defect in the code under change, have it fixed before you report unless the user said otherwise; do not ask a member to decide it.\n"));
+    assert.match(rules, /fix defects needed for that scope, and report unrelated findings without adding them to the active job/);
     h.complete("V", "The plan is ...");
     await h.tick();
 
@@ -492,8 +492,8 @@ test("the Consigliere's briefings and rooms-board rules carry the saved crew, a 
     // What rooms-board rules prints (src/server/http.ts): the same standing text a briefing starts with.
     assert.ok((await h.s.seats.standingText(h.ids.C!)).includes(crew));
     assert.ok(!(await h.s.seats.standingText(h.ids.W!)).includes("== Your crew =="), "a member is not given the crew");
-    // The seating rule names the two lines and the effort in the sentence that names members and seat.
-    assert.ok((await h.s.seats.standingText(h.ids.C!)).includes("- Work through this room's members only. Find them with `rooms-board members`; seat more with `rooms-board seat <saved crew name>`, picking from `rooms-board crew` by what each crew member is good at, what it should avoid and its effort level. Never send work to a thread that is not a member of this room.\n"));
+    // Work is routed through this room; the crew above supplies strengths, limits and effort.
+    assert.match(await h.s.seats.standingText(h.ids.C!), /Hand work through this room's members, not your own subagents or outside threads/);
 
     h.request("$user", "C", "Who should review?");
     await h.tick();
@@ -805,43 +805,49 @@ test("F6: the Consigliere's rules on the engine adjust running work with correct
   }
 });
 
-test("R3 review speed: the engine's briefing for the Consigliere carries the seven review-speed rules and the two reworded ones, word for word", async () => {
-  const freshSeat = "A fresh seat for every review: each gate that needs a reviewer gets a newly seated one, who also checks the fixes it asked for and is retired when the gate is passed. The member who did the work never reviews it.";
-  const route = "You route reviews: members never post to each other. When the work is ready, send the reviewer the worker's result by post number; send the reviewer's findings back to the worker the same way, until the reviewer passes it.";
-  const speed = [
-    "Seat the reviewer when you seat the writer: it sends you what it will check while the writer builds, and you pass that to the writer.",
-    "Before a writer reports its work ready, it reviews its own diff and fixes what that finds.",
-    "Anything that changes or describes behaviour gets a fresh reviewer; wording that changes and describes no behaviour gets your own read and the automated gate.",
-    "After two review rounds, rule on the open technical points yourself and bring the user only product questions.",
-    "Keep one revision in review at a time: the writer sends the next only after the reviewer's verdict on the last.",
-    "Every reviewer finding becomes a test in the deliverable before its gate passes.",
-  ];
-  const reseatSelf = "Reseat yourself the same way when your own context nears compaction, at a quiet moment, after writing the room state.";
-  const lines = [freshSeat, route, ...speed, reseatSelf];
-
-  // Each is a whole line of the default rules, once.
-  for (const line of lines) assert.equal(ENGINE_DEFAULT_CONSIGLIERE_RULES.split("\n").filter((l) => l === `- ${line}`).length, 1, `once: ${line.slice(0, 50)}`);
-  // The six sit with the review rules, in this order, after the one that routes reviews; the seventh follows the rule it says "the same way" of.
-  assert.ok(ENGINE_DEFAULT_CONSIGLIERE_RULES.includes([freshSeat, route, ...speed].map((l) => `- ${l}`).join("\n") + "\n- Scope is yours:"));
-  assert.match(ENGINE_DEFAULT_CONSIGLIERE_RULES, new RegExp(`\\n- Reseat long work before the harness compacts it[^\\n]*\\n- ${reseatSelf}\\n- Keep the room state current`));
-  // The old wording of the two reworded rules is gone.
-  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /each gate gets a newly seated reviewer|When the work is ready, seat the reviewer/);
-  // How a writer reviews its own diff is its own business (the user's #66): no subagent, no workflow named.
-  assert.doesNotMatch(ENGINE_DEFAULT_CONSIGLIERE_RULES, /reviews its own diff with|subagent or a review workflow/);
-
-  // The briefing the engine sends a Consigliere carries all nine.
+test("the Consigliere's delivered default bounds the whole active crew and queues future batches", async () => {
   const h = await Seats.create();
   try {
-    h.request("$user", "C", "Plan it.");
+    h.request("$user", "C", "Make the test infrastructure comprehensive; many independent targets may be ready.");
     await h.tick();
     const prompt = h.prompt("C");
-    for (const line of lines) assert.ok(prompt.includes(`- ${line}\n`), `missing: ${line.slice(0, 50)}`);
+    assert.match(prompt, /Keep at most four other members seated by default, counting writers, reviewers and preparatory work, unless the user sets another budget/);
+    assert.match(prompt, /Queue future work in the room state without seating members for it/);
+    assert.match(prompt, /If the room already exceeds its budget, complete or cancel existing work and retire finished members before seating more/);
+    assert.match(prompt, /Seat it early only for the deliverable being built/);
+    assert.match(prompt, /do not fill that wait by seating future batches/);
+    assert.match(prompt, /provider quota or authentication failure is a blocker to report, not a reason to retry repeatedly or spawn replacements/);
+    assert.doesNotMatch(prompt, /One seat per deliverable|the next deliverable gets a fresh seat|a change of any size or risk/);
+    for (const rule of ENGINE_BOARD_RULES) assert.ok(prompt.includes(rule), `missing board mechanic: ${rule.slice(0, 60)}`);
   } finally {
     h.close();
   }
-  // What the user saved replaces them, as it replaces every default rule.
+});
+
+test("the Consigliere's shorter default keeps scope, reviews and continuity without prescribing project roles", () => {
+  const rules = ENGINE_DEFAULT_CONSIGLIERE_RULES;
+  assert.ok(rules.split("\n").length <= 12, "a small policy set, with board mechanics supplied separately");
+  assert.ok(rules.split(/\s+/).length <= 650, "the editable policy stays concise");
+  assert.match(rules, /For a broad request, start with a bounded assessment and a clear completion condition/);
+  assert.match(rules, /implement findings when that is part of the assignment/);
+  assert.match(rules, /report unrelated findings without adding them to the active job/);
+  assert.match(rules, /coherent outcomes that may contain several related plan items/);
+  assert.match(rules, /Project instructions supply engineering requirements; the room assignment defines each member's role, routing and integration responsibility/);
+  assert.match(rules, /fresh independent reviewer within the active batch/);
+  assert.match(rules, /keep it through the fixes it requests/);
+  assert.match(rules, /Writers review their own diff/);
+  assert.match(rules, /one revision in review at a time/);
+  assert.match(rules, /reproducible behavioural findings into regression checks/);
+  assert.match(rules, /After two review rounds, rule on open technical points yourself/);
+  assert.match(rules, /A question or status request does not discard the ongoing objective/);
+  assert.match(rules, /Reseat long work, yourself included, at a quiet commit boundary with a checkpoint and current room state/);
+  assert.match(rules, /claim agreement only from explicit replies to the same proposal/);
+  assert.doesNotMatch(rules, /reviews their own diff with|subagent or a review workflow|\.claude\/agents|work tier|wave 0/);
+  // Saved policy still replaces the default; board mechanics remain regardless of its wording.
   const custom = engineConsigliereRules("- Be brief.");
-  for (const line of lines) assert.equal(custom.includes(line), false);
+  assert.equal(custom.includes(rules), false);
+  assert.doesNotMatch(custom, /Keep at most four other members|bounded assessment/);
+  for (const rule of ENGINE_BOARD_RULES) assert.ok(custom.includes(rule));
 });
 
 test("F7: members are told their reply is their answer, and that they post nothing (H5)", () => {
