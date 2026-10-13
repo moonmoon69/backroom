@@ -602,3 +602,72 @@ test("review #3: an owed read that fails is tried again after a while, and its c
   assert.deepEqual(told, ["t1"], "and told");
   threads.close();
 });
+
+/** A feed whose reads the test answers by hand, in any order, on a live socket of its own. */
+async function byHand(options: { idleMs?: number } = {}) {
+  const answers: Array<{ bounded: boolean; answer: (value: ThreadSnapshot) => void }> = [];
+  const threads = new ThreadFeed({ read: (_id, bounded) => new Promise<ThreadSnapshot | null>((resolve) => answers.push({ bounded, answer: resolve })), onChange: () => undefined, throttleMs: 0, ...options });
+  const connection = new FakeConnection();
+  threads.connect(connection);
+  threads.lease("t1");
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 7, projection: {} });
+  await settle();
+  connection.send("t1", { kind: "synchronized" });
+  await settle();
+  return { threads, connection, answers };
+}
+const held = (threads: ThreadFeed) => (threads as unknown as { threads: Map<string, { cache: { bounded: { sequence: number } | null; full: { sequence: number } | null } }> }).threads.get("t1")!.cache;
+
+test("review #393 (memory): a quiet thread keeps one read, the newer (the bounded one when they are as new); an event or a read kept sets its clock again", async () => {
+  const { threads, connection, answers } = await byHand({ idleMs: 60 });
+  const full = threads.detail("t1", false);
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 7, projection: {} });
+  await full;
+  assert.deepEqual([held(threads).bounded?.sequence, held(threads).full?.sequence], [7, 7], "both, while it moves");
+  // 30 ms on, the stream shows an event (one the reads cover): the clock starts again.
+  await sleep(30);
+  connection.send("t1", { kind: "event", sequence: 7, event: {} });
+  await sleep(40);
+  assert.ok(held(threads).full, "70 ms after the read, 40 after the event: not yet quiet for 60");
+  await sleep(40);
+  assert.deepEqual([held(threads).bounded?.sequence, held(threads).full], [7, null], "quiet: one read, the bounded one at a tie");
+  // A full read newer than the bounded one: the full one is kept.
+  threads.command("t1", 9);
+  const fresh = threads.detail("t1", false);
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 9, projection: {} });
+  await fresh;
+  await sleep(90);
+  assert.deepEqual([held(threads).bounded, held(threads).full?.sequence], [null, 9], "the newer kept");
+  threads.close();
+});
+
+test("review #393: a late answer never undoes a newer read of its kind, even one let go since", async () => {
+  const { threads, answers } = await byHand({ idleMs: 30 });
+  // A bounded read sent at 7 (after a command) waits; meanwhile a bounded read at 8 and a full one at 9 are kept.
+  threads.command("t1");
+  const late = threads.detail("t1", true);
+  await settle();
+  const lateRead = answers.shift()!;
+  threads.command("t1");
+  const eight = threads.detail("t1", true);
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 8, projection: {} });
+  await eight;
+  const nine = threads.detail("t1", false);
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 9, projection: {} });
+  await nine;
+  await sleep(60);
+  assert.equal(held(threads).bounded, null, "quiet: the bounded read (8), older than the full one (9), let go");
+  lateRead.answer({ snapshotSequence: 7, projection: {} });
+  await late;
+  assert.equal(held(threads).bounded, null, "the late answer at 7 is not kept in its place");
+  const next = threads.detail("t1", true);
+  await settle();
+  answers.shift()!.answer({ snapshotSequence: 9, projection: {} });
+  assert.equal((await next)?.snapshotSequence, 9, "a bounded caller is read afresh, not served 7");
+  threads.close();
+});

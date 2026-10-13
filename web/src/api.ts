@@ -240,8 +240,10 @@ export const browserTimers: LoaderTimers = {
 
 /**
  * Room desk (every participant's T3 thread view, each member's live turn among it). Read again at once when one of
- * its members' threads changes (a `thread` event) and on each re-read of everything; its timer is a 60 s fallback while
- * the stream is open and every member's thread is pushed, else `intervalMs` (2.5 s while a turn runs, 10 s otherwise).
+ * its members' threads changes (a `thread` event), when the room changes (a `room` event: a member seated, reseated or
+ * gone, so the threads whose events it takes are its members' now) and on each re-read of everything; its timer is a
+ * 60 s fallback while the stream is open and every member's thread is pushed, else `intervalMs` (2.5 s while a turn
+ * runs, 10 s otherwise).
  */
 export function useDesk(roomId: string | null, intervalMs: number): { desk: DeskResponse | null; error: string | null } {
   const [desk, setDesk] = useState<DeskResponse | null>(null);
@@ -276,6 +278,9 @@ export function useDesk(roomId: string | null, intervalMs: number): { desk: Desk
     const unfollow = pagePush.subscribe({
       thread: (threadId) => {
         if (threads.has(threadId)) loader.now();
+      },
+      room: (id) => {
+        if (id === roomId) loader.now();
       },
       all: () => loader.now(),
       open: () => loader.reschedule(),

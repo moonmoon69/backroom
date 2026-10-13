@@ -412,7 +412,7 @@ test("PagePush: its listeners hear thread events, re-reads and the stream's stat
 test("review #2: the page's handlers feed the thread loaders: a thread event is theirs alone; a re-read of everything and T3's status changing make them read again; the stream's state is theirs", () => {
   const push = new PagePush();
   const heard: string[] = [];
-  push.subscribe({ thread: (id) => heard.push(`loader:thread:${id}`), all: () => heard.push("loader:all"), open: (open) => heard.push(`loader:${open ? "open" : "closed"}`) });
+  push.subscribe({ thread: (id) => heard.push(`loader:thread:${id}`), room: (id) => heard.push(`loader:room:${id}`), all: () => heard.push("loader:all"), open: (open) => heard.push(`loader:${open ? "open" : "closed"}`) });
   const page: string[] = [];
   const handlers = withPush(
     { all: () => page.push("all"), rooms: () => page.push("rooms"), room: (id) => page.push(`room:${id}`), shell: () => page.push("shell"), status: (reach) => page.push(`status:${reach.up}`) },
@@ -425,6 +425,8 @@ test("review #2: the page's handlers feed the thread loaders: a thread event is 
   // T3's feed dropped: a thread view on the 60 s fallback reads again, and its answer says it is no longer pushed.
   handlers.status({ up: false, error: "T3 closed the connection", at: "" });
   handlers.shell();
-  assert.deepEqual(heard, ["loader:open", "loader:thread:t1", "loader:all", "loader:all"]);
-  assert.deepEqual(page, ["open", "all", "status:false", "shell"]);
+  // Review #393: a room's change reaches the loaders too (a member seated: the desk reads which threads it shows).
+  handlers.room("r1");
+  assert.deepEqual(heard, ["loader:open", "loader:thread:t1", "loader:all", "loader:all", "loader:room:r1"]);
+  assert.deepEqual(page, ["open", "all", "status:false", "shell", "room:r1"]);
 });

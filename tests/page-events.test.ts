@@ -397,7 +397,7 @@ test("a thread a page read is watched: its changes reach open pages as thread wi
   assert.ok(!events(page.frames.slice(from)).some((f) => f.event === "thread" && (f.data as { threadId: string }).threadId === "thread:b"), "thread:b: nobody watches it");
 });
 
-test("PageChanges passes the adapter's thread changes on as they come, to observers before pages, and none after it is closed", () => {
+test("PageChanges passes the adapter's thread changes on as they come, to observers before pages, and none after it is closed", (t) => {
   const listeners = new Set<(threadId: string) => void>();
   const adapter = {
     listProjects: async () => [],
@@ -408,6 +408,8 @@ test("PageChanges passes the adapter's thread changes on as they come, to observ
     },
   };
   const changes = new PageChanges(adapter);
+  // Closed whatever happens: a page subscribed starts its check, whose timer would keep a failed run alive.
+  t.after(() => changes.close());
   const seen: string[] = [];
   changes.observe((event) => seen.push(`observer:${event.type}:${event.type === "thread" ? event.threadId : ""}`));
   const stop = changes.subscribe((event) => seen.push(`page:${event.type}:${event.type === "thread" ? event.threadId : ""}`));

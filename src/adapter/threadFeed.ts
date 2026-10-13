@@ -15,7 +15,9 @@
  * T3's reducer is not ported: an event only says that the thread moved, and to which sequence. A subscription starts
  * after the sequence of the thread's latest read (afterSequence), so T3 replays the events since that read (mostly
  * none) rather than sending its snapshot, megabytes for a long thread even bounded: a thread with no read yet is read
- * once before it is subscribed to.
+ * once before it is subscribed to. T3 still sends its snapshot (bounded and compact; only its sequence is used) when the
+ * gap since that read is too long to replay (a reconnect after a long outage, a stream asked for again long after T3
+ * refused it), or when the thread has no read to start after (its first read failed).
  *
  * Watched: every thread a room seats (the engine host holds them), and every thread whose detail a page read in the last
  * 60 s (each such read renews its lease; the overview's describing reads lease nothing). A thread nothing holds or
@@ -25,7 +27,9 @@
  * A watched thread's detail while its stream is live (synchronized, on the feed's current socket):
  * - Each kind (bounded, the recent window; full, the whole history) is cached with the sequence its read reflects:
  *   T3's snapshotSequence, or the latest the streams had shown when the read was sent if that is later (T3 streams only
- *   what it has stored, and a read sees what is stored). A cached read only gives way to a newer one.
+ *   what it has stored, and a read sees what is stored). A read is kept only if it is newer than every read of its kind
+ *   kept before, and a full read only if it is not older than any bounded read kept: an answer that comes late never
+ *   undoes a newer read of either kind, even one let go since.
  * - The stream showing a sequence past the cached bounded read has it read again: at once after a quiet spell, then at
  *   most once per 2 s per thread while the thread keeps moving, and once more after the last change. An event the
  *   cached read already covers, or one shown again, reads nothing; one that comes during a read is read after it. An
@@ -35,6 +39,9 @@
  *   shell stream tells of the thread but its time: its status, runs, request, background tasks). A cached read below it
  *   is read again, so a shell and a detail read together agree: the engine host imports from the detail what the shell
  *   says has happened. A full detail is never older than the bounded one: a newer bounded read lets the full one go.
+ * - Memory: a thread holds both its reads only while it changes; once it has been quiet for 30 s (no event, no read
+ *   kept) it keeps the newer one (the bounded one when they are as new), so a quiet watched thread holds one read, at
+ *   most 2 while it changes: a long thread's read is some 2.7 MB of JSON, bounded or whole.
  * - A command on the thread (one of this adapter's) has the next read of each kind made afresh, at once.
  * - Each newer bounded read is told (onChange) once it is cached: the engine host wakes, open pages read again.
  * Read from T3 on each call, as before (a read of the caller's own, sent after it called; cached for later): a thread
@@ -179,6 +186,8 @@ export interface ThreadFeedOptions<S extends Read = ThreadSnapshot> {
   throttleMs?: number;
   /** The wait before an owed read that failed is tried again: doubling from it up to a minute. Default 5 s. */
   readRetryMs?: number;
+  /** How long a thread must be quiet (no event, no read kept) before it keeps only one of its two reads. Default 30 s. */
+  idleMs?: number;
   leaseMs?: number;
   lingerMs?: number;
   /** The wait before T3 is asked again for a stream it refused or ended: doubling from retryMs up to retryMaxMs (30 s, 5 min). */
@@ -216,6 +225,10 @@ class Thread<S> {
   /** Bumped by each command on the thread: a read sent before it is not served after it. */
   gen = 0;
   readonly cache: Record<Kind, Entry<S> | null> = { bounded: null, full: null };
+  /** Per kind, the newest sequence ever kept, a read let go since included: no older one is kept again. */
+  readonly kept: Record<Kind, number> = { bounded: Number.NEGATIVE_INFINITY, full: Number.NEGATIVE_INFINITY };
+  /** Lets one of the two reads go once the thread has been quiet. */
+  idle: Timer | null = null;
   readonly reading: Record<Kind, { promise: Promise<{ snapshot: S | null; sequence: number }>; gen: number } | null> = { bounded: null, full: null };
   /** The latest read failed: callers read for themselves until one succeeds. */
   failed = false;
@@ -345,6 +358,8 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     this.unsubscribe(thread);
     if (thread.retry) clearTimeout(thread.retry);
     thread.retry = null;
+    if (thread.idle) clearTimeout(thread.idle);
+    thread.idle = null;
   }
 
   private unsubscribe(thread: Thread<S>): void {
@@ -392,6 +407,7 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
       const sequence = typeof item.sequence === "number" ? item.sequence : typeof item.snapshotSequence === "number" ? item.snapshotSequence : null;
       if (sequence !== null) thread.latest = Math.max(thread.latest, sequence);
     }
+    this.quiet(id, thread);
     if (stream.synced) this.owed(id, thread);
   }
 
@@ -453,15 +469,39 @@ export class ThreadFeed<S extends Read = ThreadSnapshot> {
     if (this.threads.get(id) !== thread) return sequence;
     thread.latest = Math.max(thread.latest, sequence);
     const held = thread.cache[kind];
-    if (!held || sequence > held.sequence || (sequence === held.sequence && gen > held.gen)) {
+    // Newer than every read of its kind kept so far (as new, after a command, or once that one was let go); a full read
+    // never older than a bounded one kept. A late answer never undoes a newer read of either kind (review #393).
+    const newer = sequence > thread.kept[kind] || (sequence === thread.kept[kind] && (!held || gen > held.gen));
+    if (newer && (kind === "bounded" || sequence >= thread.kept.bounded)) {
+      thread.kept[kind] = sequence;
       thread.cache[kind] = { snapshot, sequence, read, gen };
       // A full read older than the bounded one is never served again: it is let go (a long thread's runs to megabytes).
       const full = thread.cache.full;
       if (kind === "bounded" && full && full.sequence < sequence) thread.cache.full = null;
       if (kind === "bounded" && held && sequence > held.sequence && this.live(thread)) this.options.onChange(id);
     }
+    this.quiet(id, thread);
     if (kind === "bounded" && this.live(thread)) this.owed(id, thread);
     return sequence;
+  }
+
+  /**
+   * The quiet clock: while the thread holds both its reads, the newer is kept and the other let go once nothing has
+   * moved for idleMs (the bounded one kept when they are as new: the pages read it). Armed again by each event and
+   * each read kept.
+   */
+  private quiet(id: string, thread: Thread<S>): void {
+    if (thread.idle) clearTimeout(thread.idle);
+    thread.idle = null;
+    if (!thread.cache.bounded || !thread.cache.full) return;
+    thread.idle = setTimeout(() => {
+      thread.idle = null;
+      const { bounded, full } = thread.cache;
+      if (this.threads.get(id) !== thread || !bounded || !full) return;
+      if (full.sequence > bounded.sequence) thread.cache.bounded = null;
+      else thread.cache.full = null;
+    }, this.options.idleMs ?? 30_000);
+    thread.idle.unref?.();
   }
 
   /** The stream has shown a sequence past the cached bounded read: read it, throttled. */
