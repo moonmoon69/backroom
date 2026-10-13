@@ -1564,3 +1564,34 @@ test("with the HTTP adapter, a new token reopens the feed with no status blip of
   assert.equal(s.adapter.feed().state, "connected");
   assert.deepEqual(seen.filter((e) => (e as string[])[0] === "status"), [["status", false, "Backroom is connecting to T3"], ["status", true, null]], "connecting, then up: never stopped");
 });
+
+// Integration review: the feed knows it is down before the HTTP status probes finish.
+test("review integration: a feed outage already pushed reaches GET status without waiting on auth/session", async (t) => {
+  const t3 = streamingT3(opening);
+  const s = await feedService(t, t3, { retryMs: 60_000 });
+  s.adapter.startFeed();
+  await settle();
+  assert.equal((await s.status()).error, null);
+  const page = await pageEvents(s.app);
+  t.after(page.close);
+  await page.until(() => false, 20);
+  t3.feedSocket().close();
+  assert.ok(await page.until((events) => events.some((event) => event.event === "status" && event.data.up === false), 200));
+  const reach = s.stack.changes.status()!;
+  assert.equal(reach.up, false);
+
+  const auth = s.adapter.authSession.bind(s.adapter);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  s.adapter.authSession = async () => { await held; return auth(); };
+  const reading = s.status();
+  let prompt: boolean;
+  try {
+    prompt = await Promise.race([reading.then(() => true), sleep(100).then(() => false)]);
+  } finally {
+    release();
+  }
+  const status = await reading;
+  assert.deepEqual([status.error, status.feed.state], [reach.error, "down"]);
+  assert.equal(prompt, true, "the chip must receive the feed outage already pushed to the banner, without waiting for HTTP auth/session");
+});
