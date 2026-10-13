@@ -223,8 +223,8 @@ export function App() {
         loadAll();
         return;
       }
-      // Newer than any read of T3's lists still in flight: none of their answers is applied after it.
-      order.t3.supersede();
+      // A read of T3's lists in flight is kept: its success no longer clears the banner, and one begun during the outage
+      // words it (a second down, with another error, discards nothing: review #292).
       loadStatus();
     },
   });
