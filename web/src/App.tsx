@@ -14,6 +14,7 @@ import { ArchivedThreadView, ThreadView } from "./components/ThreadView.tsx";
 import { PresetsContext } from "./components/presets.tsx";
 import { ProvidersSection } from "./components/Providers.tsx";
 import { PairingPanel } from "./components/StatusStrip.tsx";
+import { feedOut, t3Banner } from "./t3Connection.ts";
 import { FilePreviewHost } from "./components/FilePreview.tsx";
 import { useToast } from "./components/Toast.tsx";
 import { RoomContext, seatLookups, type RoomContextValue } from "./context.tsx";
@@ -58,7 +59,13 @@ export function App() {
   const [threads, setThreads] = useState<T3ThreadShell[]>([]);
   /** The finish time each thread outside rooms was marked seen up to on this page (see the news effects below). */
   const [seenThreads, setSeenThreads] = useState<ReadonlyMap<string, string>>(new Map());
-  const [t3Error, setT3Error] = useState<string | null>(null);
+  // Why T3's projects and threads could not be read, if the latest read failed. It words the banner; the service's
+  // status alone decides whether there is one (t3Connection.ts, t3Banner).
+  const [listsError, setListsError] = useState<string | null>(null);
+  // When the latest read of T3's lists that succeeded was started, and since when the service has said T3 is down (page
+  // clock): a read started during the outage that succeeded is what words the banner as T3's lists read the slow way.
+  const [listsReadAt, setListsReadAt] = useState<number | null>(null);
+  const [outageSince, setOutageSince] = useState<number | null>(null);
   // Archive and unarchive switch the view before the next thread-list read confirms them.
   const markThread = useCallback((threadId: string, patch: Partial<T3ThreadShell>) => {
     setThreads((list) => list.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread)));
@@ -141,14 +148,16 @@ export function App() {
 
   const loadT3 = useCallback(() => {
     const ticket = order.t3.start();
+    const started = Date.now();
     Promise.all([api.projects(), api.allThreads()]).then(
       ([projectList, threadList]) => {
         if (!order.t3.take(ticket)) return;
         setProjects(projectList);
         setThreads(threadList);
-        setT3Error(null);
+        setListsError(null);
+        setListsReadAt(started);
       },
-      (error: unknown) => order.t3.take(ticket) && setT3Error(error instanceof Error ? error.message : String(error)),
+      (error: unknown) => order.t3.take(ticket) && setListsError(error instanceof Error ? error.message : String(error)),
     );
   }, [order]);
 
@@ -206,14 +215,16 @@ export function App() {
       setOverviewChanged((n) => n + 1);
     },
     status: (reach: T3Reach) => {
+      // The service's word on T3, at once, for the chip and the banner alike: newer than any read of the status still in
+      // flight, none of whose answers is applied after it. A read of the status then confirms it.
+      order.status.supersede();
+      setStatus((current) => (current ? { ...current, t3: { ...current.t3, error: reach.up ? null : (reach.error ?? "T3 is not answering"), errorAt: reach.up ? null : reach.at } } : current));
       if (reach.up) {
-        // The banner goes with the next read that succeeds.
         loadAll();
         return;
       }
       // Newer than any read of T3's lists still in flight: none of their answers is applied after it.
       order.t3.supersede();
-      setT3Error(reach.error ?? "T3 is not answering");
       loadStatus();
     },
   });
@@ -225,6 +236,18 @@ export function App() {
     loadBrowsers();
     loadPresets();
   }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  const t3Down = Boolean(status?.t3.error);
+  useEffect(() => {
+    // Taken now, before the read the next effect may start: React runs the updater later.
+    const now = Date.now();
+    setOutageSince((since) => (t3Down ? (since ?? now) : null));
+  }, [t3Down]);
+  // The service says T3's live feed is down: T3's lists are read once, the slow way, and whether they could be read words
+  // the banner. With the fake T3 (its feed always connected) an outage reads nothing it would only fail.
+  const listsTheSlowWay = feedOut(status?.t3 ?? null);
+  useEffect(() => {
+    if (listsTheSlowWay) loadT3();
+  }, [listsTheSlowWay, loadT3]);
   // Whether the stream is open, on the page's root: the rehearsal waits for it (scripts/rehearse.ts, page push).
   useEffect(() => {
     document.documentElement.dataset.stream = streaming ? "open" : "closed";
@@ -647,7 +670,7 @@ export function App() {
           projects={projects}
           threads={sideThreads}
           seenThreads={seenThreads}
-          t3Error={t3Error}
+          t3Banner={t3Banner(status?.t3 ?? null, listsError, outageSince !== null && listsReadAt !== null && listsReadAt >= outageSince)}
           browsers={browsers}
           controls={appControls}
           onOpenRoom={(roomId) => openInDrawer({ kind: "room", id: roomId })}

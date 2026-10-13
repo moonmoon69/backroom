@@ -1595,3 +1595,30 @@ test("review integration: a feed outage already pushed reaches GET status withou
   assert.deepEqual([status.error, status.feed.state], [reach.error, "down"]);
   assert.equal(prompt, true, "the chip must receive the feed outage already pushed to the banner, without waiting for HTTP auth/session");
 });
+
+test("while an outage is known, GET /api/status answers at once with what T3 last said of itself, and asks T3 again once it is back", async (t) => {
+  const t3 = streamingT3(opening);
+  const s = await feedService(t, t3, { retryMs: 300 });
+  s.adapter.startFeed();
+  await settle();
+  const up = await s.status();
+  assert.deepEqual([up.error, (up as unknown as { environment: { serverVersion: string } }).environment.serverVersion], [null, ENVIRONMENT.serverVersion]);
+  t3.feedSocket().close();
+  await settle();
+  // T3 holds every request now: none is waited on.
+  const describe = s.adapter.describe.bind(s.adapter);
+  let asked = 0;
+  s.adapter.describe = async () => {
+    asked += 1;
+    return await new Promise<never>(() => {});
+  };
+  const started = Date.now();
+  const down = (await s.status()) as unknown as { error: string; environment: { serverVersion: string } | null };
+  assert.ok(Date.now() - started < 100, `answered in ${Date.now() - started} ms`);
+  assert.deepEqual([down.error, down.environment?.serverVersion, asked], ["T3 closed the connection", ENVIRONMENT.serverVersion, 0], "the outage, with what T3 last said of itself; T3 not asked");
+  s.adapter.describe = describe;
+  await sleep(400);
+  await settle();
+  const back = await s.status();
+  assert.deepEqual([back.error, back.feed.state], [null, "connected"]);
+});

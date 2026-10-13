@@ -63,11 +63,13 @@ const app = createHttpApp(stack, config, resolve("web/dist"));
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });
 const command = async (...parts: string[]) => (await run(resolve("bin/rooms-browser"), [browser, ...parts, "--as", key], { env: { ...process.env, ROOMS_BROWSER_API: join(resolve(credentials), "browser-api.json") }, timeout: 20_000, maxBuffer: 1024 * 1024 })).stdout;
 let tab: string | null = null;
-interface View { banner: boolean; chip: string | null; error: string | null; feed: string; hidden: boolean }
-const inspect = async (): Promise<View> => {
-  const output = await command(tab!, "eval", `async () => {
+/** The banner is found by its mark (data-t3-banner: "down" when T3's lists cannot be read, "feed" when they are read the slow way). */
+interface View { banner: string | null; bannerText: string | null; chip: string | null; error: string | null; feed: string; hidden: boolean }
+const inspect = async (on = tab!): Promise<View> => {
+  const output = await command(on, "eval", `async () => {
     const status = await (await fetch('/api/status')).json();
-    return { banner: [...document.querySelectorAll('.ov-empty')].some(e => e.textContent.includes('T3 is not answering')),
+    const banner = document.querySelector('[data-t3-banner]');
+    return { banner: banner?.dataset.t3Banner ?? null, bannerText: banner?.textContent ?? null,
       chip: document.querySelector('.connection-chip')?.textContent ?? null, error: status.t3.error,
       feed: status.t3.feed.state, hidden: document.hidden };
   }`);
@@ -84,13 +86,14 @@ try {
   assert.ok(tab, opened);
   await sleep(1500);
   const before = await inspect();
-  assert.deepEqual([before.feed, before.error, before.banner], ["connected", null, false]);
+  assert.deepEqual([before.feed, before.error, before.banner], ["connected", null, null]);
   blocked = true;
   for (const socket of sockets) if (socket.feed) socket.close();
   await sleep(150);
   const dropped = await inspect();
   console.log("Just after the feed drops:", dropped);
-  assert.deepEqual([dropped.feed, dropped.banner], ["down", true], "the pushed outage is visible before the refresh");
+  assert.equal(dropped.feed, "down");
+  assert.ok(dropped.banner, "the pushed outage is visible before the refresh");
   await command(tab, "screenshot", "--out", join(out, "feed-down-before-http-fallback.png"));
   const getsBefore = shellGets;
   // The same browser event PageStream handles when the user returns to this tab.
@@ -104,8 +107,23 @@ try {
   assert.ok(after.error, "the server still reports the feed outage");
   assert.match(after.chip ?? "", /error/);
   assert.ok(shellGets > getsBefore, "the page successfully read the HTTP fallback");
-  assert.equal(after.banner, true, "HTTP fallback success must not clear the feed outage banner before a pushed recovery");
-  console.log("PASS: the feed outage remains visible after a successful HTTP fallback");
+  // A page loaded while the feed is down: told the feed is down and T3's lists read the slow way, with no return to it.
+  const fresh = /Opened tab (\S+)/.exec(await command("open", `http://feed-page-review-${port}.localhost:${port}`))?.[1] ?? null;
+  assert.ok(fresh, "a second tab");
+  let loaded: View;
+  try {
+    await sleep(2500);
+    loaded = await inspect(fresh);
+    console.log("A page loaded while the feed is down:", loaded);
+    await command(fresh, "screenshot", "--out", join(out, "feed-down-fresh-page.png"));
+  } finally {
+    await command(fresh, "close").catch(() => undefined);
+  }
+  assert.equal(loaded.banner, "feed", "a page loaded during the outage says the live feed is down once its slow read succeeded");
+  assert.equal(after.banner, "feed", "HTTP fallback success must not clear the feed outage banner before a pushed recovery; it says the live feed is down");
+  assert.ok(after.bannerText?.includes("live feed is down") && after.bannerText.includes(after.error!), `the banner names the feed's error and that the lists may lag: ${after.bannerText}`);
+  assert.match(after.bannerText ?? "", /may lag/);
+  console.log("PASS: the feed outage remains visible after a successful HTTP fallback, worded for lists read the slow way");
 } finally {
   if (tab) await command(tab, "close").catch(() => undefined);
   stack.close();

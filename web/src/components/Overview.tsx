@@ -59,7 +59,7 @@ export function Overview({
   projects,
   threads,
   seenThreads,
-  t3Error,
+  t3Banner,
   browsers,
   onOpenRoom,
   onOpenThread,
@@ -80,8 +80,8 @@ export function Overview({
   threads: T3ThreadShell[];
   /** The finish time each thread was marked seen up to on this page: its news up to then is left out of the overview's read. */
   seenThreads: ReadonlyMap<string, string>;
-  /** Why projects and threads could not be read from T3, if they could not. */
-  t3Error: string | null;
+  /** The T3 banner, while the service says T3 is down (t3Connection.ts, t3Banner). */
+  t3Banner: { kind: "down" | "feed"; error: string } | null;
   /** The shared browsers on this machine; null when the service cannot run browsers. */
   browsers: BrowserListItem[] | null;
   onOpenRoom: (roomId: string) => void;
@@ -284,9 +284,13 @@ export function Overview({
         {controls}
       </header>
       <div className="overview-grid">
-        {t3Error ? (
-          <p className="muted ov-empty" title={t3Error}>
+        {t3Banner?.kind === "down" ? (
+          <p className="muted ov-empty" title={t3Banner.error} data-t3-banner="down">
             T3 is not answering; its projects and threads are not listed.
+          </p>
+        ) : t3Banner?.kind === "feed" ? (
+          <p className="muted ov-empty" title={t3Banner.error} data-t3-banner="feed">
+            T3's live feed is down ({t3Banner.error}); its projects and threads are read directly and may lag.
           </p>
         ) : projects === null ? (
           <p className="muted ov-empty">Loading projects…</p>

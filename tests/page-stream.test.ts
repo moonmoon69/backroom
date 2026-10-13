@@ -238,3 +238,31 @@ test("a late answer for the room left never shows over the room open now, and it
   assert.equal(afterRoomGone({ kind: "room", id: "a" }, "a"), null);
   assert.equal(afterRoomGone(null, "a"), null);
 });
+
+test("the T3 banner is the service's word: shown while it says T3 is down, and only then; a list read words it but never clears it", async () => {
+  const { feedOut, t3Banner } = await import("../web/src/t3Connection.ts");
+  const t3 = (error: string | null, feed: "connected" | "connecting" | "down" = "connected") => ({
+    baseUrl: "http://127.0.0.1:3773",
+    paired: true,
+    pairedAt: null,
+    tokenExpiresAt: null,
+    environment: null,
+    auth: null,
+    error,
+    errorAt: error ? "2026-10-13T00:00:00.000Z" : null,
+    feed: { state: feed, since: "2026-10-13T00:00:00.000Z", error: feed === "connected" ? null : error },
+  });
+  assert.equal(t3Banner(t3(null), null, true), null, "T3 answers: none");
+  assert.equal(t3Banner(t3(null), "fetch failed", false), null, "the service says T3 answers: a list read that failed raises none");
+  assert.equal(t3Banner(null, "fetch failed", false), null, "no word from the service yet: none");
+  // The feed down, T3's lists read the slow way during the outage: the short line, with the feed's error.
+  assert.deepEqual(t3Banner(t3("T3 closed the connection", "down"), null, true), { kind: "feed", error: "T3 closed the connection" });
+  assert.deepEqual(t3Banner(t3("Backroom is connecting to T3", "connecting"), null, true), { kind: "feed", error: "Backroom is connecting to T3" });
+  // The feed down, no list read since the outage began (or one held up by T3): not answering, until one succeeds.
+  assert.deepEqual(t3Banner(t3("T3 closed the connection", "down"), null, false), { kind: "down", error: "T3 closed the connection" });
+  // The lists failed too: T3 is not answering, with their error.
+  assert.deepEqual(t3Banner(t3("T3 closed the connection", "down"), "cannot reach T3", true), { kind: "down", error: "cannot reach T3" });
+  // The fake T3 (its feed always connected, its outages seen by the pages' check): not answering, and no lists read.
+  assert.deepEqual(t3Banner(t3("T3 did not answer within 30s"), null, true), { kind: "down", error: "T3 did not answer within 30s" });
+  assert.deepEqual([feedOut(t3("T3 did not answer within 30s")), feedOut(t3("T3 closed the connection", "down")), feedOut(t3(null, "down")), feedOut(null)], [false, true, false, false]);
+});
