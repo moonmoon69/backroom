@@ -66,3 +66,36 @@ test("Astra R2: a bounded refresh recovered after idle trimming still announces 
   assert.deepEqual(changes, ["t1"],
     "the page last read 7: successful recovery to 9 must push a thread event even though its old bounded snapshot was trimmed");
 });
+
+test("Astra R2: an unchanged fallback read does not postpone quiet snapshot trimming", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 100_000 });
+  let values: (items: unknown[]) => void = () => assert.fail("not subscribed");
+  const connection: FeedConnection = {
+    closed: false, heardAt: Date.now(),
+    stream: (_tag, _payload, callback) => {
+      values = callback;
+      return { done: new Promise<void>(() => {}), cancel: () => {} };
+    },
+    ping: () => {}, close: () => {},
+  };
+  const feed = new ThreadFeed({ read: async () => ({ snapshotSequence: 7, projection: {} }), onChange: () => {} });
+  t.after(() => feed.close());
+  feed.connect(connection);
+  feed.hold("engine", ["t1"]);
+  await new Promise(setImmediate);
+  values([{ kind: "synchronized" }]);
+  await feed.detail("t1", false);
+  const state = (feed as unknown as { threads: Map<string, { cache: { bounded: unknown; full: unknown } }> }).threads.get("t1")!;
+  const heldFull = state.cache.full;
+  const heldBounded = state.cache.bounded;
+  assert.ok(heldFull);
+  assert.ok(heldBounded);
+  feed.connect(null);
+  t.mock.timers.tick(20_000);
+  await feed.detail("t1", true); // The successful fallback GET is discarded: bounded7 is already kept.
+  assert.equal(state.cache.bounded, heldBounded, "the unchanged read was not kept");
+  assert.equal(state.cache.full, heldFull);
+  t.mock.timers.tick(10_000);
+  assert.equal(state.cache.full, null,
+    "30s passed with no event or read kept: fallback polling must not postpone releasing the equal full snapshot");
+});
