@@ -2,6 +2,7 @@
  * Read-only review regression: an HTTP fallback read must not dismiss a pushed feed outage.
  * Run after build:web, against live T3, using an EMPTY throwaway service and an owned browser tab:
  * node scripts/review-shell-feed-page.ts --as <key> --credentials <live-data-dir> --browser general --port 4534 --out /tmp/feed-page-review
+ * Add --retry-error to hold the fallback while a feed reconnect fails with a different error.
  * Only the credential is read from the live data directory. No rooms or T3 commands are created.
  */
 import assert from "node:assert/strict";
@@ -19,6 +20,7 @@ import { createHttpApp } from "../src/server/http.ts";
 
 const args = process.argv.slice(2);
 const option = (name: string, fallback = "") => args.includes(name) ? args[args.indexOf(name) + 1]! : fallback;
+const retryError = args.includes("--retry-error");
 const key = option("--as");
 const credentials = option("--credentials");
 assert.ok(key && credentials, "--as and --credentials are required");
@@ -35,6 +37,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const sockets: ReadOnlySocket[] = [];
 let blocked = false;
 let shellGets = 0;
+let releaseFallback!: () => void;
+const heldFallback = new Promise<void>((resolve) => { releaseFallback = resolve; });
 class ReadOnlySocket extends WebSocket {
   feed = false;
   constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); sockets.push(this); }
@@ -51,9 +55,14 @@ class ReadOnlySocket extends WebSocket {
   }
 }
 const adapter = new HttpT3Adapter({
-  baseUrl, accessToken: stored.accessToken, webSocketImpl: ReadOnlySocket, feed: { retryMs: 60_000 },
-  fetchImpl: (input, init) => {
-    if (new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url).pathname === "/api/orchestration/shell") shellGets++;
+  baseUrl, accessToken: stored.accessToken, webSocketImpl: ReadOnlySocket, feed: { retryMs: retryError ? 400 : 60_000 },
+  fetchImpl: async (input, init) => {
+    const path = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url).pathname;
+    if (path === "/api/orchestration/shell") {
+      shellGets++;
+      if (retryError && blocked) await heldFallback;
+    }
+    if (retryError && blocked && path === "/api/auth/websocket-ticket") return new Response("retry ticket refused", { status: 503 });
     return fetch(input, init);
   },
 });
@@ -87,6 +96,19 @@ try {
   await sleep(1500);
   const before = await inspect();
   assert.deepEqual([before.feed, before.error, before.banner], ["connected", null, null]);
+  if (retryError) {
+    // Keep the read RPC socket open: the new ticket refusal affects only the feed's reconnect.
+    await adapter.getThreadDetail((await adapter.listThreads())[0]!.id, { bounded: true });
+    await command(tab, "eval", `() => {
+      window.__reviewFallback = [];
+      const original = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await original(...args);
+        if (String(args[0]).startsWith("/api/t3/projects") || String(args[0]).startsWith("/api/t3/threads")) window.__reviewFallback.push({ url: String(args[0]), status: response.status });
+        return response;
+      };
+    }`);
+  }
   blocked = true;
   for (const socket of sockets) if (socket.feed) socket.close();
   await sleep(150);
@@ -95,36 +117,58 @@ try {
   assert.equal(dropped.feed, "down");
   assert.ok(dropped.banner, "the pushed outage is visible before the refresh");
   await command(tab, "screenshot", "--out", join(out, "feed-down-before-http-fallback.png"));
-  const getsBefore = shellGets;
-  // The same browser event PageStream handles when the user returns to this tab.
-  await command(tab, "eval", "() => { document.dispatchEvent(new Event('visibilitychange')); return document.hidden; }");
-  await sleep(1500);
-  const after = await inspect();
-  console.log("After returning to the page:", after, "fallback shell GETs:", shellGets - getsBefore);
-  await command(tab, "screenshot", "--out", join(out, "feed-down-after-http-fallback.png"));
-  assert.equal(after.hidden, false, "this tab is visible");
-  assert.equal(after.feed, "down");
-  assert.ok(after.error, "the server still reports the feed outage");
-  assert.match(after.chip ?? "", /error/);
-  assert.ok(shellGets > getsBefore, "the page successfully read the HTTP fallback");
-  // A page loaded while the feed is down: told the feed is down and T3's lists read the slow way, with no return to it.
-  const fresh = /Opened tab (\S+)/.exec(await command("open", `http://feed-page-review-${port}.localhost:${port}`))?.[1] ?? null;
-  assert.ok(fresh, "a second tab");
-  let loaded: View;
-  try {
-    await sleep(2500);
-    loaded = await inspect(fresh);
-    console.log("A page loaded while the feed is down:", loaded);
-    await command(fresh, "screenshot", "--out", join(out, "feed-down-fresh-page.png"));
-  } finally {
-    await command(fresh, "close").catch(() => undefined);
+  if (retryError) {
+    const firstError = dropped.error;
+    for (let i = 0; i < 30 && adapter.feed().error === firstError; i++) await sleep(50);
+    assert.notEqual(adapter.feed().error, firstError, "the retry gives a new error during the same outage");
+    assert.ok(shellGets > 0, "an eager fallback read is held");
+    await sleep(200);
+    console.log("Retry while fallback is held:", await inspect());
+    releaseFallback();
+    await sleep(1500);
+    const after = await inspect();
+    const readsOutput = await command(tab, "eval", "() => window.__reviewFallback");
+    const reads = JSON.parse(/\x60\x60\x60json\s*([\s\S]*?)\s*\x60\x60\x60/.exec(readsOutput)![1]!) as Array<{ url: string; status: number }>;
+    console.log("Successful fallback released, no new page action:", after, "list responses:", reads);
+    assert.ok(reads.some((read) => read.url === "/api/t3/projects" && read.status === 200), "projects read succeeded");
+    assert.ok(reads.some((read) => read.url.startsWith("/api/t3/threads") && read.status === 200), "threads read succeeded");
+    await command(tab, "screenshot", "--out", join(out, "retry-invalidates-fallback.png"));
+    assert.equal(after.feed, "down");
+    assert.equal(after.banner, "feed", "a successful read begun during this outage must apply despite a second down notification");
+    console.log("PASS: a second down notification preserves the pending fallback result");
+  } else {
+    const getsBefore = shellGets;
+    // The same browser event PageStream handles when the user returns to this tab.
+    await command(tab, "eval", "() => { document.dispatchEvent(new Event('visibilitychange')); return document.hidden; }");
+    await sleep(1500);
+    const after = await inspect();
+    console.log("After returning to the page:", after, "fallback shell GETs:", shellGets - getsBefore);
+    await command(tab, "screenshot", "--out", join(out, "feed-down-after-http-fallback.png"));
+    assert.equal(after.hidden, false, "this tab is visible");
+    assert.equal(after.feed, "down");
+    assert.ok(after.error, "the server still reports the feed outage");
+    assert.match(after.chip ?? "", /error/);
+    assert.ok(shellGets > getsBefore, "the page successfully read the HTTP fallback");
+    // A page loaded while the feed is down: told the feed is down and T3's lists read the slow way, with no return to it.
+    const fresh = /Opened tab (\S+)/.exec(await command("open", `http://feed-page-review-${port}.localhost:${port}`))?.[1] ?? null;
+    assert.ok(fresh, "a second tab");
+    let loaded: View;
+    try {
+      await sleep(2500);
+      loaded = await inspect(fresh);
+      console.log("A page loaded while the feed is down:", loaded);
+      await command(fresh, "screenshot", "--out", join(out, "feed-down-fresh-page.png"));
+    } finally {
+      await command(fresh, "close").catch(() => undefined);
+    }
+    assert.equal(loaded.banner, "feed", "a page loaded during the outage says the live feed is down once its slow read succeeded");
+    assert.equal(after.banner, "feed", "HTTP fallback success must not clear the feed outage banner before a pushed recovery; it says the live feed is down");
+    assert.ok(after.bannerText?.includes("live feed is down") && after.bannerText.includes(after.error!), `the banner names the feed's error and that the lists may lag: ${after.bannerText}`);
+    assert.match(after.bannerText ?? "", /may lag/);
+    console.log("PASS: the feed outage remains visible after a successful HTTP fallback, worded for lists read the slow way");
   }
-  assert.equal(loaded.banner, "feed", "a page loaded during the outage says the live feed is down once its slow read succeeded");
-  assert.equal(after.banner, "feed", "HTTP fallback success must not clear the feed outage banner before a pushed recovery; it says the live feed is down");
-  assert.ok(after.bannerText?.includes("live feed is down") && after.bannerText.includes(after.error!), `the banner names the feed's error and that the lists may lag: ${after.bannerText}`);
-  assert.match(after.bannerText ?? "", /may lag/);
-  console.log("PASS: the feed outage remains visible after a successful HTTP fallback, worded for lists read the slow way");
 } finally {
+  releaseFallback();
   if (tab) await command(tab, "close").catch(() => undefined);
   stack.close();
   adapter.close();
