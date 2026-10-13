@@ -209,6 +209,8 @@ export interface ShellFeedOptions {
    * with no change (a removal of what the other stream already moved, a change T3 tells again).
    */
   onApplied?: () => void;
+  /** feed() changed: its state, or the error that keeps it down. */
+  onStatus?: (status: T3ShellFeedStatus) => void;
   /** How long T3 may take, once asked, to send both snapshots. Default 30 s. */
   timeoutMs?: number;
   /** How often the open socket is pinged; one silent for three of these counts as gone. Default 5 s. */
@@ -270,25 +272,34 @@ export class ShellFeed {
     this.open();
   }
 
-  /** Open again at once (on another credential): what was live stops being served until the new socket's snapshots are in. */
+  /**
+   * Open again at once (on another credential): what was live stops being served until the new socket's snapshots are
+   * in. It goes straight to connecting, never through stopped.
+   */
   restart(): void {
     if (!this.running) return;
-    this.stop();
+    this.halt();
     this.start();
   }
 
   stop(): void {
+    this.halt();
+    this.set("down", "stopped");
+  }
+
+  private halt(): void {
     this.running = false;
     this.attempt += 1;
     this.teardown();
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
-    this.set("down", "stopped");
   }
 
   private set(state: T3ShellFeedStatus["state"], error: string | null): void {
+    if (this.state.state === state && this.state.error === error) return;
     if (this.state.state !== state) this.state = { state, since: new Date(this.now()).toISOString(), error };
     else this.state = { ...this.state, error };
+    this.options.onStatus?.(this.status());
   }
 
   private later(ms: number, run: () => void): void {

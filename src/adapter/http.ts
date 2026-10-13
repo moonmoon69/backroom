@@ -545,6 +545,7 @@ export class HttpT3Adapter implements T3Adapter {
   /** T3's shell as it streams it, once started (startFeed): the shell reads' source while it is live. */
   private readonly shellFeed: ShellFeed;
   private readonly shellListeners = new Set<(change: T3ShellChange) => void>();
+  private readonly feedListeners = new Set<(status: T3ShellFeedStatus) => void>();
   /**
    * After a command: the sequence T3 gave it (Infinity when it gave none), and until when the shell reads wait for the
    * feed to reach it, reading over HTTP meanwhile, so a read made after a command sees what it did.
@@ -579,6 +580,9 @@ export class HttpT3Adapter implements T3Adapter {
       },
       // The streams may have moved on, a change or not: a read waiting on HTTP takes the feed if it has caught up.
       onApplied: () => this.releaseFeedWaiters(),
+      onStatus: (status) => {
+        for (const listener of [...this.feedListeners]) listener(status);
+      },
       timeoutMs: this.requestTimeoutMs,
       ...options.feed,
     });
@@ -613,6 +617,13 @@ export class HttpT3Adapter implements T3Adapter {
     this.shellListeners.add(listener);
     return () => {
       this.shellListeners.delete(listener);
+    };
+  }
+
+  onFeedChange(listener: (status: T3ShellFeedStatus) => void): () => void {
+    this.feedListeners.add(listener);
+    return () => {
+      this.feedListeners.delete(listener);
     };
   }
 

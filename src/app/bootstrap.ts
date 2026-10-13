@@ -128,7 +128,14 @@ export function createStack(input: {
     ...(input.log ? { log: input.log } : {}),
   });
   // Every announced room change, and every append to the journal (an unannounced one too), reaches open pages.
-  const changes = new PageChanges(input.adapter, { ...input.changes, heads: () => engine.heads(), ...(input.log ? { log: input.log } : {}) });
+  // With the HTTP adapter T3's shell and reach come from its feed; the fake has no stream (its outages and edits are seen
+  // only by reading it), so for it the pages' check stays.
+  const changes = new PageChanges(input.adapter, {
+    ...input.changes,
+    heads: () => engine.heads(),
+    ...(input.adapter.kind === "http" ? { feed: input.adapter } : {}),
+    ...(input.log ? { log: input.log } : {}),
+  });
   hub.subscribeAll((roomId) => changes.roomChanged(roomId));
   const seats: EngineSeats = service.useEngineSeats(engine, briefing, input.log);
   // Seat, reseat, retire and the Consigliere's mark go on the journal (L4b), through the service's handler hook.

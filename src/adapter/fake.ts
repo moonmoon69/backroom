@@ -177,6 +177,11 @@ export class FakeT3Adapter implements T3Adapter {
     return { state: "connected", since: this.createdAt, error: null };
   }
 
+  /** Its feed never changes. */
+  onFeedChange(): () => void {
+    return () => undefined;
+  }
+
   /**
    * Its state changed: the listeners hear of it once the change in hand is made (after the current call's synchronous
    * work, as T3's stream reports a change once it is applied). A burst of changes is heard of once, naming no thread.

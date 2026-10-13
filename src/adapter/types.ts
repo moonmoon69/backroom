@@ -584,6 +584,8 @@ export interface T3Adapter {
   onShellChange(listener: (change: T3ShellChange) => void): () => void;
   /** Whether the shell reads are served from T3's stream of it, or from its HTTP snapshot. */
   feed(): T3ShellFeedStatus;
+  /** Call `listener` each time feed() changes (its state, or the error that keeps it down). Returns the remover. */
+  onFeedChange(listener: (status: T3ShellFeedStatus) => void): () => void;
   listProjects(): Promise<T3Project[]>;
   /** Add a project to T3 (projects.mutate project.create). T3 refuses a folder another project already uses. */
   createProject(input: CreateProjectInput): Promise<void>;

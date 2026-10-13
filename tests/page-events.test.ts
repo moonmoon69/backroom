@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
-import { T3Unavailable, type T3Project, type T3ThreadShell } from "../src/adapter/types.ts";
+import { T3Unavailable, type T3Project, type T3ShellChange, type T3ShellFeedStatus, type T3ThreadShell } from "../src/adapter/types.ts";
 import { createStack } from "../src/app/bootstrap.ts";
 import { PageChanges, type PageEvent } from "../src/app/changes.ts";
 import { loadConfig } from "../src/config.ts";
@@ -310,4 +310,65 @@ test("with no page listening, a room's change reads nothing of the journal", asy
   for (let i = 0; i < 5; i += 1) changes.roomChanged("room");
   assert.equal(reads, before, "no heads read for nobody");
   changes.close();
+});
+
+test("with T3's feed, a change it applies is shell at once after a quiet spell and once more at the end of a spell it kept streaming in; its state is the reach at once; there is no check", async () => {
+  let reads = 0;
+  const adapter = {
+    listProjects: async (): Promise<T3Project[]> => {
+      reads += 1;
+      return [];
+    },
+    listThreads: async (): Promise<T3ThreadShell[]> => [],
+  };
+  const shellListeners = new Set<(change: T3ShellChange) => void>();
+  const feedListeners = new Set<(status: T3ShellFeedStatus) => void>();
+  let status: T3ShellFeedStatus = { state: "connected", since: "2026-10-13T00:00:00.000Z", error: null };
+  const feed = {
+    feed: () => status,
+    onShellChange: (listener: (change: T3ShellChange) => void) => {
+      shellListeners.add(listener);
+      return () => void shellListeners.delete(listener);
+    },
+    onFeedChange: (listener: (status: T3ShellFeedStatus) => void) => {
+      feedListeners.add(listener);
+      return () => void feedListeners.delete(listener);
+    },
+  };
+  const changes = new PageChanges(adapter, { shellMs: 100, feed });
+  const seen: string[] = [];
+  const stop = changes.subscribe((event) => seen.push(event.type === "status" ? `status:${event.status.up}:${event.status.error}` : event.type));
+  assert.equal((changes as unknown as { shellTimer: unknown }).shellTimer, null, "a page listening times no check");
+  const stream = () => {
+    for (const listener of [...shellListeners]) listener({ threadIds: ["t"] });
+  };
+  const tell = (next: T3ShellFeedStatus) => {
+    status = next;
+    for (const listener of [...feedListeners]) listener(next);
+  };
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  assert.equal(changes.status()?.up, true, "connected: up");
+  stream();
+  assert.deepEqual(seen, ["shell"], "at once");
+  stream();
+  stream();
+  assert.deepEqual(seen, ["shell"], "the rest of the spell waits");
+  await wait(130);
+  assert.deepEqual(seen, ["shell", "shell"], "one at the end of the spell for what came in it");
+  await wait(130);
+  assert.deepEqual(seen, ["shell", "shell"], "a quiet spell tells nothing");
+  stream();
+  assert.deepEqual(seen, ["shell", "shell", "shell"], "after a quiet spell, at once again");
+  tell({ state: "down", since: "2026-10-13T00:00:01.000Z", error: "T3 closed the connection" });
+  assert.deepEqual(seen.at(-1), "status:false:T3 closed the connection", "a drop at once");
+  assert.deepEqual([changes.status()?.up, changes.status()?.error], [false, "T3 closed the connection"]);
+  tell({ state: "down", since: "2026-10-13T00:00:01.000Z", error: "T3 closed the connection" });
+  tell({ state: "connected", since: "2026-10-13T00:00:02.000Z", error: null });
+  assert.deepEqual(seen.filter((e) => e.startsWith("status")), ["status:false:T3 closed the connection", "status:true:null"], "each once");
+  await changes.check();
+  await wait(250);
+  assert.equal(reads, 0, "no check reads T3 with the feed");
+  stop();
+  changes.close();
+  assert.deepEqual([shellListeners.size, feedListeners.size], [0, 0], "closing stops following the feed");
 });

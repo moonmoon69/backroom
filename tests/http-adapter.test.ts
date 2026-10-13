@@ -792,14 +792,15 @@ test("Astra review: the one-second catch-up deadline releases a read already wai
 });
 
 /** An adapter over `t3`, with its feed's timings short; `shellBody` is what T3's HTTP shell answers. */
-function feedAdapter(t3: ReturnType<typeof streamingT3>, options: { shellBody?: () => unknown; requestTimeoutMs?: number; pingMs?: number } = {}) {
+function feedAdapter(t3: ReturnType<typeof streamingT3>, options: { shellBody?: () => unknown; requestTimeoutMs?: number; pingMs?: number; retryMs?: number } = {}) {
   let tickets = 0;
   const { fetchImpl, calls } = mockFetch({
     ...base,
     "POST /api/auth/websocket-ticket": () => ({ status: 200, body: { ticket: `tk${++tickets}` } }),
     "GET /api/orchestration/shell": () => ({ status: 200, body: options.shellBody?.() ?? activeShell }),
+    "GET /api/auth/session": () => ({ status: 200, body: { authenticated: true, auth: { policy: "remote-reachable", bootstrapMethods: ["one-time-token"] }, scopes: [] } }),
   });
-  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: options.requestTimeoutMs ?? 2_000, feed: { pingMs: options.pingMs ?? 1_000, retryMs: 10, retryMaxMs: 40 } });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: options.requestTimeoutMs ?? 2_000, feed: { pingMs: options.pingMs ?? 1_000, retryMs: options.retryMs ?? 10, retryMaxMs: Math.max(40, options.retryMs ?? 10) } });
   const gets = () => calls.filter((c) => c.url.endsWith("/api/orchestration/shell")).length;
   return { adapter, calls, gets };
 }
@@ -1434,4 +1435,132 @@ test("the reconnect wait starts again from its shortest once the feed was live",
   assert.equal(adapter.feed().state, "connected");
   assert.ok(waited < 100, `back after ${waited} ms (the fifth wait in a row would be 160 ms)`);
   adapter.close();
+});
+
+// ---------------- the feed wired into the page push (deliverable B's GET /api/events) ----------------
+
+/** An open GET /api/events: its events as they come. */
+async function pageEvents(app: { request(path: string): Response | Promise<Response> }) {
+  const response = await app.request("/api/events");
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const events: Array<{ event: string; data: any; at: number }> = [];
+  let buffer = "";
+  let pending: ReturnType<typeof reader.read> | null = null;
+  const pump = async (deadline: number) => {
+    pending ??= reader.read();
+    const chunk = await Promise.race([pending, sleep(Math.max(1, deadline - Date.now())).then(() => null)]);
+    if (chunk === null) return;
+    pending = null;
+    if (chunk.done) return;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    let end: number;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const event = /^event: (.*)$/m.exec(block)?.[1];
+      const data = /^data: (.*)$/m.exec(block)?.[1];
+      if (event) events.push({ event, data: data ? JSON.parse(data) : null, at: Date.now() });
+    }
+  };
+  return {
+    events,
+    /** Read until `done` holds of the events, for `ms` at most. */
+    async until(done: (list: typeof events) => boolean, ms = 1_000) {
+      const deadline = Date.now() + ms;
+      while (!done(events) && Date.now() < deadline) await pump(deadline);
+      return done(events);
+    },
+    close: () => reader.cancel().catch(() => undefined),
+  };
+}
+
+async function feedService(t: import("node:test").TestContext, t3: ReturnType<typeof streamingT3>, options: { retryMs?: number } = {}) {
+  const { createStack } = await import("../src/app/bootstrap.ts");
+  const { createHttpApp } = await import("../src/server/http.ts");
+  const { loadConfig } = await import("../src/config.ts");
+  const { adapter, gets } = feedAdapter(t3, options);
+  const stack = createStack({ dbPath: ":memory:", adapter, briefingBudgetChars: 60_000, latestRelease: async () => null, changes: { shellMs: 500, headsMs: 60_000 } });
+  const app = createHttpApp(stack, loadConfig({ ROOMS_DATA_DIR: "/nonexistent/rooms-test-feed-push", ROOMS_PORT: "0", T3_BASE_URL: "http://t3.local:3773" }), "/nonexistent/dist");
+  t.after(() => {
+    stack.close();
+    adapter.close();
+  });
+  const status = async () => ((await (await app.request("/api/status")).json()) as { t3: { error: string | null; feed: { state: string } } }).t3;
+  return { adapter, gets, stack, app, status };
+}
+
+test("with the HTTP adapter, a change T3 streams reaches open pages as shell at once; a burst, as one more at the end of the spell; no check reads T3's shell", async (t) => {
+  const t3 = streamingT3(opening);
+  const s = await feedService(t, t3);
+  s.adapter.startFeed();
+  await settle();
+  // Becoming live is a change too: its spell is let pass.
+  await sleep(550);
+  // What the pages' check would read, were it running.
+  let checked = 0;
+  const list = s.adapter.listProjects.bind(s.adapter);
+  s.adapter.listProjects = async () => {
+    checked += 1;
+    return list();
+  };
+  const page = await pageEvents(s.app);
+  t.after(page.close);
+  await page.until(() => false, 50);
+  assert.equal(page.events.length, 0, "nothing to tell while nothing changes");
+  const pushed = Date.now();
+  t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 11, location: "active", thread: { ...threadShell, title: "renamed" } });
+  assert.ok(await page.until((list) => list.some((e) => e.event === "shell"), 150), "told at once, not at a check's next round");
+  assert.ok(page.events[0]!.at - pushed < 150);
+  // T3 goes on streaming (a running turn): one more shell at the end of the spell, not one per change.
+  for (let i = 0; i < 5; i += 1) t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 12 + i, location: "active", thread: { ...threadShell, title: `item ${i}`, updatedAt: `2026-10-03T00:00:1${i}.000Z` } });
+  await page.until(() => false, 200);
+  assert.equal(page.events.filter((e) => e.event === "shell").length, 1, "the burst waits for the spell's end");
+  await page.until((list) => list.filter((e) => e.event === "shell").length >= 2, 800);
+  await page.until(() => false, 600);
+  assert.equal(page.events.filter((e) => e.event === "shell").length, 2, "one for the whole burst");
+  assert.equal((await s.adapter.getThreadShell("thread-1"))?.title, "item 4");
+  assert.deepEqual([checked, s.gets()], [0, 0], "the pages' check of T3's shell does not run: the feed tells");
+  assert.deepEqual(page.events.filter((e) => e.event === "status"), [], "T3 answered all along");
+});
+
+test("with the HTTP adapter, the feed dropping reaches open pages as status down at once, and its reconnect as status up; GET /api/status says the same", async (t) => {
+  const t3 = streamingT3(opening);
+  const s = await feedService(t, t3, { retryMs: 300 });
+  s.adapter.startFeed();
+  await settle();
+  assert.deepEqual([(await s.status()).error, (await s.status()).feed.state], [null, "connected"]);
+  const page = await pageEvents(s.app);
+  t.after(page.close);
+  await page.until(() => false, 50);
+  const dropped = Date.now();
+  t3.feedSocket().close();
+  assert.ok(await page.until((list) => list.some((e) => e.event === "status"), 200), "down at once, not at a time limit");
+  const down = page.events.find((e) => e.event === "status")!;
+  assert.deepEqual([down.data.up, down.data.error], [false, "T3 closed the connection"]);
+  assert.ok(down.at - dropped < 200, `told ${down.at - dropped} ms after the drop`);
+  assert.deepEqual([(await s.status()).error, (await s.status()).feed.state], ["T3 closed the connection", "down"]);
+  // A page opening while it is down is told at once.
+  const late = await pageEvents(s.app);
+  t.after(late.close);
+  assert.ok(await late.until((list) => list.some((e) => e.event === "status" && e.data.up === false), 200));
+  // The feed reconnects (after 300 ms here): up, told once.
+  assert.ok(await page.until((list) => list.some((e) => e.event === "status" && e.data.up === true), 1_000), "up once it is live again");
+  assert.deepEqual(page.events.filter((e) => e.event === "status").map((e) => e.data.up), [false, true]);
+  assert.deepEqual([(await s.status()).error, (await s.status()).feed.state], [null, "connected"]);
+  assert.equal(s.gets(), 0);
+});
+
+test("with the HTTP adapter, a new token reopens the feed with no status blip of a stopped feed", async (t) => {
+  const t3 = streamingT3(opening);
+  const s = await feedService(t, t3);
+  s.adapter.startFeed();
+  await settle();
+  const seen: unknown[] = [];
+  const stop = s.stack.changes.subscribe((event) => seen.push(event.type === "status" ? [event.type, event.status.up, event.status.error] : [event.type]));
+  t.after(stop);
+  s.adapter.setAccessToken("tok2");
+  await settle();
+  assert.equal(s.adapter.feed().state, "connected");
+  assert.deepEqual(seen.filter((e) => (e as string[])[0] === "status"), [["status", false, "Backroom is connecting to T3"], ["status", true, null]], "connecting, then up: never stopped");
 });

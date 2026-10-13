@@ -6,12 +6,15 @@
  * The rest of the service calls roomChanged, shellChanged and statusChanged. Rooms come from the change hub
  * (bootstrap.ts wires hub.subscribeAll here) and from the journal's heads, read every second while a page listens, for
  * an append nobody announced (a write straight to the store; the room stream, src/server/engineView.ts, does the same).
- * T3's side is a check every 2 s while a page listens: adapter.listProjects() and listThreads() (served from the
- * adapter's shell cache, so cheap), fingerprinted, `shell` when the fingerprint moves, `status` when a read fails after
- * a success or succeeds after a failure. When the adapter can tell its shell changes itself (onShellChange and feed(),
- * deliverable A) that replaces the check.
+ * T3's side, with the HTTP adapter, is T3's own stream of its shell (the adapter's feed, src/adapter/shellFeed.ts): a
+ * change it applies is `shell`, at once after a quiet spell and then at most once every 2 s while T3 keeps streaming
+ * (every item of a running turn moves a thread, and each `shell` has the pages read the overview again), and its state
+ * is T3's reach, at once: connected is up, connecting or down is not, with the feed's error. Without a feed (the fake
+ * T3, whose outages and edits are seen only by reading it) it is a check every 2 s while a page listens:
+ * adapter.listProjects() and listThreads(), fingerprinted, `shell` when the fingerprint moves, `status` when a read
+ * fails after a success or succeeds after a failure.
  */
-import type { T3Adapter } from "../adapter/types.ts";
+import type { T3Adapter, T3ShellFeedStatus } from "../adapter/types.ts";
 
 /** T3 as the service last found it: up (answering) or down with the error; unknown until the first read. */
 export interface T3Reach {
@@ -32,6 +35,8 @@ export interface PageChangesOptions {
   heartbeatMs?: number;
   /** Every room's journal head (EngineHost.heads); without it only announced changes go out. */
   heads?: () => Map<string, number>;
+  /** T3's shell as it streams it (the HTTP adapter's feed): `shell` and `status` come from it, and there is no check. */
+  feed?: Pick<T3Adapter, "feed" | "onShellChange" | "onFeedChange">;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -51,6 +56,10 @@ export class PageChanges {
   private closed = false;
   /** Bumped at each start and pause, so a check that ends after a pause does not start a second loop. */
   private generation = 0;
+  /** The feed's: its subscriptions; the spell after a `shell` it caused, and whether a change came during it. */
+  private readonly unfollow: Array<() => void> = [];
+  private streamedTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamedDuring = false;
 
   private readonly adapter: Pick<T3Adapter, "listProjects" | "listThreads">;
   private readonly options: PageChangesOptions;
@@ -61,6 +70,12 @@ export class PageChanges {
     this.shellMs = options.shellMs ?? 2000;
     this.headsMs = options.headsMs ?? 1000;
     this.heartbeatMs = options.heartbeatMs ?? 20000;
+    const feed = options.feed;
+    if (feed) {
+      // Followed whether or not a page listens: the service's observers (the read API's memo) are told as well.
+      this.unfollow.push(feed.onShellChange(() => this.streamed()), feed.onFeedChange((status) => this.follow(status)));
+      this.follow(feed.feed());
+    }
   }
 
   /** A page listens; the watches run while one does. Returns the unsubscribe. */
@@ -128,6 +143,8 @@ export class PageChanges {
 
   /** Read T3's projects and threads now; `shell` if they changed since the last read, `status` if reaching T3 changed. */
   check(): Promise<void> {
+    // With the feed, nothing to read: it tells both as they happen.
+    if (this.options.feed) return Promise.resolve();
     // One read at a time: a check asked for while one runs shares it.
     this.checking ??= this.read().finally(() => {
       this.checking = null;
@@ -155,9 +172,43 @@ export class PageChanges {
     if (this.closed) return;
     this.closed = true;
     this.pause();
+    for (const stop of this.unfollow.splice(0)) stop();
+    if (this.streamedTimer) clearTimeout(this.streamedTimer);
+    this.streamedTimer = null;
     this.emit({ type: "closed" });
     this.listeners.clear();
     this.observers.clear();
+  }
+
+  /** The feed's state is T3's reach: connected is up, connecting or down is not. */
+  private follow(status: T3ShellFeedStatus): void {
+    if (this.closed) return;
+    if (status.state === "connected") this.statusChanged(true);
+    else this.statusChanged(false, status.error ?? (status.state === "connecting" ? "Backroom is connecting to T3" : "T3 is not answering"));
+  }
+
+  /**
+   * A change the feed applied: `shell` at once after a quiet spell, then one at the end of each spell of shellMs in
+   * which more came, so a T3 streaming without pause has the pages read again no more often than the check did.
+   */
+  private streamed(): void {
+    if (this.closed) return;
+    if (this.streamedTimer) {
+      this.streamedDuring = true;
+      return;
+    }
+    this.shellChanged();
+    const spell = () => {
+      this.streamedTimer = setTimeout(() => {
+        this.streamedTimer = null;
+        if (!this.streamedDuring) return;
+        this.streamedDuring = false;
+        this.shellChanged();
+        spell();
+      }, this.shellMs);
+      this.streamedTimer.unref?.();
+    };
+    spell();
   }
 
   private async read(): Promise<void> {
@@ -179,6 +230,8 @@ export class PageChanges {
     this.knownHeads = null;
     this.checkHeads();
     if (this.options.heads) this.headsTimer = setInterval(() => this.checkHeads(), this.headsMs);
+    // The feed tells T3's side as it happens: no check.
+    if (this.options.feed) return;
     // The next check is timed from the end of the last one: a read T3 holds up never piles up behind itself.
     const next = () => {
       this.shellTimer = setTimeout(() => {
