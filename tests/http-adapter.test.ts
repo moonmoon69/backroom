@@ -719,6 +719,78 @@ const ARCHIVED = "orchestration.subscribeArchivedShell";
 /** T3's two shell streams as they open: a snapshot each. */
 const opening = () => ({ [SHELL]: [[{ kind: "snapshot", snapshot: activeShell }]], [ARCHIVED]: [[{ kind: "snapshot", snapshot: archivedShell }]] });
 
+test("Astra review: a waiting read resumes when an archive removal advances the active sequence without changing a row", async (t) => {
+  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return Response.json(ENVIRONMENT);
+    if (path === "/api/auth/websocket-ticket") return Response.json({ ticket: "tk" });
+    await new Promise<void>((resolve) => held.push(resolve));
+    return Response.json({ ...activeShell, snapshotSequence: 15, threads: [] });
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 5_000 });
+  t.after(() => { held.splice(0).forEach((release) => release()); adapter.close(); });
+  adapter.startFeed();
+  await settle();
+  await adapter.setThreadLifecycle({ commandId: "archive", threadId: "thread-1", action: "archive" });
+  let answered = false;
+  const read = adapter.listThreads().then(() => { answered = true; });
+  await settle();
+  assert.equal(held.length, 1);
+  t3.feedSocket().push(ARCHIVED, { kind: "thread.updated", sequence: 15, thread: { ...threadShell, archivedAt: "2026-10-03T00:00:09.000Z" } });
+  await settle();
+  assert.equal(answered, false, "the active stream has not caught up yet");
+  t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-1" });
+  await settle();
+  assert.equal(answered, true, "both streams now show the archive: the pending GET must yield to the feed");
+  await read;
+});
+
+test("Astra review: archived reads after archive wait for the archived stream or use its RPC snapshot", async (t) => {
+  const archived = { ...threadShell, archivedAt: "2026-10-03T00:00:09.000Z", updatedAt: "2026-10-03T00:00:09.000Z" };
+  const t3 = streamingT3(opening, {
+    "orchestration.dispatchCommand": () => ({ sequence: 15 }),
+    "orchestration.getArchivedShellSnapshot": () => ({ ...archivedShell, snapshotSequence: 15, threads: [...archivedShell.threads, archived] }),
+  });
+  const { adapter } = feedAdapter(t3);
+  t.after(() => adapter.close());
+  adapter.startFeed();
+  await settle();
+  await adapter.setThreadLifecycle({ commandId: "archive", threadId: "thread-1", action: "archive" });
+  t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-1" });
+  await settle();
+  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old", "thread-1"], "the active removal cannot prove that the archived stream includes the command");
+});
+
+test("Astra review: the one-second catch-up deadline releases a read already waiting on HTTP", async (t) => {
+  const t3 = streamingT3(opening, { "projects.mutate": () => ({}) });
+  const held: Array<() => void> = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/.well-known/t3/environment") return Response.json(ENVIRONMENT);
+    if (path === "/api/auth/websocket-ticket") return Response.json({ ticket: "tk" });
+    await new Promise<void>((resolve) => held.push(resolve));
+    return Response.json(activeShell);
+  }) as typeof fetch;
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: t3.Socket, requestTimeoutMs: 5_000 });
+  t.after(() => { held.splice(0).forEach((release) => release()); adapter.close(); });
+  adapter.startFeed();
+  await settle();
+  await adapter.createProject({ commandId: "project", projectId: "p2", title: "p2", workspaceRoot: "/tmp/p2", createIfMissing: false });
+  let answered = false;
+  const read = adapter.listThreads().then(() => { answered = true; });
+  await settle();
+  assert.equal(held.length, 1);
+  // The project change has arrived, but its command supplied no sequence, so the floor is held for one second.
+  t3.feedSocket().push(SHELL, { kind: "project.updated", sequence: 15, project: { ...shell.projects[0], id: "p2", title: "p2", workspaceRoot: "/tmp/p2" } });
+  await settle();
+  await sleep(1_150);
+  assert.equal(adapter.feed().state, "connected");
+  assert.equal(answered, true, "the one-second fallback has expired, but the earlier read remains stuck on HTTP");
+  await read;
+});
+
 /** An adapter over `t3`, with its feed's timings short; `shellBody` is what T3's HTTP shell answers. */
 function feedAdapter(t3: ReturnType<typeof streamingT3>, options: { shellBody?: () => unknown; requestTimeoutMs?: number; pingMs?: number } = {}) {
   let tickets = 0;
