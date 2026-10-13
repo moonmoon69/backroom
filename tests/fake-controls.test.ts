@@ -38,3 +38,20 @@ test("GET /api/fake/request shows what an approval and a question were answered 
   assert.equal(((await record("nope")) as { error?: string }).error, "fake_control");
   assert.equal(await (await serve(new Request("http://fake/api/rooms"))).text(), "the app");
 });
+
+test("POST /api/fake/outage: T3 down altogether, or only its projects and threads with its descriptor answering (#8); answering again clears either", async () => {
+  const fake = new FakeT3Adapter({ autoCompleteMs: null });
+  const serve = withFakeControls((_request: Request) => new Response("the app"), fake);
+  const outage = async (body: unknown) => (await serve(new Request("http://fake/api/fake/outage", { method: "POST", body: JSON.stringify(body) }))).json();
+  const reads = async () => Promise.all([fake.describe(), fake.listProjects(), fake.listThreads()].map((p) => p.then(() => "ok", (error: Error) => error.name)));
+
+  assert.deepEqual(await outage({ down: true }), { ok: true, down: true, shellOnly: false });
+  assert.deepEqual(await reads(), ["T3Unavailable", "T3Unavailable", "T3Unavailable"]);
+  assert.deepEqual(await outage({ down: false }), { ok: true, down: false, shellOnly: false });
+  assert.deepEqual(await reads(), ["ok", "ok", "ok"]);
+
+  assert.deepEqual(await outage({ down: true, shellOnly: true }), { ok: true, down: true, shellOnly: true });
+  assert.deepEqual(await reads(), ["ok", "T3Unavailable", "T3Unavailable"], "the descriptor answers, the shell does not");
+  assert.deepEqual(await outage({ down: false }), { ok: true, down: false, shellOnly: false });
+  assert.deepEqual(await reads(), ["ok", "ok", "ok"]);
+});

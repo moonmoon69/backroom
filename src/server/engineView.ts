@@ -789,6 +789,11 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
   const pollMs = options.pollMs ?? 1000;
   const shellsMs = options.shellsMs ?? 1000;
   let shellsMemo: { at: number; value: Promise<Map<string, T3ThreadShell> | null> } | null = null;
+  // A change of T3's threads (or of reaching T3) told to the pages drops the memo first: the read a page makes on it is
+  // T3's threads as they are now, not as they were up to a second before.
+  stack.changes.observe((event) => {
+    if (event.type === "shell" || event.type === "status") shellsMemo = null;
+  });
   const shells = (): Promise<Map<string, T3ThreadShell> | null> => {
     if (shellsMemo && Date.now() - shellsMemo.at < shellsMs) return shellsMemo.value;
     const value = adapter.listThreads().then((list) => new Map(list.map((s) => [s.id, s])), () => null);

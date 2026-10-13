@@ -117,6 +117,15 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         error = (caught as Error).message;
         errorAt = new Date().toISOString();
       }
+      // Whether T3 answers is one truth, the one pages are pushed (src/app/changes.ts): its projects and threads read now
+      // (the read shared with the check, from the adapter's cache). T3 answering its descriptor while its shell does not
+      // (a restart half done, #8) is T3 not answering, on the chip as on the banner.
+      await stack.changes.check();
+      const reach = stack.changes.status();
+      if (reach && !reach.up) {
+        error = reach.error ?? "T3 is not answering";
+        errorAt = reach.at;
+      }
     }
     // The built UI's entry script (hashed name). The page compares it with what it loaded to offer a reload.
     let uiBuild: string | null = null;

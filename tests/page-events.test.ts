@@ -189,7 +189,7 @@ test("T3 stopping and starting to answer becomes status down then up, once each;
   assert.deepEqual(events(page.frames).filter((f) => f.event === "status"), [], "T3 answering from the start is no news");
   // Through the fake's control, as the rehearsal does.
   const down = await s.serve(new Request("http://fake/api/fake/outage", { method: "POST", body: JSON.stringify({ down: true, message: "connect ECONNREFUSED" }) }));
-  assert.deepEqual(await down.json(), { ok: true, down: true });
+  assert.deepEqual(await down.json(), { ok: true, down: true, shellOnly: false });
   let told = events(await page.until((frames) => events(frames).some((f) => f.event === "status"), 1000));
   const off = told.find((f) => f.event === "status")!.data as { up: boolean; error: string; at: string };
   assert.equal(off.up, false);

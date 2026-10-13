@@ -37,6 +37,8 @@ export interface PageChangesOptions {
 
 export class PageChanges {
   private readonly listeners = new Set<(event: PageEvent) => void>();
+  /** The service's own readers of what changed (a cache to drop), told before any page; they do not start the watches. */
+  private readonly observers = new Set<(event: PageEvent) => void>();
   private readonly shellMs: number;
   private readonly headsMs: number;
   readonly heartbeatMs: number;
@@ -72,6 +74,17 @@ export class PageChanges {
     return () => {
       if (!this.listeners.delete(listener)) return;
       if (this.listeners.size === 0) this.pause();
+    };
+  }
+
+  /**
+   * A part of the service that keeps something a change makes stale (the read API's memo of T3's threads): told of each
+   * change before the pages are, so the read a page makes on it is fresh. Observing starts no watch. Returns the stop.
+   */
+  observe(observer: (event: PageEvent) => void): () => void {
+    this.observers.add(observer);
+    return () => {
+      this.observers.delete(observer);
     };
   }
 
@@ -144,6 +157,7 @@ export class PageChanges {
     this.pause();
     this.emit({ type: "closed" });
     this.listeners.clear();
+    this.observers.clear();
   }
 
   private async read(): Promise<void> {
@@ -190,7 +204,7 @@ export class PageChanges {
   }
 
   private emit(event: PageEvent): void {
-    for (const listener of [...this.listeners]) {
+    for (const listener of [...this.observers, ...this.listeners]) {
       try {
         listener(event);
       } catch (error) {

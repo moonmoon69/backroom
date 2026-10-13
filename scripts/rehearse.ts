@@ -2050,8 +2050,9 @@ async function rehearseProjectBrowsers(service: Service, browser: Browser, room:
  * Push from the service to the page (B, board #48): the page keeps one stream of what changed (GET /api/events), and
  * while it is open its timers only back it up, every 60 s. A room renamed through the API shows on the overview within
  * 2 s, three times running (no poll is due: the room list's and the overview's timers would take 60 s); the fake T3
- * stopping to answer puts up the overview's T3 banner, and the T3 chip says error, within one check of T3 (2 s) and a
- * read, and both clear as soon as it answers again. When it is seen is taken in the page (its clock is this machine's),
+ * serving no projects or threads while its descriptor still answers (a restart half done, #8) puts up the overview's T3
+ * banner, and the T3 chip says error (one truth, the service's), within one check of T3 (2 s) and a read, and both clear
+ * as soon as it answers again. When it is seen is taken in the page (its clock is this machine's),
  * so the rooms-browser calls' own time does not count. Its section begins here, before its states.
  */
 async function rehearsePagePush(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
@@ -2107,7 +2108,8 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
   };
   watch(banner, true);
   const down = Date.now();
-  await service.call("POST", "/api/fake/outage", { down: true });
+  // A restart half done (#8): T3 answers its descriptor but not its projects and threads.
+  await service.call("POST", "/api/fake/outage", { down: true, shellOnly: true });
   const downLag = seenAt("the T3 banner on the overview") - down;
   const chipDown = chipWhen("dot-err");
   watch(banner, false);
@@ -2116,12 +2118,12 @@ async function rehearsePagePush(service: Service, browser: Browser, room: Room, 
   const upLag = seenAt("the T3 banner gone from the overview") - up;
   const chipUp = chipWhen("dot-ok");
   await state(
-    "push: the T3 banner shows while the fake T3 is down and clears when it is back",
+    "push: the T3 banner and chip say T3 is not answering while it serves no projects or threads (its descriptor still answering), and both clear when it is back",
     async () => ((await service.call<{ t3: { error: string | null } }>("GET", "/api/status")).t3.error === null ? "GET /api/status: T3 answers, no error" : null),
     [],
     () => {
       if (downLag > 3500) fail(`the T3 banner showed ${downLag} ms after T3 went down: over one check of T3 (2 s) and a read`);
-      if (!chipDown?.includes("dot-err")) fail(`the T3 chip did not say error while the banner showed: ${chipDown}`);
+      if (!chipDown?.includes("dot-err")) fail(`the T3 chip did not say error while the banner showed (T3's descriptor answering, its shell not): ${chipDown}`);
       if (upLag > 3500) fail(`the T3 banner cleared ${upLag} ms after T3 answered again: over one check of T3 (2 s) and a read`);
       if (!chipUp?.includes("dot-ok")) fail(`the T3 chip is not green again after T3 came back: ${chipUp}`);
       if (browser.eval<boolean>(`() => document.body.textContent.includes(${JSON.stringify(banner)})`)) fail("the T3 banner is still shown");
