@@ -100,6 +100,8 @@ export interface RoomOptions {
   images?: (body: string) => TurnImage[];
   /** Members' aliases by seat, where they differ from the seat ID (as a binding ID does). */
   aliases?: Record<string, string>;
+  /** Another fake T3 (one whose details go through the thread feed: tests/runtime/thread-wake.test.ts). */
+  fake?: () => RuntimeFake;
 }
 
 /** rooms.sqlite's side of a briefing for the test room: one member per seat, the orchestrator its Consigliere. */
@@ -121,7 +123,7 @@ export class Room {
   readonly dir = mkdtempSync(join(tmpdir(), "backroom-runtime-"));
   readonly path = join(this.dir, "board.sqlite");
   readonly room = "room";
-  readonly fake = new RuntimeFake();
+  readonly fake: RuntimeFake;
   readonly steps: HostStep[] = [];
   readonly logs: Array<{ message: string; detail: unknown }> = [];
   store: EngineStore;
@@ -134,6 +136,7 @@ export class Room {
 
   private constructor(options: RoomOptions) {
     this.options = options;
+    this.fake = options.fake?.() ?? new RuntimeFake();
     this.store = new EngineStore(this.path);
     this.host = this.makeHost();
   }

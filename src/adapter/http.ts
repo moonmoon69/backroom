@@ -6,6 +6,8 @@
  *              (WebSocket RPC streams, src/adapter/shellFeed.ts)   T3 streams them, once the feed is started
  *            GET /api/orchestration/shell                   the same while the feed is not live (archived thread
  *            orchestration.getArchivedShellSnapshot         shells over the RPC: T3's HTTP shell lists none)
+ *            orchestration.subscribeThread (on the feed's   a watched thread's changes, each read once with the GET
+ *              socket, src/adapter/threadFeed.ts)            below and shared until its next change
  *            GET /api/orchestration/threads/:id[/bounded]   a thread's projection: runs, messages, items, requests
  *            GET /.well-known/t3/environment                the server and its protocol version
  * Commands:  orchestration.dispatchCommand (WebSocket RPC)  message.dispatch, run.interrupt, runtime-request.respond, thread.*
@@ -20,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelSelection } from "../domain/types.ts";
 import { ShellFeed, type FeedConnection, type ShellSnapshot } from "./shellFeed.ts";
+import { ThreadFeed, type ThreadSnapshot } from "./threadFeed.ts";
 import type {
   ApprovalDecision,
   ThreadLifecycleAction,
@@ -85,6 +88,9 @@ export interface HttpAdapterOptions {
   onCredentialRejected?: (token: string | null) => void;
   /** The shell feed's timings (src/adapter/shellFeed.ts): its ping interval and reconnect backoff. */
   feed?: { pingMs?: number; retryMs?: number; retryMaxMs?: number };
+  /** The thread feed's timings (src/adapter/threadFeed.ts): its read throttle, leases, and retries of a refused stream. */
+  threads?: { throttleMs?: number; leaseMs?: number; lingerMs?: number; retryMs?: number; retryMaxMs?: number };
+  log?: (message: string, detail?: unknown) => void;
 }
 
 /**
@@ -546,6 +552,9 @@ export class HttpT3Adapter implements T3Adapter {
   private readonly shellFeed: ShellFeed;
   private readonly shellListeners = new Set<(change: T3ShellChange) => void>();
   private readonly feedListeners = new Set<(status: T3ShellFeedStatus) => void>();
+  /** The watched threads' details as T3 streams their changes, on the shell feed's socket. */
+  private readonly threadFeed: ThreadFeed;
+  private readonly threadListeners = new Set<(threadId: string) => void>();
   /**
    * After a command: the sequence T3 gave it (Infinity when it gave none), and until when the shell reads wait for the
    * feed to reach it, reading over HTTP meanwhile, so a read made after a command sees what it did.
@@ -569,6 +578,14 @@ export class HttpT3Adapter implements T3Adapter {
     this.worktreePollMs = options.worktreePollMs ?? 500;
     this.commandLinkIdleMs = options.commandLinkIdleMs ?? 30_000;
     this.onCredentialRejected = options.onCredentialRejected;
+    this.threadFeed = new ThreadFeed({
+      read: (threadId, bounded) => this.readThread(threadId, bounded),
+      onChange: (threadId) => {
+        for (const listener of [...this.threadListeners]) listener(threadId);
+      },
+      ...(options.log ? { log: options.log } : {}),
+      ...options.threads,
+    });
     this.shellFeed = new ShellFeed({
       connect: (onEnd) => this.connectFeed(onEnd),
       onChange: (change) => {
@@ -583,6 +600,8 @@ export class HttpT3Adapter implements T3Adapter {
       onStatus: (status) => {
         for (const listener of [...this.feedListeners]) listener(status);
       },
+      // The watched threads' streams ride on the feed's socket, while its shell is live.
+      onConnection: (connection) => this.threadFeed.connect(connection),
       timeoutMs: this.requestTimeoutMs,
       ...options.feed,
     });
@@ -625,6 +644,30 @@ export class HttpT3Adapter implements T3Adapter {
     return () => {
       this.feedListeners.delete(listener);
     };
+  }
+
+  onThreadChange(listener: (threadId: string) => void): () => void {
+    this.threadListeners.add(listener);
+    return () => {
+      this.threadListeners.delete(listener);
+    };
+  }
+
+  holdThreads(owner: string, threadIds: readonly string[]): void {
+    this.threadFeed.hold(owner, threadIds);
+  }
+
+  leaseThread(threadId: string): void {
+    this.threadFeed.lease(threadId);
+  }
+
+  threadPushed(threadId: string): boolean {
+    return this.threadFeed.pushed(threadId);
+  }
+
+  /** The thread feed's watches: how many, how many of their streams are live, how many T3 refuses (GET /api/status). */
+  threadStreams(): { watched: number; live: number; refused: number } {
+    return this.threadFeed.status();
   }
 
   private async connectFeed(onEnd: () => void): Promise<FeedConnection> {
@@ -785,6 +828,7 @@ export class HttpT3Adapter implements T3Adapter {
   close(): void {
     this.dropCommandLink();
     this.shellFeed.stop();
+    this.threadFeed.close();
     if (this.feedFloorTimer) clearTimeout(this.feedFloorTimer);
     this.feedFloorTimer = null;
     void this.reportActivity(null).catch(() => undefined);
@@ -1408,16 +1452,23 @@ export class HttpT3Adapter implements T3Adapter {
 
   async getThreadDetail(threadId: string, options: { bounded?: boolean } = {}): Promise<T3ThreadDetail | null> {
     await this.ensureProtocol();
-    let snapshot: { snapshotSequence?: number; projection: Record<string, unknown>; hasMoreHistory?: boolean };
+    // A watched thread's from its latest read while its stream shows no change past it; else read now (threadFeed.ts).
+    const snapshot = await this.threadFeed.detail(threadId, options.bounded === true);
+    if (!snapshot) return null;
+    const shell = await this.shell();
+    const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);
+    return this.toDetail(snapshot, listed ? this.toShell(listed) : null);
+  }
+
+  /** One read of a thread's projection from T3: its bounded window or its whole history; null when T3 has no such thread. */
+  private async readThread(threadId: string, bounded: boolean): Promise<ThreadSnapshot | null> {
+    await this.ensureProtocol();
     try {
-      snapshot = (await this.request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}${options.bounded ? "/bounded" : ""}`)) as typeof snapshot;
+      return (await this.request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}${bounded ? "/bounded" : ""}`)) as ThreadSnapshot;
     } catch (error) {
       if (error instanceof T3CommandRejected && error.status === 404) return null;
       throw error;
     }
-    const shell = await this.shell();
-    const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);
-    return this.toDetail(snapshot, listed ? this.toShell(listed) : null);
   }
 
   // ---------------- commands ----------------
@@ -1432,6 +1483,8 @@ export class HttpT3Adapter implements T3Adapter {
       if (typeof result?.sequence === "number") sequence = result.sequence;
     } finally {
       this.invalidateShell(sequence);
+      // A read of the thread made from now on sees the command: none made before it is served after it.
+      if (typeof command.threadId === "string") this.threadFeed.command(command.threadId, sequence);
     }
   }
 

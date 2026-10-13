@@ -211,6 +211,11 @@ export interface ShellFeedOptions {
   onApplied?: () => void;
   /** feed() changed: its state, or the error that keeps it down. */
   onStatus?: (status: T3ShellFeedStatus) => void;
+  /**
+   * The socket, once the shell on it is live (more streams may be opened on it: the thread feed's), and null as soon as
+   * it is given up, before it is closed.
+   */
+  onConnection?: (connection: FeedConnection | null) => void;
   /** How long T3 may take, once asked, to send both snapshots. Default 30 s. */
   timeoutMs?: number;
   /** How often the open socket is pinged; one silent for three of these counts as gone. Default 5 s. */
@@ -238,6 +243,8 @@ export class ShellFeed {
   private state: T3ShellFeedStatus;
   private shell: ShellState | null = null;
   private connection: FeedConnection | null = null;
+  /** The socket told to onConnection, until it is given up. */
+  private announced: FeedConnection | null = null;
   private cancels: Array<() => void> = [];
   /** The current attempt's timers not yet run: its deadline for the snapshots, its next ping. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
@@ -346,6 +353,8 @@ export class ShellFeed {
           this.failures = 0;
           this.set("connected", null);
           this.heartbeat(attempt, connection);
+          this.announced = connection;
+          this.options.onConnection?.(connection);
           this.options.onChange({ threadIds: null });
           this.options.onApplied?.();
           return;
@@ -392,6 +401,10 @@ export class ShellFeed {
   }
 
   private teardown(): void {
+    if (this.announced) {
+      this.announced = null;
+      this.options.onConnection?.(null);
+    }
     for (const cancel of this.cancels) cancel();
     this.cancels = [];
     for (const timer of this.timers) clearTimeout(timer);

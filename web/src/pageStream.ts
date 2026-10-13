@@ -5,6 +5,11 @@
  * The page reads everything again whenever the stream opens (the first time and at each reconnect: iOS drops the
  * connection while the PWA is in the background) and whenever it comes back into view; on each event it reads again
  * what the event names. While the stream is open the page's timers only back it up, slowly.
+ *
+ * A thread's detail (the thread view, a member's thread over its room, the room's desk with each member's live turn)
+ * is read by a DetailLoader: again on each `thread` event naming it, and on each (re)open and return into view; its
+ * timer is FALLBACK_MS while the stream is open and the service says the thread's changes are pushed (the answer's
+ * `pushed`: T3 streams them), its own cadence otherwise.
  */
 
 /** T3 as the service last found it (src/app/changes.ts, T3Reach). */
@@ -23,6 +28,8 @@ export interface PageStreamHandlers {
   room(roomId: string): void;
   /** T3's projects or threads changed. */
   shell(): void;
+  /** A watched thread's detail changed. */
+  thread(threadId: string): void;
   /** T3 stopped answering, or answers again. */
   status(reach: T3Reach): void;
   /** The stream is open (true) or not (false): the timers run slowly, or at their own pace. */
@@ -121,6 +128,10 @@ export class PageStream {
       if (typeof roomId === "string") this.coalesce(`room:${roomId}`, () => this.handlers.room(roomId));
     });
     source.addEventListener("shell", () => this.coalesce("shell", () => this.handlers.shell()));
+    source.addEventListener("thread", (event) => {
+      const threadId = data(event).threadId;
+      if (typeof threadId === "string") this.coalesce(`thread:${threadId}`, () => this.handlers.thread(threadId));
+    });
     source.addEventListener("status", (event) => {
       const reach = data(event);
       if (typeof reach.up === "boolean") this.handlers.status({ up: reach.up, error: typeof reach.error === "string" ? reach.error : null, at: typeof reach.at === "string" ? reach.at : "" });
@@ -189,4 +200,152 @@ export function shownSnapshot<T extends { room: { id: string } }>(read: T | null
 /** The selection after a room's read answered 404: closed if that room is still the one open, else left as it is. */
 export function afterRoomGone<S extends { kind: string; id: string }>(selection: S | null, roomId: string): S | null {
   return selection?.kind === "room" && selection.id === roomId ? null : selection;
+}
+
+/** The timer of a thread detail's loader while its changes are pushed: a fallback only. */
+export const FALLBACK_MS = 60_000;
+
+export interface PushListener {
+  /** A watched thread's detail changed. */
+  thread?(threadId: string): void;
+  /** Read everything again: the stream (re)opened, or the page came back into view. */
+  all?(): void;
+  /** The stream opened or closed. */
+  open?(open: boolean): void;
+}
+
+/** What the thread detail loaders follow of the page's stream: whether it is open, its `thread` events, its re-reads. */
+export class PagePush {
+  private isOpen = false;
+  private readonly listeners = new Set<PushListener>();
+
+  get open(): boolean {
+    return this.isOpen;
+  }
+
+  subscribe(listener: PushListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  thread(threadId: string): void {
+    for (const listener of [...this.listeners]) listener.thread?.(threadId);
+  }
+
+  all(): void {
+    for (const listener of [...this.listeners]) listener.all?.();
+  }
+
+  setOpen(open: boolean): void {
+    if (this.isOpen === open) return;
+    this.isOpen = open;
+    for (const listener of [...this.listeners]) listener.open?.(open);
+  }
+}
+
+export interface DetailLoaderOptions<T> {
+  read(): Promise<T>;
+  /** An answer, applied: never one of a loader stopped (the page moved on to another thread, member or room). */
+  apply(value: T): void;
+  /** A failed read; "stop" ends the loader (the thread is gone). */
+  fail(error: unknown): "stop" | void;
+  /** The wait after this answer (null after a failure) before the next read, when nothing pushed comes first. */
+  delay(value: T | null): number;
+}
+
+export interface LoaderTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}
+
+/**
+ * A loader of one thing (one thread's view, one room's desk): one read at a time, each answer applied in order and
+ * only while the loader runs, the next read on its timer (the delay its answer asks for) or at once when asked (`now`:
+ * an event, a re-read of everything). Asked while a read is in flight, it reads once more when that one is in, so an
+ * event that comes during a read is never answered by a read sent before it.
+ */
+export class DetailLoader<T> {
+  private readonly options: DetailLoaderOptions<T>;
+  private readonly timers: LoaderTimers;
+  private running = false;
+  private reading = false;
+  private again = false;
+  private timer: unknown = null;
+  private last: { value: T | null } | null = null;
+
+  constructor(options: DetailLoaderOptions<T>, timers: LoaderTimers) {
+    this.options = options;
+    this.timers = timers;
+  }
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.read();
+  }
+
+  stop(): void {
+    this.running = false;
+    this.clear();
+  }
+
+  /** Read now: at once, or right after the read in flight. */
+  now(): void {
+    if (!this.running) return;
+    if (this.reading) {
+      this.again = true;
+      return;
+    }
+    this.clear();
+    this.read();
+  }
+
+  /** The cadence may have changed (the stream opened or closed): the timer is armed again from now, as the last answer asks. */
+  reschedule(): void {
+    if (!this.running || this.reading || !this.last) return;
+    this.arm(this.options.delay(this.last.value));
+  }
+
+  private clear(): void {
+    if (this.timer !== null) this.timers.clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private arm(ms: number): void {
+    this.clear();
+    this.timer = this.timers.setTimeout(() => {
+      this.timer = null;
+      this.read();
+    }, ms);
+  }
+
+  private read(): void {
+    if (!this.running) return;
+    this.reading = true;
+    this.again = false;
+    const settle = (value: T | null, stop: boolean) => {
+      this.reading = false;
+      if (!this.running) return;
+      if (stop) {
+        this.stop();
+        return;
+      }
+      this.last = { value };
+      if (this.again) this.read();
+      else this.arm(this.options.delay(value));
+    };
+    this.options.read().then(
+      (value) => {
+        if (!this.running) return settle(null, false);
+        this.options.apply(value);
+        settle(value, false);
+      },
+      (error: unknown) => {
+        if (!this.running) return settle(null, false);
+        settle(null, this.options.fail(error) === "stop");
+      },
+    );
+  }
 }

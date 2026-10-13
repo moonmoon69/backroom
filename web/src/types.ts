@@ -840,6 +840,8 @@ export interface ThreadView {
   };
   /** Older turns exist in T3 beyond the window read here. */
   partial: boolean;
+  /** Its changes come as `thread` events on the page's stream (T3 streams them): the page's timer only backs them up. */
+  pushed?: boolean;
   /** Browsers for its agent, chosen as a room chooses them; off until chosen. The default is the one in use. Absent from an older service. */
   browsers?: { enabled: boolean; defaultBrowserId: string | null; allowedBrowserIds: string[] | null };
 }
@@ -1072,6 +1074,8 @@ export interface Desk {
   runningRun?: { runId: string; startedByRoom: boolean; prompt: string | null; promptImages?: string[] } | null;
   activities: T3Activity[];
   partial: boolean;
+  /** Its changes come as `thread` events on the page's stream (T3 streams them). */
+  pushed?: boolean;
 }
 
 export type LiveFeedItem =
@@ -1086,6 +1090,8 @@ export interface DeskResponse {
   participants: Record<string, Desk>;
   errors: Record<string, string>;
   fetchedAt: string;
+  /** Every member's thread pushes its changes as `thread` events: the desk's timer only backs them up. */
+  pushed?: boolean;
 }
 
 export interface StatusResponse {
@@ -1111,6 +1117,8 @@ export interface StatusResponse {
      * connecting or down (src/adapter/shellFeed.ts); `since` is when it entered that state, `error` what took it down.
      */
     feed?: { state: "connected" | "connecting" | "down"; since: string; error: string | null };
+    /** The threads watched (seated, or shown in the last minute), their streams live, and those T3 refuses; null on the fake T3. */
+    threads?: { watched: number; live: number; refused: number } | null;
     environment: T3Environment | null;
     auth: { authenticated: boolean; policy: string; bootstrapMethods: string[] } | null;
     error: string | null;

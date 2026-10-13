@@ -8,10 +8,23 @@
  *   2. The adapter: starts the adapter's feed, and once it is live compares its shell reads (projects, threads,
  *      archived threads, a thread by id) with the same reads made over HTTP by an adapter without the feed, and
  *      counts the HTTP shell snapshots the feed's reads made (none expected).
+ *   3. With `--threads` (the thread feed, src/adapter/threadFeed.ts), for `--minutes` (default 1), on the threads the
+ *      user's rooms seat (read-only from ROOMS_DATA_DIR/rooms.sqlite), or the ids given after `--threads`:
+ *      a. The wire: one orchestration.subscribeThread after the sequence of the thread's bounded read: T3 replays
+ *         what came since (no snapshot), sends its marker, then an event per change; a read after them is at least at
+ *         the last event's sequence (one numbering).
+ *      b. The reads: the adapter holds the threads as the engine host does, and plays the host's tick (every 1.5 s,
+ *         each seat whose thread has a run going or whose shell changed: its bounded read, and its whole history when
+ *         the window is partial) and a page with the room open (the desk: every member's bounded read, on each thread
+ *         event and every 60 s; before, every 2.5 s while a member worked, else 10 s). It counts the reads T3 served
+ *         against the reads the same callers made before (one per call), per minute.
  *
  * The credential is Backroom's stored one (ROOMS_DATA_DIR, data/ by default) or T3_ACCESS_TOKEN. Exit code 0 when
  * every check passed.
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { readStoredAuth } from "../src/adapter/auth.ts";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
 import type { T3ThreadShell } from "../src/adapter/types.ts";
@@ -20,6 +33,8 @@ import { loadConfig } from "../src/config.ts";
 
 const args = process.argv.slice(2);
 const seconds = Number(args[args.indexOf("--seconds") + 1] ?? 6) || 6;
+const threadsAt = args.indexOf("--threads");
+const minutes = Number(args[args.indexOf("--minutes") + 1] ?? 1) || 1;
 const config = loadConfig();
 const stored = readStoredAuth(config.dataDir);
 const baseUrl = config.t3BaseUrl ?? stored?.baseUrl ?? "http://127.0.0.1:3773";
@@ -172,6 +187,199 @@ try {
 } finally {
   feed.close();
   overHttp.close();
+}
+
+// ---------------- 3. the threads (--threads) ----------------
+
+/** The threads to watch: those named after --threads, else those the user's rooms seat (their bindings, read-only). */
+function seatedThreads(): string[] {
+  const named = threadsAt >= 0 ? args.slice(threadsAt + 1).filter((arg, i, all) => !arg.startsWith("--") && (i === 0 || !all[i - 1]!.startsWith("--") || all[i - 1] === "--threads")) : [];
+  if (named.length > 0) return named;
+  const file = join(config.dataDir, "rooms.sqlite");
+  if (!existsSync(file)) return [];
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    return (db.prepare("SELECT DISTINCT thread_id FROM bindings WHERE retired_at IS NULL").all() as Array<{ thread_id: string }>).map((row) => row.thread_id);
+  } finally {
+    db.close();
+  }
+}
+
+const authorization: Record<string, string> = accessToken ? { authorization: `Bearer ${accessToken}` } : {};
+async function boundedSequence(threadId: string): Promise<number | null> {
+  const response = await fetch(`${baseUrl}/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`, { headers: { accept: "application/json", "x-t3-orchestration-protocol": String(ORCHESTRATION_PROTOCOL_VERSION), ...authorization } });
+  if (!response.ok) return null;
+  const body = (await response.json()) as { snapshotSequence?: number };
+  return typeof body.snapshotSequence === "number" ? body.snapshotSequence : null;
+}
+
+/** 3a: one thread's stream on a socket of its own, after its bounded read. */
+async function threadWire(threadId: string): Promise<void> {
+  const after = await boundedSequence(threadId);
+  if (after === null) throw new Error(`no bounded read of ${threadId}`);
+  const { ticket } = (await (await fetch(`${baseUrl}/api/auth/websocket-ticket`, { method: "POST", headers: { accept: "application/json", ...authorization } })).json()) as { ticket: string };
+  const url = new URL("/ws", baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("wsTicket", ticket);
+  url.searchParams.set("orchestrationProtocol", String(ORCHESTRATION_PROTOCOL_VERSION));
+  const socket = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener("open", () => resolve(), { once: true });
+    socket.addEventListener("error", () => reject(new Error("the socket failed to open")), { once: true });
+  });
+  const started = Date.now();
+  const at = () => `${String(Date.now() - started).padStart(5)} ms`;
+  let synced = false;
+  let snapshots = 0;
+  let events = 0;
+  let last = after;
+  let exit: unknown = null;
+  socket.addEventListener("message", (event) => {
+    const decoded = JSON.parse(String(event.data)) as unknown;
+    for (const frame of (Array.isArray(decoded) ? decoded : [decoded]) as Array<{ _tag: string; requestId?: string; values?: unknown[]; exit?: unknown }>) {
+      if (frame._tag === "Chunk" && frame.requestId === "1") {
+        const values = (frame.values ?? []) as Array<{ kind?: string; sequence?: number; snapshotSequence?: number; event?: { type?: string } }>;
+        for (const value of values) {
+          if (value.kind === "synchronized") synced = true;
+          else if (value.kind === "snapshot") snapshots += 1;
+          else if (value.kind === "event") {
+            events += 1;
+            last = Math.max(last, value.sequence ?? 0);
+          }
+        }
+        const described = values.map((value) => (value.kind === "event" ? `event@${value.sequence} ${value.event?.type ?? ""}` : value.kind === "snapshot" ? `snapshot@${value.snapshotSequence}` : String(value.kind)));
+        console.log(`${at()} << Chunk subscribeThread [${described.join(", ")}] (${String(event.data).length} bytes)`);
+        socket.send(JSON.stringify({ _tag: "Ack", requestId: "1" }));
+      } else if (frame._tag === "Exit" && frame.requestId === "1") {
+        exit = frame.exit;
+        console.log(`${at()} << Exit subscribeThread ${brief(frame.exit, 160)}`);
+      }
+    }
+  });
+  const request = { _tag: "Request", id: "1", tag: "orchestration.subscribeThread", payload: { threadId, afterSequence: after, acceptBoundedSnapshot: true, acceptCompactTurnItems: true, requestCompletionMarker: true }, headers: [] };
+  console.log(`${at()} >> ${JSON.stringify(request)}`);
+  socket.send(JSON.stringify(request));
+  await sleep(seconds * 1000);
+  const readAfter = await boundedSequence(threadId);
+  socket.send(JSON.stringify({ _tag: "Interrupt", requestId: "1" }));
+  await sleep(500);
+  socket.close();
+  if (synced && snapshots === 0) ok("threads wire: resumed", `subscribed after the bounded read's sequence ${after}: T3 replayed with no snapshot and sent its marker`);
+  else fail("threads wire: resumed", `marker ${synced}, ${snapshots} snapshot(s)`);
+  ok("threads wire: events", `${events} event(s) of ${threadId} in ${seconds} s, the last at ${last}`);
+  if (readAfter !== null && readAfter >= last) ok("threads wire: one numbering", `a bounded read after them is at ${readAfter}, not behind the last event (${last})`);
+  else fail("threads wire: one numbering", `read at ${readAfter}, last event ${last}`);
+  if (JSON.stringify(exit).includes('"Interrupt"')) ok("threads wire: interrupt", "the stream ended with an Exit after Interrupt");
+  else fail("threads wire: interrupt", `exit ${brief(exit)}`);
+}
+
+/** 3b: the engine host's tick and an open room's desk, through the adapter with the thread feed, for `minutes`. */
+async function threadReads(seated: string[]): Promise<void> {
+  const served = { bounded: 0, full: 0 };
+  const counting: typeof fetch = (input, init) => {
+    const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).pathname;
+    if (path.startsWith("/api/orchestration/threads/")) {
+      if (path.endsWith("/bounded")) served.bounded += 1;
+      else served.full += 1;
+    }
+    return fetch(input, init);
+  };
+  const adapter = new HttpT3Adapter({ baseUrl, accessToken, userDataDir: config.t3UserDataDir, fetchImpl: counting, log: (message, detail) => console.log(`  adapter: ${message} ${brief(detail)}`) });
+  const before = { hostBounded: 0, hostFull: 0, desk: 0 };
+  const events = new Map<string, number>();
+  try {
+    adapter.startFeed();
+    const startedAt = Date.now();
+    while (adapter.feed().state !== "connected" && Date.now() - startedAt < 30_000) await sleep(50);
+    if (adapter.feed().state !== "connected") throw new Error(`the feed is ${adapter.feed().state}`);
+    adapter.holdThreads("engine", seated);
+    // The page: the desk reads every member's bounded detail, on their events (coalesced as the page does) and every 60 s.
+    let deskDue: ReturnType<typeof setTimeout> | null = null;
+    const desk = async () => {
+      for (const id of seated) {
+        adapter.leaseThread(id);
+        await adapter.getThreadDetail(id, { bounded: true }).catch(() => null);
+      }
+    };
+    adapter.onThreadChange((threadId) => {
+      events.set(threadId, (events.get(threadId) ?? 0) + 1);
+      deskDue ??= setTimeout(() => {
+        deskDue = null;
+        void desk();
+      }, 150);
+    });
+    const shellKey = (shell: T3ThreadShell) => JSON.stringify([shell.latestRunId, shell.status, shell.latestUserMessageAt, shell.latestRunCompletedAt, shell.pendingBackgroundTasks.length]);
+    const keys = new Map<string, string>();
+    const windowMs = minutes * 60_000;
+    const begin = Date.now();
+    let ticks = 0;
+    let running = 0;
+    let lastDesk = -Infinity;
+    let lastFallback = begin;
+    await desk();
+    const baseline = { ...served };
+    while (Date.now() - begin < windowMs) {
+      ticks += 1;
+      const shells = new Map((await adapter.listThreads()).map((shell) => [shell.id, shell]));
+      const working = seated.filter((id) => shells.get(id)?.activeRunId);
+      running += working.length;
+      // The host's tick: a seat with a run going, or whose shell moved, is read; its whole history when the window is partial.
+      for (const id of seated) {
+        const shell = shells.get(id);
+        if (!shell) continue;
+        const key = shellKey(shell);
+        const due = shell.activeRunId !== null || keys.get(id) !== key;
+        keys.set(id, key);
+        if (!due) continue;
+        before.hostBounded += 1;
+        const bounded = await adapter.getThreadDetail(id, { bounded: true }).catch(() => null);
+        if (bounded?.partial) {
+          before.hostFull += 1;
+          await adapter.getThreadDetail(id).catch(() => null);
+        }
+      }
+      // Before: the desk read every member every 2.5 s while one worked, else every 10 s.
+      const now = Date.now();
+      if (now - lastDesk >= (working.length > 0 ? 2_500 : 10_000)) {
+        before.desk += seated.length;
+        lastDesk = now;
+      }
+      // After: its 60 s fallback.
+      if (now - lastFallback >= 60_000) {
+        lastFallback = now;
+        await desk();
+      }
+      await sleep(1_500);
+    }
+    if (deskDue) clearTimeout(deskDue);
+    const perMinute = (n: number) => Math.round((n / (Date.now() - begin)) * 60_000);
+    const after = { bounded: served.bounded - baseline.bounded, full: served.full - baseline.full };
+    const status = adapter.threadStreams();
+    if (status.live === seated.length && status.refused === 0) ok("threads: streams", `${status.live} of ${seated.length} seated threads streamed on the feed's socket, none refused`);
+    else fail("threads: streams", brief(status));
+    console.log(`  ${ticks} ticks over ${Math.round((Date.now() - begin) / 1000)} s; on average ${(running / Math.max(1, ticks)).toFixed(1)} of ${seated.length} seated threads had a run going`);
+    console.log(`  thread events heard (each after the read it caused): ${[...events].map(([id, n]) => `${id} ${n}`).join(", ") || "none"}`);
+    console.log(`  before (one T3 read per call): host ${perMinute(before.hostBounded)} bounded + ${perMinute(before.hostFull)} full, desk ${perMinute(before.desk)} bounded: ${perMinute(before.hostBounded + before.hostFull + before.desk)} reads/min`);
+    console.log(`  after (what T3 served): ${perMinute(after.bounded)} bounded + ${perMinute(after.full)} full: ${perMinute(after.bounded + after.full)} reads/min, plus ${seated.length} subscriptions held open`);
+    if (after.bounded + after.full <= before.hostBounded + before.hostFull + before.desk) ok("threads: reads", `${after.bounded + after.full} reads served for ${before.hostBounded + before.hostFull + before.desk} calls`);
+    else fail("threads: reads", `${after.bounded + after.full} reads for ${before.hostBounded + before.hostFull + before.desk} calls`);
+  } finally {
+    adapter.close();
+  }
+}
+
+if (threadsAt >= 0) {
+  try {
+    const listed = new Map((await overHttp.listThreads()).map((shell) => [shell.id, shell]));
+    const seated = seatedThreads().filter((id) => listed.has(id));
+    if (seated.length === 0) throw new Error("no seated thread T3 lists (name some after --threads)");
+    console.log(`threads: ${seated.join(", ")}`);
+    const busiest = seated.find((id) => listed.get(id)?.activeRunId) ?? seated[0]!;
+    await threadWire(busiest);
+    await threadReads(seated);
+  } catch (error) {
+    fail("threads", (error as Error).message);
+  }
 }
 
 console.log(failures === 0 ? "all checks passed" : `${failures} check(s) failed`);

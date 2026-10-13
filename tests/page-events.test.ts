@@ -372,3 +372,49 @@ test("with T3's feed, a change it applies is shell at once after a quiet spell a
   changes.close();
   assert.deepEqual([shellListeners.size, feedListeners.size], [0, 0], "closing stops following the feed");
 });
+
+test("a thread a page read is watched: its changes reach open pages as thread with its id, once a read sees them; one no page read and no room seats sends nothing", async (t) => {
+  const s = await eventsStack(t);
+  for (const id of ["thread:a", "thread:b"]) {
+    await s.fake.launchThread({ commandId: `launch:${id}`, threadId: id, projectId: "project_demo", title: id, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" } });
+    s.fake.startExternalRun(id);
+  }
+  const page = await listen(t, s.app);
+  await page.until((frames) => frames.length >= 1);
+  // The thread view reads thread:a: watched, its changes pushed.
+  const read = await s.app.request("/api/threads/thread%3Aa");
+  assert.equal(read.status, 200);
+  assert.equal(((await read.json()) as { pushed: boolean }).pushed, true);
+  const from = page.frames.length;
+  s.fake.say("thread:b", "not watched");
+  s.fake.say("thread:a", "Halfway there.");
+  const told = events(await page.until((frames) => events(frames).some((f) => f.event === "thread"), 1000, from));
+  assert.deepEqual(told.filter((f) => f.event === "thread").map((f) => f.data), [{ threadId: "thread:a" }]);
+  // A read made when it is told sees the change.
+  const again = (await (await s.app.request("/api/threads/thread%3Aa")).json()) as { running: { feed: Array<{ kind: string; text?: string }> } | null };
+  assert.ok(again.running?.feed.some((item) => item.kind === "message" && item.text === "Halfway there."));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(!events(page.frames.slice(from)).some((f) => f.event === "thread" && (f.data as { threadId: string }).threadId === "thread:b"), "thread:b: nobody watches it");
+});
+
+test("PageChanges passes the adapter's thread changes on as they come, to observers before pages, and none after it is closed", () => {
+  const listeners = new Set<(threadId: string) => void>();
+  const adapter = {
+    listProjects: async () => [],
+    listThreads: async () => [],
+    onThreadChange: (listener: (threadId: string) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const changes = new PageChanges(adapter);
+  const seen: string[] = [];
+  changes.observe((event) => seen.push(`observer:${event.type}:${event.type === "thread" ? event.threadId : ""}`));
+  const stop = changes.subscribe((event) => seen.push(`page:${event.type}:${event.type === "thread" ? event.threadId : ""}`));
+  for (const listener of listeners) listener("t1");
+  for (const listener of listeners) listener("t1");
+  assert.deepEqual(seen, ["observer:thread:t1", "page:thread:t1", "observer:thread:t1", "page:thread:t1"], "the adapter is the throttle: each is told");
+  stop();
+  changes.close();
+  assert.equal(listeners.size, 0, "closed: it no longer follows the adapter");
+});

@@ -47,6 +47,8 @@ import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatu
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
 const SYSTEM = "$system";
+/** The owner of the host's watches on its seats' threads (adapter.holdThreads). */
+const WATCHER = "engine";
 const MiB = 1024 * 1024;
 /** With `stuckMs`: the fewest failed attempts in a row before a run's step counts as stuck, so a gap alone never does. */
 const STUCK_ATTEMPTS = 3;
@@ -164,9 +166,14 @@ export class EngineHost {
   private ticking: Promise<void> | null = null;
   /** A seat's thread changed in T3 while a tick was running: another one runs when it ends. */
   private again = false;
+  /** A wake's tick is due (on the next turn of the event loop). */
+  private woken = false;
   private unwatchShell: (() => void) | null = null;
+  private unwatchThreads: (() => void) | null = null;
   /** Per seat's thread: its shell as the latest tick listed it (wakeKey), to tell a change T3 streams that a tick would act on. */
   private listed = new Map<string, string>();
+  /** The seats' threads as the latest tick found them: the threads the host keeps watched, whose changes wake it. */
+  private seated = new Set<string>();
   private halted = false;
   private appends = 0;
   /** Per run: when its message was first sent, and how often T3 refused it. Bounds only; nothing is decided from them. */
@@ -212,19 +219,34 @@ export class EngineHost {
     this.log = options.log ?? (() => {});
   }
 
-  /** Tick every `intervalMs`, and at once when T3 reports a change to a seat's thread (the interval is the fallback). */
+  /**
+   * Tick every `intervalMs`, and at once when T3 reports a change to a seat's thread: to its shell (shellChanged), or to
+   * its detail (the adapter tells a watched thread's change once a read sees it; the host watches its seats' threads).
+   * The interval is the fallback.
+   */
   start(intervalMs = 1500): void {
-    this.stop();
+    this.unlisten();
     this.timer = setInterval(() => void this.tick(), intervalMs);
     this.timer.unref();
     this.unwatchShell = this.adapter.onShellChange((change) => void this.shellChanged(change));
+    this.unwatchThreads = this.adapter.onThreadChange((threadId) => {
+      if (this.seated.has(threadId)) this.wake();
+    });
   }
 
   stop(): void {
+    this.unlisten();
+    // Its seats' threads stay watched a little longer (a host started again soon keeps their streams), then go.
+    this.adapter.holdThreads(WATCHER, []);
+  }
+
+  private unlisten(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.unwatchShell?.();
     this.unwatchShell = null;
+    this.unwatchThreads?.();
+    this.unwatchThreads = null;
   }
 
   /** Stop for good, before the store is closed: no tick runs after this. */
@@ -253,14 +275,20 @@ export class EngineHost {
     return this.ticking;
   }
 
-  /** Look again at once; while a tick runs (it may have listed the threads before the change), right after it. */
+  /**
+   * Look again at once; while a tick runs (it may have listed the threads before the change), right after it. Wakes
+   * before the woken tick has started are one (a change T3 tells for the shell and for the thread alike).
+   */
   private wake(): void {
     if (!this.timer || this.halted) return;
     if (this.ticking) {
       this.again = true;
       return;
     }
+    if (this.woken) return;
+    this.woken = true;
     setImmediate(() => {
+      this.woken = false;
       if (this.timer && !this.halted) void this.tick();
     });
   }
@@ -299,6 +327,13 @@ export class EngineHost {
 
   private async tickRooms(): Promise<void> {
     if (this.halted) return;
+    // The seats' threads are watched (T3 streams their changes): a tick then reads one only once it has changed.
+    const seated = new Set<string>();
+    for (const roomId of this.rooms()) {
+      for (const seat of this.project(roomId).seats.values()) if (seat.status !== "retired") seated.add(seat.threadId);
+    }
+    this.seated = seated;
+    this.adapter.holdThreads(WATCHER, [...seated]);
     let shells: Map<string, T3ThreadShell>;
     try {
       shells = new Map((await this.adapter.listThreads()).map((s) => [s.id, s]));

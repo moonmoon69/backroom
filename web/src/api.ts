@@ -1,6 +1,6 @@
 /** Typed fetch helpers for the Backroom HTTP API plus the page's stream of changes. */
 import { useEffect, useRef, useState } from "react";
-import { PageStream, type EventSourceLike, type PageStreamDeps, type PageStreamHandlers } from "./pageStream.ts";
+import { DetailLoader, FALLBACK_MS, PagePush, PageStream, type EventSourceLike, type LoaderTimers, type PageStreamDeps, type PageStreamHandlers } from "./pageStream.ts";
 import type {
   FilePreviewResponse,
   UpdatesView,
@@ -227,39 +227,70 @@ export function useProviders(enabled: boolean, intervalMs = 60000): { providers:
 }
 
 /**
- * Room desk (every participant's T3 thread view). One polling loop per room: `intervalMs` is 10s while
- * a room is open (crew tiles need it on every tab) and 3s while the Changes tab is visible.
+ * What the page's stream tells the thread detail loaders (pageStream.ts PagePush): usePageStream feeds it, the thread
+ * view and the desk follow it.
+ */
+export const pagePush = new PagePush();
+
+/** The browser's timers, for the loaders. */
+export const browserTimers: LoaderTimers = {
+  setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+  clearTimeout: (timer) => window.clearTimeout(timer as number),
+};
+
+/**
+ * Room desk (every participant's T3 thread view, each member's live turn among it). Read again at once when one of
+ * its members' threads changes (a `thread` event) and on each re-read of everything; its timer is a 60 s fallback while
+ * the stream is open and every member's thread is pushed, else `intervalMs` (2.5 s while a turn runs, 10 s otherwise).
  */
 export function useDesk(roomId: string | null, intervalMs: number): { desk: DeskResponse | null; error: string | null } {
   const [desk, setDesk] = useState<DeskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const interval = useRef(intervalMs);
+  interval.current = intervalMs;
+  const loaderRef = useRef<DetailLoader<DeskResponse> | null>(null);
   useEffect(() => {
     setDesk(null);
     setError(null);
   }, [roomId]);
   useEffect(() => {
     if (!roomId) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      try {
-        const data = await api.desk(roomId);
-        if (!cancelled) {
+    // The members' threads, as the latest answer names them: an event for one of them reads the desk again.
+    let threads = new Set<string>();
+    const loader = new DetailLoader<DeskResponse>(
+      {
+        read: () => api.desk(roomId),
+        apply: (data) => {
+          threads = new Set(Object.values(data.participants).map((desk) => desk.threadId).filter((id): id is string => typeof id === "string"));
           setDesk(data);
           setError(null);
-        }
-      } catch (caught) {
-        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
-      } finally {
-        if (!cancelled) timer = setTimeout(tick, intervalMs);
-      }
-    };
-    void tick();
+        },
+        fail: (caught) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        },
+        delay: (data) => (pagePush.open && data?.pushed === true ? FALLBACK_MS : interval.current),
+      },
+      browserTimers,
+    );
+    loaderRef.current = loader;
+    const unfollow = pagePush.subscribe({
+      thread: (threadId) => {
+        if (threads.has(threadId)) loader.now();
+      },
+      all: () => loader.now(),
+      open: () => loader.reschedule(),
+    });
+    loader.start();
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+      unfollow();
+      loader.stop();
+      if (loaderRef.current === loader) loaderRef.current = null;
     };
-  }, [roomId, intervalMs]);
+  }, [roomId]);
+  // A new cadence (a turn started or ended) times the next read from now, without reading at once.
+  useEffect(() => {
+    loaderRef.current?.reschedule();
+  }, [intervalMs]);
   return { desk, error };
 }
 
@@ -385,19 +416,27 @@ export function useLive(
  * The page's one stream of what changed on the service (pageStream.ts): the handlers run on each event, and `all` on
  * each (re)open and each return into view. Returns whether the stream is open, so the timers can slow down.
  */
-export function usePageStream(handlers: Omit<PageStreamHandlers, "open">): boolean {
+export function usePageStream(handlers: Omit<PageStreamHandlers, "open" | "thread">): boolean {
   const current = useRef(handlers);
   current.current = handlers;
   const [open, setOpen] = useState(false);
   useEffect(() => {
     const stream = new PageStream(
       {
-        all: () => current.current.all(),
+        all: () => {
+          current.current.all();
+          pagePush.all();
+        },
         rooms: () => current.current.rooms(),
         room: (roomId) => current.current.room(roomId),
         shell: () => current.current.shell(),
+        // A thread's detail: the loaders showing it read it again (the thread view, the desk).
+        thread: (threadId) => pagePush.thread(threadId),
         status: (reach) => current.current.status(reach),
-        open: setOpen,
+        open: (isOpen) => {
+          pagePush.setOpen(isOpen);
+          setOpen(isOpen);
+        },
       },
       browserDeps(),
     );

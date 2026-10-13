@@ -156,6 +156,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         credential: t3Credential?.status() ?? null,
         // Whether T3's shell reaches Backroom as T3 streams it, or by HTTP snapshots while the stream is not live.
         feed: stack.adapter.feed(),
+        // The threads watched (seated, or shown by a page in the last minute), how many of their streams are live, and
+        // how many T3 refuses (src/adapter/threadFeed.ts); null on the fake T3, which has no streams.
+        threads: httpAdapter ? httpAdapter.threadStreams() : null,
         environment,
         auth,
         error,
@@ -166,8 +169,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   /**
    * What changed, pushed to each open page (src/app/changes.ts), one stream per page: `rooms` (a room changed), `room`
-   * with { roomId } (that room's snapshot), `shell` (T3's projects or threads), `status` (T3 reachable or not, as
-   * { up, error, at }; sent at once while T3 is down). A comment every 20 s keeps the stream open; `retry` tells the
+   * with { roomId } (that room's snapshot), `shell` (T3's projects or threads), `thread` with { threadId } (a watched
+   * thread's detail), `status` (T3 reachable or not, as { up, error, at }; sent at once while T3 is down). A comment every 20 s keeps the stream open; `retry` tells the
    * browser how soon to reconnect. The page reads again on each event, and everything again on each (re)connect.
    */
   app.get("/api/events", (c) => {
@@ -193,6 +196,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         if (event.type === "rooms") void send("rooms", {});
         else if (event.type === "room") void send("room", { roomId: event.roomId });
         else if (event.type === "shell") void send("shell", {});
+        else if (event.type === "thread") void send("thread", { threadId: event.threadId });
         else if (event.type === "status") void send("status", event.status);
         else end();
       });
@@ -338,6 +342,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   app.get("/api/threads/:threadId", async (c) => {
     const threadId = c.req.param("threadId");
+    // A page shows it: watched for a minute (each read renews it), its changes pushed as `thread` events.
+    stack.adapter.leaseThread(threadId);
     const [detail, projects] = await Promise.all([stack.adapter.getThreadDetail(threadId, { bounded: true }), stack.adapter.listProjects()]);
     if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
     const shell = detail.shell;
@@ -353,6 +359,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       browsers: threadBrowsersView(threadId),
       // T3 holds runs older than the window read here.
       partial: detail.partial,
+      // Its changes come as `thread` events on GET /api/events: the page's timer only backs them up.
+      pushed: stack.adapter.threadPushed(threadId),
     });
   });
 
@@ -364,6 +372,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
    */
   app.get("/api/t3/threads/:threadId/costs", async (c) => {
     const threadId = c.req.param("threadId");
+    stack.adapter.leaseThread(threadId);
     const detail = await stack.adapter.getThreadDetail(threadId, { bounded: true });
     if (!detail || detail.shell.deletedAt) throw new RoomError("not_found", "thread not found in T3", 404);
     const replies = threadTranscript(detail)
@@ -494,9 +503,11 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       partial: false,
     };
     if (!binding) return empty;
+    // A page shows it: watched for a minute (each read renews it), its changes pushed as `thread` events.
+    stack.adapter.leaseThread(binding.threadId);
     // The recent window of the thread: its runs and requests in full, its latest items and messages.
     const detail = await stack.adapter.getThreadDetail(binding.threadId, { bounded: true });
-    if (!detail) return empty;
+    if (!detail) return { ...empty, pushed: stack.adapter.threadPushed(binding.threadId) };
     const shell = detail.shell;
     const running = runningRun(detail);
     const latest = detail.runs.find((run) => run.id === shell.latestRunId) ?? null;
@@ -563,6 +574,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       activities: recentActivity(detail),
       // A window of recent history; T3 holds the complete record.
       partial: detail.partial,
+      // Its changes come as `thread` events on GET /api/events: the page's timer only backs them up.
+      pushed: stack.adapter.threadPushed(binding.threadId),
     };
   };
 
@@ -591,7 +604,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         }
       }),
     );
-    return c.json({ participants: desks, errors, fetchedAt: new Date().toISOString() });
+    // Every member's thread pushes its changes: the page's desk timer only backs them up.
+    const pushed = Object.values(desks).every((desk) => (desk as { threadId?: unknown }).threadId === null || (desk as { pushed?: unknown }).pushed === true);
+    return c.json({ participants: desks, errors, fetchedAt: new Date().toISOString(), pushed: pushed && Object.keys(errors).length === 0 });
   });
 
   const roomFolders = (roomId: string) => {

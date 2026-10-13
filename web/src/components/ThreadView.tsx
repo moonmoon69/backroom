@@ -3,7 +3,8 @@
  * by Backroom. What you type goes to T3 as typed (no room briefing), like typing in T3 Code.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { api, ApiError, attachmentUrl, useThreadCosts } from "../api.ts";
+import { api, ApiError, attachmentUrl, browserTimers, pagePush, useThreadCosts } from "../api.ts";
+import { DetailLoader, FALLBACK_MS } from "../pageStream.ts";
 import type { ThreadCost, ThreadCosts } from "../types.ts";
 import { withoutT3ContextRefs } from "../t3Context.ts";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
@@ -75,65 +76,78 @@ export function threadActivity(thread: Pick<T3ThreadShell, "status" | "pendingRe
   return { label: "idle", tone: "idle" };
 }
 
-/** Poll the thread: every 1.5s while it works or waits on you (and briefly after a send), else every 5s. */
+/**
+ * The thread's view, read again at once when its detail changes (a `thread` event), on each re-read of everything (the
+ * stream reopened, the page back in view) and after what the page did to it (refresh; hurry, after a send). Its timer
+ * is a 60 s fallback while the stream is open and the service pushes the thread's changes; otherwise every 1.5s while
+ * it works or waits on you (and for 10 s after a send), else every 5s.
+ */
 function useThreadView(threadId: string, onGone: () => void): { view: ThreadViewData | null; error: string | null; refresh: () => void; hurry: () => void } {
   const [view, setView] = useState<ThreadViewData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
   const fastUntil = useRef(0);
   // A thread just started may not be readable yet; it only counts as gone after it was seen, or after a few tries.
   const misses = useRef(0);
   const seen = useRef(false);
   const gone = useRef(onGone);
   gone.current = onGone;
+  const loaderRef = useRef<DetailLoader<ThreadViewData> | null>(null);
   useEffect(() => {
     setView(null);
     setError(null);
     misses.current = 0;
     seen.current = false;
-  }, [threadId]);
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      let busy = Date.now() < fastUntil.current;
-      try {
-        const data = await api.thread(threadId);
-        if (cancelled) return;
-        setView(data);
-        setError(null);
-        seen.current = true;
-        misses.current = 0;
-        busy = busy || data.running !== null || data.requests.length > 0 || isRunActive(data.thread.status);
-      } catch (caught) {
-        if (cancelled) return;
-        if (caught instanceof ApiError && caught.status === 404) {
-          misses.current += 1;
-          if (seen.current || misses.current >= 5) {
-            cancelled = true;
-            gone.current();
+    const loader = new DetailLoader<ThreadViewData>(
+      {
+        read: () => api.thread(threadId),
+        apply: (data) => {
+          setView(data);
+          setError(null);
+          seen.current = true;
+          misses.current = 0;
+        },
+        fail: (caught) => {
+          if (caught instanceof ApiError && caught.status === 404) {
+            misses.current += 1;
+            if (seen.current || misses.current >= 5) {
+              gone.current();
+              return "stop";
+            }
             return;
           }
-          busy = true;
-        } else {
           setError(caught instanceof Error ? caught.message : String(caught));
-        }
-      }
-      if (!cancelled) timer = setTimeout(tick, busy ? 1500 : 5000);
-    };
-    void tick();
+        },
+        delay: (data) => {
+          if (!data && misses.current > 0) return 1500;
+          if (data && pagePush.open && data.pushed === true) return FALLBACK_MS;
+          const busy = Date.now() < fastUntil.current || (data !== null && (data.running !== null || data.requests.length > 0 || isRunActive(data.thread.status)));
+          return busy ? 1500 : 5000;
+        },
+      },
+      browserTimers,
+    );
+    loaderRef.current = loader;
+    const unfollow = pagePush.subscribe({
+      thread: (id) => {
+        if (id === threadId) loader.now();
+      },
+      all: () => loader.now(),
+      open: () => loader.reschedule(),
+    });
+    loader.start();
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+      unfollow();
+      loader.stop();
+      if (loaderRef.current === loader) loaderRef.current = null;
     };
-  }, [threadId, nonce]);
+  }, [threadId]);
   return {
     view,
     error,
-    refresh: useCallback(() => setNonce((n) => n + 1), []),
+    refresh: useCallback(() => loaderRef.current?.now(), []),
     hurry: useCallback(() => {
       fastUntil.current = Date.now() + 10_000;
-      setNonce((n) => n + 1);
+      loaderRef.current?.now();
     }, []),
   };
 }

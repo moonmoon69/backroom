@@ -8,7 +8,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { FakeState, FakeT3Adapter } from "./fake.ts";
 
 /** Calls that only read (or touch state T3 would not keep): no write after them. */
-const READS = /^(list|get|describe|versions|browse|default|report|refresh|state|feed|on[A-Z])/;
+const READS = /^(list|get|describe|versions|browse|default|report|refresh|state|feed|on[A-Z]|holdThreads$|leaseThread$|threadPushed$)/;
 
 export function persistFake(fake: FakeT3Adapter, file: string): FakeT3Adapter {
   const save = () => {

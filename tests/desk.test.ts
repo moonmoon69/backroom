@@ -71,3 +71,19 @@ test("a run the room just sent is the room's from the first read", async (t) => 
   assert.equal(live.runningRun.prompt, null, "so its briefing is never shown as a message typed in T3");
   assert.deepEqual(live.runningRun.promptImages, []);
 });
+
+test("the desk and a member's live view watch the members' threads for a minute, and say their changes are pushed", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const config = loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-desk", ROOMS_PORT: "0" });
+  const app = createHttpApp(stack, config, "/nonexistent/dist");
+  const watched = (name: string) => stack.fake.watches.has(stack.threadOf(name));
+  assert.deepEqual([watched("claude"), watched("sol1")], [false, false], "no page has read them, no tick has seated them");
+  const live = (await (await app.request(`/api/rooms/${stack.roomId}/participants/${stack.participants.claude!}/live`)).json()) as { pushed: boolean };
+  assert.equal(live.pushed, true);
+  assert.deepEqual([watched("claude"), watched("sol1")], [true, false], "the live view: its member's thread");
+  const desk = (await (await app.request(`/api/rooms/${stack.roomId}/desk`)).json()) as { pushed: boolean; participants: Record<string, { pushed: boolean }> };
+  assert.equal(desk.pushed, true);
+  assert.ok(Object.values(desk.participants).every((one) => one.pushed === true));
+  assert.deepEqual([watched("claude"), watched("sol1"), watched("sol2")], [true, true, true], "the desk: every member's thread");
+});

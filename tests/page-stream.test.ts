@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { COALESCE_MS, EVENTS_URL, Latest, PageStream, afterRoomGone, shownSnapshot, REOPEN_MS, type EventSourceLike, type PageStreamHandlers, type T3Reach } from "../web/src/pageStream.ts";
+import { COALESCE_MS, DetailLoader, EVENTS_URL, FALLBACK_MS, Latest, PagePush, PageStream, afterRoomGone, shownSnapshot, REOPEN_MS, type EventSourceLike, type PageStreamHandlers, type T3Reach } from "../web/src/pageStream.ts";
 
 class FakeSource implements EventSourceLike {
   readyState = 0;
@@ -47,6 +47,7 @@ function page() {
     rooms: () => calls.push("rooms"),
     room: (roomId) => calls.push(`room:${roomId}`),
     shell: () => calls.push("shell"),
+    thread: (threadId) => calls.push(`thread:${threadId}`),
     status: (reach: T3Reach) => calls.push(`status:${reach.up ? "up" : `down:${reach.error}`}`),
     open: (open) => calls.push(open ? "open" : "closed"),
   };
@@ -265,4 +266,145 @@ test("the T3 banner is the service's word: shown while it says T3 is down, and o
   // The fake T3 (its feed always connected, its outages seen by the pages' check): not answering, and no lists read.
   assert.deepEqual(t3Banner(t3("T3 did not answer within 30s"), null, true), { kind: "down", error: "T3 did not answer within 30s" });
   assert.deepEqual([feedOut(t3("T3 did not answer within 30s")), feedOut(t3("T3 closed the connection", "down")), feedOut(t3(null, "down")), feedOut(null)], [false, true, false, false]);
+});
+
+test("a thread event reads again the thread it names, once per burst, each thread apart", () => {
+  const p = page();
+  p.stream.start();
+  p.source.open();
+  p.take();
+  p.source.emit("thread", { threadId: "t1" });
+  p.source.emit("thread", { threadId: "t2" });
+  p.source.emit("thread", { threadId: "t1" });
+  p.source.emit("thread", { nonsense: true });
+  assert.deepEqual(p.take(), []);
+  p.advance(COALESCE_MS);
+  assert.deepEqual(p.take().sort(), ["thread:t1", "thread:t2"]);
+  p.stream.stop();
+});
+
+/** A clock of the test's own, for a loader's timers. */
+function clock() {
+  let now = 0;
+  let nextId = 0;
+  let timers: Array<{ at: number; callback: () => void; id: number }> = [];
+  return {
+    timers: {
+      setTimeout: (callback: () => void, ms: number) => {
+        const id = ++nextId;
+        timers.push({ at: now + ms, callback, id });
+        return id;
+      },
+      clearTimeout: (id: unknown) => {
+        timers = timers.filter((t) => t.id !== id);
+      },
+    },
+    /** When the next timer is due, from now; null with none. */
+    next: () => (timers.length === 0 ? null : Math.min(...timers.map((t) => t.at)) - now),
+    advance(ms: number) {
+      now += ms;
+      for (;;) {
+        const due = timers.filter((t) => t.at <= now).sort((a, b) => a.at - b.at)[0];
+        if (!due) break;
+        timers = timers.filter((t) => t !== due);
+        due.callback();
+      }
+    },
+  };
+}
+
+/** Reads the test answers by hand, in any order. */
+function reads<T>() {
+  const pending: Array<{ resolve: (value: T) => void; reject: (error: unknown) => void }> = [];
+  return {
+    pending,
+    read: () => new Promise<T>((resolve, reject) => pending.push({ resolve, reject })),
+  };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("DetailLoader: one read at a time; asked during a read it reads once more after it, so an event during a read is never answered by that read", async () => {
+  const c = clock();
+  const r = reads<{ n: number }>();
+  const applied: number[] = [];
+  const loader = new DetailLoader<{ n: number }>({ read: r.read, apply: (value) => applied.push(value.n), fail: () => undefined, delay: () => 5000 }, c.timers);
+  loader.start();
+  assert.equal(r.pending.length, 1);
+  loader.now();
+  loader.now();
+  assert.equal(r.pending.length, 1, "not a second read while one is out");
+  r.pending[0]!.resolve({ n: 1 });
+  await flush();
+  assert.deepEqual(applied, [1]);
+  assert.equal(r.pending.length, 2, "one more after it, for the events that came during it");
+  r.pending[1]!.resolve({ n: 2 });
+  await flush();
+  assert.deepEqual(applied, [1, 2]);
+  assert.equal(r.pending.length, 2);
+  assert.equal(c.next(), 5000, "then the timer, as the answer asks");
+  c.advance(5000);
+  assert.equal(r.pending.length, 3);
+  loader.stop();
+});
+
+test("DetailLoader: stopped (the page went to another thread, member or room), it applies nothing more, not even the answer in flight", async () => {
+  const c = clock();
+  const r = reads<{ n: number }>();
+  const applied: number[] = [];
+  const loader = new DetailLoader<{ n: number }>({ read: r.read, apply: (value) => applied.push(value.n), fail: () => undefined, delay: () => 1500 }, c.timers);
+  loader.start();
+  loader.stop();
+  r.pending[0]!.resolve({ n: 1 });
+  await flush();
+  assert.deepEqual(applied, []);
+  assert.equal(c.next(), null, "and arms nothing");
+  loader.now();
+  assert.equal(r.pending.length, 1);
+});
+
+test("DetailLoader: while the stream is open and the thread pushed, its timer is the 60 s fallback; the stream closing puts it back on its own cadence at once; a failure that stops it stops it", async () => {
+  const c = clock();
+  const push = new PagePush();
+  const r = reads<{ pushed: boolean }>();
+  const loader = new DetailLoader<{ pushed: boolean }>(
+    { read: r.read, apply: () => undefined, fail: (error) => ((error as Error).message === "gone" ? "stop" : undefined), delay: (value) => (push.open && value?.pushed ? FALLBACK_MS : 1500) },
+    c.timers,
+  );
+  const unfollow = push.subscribe({ open: () => loader.reschedule(), all: () => loader.now() });
+  push.setOpen(true);
+  loader.start();
+  r.pending[0]!.resolve({ pushed: true });
+  await flush();
+  assert.equal(c.next(), FALLBACK_MS, "pushed: the timer only backs the events up");
+  c.advance(10_000);
+  assert.equal(r.pending.length, 1, "no read due");
+  push.setOpen(false);
+  assert.equal(c.next(), 1500, "the stream closed: its own cadence, from now");
+  c.advance(1500);
+  assert.equal(r.pending.length, 2);
+  r.pending[1]!.resolve({ pushed: false });
+  await flush();
+  push.setOpen(true);
+  assert.equal(c.next(), 1500, "not pushed (T3 refused its stream): its own cadence even with the stream open");
+  push.all();
+  assert.equal(r.pending.length, 3, "a re-read of everything reads it now");
+  r.pending[2]!.reject(new Error("gone"));
+  await flush();
+  assert.equal(c.next(), null, "stopped by its failure");
+  unfollow();
+});
+
+test("PagePush: its listeners hear thread events, re-reads and the stream's state, until they leave", () => {
+  const push = new PagePush();
+  const heard: string[] = [];
+  const leave = push.subscribe({ thread: (id) => heard.push(`thread:${id}`), all: () => heard.push("all"), open: (open) => heard.push(open ? "open" : "closed") });
+  push.setOpen(true);
+  push.setOpen(true);
+  push.thread("t1");
+  push.all();
+  push.setOpen(false);
+  leave();
+  push.thread("t2");
+  assert.deepEqual(heard, ["open", "thread:t1", "all", "closed"]);
+  assert.equal(push.open, false);
 });

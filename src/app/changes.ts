@@ -1,7 +1,8 @@
 /**
  * What open pages are told, pushed over GET /api/events (src/server/http.ts) so they read again at once instead of on a
  * timer: a room changed (`rooms` for the room list, `room` with its id for its snapshot), T3's projects or threads
- * changed (`shell`), and T3 stopped or started answering (`status`).
+ * changed (`shell`), a watched thread's detail changed (`thread` with its id), and T3 stopped or started answering
+ * (`status`).
  *
  * The rest of the service calls roomChanged, shellChanged and statusChanged. Rooms come from the change hub
  * (bootstrap.ts wires hub.subscribeAll here) and from the journal's heads, read every second while a page listens, for
@@ -13,6 +14,10 @@
  * T3, whose outages and edits are seen only by reading it) it is a check every 2 s while a page listens:
  * adapter.listProjects() and listThreads(), fingerprinted, `shell` when the fingerprint moves, `status` when a read
  * fails after a success or succeeds after a failure.
+ *
+ * `thread` is the adapter's onThreadChange, passed on as it comes: a thread is watched while a room seats it or a page
+ * read its detail in the last minute (src/adapter/threadFeed.ts), and the adapter tells its change once a read made
+ * then sees it (with the HTTP adapter at most once per 2 s per thread, after the read its stream caused).
  */
 import type { T3Adapter, T3ShellFeedStatus } from "../adapter/types.ts";
 
@@ -24,7 +29,7 @@ export interface T3Reach {
 }
 
 /** `closed`: the service is shutting down, and each stream ends. */
-export type PageEvent = { type: "rooms" } | { type: "room"; roomId: string } | { type: "shell" } | { type: "status"; status: T3Reach } | { type: "closed" };
+export type PageEvent = { type: "rooms" } | { type: "room"; roomId: string } | { type: "shell" } | { type: "thread"; threadId: string } | { type: "status"; status: T3Reach } | { type: "closed" };
 
 export interface PageChangesOptions {
   /** How often T3's projects and threads are checked while a page listens (ms). */
@@ -64,12 +69,14 @@ export class PageChanges {
   private readonly adapter: Pick<T3Adapter, "listProjects" | "listThreads">;
   private readonly options: PageChangesOptions;
 
-  constructor(adapter: Pick<T3Adapter, "listProjects" | "listThreads">, options: PageChangesOptions = {}) {
+  constructor(adapter: Pick<T3Adapter, "listProjects" | "listThreads"> & Partial<Pick<T3Adapter, "onThreadChange">>, options: PageChangesOptions = {}) {
     this.adapter = adapter;
     this.options = options;
     this.shellMs = options.shellMs ?? 2000;
     this.headsMs = options.headsMs ?? 1000;
     this.heartbeatMs = options.heartbeatMs ?? 20000;
+    // A watched thread's change, as the adapter tells it (it is the throttle): pages showing the thread read it again.
+    if (adapter.onThreadChange) this.unfollow.push(adapter.onThreadChange((threadId) => this.threadChanged(threadId)));
     const feed = options.feed;
     if (feed) {
       // Followed whether or not a page listens: the service's observers (the read API's memo) are told as well.
@@ -129,6 +136,10 @@ export class PageChanges {
 
   shellChanged(): void {
     this.emit({ type: "shell" });
+  }
+
+  threadChanged(threadId: string): void {
+    if (!this.closed) this.emit({ type: "thread", threadId });
   }
 
   /** T3 answers again (`up`) or stopped answering, with the error. Only a change goes out. */

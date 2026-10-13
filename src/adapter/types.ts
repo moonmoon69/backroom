@@ -586,6 +586,18 @@ export interface T3Adapter {
   feed(): T3ShellFeedStatus;
   /** Call `listener` each time feed() changes (its state, or the error that keeps it down). Returns the remover. */
   onFeedChange(listener: (status: T3ShellFeedStatus) => void): () => void;
+  /**
+   * Call `listener` with a watched thread's id when its detail changed in T3, once a read made from then on sees the
+   * change (with the HTTP adapter: once the read its stream caused is in, at most once per 2 s per thread while it keeps
+   * changing, and once after its last change). Returns the remover.
+   */
+  onThreadChange(listener: (threadId: string) => void): () => void;
+  /** The threads `owner` keeps watched from now on, in place of those it kept before (the engine host: its seats' threads). */
+  holdThreads(owner: string, threadIds: readonly string[]): void;
+  /** A page read the thread's detail: it is watched for a minute from now (src/adapter/threadFeed.ts). */
+  leaseThread(threadId: string): void;
+  /** Whether the thread's changes are told (onThreadChange): it is watched, and its stream is on, or opening. */
+  threadPushed(threadId: string): boolean;
   listProjects(): Promise<T3Project[]>;
   /** Add a project to T3 (projects.mutate project.create). T3 refuses a folder another project already uses. */
   createProject(input: CreateProjectInput): Promise<void>;

@@ -8,6 +8,7 @@
  *   POST /api/fake/hold          { threadId, hold }            runs on the thread are not finished automatically
  *   POST /api/fake/complete      { threadId, text, outcome?, progress?, files? }   end the thread's running run
  *                                outcome "completed" | "error" | "interrupted"; progress: messages before the final one
+ *   POST /api/fake/say           { threadId, text }            the agent says something in its running turn -> { messageId }
  *   POST /api/fake/self-run      { threadId }                  a turn the agent starts itself -> { runId }
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
  *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
@@ -51,6 +52,7 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
     fake.completeRun(thread(input), { text: typeof input.text === "string" ? input.text : "Done.", outcome, progress, files });
     return {};
   }));
+  controls.post("/api/fake/say", run((input) => ({ messageId: fake.say(thread(input), typeof input.text === "string" ? input.text : "working on it") })));
   controls.post("/api/fake/self-run", run((input) => ({ runId: fake.startSelfRun(thread(input)) })));
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
   controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));

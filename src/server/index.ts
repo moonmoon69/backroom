@@ -44,6 +44,7 @@ if (config.adapter === "fake") {
     accessToken: config.t3AccessToken ?? stored?.accessToken ?? null,
     userDataDir: config.t3UserDataDir,
     onCredentialRejected: (token) => credential?.rejected(token),
+    log,
   });
   adapter = http;
   // A token given in T3_ACCESS_TOKEN is the user's to keep; otherwise Backroom keeps its own (src/app/t3Credential.ts).

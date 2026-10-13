@@ -38,6 +38,7 @@ import type {
   T3Versions,
 } from "./types.ts";
 import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, isRunActive, openRequests } from "./types.ts";
+import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
   shell: T3ThreadShell;
@@ -136,6 +137,10 @@ export class FakeT3Adapter implements T3Adapter {
   private readonly options: Required<Omit<FakeAdapterOptions, "projectRoot">>;
   private readonly shellListeners = new Set<(change: T3ShellChange) => void>();
   private shellChangeQueued = false;
+  /** Who watches which thread, as the HTTP adapter keeps it: only a watched thread's changes are told, as T3 streams only those. */
+  readonly watches = new ThreadWatches({ onWatch: () => undefined, onUnwatch: () => undefined });
+  private readonly threadListeners = new Set<(threadId: string) => void>();
+  private readonly threadChangesQueued = new Set<string>();
   private readonly createdAt = new Date().toISOString();
 
   constructor(options: FakeAdapterOptions = {}) {
@@ -180,6 +185,39 @@ export class FakeT3Adapter implements T3Adapter {
   /** Its feed never changes. */
   onFeedChange(): () => void {
     return () => undefined;
+  }
+
+  onThreadChange(listener: (threadId: string) => void): () => void {
+    this.threadListeners.add(listener);
+    return () => {
+      this.threadListeners.delete(listener);
+    };
+  }
+
+  holdThreads(owner: string, threadIds: readonly string[]): void {
+    this.watches.hold(owner, threadIds);
+  }
+
+  leaseThread(threadId: string): void {
+    this.watches.lease(threadId);
+  }
+
+  /** Every change of a watched thread is told: it has no stream to be refused. */
+  threadPushed(threadId: string): boolean {
+    return this.watches.has(threadId);
+  }
+
+  /**
+   * A thread changed: if it is watched, its listeners hear of it once the change in hand is made (after the current
+   * call's synchronous work, as the HTTP adapter tells it once a read sees it), once for a burst.
+   */
+  private threadChanged(threadId: string): void {
+    if (!this.watches.has(threadId) || this.threadChangesQueued.has(threadId)) return;
+    this.threadChangesQueued.add(threadId);
+    queueMicrotask(() => {
+      this.threadChangesQueued.delete(threadId);
+      for (const listener of [...this.threadListeners]) listener(threadId);
+    });
   }
 
   /**
@@ -386,6 +424,7 @@ export class FakeT3Adapter implements T3Adapter {
     if (this.seenCommands.has(commandId)) return false; // T3 keeps a receipt per command: a replay changes nothing
     this.seenCommands.add(commandId);
     this.changed();
+    this.threadChanged(threadId);
     return true;
   }
 
@@ -401,6 +440,7 @@ export class FakeT3Adapter implements T3Adapter {
     const at = new Date(Math.max(Date.now(), last + 1)).toISOString();
     thread.shell.updatedAt = at;
     this.changed();
+    this.threadChanged(thread.shell.id);
     return at;
   }
 
@@ -760,6 +800,19 @@ export class FakeT3Adapter implements T3Adapter {
     if (!thread) throw new Error("unknown thread");
     thread.shell.pendingBackgroundTasks = taskIds.map((taskId) => ({ taskId, kind: "command" as const, description: `background ${taskId}`, childThreadId: null }));
     this.changed();
+    this.threadChanged(threadId);
+  }
+
+  /** Test control: the agent says something in its running turn, a message of the run's before its final one. */
+  say(threadId: string, text: string): string {
+    const thread = this.threads.get(threadId);
+    const run = thread ? this.activeRun(thread) : null;
+    if (!thread || !run) throw new Error("no active run to speak in");
+    const at = this.stamp(thread);
+    const id = `message:${randomUUID()}`;
+    thread.messages.push({ id, threadId, role: "assistant", text, runId: run.id, nodeId: `node:${run.id}:${id}`, streaming: false, createdAt: at, updatedAt: at, createdBy: "agent", creationSource: "provider", senderThreadId: null, attachments: [] });
+    thread.turnItems.push({ ...this.item(thread, run.id, at), type: "assistant_message", messageId: id, text, streaming: false });
+    return id;
   }
 
   /** Test control: a run the agent starts itself (a background task finished): T3 writes its notice, not a person. */
