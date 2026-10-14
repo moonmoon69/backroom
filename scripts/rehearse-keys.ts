@@ -1813,8 +1813,17 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // room is opened after another one, so its desk is read afresh. At first the bubble is small and the newest post shows,
     // so the ring lands on it; when the desk comes the bubble grows over the post, and the ring lands again, on the
     // running turn's chip. A key pressed before the desk comes keeps the ring where the key put it.
+    // The page's desk fetch is held in the page: for `ms` (holdDesk), or until releaseDesk() lets the held fetches through
+    // (holdDeskUntilReleased), so the first checks read the page before the desk comes. A timed hold lost that race under
+    // load: the check ran 5 s after Enter, past a 4 s hold.
+    const deskFetchHook = `if (!window.__rehearseFetch) { const real = window.fetch.bind(window); window.__rehearseFetch = real; window.fetch = (input, init) => { const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url; const hold = window.__rehearseDeskHold; const gate = window.__rehearseDeskGate; return (hold || gate) && /\\/desk(\\?|$)/.test(url) ? (gate || new Promise((done) => setTimeout(done, hold))).then(() => real(input, init)) : real(input, init); }; }`;
+    const feedBubbleStyle = `if (!document.getElementById('rehearse-feed-bubble')) document.head.insertAdjacentHTML('beforeend', '<style id="rehearse-feed-bubble">.bubble-live:has(.live-feed:not(.live-empty)) { min-height: 75vh }</style>');`;
     const holdDesk = (ms: number) =>
-      browser.eval<boolean>(`() => { if (!window.__rehearseFetch) { const real = window.fetch.bind(window); window.__rehearseFetch = real; window.fetch = (input, init) => { const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url; const hold = window.__rehearseDeskHold; return hold && /\\/desk(\\?|$)/.test(url) ? new Promise((done) => setTimeout(done, hold)).then(() => real(input, init)) : real(input, init); }; } window.__rehearseDeskHold = ${ms}; if (!document.getElementById('rehearse-feed-bubble')) document.head.insertAdjacentHTML('beforeend', '<style id="rehearse-feed-bubble">.bubble-live:has(.live-feed:not(.live-empty)) { min-height: 75vh }</style>'); return true; }`);
+      browser.eval<boolean>(`() => { ${deskFetchHook} window.__rehearseDeskHold = ${ms}; ${feedBubbleStyle} return true; }`);
+    const holdDeskUntilReleased = () =>
+      browser.eval<boolean>(`() => { ${deskFetchHook} window.__rehearseDeskGate = new Promise((release) => { window.__rehearseDeskRelease = release; }); ${feedBubbleStyle} return true; }`);
+    const releaseDesk = () =>
+      browser.eval<boolean>(`() => { window.__rehearseDeskGate = null; window.__rehearseDeskRelease?.(); return true; }`);
     /** Another room opened and closed, so this room's desk is read afresh when it opens next. */
     const deskAfresh = async () => {
       await goTo(`room:${third.roomId}`);
@@ -1824,13 +1833,14 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       await expect("Backspace: back on its card", (f) => f.drawers.length === 0 && f.key === `room:${third.roomId}`);
     };
     await deskAfresh();
-    holdDesk(4000);
+    holdDeskUntilReleased();
     await goTo(`room:${R}`);
     press("Enter");
-    await expect(`Enter, the desk held back 4 s: the ring on the newest post #${openPost.number} (the bubble small, no feed yet)`, (f) => inRoom(f) && f.key === `post:${openPost.seq}`, 3500);
+    await expect(`Enter, the desk held until the checks below: the ring on the newest post #${openPost.number} (the bubble small, no feed yet)`, (f) => inRoom(f) && f.key === `post:${openPost.seq}`, 3500);
     const early = board() ?? fail("the page draws no open room's board");
     if (early.feed || early.shown < Math.min(early.height, 48)) fail(`before the desk comes the feed should not be drawn and the newest post should show: ${JSON.stringify(early)}`);
     log(`  page: before the desk, the bubble ${early.bubble}px, no feed; the newest post shows ${early.shown}px of ${early.height}`);
+    releaseDesk();
     await expect("the desk comes late: the ring lands again, on the running turn's chip", (f) => f.key === chipKey && f.chip && f.ring, 10_000);
     const late = board() ?? fail("the page draws no open room's board");
     if (!late.feed || late.shown >= Math.min(late.height, 48) || late.distance > 2) fail(`after the desk the feed should be drawn, the newest post out of view and the board at its bottom: ${JSON.stringify(late)}`);
