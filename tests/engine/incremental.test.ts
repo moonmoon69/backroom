@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { EngineStore, decide, fold } from "../../src/engine/index.ts";
-import type { Command, Projection, StoreBoundary } from "../../src/engine/index.ts";
-import { EntryOverlay } from "../../src/engine/incremental.ts";
+import type { Command, Projection, RoomEvent, StoreBoundary } from "../../src/engine/index.ts";
+import { EntryOverlay, journalHistory } from "../../src/engine/incremental.ts";
 import { DiskRoom, waitForFiles, worker } from "./store-fixture.ts";
 import type { WorkerInput, WorkerResult } from "./store-fixture.ts";
 import type { IncrementalWorkerInput } from "./incremental-worker.ts";
@@ -275,17 +275,22 @@ test("incremental warm notes do no full replay/replacement/old-payload cloning a
     instrument.coldCache = (...args) => { cold++; return originalCold(...args); };
     instrument.rows = (room, after = 0) => { if (!after) fullRows++; return originalRows(room, after); };
     instrument.replaceIndices = (...args) => { replacements++; return originalReplace(...args); };
-    const request = cache.p.requests.get("B")!, body = request.body;
-    Object.defineProperty(request, "body", { enumerable: true, configurable: true, get() { oldPayloadReads++; return body; } });
-    const event = cache.p.events.find((e) => e.data.kind === "request" && e.data.request.id === "B")!;
+    // The cache's entries and events are frozen once a snapshot has shared them: the old payload is read through
+    // counting stand-ins put where the cache keeps it, and put back after.
+    const counting = <T extends object>(target: T): T => new Proxy(target, { get(t, key, receiver) { if (key === "body") oldPayloadReads++; return Reflect.get(t, key, receiver); } });
+    const request = cache.p.requests.get("B")!;
+    cache.p.requests.set("B", counting(request));
+    const at = cache.p.events.findIndex((e) => e.data.kind === "request" && e.data.request.id === "B"), event = cache.p.events[at]!, history = journalHistory(cache.p).events;
     assert.equal(event.data.kind, "request");
-    if (event.data.kind === "request") Object.defineProperty(event.data.request, "body", { enumerable: true, configurable: true, get() { oldPayloadReads++; return body; } });
+    if (event.data.kind === "request") {
+      const stand = { ...event, data: { ...event.data, request: counting(event.data.request) } };
+      (cache.p.events as RoomEvent[])[at] = stand; history.set(event.id, stand);
+    }
     const existing = instrument.db.prepare("SELECT kind,id,value FROM engine_projection WHERE room=? ORDER BY kind,id").all(r.room);
     for (let i = 0; i < 30; i++) r.add({ type: "post", actor: "O", id: `warm-note:${i}`, intent: "note", body: "x".repeat(1024) });
     assert.deepEqual({ cold, fullRows, replacements, oldPayloadReads }, { cold: 0, fullRows: 0, replacements: 0, oldPayloadReads: 0 });
     assert.deepEqual(instrument.db.prepare("SELECT kind,id,value FROM engine_projection WHERE room=? ORDER BY kind,id").all(r.room), existing);
-    Object.defineProperty(request, "body", { enumerable: true, configurable: true, writable: true, value: body });
-    if (event.data.kind === "request") Object.defineProperty(event.data.request, "body", { enumerable: true, configurable: true, writable: true, value: body });
+    cache.p.requests.set("B", request); (cache.p.events as RoomEvent[])[at] = event; history.set(event.id, event);
     instrument.coldCache = originalCold; instrument.rows = originalRows; instrument.replaceIndices = originalReplace;
     parity(r);
   } finally { r.cleanup(); }

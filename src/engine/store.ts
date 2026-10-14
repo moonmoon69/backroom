@@ -136,10 +136,45 @@ function derive(rows: StoredRow[]): Derived {
   return { log, p, commands, projections, keys };
 }
 
+/** A snapshot's maps and sets, which refuse every write once built. */
+const sealed = new WeakSet<object>();
+function readOnly(): never { throw new TypeError("an engine snapshot is read-only"); }
+class SnapshotMap<K, V> extends Map<K, V> {
+  override set(key: K, value: V): this { if (sealed.has(this)) readOnly(); return super.set(key, value); }
+  override delete(key: K): boolean { if (sealed.has(this)) readOnly(); return super.delete(key); }
+  override clear(): void { if (sealed.has(this)) readOnly(); super.clear(); }
+}
+class SnapshotSet<T> extends Set<T> {
+  override add(value: T): this { if (sealed.has(this)) readOnly(); return super.add(value); }
+  override delete(value: T): boolean { if (sealed.has(this)) readOnly(); return super.delete(value); }
+  override clear(): void { if (sealed.has(this)) readOnly(); super.clear(); }
+}
+/** Committed entries and events are replaced, never changed (EntryOverlay.edit copies): freezing them keeps it so. */
+function deepFreeze(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const v of Object.values(value)) deepFreeze(v);
+}
+/** The committed projection as one immutable object, sharing the cache's frozen entries and events. */
+function frozenSnapshot(p: Projection): Projection {
+  for (const e of p.events) deepFreeze(e);
+  for (const s of p.subscriptions) deepFreeze(s);
+  const s = { ...p, events: Object.freeze(Array.from(p.events)), subscriptions: Object.freeze([...p.subscriptions]) as Projection["subscriptions"], commandKeys: new SnapshotSet(p.commandKeys) };
+  for (const name of projectionMaps) {
+    const map = new SnapshotMap(p[name] as Map<string, unknown>);
+    for (const v of map.values()) deepFreeze(v);
+    (s[name] as Map<string, unknown>) = map;
+  }
+  for (const name of [...projectionMaps, "commandKeys"] as const) { sealed.add(s[name]); Object.freeze(s[name]); }
+  return Object.freeze(s);
+}
+
 const PROJECTION_VERSION = 1;
 interface Cache {
   room: string; connection: symbol; version: number; head: number; dataVersion: number; audited: boolean;
   p: Projection; rows: StoredRow[]; commands: Map<string, CommandRow>; projections: Map<string, ProjectionRow>; keys: Map<string, KeyRow>;
+  /** `p` as `snapshot` hands it out: built again on the first read after the journal grew (every change to `p` is an event). */
+  snapshot: Projection | null;
 }
 interface Working {
   base: Cache; overlay: ProjectionOverlay; rows: StoredRow[]; dataVersion: number; audited: boolean; indexBaseP: Projection;
@@ -161,7 +196,7 @@ function validateBatch(batch: StoredRow[], expected: number, commands: Map<strin
     || r.batch_size !== first.batch_size || !["appended", "blocked"].includes(r.outcome))) throw new Error("incomplete log batch");
 }
 function cacheFrom(room: string, connection: symbol, dataVersion: number, d: Derived): Cache {
-  return { room, connection, version: PROJECTION_VERSION, head: d.log.length, dataVersion, audited: false, p: d.p,
+  return { room, connection, version: PROJECTION_VERSION, head: d.log.length, dataVersion, audited: false, p: d.p, snapshot: null,
     rows: [], commands: new Map(d.commands.map((r) => [r.key, r])), projections: new Map(d.projections.map((r) => [projectionIdentity(r), r])), keys: new Map(d.keys.map((r) => [keyIdentity(r), r])) };
 }
 function publishEntries<K, V>(overlay: EntryOverlay<K, V>): void {
@@ -483,12 +518,20 @@ export class EngineStore {
     const rows = this.sql("SELECT room,seq FROM engine_head").all() as { room: string; seq: number }[];
     return new Map(rows.map((row) => [row.room, row.seq]));
   }
+  /**
+   * The room's projection as committed now (read in a transaction, so a foreign suffix or an unexplained write is found
+   * first): one deeply frozen object, shared by every reader and the same object until the room's journal grows, so
+   * reading it copies nothing. It never changes, and every write to it throws.
+   */
+  snapshot(room: string): Projection {
+    this.transaction("IMMEDIATE", () => { this.working(room, false); });
+    const cache = this.caches.get(room)!;
+    if (cache.snapshot?.events.length !== cache.p.events.length) cache.snapshot = frozenSnapshot(cache.p);
+    return cache.snapshot;
+  }
+  /** A detached copy of `snapshot` that the caller owns and may change. */
   project(room: string): Projection {
-    return this.transaction("IMMEDIATE", () => {
-      const p = this.working(room, false).overlay.p, detached = { ...p, events: Array.from(p.events), commandKeys: new Set(p.commandKeys) };
-      for (const name of projectionMaps) (detached[name] as Map<string, unknown>) = new Map(p[name] as Map<string, unknown>);
-      return detached;
-    });
+    return structuredClone(this.snapshot(room));
   }
   recovery(room: string) {
     const p = this.project(room);

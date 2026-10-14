@@ -117,11 +117,19 @@ replay on a cold start or after a write the connection cannot explain, and rebui
 is refused, and so is an output source key reused with other content. `engine_key` keeps the identities unique within a
 room: thread, T3 run, dispatch command and message, a seat's unresolved run, sync receipt, answer claim and source key.
 Each room's projection is cached and changed in place by an overlay of the entries a command touched, published only
-after the commit; `project` returns a copy and `load` the events. Optional boundary hooks exist for fault tests.
+after the commit; a published entry or event is never changed again (a decision copies an entry before it edits it).
+`snapshot` hands out the committed projection as one shared object, deeply frozen (every write to it throws, a nested
+one too) and never changed: the same object until the room's journal grows, built again on the first read after that,
+so a read copies nothing. It is read in a transaction, so a foreign suffix or an unexplained write is found before it
+is handed out, and a write that fails drops the cache and its snapshot with it. The host reads it, and so does the read
+API through `EngineHost.view`; `project` returns a detached copy of it the caller owns, and `load` the events. Optional
+boundary hooks exist for fault tests.
 
 ## Tests
 
-`tests/engine`: the domain, interleavings, incident and seat-lifecycle suites (decisions), the store, store-fault and
-incremental suites (transactions, real-SIGKILL crashes, cache and index parity), `golden.test.ts` (every history
-recorded from the core before the carve replays with equal decisions and maps) and `release-closure.test.ts`.
-`scripts/long-room.ts` times 2,000-note rooms and a host tick.
+`tests/engine`: the domain, interleavings, incident and seat-lifecycle suites (decisions), the store, store-fault,
+store-snapshot and incremental suites (transactions, real-SIGKILL crashes, cache and index parity, the two reads),
+`golden.test.ts` (every history recorded from the core before the carve replays with equal decisions and maps) and
+`release-closure.test.ts`. `scripts/long-room.ts` times 2,000-note rooms and a host tick; `scripts/projection-tick.ts`
+times host ticks over a room of 4,000 events and 60 seats (`tests/runtime/projection-reads.test.ts` keeps a tick from
+copying the projection).
