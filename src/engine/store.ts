@@ -136,19 +136,43 @@ function derive(rows: StoredRow[]): Derived {
   return { log, p, commands, projections, keys };
 }
 
-/** A snapshot's maps and sets, which refuse every write once built. */
-const sealed = new WeakSet<object>();
 function readOnly(): never { throw new TypeError("an engine snapshot is read-only"); }
-class SnapshotMap<K, V> extends Map<K, V> {
-  override set(key: K, value: V): this { if (sealed.has(this)) readOnly(); return super.set(key, value); }
-  override delete(key: K): boolean { if (sealed.has(this)) readOnly(); return super.delete(key); }
-  override clear(): void { if (sealed.has(this)) readOnly(); super.clear(); }
+/**
+ * A snapshot's maps and sets: read-only views of copies only they hold. They are not Maps or Sets themselves (no
+ * internal slot), so neither their own writers nor Map.prototype's or Set.prototype's can change what they hold.
+ */
+class SnapshotMap<K, V> implements Map<K, V> {
+  readonly #map: Map<K, V>;
+  constructor(map: Map<K, V>) { this.#map = map; Object.freeze(this); }
+  get size(): number { return this.#map.size; }
+  get(key: K): V | undefined { return this.#map.get(key); }
+  has(key: K): boolean { return this.#map.has(key); }
+  keys() { return this.#map.keys(); }
+  values() { return this.#map.values(); }
+  entries() { return this.#map.entries(); }
+  [Symbol.iterator]() { return this.#map.entries(); }
+  forEach(callback: (value: V, key: K, map: Map<K, V>) => void, thisArg?: unknown): void { for (const [k, v] of this.#map) callback.call(thisArg, v, k, this); }
+  set(): this { return readOnly(); }
+  delete(): boolean { return readOnly(); }
+  clear(): void { readOnly(); }
+  get [Symbol.toStringTag](): string { return "SnapshotMap"; }
 }
-class SnapshotSet<T> extends Set<T> {
-  override add(value: T): this { if (sealed.has(this)) readOnly(); return super.add(value); }
-  override delete(value: T): boolean { if (sealed.has(this)) readOnly(); return super.delete(value); }
-  override clear(): void { if (sealed.has(this)) readOnly(); super.clear(); }
+class SnapshotSet<T> implements Set<T> {
+  readonly #set: Set<T>;
+  constructor(set: Set<T>) { this.#set = set; Object.freeze(this); }
+  get size(): number { return this.#set.size; }
+  has(value: T): boolean { return this.#set.has(value); }
+  keys() { return this.#set.keys(); }
+  values() { return this.#set.values(); }
+  entries() { return this.#set.entries(); }
+  [Symbol.iterator]() { return this.#set.values(); }
+  forEach(callback: (value: T, value2: T, set: Set<T>) => void, thisArg?: unknown): void { for (const v of this.#set) callback.call(thisArg, v, v, this); }
+  add(): this { return readOnly(); }
+  delete(): boolean { return readOnly(); }
+  clear(): void { readOnly(); }
+  get [Symbol.toStringTag](): string { return "SnapshotSet"; }
 }
+Object.freeze(SnapshotMap.prototype); Object.freeze(SnapshotSet.prototype);
 /** Committed entries and events are replaced, never changed (EntryOverlay.edit copies): freezing them keeps it so. */
 function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
@@ -159,13 +183,12 @@ function deepFreeze(value: unknown): void {
 function frozenSnapshot(p: Projection): Projection {
   for (const e of p.events) deepFreeze(e);
   for (const s of p.subscriptions) deepFreeze(s);
-  const s = { ...p, events: Object.freeze(Array.from(p.events)), subscriptions: Object.freeze([...p.subscriptions]) as Projection["subscriptions"], commandKeys: new SnapshotSet(p.commandKeys) };
+  const s = { ...p, events: Object.freeze(Array.from(p.events)), subscriptions: Object.freeze([...p.subscriptions]) as Projection["subscriptions"], commandKeys: new SnapshotSet(new Set(p.commandKeys)) };
   for (const name of projectionMaps) {
-    const map = new SnapshotMap(p[name] as Map<string, unknown>);
+    const map = new Map(p[name] as Map<string, unknown>);
     for (const v of map.values()) deepFreeze(v);
-    (s[name] as Map<string, unknown>) = map;
+    (s[name] as Map<string, unknown>) = new SnapshotMap(map);
   }
-  for (const name of [...projectionMaps, "commandKeys"] as const) { sealed.add(s[name]); Object.freeze(s[name]); }
   return Object.freeze(s);
 }
 
@@ -529,9 +552,11 @@ export class EngineStore {
     if (cache.snapshot?.events.length !== cache.p.events.length) cache.snapshot = frozenSnapshot(cache.p);
     return cache.snapshot;
   }
-  /** A detached copy of `snapshot` that the caller owns and may change. */
+  /** A detached copy of `snapshot` that the caller owns and may change: plain maps and sets, every value copied. */
   project(room: string): Projection {
-    return structuredClone(this.snapshot(room));
+    const p = this.snapshot(room), detached = { ...p, events: Array.from(p.events), subscriptions: [...p.subscriptions], commandKeys: new Set(p.commandKeys) };
+    for (const name of projectionMaps) (detached[name] as Map<string, unknown>) = new Map(p[name] as Map<string, unknown>);
+    return structuredClone(detached);
   }
   recovery(room: string) {
     const p = this.project(room);

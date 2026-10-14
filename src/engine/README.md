@@ -119,7 +119,8 @@ room: thread, T3 run, dispatch command and message, a seat's unresolved run, syn
 Each room's projection is cached and changed in place by an overlay of the entries a command touched, published only
 after the commit; a published entry or event is never changed again (a decision copies an entry before it edits it).
 `snapshot` hands out the committed projection as one shared object, deeply frozen (every write to it throws, a nested
-one too) and never changed: the same object until the room's journal grows, built again on the first read after that,
+one too; its maps and sets are read-only views, not Maps or Sets, so `Map.prototype` and `Set.prototype` cannot write to
+them either) and never changed: the same object until the room's journal grows, built again on the first read after that,
 so a read copies nothing. It is read in a transaction, so a foreign suffix or an unexplained write is found before it
 is handed out, and a write that fails drops the cache and its snapshot with it. The host reads it, and so does the read
 API through `EngineHost.view`; `project` returns a detached copy of it the caller owns, and `load` the events. Optional

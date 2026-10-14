@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     let reads = 0, copies = 0;
     const clone = globalThis.structuredClone;
     globalThis.structuredClone = ((value: unknown, options?: Parameters<typeof structuredClone>[1]) => {
-      if (value && typeof value === "object" && (value as { seats?: unknown }).seats instanceof Map) copies += 1;
+      if (value && typeof value === "object" && "seats" in value && "events" in value) copies += 1;
       return clone(value, options);
     }) as typeof structuredClone;
     const counted = store as unknown as Record<string, (...args: unknown[]) => unknown>;

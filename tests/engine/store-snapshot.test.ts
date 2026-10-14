@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EngineStore, fold } from "../../src/engine/index.ts";
 import type { Projection } from "../../src/engine/index.ts";
+import { projectionMaps } from "../../src/engine/incremental.ts";
 import { DiskRoom } from "./store-fixture.ts";
 
 /** A room with one of everything a snapshot holds: requests with a correction, a run with a confirmed sync, a subscription. */
@@ -20,6 +21,13 @@ function busy(): { r: DiskRoom; runId: string } {
   r.add({ type: "confirm_sync", actor: "$system", runId: run.id, receiptId: receipt.id, digest: receipt.digest, evidence: "FAKE shown in the run" });
   r.add({ type: "subscribe", actor: "V", requestId: "A", milestones: ["m"], enabled: true });
   return { r, runId: run.id };
+}
+
+/** A snapshot as plain maps, sets and arrays, to compare with a fold. */
+function plain(p: Projection): Projection {
+  const out = { ...p, events: [...p.events], subscriptions: [...p.subscriptions], commandKeys: new Set(p.commandKeys) };
+  for (const name of projectionMaps) (out[name] as Map<string, unknown>) = new Map(p[name] as Map<string, unknown>);
+  return structuredClone(out);
 }
 
 /** Every kind of write a reader could try on a projection, nested ones included. */
@@ -47,14 +55,14 @@ test("snapshot: one frozen object per journal head, shared by every reader, equa
   try {
     const first = r.store.snapshot(r.room);
     assert.equal(r.store.snapshot(r.room), first, "a read with no write in between hands out the same object");
-    assert.deepEqual(structuredClone(first), fold(r.store.load(r.room)));
+    assert.deepEqual(plain(first), fold(r.store.load(r.room)));
     r.request("C");
     const second = r.store.snapshot(r.room);
     assert.notEqual(second, first, "a commit replaces the snapshot");
     assert.equal(second.requests.get("C")!.state, "open", "the read after a write sees it");
     assert.equal(first.requests.has("C"), false, "an earlier snapshot never changes");
     assert.equal(first.events.length, second.events.length - 1);
-    assert.deepEqual(structuredClone(second), fold(r.store.load(r.room)));
+    assert.deepEqual(plain(second), fold(r.store.load(r.room)));
     r.parity();
   } finally { r.cleanup(); }
 });
@@ -66,7 +74,7 @@ test("snapshot: every write to it throws, nested values included, and the store 
     const before = r.store.project(r.room);
     for (const [what, write] of writes(p, runId)) assert.throws(write, TypeError, what);
     assert.deepEqual(r.store.project(r.room), before);
-    assert.deepEqual(structuredClone(p), before, "the snapshot itself is unchanged too");
+    assert.deepEqual(plain(p), before, "the snapshot itself is unchanged too");
     // The cache's own entries are frozen with it, so the next decision still copies before it changes one.
     r.add({ type: "correct", actor: "O", requestId: "A", body: "Corrected A again" });
     assert.equal(r.store.snapshot(r.room).requests.get("A")!.corrections.length, 2);
@@ -75,14 +83,45 @@ test("snapshot: every write to it throws, nested values included, and the store 
   } finally { r.cleanup(); }
 });
 
+test("snapshot: its maps and sets are not Maps or Sets, so Map.prototype's and Set.prototype's writers cannot change them either (review #80)", () => {
+  const { r } = busy();
+  try {
+    const p = r.store.snapshot(r.room), before = plain(p);
+    for (const name of projectionMaps) {
+      const map = p[name] as Map<string, unknown>, key = map.keys().next().value ?? "k";
+      for (const [what, write] of [["set", () => Map.prototype.set.call(map, "forged", 1)], ["delete", () => Map.prototype.delete.call(map, key)], ["clear", () => Map.prototype.clear.call(map)]] as const) {
+        assert.throws(write, TypeError, `Map.prototype.${what} on ${name}`);
+      }
+      assert.equal(map instanceof Map, false, name);
+    }
+    for (const [what, write] of [["add", () => Set.prototype.add.call(p.commandKeys, "forged")], ["delete", () => Set.prototype.delete.call(p.commandKeys, p.commandKeys.values().next().value)], ["clear", () => Set.prototype.clear.call(p.commandKeys)]] as const) {
+      assert.throws(write, TypeError, `Set.prototype.${what} on commandKeys`);
+    }
+    assert.equal(p.commandKeys instanceof Set, false);
+    assert.throws(() => { (Object.getPrototypeOf(p.seats) as { get: unknown }).get = () => undefined; }, TypeError, "nor can their shared methods be replaced");
+    assert.deepEqual(plain(p), before, "the snapshot is unchanged");
+    assert.equal(r.store.snapshot(r.room), p);
+    assert.deepEqual(plain(r.store.snapshot(r.room)), fold(r.store.load(r.room)), "later readers agree with the journal");
+    assert.deepEqual(r.store.project(r.room), fold(r.store.load(r.room)), "and so does a copy of it");
+    // Read as a map and a set still: by key, by size, by iteration, and with forEach naming the view itself.
+    assert.equal(p.seats.get("W")!.id, "W");
+    assert.equal(p.seats.size, 4);
+    assert.deepEqual([...p.seats.keys()], ["O", "W", "V", "X"]);
+    assert.deepEqual(new Map(p.seats), r.store.project(r.room).seats);
+    assert.equal([...p.commandKeys].length, p.commandKeys.size);
+    p.seats.forEach((_seat, _id, map) => assert.equal(map, p.seats));
+    p.commandKeys.forEach((_key, _again, set) => assert.equal(set, p.commandKeys));
+  } finally { r.cleanup(); }
+});
+
 test("project: a detached copy the caller owns; changing it changes nothing else, and later commits leave it as it was", () => {
   const { r, runId } = busy();
   try {
     const mine = r.store.project(r.room);
     const shared = r.store.snapshot(r.room);
-    const expected = structuredClone(shared);
+    const expected = plain(shared);
     for (const [what, write] of writes(mine, runId)) assert.doesNotThrow(write, what);
-    assert.deepEqual(structuredClone(r.store.snapshot(r.room)), expected, "the store and its snapshot are unchanged");
+    assert.deepEqual(plain(r.store.snapshot(r.room)), expected, "the store and its snapshot are unchanged");
     assert.equal(r.store.snapshot(r.room), shared);
     const untouched = r.store.project(r.room);
     r.request("C");
@@ -104,7 +143,7 @@ test("snapshot: a foreign connection's commit is read before the snapshot is han
     assert.notEqual(after, before);
     assert.equal(after.requests.get("F")!.body, "From another connection");
     assert.equal(before.requests.has("F"), false);
-    assert.deepEqual(structuredClone(after), fold(r.store.load(r.room)));
+    assert.deepEqual(plain(after), fold(r.store.load(r.room)));
   } finally { other.close(); r.cleanup(); }
 });
 
@@ -115,13 +154,13 @@ test("snapshot: a write that fails before or after its commit leaves no snapshot
       const before = r.store.snapshot(r.room);
       r.reopen({ onBoundary(point) { if (point === fault) throw new Error(`fault ${fault}`); } });
       const reopened = r.store.snapshot(r.room);
-      assert.deepEqual(structuredClone(reopened), structuredClone(before), fault);
+      assert.deepEqual(plain(reopened), plain(before), fault);
       assert.throws(() => r.request("C"), new RegExp(`fault ${fault}`));
       const after = r.store.snapshot(r.room);
       const committed = ["after_commit", "before_cache_publish"].includes(fault);
       assert.equal(after.requests.has("C"), committed, fault);
       assert.notEqual(after, reopened, `${fault}: the failed write dropped the cache, and its snapshot with it`);
-      assert.deepEqual(structuredClone(after), fold(r.store.load(r.room)), fault);
+      assert.deepEqual(plain(after), fold(r.store.load(r.room)), fault);
       assert.equal(reopened.requests.has("C"), false, `${fault}: a snapshot handed out before stays as it was`);
       r.reopen();
       r.parity();
@@ -136,7 +175,7 @@ test("snapshot: a rebuild replaces it", () => {
     r.store.rebuild(r.room);
     const after = r.store.snapshot(r.room);
     assert.notEqual(after, before);
-    assert.deepEqual(structuredClone(after), structuredClone(before));
+    assert.deepEqual(plain(after), plain(before));
     r.parity();
   } finally { r.cleanup(); }
 });

@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { inputTree } from "../../src/engine/index.ts";
+import { fold, inputTree } from "../../src/engine/index.ts";
 import type { CommitReceipt, EngineStore, Projection } from "../../src/engine/index.ts";
 import { HostRefusal, MEMBERS_DO_NOT_POST } from "../../src/runtime/index.ts";
 import { Room } from "./helpers.ts";
@@ -26,7 +26,7 @@ function watchReads(store: EngineStore) {
   let copies = 0, commits = 0;
   const clone = globalThis.structuredClone;
   globalThis.structuredClone = ((value: unknown, options?: Parameters<typeof structuredClone>[1]) => {
-    if (value && typeof value === "object" && (value as { seats?: unknown }).seats instanceof Map) copies += 1;
+    if (value && typeof value === "object" && "seats" in value && "events" in value) copies += 1;
     return clone(value, options);
   }) as typeof structuredClone;
   const target = store as unknown as Record<string, (...args: unknown[]) => unknown>;
@@ -156,4 +156,21 @@ test("view: the host's own snapshot, which refuses every write and never changes
   assert.equal(room.state(a), "answered");
   assert.equal(view.requests.get(a)!.state, "open", "a view handed out before is as it was");
   assert.notEqual(room.host.view(room.room), view);
+});
+
+// Review #80: a caller's view whose maps or sets it changed through Map.prototype or Set.prototype poisoned every later
+// read, the host's included: the snapshot's maps and sets now have no Map or Set inside them to change.
+for (const kind of ["map", "set"] as const) test(`native ${kind} writers on a caller's view cannot poison later readers`, async () => {
+  room = await Room.create({ seats: ["C", "W"] });
+  const q = room.user("W", "Run the requested work.");
+  const view = room.host.view(room.room);
+  assert.throws(() => (kind === "map" ? Map.prototype.clear.call(view.seats) : Set.prototype.add.call(view.commandKeys, "not-in-the-journal")), TypeError);
+  const next = room.host.view(room.room);
+  const replay = fold(room.store.load(room.room));
+  if (kind === "map") {
+    assert.equal(next.seats.size, 2);
+    await room.tick();
+    assert.equal(room.running("W"), true, "a caller cannot stop dispatch by changing its view");
+  } else assert.deepEqual([...next.commandKeys], [...replay.commandKeys], "later readers agree with the journal");
+  assert.equal(room.state(q), "open");
 });
