@@ -1295,8 +1295,12 @@ export class EngineHost {
     return run && (run.phase === "accepted" || run.phase === "running" || run.phase === "uncertain") ? run : null;
   }
 
+  /**
+   * The room as committed now: the store's shared snapshot, which copies nothing and changes only by being replaced, so
+   * every read after a write (the host's, a member's command that landed while the tick waited on T3) sees it.
+   */
   private project(roomId: string): Projection {
-    return this.store.project(roomId);
+    return this.store.snapshot(roomId);
   }
 
   private exec(roomId: string, command: Command): CommitReceipt {
@@ -1325,7 +1329,7 @@ export class EngineHost {
     }
   }
 
-  /** Projection reads for callers (the read API, tests). */
+  /** Projection reads for callers (the read API, tests): the store's snapshot, which never changes and refuses every write. */
   view(roomId: string): Projection {
     return this.project(roomId);
   }
