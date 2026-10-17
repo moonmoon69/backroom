@@ -594,6 +594,31 @@ test("the room list and the overview: needs you = notices plus approvals, busy =
   assert.ok(member.lastReply?.at);
 });
 
+test("the overview's last reply is the member's newest turn, a follow-up included (H5)", async (t) => {
+  const s = await engineStack(t);
+  s.ask("worker", "Implement slugify.");
+  await s.tick();
+  const threadId = s.seats.worker!.threadId;
+  s.fake.completeRun(threadId, { text: "Slugify done." });
+  await s.tick(2);
+  // A turn on its thread the room did not start (typed in T3, or one it started itself) answers nothing: it is imported as
+  // a follow-up on the request its answer closed, and news counts it as a finish (EnginePost.turn).
+  s.fake.startExternalRun(threadId, "one more thing");
+  s.fake.completeRun(threadId, { text: "The gate passed; main carries it." });
+  await s.tick(2);
+  const snapshot = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+  const last = snapshot.posts.at(-1)!;
+  assert.equal(last.kind, "progress");
+  assert.equal(last.progress?.milestone, "follow-up");
+  assert.equal(last.turn, true);
+  assert.equal(last.author, s.seats.worker!.seatId);
+  // The tile's line is what the member last said: that follow-up, not the answer before it.
+  const overview = await s.get<EngineOverview>("/api/overview");
+  const member = overview.rooms[0]!.members.find((m) => m.alias === "worker")!;
+  assert.equal(member.lastReply?.text, "The gate passed; main carries it.", "the newest turn, without its status line");
+  assert.equal(member.lastReply?.at, last.at);
+});
+
 test("needs you is bounded: a notice leaves it when dismissed, retried or when its requests close", async (t) => {
   const s = await engineStack(t);
   const first = s.ask("worker", "One.");
