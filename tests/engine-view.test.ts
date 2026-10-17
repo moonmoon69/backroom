@@ -619,7 +619,7 @@ test("the overview's last reply is the member's newest turn, a follow-up include
   assert.equal(member.lastReply?.at, last.at);
 });
 
-test("overview review: a pre-H5 explicit answer or idle settle remains the member's latest reply", async (t) => {
+test("the overview's last reply keeps a pre-H5 explicit answer or idle settle: an output that is no turn (review #16, post #23)", async (t) => {
   for (const source of ["answer", "idle"] as const) await t.test(source, async (t) => {
     const s = await engineStack(t, ["worker"]);
     const requestId = s.ask("worker", "Implement slugify and finish its checks.");

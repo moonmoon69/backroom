@@ -969,9 +969,11 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
             }
             const run = status.activeRunId ? view.runs.find((r) => r.id === status.activeRunId) : undefined;
             const doing = run?.requestIds.map((id) => view.posts.find((post) => post.request?.id === id)?.body).find((body) => body !== undefined) ?? null;
-            // What it last said: its newest turn (EnginePost.turn, the posts news counts): a run's final, or the follow-up or
-            // note a T3 turn the room did not start was imported as (H5). A keep-alive's reply is no turn and stays off the tile.
-            const reply = [...view.posts].reverse().find((post) => post.turn && seatIds.has(post.author) && post.body.trim().length > 0);
+            // What it last said: its newest turn (EnginePost.turn, the posts news counts: a run's final, or the follow-up or
+            // note a T3 turn the room did not start was imported as, H5), or an output that is no turn and a journal from
+            // before H5 holds (an explicit answer, an idle settle: review #16, post #23). A keep-alive's reply is a note with no
+            // turn and stays off the tile.
+            const reply = [...view.posts].reverse().find((post) => (post.turn || post.output !== undefined || post.note?.source === "t3-turn") && seatIds.has(post.author) && post.body.trim().length > 0);
             return {
               id: participant.id, alias: participant.alias, modelSelection: participant.modelSelection, presetId: participant.presetId,
               consigliere: room.consigliereId === participant.id, status, live, doing,
