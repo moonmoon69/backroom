@@ -619,6 +619,36 @@ test("the overview's last reply is the member's newest turn, a follow-up include
   assert.equal(member.lastReply?.at, last.at);
 });
 
+test("overview review: a pre-H5 explicit answer or idle settle remains the member's latest reply", async (t) => {
+  for (const source of ["answer", "idle"] as const) await t.test(source, async (t) => {
+    const s = await engineStack(t, ["worker"]);
+    const requestId = s.ask("worker", "Implement slugify and finish its checks.");
+    await s.tick();
+    const { seatId, threadId } = s.seats.worker!;
+    const runId = s.engine.view(s.roomId).seats.get(seatId)!.activeRunId!;
+    // The core still reads pre-H5 journals. A background activity held the request open after the first final.
+    const store = new EngineStore(join(s.dir, "board.sqlite"));
+    t.after(() => store.close());
+    const activityId = `bg:${runId}`;
+    store.execute(s.roomId, { type: "activity_start", actor: "$system", id: "legacy-background", activityId, runId, requestIds: [requestId], status: "pending" });
+    s.fake.completeRun(threadId, { text: "Implementation done; checks are still running." });
+    await s.tick(2);
+    assert.equal(s.engine.view(s.roomId).requests.get(requestId)!.state, "open");
+    const body = source === "answer" ? "Review passed; the finished fix is ready." : "(background work ended without a further turn)\n\nImplementation done; checks are still running.";
+    // The legacy host's rooms-board answer and idle settle both used an activity-associated output.
+    store.execute(s.roomId, { type: "output", actor: source === "answer" ? seatId : "$system", id: `legacy-${source}`, author: seatId,
+      sourceKey: `${source}:${source === "answer" ? seatId : activityId}`, association: { kind: "activity", id: activityId }, activityCompletion: "done", body,
+      disposition: { kind: "answer", requestIds: [requestId] } });
+    const snapshot = await s.get<EngineRoomSnapshot>(`/api/rooms/${s.roomId}`);
+    const last = snapshot.posts.at(-1)!;
+    assert.equal(last.output?.source, source);
+    assert.equal(last.turn, false, "explicit answers and idle settles are deliberately not turns");
+    assert.equal(snapshot.requests.length, 0, "the legacy output closed the request");
+    const overview = await s.get<EngineOverview>("/api/overview");
+    assert.equal(overview.rooms[0]!.members[0]!.lastReply?.text, body, "show the completion, not the earlier checks-running final");
+  });
+});
+
 test("needs you is bounded: a notice leaves it when dismissed, retried or when its requests close", async (t) => {
   const s = await engineStack(t);
   const first = s.ask("worker", "One.");
