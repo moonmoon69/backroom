@@ -1259,6 +1259,28 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     // Closed again: the story goes on from the strip, the bar back in flow above it.
     browser.on("press", "Escape");
     browser.poll<boolean>("the composer to close", "() => !document.querySelector('.composer-overlay') && Boolean(document.querySelector('.sheet-main > .background-bar'))", (closed) => closed === true);
+    // A reader near the end, but outside the overlay's 48px follow threshold, keeps the same line when opening.
+    // Moving the bar out of flow must not enlarge the scroller first and turn that reader into an end follower.
+    const reading = browser.eval<{ top: number; distance: number; number: string; y: number }>(
+      "() => { const t = document.querySelector('.sheet-main > .timeline-wrap > .timeline'); t.scrollTop = t.scrollHeight - t.clientHeight - 70; const row = [...t.querySelectorAll('[data-number]')].find(el => el.getBoundingClientRect().bottom > t.getBoundingClientRect().top); return { top: t.scrollTop, distance: t.scrollHeight - t.scrollTop - t.clientHeight, number: row.dataset.number, y: row.getBoundingClientRect().top }; }",
+    );
+    browser.poll<number>("the reading position 70px above the end", "() => { const t = document.querySelector('.sheet-main > .timeline-wrap > .timeline'); return t.scrollHeight - t.scrollTop - t.clientHeight; }", (distance) => Math.abs(distance - 70) <= 1);
+    browser.click(/button "(Write a message|Continue your draft)"/);
+    browser.poll<boolean>("the composer to open again", "() => Boolean(document.querySelector('.composer-overlay'))", (open) => open === true);
+    await check.state("opening the composer near the end keeps the reading position", (x) => {
+      const status = (x as unknown as { participantStatus: Record<string, { background: string | null }> }).participantStatus[room.participant.worker];
+      return status?.background === "working" ? "@worker has background work; the reader was 70px above the end" : null;
+    }, ["background work"], {
+      extra: () => {
+        const after = browser.eval<{ top: number; distance: number; y: number }>(
+          `() => { const t = document.querySelector('.sheet-main > .timeline-wrap > .timeline'); return { top: t.scrollTop, distance: t.scrollHeight - t.scrollTop - t.clientHeight, y: t.querySelector('[data-number="${reading.number}"]').getBoundingClientRect().top }; }`,
+        );
+        if (Math.abs(after.y - reading.y) > 1) fail(`opening the composer moved the reading position: before ${JSON.stringify(reading)}, after ${JSON.stringify(after)}`);
+        log(`  page: the same row #${reading.number} stays at y=${after.y}; scrollTop ${reading.top} -> ${after.top}`);
+      },
+    });
+    browser.on("press", "Escape");
+    browser.poll<boolean>("the composer to close again", "() => !document.querySelector('.composer-overlay')", (closed) => closed === true);
     await room.finish("fable", "Noted: @worker's tests still run; its follow-up will say when they end.");
     await service.background(room.thread.worker, []);
     const cleared = Date.now();
