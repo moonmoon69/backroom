@@ -42,7 +42,7 @@ import {
   timingFixes,
   type TextEdit,
 } from "./composerText.ts";
-import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
+import { ComposerFloat, ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { RemoveParticipantDialog } from "./Crew.tsx";
 import { ChevronIcon, CloseIcon, ImageIcon } from "./icons.tsx";
@@ -51,6 +51,8 @@ import { useMenuFocus } from "../keys.ts";
 interface Props {
   /** Look → Overview: closed to a strip until wanted, then over the conversation (composerOverlay.tsx). */
   overlay?: boolean;
+  /** What sits above the input (the room's background bar): above the strip while closed, above the open card in its float. */
+  above?: ReactNode;
 }
 
 interface MentionState {
@@ -87,7 +89,7 @@ type Edit = (make: (source: string) => TextEdit | null) => void;
 
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
-export function Composer({ overlay: asOverlay = false }: Props) {
+export function Composer({ overlay: asOverlay = false, above }: Props) {
   const { snapshot, runCommand, colorOf, aliasOf } = useRoom();
   const roomId = snapshot.room.id;
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
@@ -554,15 +556,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   ];
 
   const composer = (
-    <div
-      ref={overlay.panel}
-      className={`composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`}
-      aria-label="Composer"
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      onWheel={overlay.enabled ? overlay.onWheel : undefined}
-    >
+    <div className={`composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       {/* Who it goes to, on the overlay's frame (drawn in the pixel look only). */}
       {overlay.enabled ? <span className="composer-nameplate">{stripTo}</span> : null}
       {crew.length > 0 ? (
@@ -743,9 +737,16 @@ export function Composer({ overlay: asOverlay = false }: Props) {
       ) : null}
     </div>
   );
-  if (!overlay.enabled) return composer;
+  if (!overlay.enabled)
+    return (
+      <>
+        {above}
+        {composer}
+      </>
+    );
   return (
     <>
+      {overlay.open ? null : above}
       <ComposerStrip
         overlay={overlay}
         lane
@@ -760,7 +761,11 @@ export function Composer({ overlay: asOverlay = false }: Props) {
           overlay.reveal();
         }}
       />
-      {overlay.open ? composer : null}
+      {overlay.open ? (
+        <ComposerFloat overlay={overlay} above={above}>
+          {composer}
+        </ComposerFloat>
+      ) : null}
     </>
   );
 }

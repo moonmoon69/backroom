@@ -30,7 +30,7 @@ import {
   type ThreadView as ThreadViewData,
 } from "../types.ts";
 import { useCatalog } from "./catalog.ts";
-import { ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
+import { ComposerFloat, ComposerStrip, useComposerOverlay } from "./composerOverlay.tsx";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { CopyTextButton } from "./CopyText.tsx";
 import { Dialog } from "./Dialog.tsx";
@@ -1035,15 +1035,7 @@ export function ThreadComposer({
     ) : null;
 
   const composer = (
-    <div
-      ref={overlay.panel}
-      className={`composer thread-composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`}
-      aria-label="Composer"
-      onDragOver={onDragOver}
-      onDragLeave={() => setDragging(false)}
-      onDrop={onDrop}
-      onWheel={overlay.enabled ? overlay.onWheel : undefined}
-    >
+    <div className={`composer thread-composer${overlay.enabled ? " composer-overlay" : ""}${dragging ? " dragging" : ""}`} aria-label="Composer" onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
       {/* Who it goes to, on the overlay's frame (drawn in the pixel look only). */}
       {asOverlay ? (
         <span className="composer-nameplate">
@@ -1131,7 +1123,7 @@ export function ThreadComposer({
           overlay.reveal();
         }}
       />
-      {overlay.open ? composer : null}
+      {overlay.open ? <ComposerFloat overlay={overlay}>{composer}</ComposerFloat> : null}
     </>
   );
 }

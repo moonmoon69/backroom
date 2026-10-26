@@ -10,6 +10,8 @@ import { navProps } from "../keys.ts";
  * tools type into it) and the caret after the draft. The conversation stays readable above it and scrolls with the
  * wheel, over the overlay too. Escape, or a fresh Backspace in an empty field, closes it; sending closes it. The draft
  * stays. A Backspace held down to clear the text stops at the empty field: its repeats never close the composer.
+ * What sits above the input (a room's background bar) rides with it: in flow above the strip while closed, in the
+ * float above the card while open (ComposerFloat), so the open card never covers it.
  */
 export interface ComposerOverlay {
   /** Whether the composer is an overlay at all; when not, it is always open and none of this applies. */
@@ -24,6 +26,7 @@ export interface ComposerOverlay {
   hide: () => void;
   /** Escape, or a fresh Backspace (not a held one's repeat) in an empty field, closes. True when the key was used. */
   fieldKey: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+  /** The open composer's float (ComposerFloat): the card, and what sits above the input above it. */
   panel: RefObject<HTMLDivElement | null>;
   strip: RefObject<HTMLButtonElement | null>;
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
@@ -75,8 +78,9 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     }
   }, [enabled, isOpen, textarea]);
 
-  // The overlay covers the foot of the conversation: pad it by that much, so its last lines scroll up into view above
-  // the overlay. A conversation read at its end stays at its end. Before paint, so the last lines never flash under it.
+  // The float covers the foot of the conversation: pad it by that much, so its last lines scroll up into view above
+  // the float (what rides above the card included). A conversation read at its end stays at its end. Before paint, so
+  // the last lines never flash under it.
   useLayoutEffect(() => {
     const el = panel.current;
     const host = el?.parentElement;
@@ -191,6 +195,20 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   );
 
   return { enabled, open, show, reveal, hide, fieldKey, panel, strip, onWheel };
+}
+
+/**
+ * The open composer, floated over the foot of the conversation: the card, and above it what sits above the input
+ * (`above`: a room's background bar), so the card never covers it. It is the overlay's panel: what it covers is measured
+ * from its top, and the wheel over any of it scrolls the conversation behind.
+ */
+export function ComposerFloat({ overlay, above, children }: { overlay: ComposerOverlay; above?: ReactNode; children: ReactNode }) {
+  return (
+    <div ref={overlay.panel} className="composer-float" onWheel={overlay.onWheel}>
+      {above}
+      {children}
+    </div>
+  );
 }
 
 /** One line of the draft for the strip. */

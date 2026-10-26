@@ -1234,6 +1234,31 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
         log(`  page: #${n} shows the status line naming the background task; no 'working since' anywhere`);
       },
     });
+    // 12b. The bar above the composer (BackgroundBar) says the worker is between turns with work in the background.
+    // Opened, the composer floats over the foot of the conversation, and the bar rides above its card rather than under
+    // it (the user's #3 in "debug": it was behind the open composer): the bar is in the float, whole above the card's
+    // top, and nothing is painted over its middle.
+    browser.click(/button "(Write a message|Continue your draft)"/);
+    browser.poll<boolean>("the composer to open", "() => Boolean(document.querySelector('.composer-overlay'))", (open) => open === true);
+    const floatSeen = () =>
+      browser.eval<{ float: boolean; bar: number[] | null; card: number[] | null; over: string | null; text: string }>(
+        "() => { const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom].map(Math.round); }; const bar = document.querySelector('.composer-float > .background-bar'); const card = document.querySelector('.composer-float > .composer-overlay'); const r = bar?.getBoundingClientRect(); const hit = r ? document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2) : null; return { float: Boolean(document.querySelector('.composer-float')), bar: box(bar), card: box(card), over: hit ? (bar.contains(hit) ? 'the bar' : `${hit.tagName.toLowerCase()}.${hit.className}`) : null, text: bar?.textContent ?? '' }; }",
+      );
+    await check.state("the background bar rides above the open composer, not under it", (x) => {
+      const status = (x as unknown as { participantStatus: Record<string, { background: string | null; status: string }> }).participantStatus[room.participant.worker];
+      return status?.background === "working" && !["preparing", "queued", "starting", "running", "waiting"].includes(status.status) ? `@worker's status: background=${status.background}, status=${status.status}; the composer open on the page` : null;
+    }, ["background work"], {
+      extra: () => {
+        const seen = floatSeen();
+        if (!seen.float || !seen.bar || !seen.card) fail(`the open composer does not float with the background bar above its card: ${JSON.stringify(seen)}`);
+        if (seen.bar[3]! > seen.card[1]!) fail(`the background bar (bottom ${seen.bar[3]}) reaches under the composer's card (top ${seen.card[1]}): ${JSON.stringify(seen)}`);
+        if (seen.over !== "the bar") fail(`the background bar's middle is covered by ${JSON.stringify(seen.over)}: ${JSON.stringify(seen)}`);
+        log(`  page: the composer open; the bar ${JSON.stringify(seen.text.trim())} whole above its card (bar bottom ${seen.bar[3]}, card top ${seen.card[1]}), nothing over it`);
+      },
+    });
+    // Closed again: the story goes on from the strip, the bar back in flow above it.
+    browser.on("press", "Escape");
+    browser.poll<boolean>("the composer to close", "() => !document.querySelector('.composer-overlay') && Boolean(document.querySelector('.sheet-main > .background-bar'))", (closed) => closed === true);
     await room.finish("fable", "Noted: @worker's tests still run; its follow-up will say when they end.");
     await service.background(room.thread.worker, []);
     const cleared = Date.now();

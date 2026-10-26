@@ -323,8 +323,7 @@ export function OverviewRoom({
       <div className="sheet-body">
         <section className="sheet-main" aria-label={chat ? `Conversation with ${consigliere?.alias}` : "Board"} data-nav-pane="board">
           <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} />
-          <BackgroundBar />
-          <Composer overlay />
+          <Composer overlay above={<BackgroundBar />} />
         </section>
         {panel ? <Inspector tab={panel} onTab={onPanel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
       </div>

@@ -4,7 +4,8 @@ import { identityStyle, Monogram } from "./Monogram.tsx";
 
 /**
  * Who is between turns but not done: T3 reports background work (subagents, commands) or monitoring on the thread,
- * and the agent will wake itself when it finishes. Mirrors T3's "Background work" strip above its composer.
+ * and the agent will wake itself when it finishes. Mirrors T3's "Background work" strip above its composer: the room's
+ * Composer draws it as what sits above its input, so it rides above the open card too (composerOverlay.tsx).
  */
 export function BackgroundBar() {
   const { snapshot, desk, colorOf } = useRoom();
