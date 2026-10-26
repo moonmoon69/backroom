@@ -1050,6 +1050,11 @@ html[data-skin="pixel"] select:not([multiple]) {
   padding-top: 24px;
 }
 
+/* The float's gap keeps the nameplate, hung 14px over the card's frame, clear of the bar riding above the card. */
+[data-skin="pixel"] .composer-float {
+  gap: 20px;
+}
+
 [data-skin="pixel"] .composer-nameplate {
   display: inline-flex;
   align-items: center;
