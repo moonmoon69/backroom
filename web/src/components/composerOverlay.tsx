@@ -37,6 +37,9 @@ const scrollerBeside = (panel: HTMLElement | null): HTMLElement | null => panel?
 
 const isTextField = (element: HTMLElement): boolean => element.isContentEditable || element.matches("input, textarea, select");
 
+/** Read at its end: within 48px of it, so the foot follows what the open composer covers. */
+const atEndOf = (scroller: HTMLElement): boolean => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+
 /** `arrival`: the strip takes the focus as it is first drawn (a thread); a room places the ring itself (OverviewRoom). */
 export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTextAreaElement | null>, text: string, arrival = true): ComposerOverlay {
   const [isOpen, setOpen] = useState(false);
@@ -46,6 +49,16 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   const refocus = useRef(false);
   /** The composer is under something (a member's thread over its room, a dialog): its page-wide keys are not its. */
   const covered = useCallback(() => Boolean((strip.current ?? panel.current)?.closest("[inert]")), []);
+  /**
+   * Whether the conversation was read at its end as the composer was opened, measured before the open is rendered:
+   * the render moves what rides above the card (a room's background bar) out of the flow, which makes the scroller
+   * taller by that much, and a reader a little above the end would then count as at it and be scrolled there.
+   */
+  const atEndOnOpen = useRef(false);
+  const measureEnd = useCallback(() => {
+    const scroller = scrollerBeside(strip.current?.closest(".composer-slot") ?? null);
+    atEndOnOpen.current = scroller ? atEndOf(scroller) : false;
+  }, []);
 
   // On arrival the strip takes the focus (a room opened by a click leaves it on the card behind the drawer), so the
   // first Enter opens the composer; a text field that has the focus keeps it.
@@ -86,9 +99,13 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
     const host = el?.parentElement;
     const scroller = scrollerBeside(el);
     if (!enabled || !isOpen || !el || !host || !scroller) return;
+    // The first fit is the open itself: whether to follow the end was measured before its render (measureEnd). The
+    // later ones (the float resized: the field grew, the bar came or went) read the scroller as it is, its foot padded.
+    let opening = true;
     const fit = () => {
       const covered = Math.max(0, scroller.getBoundingClientRect().bottom - el.getBoundingClientRect().top);
-      const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+      const atEnd = opening ? atEndOnOpen.current : atEndOf(scroller);
+      opening = false;
       host.style.setProperty("--composer-cover", `${Math.round(covered)}px`);
       host.dataset.composerOpen = "";
       if (atEnd) scroller.scrollTop = scroller.scrollHeight;
@@ -106,6 +123,7 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   const show = useCallback(
     (typed?: string) => {
       if (!enabled) return;
+      measureEnd();
       flushSync(() => setOpen(true));
       const el = textarea.current;
       if (!el) return;
@@ -117,9 +135,12 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
     },
-    [enabled, textarea],
+    [enabled, textarea, measureEnd],
   );
-  const reveal = useCallback(() => setOpen(true), []);
+  const reveal = useCallback(() => {
+    measureEnd();
+    setOpen(true);
+  }, [measureEnd]);
   const hide = useCallback(() => {
     refocus.current = Boolean(panel.current?.contains(document.activeElement));
     setOpen(false);
