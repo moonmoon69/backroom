@@ -4,6 +4,7 @@ import { DetailLoader, FALLBACK_MS, PagePush, PageStream, withPush, type EventSo
 import type {
   AgentsFileDiff,
   AgentsFileEntry,
+  PotetoState,
   FilePreviewResponse,
   UpdatesView,
   ApiErrorBody,
@@ -172,7 +173,7 @@ export const api = {
   presets: (): Promise<Preset[]> => get("/api/presets"),
   overview: (): Promise<{ rooms: OverviewRoom[]; threads: OverviewThread[]; readAt: string }> => get("/api/overview"),
   /** App-wide settings: which saved crew member is the Consigliere of new rooms, his rules, and what his retiring does to a thread (absent from an older service). */
-  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean; agentsFileText?: { text: string; custom: boolean; defaultText: string } }> => get("/api/settings"),
+  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean; agentsFileText?: { text: string; custom: boolean; defaultText: string }; poteto?: PotetoState | null }> => get("/api/settings"),
   /** Every project folder where Backroom wrote AGENTS.md, with its state against the saved template. */
   agentsFiles: (): Promise<AgentsFileEntry[]> => get("/api/agents-files"),
   /** One project's AGENTS.md against the saved template rendered for it. */

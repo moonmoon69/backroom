@@ -85,6 +85,8 @@ const stack = createStack({
   // A throwaway service on the fake T3 writes agents files only in its own data folder and ROOMS_FAKE_PROJECT_DIR: a real
   // folder added to it as a project is never written in (and it does not know what the user's Backroom wrote there).
   agentsFile: config.adapter === "fake" ? { onlyUnder: [config.dataDir, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? [process.env.ROOMS_FAKE_PROJECT_DIR] : [])] } : true,
+  // Poteto mode's pstack clone, in this data folder (a throwaway service's own too), from ROOMS_PSTACK_REPO or GitHub.
+  poteto: { dataDir: config.dataDir, source: config.pstackRepo },
   browserCommand,
   boardCommand,
   log,
@@ -157,6 +159,8 @@ credential?.start();
 // T3's shell as T3 streams it: the engine's and the page's shell reads come from it while it is live.
 if (adapter instanceof HttpT3Adapter) adapter.startFeed();
 stack.engine.start(config.tickMs);
+// In the background: the clone made when it is missing, then the hourly look for the daily update.
+stack.poteto?.start();
 
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
 const fetch = adapter instanceof FakeT3Adapter ? withFakeControls(app.fetch, adapter) : app.fetch;

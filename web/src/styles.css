@@ -8220,6 +8220,27 @@ span.reply-to {
   outline-offset: -2px;
 }
 
+/* ---- Settings → Poteto mode (src/app/poteto.ts) ---- */
+.poteto-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 14px 0 8px;
+}
+
+.poteto-facts dt {
+  color: var(--fg-muted);
+}
+
+.poteto-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.poteto-pin {
+  margin-left: 8px;
+}
+
 /* ---- Settings → Agents file, and the overview's mark (src/app/agentsFile.ts) ---- */
 .agents-file-switch {
   margin-top: 8px;

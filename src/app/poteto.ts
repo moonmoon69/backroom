@@ -1,0 +1,504 @@
+/**
+ * Poteto mode (board #141, #158, #180): pstack, Lauren Tan's skills for rigorous agent work (MIT, in cursor/plugins),
+ * kept by Backroom in its own data folder and reached by every seat, with poteto-mode, its entry point, used as it is.
+ * Nothing of pstack is edited: Backroom only clones it, keeps it up to date with git, and points at it, by one line in
+ * the agents file ({poteto}, src/app/agentsFile.ts) and by the briefing's Skills section (src/briefing/assemble.ts).
+ *
+ * The clone is `<data folder's real path>/skills/cursor-plugins`, sparse to pstack/ (Cursor's tree) and harness/pstack/
+ * (the generated copy with the Claude Code adapter), on main only, blobs fetched as the sparse checkout needs them. The
+ * folder layout is kept as cloned: poteto-mode indexes the other skills by relative path.
+ *
+ * - Settings → Poteto mode (poteto.enabled in kv, "off" when off; on by default). Off: nothing is cloned or fetched, by
+ *   the timer, the settings route or Update now; the clone stays.
+ * - Prepared in the background (at service start, when the settings are read, and each hour while it is missing),
+ *   never holding up a room or a seat; one git operation at a time (a serial queue). A clone goes into a temporary
+ *   sibling folder and is renamed into place only once it validates (plugin.json readable, poteto-mode's SKILL.md in both
+ *   trees). Ready means the final folder validates; what the agents file and the briefing say is read from the snapshot
+ *   taken after the last clone or update that succeeded, never from a folder half way through one.
+ * - Updated once a day (an hourly check of when it last checked; a failure is tried again the next hour) and on Update
+ *   now: a fetch of origin's main, then a fast-forward. poteto.pin (a commit or a tag) pins it: the update fetches and
+ *   keeps the pin checked out, and says "pinned at X, latest is Y". Local changes in the clone stop any move.
+ * - Refused, with the reason recorded and nothing deleted, moved or repaired: a link in the path from the data folder
+ *   to the clone, a .git that is not a folder of its own, a folder whose git top level is elsewhere (the data folder
+ *   lives inside Backroom's own checkout), a folder that is there but is no pstack clone.
+ * - ROOMS_PSTACK_REPO (config.pstackRepo) is the source: GitHub's cursor/plugins unless a test or the rehearsal gives a
+ *   local bare repository.
+ */
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { Repos } from "../db/repos.ts";
+import { runGit } from "../git/reader.ts";
+
+/** Settings → Poteto mode: "off" when the user turned it off; on (absent) by default. */
+export const POTETO_SETTING_KEY = "poteto.enabled";
+/** The commit or tag the clone is pinned at; absent: it follows origin's main. */
+export const POTETO_PIN_KEY = "poteto.pin";
+/** What the last clone or update found (PackRecord). */
+export const POTETO_RECORD_KEY = "poteto.pack";
+
+export const PSTACK_REPO = "https://github.com/cursor/plugins";
+/** The clone's place under the data folder. */
+export const SKILLS_FOLDER = "skills";
+export const CLONE_FOLDER = "cursor-plugins";
+/** The two trees the clone holds: Cursor's, and the generated Claude Code copy. */
+export const SPARSE_PATHS = ["pstack", "harness/pstack"] as const;
+const BRANCH = "main";
+const UPSTREAM = `refs/remotes/origin/${BRANCH}`;
+export const PSTACK_SKILLS = "pstack/skills";
+export const CLAUDE_SKILLS = "harness/pstack/claude-code/skills";
+const PLUGIN_JSON = "pstack/plugin.json";
+/** pstack's own note mapping its Cursor names to Claude Code's: the model for a harness it has no adapter for. */
+export const ADAPTER_NOTE = "pstack/docs/harness/claude-code.md";
+const MODE_SKILL = "poteto-mode/SKILL.md";
+
+export const DAY_MS = 24 * 60 * 60 * 1000;
+/** How often the timer looks whether the clone is due a check (or is missing, or the last attempt failed). */
+export const TICK_MS = 60 * 60 * 1000;
+const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Where Backroom differs from poteto-mode, one sentence each: in the agents file's line and the Skills section. */
+export const POTETO_DIFFERENCES = [
+  "Deliver the change committed on your branch with a Handoff instead of opening a pull request.",
+  "In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome.",
+  "Model routing is the crew's: skip setup-pstack.",
+] as const;
+export const PRECEDENCE = "Backroom's three differences take precedence over the mode where they conflict";
+
+/**
+ * The agents file's {poteto} line for a clone: the mode's two paths, the note for the harnesses pstack has no adapter
+ * for, and Backroom's differences with their precedence. One line, read by every session in the project, subagents too.
+ */
+export function potetoLine(clone: string): string {
+  return (
+    `- For any non-trivial job, read and follow poteto-mode at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}). ` +
+    `pstack has no adapter for Codex or Antigravity: there, map its Cursor names to your own tools as its Claude Code adapter note (${clone}/${ADAPTER_NOTE}) does. ` +
+    `${PRECEDENCE}. ${POTETO_DIFFERENCES.join(" ")}`
+  );
+}
+
+/** Why the last clone or update did not do what it was for. */
+export interface PackError {
+  reason: string;
+  at: string;
+  during: "clone" | "update";
+}
+
+/** What the last clone or update found, kept in kv. */
+export interface PackRecord {
+  /** pstack/plugin.json's version. */
+  version: string | null;
+  /** The commit checked out (full). */
+  commit: string | null;
+  /** When Backroom last tried to clone or update. */
+  checkedAt: string | null;
+  /** The last commit that changed pstack, as git's one-line log (`<short> <subject>`). */
+  lastChange: string | null;
+  /** origin's main (short) when the clone is pinned elsewhere. */
+  latest: string | null;
+  error: PackError | null;
+}
+
+/** Poteto mode as the settings route reports it and poteto.update answers. */
+export interface PotetoState {
+  enabled: boolean;
+  /** The commit or tag it is pinned at; null: it follows origin's main. */
+  pin: string | null;
+  /** Where the clone is, or will be. */
+  folder: string;
+  source: string;
+  /** The folder validates: the agents file's line and the Skills section point at it. */
+  ready: boolean;
+  /** A clone or an update is running or waiting. */
+  busy: boolean;
+  version: string | null;
+  commit: string | null;
+  checkedAt: string | null;
+  lastChange: string | null;
+  /** "pinned at <pin>, latest is <short>" while pinned. */
+  pinned: string | null;
+  error: PackError | null;
+}
+
+/** What the briefing's Skills section is made of, while Poteto mode is on and ready. */
+export interface PotetoBriefing {
+  clone: string;
+  version: string | null;
+  /** The commit checked out, short. */
+  commit: string | null;
+  /** The skills in pstack/skills (each a folder with a SKILL.md), sorted. */
+  names: string[];
+}
+
+export interface PotetoClock {
+  now(): number;
+  setInterval(fn: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+const systemClock: PotetoClock = {
+  now: () => Date.now(),
+  setInterval: (fn, ms) => {
+    const handle = setInterval(fn, ms);
+    handle.unref?.();
+    return handle;
+  },
+  clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout),
+};
+
+export interface PotetoOptions {
+  /** The configured data folder: the clone goes under its real path. */
+  dataDir: string;
+  /** Where pstack is cloned from (ROOMS_PSTACK_REPO); cursor/plugins on GitHub by default. */
+  source?: string;
+  clock?: PotetoClock;
+  log?: (message: string, detail?: unknown) => void;
+}
+
+interface Snapshot {
+  ready: boolean;
+  version: string | null;
+  commit: string | null;
+  names: string[];
+}
+
+const NOT_READY: Snapshot = { ready: false, version: null, commit: null, names: [] };
+const EMPTY_RECORD: PackRecord = { version: null, commit: null, checkedAt: null, lastChange: null, latest: null, error: null };
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+const isFile = (path: string): boolean => {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** A folder as a pstack clone: plugin.json readable, poteto-mode in both trees; its version and skills. */
+function inspect(folder: string): { ok: true; version: string | null; names: string[] } | { ok: false; reason: string } {
+  let version: string | null;
+  try {
+    const plugin = JSON.parse(readFileSync(join(folder, PLUGIN_JSON), "utf8")) as { version?: unknown };
+    version = typeof plugin.version === "string" ? plugin.version : null;
+  } catch (error) {
+    return { ok: false, reason: `${PLUGIN_JSON} cannot be read: ${errorText(error)}` };
+  }
+  for (const tree of [PSTACK_SKILLS, CLAUDE_SKILLS]) {
+    if (!isFile(join(folder, tree, MODE_SKILL))) return { ok: false, reason: `${tree}/${MODE_SKILL} is missing` };
+  }
+  let names: string[] = [];
+  try {
+    names = readdirSync(join(folder, PSTACK_SKILLS))
+      .filter((name) => !name.startsWith(".") && isFile(join(folder, PSTACK_SKILLS, name, "SKILL.md")))
+      .sort();
+  } catch {
+    // validated above: the folder is there
+  }
+  return { ok: true, version, names };
+}
+
+export class PotetoPack {
+  readonly source: string;
+  private readonly dataDir: string;
+  private readonly repos: Pick<Repos, "getKv" | "setKv" | "deleteKv">;
+  private readonly clock: PotetoClock;
+  private readonly log: (message: string, detail?: unknown) => void;
+  private snap: Snapshot;
+  private queue: Promise<unknown> = Promise.resolve();
+  private preparing: Promise<void> | null = null;
+  private running = 0;
+  private timer: unknown = null;
+
+  constructor(repos: Pick<Repos, "getKv" | "setKv" | "deleteKv">, options: PotetoOptions) {
+    this.repos = repos;
+    this.dataDir = options.dataDir;
+    this.source = options.source ?? PSTACK_REPO;
+    this.clock = options.clock ?? systemClock;
+    this.log = options.log ?? (() => {});
+    this.snap = this.look();
+  }
+
+  enabled(): boolean {
+    return this.repos.getKv(POTETO_SETTING_KEY) !== "off";
+  }
+
+  pin(): string | null {
+    return this.repos.getKv(POTETO_PIN_KEY) ?? null;
+  }
+
+  /** The clone's folder, under the data folder's real path (resolved as given while the data folder is missing). */
+  folder(): string {
+    let data: string;
+    try {
+      data = realpathSync(this.dataDir);
+    } catch {
+      data = resolve(this.dataDir);
+    }
+    return join(data, SKILLS_FOLDER, CLONE_FOLDER);
+  }
+
+  private record(): PackRecord {
+    try {
+      return { ...EMPTY_RECORD, ...(JSON.parse(this.repos.getKv(POTETO_RECORD_KEY) ?? "{}") as Partial<PackRecord>) };
+    } catch {
+      return { ...EMPTY_RECORD };
+    }
+  }
+
+  private save(record: PackRecord): void {
+    this.repos.setKv(POTETO_RECORD_KEY, JSON.stringify(record));
+  }
+
+  private now(): string {
+    return new Date(this.clock.now()).toISOString();
+  }
+
+  /** The agents file's {poteto} line while Poteto mode is on and the clone is ready; null otherwise. */
+  pointerLine(): string | null {
+    return this.enabled() && this.snap.ready ? potetoLine(this.folder()) : null;
+  }
+
+  /** The Skills section's makings while Poteto mode is on and the clone is ready; null otherwise. */
+  briefing(): PotetoBriefing | null {
+    if (!this.enabled() || !this.snap.ready) return null;
+    return { clone: this.folder(), version: this.snap.version, commit: this.snap.commit ? this.snap.commit.slice(0, 7) : null, names: this.snap.names };
+  }
+
+  state(): PotetoState {
+    const record = this.record();
+    const pin = this.pin();
+    return {
+      enabled: this.enabled(),
+      pin,
+      folder: this.folder(),
+      source: this.source,
+      ready: this.snap.ready,
+      busy: this.running > 0,
+      version: record.version,
+      commit: record.commit,
+      checkedAt: record.checkedAt,
+      lastChange: record.lastChange,
+      pinned: pin ? `pinned at ${pin}, latest is ${record.latest ?? "not known yet"}` : null,
+      error: record.error,
+    };
+  }
+
+  /** The hourly look, and one at once. */
+  start(): void {
+    if (this.timer !== null) return;
+    this.timer = this.clock.setInterval(() => void this.tick(), TICK_MS);
+    void this.tick();
+  }
+
+  stop(): void {
+    if (this.timer === null) return;
+    this.clock.clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** The timer's look: while on, clone when missing, update when a day has passed since the last check or it failed. */
+  tick(): Promise<void> {
+    if (!this.enabled()) return Promise.resolve();
+    if (!this.snap.ready) return this.prepare();
+    const record = this.record();
+    const due = record.error !== null || record.checkedAt === null || this.clock.now() - Date.parse(record.checkedAt) >= DAY_MS;
+    return due ? this.serial(() => this.updateNow()).then(() => undefined) : Promise.resolve();
+  }
+
+  /** In the background: the clone made when Poteto mode is on and it is missing; one at a time. Never rejects. */
+  prepare(): Promise<void> {
+    if (!this.enabled() || this.snap.ready) return Promise.resolve();
+    if (this.preparing) return this.preparing;
+    const preparing = this.serial(async () => {
+      if (this.enabled() && !this.snap.ready) await this.cloneNow();
+    }).finally(() => {
+      if (this.preparing === preparing) this.preparing = null;
+    });
+    this.preparing = preparing;
+    return preparing;
+  }
+
+  /** Update now (and a pin set): the clone made, or fetched and moved; what it found. Off: nothing is done. */
+  update(): Promise<PotetoState> {
+    return this.serial(async () => {
+      if (!this.enabled()) return;
+      if (this.snap.ready) await this.updateNow();
+      else await this.cloneNow();
+    }).then(() => this.state());
+  }
+
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    this.running += 1;
+    const next = this.queue.then(fn, fn).finally(() => {
+      this.running -= 1;
+    });
+    this.queue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  /**
+   * Why the folder may not be touched, from what can be seen without git: a link between the data folder and the
+   * clone, a component that is no folder, a .git that is no folder of its own. Null when none.
+   */
+  private refusedOnSight(): string | null {
+    let data: string;
+    try {
+      data = realpathSync(this.dataDir);
+    } catch (error) {
+      return `the data folder ${this.dataDir} cannot be resolved: ${errorText(error)}`;
+    }
+    const folder = join(data, SKILLS_FOLDER, CLONE_FOLDER);
+    for (const path of [join(data, SKILLS_FOLDER), folder]) {
+      try {
+        const stats = lstatSync(path);
+        if (stats.isSymbolicLink()) return `${path} is a link: Backroom keeps pstack only in a folder of its own`;
+        if (!stats.isDirectory()) return `${path} is not a folder`;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        return `${path} cannot be looked at: ${errorText(error)}`;
+      }
+    }
+    try {
+      const dotGit = lstatSync(join(folder, ".git"));
+      if (dotGit.isSymbolicLink()) return `${folder}/.git is a link: its repository is elsewhere`;
+      if (!dotGit.isDirectory()) return `${folder}/.git is a file: its repository is elsewhere`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return `${folder} is there but is no git clone; Backroom leaves it as it is`;
+      return `${folder}/.git cannot be looked at: ${errorText(error)}`;
+    }
+    return null;
+  }
+
+  /** refusedOnSight, and git's top level in the clone the folder itself (not an enclosing repository). */
+  private async refused(): Promise<string | null> {
+    const seen = this.refusedOnSight();
+    if (seen) return seen;
+    const folder = this.folder();
+    try {
+      lstatSync(folder);
+    } catch {
+      return null;
+    }
+    try {
+      const top = (await runGit(folder, ["rev-parse", "--show-toplevel"])).trim();
+      if (realpathSync(top) !== folder) return `git's top level in ${folder} is ${top}, not the folder itself`;
+    } catch (error) {
+      return `git cannot read ${folder}: ${errorText(error)}`;
+    }
+    return null;
+  }
+
+  /** The snapshot of the folder as it is (at start): ready when nothing refuses it on sight and it validates. */
+  private look(): Snapshot {
+    if (this.refusedOnSight()) return NOT_READY;
+    const inspected = inspect(this.folder());
+    return inspected.ok ? { ready: true, version: inspected.version, commit: this.record().commit, names: inspected.names } : NOT_READY;
+  }
+
+  private fail(during: PackError["during"], reason: string): void {
+    const at = this.now();
+    this.save({ ...this.record(), checkedAt: at, error: { reason, at, during } });
+    this.log(`poteto mode: the ${during} of pstack failed: ${reason}`);
+  }
+
+  /** The commit a pin names, fetched from origin when the clone does not have it. */
+  private async pinned(folder: string, pin: string): Promise<string> {
+    const local = await runGit(folder, ["rev-parse", "--verify", "--quiet", `${pin}^{commit}`]).catch(() => "");
+    if (local.trim()) return local.trim();
+    await runGit(folder, ["fetch", "--quiet", "origin", pin], { timeoutMs: FETCH_TIMEOUT_MS }).catch((error: unknown) => {
+      throw new Error(`the pin ${pin} is not in ${this.source}: ${errorText(error)}`);
+    });
+    return (await runGit(folder, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).trim();
+  }
+
+  private async cloneNow(): Promise<void> {
+    const refusal = await this.refused();
+    if (refusal) return this.fail("clone", refusal);
+    const folder = this.folder();
+    const skills = join(folder, "..");
+    let there = true;
+    try {
+      lstatSync(folder);
+    } catch {
+      there = false;
+    }
+    if (there) {
+      // A clone made by hand, or one that stopped validating: taken as it is when it validates, else left alone.
+      const inspected = inspect(folder);
+      if (!inspected.ok) return this.fail("clone", `${folder} is there but is no usable pstack clone (${inspected.reason}); Backroom leaves it as it is`);
+      return this.settle(folder, "clone", null);
+    }
+    mkdirSync(skills, { recursive: true });
+    const partial = mkdtempSync(join(skills, `.${CLONE_FOLDER}-`));
+    try {
+      await runGit(skills, ["clone", "--quiet", "--no-checkout", "--filter=blob:none", "--single-branch", "--branch", BRANCH, "--", this.source, partial], { timeoutMs: CLONE_TIMEOUT_MS });
+      await runGit(partial, ["sparse-checkout", "set", "--cone", ...SPARSE_PATHS]);
+      await runGit(partial, ["checkout", "--quiet", BRANCH], { timeoutMs: CLONE_TIMEOUT_MS });
+      const pin = this.pin();
+      if (pin) await runGit(partial, ["checkout", "--quiet", "--detach", await this.pinned(partial, pin)], { timeoutMs: CLONE_TIMEOUT_MS });
+      const inspected = inspect(partial);
+      if (!inspected.ok) throw new Error(`what ${this.source} holds is not pstack as Backroom reads it: ${inspected.reason}`);
+      renameSync(partial, folder);
+    } catch (error) {
+      // Only the temporary folder of this clone is removed.
+      rmSync(partial, { recursive: true, force: true });
+      return this.fail("clone", errorText(error));
+    }
+    this.log(`poteto mode: pstack cloned from ${this.source} into ${folder}`);
+    return this.settle(folder, "clone", null);
+  }
+
+  private async updateNow(): Promise<void> {
+    const refusal = await this.refused();
+    if (refusal) {
+      // Not pointed at any more: the folder is no longer one Backroom can vouch for.
+      this.snap = NOT_READY;
+      return this.fail("update", refusal);
+    }
+    const folder = this.folder();
+    const dirty = await runGit(folder, ["status", "--porcelain"]).then(
+      (text) => text.trim() !== "",
+      () => true,
+    );
+    if (dirty) return this.fail("update", `local changes in ${folder}: Backroom moves nothing while they are there`);
+    let error: string | null = null;
+    try {
+      await runGit(folder, ["fetch", "--quiet", "--prune", "origin"], { timeoutMs: FETCH_TIMEOUT_MS });
+    } catch (fetchError) {
+      error = `could not fetch from ${this.source}: ${errorText(fetchError)}`;
+    }
+    try {
+      const pin = this.pin();
+      if (pin) {
+        const commit = await this.pinned(folder, pin);
+        const head = (await runGit(folder, ["rev-parse", "HEAD"])).trim();
+        if (head !== commit) await runGit(folder, ["checkout", "--quiet", "--detach", commit], { timeoutMs: FETCH_TIMEOUT_MS });
+      } else {
+        const branch = (await runGit(folder, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim();
+        if (branch !== BRANCH) await runGit(folder, ["checkout", "--quiet", BRANCH], { timeoutMs: FETCH_TIMEOUT_MS });
+        await runGit(folder, ["merge", "--ff-only", "--quiet", UPSTREAM], { timeoutMs: FETCH_TIMEOUT_MS });
+      }
+    } catch (moveError) {
+      error ??= errorText(moveError);
+    }
+    return this.settle(folder, "update", error);
+  }
+
+  /** After a clone or an update: the record and the snapshot from the folder as it is now. */
+  private async settle(folder: string, during: PackError["during"], error: string | null): Promise<void> {
+    const at = this.now();
+    const inspected = inspect(folder);
+    const commit = (await runGit(folder, ["rev-parse", "HEAD"]).catch(() => "")).trim() || null;
+    const lastChange = (await runGit(folder, ["log", "-1", "--format=%h %s", "--", ...SPARSE_PATHS]).catch(() => "")).trim() || null;
+    const latest = this.pin() ? (await runGit(folder, ["rev-parse", "--short", UPSTREAM]).catch(() => "")).trim() || null : null;
+    const reason = error ?? (inspected.ok ? null : `${folder} is no usable pstack clone now: ${inspected.reason}`);
+    const previous = this.record();
+    this.save({ version: inspected.ok ? inspected.version : previous.version, commit, checkedAt: at, lastChange, latest, error: reason ? { reason, at, during } : null });
+    this.snap = inspected.ok ? { ready: true, version: inspected.version, commit, names: inspected.names } : NOT_READY;
+    if (reason) this.log(`poteto mode: the ${during} of pstack: ${reason}`);
+  }
+}

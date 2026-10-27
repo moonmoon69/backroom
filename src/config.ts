@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { PSTACK_REPO } from "./app/poteto.ts";
 
 export interface Config {
   port: number;
@@ -21,6 +22,8 @@ export interface Config {
   webDistDir: string;
   /** Delivery budget for a single briefing, in characters. */
   briefingBudgetChars: number;
+  /** Where Poteto mode's pstack is cloned from (ROOMS_PSTACK_REPO, a URL or a local path; src/app/poteto.ts). */
+  pstackRepo: string;
   /** How long deleting a room waits for T3 to answer each thread action, in milliseconds. */
   threadActionTimeoutMs: number;
   /**
@@ -97,6 +100,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tickMs: Number(env.ROOMS_TICK_MS ?? 1500),
     webDistDir: resolve(env.ROOMS_WEB_DIST ?? "web/dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
+    // A local path is taken from the service's folder, as the other paths here: git clones from another folder.
+    pstackRepo: env.ROOMS_PSTACK_REPO ? (/^[a-z][a-z0-9+.-]*:\/\/|^[^/]+@[^/:]+:/i.test(env.ROOMS_PSTACK_REPO) ? env.ROOMS_PSTACK_REPO : resolve(env.ROOMS_PSTACK_REPO)) : PSTACK_REPO,
     threadActionTimeoutMs: Number(env.ROOMS_THREAD_ACTION_TIMEOUT_MS ?? 5000),
     keepAliveMs: parseKeepAliveMs(env.ROOMS_KEEPALIVE_MS),
     browser: {

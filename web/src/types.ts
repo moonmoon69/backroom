@@ -569,6 +569,33 @@ export interface AgentsFileDiff {
   templateDigest: string;
 }
 
+/** Why pstack's last clone or update did not do what it was for (src/app/poteto.ts). */
+export interface PackError {
+  reason: string;
+  at: string;
+  during: "clone" | "update";
+}
+
+/** Settings → Poteto mode, as the settings route reports it and poteto.update answers (src/app/poteto.ts). */
+export interface PotetoState {
+  enabled: boolean;
+  /** The commit or tag it is pinned at; null: it follows origin's main. */
+  pin: string | null;
+  folder: string;
+  source: string;
+  /** The clone validates: the agents file's line and the Skills section point at it. */
+  ready: boolean;
+  /** A clone or an update is running or waiting. */
+  busy: boolean;
+  version: string | null;
+  commit: string | null;
+  checkedAt: string | null;
+  lastChange: string | null;
+  /** "pinned at <pin>, latest is <short>" while pinned. */
+  pinned: string | null;
+  error: PackError | null;
+}
+
 /** Per-model option from T3's manifest (effort, contextWindow, fastMode, thinking, …). */
 export interface ModelOptionDescriptor {
   id: string;
@@ -1276,6 +1303,12 @@ export type RoomCommand =
   | { type: "agentsFile.text.set"; text: string | null }
   /** Apply the saved template to one project's AGENTS.md, bound to the diff the user looked at. */
   | { type: "agentsFile.apply"; projectId?: string | undefined; folder?: string | undefined; fileDigest: string; templateDigest: string }
+  /** Settings → Poteto mode: whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
+  | { type: "poteto.enabled.set"; enabled: boolean }
+  /** Update now: pstack's clone fetched and moved, or made when it is missing. */
+  | { type: "poteto.update" }
+  /** Pin this version (a commit or a tag), or with null follow origin's main again. */
+  | { type: "poteto.pin.set"; pin: string | null }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
   | {
       type: "participant.create";
@@ -1335,6 +1368,7 @@ export type CommandResult =
   | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "settings.updated" }
   | { type: "agentsFile.applied"; file: AgentsFileEntry }
+  | { type: "poteto.updated"; poteto: PotetoState }
   | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }

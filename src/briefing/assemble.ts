@@ -1,8 +1,9 @@
 /**
  * A briefing's standing sections: who the reader is, the rules, where everyone works, the browsers, the board, the
- * Consigliere's crew and the room's state. They go out in full on a thread's first delivery and again after its context
- * was compacted; in between a delivery carries the work (src/briefing/envelope.ts), one header line that says how to
- * print the standing sections again, and any standing section that changed since the thread last had it.
+ * skills (Poteto mode), the Consigliere's crew and the room's state. They go out in full on a thread's first delivery
+ * and again after its context was compacted; in between a delivery carries the work (src/briefing/envelope.ts), one
+ * header line that says how to print the standing sections again, and any standing section that changed since the
+ * thread last had it.
  */
 import { createHash } from "node:crypto";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
@@ -21,6 +22,7 @@ export interface BrowsersBriefing {
 }
 import { engineConsigliereRules, engineSeatFacts } from "../app/consigliere.ts";
 import { crewListing } from "../app/crew.ts";
+import { ADAPTER_NOTE, CLAUDE_SKILLS, POTETO_DIFFERENCES, PRECEDENCE, PSTACK_SKILLS, type PotetoBriefing } from "../app/poteto.ts";
 import type { RoomState } from "../app/roomState.ts";
 import type { Participant, Preset, Room } from "../domain/types.ts";
 import type { Workspace } from "../git/workspaces.ts";
@@ -44,13 +46,28 @@ export interface StandingInput {
   crew?: Preset[] | null;
   /** A member's standing facts in a room with a Consigliere; `engineSeatFacts` from consigliere.ts when absent. */
   seatFacts?: ((consigliere: Pick<Participant, "alias">) => string) | null;
+  /** Poteto mode's pack for the reader's harness, while it is on and its clone ready (src/app/poteto.ts); off otherwise. */
+  skills?: SkillsBriefing | null;
+}
+
+/** The harness a seat runs on, as far as the Skills section tells them apart. */
+export type SkillsHarness = "claude" | "codex" | "antigravity" | "other";
+
+export interface SkillsBriefing extends PotetoBriefing {
+  harness: SkillsHarness;
+}
+
+/** A T3 driver (or, without T3's catalog, the instance's name) as the Skills section's harness. */
+export function skillsHarness(driver: string): SkillsHarness {
+  const name = driver.toLowerCase();
+  return name.includes("claude") ? "claude" : name.includes("codex") ? "codex" : name.includes("antigravity") || name.includes("gemini") ? "antigravity" : "other";
 }
 
 /**
  * The standing sections that are sent again when they change: "role" is the "You are" line with the rules line under
  * it (who the reader is: the Consigliere or a member, and of whom); "crew" is the Consigliere's "Your crew".
  */
-export const STANDING_KEYS = ["role", "consigliere", "workspaces", "browsers", "board", "crew"] as const;
+export const STANDING_KEYS = ["role", "consigliere", "workspaces", "browsers", "board", "skills", "crew"] as const;
 export type StandingKey = (typeof STANDING_KEYS)[number];
 
 /** How much of a condensed post a briefing keeps: its first characters, on one line. */
@@ -146,6 +163,29 @@ export function workspaceSection(participantId: string, workspaces: Workspace[])
   return lines.join("\n");
 }
 
+/**
+ * Poteto mode as a briefing section, for every seat: the pack's revision, poteto-mode for the reader's harness (Claude
+ * Code's copy for Claude, Cursor's tree for the others, with a note where pstack has no adapter), Backroom's three
+ * differences, and pstack's skills by name (poteto-mode indexes them, so no descriptions here).
+ */
+export function skillsSection(skills: SkillsBriefing): string {
+  const folder = `${skills.clone}/${skills.harness === "claude" ? CLAUDE_SKILLS : PSTACK_SKILLS}`;
+  const revision = [skills.version ? `pstack ${skills.version}` : "pstack", skills.commit ? `at commit ${skills.commit}` : null].filter(Boolean).join(" ");
+  const harness = skills.harness === "codex" ? "Codex" : skills.harness === "antigravity" ? "Antigravity" : null;
+  return [
+    "== Skills ==",
+    `Poteto mode is on: ${revision}, Lauren Tan's skills (MIT), kept by Backroom in ${skills.clone}.`,
+    `For any non-trivial job, read and follow ${folder}/poteto-mode/SKILL.md.`,
+    ...(harness ? [`pstack has no adapter for ${harness}: map its Cursor names to your own tools as its Claude Code adapter note (${skills.clone}/${ADAPTER_NOTE}) does.`] : []),
+    `${PRECEDENCE}:`,
+    ...POTETO_DIFFERENCES.map((difference) => `- ${difference}`),
+    `pstack's skills: ${skills.names.join(", ")}; read ${folder}/<name>/SKILL.md for one.`,
+  ].join("\n");
+}
+
+/** Said instead of the Skills section to a seat that had it, once Poteto mode is off (or its clone no longer ready). */
+export const SKILLS_OFF = "== Skills ==\nPoteto mode is off now: the Skills section you were given earlier no longer applies. Follow a pstack skill only when your assignment names one.";
+
 /** The room's state as a briefing section: the Consigliere's summary, with who wrote it and when. */
 export function roomStateSection(state: RoomState): string {
   const at = state.at ? ` (${state.at.slice(0, 16).replace("T", " ")} UTC)` : "";
@@ -168,6 +208,8 @@ export interface StandingSections {
   workspaces: string | null;
   browsers: string | null;
   board: string | null;
+  /** Poteto mode, while it is on and its clone ready. */
+  skills: string | null;
   /** The user's saved crew, in the Consigliere's briefings only. */
   crew: string | null;
   /** What a member of a room with a Consigliere was told at its seat briefing. */
@@ -204,6 +246,7 @@ export function standingSections(input: StandingInput): StandingSections {
     workspaces,
     browsers: input.browsers ? browserSection(input.browsers) : null,
     board: input.board ? boardLine(input.board) : null,
+    skills: input.skills ? skillsSection(input.skills) : null,
     crew: isConsigliere && input.crew ? crewSection(input.crew) : null,
     seat: hisRoom ? (input.seatFacts ?? engineSeatFacts)(hisRoom) : null,
     roomState: input.roomState ? roomStateSection(input.roomState) : null,
@@ -232,6 +275,9 @@ export function standingFingerprint(input: StandingInput): Record<StandingKey, s
     workspaces: shape ? digest(JSON.stringify([where(shape.self), shape.sharing.length > 0, shape.elsewhere.some((w) => w.folder)])) : undefined,
     browsers: !room.browserEnabled ? "off" : browsers ? digest(browserSection({ ...browsers, browsers: browsers.browsers.map((b) => ({ ...b, running: true })) })) : undefined,
     board: input.board ? digest(boardLine(input.board)) : null,
+    // All the section says, the pack's version and commit included: a seat is told again when the pack moves, and told
+    // it is off (SKILLS_OFF) when it had the section.
+    skills: input.skills ? digest(skillsSection(input.skills)) : null,
     // All the section says (names, models, effort, worktree notes, sentences); a look or permission mode is not in it.
     crew: !isConsigliere ? null : input.crew ? digest(crewSection(input.crew)) : undefined,
   };
@@ -264,6 +310,7 @@ export function standingLines(sections: StandingSections, keys: "all" | Standing
     has("workspaces") ? sections.workspaces : null,
     has("browsers") ? (sections.browsers ?? (keys === "all" ? null : BROWSERS_OFF)) : null,
     has("board") ? sections.board : null,
+    has("skills") ? (sections.skills ?? (keys === "all" ? null : SKILLS_OFF)) : null,
     has("crew") ? sections.crew : null,
     keys === "all" && options.seat ? sections.seat : null,
     keys === "all" ? sections.roomState : null,

@@ -394,6 +394,17 @@ export const AgentsFileApplyCommand = z
   .object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty.optional(), folder: nonEmpty.optional(), fileDigest: nonEmpty, templateDigest: nonEmpty })
   .strict();
 
+/** Settings → Poteto mode (src/app/poteto.ts): whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
+export const PotetoEnabledCommand = z.object({ type: z.literal("poteto.enabled.set"), enabled: z.boolean() }).strict();
+
+/** Update now: pstack's clone fetched and moved (fast-forwarded, or kept at its pin), or made when it is missing. */
+export const PotetoUpdateCommand = z.object({ type: z.literal("poteto.update") }).strict();
+
+/** Pin this version (a commit or a tag) or, with null, follow origin's main again. */
+export const PotetoPinCommand = z
+  .object({ type: z.literal("poteto.pin.set"), pin: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/, "a commit or a tag: letters, digits and . _ / -").nullable() })
+  .strict();
+
 /** An image sent inline with a direct thread message: PNG, JPEG, GIF or WebP as a base64 data URL (T3's upload form). */
 export const InlineImageSchema = z
   .object({
@@ -496,6 +507,9 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   AgentsFileEnabledCommand,
   AgentsFileTextSetCommand,
   AgentsFileApplyCommand,
+  PotetoEnabledCommand,
+  PotetoUpdateCommand,
+  PotetoPinCommand,
   ThreadStartCommand,
   ThreadSendCommand,
   ThreadInterruptCommand,

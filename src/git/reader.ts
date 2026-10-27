@@ -104,9 +104,10 @@ export interface GitView extends GitCheckoutSummary {
 /**
  * Run git in `cwd`. Exit codes in `okCodes` count as success (git diff --no-index exits 1 when files differ). Nothing
  * can wait on a prompt: no terminal prompt, and stdin is closed. A failure is git's first line of error.
- * src/app/agentsFile.ts asks git with it too.
+ * src/app/agentsFile.ts asks git with it too, and src/app/poteto.ts keeps its pstack clone with it (a clone or a fetch
+ * takes longer than the default limit: `timeoutMs`).
  */
-function git(cwd: string, args: string[], options: { okCodes?: number[]; maxBytes?: number } = {}): Promise<string> {
+function git(cwd: string, args: string[], options: { okCodes?: number[]; maxBytes?: number; timeoutMs?: number } = {}): Promise<string> {
   const okCodes = options.okCodes ?? [0];
   return new Promise((resolvePromise, reject) => {
     const child = execFile(
@@ -114,7 +115,7 @@ function git(cwd: string, args: string[], options: { okCodes?: number[]; maxByte
       ["-C", cwd, "-c", "core.quotePath=false", "-c", "color.ui=never", ...args],
       {
         encoding: "utf8",
-        timeout: GIT_TIMEOUT_MS,
+        timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
         maxBuffer: Math.max(options.maxBytes ?? 0, 16 * 1024 * 1024),
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
       },

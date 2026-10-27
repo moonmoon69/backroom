@@ -13,6 +13,7 @@ import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
+import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
 import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
@@ -39,6 +40,8 @@ export type CommandResult =
   | { type: "room.updated"; roomId: string }
   /** agentsFile.apply: the project's AGENTS.md now holds the saved template rendered for it. */
   | { type: "agentsFile.applied"; file: AgentsFileEntry }
+  /** poteto.update, and poteto.pin.set while Poteto mode is on: what the clone holds now (an error in it when that failed). */
+  | { type: "poteto.updated"; poteto: PotetoState }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
   | { type: "project.updated"; projectId: string }
@@ -119,6 +122,8 @@ export interface RoomServiceOptions {
   agentsFiles?: AgentsFiles | null;
   /** How long room creation waits for it (AGENTS_FILE_WAIT_MS). */
   agentsFileWaitMs?: number;
+  /** Poteto mode's pstack clone (src/app/poteto.ts); null: this service keeps none. */
+  poteto?: PotetoPack | null;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -133,6 +138,7 @@ export class RoomService {
   private readonly threadActionTimeoutMs: number;
   readonly agentsFiles: AgentsFiles | null;
   private readonly agentsFileWaitMs: number;
+  readonly poteto: PotetoPack | null;
   private readonly log: (message: string, detail?: unknown) => void;
 
   constructor(db: Database, repos: Repos, adapter: T3Adapter, notify: (roomId: string) => void = () => {}, options: RoomServiceOptions = {}) {
@@ -146,6 +152,7 @@ export class RoomService {
     this.threadActionTimeoutMs = limit !== undefined && Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2 ** 31 - 1) : THREAD_ACTION_TIMEOUT_MS;
     this.agentsFiles = options.agentsFiles ?? null;
     this.agentsFileWaitMs = options.agentsFileWaitMs ?? AGENTS_FILE_WAIT_MS;
+    this.poteto = options.poteto ?? null;
     this.log = options.log ?? (() => {});
   }
 
@@ -275,6 +282,23 @@ export class RoomService {
         if (!this.agentsFiles) throw new RoomError("agents_file_refused", "this service writes no agents files", 409);
         return { type: "agentsFile.applied", file: await this.agentsFiles.apply(command) };
       }
+      case "poteto.enabled.set":
+        if (command.enabled) {
+          this.repos.deleteKv(POTETO_SETTING_KEY);
+          // In the background: the clone made if it is missing; nothing waits on it.
+          void this.poteto?.prepare();
+        } else this.repos.setKv(POTETO_SETTING_KEY, "off");
+        return { type: "settings.updated" };
+      case "poteto.update":
+        if (!this.poteto) throw new RoomError("poteto_refused", "this service keeps no pstack clone", 409);
+        if (this.repos.getKv(POTETO_SETTING_KEY) === "off") throw new RoomError("poteto_refused", "Poteto mode is off: turn it on to update pstack", 409);
+        return { type: "poteto.updated", poteto: await this.poteto.update() };
+      case "poteto.pin.set":
+        if (command.pin === null) this.repos.deleteKv(POTETO_PIN_KEY);
+        else this.repos.setKv(POTETO_PIN_KEY, command.pin);
+        // Moved to the pin (or back to origin's main) at once while on; off, the next update after it is turned on does.
+        if (!this.poteto || this.repos.getKv(POTETO_SETTING_KEY) === "off") return { type: "settings.updated" };
+        return { type: "poteto.updated", poteto: await this.poteto.update() };
       case "room.delete":
         return this.deleteRoom(command);
       case "participant.create":

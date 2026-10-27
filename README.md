@@ -23,21 +23,22 @@ Backroom owns conversation and coordination. T3 owns execution: every member is 
 7. [Your first room](#your-first-room)
 8. [Projects, and threads without a room](#projects-and-threads-without-a-room)
 9. [The agents file](#the-agents-file)
-10. [Writing messages](#writing-messages)
-11. [Sending while someone is working](#sending-while-someone-is-working)
-12. [T3 slash commands](#t3-slash-commands)
-13. [The Consigliere](#the-consigliere)
-14. [Room browser](#room-browser)
-15. [What the room shows](#what-the-room-shows)
-16. [Managing rooms and members](#managing-rooms-and-members)
-17. [The overview](#the-overview)
-18. [Keyboard](#keyboard)
-19. [The pixel look](#the-pixel-look)
-20. [Configuration](#configuration)
-21. [Running, updating and backing up](#running-updating-and-backing-up)
-22. [Troubleshooting](#troubleshooting)
-23. [Development](#development)
-24. [How it works](#how-it-works)
+10. [Poteto mode](#poteto-mode)
+11. [Writing messages](#writing-messages)
+12. [Sending while someone is working](#sending-while-someone-is-working)
+13. [T3 slash commands](#t3-slash-commands)
+14. [The Consigliere](#the-consigliere)
+15. [Room browser](#room-browser)
+16. [What the room shows](#what-the-room-shows)
+17. [Managing rooms and members](#managing-rooms-and-members)
+18. [The overview](#the-overview)
+19. [Keyboard](#keyboard)
+20. [The pixel look](#the-pixel-look)
+21. [Configuration](#configuration)
+22. [Running, updating and backing up](#running-updating-and-backing-up)
+23. [Troubleshooting](#troubleshooting)
+24. [Development](#development)
+25. [How it works](#how-it-works)
 
 ---
 
@@ -301,13 +302,13 @@ An agent should work the way its project asks, whoever gave it the work. So Back
 | `CLAUDE.md` and no `AGENTS.md` | nothing: the project has instructions of its own |
 | both | nothing |
 
-`CLAUDE.md` counts as there in any capitals, as `.claude/CLAUDE.md`, as a link (even one to nowhere), or when git tracks it and it was deleted in the folder. `AGENTS.md` counts as there only under that very name, as a file or a link to one; when the folder has it in other capitals, has `AGENTS.override.md` instead, has a link to nowhere or a tracked one that was deleted, Backroom writes nothing. In a project folder below its repository's top, any of these files in a folder between them (the top included) is the project's own instructions, which Codex and Claude read from there: nothing is written either. The default names the project's checks from its package scripts (`check`, else `typecheck`, `lint` and `test`, run with the package manager its lockfile names) and its Makefile (`check`, else `lint` and `test`), "and whatever else its README asks for"; with none of those it points at the README and the package scripts. Its text has one source, `DEFAULT_AGENTS_TEMPLATE` in [`src/app/agentsFile.ts`](src/app/agentsFile.ts), a template whose one placeholder `{checks}` stands for that checks phrase. Its last line says: "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom changes it only when you apply the current default from Settings → Agents file."
+`CLAUDE.md` counts as there in any capitals, as `.claude/CLAUDE.md`, as a link (even one to nowhere), or when git tracks it and it was deleted in the folder. `AGENTS.md` counts as there only under that very name, as a file or a link to one; when the folder has it in other capitals, has `AGENTS.override.md` instead, has a link to nowhere or a tracked one that was deleted, Backroom writes nothing. In a project folder below its repository's top, any of these files in a folder between them (the top included) is the project's own instructions, which Codex and Claude read from there: nothing is written either. The default names the project's checks from its package scripts (`check`, else `typecheck`, `lint` and `test`, run with the package manager its lockfile names) and its Makefile (`check`, else `lint` and `test`), "and whatever else its README asks for"; with none of those it points at the README and the package scripts. Its text has one source, `DEFAULT_AGENTS_TEMPLATE` in [`src/app/agentsFile.ts`](src/app/agentsFile.ts), a template whose placeholder `{checks}` stands for that checks phrase, and whose line `{poteto}` is [Poteto mode](#poteto-mode)'s one line pointing at pstack's poteto-mode while that is on and its clone ready, and is left out (no blank line in its place) otherwise. Its last line says: "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom changes it only when you apply the current default from Settings → Agents file."
 
 Projects that have rooms already get nothing until a new room is made there. Nothing is written when Backroom starts, when a member is seated or when a project is added. A room waits a few seconds at most for this; past that it opens, and the writing goes on. The switch in **Settings → Agents file** (on by default) turns that automatic writing off; it governs nothing else, and Apply (below) works with it off.
 
 **What it never does.** In the project's working tree it never overwrites or edits a file by itself (each file is created exclusively: one that appears meanwhile is kept as it is, and no link is followed; the one exception is your Apply, below) and never creates a folder; inside `.git` it edits only `info/exclude` and adds at most the hook, creating `info/` and `hooks/` when they are missing. It never commits, never edits `.gitignore`, never pushes, and never installs a git hook over one, where the repository sets `core.hooksPath`, or for a project that is not its repository's main checkout. It never writes in a folder that holds others: the home folder or one above it, a folder with another of T3's projects below it, or a folder outside git with a repository below it (directly or one folder further down), since Claude Code and Cursor read these files from every folder above the one they work in, and the file would reach every session below. A folder that is not on Backroom's machine is left alone, and so is a folder git cannot say is a repository or not (git missing, a timeout, an ownership refusal, a worktree whose repository moved); the next room tries again. A project in a subfolder of its repository whose path holds characters other than letters, digits, spaces and `. _ @ + - /` gets nothing: its files could not be listed to git as they are. Once it has written in a folder it never writes there again: a file you remove stays removed, also when the project is removed from T3 and added again.
 
-**The template, and changing it.** **Settings → Agents file** opens the editor: the switch, the template in a textarea with **Save template** and **Reset to default**, and the projects already written. A saved template is kept in the service (the `kv` table, `agentsFile.text`); `{checks}` in it is filled per project, more than once if it is there more than once, and a template without it is written as it is. It is meant to fit any project and any harness: routing and models belong to the crew and the Consigliere, not here. The file is written once, when a project's first room is made, so a change reaches only projects written afterwards: a project already written keeps its file until you apply the new template to it.
+**The template, and changing it.** **Settings → Agents file** opens the editor: the switch, the template in a textarea with **Save template** and **Reset to default**, and the projects already written. A saved template is kept in the service (the `kv` table, `agentsFile.text`); `{checks}` in it is filled per project, more than once if it is there more than once, and a template without it is written as it is. `{poteto}` on a line of its own becomes Poteto mode's line, or goes with its line while Poteto mode is off or its clone is not ready; a template without it gets no line. Since the rendering follows Poteto mode, turning it on or off (or its clone becoming ready) shows the projects already written as **differs**, and Apply pushes the line in or takes it out, as with any change of template. It is meant to fit any project and any harness: routing and models belong to the crew and the Consigliere, not here. The file is written once, when a project's first room is made, so a change reaches only projects written afterwards: a project already written keeps its file until you apply the new template to it.
 
 **Each project's state.** Below the template the editor lists every folder where Backroom wrote `AGENTS.md` (a project where it wrote only `CLAUDE.md` is not listed), with its folder and its state against the saved template rendered for that project, its checks read again: **same**, **differs** (edited in the project, or written from an earlier template), **removed** (the file is gone; Backroom does not write it again), or **blocked**, with its reason (the folder is not on this machine or leads elsewhere now, a link put in its place or above it, or `AGENTS.md` is a link now, a folder, a file another name is hard-linked to, or cannot be read; never shown as removed). On the overview, a project whose file differs has a quiet **AGENTS.md differs** mark on its heading; it opens the diff. The page reads the states (`GET /api/agents-files`) when the overview opens and again when the editor or a diff dialog closes.
 
@@ -342,6 +343,42 @@ A worktree that exists already gets nothing: copy the two files into it by hand 
 T3 starts Claude with its default setting sources, project files included, and Cursor with its project settings (read in T3 0.0.46's code), so members read these files as they would in T3 Code.
 
 Backroom's own repository keeps its `AGENTS.md`, with its real checks, and the same one-line `CLAUDE.md` out of git like any other project's: listed in its `.git/info/exclude` and copied into new worktrees by the same post-checkout hook.
+
+## Poteto mode
+
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) is Lauren Tan's set of skills for rigorous agent work: playbooks for investigations, bug fixes, features, refactors and perf work, principles, and routed skills such as **how**, **architect**, **tdd** and **unslop**. Its entry point, **poteto-mode**, reads the request, picks a playbook and runs the other skills as the steps need them. Poteto mode in Backroom points every seat at poteto-mode, and keeps pstack up to date, without installing anything in a harness and without editing a line of pstack: it is used as its author publishes it, under its MIT licence (the `LICENSE` in the clone's `pstack/` folder). No crew member is assigned skills: the Consigliere decides at each assignment which skill a job calls for, and every member can reach for any of them.
+
+**Where it is.** Backroom keeps a clone of [cursor/plugins](https://github.com/cursor/plugins) in its data folder, at `data/skills/cursor-plugins` (under the data folder's real path, links resolved; `ROOMS_PSTACK_REPO` names another source). The clone is sparse: it holds `pstack/`, Cursor's tree, and `harness/pstack/`, the generated copy whose `claude-code/` carries pstack's Claude Code adapter. Its folders stay as cloned, since poteto-mode finds the other skills by relative path. Each Backroom keeps its own: a throwaway service clones into its own data folder.
+
+**On and off.** **Settings → Poteto mode** is on by default. The dialog shows the switch, pstack's version (from `pstack/plugin.json`), the commit, when Backroom last checked, the last change to pstack as git's one-line log, the folder, **Update now**, **Pin this version** or **Follow latest**, and the last error when there is one. While it is on and the clone is missing, Backroom clones it in the background, at its start and when the settings are read (the menu or a dialog opening), and tries again each hour after a failure. No room or seat ever waits for it: a seat briefed before the clone is ready gets the Skills section with its next briefing once it is. Off, nothing is cloned or fetched, by the timer, the settings or Update now (which is refused), and the clone stays where it is. Turning it off does not reach into what is already written: an `AGENTS.md` Backroom wrote keeps its poteto-mode line until you apply the template to it (**Settings → Agents file** shows those projects as differing), and a seat that was given the Skills section gets, with its next briefing, a short one saying Poteto mode is off and the earlier section no longer applies. On again, the full section returns the same way.
+
+**Updates.** While it is on, Backroom looks each hour whether a day has passed since it last checked; then, and on **Update now**, it fetches origin's `main` and fast-forwards the clone to it. A fetch that fails (offline, say) is recorded with its reason and shown in the dialog; the clone stays as it was, still pointed at, and the next hour tries again. A clone goes into a temporary folder beside the final one and is moved into place only once `plugin.json` reads and poteto-mode's `SKILL.md` is in both trees; until then nothing points at it, and a failed clone leaves nothing behind. One git operation runs at a time. What the agents file and the briefings say is read from the clone as the last successful clone or update left it, never from one half done.
+
+**Pinning and rolling back.** **Pin this version** keeps the commit checked out now (the setting `poteto.pin`): updates still fetch, keep the pin checked out, and the dialog says "pinned at X, latest is Y". **Follow latest** removes the pin, and the next update fast-forwards again. Rolling back is pinning an older commit: find it with git in the clone folder and pin it through the commands route (a tag works too):
+
+```bash
+git -C data/skills/cursor-plugins log --oneline -- pstack            # pstack's commits, newest first
+curl -s -X POST http://127.0.0.1:4400/api/commands -H 'content-type: application/json' \
+  -d '{"type":"poteto.pin.set","pin":"<commit or tag>"}'
+```
+
+Leave the clone's checkout to Backroom: a `git checkout` by hand is moved back by the next update unless it is pinned, and a change in the clone's files stops every move, recorded as "local changes in <folder>" and shown, with nothing overwritten, until you undo it (`git -C data/skills/cursor-plugins checkout -- .`). Backroom refuses, with the reason shown and nothing deleted, moved or repaired, a clone folder (or `data/skills`) that is a link, a clone whose `.git` is a file or a link (its repository elsewhere), a folder there that is no git clone, and one whose git top level is another folder (the data folder lives inside Backroom's own checkout). To start over, turn it off, delete `data/skills/cursor-plugins`, and turn it on again.
+
+**How a seat is pointed at it.** Two ways, so that every reader is reached:
+
+- **The agents file.** The default template's `{poteto}` line is, while Poteto mode is on and the clone ready, one line in each project's `AGENTS.md`: for any non-trivial job, read and follow poteto-mode at `<clone>/pstack/skills/poteto-mode/SKILL.md` (Claude Code: the copy at `<clone>/harness/pstack/claude-code/skills/poteto-mode/SKILL.md`); pstack has no adapter for Codex or Antigravity, whose readers map its Cursor names to their own tools as its Claude Code adapter note does; and Backroom's three differences take precedence over the mode where they conflict. Every session in the project reads it, a member's subagents too, which no briefing reaches. It is written with the file, and pushed into a file already written by Apply (see [The agents file](#the-agents-file)).
+- **The briefing.** A standing section, **Skills**, for every seat, the Consigliere and the members: pstack's version and commit, poteto-mode's path for the seat's harness, the note where pstack has no adapter for it, the three differences, and pstack's skills by name with how to read one (poteto-mode indexes them, so no descriptions). It is sent again when it changes, a new commit included, so a seat always knows which revision it was told to use; `rooms-board rules` prints it.
+
+**Backroom's three differences.** Deliver the change committed on your branch with a Handoff instead of opening a pull request. In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome. Model routing is the crew's: skip setup-pstack.
+
+**Which harness reads which tree.** The seat's harness comes from T3's provider driver (the instance's name when T3's catalog does not answer).
+
+| Harness | Pointed at | Note |
+| --- | --- | --- |
+| Claude Code | `harness/pstack/claude-code/skills/` | poteto-mode tells it to read pstack's Claude Code adapter first |
+| Cursor | `pstack/skills/` | pstack's own harness |
+| Codex, Antigravity | `pstack/skills/` | pstack has no adapter for them: the section and the agents file's line say to map its Cursor names as the Claude Code adapter note does |
+| OpenCode, Pi, Grok | `pstack/skills/` | not verified |
 
 ## Writing messages
 
@@ -682,7 +719,7 @@ A turn can end while subagents, background shells or watch loops keep running. T
 
 ### The overview's header
 
-The overview's header holds **+** (a new project) and **Arrange** on the left, and the app-wide controls on the right: the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel), **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)) and the settings menu (two sliders): **Consigliere…** (see [The Consigliere](#the-consigliere)), **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)), the theme (System, Light, Dark) and the look (Plain, [Pixel](#the-pixel-look)). The header of each page opened over the overview carries only that page's controls.
+The overview's header holds **+** (a new project) and **Arrange** on the left, and the app-wide controls on the right: the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel), **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)) and the settings menu (two sliders): **Consigliere…** (see [The Consigliere](#the-consigliere)), **Agents file…** (see [The agents file](#the-agents-file)), **Poteto mode…** (see [Poteto mode](#poteto-mode)), **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)), the theme (System, Light, Dark) and the look (Plain, [Pixel](#the-pixel-look)). The header of each page opened over the overview carries only that page's controls.
 
 Controls that open, close, toggle or add something are icons with a hover name (people, globe, branch, ⋯, ×, +, image, theme); actions that change something (**Send**, **Start browser**, **Retry**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
@@ -979,6 +1016,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_DATA_DIR` | `./data` | Database, stored credential and images |
 | `ROOMS_DB_PATH` | `$ROOMS_DATA_DIR/rooms.sqlite` | Database file, if it should live elsewhere |
 | `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
+| `ROOMS_PSTACK_REPO` | `https://github.com/cursor/plugins` | Where [Poteto mode](#poteto-mode) clones pstack from: a URL, or a local path (taken from the service's folder). The tests and the rehearsal give a local bare repository |
 | `ROOMS_FAKE_PROJECT_DIR` | `/tmp/demo` | Demo mode: the demo project's folder (never created), a scratch git repository to try [the agents file](#the-agents-file) |
 | `T3_BASE_URL` | from `~/.t3/userdata/server-runtime.json`, else the paired server, else `http://127.0.0.1:3773` | T3 server origin |
 | `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token (used as it is, never renewed) |
@@ -1110,6 +1148,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 | `src/git` | Git read with the CLI on this machine: a folder's branch, uncommitted files, commits, worktrees and diffs (`reader.ts`), and where each member works (`workspaces.ts`) |
 | `src/adapter` | T3 boundary (Orchestrator V2): T3's shell as it streams it (`shellFeed.ts`), HTTP reads and WebSocket RPC commands with pairing and protocol check, and an in-memory fake |
 | `src/app/agentsFile.ts` | The agents file: the default template and the saved one, when it is written in a project's folder, the repository's exclude entries and the worktree hook, each project's state, the diff and Apply |
+| `src/app/poteto.ts` | Poteto mode: pstack's clone in the data folder (sparse, validated before it is put in place, refused where the folder is not its own), the daily update and Update now, the pin, the agents file's `{poteto}` line; the briefing's Skills section is in `src/briefing/assemble.ts` |
 | `src/app/threadView.ts` | What is shown of a T3 thread, from its projection: one reply per run, the run in progress, requests, context, background work, changed files |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
@@ -1119,6 +1158,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 | `scripts/t3-contract-check.ts` | Live adapter check (`npm run t3:check`) |
 | `scripts/t3-shell-feed.ts` | Read-only check of T3's shell streams and the adapter's feed against a real T3 (`npm run t3:feed`) |
 | `scripts/t3-v2-cutover.ts` | Moves the machine from T3's V1 to V2 together with Backroom (`npm run t3:v2`) |
+| `scripts/pstack-fixture.ts` | A local stand-in for cursor/plugins (a bare repository in pstack's shape), for the tests and the rehearsal |
 | `scripts/rehearse.ts` | The page rehearsed in a browser against a fake-T3 service of its own (`--step ui`, `room`, `keys`, or `all` for the three at once; `--only` and `--until` choose states, `--list` lists them; `rehearse-select.ts` chooses, `rehearse-keys.ts` is the keys step) |
 | `tests/` | Acceptance tests driven through the fake adapter |
 

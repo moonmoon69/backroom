@@ -75,6 +75,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
+import { makePstackFixture, type PstackFixture } from "./pstack-fixture.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
 import { forSteps, sectionNames, Selection, SelectionDone, stateNames, stepSource } from "./rehearse-select.ts";
 import { clearRecord, ourTabs, parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
@@ -225,6 +226,8 @@ class Service {
   readonly base: string;
   private readonly o: Options;
   private child: ChildProcess | null = null;
+  /** Poteto mode's pstack, a local bare repository in the run's data folder: the service clones it, never the network. */
+  pstack: PstackFixture | null = null;
   constructor(o: Options) {
     this.o = o;
     this.base = `http://127.0.0.1:${o.port}`;
@@ -241,6 +244,7 @@ class Service {
     }
     mkdirSync(this.o.data, { recursive: true });
     writeFileSync(join(this.o.data, ".rehearse"), "data of scripts/rehearse.ts; deleted by its next run\n");
+    this.pstack = makePstackFixture(join(this.o.data, "pstack-fixture"), PSTACK_FIXTURE_VERSION);
     await this.spawn();
     log(`service on ${this.base} (data ${this.o.data}, log service.log there)`);
   }
@@ -252,7 +256,7 @@ class Service {
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ...kept },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
@@ -1869,6 +1873,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
   }
 
+  // 24b. Settings → Poteto mode: the switch, the fixture's version, and Update now after a commit upstream (its section opens in the function).
+  check.passed.push(...(await rehearsePoteto(service, browser, room, selection, section)));
+
   // 25. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
   check.passed.push(...(await rehearseProjectBrowsers(service, browser, room, selection, section)));
 
@@ -2101,6 +2108,57 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
   );
   // Later sections write with Backroom's template, and start in a room, as the section's first state left the page.
   await service.command({ type: "agentsFile.text.set", text: null });
+  browser.openRoom(room.title);
+  return passed;
+}
+
+/** The pstack version the rehearsal's fixture starts at, and the one its added commit brings. */
+const PSTACK_FIXTURE_VERSION = "0.15.0-rehearsal";
+const PSTACK_FIXTURE_NEXT = "0.15.1-rehearsal";
+
+/**
+ * Settings → Poteto mode (src/app/poteto.ts, board #158): the service cloned the run's pstack fixture at its start; the
+ * dialog shows the switch on and the fixture's version; a commit added to the fixture, Update now fetches and
+ * fast-forwards to it, and the dialog shows its version and its subject as the last change. Its section begins here.
+ */
+async function rehearsePoteto(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("Settings → Poteto mode: on, the fixture's version, and Update now brings a commit added to the fixture"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  type Poteto = { enabled: boolean; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
+  const poteto = async () => (await service.call<{ poteto: Poteto | null }>("GET", "/api/settings")).poteto;
+  const ready = await until("the service to have cloned the pstack fixture", async () => {
+    const now = await poteto();
+    if (now?.error) fail(`the clone of the fixture failed: ${now.error.reason}`);
+    return now?.ready && !now.busy ? now : null;
+  });
+  if (ready.version !== PSTACK_FIXTURE_VERSION) fail(`the clone holds pstack ${ready.version}, not the fixture's ${PSTACK_FIXTURE_VERSION}`);
+  const facts = "() => Object.fromEntries([...document.querySelectorAll('.poteto-facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent ?? '']))";
+  browser.click(/button "Back to the overview"/);
+  browser.click(/button "Settings"/);
+  browser.click(/menuitem "Poteto mode…/);
+  browser.waitFor("Point every seat at poteto-mode");
+  browser.poll<Record<string, string>>("the fixture's version in the dialog", facts, (v) => v.Version === PSTACK_FIXTURE_VERSION);
+  if (!browser.eval<boolean>("() => document.querySelector('.agents-file-switch input')?.checked === true")) fail("the switch is not on: Poteto mode is on by default");
+  const next = service.pstack!.commit("pstack: a newer skill (rehearsal)", { version: PSTACK_FIXTURE_NEXT, files: { "pstack/skills/tdd/SKILL.md": "# tdd (fixture, newer)\n" } });
+  browser.click(/button "Update now"/);
+  await state(
+    "Settings → Poteto mode: on, the fixture's version, and Update now brings a commit added to the fixture",
+    async () => {
+      const now = await poteto();
+      if (now?.error) fail(`Update now failed: ${now.error.reason}`);
+      if (!now || now.busy || now.commit !== next) return null;
+      if (now.version !== PSTACK_FIXTURE_NEXT || !now.enabled || !now.ready) fail(`after Update now: ${JSON.stringify(now)}`);
+      return `the clone is at the fixture's new commit ${next.slice(0, 7)}, pstack ${now.version}, last change ${JSON.stringify(now.lastChange)}`;
+    },
+    [PSTACK_FIXTURE_NEXT, "pstack: a newer skill (rehearsal)"],
+    () => {
+      const shown = browser.poll<Record<string, string>>("the new commit in the dialog", facts, (v) => v.Commit?.startsWith(next.slice(0, 7)) === true && v["Last change"] === `${next.slice(0, 7)} pstack: a newer skill (rehearsal)`);
+      if (!browser.eval<boolean>("() => document.querySelector('.agents-file-switch input')?.checked === true")) fail("the switch went off");
+      log(`  page: the switch on, version ${shown.Version}, commit ${shown.Commit}, last change ${JSON.stringify(shown["Last change"])}, folder ${shown.Folder}`);
+    },
+  );
+  browser.click(/button "Done"/);
   browser.openRoom(room.title);
   return passed;
 }

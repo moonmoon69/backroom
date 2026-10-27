@@ -11,6 +11,7 @@ import { engineMessages, messageImages } from "./engineMessages.ts";
 import { keepAliveSetting } from "./keepAlive.ts";
 import { AgentsFiles, type AgentsFilesOptions } from "./agentsFile.ts";
 import { PageChanges, type PageChangesOptions } from "./changes.ts";
+import { PotetoPack, type PotetoOptions } from "./poteto.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { T3Presence } from "./t3Presence.ts";
@@ -59,6 +60,8 @@ export interface AppStack {
   engine: EngineHost;
   /** The seat lifecycle on the journal (seat, Consigliere, retire, reseat). */
   seats: EngineSeats;
+  /** Poteto mode's pstack clone (src/app/poteto.ts), when this service keeps one; started by the server. */
+  poteto: PotetoPack | null;
   close(): void;
 }
 
@@ -85,6 +88,11 @@ export function createStack(input: {
    * say so, so they write in no folder of the machine.
    */
   agentsFile?: boolean | Pick<AgentsFilesOptions, "onlyUnder">;
+  /**
+   * Poteto mode's pstack clone (src/app/poteto.ts): where the data folder is and where pstack comes from. The server
+   * gives it; tests only when they say so, with a local repository, so they never reach the network.
+   */
+  poteto?: PotetoOptions | null;
   /** How often the page-push source checks T3's shell and the journal's heads (tests make them short). */
   changes?: Pick<PageChangesOptions, "shellMs" | "headsMs" | "heartbeatMs">;
 }): AppStack {
@@ -93,9 +101,13 @@ export function createStack(input: {
   startSeen(repos);
   const hub = new ChangeHub();
   const notify = (roomId: string) => hub.notify(roomId);
+  const poteto = input.poteto ? new PotetoPack(repos, { ...input.poteto, ...(input.log ? { log: input.log } : {}) }) : null;
   const service = new RoomService(db, repos, input.adapter, notify, {
     ...(input.threadActionTimeoutMs !== undefined ? { threadActionTimeoutMs: input.threadActionTimeoutMs } : {}),
-    agentsFiles: input.agentsFile ? new AgentsFiles(repos, { ...(typeof input.agentsFile === "object" ? input.agentsFile : {}), ...(input.log ? { log: input.log } : {}) }) : null,
+    agentsFiles: input.agentsFile
+      ? new AgentsFiles(repos, { ...(typeof input.agentsFile === "object" ? input.agentsFile : {}), ...(input.log ? { log: input.log } : {}), poteto: () => poteto?.pointerLine() ?? null })
+      : null,
+    poteto,
     ...(input.log ? { log: input.log } : {}),
   });
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;
@@ -109,6 +121,7 @@ export function createStack(input: {
     adapter: input.adapter,
     browsers,
     images: messageImages(repos),
+    poteto,
     ...(input.boardCommand ? { boardCommand: input.boardCommand } : {}),
     ...(input.browserCommand ? { browserCommand: input.browserCommand } : {}),
     ...(input.log ? { log: input.log } : {}),
@@ -155,7 +168,9 @@ export function createStack(input: {
     presence,
     engine,
     seats,
+    poteto,
     close() {
+      poteto?.stop();
       changes.close();
       engine.close();
       engineStore.close();

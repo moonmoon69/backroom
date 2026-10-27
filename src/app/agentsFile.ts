@@ -47,12 +47,14 @@
  * and added again keeps its record.
  *
  * The text is a template, Backroom's (DEFAULT_AGENTS_TEMPLATE) or the user's (Settings → Agents file, agentsFile.text in
- * kv), with {checks} filled per project. A saved template reaches only folders written afterwards: Backroom never
- * changes a file by itself. Settings → Agents file lists each folder where it wrote AGENTS.md with its state against
- * the saved template rendered for it (same, differs, removed, blocked), shows the diff, and on the user's Apply writes
- * the rendered template over the file: bound to the digests of the diff the user saw, only through a handle on a plain
- * file of its own (no link followed, nothing created), never CLAUDE.md, git, the exclude file, the hook or worktrees'
- * copies. The on/off setting governs the automatic writing only.
+ * kv), with {checks} filled per project and {poteto} with Poteto mode's line while it is on and its clone ready
+ * (src/app/poteto.ts; turning it on or off changes the rendered template, so written projects then differ). A saved
+ * template reaches only folders written afterwards: Backroom never changes a file by itself. Settings → Agents file
+ * lists each folder where it wrote AGENTS.md with its state against the saved template rendered for it (same, differs,
+ * removed, blocked), shows the diff, and on the user's Apply writes the rendered template over the file: bound to the
+ * digests of the diff the user saw, only through a handle on a plain file of its own (no link followed, nothing
+ * created), never CLAUDE.md, git, the exclude file, the hook or worktrees' copies. The on/off setting governs the
+ * automatic writing only.
  */
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
@@ -196,6 +198,8 @@ export interface AgentsFilesOptions {
   onlyUnder?: string[];
   /** Tests only: runs between the look at the folder and each write (apply's too), where another writer could get in. */
   beforeWrite?: (folder: string, file: string) => void;
+  /** Poteto mode's line for {poteto} (src/app/poteto.ts), read at each rendering; null or absent: none. */
+  poteto?: () => string | null;
 }
 
 const exists = (path: string): boolean => {
@@ -288,6 +292,12 @@ export function projectChecks(folder: string): string[] {
 /** The placeholder a template holds for the project's checks, filled when the file is written for a project. */
 export const CHECKS_PLACEHOLDER = "{checks}";
 
+/**
+ * The placeholder for Poteto mode's line (src/app/poteto.ts): on a line of its own, it is that one line while Poteto
+ * mode is on and its clone is ready, and the line goes when it is not.
+ */
+export const POTETO_PLACEHOLDER = "{poteto}";
+
 /** The checks phrase {checks} stands for: the project's checks named when they could be read. */
 export function checksPhrase(checks: string[]): string {
   return checks.length > 0 ? `${checks.map((check) => `\`${check}\``).join(", ")}, and whatever else its README asks for` : "the ones its README or package scripts name";
@@ -295,7 +305,7 @@ export function checksPhrase(checks: string[]): string {
 
 /**
  * The default template, the one source of the default AGENTS.md: the worker's habits in words that fit any project and
- * any harness, with {checks} where the project's checks go.
+ * any harness, with {checks} where the project's checks go and {poteto} where Poteto mode's line goes.
  */
 export const DEFAULT_AGENTS_TEMPLATE = [
   "# Working in this project",
@@ -304,6 +314,7 @@ export const DEFAULT_AGENTS_TEMPLATE = [
   "",
   "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
   "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
+  POTETO_PLACEHOLDER,
   "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
   "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
   "- A writer delivers the change committed, with its tests and the checks it ran.",
@@ -324,14 +335,20 @@ export const AGENTS_TEXT_KEY = "agentsFile.text";
 /** The longest template the editor saves (agentsFile.text.set). */
 export const AGENTS_TEXT_MAX = 20000;
 
-/** A template written for a project: every {checks} filled with its checks phrase, LF line endings, one final newline. */
-export function renderAgentsText(template: string, checks: string[]): string {
-  return `${template.replace(/\r\n?/g, "\n").split(CHECKS_PLACEHOLDER).join(checksPhrase(checks)).trimEnd()}\n`;
+/**
+ * A template written for a project: every {checks} filled with its checks phrase, every {poteto} with Poteto mode's line
+ * (`poteto`, null while it is off or its clone is not ready: then a line that holds only {poteto} goes, and any other is
+ * emptied), LF line endings, one final newline.
+ */
+export function renderAgentsText(template: string, checks: string[], poteto: string | null = null): string {
+  const lines = template.replace(/\r\n?/g, "\n").split("\n");
+  const kept = poteto === null ? lines.filter((line) => line.trim() !== POTETO_PLACEHOLDER) : lines;
+  return `${kept.join("\n").split(CHECKS_PLACEHOLDER).join(checksPhrase(checks)).split(POTETO_PLACEHOLDER).join(poteto ?? "").trimEnd()}\n`;
 }
 
-/** The default AGENTS.md for a project with these checks: the default template rendered. */
-export function defaultAgentsText(checks: string[]): string {
-  return renderAgentsText(DEFAULT_AGENTS_TEMPLATE, checks);
+/** The default AGENTS.md for a project with these checks (and Poteto mode's line, when it has one): the default template rendered. */
+export function defaultAgentsText(checks: string[], poteto: string | null = null): string {
+  return renderAgentsText(DEFAULT_AGENTS_TEMPLATE, checks, poteto);
 }
 
 /** The template new rooms write: the user's (Settings → Agents file) when they saved one, else the default. */
@@ -428,6 +445,7 @@ export class AgentsFiles {
   private readonly log: (message: string, detail?: unknown) => void;
   private readonly onlyUnder: string[] | null;
   private readonly beforeWrite: (folder: string, file: string) => void;
+  private readonly poteto: () => string | null;
   /** One room at a time per folder: two rooms created at once write once. */
   private readonly queues = new Map<string, Promise<unknown>>();
 
@@ -436,6 +454,7 @@ export class AgentsFiles {
     this.log = options.log ?? (() => {});
     this.onlyUnder = options.onlyUnder ? options.onlyUnder.map((root) => canonicalPath(root)) : null;
     this.beforeWrite = options.beforeWrite ?? (() => {});
+    this.poteto = options.poteto ?? (() => null);
   }
 
   private records(): AgentsFileRecord[] {
@@ -555,7 +574,7 @@ export class AgentsFiles {
         try {
           this.beforeWrite(folder, name);
           // "wx": never over a file (or a link) that appeared since the look above.
-          writeFileSync(join(folder, name), name === AGENTS_FILE ? renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder)) : CLAUDE_TEXT, { flag: "wx" });
+          writeFileSync(join(folder, name), name === AGENTS_FILE ? renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.poteto()) : CLAUDE_TEXT, { flag: "wx" });
           written.push(name);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") this.log(`could not write ${name} in ${folder}`, errorText(error));
@@ -624,7 +643,7 @@ export class AgentsFiles {
     } finally {
       if (fd !== null) closeSync(fd);
     }
-    const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder));
+    const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.poteto());
     return { state: text === rendered ? "same" : "differs", text, rendered };
   }
 
