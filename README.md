@@ -366,7 +366,7 @@ Leave the clone's checkout to Backroom: a `git checkout` by hand is moved back b
 
 **How a seat is pointed at it.** Two ways, so that every reader is reached:
 
-- **The agents file.** The default template's `{poteto}` line is, while Poteto mode is on and the clone ready, one line in each project's `AGENTS.md`: for any non-trivial job, read and follow poteto-mode at `<clone>/pstack/skills/poteto-mode/SKILL.md` (Claude Code: the copy at `<clone>/harness/pstack/claude-code/skills/poteto-mode/SKILL.md`); pstack has no adapter for Codex or Antigravity, whose readers map its Cursor names to their own tools as its Claude Code adapter note does; and Backroom's three differences take precedence over the mode where they conflict. Every session in the project reads it, a member's subagents too, which no briefing reaches. It is written with the file, and pushed into a file already written by Apply (see [The agents file](#the-agents-file)).
+- **The agents file.** The default template's `{poteto}` line is, while Poteto mode is on and the clone ready, one line in each project's `AGENTS.md`: for any non-trivial job, read and follow poteto-mode at `<clone>/pstack/skills/poteto-mode/SKILL.md` (Claude Code: the copy at `<clone>/harness/pstack/claude-code/skills/poteto-mode/SKILL.md`), and where the mode conflicts with the file, the file wins (its branch and Handoff rules over the mode's pull-request step) and setup-pstack is skipped. The longer form, with the adapter note and the three differences, is the briefing's. Every session in the project reads it, a member's subagents too, which no briefing reaches. It is written with the file, and pushed into a file already written by Apply (see [The agents file](#the-agents-file)).
 - **The briefing.** A standing section, **Skills**, for every seat, the Consigliere and the members: pstack's version and commit, poteto-mode's path for the seat's harness, the note where pstack has no adapter for it, the three differences, and pstack's skills by name with how to read one (poteto-mode indexes them, so no descriptions). It is sent again when it changes, a new commit included, so a seat always knows which revision it was told to use; `rooms-board rules` prints it.
 
 **Backroom's three differences.** Deliver the change committed on your branch with a Handoff instead of opening a pull request. In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome. Model routing is the crew's: skip setup-pstack.
@@ -377,7 +377,7 @@ Leave the clone's checkout to Backroom: a `git checkout` by hand is moved back b
 | --- | --- | --- |
 | Claude Code | `harness/pstack/claude-code/skills/` | poteto-mode tells it to read pstack's Claude Code adapter first |
 | Cursor | `pstack/skills/` | pstack's own harness |
-| Codex, Antigravity | `pstack/skills/` | pstack has no adapter for them: the section and the agents file's line say to map its Cursor names as the Claude Code adapter note does |
+| Codex, Antigravity | `pstack/skills/` | pstack has no adapter for them: the Skills section says to map its Cursor names as the Claude Code adapter note does |
 | OpenCode, Pi, Grok | `pstack/skills/` | not verified |
 
 ## Writing messages

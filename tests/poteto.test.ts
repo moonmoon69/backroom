@@ -522,11 +522,7 @@ test("{poteto}: one line when on and ready, nothing (and no blank line) when not
   assert.equal(
     line,
     "- For any non-trivial job, read and follow poteto-mode at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md). " +
-      "pstack has no adapter for Codex or Antigravity: there, map its Cursor names to your own tools as its Claude Code adapter note (/data/skills/cursor-plugins/pstack/docs/harness/claude-code.md) does. " +
-      "Backroom's three differences take precedence over the mode where they conflict. " +
-      "Deliver the change committed on your branch with a Handoff instead of opening a pull request. " +
-      "In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome. " +
-      "Model routing is the crew's: skip setup-pstack.",
+      "Where it conflicts with this file, this file wins; skip setup-pstack.",
   );
   assert.equal(DEFAULT_AGENTS_TEMPLATE.split("\n").filter((l) => l === POTETO_PLACEHOLDER).length, 1, "the default holds it once, on a line of its own");
   const checks = ["npm run check"];

@@ -60,7 +60,7 @@ export const TICK_MS = 60 * 60 * 1000;
 const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Where Backroom differs from poteto-mode, one sentence each: in the agents file's line and the Skills section. */
+/** Where Backroom differs from poteto-mode, one sentence each: in the briefing's Skills section. */
 export const POTETO_DIFFERENCES = [
   "Deliver the change committed on your branch with a Handoff instead of opening a pull request.",
   "In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome.",
@@ -69,15 +69,13 @@ export const POTETO_DIFFERENCES = [
 export const PRECEDENCE = "Backroom's three differences take precedence over the mode where they conflict";
 
 /**
- * The agents file's {poteto} line for a clone: the mode's two paths, the note for the harnesses pstack has no adapter
- * for, and Backroom's differences with their precedence. One line, read by every session in the project, subagents too.
+ * The agents file's {poteto} line for a clone: the mode's two paths, and that the file wins where the mode conflicts
+ * with it (the mode's pull-request step against the file's branch and Handoff rules; its model routing). Two sentences,
+ * read by every session in the project, subagents too (the user's #387); the briefing's Skills section carries the
+ * longer form, with the adapter note and the three differences.
  */
 export function potetoLine(clone: string): string {
-  return (
-    `- For any non-trivial job, read and follow poteto-mode at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}). ` +
-    `pstack has no adapter for Codex or Antigravity: there, map its Cursor names to your own tools as its Claude Code adapter note (${clone}/${ADAPTER_NOTE}) does. ` +
-    `${PRECEDENCE}. ${POTETO_DIFFERENCES.join(" ")}`
-  );
+  return `- For any non-trivial job, read and follow poteto-mode at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}). Where it conflicts with this file, this file wins; skip setup-pstack.`;
 }
 
 /** Why the last clone or update did not do what it was for. */
