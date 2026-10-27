@@ -720,12 +720,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   });
 
-  // Images agents saved to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders them.
-  // Only image files under the allowed roots are served; see localImage.ts.
   /**
-   * A media file an agent wrote to disk and referenced from a reply (image, video or audio under the home or temp
-   * folder), streamed with byte ranges so a video seeks and plays on every browser. /api/local-image is the older
-   * name for the same route.
+   * A media file an agent wrote to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders
+   * them: an image, video or audio file wherever the service can read it (localImage.ts), streamed with byte ranges so
+   * a video seeks and plays on every browser. /api/local-image is the older name for the same route.
    */
   const localFile = (c: Context) => {
     const resolved = resolveLocalImage(c.req.query("path") ?? "");

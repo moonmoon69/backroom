@@ -109,13 +109,26 @@ test("the route finds a relative path in T3's project folders, reads an absolute
   const ok = await read(`path=${encodeURIComponent("src/parser.ts")}`);
   assert.equal(ok.status, 200);
   assert.equal(((await ok.json()) as { kind: string }).kind, "text");
-  const outside = mkdtempSync(join(tmpdir(), "rooms-preview-anywhere-"));
+  // Outside the home and temp folders, which the route once refused.
+  const outside = mkdtempSync("/var/tmp/rooms-preview-anywhere-");
   writeFileSync(join(outside, "notes.md"), "elsewhere");
   const anywhere = await read(`path=${encodeURIComponent(join(outside, "notes.md"))}`);
   assert.equal(anywhere.status, 200);
   assert.equal(((await anywhere.json()) as { content: string }).content, "elsewhere");
   const missing = await read(`path=${encodeURIComponent(join(outside, "gone.md"))}`);
   assert.equal(missing.status, 404);
+  // A picture there, by its path and through a project folder that is a link to it: the preview's media URL serves it.
+  writeFileSync(join(outside, "pixel.png"), Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"));
+  symlinkSync(outside, join(root, "linked"));
+  for (const path of [join(outside, "pixel.png"), join(root, "linked", "pixel.png")]) {
+    const preview = await read(`path=${encodeURIComponent(path)}`);
+    assert.equal(preview.status, 200, path);
+    const body = (await preview.json()) as { kind: string; url: string };
+    assert.equal(body.kind, "image", path);
+    const media = await app.request(body.url);
+    assert.equal(media.status, 200, `the preview's media URL serves ${path}`);
+    assert.equal(media.headers.get("content-type"), "image/png");
+  }
   const secret = await read("path=.env");
   assert.equal(secret.status, 403);
   assert.match(((await secret.json()) as { message: string }).message, /keys or tokens/);
