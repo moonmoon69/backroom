@@ -35,6 +35,7 @@ import type { Participant, Room } from "../src/domain/types.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
 import { FIXTURE_SKILLS, makePstackFixture, type PstackFixture } from "../scripts/pstack-fixture.ts";
+import { potetoStatus } from "../web/src/potetoStatus.ts";
 
 // The web keeps hand copies of the state and the commands: `npm run typecheck` fails when they drift.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -140,9 +141,9 @@ test("the clone: sparse to pstack/ and harness/pstack/ on main, from ROOMS_PSTAC
   assert.equal(readFileSync(join(folder, "pstack/skills/poteto-mode/SKILL.md"), "utf8"), readFileSync(join(up.work, "pstack/skills/poteto-mode/SKILL.md"), "utf8"), "pstack as it is");
   assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: state.commit!.slice(0, 7), names: FIXTURE_SKILLS });
   assert.equal(pack.pointerLine(), potetoLine(folder));
-  assert.equal(record().commit, state.commit);
-  // A new pack over the same data reads the clone as ready from the start, its commit from the record.
-  const again = new PotetoPack({ getKv: (key) => (key === POTETO_RECORD_KEY ? JSON.stringify(record()) : null), setKv: () => {}, deleteKv: () => {} }, { dataDir: linked, source: up.bare });
+  assert.equal(record().commit, undefined, "kv keeps no commit: git says it");
+  // A new pack over the same data, with nothing in kv, reads the clone as ready from the start, its commit from git.
+  const again = new PotetoPack({ getKv: () => null, setKv: () => {}, deleteKv: () => {} }, { dataDir: linked, source: up.bare });
   assert.deepEqual(again.briefing(), pack.briefing());
 });
 
@@ -367,6 +368,23 @@ test("containment: a link on the way, a .git file, a folder that is no clone, an
     assert.equal(pack.pointerLine(), null);
     assert.equal(readFileSync(join(folder, ".git"), "utf8"), `gitdir: ${gitDir}\n`, "left as it is");
   }
+  // A ready clone inside a repository whose own .git is emptied: its files still validate, but git's top level is the
+  // repository above: refused, and no longer pointed at (readiness keeps the refusal until the next look).
+  {
+    const outer = dir("outer");
+    execFileSync("git", ["init", "-q", outer]);
+    mkdirSync(join(outer, "data"), { recursive: true });
+    const { pack, folder } = packFor(up.bare, { dataDir: join(outer, "data") });
+    await pack.update();
+    assert.ok(pack.pointerLine());
+    rmSync(join(folder, ".git"), { recursive: true, force: true });
+    mkdirSync(join(folder, ".git"));
+    const state = await pack.update();
+    assert.equal(state.error?.reason, `git's top level in ${folder} is ${outer}, not the folder itself`);
+    assert.equal(pack.pointerLine(), null);
+    assert.equal(pack.briefing(), null);
+    assert.ok(existsSync(join(folder, "pstack/skills/poteto-mode/SKILL.md")), "left as it is");
+  }
   // A folder there that is no git clone (the data folder is inside Backroom's own checkout).
   {
     const data = dir("data");
@@ -442,6 +460,23 @@ test("the README's git procedures, through the daily tick: an older commit found
   await pack.tick();
   assert.equal(pack.state().error, null);
   assert.equal(pack.state().version, "0.15.4");
+});
+
+test("while a clone or an update runs, the agents file and the briefing read the checkout as the last read found it, never one half moved", async () => {
+  const up = upstream("0.15.0");
+  const { pack, folder } = packFor(up.bare);
+  await pack.update();
+  const before = pack.briefing();
+  assert.ok(before);
+  const running = pack.update();
+  // What a checkout half way through a move can look like: plugin.json gone for a moment.
+  renameSync(join(folder, "pstack/plugin.json"), join(folder, "plugin.json.moving"));
+  assert.equal(pack.state().busy, true);
+  assert.deepEqual(pack.briefing(), before, "the briefing: the checkout as it was");
+  assert.equal(pack.pointerLine(), potetoLine(folder), "the agents file's line: still there");
+  await running;
+  renameSync(join(folder, "plugin.json.moving"), join(folder, "pstack/plugin.json"));
+  assert.deepEqual(pack.briefing(), before, "read afresh once nothing runs");
 });
 
 // ---------------- the agents file ----------------
@@ -621,6 +656,16 @@ test("the briefing source: each seat's harness from T3's catalog, the section wh
   assert.ok((await s.stack.seats.standingText(work)).includes(`read and follow ${s.folder}/harness/pstack/claude-code/skills/poteto-mode/SKILL.md.`), "the harness from T3's driver, not the instance's name");
   await s.run({ type: "poteto.enabled.set", enabled: false });
   assert.equal((await s.stack.seats.standingText(claude)).includes("== Skills =="), false, "off");
+});
+
+test("the dialog's status line: the setting before the clone, so off never says seats are pointed at it (review #206)", () => {
+  const off = "Off: seats are not pointed at it; the clone is kept.";
+  assert.equal(potetoStatus({ enabled: false, busy: false, ready: true }), off);
+  assert.equal(potetoStatus({ enabled: false, busy: true, ready: true }), off, "off while an update finishes");
+  assert.equal(potetoStatus({ enabled: false, busy: false, ready: false }), "Off: seats are not pointed at it.");
+  assert.equal(potetoStatus({ enabled: true, busy: true, ready: true }), "Working on the clone…");
+  assert.equal(potetoStatus({ enabled: true, busy: false, ready: true }), "Ready: seats are pointed at it.");
+  assert.equal(potetoStatus({ enabled: true, busy: false, ready: false }), "Not cloned yet.");
 });
 
 // ---------------- the settings route and the commands ----------------

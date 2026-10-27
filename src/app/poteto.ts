@@ -13,17 +13,20 @@
  * - Prepared in the background (at service start, when the settings are read, and each hour while it is missing),
  *   never holding up a room or a seat; one git operation at a time (a serial queue). A clone goes into a temporary
  *   sibling folder and is renamed into place only once it validates (plugin.json readable, poteto-mode's SKILL.md in both
- *   trees). Ready means the final folder validates; what the agents file and the briefing say is read from the snapshot
- *   taken after the last clone or update that succeeded, never from a folder half way through one.
+ *   trees). Ready means the final folder validates, read from the checkout each time it is used (a folder deleted or
+ *   broken is not ready, and the next clone makes it again), with pstack's version from its files and the commit from
+ *   git; while a clone or an update runs, what the last read found, never a checkout half way through one.
  * - Updated once a day (an hourly check of when it last checked; a failure is tried again the next hour) and on Update
  *   now: a fetch of origin's main, then a fast-forward. poteto.pin (a commit or a tag) pins it: the update fetches and
- *   keeps the pin checked out, and says "pinned at X, latest is Y". Local changes in the clone stop any move.
+ *   keeps the pin checked out, and says "pinned at X, latest is Y". Local changes in the clone stop any move. A queued
+ *   clone or update reads the setting and the pin when it starts: off by then, it does nothing.
  * - Refused, with the reason recorded and nothing deleted, moved or repaired: a link in the path from the data folder
  *   to the clone, a .git that is not a folder of its own, a folder whose git top level is elsewhere (the data folder
  *   lives inside Backroom's own checkout), a folder that is there but is no pstack clone.
  * - ROOMS_PSTACK_REPO (config.pstackRepo) is the source: GitHub's cursor/plugins unless a test or the rehearsal gives a
  *   local bare repository.
  */
+import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Repos } from "../db/repos.ts";
@@ -84,18 +87,15 @@ export interface PackError {
   during: "clone" | "update";
 }
 
-/** What the last clone or update found, kept in kv. */
+/**
+ * What the last clone or update found that the checkout cannot say, kept in kv: the version and the commit are read from
+ * the checkout itself whenever they are used, so they always describe the same checkout.
+ */
 export interface PackRecord {
-  /** pstack/plugin.json's version. */
-  version: string | null;
-  /** The commit checked out (full). */
-  commit: string | null;
   /** When Backroom last tried to clone or update. */
   checkedAt: string | null;
   /** The last commit that changed pstack, as git's one-line log (`<short> <subject>`). */
   lastChange: string | null;
-  /** origin's main (short) when the clone is pinned elsewhere. */
-  latest: string | null;
   error: PackError | null;
 }
 
@@ -163,7 +163,7 @@ interface Snapshot {
 }
 
 const NOT_READY: Snapshot = { ready: false, version: null, commit: null, names: [] };
-const EMPTY_RECORD: PackRecord = { version: null, commit: null, checkedAt: null, lastChange: null, latest: null, error: null };
+const EMPTY_RECORD: PackRecord = { checkedAt: null, lastChange: null, error: null };
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -204,7 +204,13 @@ export class PotetoPack {
   private readonly repos: Pick<Repos, "getKv" | "setKv" | "deleteKv">;
   private readonly clock: PotetoClock;
   private readonly log: (message: string, detail?: unknown) => void;
-  private snap: Snapshot;
+  /**
+   * The checkout as the last read found it, used while a clone or an update of Backroom's runs, so that nothing is read
+   * from a checkout half way through one; otherwise the checkout is read each time.
+   */
+  private held: Snapshot | null = null;
+  /** Why the last look with git refused the folder (refused()); null when it did not. */
+  private refusal: string | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private preparing: Promise<void> | null = null;
   private running = 0;
@@ -216,7 +222,6 @@ export class PotetoPack {
     this.source = options.source ?? PSTACK_REPO;
     this.clock = options.clock ?? systemClock;
     this.log = options.log ?? (() => {});
-    this.snap = this.look();
   }
 
   enabled(): boolean {
@@ -240,7 +245,8 @@ export class PotetoPack {
 
   private record(): PackRecord {
     try {
-      return { ...EMPTY_RECORD, ...(JSON.parse(this.repos.getKv(POTETO_RECORD_KEY) ?? "{}") as Partial<PackRecord>) };
+      const saved = JSON.parse(this.repos.getKv(POTETO_RECORD_KEY) ?? "{}") as Partial<PackRecord>;
+      return { checkedAt: saved.checkedAt ?? null, lastChange: saved.lastChange ?? null, error: saved.error ?? null };
     } catch {
       return { ...EMPTY_RECORD };
     }
@@ -254,32 +260,82 @@ export class PotetoPack {
     return new Date(this.clock.now()).toISOString();
   }
 
+  /**
+   * The checkout's files as they are now: ready when nothing refuses the folder and it validates (plugin.json readable,
+   * poteto-mode's SKILL.md in both trees), with pstack's version and skills. No commit: that is git's (read()).
+   */
+  private onDisk(): Snapshot {
+    if (this.refusal !== null || this.refusedOnSight()) return NOT_READY;
+    const inspected = inspect(this.folder());
+    return inspected.ok ? { ready: true, version: inspected.version, commit: null, names: inspected.names } : NOT_READY;
+  }
+
+  /** git in the clone, waited for (a few milliseconds: the briefing and the settings read it as they are); null on failure. */
+  private gitNow(args: string[]): string | null {
+    try {
+      const text = execFileSync("git", ["-C", this.folder(), ...args], {
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+      });
+      return text.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The checkout now: its files, then its commit from git (`rev-parse HEAD`), read together each time, so the version and
+   * the commit describe the same checkout (Backroom's own clones and updates never run in between: snapshot()).
+   */
+  private read(): Snapshot {
+    const files = this.onDisk();
+    return files.ready ? { ...files, commit: this.gitNow(["rev-parse", "HEAD"]) } : NOT_READY;
+  }
+
+  /** read(), or while a clone or an update of Backroom's runs, the checkout as the last read found it. */
+  private snapshot(): Snapshot {
+    if (this.running > 0 && this.held) return this.held;
+    this.held = this.read();
+    return this.held;
+  }
+
+  /** Whether the clone is ready now, as snapshot() says it, without git. */
+  private readyNow(): boolean {
+    return this.running > 0 && this.held ? this.held.ready : this.onDisk().ready;
+  }
+
   /** The agents file's {poteto} line while Poteto mode is on and the clone is ready; null otherwise. */
   pointerLine(): string | null {
-    return this.enabled() && this.snap.ready ? potetoLine(this.folder()) : null;
+    return this.enabled() && this.readyNow() ? potetoLine(this.folder()) : null;
   }
 
   /** The Skills section's makings while Poteto mode is on and the clone is ready; null otherwise. */
   briefing(): PotetoBriefing | null {
-    if (!this.enabled() || !this.snap.ready) return null;
-    return { clone: this.folder(), version: this.snap.version, commit: this.snap.commit ? this.snap.commit.slice(0, 7) : null, names: this.snap.names };
+    if (!this.enabled()) return null;
+    const snap = this.snapshot();
+    if (!snap.ready) return null;
+    return { clone: this.folder(), version: snap.version, commit: snap.commit ? snap.commit.slice(0, 7) : null, names: snap.names };
   }
 
   state(): PotetoState {
+    const snap = this.snapshot();
     const record = this.record();
     const pin = this.pin();
+    const latest = pin && snap.ready ? this.gitNow(["rev-parse", "--short", UPSTREAM]) : null;
     return {
       enabled: this.enabled(),
       pin,
       folder: this.folder(),
       source: this.source,
-      ready: this.snap.ready,
+      ready: snap.ready,
       busy: this.running > 0,
-      version: record.version,
-      commit: record.commit,
+      version: snap.version,
+      commit: snap.commit,
       checkedAt: record.checkedAt,
       lastChange: record.lastChange,
-      pinned: pin ? `pinned at ${pin}, latest is ${record.latest ?? "not known yet"}` : null,
+      pinned: pin ? `pinned at ${pin}, latest is ${latest ?? "not known yet"}` : null,
       error: record.error,
     };
   }
@@ -297,21 +353,24 @@ export class PotetoPack {
     this.timer = null;
   }
 
-  /** The timer's look: while on, clone when missing, update when a day has passed since the last check or it failed. */
+  /**
+   * The timer's look: while on, clone when missing, update when a day has passed since the last check or it failed. The
+   * queued update looks again when it starts: off by then, it does nothing (and the pin is read then too).
+   */
   tick(): Promise<void> {
     if (!this.enabled()) return Promise.resolve();
-    if (!this.snap.ready) return this.prepare();
+    if (!this.onDisk().ready) return this.prepare();
     const record = this.record();
     const due = record.error !== null || record.checkedAt === null || this.clock.now() - Date.parse(record.checkedAt) >= DAY_MS;
-    return due ? this.serial(() => this.updateNow()).then(() => undefined) : Promise.resolve();
+    return due ? this.serial(() => this.cloneOrUpdate()) : Promise.resolve();
   }
 
   /** In the background: the clone made when Poteto mode is on and it is missing; one at a time. Never rejects. */
   prepare(): Promise<void> {
-    if (!this.enabled() || this.snap.ready) return Promise.resolve();
+    if (!this.enabled() || this.onDisk().ready) return Promise.resolve();
     if (this.preparing) return this.preparing;
     const preparing = this.serial(async () => {
-      if (this.enabled() && !this.snap.ready) await this.cloneNow();
+      if (this.enabled() && !this.onDisk().ready) await this.cloneNow();
     }).finally(() => {
       if (this.preparing === preparing) this.preparing = null;
     });
@@ -321,11 +380,14 @@ export class PotetoPack {
 
   /** Update now (and a pin set): the clone made, or fetched and moved; what it found. Off: nothing is done. */
   update(): Promise<PotetoState> {
-    return this.serial(async () => {
-      if (!this.enabled()) return;
-      if (this.snap.ready) await this.updateNow();
-      else await this.cloneNow();
-    }).then(() => this.state());
+    return this.serial(() => this.cloneOrUpdate()).then(() => this.state());
+  }
+
+  /** A queued clone or update as it starts: nothing while off; the clone made when the checkout is missing or invalid. */
+  private async cloneOrUpdate(): Promise<void> {
+    if (!this.enabled()) return;
+    if (this.onDisk().ready) await this.updateNow();
+    else await this.cloneNow();
   }
 
   /** When what is queued now has run; starts nothing. */
@@ -378,8 +440,16 @@ export class PotetoPack {
     return null;
   }
 
-  /** refusedOnSight, and git's top level in the clone the folder itself (not an enclosing repository). */
+  /**
+   * refusedOnSight, and git's top level in the clone the folder itself (not an enclosing repository). Kept until the next
+   * look: a refused folder is not ready.
+   */
   private async refused(): Promise<string | null> {
+    this.refusal = await this.refusedWithGit();
+    return this.refusal;
+  }
+
+  private async refusedWithGit(): Promise<string | null> {
     const seen = this.refusedOnSight();
     if (seen) return seen;
     const folder = this.folder();
@@ -395,13 +465,6 @@ export class PotetoPack {
       return `git cannot read ${folder}: ${errorText(error)}`;
     }
     return null;
-  }
-
-  /** The snapshot of the folder as it is (at start): ready when nothing refuses it on sight and it validates. */
-  private look(): Snapshot {
-    if (this.refusedOnSight()) return NOT_READY;
-    const inspected = inspect(this.folder());
-    return inspected.ok ? { ready: true, version: inspected.version, commit: this.record().commit, names: inspected.names } : NOT_READY;
   }
 
   private fail(during: PackError["during"], reason: string): void {
@@ -460,8 +523,8 @@ export class PotetoPack {
   private async updateNow(): Promise<void> {
     const refusal = await this.refused();
     if (refusal) {
-      // Not pointed at any more: the folder is no longer one Backroom can vouch for.
-      this.snap = NOT_READY;
+      // Not pointed at any more (refused() keeps the refusal): the folder is no longer one Backroom can vouch for.
+      this.held = NOT_READY;
       return this.fail("update", refusal);
     }
     const folder = this.folder();
@@ -493,17 +556,14 @@ export class PotetoPack {
     return this.settle(folder, "update", error);
   }
 
-  /** After a clone or an update: the record and the snapshot from the folder as it is now. */
+  /** After a clone or an update: the record, and the checkout read afresh for what reads it next. */
   private async settle(folder: string, during: PackError["during"], error: string | null): Promise<void> {
     const at = this.now();
     const inspected = inspect(folder);
-    const commit = (await runGit(folder, ["rev-parse", "HEAD"]).catch(() => "")).trim() || null;
     const lastChange = (await runGit(folder, ["log", "-1", "--format=%h %s", "--", ...SPARSE_PATHS]).catch(() => "")).trim() || null;
-    const latest = this.pin() ? (await runGit(folder, ["rev-parse", "--short", UPSTREAM]).catch(() => "")).trim() || null : null;
     const reason = error ?? (inspected.ok ? null : `${folder} is no usable pstack clone now: ${inspected.reason}`);
-    const previous = this.record();
-    this.save({ version: inspected.ok ? inspected.version : previous.version, commit, checkedAt: at, lastChange, latest, error: reason ? { reason, at, during } : null });
-    this.snap = inspected.ok ? { ready: true, version: inspected.version, commit, names: inspected.names } : NOT_READY;
+    this.save({ checkedAt: at, lastChange, error: reason ? { reason, at, during } : null });
+    this.held = this.read();
     if (reason) this.log(`poteto mode: the ${during} of pstack: ${reason}`);
   }
 }

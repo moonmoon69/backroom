@@ -2119,11 +2119,12 @@ const PSTACK_FIXTURE_NEXT = "0.15.1-rehearsal";
 /**
  * Settings → Poteto mode (src/app/poteto.ts, board #158): the service cloned the run's pstack fixture at its start; the
  * dialog shows the switch on and the fixture's version; a commit added to the fixture, Update now fetches and
- * fast-forwards to it, and the dialog shows its version and its subject as the last change. Its section begins here.
+ * fast-forwards to it, and the dialog shows its version and its subject as the last change; switched off, the status
+ * says seats are not pointed at it (review #206), and on again it is ready. Its section begins here.
  */
 async function rehearsePoteto(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
-  if (!(await section("Settings → Poteto mode: on, the fixture's version, and Update now brings a commit added to the fixture"))) return passed;
+  if (!(await section("Settings → Poteto mode: on, the fixture's version, Update now brings a commit added to the fixture, and off says seats are not pointed at it"))) return passed;
   const state = probedStates(browser, selection, passed);
   type Poteto = { enabled: boolean; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
   const poteto = async () => (await service.call<{ poteto: Poteto | null }>("GET", "/api/settings")).poteto;
@@ -2143,7 +2144,7 @@ async function rehearsePoteto(service: Service, browser: Browser, room: Room, se
   const next = service.pstack!.commit("pstack: a newer skill (rehearsal)", { version: PSTACK_FIXTURE_NEXT, files: { "pstack/skills/tdd/SKILL.md": "# tdd (fixture, newer)\n" } });
   browser.click(/button "Update now"/);
   await state(
-    "Settings → Poteto mode: on, the fixture's version, and Update now brings a commit added to the fixture",
+    "Settings → Poteto mode: on, the fixture's version, Update now brings a commit added to the fixture, and off says seats are not pointed at it",
     async () => {
       const now = await poteto();
       if (now?.error) fail(`Update now failed: ${now.error.reason}`);
@@ -2156,6 +2157,14 @@ async function rehearsePoteto(service: Service, browser: Browser, room: Room, se
       const shown = browser.poll<Record<string, string>>("the new commit in the dialog", facts, (v) => v.Commit?.startsWith(next.slice(0, 7)) === true && v["Last change"] === `${next.slice(0, 7)} pstack: a newer skill (rehearsal)`);
       if (!browser.eval<boolean>("() => document.querySelector('.agents-file-switch input')?.checked === true")) fail("the switch went off");
       log(`  page: the switch on, version ${shown.Version}, commit ${shown.Commit}, last change ${JSON.stringify(shown["Last change"])}, folder ${shown.Folder}`);
+      // Review #206: switched off, the status says seats are not pointed at it (the clone kept); on again, ready.
+      const status = "() => ({ on: document.querySelector('.agents-file-switch input')?.checked ?? null, status: document.querySelector('.poteto-facts + .hint')?.textContent ?? null })";
+      browser.click(/checkbox "Point every seat at poteto-mode/);
+      const off = browser.poll<{ on: boolean | null; status: string | null }>("the switch off and the status saying so", status, (v) => v.on === false && v.status === "Off: seats are not pointed at it; the clone is kept.");
+      if (off.status?.includes("seats are pointed at it")) fail(`Off still says: ${off.status}`);
+      browser.click(/checkbox "Point every seat at poteto-mode/);
+      browser.poll<{ on: boolean | null; status: string | null }>("the switch on again and the clone ready", status, (v) => v.on === true && v.status === "Ready: seats are pointed at it.", 30_000);
+      log(`  page: switched off, the status said ${JSON.stringify(off.status)}; on again, ready`);
     },
   );
   browser.click(/button "Done"/);

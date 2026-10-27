@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.ts";
+import { potetoStatus } from "../potetoStatus.ts";
 import type { PotetoState } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { useToast } from "./Toast.tsx";
@@ -85,7 +86,7 @@ export function PotetoDialog({ onClose }: { onClose: () => void }) {
             </dd>
           </dl>
           <p className="hint" aria-live="polite">
-            {state.busy ? "Working on the clone…" : state.ready ? "Ready: seats are pointed at it." : state.enabled ? "Not cloned yet." : "Off."}
+            {potetoStatus(state)}
           </p>
           {state.error ? (
             <p className="status-error poteto-error">
