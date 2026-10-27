@@ -1901,14 +1901,18 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
 /**
  * As Checks.state, for states that read the service through a probe of their own rather than a room's snapshot: a state
  * --only does not name is set up silently (the service polled, the texts waited for). Each state passed goes in `passed`.
+ * A state that makes the service refuse a command on purpose says so (`refusal`): the browser's console line for it is
+ * accepted whether the state is checked or played silently, so it never fails a later state's console check.
  */
 function probedStates(browser: Browser, selection: Selection, passed: string[]) {
-  return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void): Promise<void> => {
+  return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void, options: { refusal?: boolean } = {}): Promise<void> => {
     const { index, loud } = selection.enter(name);
     log(`${loud ? "CHECK" : "SET UP (silently)"} ${selection.label(index)}`);
     log(`  api: ${await until(`the service to show: ${name}`, probe)}`);
     for (const text of page) browser.waitFor(text);
+    const refused = options.refusal ? browser.acceptRefusal() : [];
     if (!loud) return;
+    if (refused.length > 0) log(`  console: the refused command's own line, expected: ${refused.join(" | ")}`);
     extra?.();
     browser.consoleClean();
     browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
@@ -2056,8 +2060,8 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
         (list) => list.length === 2 && list.every((b) => b.disabled),
       );
       log(`  page: the refusal is shown, the ${tooLong.length}-character draft is still there, ${buttons.map((b) => b.text).join(" and ")} disabled with the save-first hint`);
-      log(`  console: the refused command's own line, expected: ${browser.acceptRefusal().join(" | ")}`);
     },
+    { refusal: true },
   );
   dismissToasts();
   browser.click(/button "Done"/);
