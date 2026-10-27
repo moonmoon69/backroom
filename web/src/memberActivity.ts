@@ -24,6 +24,16 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
 }
 
 /**
+ * What still runs on the thread, each job as T3 lists it with its kind and minutes ("Run the tests (command, 2m) · …"),
+ * or that the agent will continue when it finishes when T3 lists none.
+ */
+export function jobsLine(desk: Desk | null | undefined, now: number): string {
+  const jobs = desk?.backgroundTasks ?? [];
+  if (jobs.length === 0) return "will continue when it finishes";
+  return jobs.map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`).join(" · ");
+}
+
+/**
  * Between turns but not done, as T3 reports it: background work or monitoring left running after the turn, which the
  * agent wakes itself from when it finishes. Null mid-turn, or with nothing left running.
  */

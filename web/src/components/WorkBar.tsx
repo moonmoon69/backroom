@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
-import { betweenTurns, describeStatus } from "../memberActivity.ts";
+import { betweenTurns, describeStatus, jobsLine } from "../memberActivity.ts";
+import { chipTitle, oneLine } from "../workChip.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
 import { flashPost, NoticeActions } from "./Timeline.tsx";
@@ -156,7 +157,6 @@ export function WorkBar() {
   }
   // Busy without a room run: a turn someone typed in T3, or the agent continued on its own. Else between turns with
   // work left running, as T3 lists it, in the Members panel's words ("background work", "monitoring").
-  const now = Date.now();
   for (const participant of snapshot.participants.filter(isActiveParticipant)) {
     if (busy.has(participant.id)) continue;
     const status = snapshot.participantStatus[participant.id];
@@ -165,12 +165,7 @@ export function WorkBar() {
     if ((running && !running.startedByRoom) || (!running && status?.externalActivity)) {
       items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "" });
     } else if (betweenTurns(status, memberDesk)) {
-      const jobs = memberDesk?.backgroundTasks ?? [];
-      const text =
-        jobs.length > 0
-          ? jobs.map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`).join(" · ")
-          : "will continue when it finishes";
-      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text });
+      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()) });
     }
   }
 
@@ -246,7 +241,6 @@ export function WorkBar() {
     [drawn],
   );
   if (items.length === 0) return null;
-  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   /** The key bar's words for a chip ("@fable working: on #88"); on the chip itself after its lane, "status · …". */
   const whereOf = (item: Item) => `${item.participant ? `@${item.participant.alias}` : "Backroom"} ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 200)}` : ""}`;
   return (
@@ -284,7 +278,7 @@ export function WorkBar() {
                   </>
                 );
                 const style = identityStyle(item.participant ? colorOf(item.participant.id) : "var(--fg-muted)");
-                const title = `${item.participant?.alias ?? ""} · ${item.what}${item.text ? `: ${oneLine(item.text).slice(0, 400)}` : ""}`;
+                const title = chipTitle(item.participant?.alias ?? "", item.what, item.text);
                 // A chip is a stop only with something to press (keyOrder.ts, chipOffers); a click opens any.
                 const stop =
                   item.open !== undefined &&
