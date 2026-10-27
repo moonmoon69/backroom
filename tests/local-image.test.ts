@@ -20,25 +20,26 @@ function fixture() {
   return dir;
 }
 
-test("resolveLocalImage only accepts image files inside the allowed roots", () => {
+test("resolveLocalImage accepts media files wherever they are, through a link too, and nothing else", () => {
   const dir = fixture();
-  const outside = mkdtempSync(join(tmpdir(), "rooms-outside-"));
-  writeFileSync(join(outside, "leak.png"), PNG);
-  symlinkSync(join(outside, "leak.png"), join(dir, "link.png"));
+  const elsewhere = mkdtempSync("/var/tmp/rooms-elsewhere-");
+  writeFileSync(join(elsewhere, "shot.png"), PNG);
+  symlinkSync(join(elsewhere, "shot.png"), join(dir, "link.png"));
 
-  const ok = resolveLocalImage(join(dir, "shot.png"), [dir]);
+  const ok = resolveLocalImage(join(dir, "shot.png"));
   assert.equal(ok.ok, true);
   if (ok.ok) assert.equal(ok.mimeType, "image/png");
 
-  assert.equal(resolveLocalImage(`file://${join(dir, "shot.png")}`, [dir]).ok, true, "file:// URLs are accepted");
-  assert.equal(resolveLocalImage("shot.png", [dir]).ok, false, "relative paths are rejected");
-  assert.equal(resolveLocalImage(join(dir, "notes.txt"), [dir]).ok, false, "non-images are rejected");
-  assert.equal(resolveLocalImage(join(dir, "fake.png.txt"), [dir]).ok, false, "the real extension counts");
-  assert.equal(resolveLocalImage(join(dir, "missing.png"), [dir]).ok, false, "missing files are rejected");
-  assert.equal(resolveLocalImage(join(dir, "..", "..", "etc", "passwd.png"), [dir]).ok, false, "traversal is rejected");
-  const viaLink = resolveLocalImage(join(dir, "link.png"), [dir]);
-  assert.equal(viaLink.ok, false, "symlinks pointing outside the roots are rejected");
-  assert.equal(resolveLocalImage(join(dir, "shot.png"), [outside]).ok, false, "files outside every root are rejected");
+  assert.equal(resolveLocalImage(`file://${join(dir, "shot.png")}`).ok, true, "file:// URLs are accepted");
+  assert.equal(resolveLocalImage("shot.png").ok, false, "relative paths are rejected");
+  assert.equal(resolveLocalImage(join(dir, "notes.txt")).ok, false, "non-images are rejected");
+  assert.equal(resolveLocalImage(join(dir, "fake.png.txt")).ok, false, "the real extension counts");
+  assert.equal(resolveLocalImage(join(dir, "missing.png")).ok, false, "missing files are rejected");
+  assert.equal(resolveLocalImage(join(dir, "..", "..", "etc", "passwd.png")).ok, false, "a traversal to nothing is rejected");
+  const outsideTemp = resolveLocalImage(join(elsewhere, "shot.png"));
+  assert.equal(outsideTemp.ok, true, "a picture outside the home and temp folders is served");
+  const viaLink = resolveLocalImage(join(dir, "link.png"));
+  assert.equal(viaLink.ok && viaLink.path, join(elsewhere, "shot.png"), "a link is followed to the file");
 });
 
 test("GET /api/local-image streams the image with its mime type and refuses everything else", async (t) => {

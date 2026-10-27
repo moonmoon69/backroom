@@ -4,7 +4,7 @@
  */
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { Readable } from "node:stream";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -720,12 +720,10 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
   });
 
-  // Images agents saved to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders them.
-  // Only image files under the allowed roots are served; see localImage.ts.
   /**
-   * A media file an agent wrote to disk and referenced from a reply (image, video or audio under the home or temp
-   * folder), streamed with byte ranges so a video seeks and plays on every browser. /api/local-image is the older
-   * name for the same route.
+   * A media file an agent wrote to disk and referenced from a reply (`![shot](/tmp/shot.png)`), like T3 Code renders
+   * them: an image, video or audio file wherever the service can read it (localImage.ts), streamed with byte ranges so
+   * a video seeks and plays on every browser. /api/local-image is the older name for the same route.
    */
   const localFile = (c: Context) => {
     const resolved = resolveLocalImage(c.req.query("path") ?? "");
@@ -766,13 +764,13 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   /**
    * A file a reply names, to preview it: its text (up to a size), or where to fetch it for an image or a recording.
-   * Read only inside T3's project folders, its threads' worktrees and the temp folder; see filePreview.ts. `base` is
-   * the folder the reply was written in, where a relative path is looked for first.
+   * Any file the service can read, never a secret; see filePreview.ts. `base` is the folder the reply was written in,
+   * where a relative path is looked for first, then in the projects and their threads' worktrees.
    */
   app.get("/api/file-preview", async (c) => {
     const [projects, threads] = await Promise.all([stack.adapter.listProjects(), stack.adapter.listThreads()]);
-    const roots = [...projects.map((project) => project.workspaceRoot), ...threads.flatMap((thread) => (thread.worktreePath ? [thread.worktreePath] : [])), tmpdir(), "/tmp"];
-    const preview = previewFile(c.req.query("path") ?? "", { base: c.req.query("base") || null, roots });
+    const folders = [...projects.map((project) => project.workspaceRoot), ...threads.flatMap((thread) => (thread.worktreePath ? [thread.worktreePath] : []))];
+    const preview = previewFile(c.req.query("path") ?? "", { base: c.req.query("base") || null, folders });
     if (!preview.ok) throw new RoomError(preview.status === 404 ? "not_found" : preview.status === 400 ? "invalid_path" : "forbidden", preview.reason, preview.status);
     return c.json(preview);
   });

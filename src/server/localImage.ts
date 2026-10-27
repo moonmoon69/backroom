@@ -1,12 +1,11 @@
 /**
  * Serving media that agents write to disk and reference from replies, e.g. `![shot](/tmp/shot.png)` or a recording
  * `![demo](/home/me/demo.mp4)`. T3 Code renders those inline; here the UI asks GET /api/local-file?path=... and this
- * module decides whether the path may be served. Only image, video and audio files are served, and only from inside
- * the allowed roots, so the endpoint cannot be used to read arbitrary files.
+ * module decides whether the path may be served: an image, video or audio file by its name, wherever the service can
+ * read it and through symlinks, as the file preview reads text (filePreview.ts). Nothing else is served.
  */
 import { realpathSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { extname, isAbsolute, resolve, sep } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 
 export type LocalFileKind = "image" | "video" | "audio";
 
@@ -54,11 +53,6 @@ export function localFileType(name: string): { kind: LocalFileKind; mimeType: st
   return null;
 }
 
-/** Roots a reply may reference images from: the user's home (projects, worktrees, attachments) and the temp dir. */
-export function defaultImageRoots(): string[] {
-  return [homedir(), tmpdir(), "/tmp"].map((root) => safeRealpath(root)).filter((root, index, all) => root !== null && all.indexOf(root) === index) as string[];
-}
-
 function safeRealpath(path: string): string | null {
   try {
     return realpathSync(path);
@@ -67,18 +61,15 @@ function safeRealpath(path: string): string | null {
   }
 }
 
-const isInside = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
-
-export function resolveLocalImage(requested: string, roots: string[] = defaultImageRoots()): LocalImageResolution {
+export function resolveLocalImage(requested: string): LocalImageResolution {
   const raw = requested.startsWith("file://") ? decodeURIComponent(requested.slice("file://".length)) : requested;
   if (!raw || !isAbsolute(raw)) return { ok: false, status: 400, reason: "path must be absolute" };
   const type = localFileType(raw);
   if (!type) return { ok: false, status: 403, reason: "not an image, video or audio file" };
   const { kind, mimeType } = type;
+  // The file itself is served, however it was named: a link's own name decides the type, its target the bytes.
   const real = safeRealpath(resolve(raw));
   if (!real) return { ok: false, status: 404, reason: "no such file" };
-  // Symlinks are resolved before the root check so a link inside /tmp cannot point outside.
-  if (!roots.some((root) => isInside(real, root))) return { ok: false, status: 403, reason: "outside allowed roots" };
   const stat = statSync(real);
   if (!stat.isFile()) return { ok: false, status: 404, reason: "not a file" };
   if (stat.size > (kind === "image" ? MAX_LOCAL_IMAGE_BYTES : MAX_LOCAL_MEDIA_BYTES)) return { ok: false, status: 413, reason: `${kind} too large` };

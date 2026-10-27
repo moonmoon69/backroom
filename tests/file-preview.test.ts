@@ -1,4 +1,4 @@
-/** GET /api/file-preview: a file a reply names, read only inside the projects, their worktrees and the temp folder. */
+/** GET /api/file-preview: a file a reply names, wherever the service can read it, never a secret. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,32 +28,50 @@ test("a relative path is found in the reply's folder first, then in each project
   const worktree = mkdtempSync(join(tmpdir(), "rooms-preview-wt-"));
   mkdirSync(join(worktree, "src"));
   writeFileSync(join(worktree, "src", "parser.ts"), "// the branch's version\n");
-  const fromBase = previewFile("src/parser.ts", { base: worktree, roots: [root, worktree] });
+  const fromBase = previewFile("src/parser.ts", { base: worktree, folders: [root, worktree] });
   assert.equal(fromBase.ok && fromBase.kind === "text" && fromBase.content, "// the branch's version\n");
-  const fromRoots = previewFile("docs/plan.md", { base: worktree, roots: [root, worktree] });
+  const fromRoots = previewFile("docs/plan.md", { base: worktree, folders: [root, worktree] });
   assert.equal(fromRoots.ok && fromRoots.kind === "text" && fromRoots.content.startsWith("# Plan"), true);
-  assert.deepEqual(previewFile("src/missing.ts", { roots: [root] }), { ok: false, status: 404, reason: "no such file" });
-  assert.equal((previewFile("src", { roots: [root] }) as { status: number }).status, 400, "a folder");
+  assert.deepEqual(previewFile("src/missing.ts", { folders: [root] }), { ok: false, status: 404, reason: "no such file" });
+  assert.equal((previewFile("src", { folders: [root] }) as { status: number }).status, 400, "a folder");
 });
 
-test("outside the allowed folders, through a symlink, or a secret: refused", () => {
+test("a file outside the projects is previewed, by its path or through a link; a secret is refused wherever it is", () => {
   const root = project();
   const outside = mkdtempSync(join(tmpdir(), "rooms-preview-outside-"));
   writeFileSync(join(outside, "notes.md"), "private");
   symlinkSync(join(outside, "notes.md"), join(root, "link.md"));
-  assert.equal((previewFile(join(outside, "notes.md"), { roots: [root] }) as { status: number }).status, 403);
-  assert.equal((previewFile("link.md", { roots: [root] }) as { status: number }).status, 403);
-  assert.equal((previewFile(".env", { roots: [root] }) as { status: number }).status, 403);
-  assert.equal(previewFile(".env.example", { roots: [root] }).ok, true, "an example has no secrets");
-  assert.equal((previewFile("~/.ssh/id_ed25519", { roots: [root] }) as { status: number }).status >= 403, true);
+  const byPath = previewFile(join(outside, "notes.md"), { folders: [root] });
+  assert.equal(byPath.ok && byPath.kind === "text" && byPath.content, "private");
+  const byLink = previewFile("link.md", { folders: [root] });
+  assert.equal(byLink.ok && byLink.path, join(outside, "notes.md"), "the link is followed");
+  writeFileSync(join(outside, "id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----");
+  symlinkSync(join(outside, "id_ed25519"), join(root, "harmless.txt"));
+  assert.equal((previewFile("harmless.txt", { folders: [root] }) as { status: number }).status, 403, "a link to a key is refused as the key is");
+  assert.equal((previewFile(".env", { folders: [root] }) as { status: number }).status, 403);
+  assert.equal(previewFile(".env.example", { folders: [root] }).ok, true, "an example has no secrets");
+  assert.equal((previewFile("~/.ssh/id_ed25519", { folders: [root] }) as { status: number }).status >= 403, true);
+});
+
+test("a project folder that is a link elsewhere: its files are previewed by their path in the project and by a relative path", () => {
+  const root = project();
+  const elsewhere = mkdtempSync(join(tmpdir(), "rooms-preview-docs-"));
+  mkdirSync(join(elsewhere, "plans"));
+  writeFileSync(join(elsewhere, "plans", "canvas-home.md"), "# Canvas home\n");
+  symlinkSync(elsewhere, join(root, "linked-docs"));
+  const absolute = previewFile(join(root, "linked-docs", "plans", "canvas-home.md"), { folders: [root] });
+  assert.equal(absolute.ok && absolute.kind === "text" && absolute.content, "# Canvas home\n");
+  assert.equal(absolute.ok && absolute.path, join(elsewhere, "plans", "canvas-home.md"), "the resolved path is shown");
+  const relative = previewFile("linked-docs/plans/canvas-home.md", { base: root, folders: [root] });
+  assert.equal(relative.ok && relative.kind === "text" && relative.content, "# Canvas home\n");
 });
 
 test("binaries are named, not shown; media goes to the media route; long text is cut and says so", () => {
   const root = project();
-  assert.equal((previewFile("tool.bin", { roots: [root] }) as { kind: string }).kind, "binary");
-  const image = previewFile("shot.png", { roots: [root] });
+  assert.equal((previewFile("tool.bin", { folders: [root] }) as { kind: string }).kind, "binary");
+  const image = previewFile("shot.png", { folders: [root] });
   assert.equal(image.ok && image.kind === "image" && image.url, `/api/local-file?path=${encodeURIComponent(join(root, "shot.png"))}`);
-  const big = previewFile("big.log", { roots: [root] });
+  const big = previewFile("big.log", { folders: [root] });
   assert.equal(big.ok && big.kind === "text" && big.truncated && big.content.length, MAX_PREVIEW_BYTES);
 });
 
@@ -62,26 +80,26 @@ test("HTML keeps the text contract, original source and resolved extension; inco
   const source = '<!doctype html><html><button id="choice">Choose</button><script>choice.onclick=()=>choice.textContent="Chosen";</script></html>\n';
   for (const name of ["overview.html", "overview.HTM"]) {
     writeFileSync(join(root, name), source);
-    const preview = previewFile(name, { roots: [root] });
+    const preview = previewFile(name, { folders: [root] });
     assert.ok(preview.ok && preview.kind === "text");
     assert.equal(preview.path, join(root, name));
     assert.equal(preview.content, source);
     assert.equal(preview.truncated, false);
   }
   symlinkSync(join(root, "overview.html"), join(root, "alias.txt"));
-  const alias = previewFile("alias.txt", { roots: [root] });
+  const alias = previewFile("alias.txt", { folders: [root] });
   assert.ok(alias.ok && alias.kind === "text");
   assert.equal(alias.path, join(root, "overview.html"), "the frontend classifies the resolved HTML, not the alias");
   const incomplete = source + " ".repeat(MAX_PREVIEW_BYTES);
   writeFileSync(join(root, "large.html"), incomplete);
-  const large = previewFile("large.html", { roots: [root] });
+  const large = previewFile("large.html", { folders: [root] });
   assert.ok(large.ok && large.kind === "text");
   assert.equal(large.truncated, true);
   assert.equal(large.content, incomplete.slice(0, MAX_PREVIEW_BYTES));
   assert.equal(large.size, Buffer.byteLength(incomplete));
 });
 
-test("the route reads from T3's project folders and says why it refuses", async (t) => {
+test("the route finds a relative path in T3's project folders, reads an absolute one anywhere, and says why it refuses", async (t) => {
   const stack = await createTestStack();
   t.after(() => stack.close());
   const root = project();
@@ -91,6 +109,26 @@ test("the route reads from T3's project folders and says why it refuses", async 
   const ok = await read(`path=${encodeURIComponent("src/parser.ts")}`);
   assert.equal(ok.status, 200);
   assert.equal(((await ok.json()) as { kind: string }).kind, "text");
+  // Outside the home and temp folders, which the route once refused.
+  const outside = mkdtempSync("/var/tmp/rooms-preview-anywhere-");
+  writeFileSync(join(outside, "notes.md"), "elsewhere");
+  const anywhere = await read(`path=${encodeURIComponent(join(outside, "notes.md"))}`);
+  assert.equal(anywhere.status, 200);
+  assert.equal(((await anywhere.json()) as { content: string }).content, "elsewhere");
+  const missing = await read(`path=${encodeURIComponent(join(outside, "gone.md"))}`);
+  assert.equal(missing.status, 404);
+  // A picture there, by its path and through a project folder that is a link to it: the preview's media URL serves it.
+  writeFileSync(join(outside, "pixel.png"), Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"));
+  symlinkSync(outside, join(root, "linked"));
+  for (const path of [join(outside, "pixel.png"), join(root, "linked", "pixel.png")]) {
+    const preview = await read(`path=${encodeURIComponent(path)}`);
+    assert.equal(preview.status, 200, path);
+    const body = (await preview.json()) as { kind: string; url: string };
+    assert.equal(body.kind, "image", path);
+    const media = await app.request(body.url);
+    assert.equal(media.status, 200, `the preview's media URL serves ${path}`);
+    assert.equal(media.headers.get("content-type"), "image/png");
+  }
   const secret = await read("path=.env");
   assert.equal(secret.status, 403);
   assert.match(((await secret.json()) as { message: string }).message, /keys or tokens/);
@@ -102,7 +140,7 @@ test("a file named without its folder is found by name, shallowest first, never 
   writeFileSync(join(root, "node_modules", "lib", "Crew.tsx"), "// not this one");
   mkdirSync(join(root, "web", "src", "components"), { recursive: true });
   writeFileSync(join(root, "web", "src", "components", "Crew.tsx"), "export function Crew() {}\n");
-  const found = previewFile("Crew.tsx", { base: root, roots: [root] });
+  const found = previewFile("Crew.tsx", { base: root, folders: [root] });
   assert.equal(found.ok && found.path, join(root, "web", "src", "components", "Crew.tsx"));
-  assert.equal((previewFile("Nowhere.tsx", { base: root, roots: [root] }) as { status: number }).status, 404);
+  assert.equal((previewFile("Nowhere.tsx", { base: root, folders: [root] }) as { status: number }).status, 404);
 });
