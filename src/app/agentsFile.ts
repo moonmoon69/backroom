@@ -55,7 +55,7 @@
  * copies. The on/off setting governs the automatic writing only.
  */
 import { createHash } from "node:crypto";
-import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Repos } from "../db/repos.ts";
@@ -342,6 +342,21 @@ export function agentsTemplate(repos: Pick<Repos, "getKv">): { text: string; cus
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Why a recorded folder is not itself any more: its real path (links resolved) is elsewhere, a link put in its place or
+ * in a folder above it. Null when it is the recorded one.
+ */
+function movedAway(folder: string): string | null {
+  let real: string;
+  try {
+    real = realpathSync(folder);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? `${folder} is not on this machine` : `${folder} cannot be resolved: ${errorText(error)}`;
+  }
+  return real === folder ? null : `${folder} leads elsewhere now (${real}), not to the folder Backroom wrote in`;
+}
+
 /** `path` strictly inside `folder` (a folder named `..old` in it is inside too). */
 const isInside = (path: string, folder: string): boolean => {
   const rel = relative(folder, path);
@@ -581,7 +596,9 @@ export class AgentsFiles {
    */
   private compare(record: AgentsFileRecord): { state: "same" | "differs"; text: string; rendered: string } | { state: "removed" } | { state: "blocked"; reason: string } {
     const folder = record.folder;
-    if (!isDirectory(folder)) return { state: "blocked", reason: `${folder} is not on this machine` };
+    // Not on this machine, or not the recorded folder any more (a link put in its place or above it).
+    const moved = movedAway(folder);
+    if (moved) return { state: "blocked", reason: moved };
     const path = join(folder, AGENTS_FILE);
     let kind: Stats;
     try {
@@ -668,6 +685,7 @@ export class AgentsFiles {
     if (!record) return Promise.reject(refused("Backroom wrote no AGENTS.md there, so it applies nothing"));
     return this.serial(record.folder, async () => {
       const folder = record.folder;
+      // The recorded folder under onlyUnder; compare() below refuses it when its real path (links resolved) is elsewhere now.
       if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || isInside(folder, root))) throw refused(`${folder} is outside the folders this service writes in`);
       const compared = this.compare(record);
       if (compared.state === "removed") throw refused(`AGENTS.md is gone from ${folder}, and Backroom does not write it again`);
@@ -686,6 +704,19 @@ export class AgentsFiles {
       try {
         const stats = fstatSync(fd);
         if (!stats.isFile() || stats.nlink !== 1) throw refused("AGENTS.md is no longer a plain file of its own");
+        // O_NOFOLLOW guards the file's own name only: the folder could have been swapped for a link before the open. So
+        // the folder is still the recorded one, and the handle is the file its path names now.
+        const movedSince = movedAway(folder);
+        if (movedSince) throw refused(movedSince);
+        let named: Stats | null = null;
+        try {
+          named = lstatSync(path);
+        } catch {
+          // gone meanwhile: not the handle's file
+        }
+        if (!named || named.dev !== stats.dev || named.ino !== stats.ino) throw refused("AGENTS.md was replaced while it was being applied");
+        // The instant between these checks and the write stays open to a second swap; on a single-user machine only the
+        // user could make it.
         // What the handle holds is what the user looked at, read through the handle itself.
         if (digest(readFileSync(fd, "utf8")) !== target.fileDigest) throw refused(STALE);
         ftruncateSync(fd, 0);

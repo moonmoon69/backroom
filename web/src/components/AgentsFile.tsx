@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { reloadAgentsFiles, useAgentsFiles } from "../agentsFiles.ts";
+import { templateSaved, type TemplateDraft } from "../agentsTemplate.ts";
 import type { AgentsFileDiff, AgentsFileEntry } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { DiffView } from "./GitTab.tsx";
@@ -22,17 +23,17 @@ const STATE_TITLE: Record<AgentsFileEntry["state"], string> = {
 
 /**
  * Settings → Agents file (src/app/agentsFile.ts): the switch for new rooms, the template they write with Save and Reset
- * to default, and every project where Backroom wrote AGENTS.md with its state against the saved template, a diff and
- * Apply for the ones that differ. Diff and Apply use the saved template, never the draft in the textarea.
+ * to default, and every project where Backroom wrote AGENTS.md with its state against the saved template, and for the
+ * ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the overview's mark does).
+ * Diff and Apply use the saved template, never the draft in the textarea.
  */
 export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
   const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [template, setTemplate] = useState<{ text: string; saved: string; custom: boolean; defaultText: string } | null>(null);
+  const [template, setTemplate] = useState<TemplateDraft | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [diffFor, setDiffFor] = useState<AgentsFileEntry | null>(null);
-  const [applying, setApplying] = useState<string | null>(null);
   const { entries, error: listError } = useAgentsFiles();
   useEffect(() => {
     reloadAgentsFiles();
@@ -61,31 +62,19 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
   };
   const save = async (next: string | null) => {
     if (!template) return;
+    // What the textarea held when Save (or Reset) was clicked: typing done while the command runs is kept.
+    const submitted = template.text;
     setSaving(true);
     try {
       await api.command({ type: "agentsFile.text.set", text: next });
       const text = next ?? template.defaultText;
-      setTemplate({ ...template, text, saved: text, custom: next !== null });
+      setTemplate((current) => current && templateSaved(current, submitted, text, next !== null));
       reloadAgentsFiles();
     } catch (error) {
       // The draft stays in the textarea.
       toast(message(error));
     } finally {
       setSaving(false);
-    }
-  };
-  const applyFromList = async (entry: AgentsFileEntry) => {
-    setApplying(entry.folder);
-    try {
-      const seen = await api.agentsFileDiff(entry.folder);
-      if (!window.confirm(`Replace the whole AGENTS.md in ${entry.folder} with the saved template? ${APPLY_SAYS}`)) return;
-      await api.command({ type: "agentsFile.apply", folder: entry.folder, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest });
-      toast(`AGENTS.md in ${entry.folder} now holds the saved template`, "success");
-    } catch (error) {
-      toast(message(error));
-    } finally {
-      setApplying(null);
-      reloadAgentsFiles();
     }
   };
   return (
@@ -110,7 +99,16 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
       {template ? (
         <label className="consigliere-rules agents-file-template">
           The template
-          <textarea className="mono" rows={10} value={template.text} spellCheck={false} onChange={(e) => setTemplate({ ...template, text: e.target.value })} />
+          <textarea
+            className="mono"
+            rows={10}
+            value={template.text}
+            spellCheck={false}
+            onChange={(e) => {
+              const text = e.target.value;
+              setTemplate((current) => current && { ...current, text });
+            }}
+          />
           <span className="hint">
             {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name. The file is written
             once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
@@ -150,8 +148,8 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
                     <button type="button" className="small ghost" disabled={dirty} title={dirty ? "Save the template first" : "The project's file against the saved template"} onClick={() => setDiffFor(entry)}>
                       Show diff
                     </button>
-                    <button type="button" className="small" disabled={dirty || applying !== null} title={dirty ? "Save the template first" : APPLY_SAYS} onClick={() => void applyFromList(entry)}>
-                      Apply
+                    <button type="button" className="small" disabled={dirty} title={dirty ? "Save the template first" : "Opens the diff, with Apply at its end: you apply what you see"} onClick={() => setDiffFor(entry)}>
+                      Apply…
                     </button>
                   </span>
                 ) : null}

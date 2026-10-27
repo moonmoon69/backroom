@@ -7,7 +7,8 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -30,6 +31,7 @@ import { loadConfig } from "../src/config.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
+import { templateSaved } from "../web/src/agentsTemplate.ts";
 
 // The web keeps hand copies of the route's entries, the diff, the two commands and apply's result: `npm run typecheck`
 // fails when they drift.
@@ -426,4 +428,44 @@ test("apply between the look and the write: a link swapped in is never followed,
     await assert.rejects(racing.apply({ folder: dir, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }), reason, what);
     check(dir);
   }
+});
+
+test("apply after the open: the folder still the recorded one, and the handle the file its name gives now, else refused", async (t) => {
+  const s = stackFor(t);
+  const { dir } = await written(s);
+  writeFileSync(join(dir, "AGENTS.md"), "# Ours\n");
+  const files = new AgentsFiles(s.stack.repos);
+  const seen = await files.diff({ folder: dir });
+  // Between the open and the write: the file renamed away and another put under its name. The handle still holds the
+  // old one, whose bytes the user saw; the check after the open sees the name gives another file now.
+  const realpath = fs.realpathSync;
+  let calls = 0;
+  t.mock.method(fs, "realpathSync", (...args: Parameters<typeof fs.realpathSync>) => {
+    // The third look at the folder in apply: the record's lookup, compare's, then the one after the open.
+    if (String(args[0]) === dir && ++calls === 3) {
+      fs.renameSync(join(dir, "AGENTS.md"), join(dir, "AGENTS.old.md"));
+      writeFileSync(join(dir, "AGENTS.md"), "# Put there meanwhile\n");
+    }
+    return realpath(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  await assert.rejects(files.apply({ folder: dir, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }), /replaced while it was being applied/);
+  assert.equal(calls, 3, "the folder is looked at again after the open");
+  assert.equal(read(join(dir, "AGENTS.md")), "# Put there meanwhile\n");
+  assert.equal(read(join(dir, "AGENTS.old.md")), "# Ours\n", "the file the handle holds is not written either");
+});
+
+test("the editor after a save the service took: the textarea takes the saved text only when it still holds what was submitted (review #81)", () => {
+  const before = { text: "# A  ", saved: "# Old", custom: false, defaultText: "# Default" };
+  // Nothing typed while the save ran: the textarea shows the saved (trimmed) text, and nothing is left unsaved.
+  assert.deepEqual(templateSaved(before, "# A  ", "# A", true), { text: "# A", saved: "# A", custom: true, defaultText: "# Default" });
+  // Typed on while it ran: the newer draft stays, unsaved against the text the service now holds.
+  assert.deepEqual(templateSaved({ ...before, text: "# A, and B typed meanwhile" }, "# A  ", "# A", true), { text: "# A, and B typed meanwhile", saved: "# A", custom: true, defaultText: "# Default" });
+  // Reset to default the same way.
+  assert.deepEqual(templateSaved({ ...before, text: "# Mine" }, "# Mine", "# Default", false).text, "# Default");
+  assert.deepEqual(templateSaved({ ...before, text: "# Mine, and more" }, "# Mine", "# Default", false).text, "# Mine, and more");
 });

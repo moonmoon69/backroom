@@ -435,6 +435,17 @@ class Browser {
     for (const line of fresh) this.outage.add(line);
     return fresh;
   }
+  /**
+   * After a command the service was meant to refuse: Chrome's own line for that one 400 is expected and not counted
+   * again; any other error-level line fails as always.
+   */
+  acceptRefusal(): string[] {
+    const fresh = this.errorLines().filter((line) => !this.outage.has(line));
+    const refusals = fresh.filter((line) => /Failed to load resource: the server responded with a status of 400 \(Bad Request\)/.test(line));
+    if (refusals.length !== 1 || fresh.length !== 1) fail(`expected one console line for the refused command, got:\n${fresh.join("\n")}`);
+    for (const line of refusals) this.outage.add(line);
+    return refusals;
+  }
   /** Poll the page (every half second) until `ok` holds for what `fn` reads; the last reading goes into the failure. */
   poll<T>(what: string, fn: string, ok: (value: T) => boolean, ms = 15_000): T {
     const start = Date.now();
@@ -1978,8 +1989,11 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
   const mark = `() => [...document.querySelectorAll('.ov-project')].find((s) => s.getAttribute('aria-label') === ${JSON.stringify(title)})?.querySelector('.ov-project-title .ov-agents-mark')?.textContent ?? null`;
   browser.click(/button "Back to the overview"/);
   browser.waitFor(title);
-  // The room's toast sits over the dialog's foot (its Done): dismissed first, as the user would.
-  for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
+  // A toast sits over the dialog's foot (its Done): dismissed first, as the user would.
+  const dismissToasts = () => {
+    for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
+  };
+  dismissToasts();
   browser.click(/button "Settings"/);
   browser.click(/menuitem "Agents file…/);
   browser.waitFor("Projects written");
@@ -2011,6 +2025,34 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
       log("  page: the row says differs, with Show diff and Apply enabled once saved");
     },
   );
+  // A draft over the cap (20000 characters), put in as a paste would: the service refuses the save, and the draft stays.
+  const tooLong = `${template}\n${"x".repeat(20000)}`;
+  browser.on(
+    "eval",
+    `() => { const t = document.querySelector('.agents-file-template textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, ${JSON.stringify(tooLong)}); t.dispatchEvent(new Event('input', { bubbles: true })); return t.value.length; }`,
+  );
+  browser.poll<number | null>("the draft over the cap in the textarea", "() => document.querySelector('.agents-file-template textarea')?.value.length ?? null", (n) => n === tooLong.length);
+  browser.click(/button "Save template"/);
+  await state(
+    "a template over the cap: Save refused and said, the draft kept, Show diff and Apply wait with the save-first hint",
+    async () => {
+      const settings = await service.call<{ agentsFileText: { text: string } }>("GET", "/api/settings");
+      if (settings.agentsFileText.text !== template) fail(`the saved template changed: ${settings.agentsFileText.text.length} characters`);
+      return `the saved template is still ${JSON.stringify(template)}; the service refused ${tooLong.length} characters`;
+    },
+    ["Too big: expected string to have <=20000 characters", "Save the template first"],
+    () => {
+      browser.poll<number | null>("the draft to stay in the textarea after the refusal", "() => document.querySelector('.agents-file-template textarea')?.value.length ?? null", (n) => n === tooLong.length);
+      const buttons = browser.poll<Array<{ text: string; disabled: boolean }>>(
+        "Show diff and Apply… to be disabled",
+        "() => [...document.querySelectorAll('.agents-file-row[data-state=\"differs\"] button')].map((b) => ({ text: b.textContent, disabled: b.disabled }))",
+        (list) => list.length === 2 && list.every((b) => b.disabled),
+      );
+      log(`  page: the refusal is shown, the ${tooLong.length}-character draft is still there, ${buttons.map((b) => b.text).join(" and ")} disabled with the save-first hint`);
+      log(`  console: the refused command's own line, expected: ${browser.acceptRefusal().join(" | ")}`);
+    },
+  );
+  dismissToasts();
   browser.click(/button "Done"/);
   await state(
     "the scratch project's heading shows the quiet AGENTS.md differs mark",
