@@ -15,7 +15,7 @@
  *   sibling folder and is renamed into place only once it validates (plugin.json readable, poteto-mode's SKILL.md in both
  *   trees). Ready means the final folder validates, read from the checkout each time it is used (a folder deleted or
  *   broken is not ready, and the next clone makes it again), with pstack's version from its files and the commit from
- *   git; while a clone or an update runs, what the last read found, never a checkout half way through one.
+ *   git; while a clone or an update runs, the checkout as it was before it moved anything, never one half way through.
  * - Updated once a day (an hourly check of when it last checked; a failure is tried again the next hour) and on Update
  *   now: a fetch of origin's main, then a fast-forward. poteto.pin (a commit or a tag) pins it: the update fetches and
  *   keeps the pin checked out, and says "pinned at X, latest is Y". Local changes in the clone stop any move. A queued
@@ -205,8 +205,9 @@ export class PotetoPack {
   private readonly clock: PotetoClock;
   private readonly log: (message: string, detail?: unknown) => void;
   /**
-   * The checkout as the last read found it, used while a clone or an update of Backroom's runs, so that nothing is read
-   * from a checkout half way through one; otherwise the checkout is read each time.
+   * While clones or updates of Backroom's are queued or running: the checkout as it was before the first of them could
+   * move a file (taken when it was queued, on a new instance too), and as each left it for the next. Readers get it
+   * instead of a checkout half way through a move. Null when nothing runs: readers then read the checkout itself.
    */
   private held: Snapshot | null = null;
   /** Why the last look with git refused the folder (refused()); null when it did not. */
@@ -294,16 +295,14 @@ export class PotetoPack {
     return files.ready ? { ...files, commit: this.gitNow(["rev-parse", "HEAD"]) } : NOT_READY;
   }
 
-  /** read(), or while a clone or an update of Backroom's runs, the checkout as the last read found it. */
+  /** The checkout now, or while a clone or an update of Backroom's runs, as it was before it moved anything (held). */
   private snapshot(): Snapshot {
-    if (this.running > 0 && this.held) return this.held;
-    this.held = this.read();
-    return this.held;
+    return this.held ?? this.read();
   }
 
   /** Whether the clone is ready now, as snapshot() says it, without git. */
   private readyNow(): boolean {
-    return this.running > 0 && this.held ? this.held.ready : this.onDisk().ready;
+    return this.held ? this.held.ready : this.onDisk().ready;
   }
 
   /** The agents file's {poteto} line while Poteto mode is on and the clone is ready; null otherwise. */
@@ -395,10 +394,16 @@ export class PotetoPack {
     return this.queue.then(() => undefined);
   }
 
+  /**
+   * One clone or update at a time. The first queued while nothing runs takes the checkout as it is (held) before any git
+   * command of its can move a file; each that ends leaves the checkout as it is now for the next, and the last drops it.
+   */
   private serial<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.running === 0) this.held = this.read();
     this.running += 1;
     const next = this.queue.then(fn, fn).finally(() => {
       this.running -= 1;
+      this.held = this.running > 0 ? this.read() : null;
     });
     this.queue = next.then(
       () => undefined,
@@ -523,8 +528,7 @@ export class PotetoPack {
   private async updateNow(): Promise<void> {
     const refusal = await this.refused();
     if (refusal) {
-      // Not pointed at any more (refused() keeps the refusal): the folder is no longer one Backroom can vouch for.
-      this.held = NOT_READY;
+      // Not pointed at once this ends (refused() keeps the refusal): no longer a folder Backroom can vouch for.
       return this.fail("update", refusal);
     }
     const folder = this.folder();
@@ -556,14 +560,13 @@ export class PotetoPack {
     return this.settle(folder, "update", error);
   }
 
-  /** After a clone or an update: the record, and the checkout read afresh for what reads it next. */
+  /** After a clone or an update: the record (readers read the checkout itself once nothing runs: serial()). */
   private async settle(folder: string, during: PackError["during"], error: string | null): Promise<void> {
     const at = this.now();
     const inspected = inspect(folder);
     const lastChange = (await runGit(folder, ["log", "-1", "--format=%h %s", "--", ...SPARSE_PATHS]).catch(() => "")).trim() || null;
     const reason = error ?? (inspected.ok ? null : `${folder} is no usable pstack clone now: ${inspected.reason}`);
     this.save({ checkedAt: at, lastChange, error: reason ? { reason, at, during } : null });
-    this.held = this.read();
     if (reason) this.log(`poteto mode: the ${during} of pstack: ${reason}`);
   }
 }

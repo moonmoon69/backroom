@@ -479,6 +479,42 @@ test("while a clone or an update runs, the agents file and the briefing read the
   assert.deepEqual(pack.briefing(), before, "read afresh once nothing runs");
 });
 
+test("an update queued behind a clone: while its checkout is paused, readers see what the clone left, not what was there before it", async (t) => {
+  const up = upstream("0.15.0");
+  const first = git(up.work, "rev-parse", "HEAD");
+  up.commit("pstack: tdd changed", { version: "0.15.1", files: { "pstack/skills/tdd/SKILL.md": "# tdd, changed\n" } });
+  // A smudge filter on tdd's SKILL.md that, once armed, pauses git's checkout there until released.
+  const gate = dir("gate");
+  const [armed, entered, release] = ["armed", "entered", "release"].map((name) => join(gate, name)) as [string, string, string];
+  const filter = join(gate, "filter.sh");
+  writeFileSync(filter, `#!/bin/sh\nif [ -e '${armed}' ]; then : > '${entered}'; while [ ! -e '${release}' ]; do sleep 0.01; done; fi\ncat\n`, { mode: 0o755 });
+  writeFileSync(join(gate, "attributes"), "pstack/skills/tdd/SKILL.md filter=gate\n");
+  const saved = { ...process.env };
+  Object.assign(process.env, { GIT_CONFIG_COUNT: "3", GIT_CONFIG_KEY_0: "core.attributesFile", GIT_CONFIG_VALUE_0: join(gate, "attributes"), GIT_CONFIG_KEY_1: "filter.gate.smudge", GIT_CONFIG_VALUE_1: filter, GIT_CONFIG_KEY_2: "filter.gate.clean", GIT_CONFIG_VALUE_2: "cat" });
+  t.after(() => {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  });
+  const { pack, repos, folder } = packFor(up.bare);
+  repos.setKv(POTETO_PIN_KEY, first);
+  const cloning = pack.update();
+  const updating = pack.update();
+  await cloning;
+  // Between the two: the clone at the pin; the update, already queued, follows origin's main and moves tdd.
+  repos.deleteKv(POTETO_PIN_KEY);
+  writeFileSync(armed, "");
+  try {
+    const deadline = Date.now() + 5000;
+    while (!existsSync(entered) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 10));
+    assert.ok(existsSync(entered), "git reached the paused checkout");
+    assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: first.slice(0, 7), names: FIXTURE_SKILLS }, "the checkout the clone left");
+    assert.equal(pack.pointerLine(), potetoLine(folder));
+  } finally {
+    writeFileSync(release, "");
+    await updating;
+  }
+  assert.equal(pack.state().version, "0.15.1");
+});
+
 // ---------------- the agents file ----------------
 
 test("{poteto}: one line when on and ready, nothing (and no blank line) when not; a custom template without it gets none", () => {
