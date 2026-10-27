@@ -110,7 +110,8 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
             }}
           />
           <span className="hint">
-            {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name. The file is written
+            {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{poteto}"}</code>, on a line of its own, is
+            Poteto mode&rsquo;s line pointing at pstack&rsquo;s poteto-mode while that is on (Settings → Poteto mode), and goes otherwise, so turning it on or off shows written projects as differing. The file is written
             once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
           </span>
           <span className="task-actions">

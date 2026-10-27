@@ -673,10 +673,14 @@ test("the settings route reports Poteto mode and starts a missing clone; poteto.
   const refused = await s.post({ type: "poteto.update" });
   assert.equal(refused.status, 409);
   assert.equal(refused.body.message, "Poteto mode is off: turn it on to update pstack");
-  assert.equal((await s.post({ type: "poteto.pin.set", pin: "v1" })).body.type, "settings.updated", "a pin set while off waits for the next update");
+  const older = git(s.folder, "rev-parse", "HEAD~1");
+  assert.equal((await s.post({ type: "poteto.pin.set", pin: older })).body.type, "settings.updated", "a pin set while off is only kept");
+  assert.notEqual(git(s.folder, "rev-parse", "HEAD"), older);
   assert.equal((await s.post({ type: "poteto.enabled.set", enabled: "yes" })).status, 400);
   assert.equal((await s.post({ type: "poteto.enabled.set", enabled: true })).body.type, "settings.updated");
   assert.equal(s.stack.repos.getKv(POTETO_SETTING_KEY), null);
+  await s.stack.poteto!.settled();
+  assert.equal(git(s.folder, "rev-parse", "HEAD"), older, "turned on: the pin set while off is checked out, by the update turning it on started");
 
   // A service that keeps no clone (the tests' default): reported as null, and Update now refused.
   const bare = createStack({ dbPath: ":memory:", adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null });

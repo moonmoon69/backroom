@@ -328,6 +328,11 @@ export class PotetoPack {
     }).then(() => this.state());
   }
 
+  /** When what is queued now has run; starts nothing. */
+  settled(): Promise<void> {
+    return this.queue.then(() => undefined);
+  }
+
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     this.running += 1;
     const next = this.queue.then(fn, fn).finally(() => {

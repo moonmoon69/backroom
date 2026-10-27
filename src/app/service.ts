@@ -285,8 +285,9 @@ export class RoomService {
       case "poteto.enabled.set":
         if (command.enabled) {
           this.repos.deleteKv(POTETO_SETTING_KEY);
-          // In the background: the clone made if it is missing; nothing waits on it.
-          void this.poteto?.prepare();
+          // In the background, nothing waiting on it: the clone made if it is missing, else updated (a pin set while off
+          // checked out, the fetch skipped while it was off made).
+          void this.poteto?.update().catch(() => undefined);
         } else this.repos.setKv(POTETO_SETTING_KEY, "off");
         return { type: "settings.updated" };
       case "poteto.update":
