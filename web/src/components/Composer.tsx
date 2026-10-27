@@ -51,8 +51,6 @@ import { useMenuFocus } from "../keys.ts";
 interface Props {
   /** Look → Overview: closed to a strip until wanted, then over the conversation (composerOverlay.tsx). */
   overlay?: boolean;
-  /** What sits above the input (the room's background bar): above the strip while closed, above the open card in its float. */
-  above?: ReactNode;
 }
 
 interface MentionState {
@@ -89,7 +87,7 @@ type Edit = (make: (source: string) => TextEdit | null) => void;
 
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
-export function Composer({ overlay: asOverlay = false, above }: Props) {
+export function Composer({ overlay: asOverlay = false }: Props) {
   const { snapshot, runCommand, colorOf, aliasOf } = useRoom();
   const roomId = snapshot.room.id;
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
@@ -737,16 +735,9 @@ export function Composer({ overlay: asOverlay = false, above }: Props) {
       ) : null}
     </div>
   );
-  if (!overlay.enabled)
-    return (
-      <>
-        {above}
-        {composer}
-      </>
-    );
+  if (!overlay.enabled) return composer;
   return (
     <>
-      {overlay.open ? null : above}
       <ComposerStrip
         overlay={overlay}
         lane
@@ -762,7 +753,7 @@ export function Composer({ overlay: asOverlay = false, above }: Props) {
         }}
       />
       {overlay.open ? (
-        <ComposerFloat overlay={overlay} above={above}>
+        <ComposerFloat overlay={overlay}>
           {composer}
         </ComposerFloat>
       ) : null}

@@ -1,7 +1,7 @@
 /** What the Members panel says a member is doing, ranked as T3 Code ranks its thread pills. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeStatus } from "../web/src/memberActivity.ts";
+import { betweenTurns, describeStatus } from "../web/src/memberActivity.ts";
 import type { BackgroundTask, Desk, ParticipantStatus } from "../web/src/types.ts";
 
 const status = (over: Partial<ParticipantStatus> = {}): ParticipantStatus => ({
@@ -47,4 +47,14 @@ test("what needs you outranks work and stands still; a plan ready waits on you t
   assert.equal(describeStatus(status({ status: "idle" })).label, "ready", "no run yet");
   assert.equal(describeStatus(undefined).label, "ready", "a member seated a moment ago, before its thread was read");
   assert.equal(describeStatus(status({ status: "unknown" })).label, "ready");
+});
+
+test("between turns is read in one place: the status bar's chip and the Members panel agree, the desk's reading first", () => {
+  assert.equal(betweenTurns(status({ status: "running", activeRunId: "run1", background: "working" })), null, "mid-turn it is the turn's chip");
+  assert.equal(betweenTurns(status({ background: null })), null);
+  assert.equal(betweenTurns(status({ background: "working" })), "working");
+  const lagging = status({ background: null });
+  const watching = desk({ backgroundLiveness: "monitoring", backgroundTasks: [job("background", "monitor")] });
+  assert.equal(betweenTurns(lagging, watching), "monitoring", "the desk read T3 after the status line");
+  assert.equal(describeStatus(lagging, watching).label, "monitoring");
 });

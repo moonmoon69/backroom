@@ -1251,33 +1251,37 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
         log(`  page: #${n} shows the status line naming the background task; no 'working since' anywhere`);
       },
     });
-    // 12b. The bar above the composer (BackgroundBar) says the worker is between turns with work in the background.
-    // Opened, the composer floats over the foot of the conversation, and the bar rides above its card rather than under
-    // it (the user's #3 in "debug": it was behind the open composer): the bar is in the float, whole above the card's
-    // top, and nothing is painted over its middle.
-    browser.click(/button "(Write a message|Continue your draft)"/);
-    browser.poll<boolean>("the composer to open", "() => Boolean(document.querySelector('.composer-overlay'))", (open) => open === true);
-    const floatSeen = () =>
-      browser.eval<{ float: boolean; bar: number[] | null; card: number[] | null; over: string | null; text: string }>(
-        "() => { const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom].map(Math.round); }; const bar = document.querySelector('.composer-float > .background-bar'); const card = document.querySelector('.composer-float > .composer-overlay'); const r = bar?.getBoundingClientRect(); const hit = r ? document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2) : null; return { float: Boolean(document.querySelector('.composer-float')), bar: box(bar), card: box(card), over: hit ? (bar.contains(hit) ? 'the bar' : `${hit.tagName.toLowerCase()}.${hit.className}`) : null, text: bar?.textContent ?? '' }; }",
-      );
-    await check.state("the background bar rides above the open composer, not under it", (x) => {
+    // 12b. The worker is between turns with its background task, as T3 reports it: the status bar's Working group holds
+    // its chip, in the Members panel's words with the task T3 lists, and nothing is drawn above the composer, closed or
+    // open (the user's #3, #10 and #17: one status bar, no strip of its own above the composer).
+    await check.state("the worker's background work is a Working chip in the status bar", (x) => {
       const status = (x as unknown as { participantStatus: Record<string, { background: string | null; status: string }> }).participantStatus[room.participant.worker];
-      return status?.background === "working" && !["preparing", "queued", "starting", "running", "waiting"].includes(status.status) ? `@worker's status: background=${status.background}, status=${status.status}; the composer open on the page` : null;
-    }, ["background work"], {
+      return status?.background === "working" && !["preparing", "queued", "starting", "running", "waiting"].includes(status.status) ? `@worker's status: background=${status.background}, status=${status.status}` : null;
+    }, ["background strict-tests"], {
       extra: () => {
-        const seen = floatSeen();
-        if (!seen.float || !seen.bar || !seen.card) fail(`the open composer does not float with the background bar above its card: ${JSON.stringify(seen)}`);
-        if (seen.bar[3]! > seen.card[1]!) fail(`the background bar (bottom ${seen.bar[3]}) reaches under the composer's card (top ${seen.card[1]}): ${JSON.stringify(seen)}`);
-        if (seen.over !== "the bar") fail(`the background bar's middle is covered by ${JSON.stringify(seen.over)}: ${JSON.stringify(seen)}`);
-        log(`  page: the composer open; the bar ${JSON.stringify(seen.text.trim())} whole above its card (bar bottom ${seen.bar[3]}, card top ${seen.card[1]}), nothing over it`);
+        const chip = browser.poll<string | null>(
+          "@worker's Working chip with its background task",
+          "() => [...document.querySelectorAll('.work-working .work-chip')].map((c) => c.textContent).find((t) => t.includes('worker') && t.includes('background work') && t.includes('background strict-tests (command,')) ?? null",
+          (text) => text !== null,
+        );
+        const strips = browser.eval<number>("() => document.querySelectorAll('.background-bar').length");
+        if (strips > 0) fail(`the page still draws ${strips} .background-bar`);
+        browser.click(/button "(Write a message|Continue your draft)"/);
+        browser.poll<boolean>("the composer to open", "() => Boolean(document.querySelector('.composer-overlay'))", (open) => open === true);
+        const float = browser.eval<{ children: string[]; position: string; floatTop: number; cardTop: number; cardBottom: number; height: number; focused: boolean; last: string | undefined; lastBottom: number }>(
+          "() => { const f = document.querySelector('.composer-float'); const card = f.querySelector(':scope > .composer-overlay'); const t = document.querySelector('.sheet-main > .timeline-wrap > .timeline'); t.scrollTop = t.scrollHeight; const last = [...t.querySelectorAll('[data-number]')].at(-1); return { children: [...f.children].map((c) => c.className), position: getComputedStyle(f).position, floatTop: Math.round(f.getBoundingClientRect().top), cardTop: Math.round(card?.getBoundingClientRect().top ?? -1), cardBottom: Math.round(card?.getBoundingClientRect().bottom ?? -1), height: window.innerHeight, focused: Boolean(card?.contains(document.activeElement) && document.activeElement.matches('textarea')), last: last?.dataset.number, lastBottom: Math.round(last?.getBoundingClientRect().bottom ?? Infinity) }; }",
+        );
+        if (float.children.length !== 1 || float.floatTop !== float.cardTop) fail(`the open composer draws something above its card: ${JSON.stringify(float)}`);
+        if (float.position !== "absolute" || float.cardBottom > float.height) fail(`the open composer does not float over the conversation in the window: ${JSON.stringify(float)}`);
+        if (!float.focused) fail(`the open composer's field does not have the focus: ${JSON.stringify(float)}`);
+        if (float.lastBottom > float.cardTop) fail(`the conversation's last post #${float.last} ends under the card (bottom ${float.lastBottom}, card top ${float.cardTop})`);
+        browser.on("press", "Escape");
+        browser.poll<boolean>("the composer to close", "() => !document.querySelector('.composer-overlay')", (closed) => closed === true);
+        log(`  page: the Working chip ${JSON.stringify(chip)}; no .background-bar; the open composer's float holds its card alone (top ${float.cardTop}, bottom ${float.cardBottom} of ${float.height}), its field focused, #${float.last} above it (bottom ${float.lastBottom})`);
       },
     });
-    // Closed again: the story goes on from the strip, the bar back in flow above it.
-    browser.on("press", "Escape");
-    browser.poll<boolean>("the composer to close", "() => !document.querySelector('.composer-overlay') && Boolean(document.querySelector('.sheet-main > .background-bar'))", (closed) => closed === true);
-    // A reader near the end, but outside the overlay's 48px follow threshold, keeps the same line when opening.
-    // Moving the bar out of flow must not enlarge the scroller first and turn that reader into an end follower.
+    // A reader near the end, but outside the overlay's 48px follow threshold, keeps the same line when opening: the
+    // float pads the conversation's foot without scrolling a reader who was not at its end.
     const reading = browser.eval<{ top: number; distance: number; number: string; y: number }>(
       "() => { const t = document.querySelector('.sheet-main > .timeline-wrap > .timeline'); t.scrollTop = t.scrollHeight - t.clientHeight - 70; const row = [...t.querySelectorAll('[data-number]')].find(el => el.getBoundingClientRect().bottom > t.getBoundingClientRect().top); return { top: t.scrollTop, distance: t.scrollHeight - t.scrollTop - t.clientHeight, number: row.dataset.number, y: row.getBoundingClientRect().top }; }",
     );

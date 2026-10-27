@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
-import { sinceWords } from "../engineTime.ts";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
+import { betweenTurns, describeStatus } from "../memberActivity.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
 import { flashPost, NoticeActions } from "./Timeline.tsx";
@@ -47,11 +47,12 @@ const PHASE: Record<EngineRunView["phase"], string> = {
 /**
  * The room's status in a line or two above the conversation, read from its journal: one chip per thing going on, under
  * what it asks of you. "Needs you" is a notice that waits on you (a failed turn: Retry or Dismiss) and an approval or
- * question T3 is waiting on; "Working" is a run (an uncertain one says so), a turn the room did not start, and
- * background work a member holds open ("working since"); "Waiting" is a member with posts it has not been given yet
- * (its unread backlog), or a delivery that cannot be made. Clicking a chip opens what can be done about it. The chips
- * with something to open are a lane of the room's keys (keys.ts): Left and Right between them, Enter opens one with its
- * choices as an action strip under the bar (K1-6), the ring on the first: the strip's buttons press the choices' own.
+ * question T3 is waiting on; "Working" is a run (an uncertain one says so), a turn the room did not start, and a
+ * member between turns with background work or monitoring, as T3 reports it; "Waiting" is a member with posts it has
+ * not been given yet (its unread backlog), or a delivery that cannot be made. Clicking a chip opens what can be done
+ * about it. The chips with something to open are a lane of the room's keys (keys.ts): Left and Right between them,
+ * Enter opens one with its choices as an action strip under the bar (K1-6), the ring on the first: the strip's buttons
+ * press the choices' own.
  */
 export function WorkBar() {
   const { snapshot, desk, colorOf, participantById, seatOf, nameOf, runCommand } = useRoom();
@@ -153,20 +154,23 @@ export function WorkBar() {
       posts: numbers(run.requestIds),
     });
   }
-  // Busy without a room run: a turn someone typed in T3, or the agent continued on its own.
+  // Busy without a room run: a turn someone typed in T3, or the agent continued on its own. Else between turns with
+  // work left running, as T3 lists it, in the Members panel's words ("background work", "monitoring").
+  const now = Date.now();
   for (const participant of snapshot.participants.filter(isActiveParticipant)) {
     if (busy.has(participant.id)) continue;
-    const running = desk?.participants[participant.id]?.runningRun;
-    if ((running && !running.startedByRoom) || (!running && snapshot.participantStatus[participant.id]?.externalActivity)) {
+    const status = snapshot.participantStatus[participant.id];
+    const memberDesk = desk?.participants[participant.id];
+    const running = memberDesk?.runningRun;
+    if ((running && !running.startedByRoom) || (!running && status?.externalActivity)) {
       items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "" });
-    }
-  }
-  // Background work a member holds requests open with ("working since …").
-  for (const seat of snapshot.seats) {
-    if (seat.status === "retired") continue;
-    for (const activity of seat.activities) {
-      const since = sinceWords(activity.since);
-      items.push({ key: `activity:${activity.id}`, group: "working", participant: seatOf(seat.seatId).participant, what: `working since ${since}`, text: `holds ${refs(activity.requestIds) || "its request"} open${activity.kind === "bg" ? " · background work" : ""}` });
+    } else if (betweenTurns(status, memberDesk)) {
+      const jobs = memberDesk?.backgroundTasks ?? [];
+      const text =
+        jobs.length > 0
+          ? jobs.map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`).join(" · ")
+          : "will continue when it finishes";
+      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text });
     }
   }
 

@@ -10,8 +10,6 @@ import { navProps } from "../keys.ts";
  * tools type into it) and the caret after the draft. The conversation stays readable above it and scrolls with the
  * wheel, over the overlay too. Escape, or a fresh Backspace in an empty field, closes it; sending closes it. The draft
  * stays. A Backspace held down to clear the text stops at the empty field: its repeats never close the composer.
- * What sits above the input (a room's background bar) rides with it: in flow above the strip while closed, in the
- * float above the card while open (ComposerFloat), so the open card never covers it.
  */
 export interface ComposerOverlay {
   /** Whether the composer is an overlay at all; when not, it is always open and none of this applies. */
@@ -26,7 +24,7 @@ export interface ComposerOverlay {
   hide: () => void;
   /** Escape, or a fresh Backspace (not a held one's repeat) in an empty field, closes. True when the key was used. */
   fieldKey: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
-  /** The open composer's float (ComposerFloat): the card, and what sits above the input above it. */
+  /** The open composer's float (ComposerFloat). */
   panel: RefObject<HTMLDivElement | null>;
   strip: RefObject<HTMLButtonElement | null>;
   onWheel: (event: WheelEvent<HTMLDivElement>) => void;
@@ -49,16 +47,6 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   const refocus = useRef(false);
   /** The composer is under something (a member's thread over its room, a dialog): its page-wide keys are not its. */
   const covered = useCallback(() => Boolean((strip.current ?? panel.current)?.closest("[inert]")), []);
-  /**
-   * Whether the conversation was read at its end as the composer was opened, measured before the open is rendered:
-   * the render moves what rides above the card (a room's background bar) out of the flow, which makes the scroller
-   * taller by that much, and a reader a little above the end would then count as at it and be scrolled there.
-   */
-  const atEndOnOpen = useRef(false);
-  const measureEnd = useCallback(() => {
-    const scroller = scrollerBeside(strip.current?.closest(".composer-slot") ?? null);
-    atEndOnOpen.current = scroller ? atEndOf(scroller) : false;
-  }, []);
 
   // On arrival the strip takes the focus (a room opened by a click leaves it on the card behind the drawer), so the
   // first Enter opens the composer; a text field that has the focus keeps it.
@@ -92,20 +80,15 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   }, [enabled, isOpen, textarea]);
 
   // The float covers the foot of the conversation: pad it by that much, so its last lines scroll up into view above
-  // the float (what rides above the card included). A conversation read at its end stays at its end. Before paint, so
-  // the last lines never flash under it.
+  // the float. A conversation read at its end stays at its end. Before paint, so the last lines never flash under it.
   useLayoutEffect(() => {
     const el = panel.current;
     const host = el?.parentElement;
     const scroller = scrollerBeside(el);
     if (!enabled || !isOpen || !el || !host || !scroller) return;
-    // The first fit is the open itself: whether to follow the end was measured before its render (measureEnd). The
-    // later ones (the float resized: the field grew, the bar came or went) read the scroller as it is, its foot padded.
-    let opening = true;
     const fit = () => {
       const covered = Math.max(0, scroller.getBoundingClientRect().bottom - el.getBoundingClientRect().top);
-      const atEnd = opening ? atEndOnOpen.current : atEndOf(scroller);
-      opening = false;
+      const atEnd = atEndOf(scroller);
       host.style.setProperty("--composer-cover", `${Math.round(covered)}px`);
       host.dataset.composerOpen = "";
       if (atEnd) scroller.scrollTop = scroller.scrollHeight;
@@ -123,7 +106,6 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
   const show = useCallback(
     (typed?: string) => {
       if (!enabled) return;
-      measureEnd();
       flushSync(() => setOpen(true));
       const el = textarea.current;
       if (!el) return;
@@ -135,12 +117,9 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
     },
-    [enabled, textarea, measureEnd],
+    [enabled, textarea],
   );
-  const reveal = useCallback(() => {
-    measureEnd();
-    setOpen(true);
-  }, [measureEnd]);
+  const reveal = useCallback(() => setOpen(true), []);
   const hide = useCallback(() => {
     refocus.current = Boolean(panel.current?.contains(document.activeElement));
     setOpen(false);
@@ -219,14 +198,12 @@ export function useComposerOverlay(enabled: boolean, textarea: RefObject<HTMLTex
 }
 
 /**
- * The open composer, floated over the foot of the conversation: the card, and above it what sits above the input
- * (`above`: a room's background bar), so the card never covers it. It is the overlay's panel: what it covers is measured
- * from its top, and the wheel over any of it scrolls the conversation behind.
+ * The open composer, floated over the foot of the conversation. It is the overlay's panel: what it covers is measured
+ * from its top, and the wheel over it scrolls the conversation behind.
  */
-export function ComposerFloat({ overlay, above, children }: { overlay: ComposerOverlay; above?: ReactNode; children: ReactNode }) {
+export function ComposerFloat({ overlay, children }: { overlay: ComposerOverlay; children: ReactNode }) {
   return (
     <div ref={overlay.panel} className="composer-float" onWheel={overlay.onWheel}>
-      {above}
       {children}
     </div>
   );

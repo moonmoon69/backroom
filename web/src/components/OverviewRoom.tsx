@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type T3Project } from "../types.ts";
-import { BackgroundBar } from "./BackgroundBar.tsx";
 import { Composer } from "./Composer.tsx";
 import { GitButton, Inspector, type InspectorTab } from "./Inspector.tsx";
 import { CrewButton } from "./Crew.tsx";
@@ -323,7 +322,7 @@ export function OverviewRoom({
       <div className="sheet-body">
         <section className="sheet-main" aria-label={chat ? `Conversation with ${consigliere?.alias}` : "Board"} data-nav-pane="board">
           <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} />
-          <Composer overlay above={<BackgroundBar />} />
+          <Composer overlay />
         </section>
         {panel ? <Inspector tab={panel} onTab={onPanel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}
       </div>

@@ -4140,32 +4140,6 @@ span.reply-to {
   border-color: color-mix(in srgb, var(--warn) 45%, transparent);
 }
 
-/* Above the composer: who is between turns but still working in the background (like T3's "Background work"). Over the
-   open composer it rides in the card's float (.composer-float below), never under the card. */
-.background-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 0 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font-size: var(--text-sm);
-}
-.background-bar .bg-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-.background-bar .bg-jobs {
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
 /* A long press drags instead of selecting text or opening the phone's menu. */
 [data-sort] {
   -webkit-touch-callout: none;
@@ -7505,9 +7479,8 @@ button.work-chip:hover,
 /* =====================================================================================================
    Look → Overview: the composer as an overlay (composerOverlay.tsx). Closed, a strip in the composer's place
    says who a message goes to, what is queued, and the draft. Open, the composer floats over the lower middle of
-   the conversation (.composer-float: the card, and above it what sits above the input, a room's background bar),
-   in large type (while talking you read your own words); the conversation's foot is padded by what the float
-   covers, so its last lines scroll up into view above it.
+   the conversation (.composer-float), in large type (while talking you read your own words); the conversation's
+   foot is padded by what the float covers, so its last lines scroll up into view above it.
    ===================================================================================================== */
 .sheet-main,
 .ov-drawer .room-centre {
@@ -7614,7 +7587,7 @@ button.work-chip:hover,
   border-color: color-mix(in srgb, var(--warn) 55%, transparent);
 }
 
-/* The float: the open card, and above it what sits above the input, so the card never covers it. */
+/* The float: the open card. */
 .composer-float {
   position: absolute;
   left: 12px;
@@ -7625,14 +7598,6 @@ button.work-chip:hover,
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-/* Over the conversation, the bar gets a surface of its own (in flow, it reads on the sheet's). */
-.composer-float > .background-bar {
-  margin: 0;
-  background: var(--bg);
-  box-shadow: var(--shadow-lg);
 }
 
 /* The card: its own containing block, so the nameplate (pixel.css) hangs from its frame and not the float's. */

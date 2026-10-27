@@ -1,5 +1,5 @@
 /** What a room member is doing, from its T3 thread: the Members panel's label, the motion of its card, what runs. */
-import type { Desk, ParticipantStatus } from "./types.ts";
+import { isRunActive, type Desk, type ParticipantStatus } from "./types.ts";
 
 /** What a member is doing, in T3 Code's terms (its thread status pills), with what the room can add. */
 export interface MemberActivity {
@@ -24,6 +24,15 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
 }
 
 /**
+ * Between turns but not done, as T3 reports it: background work or monitoring left running after the turn, which the
+ * agent wakes itself from when it finishes. Null mid-turn, or with nothing left running.
+ */
+export function betweenTurns(status: ParticipantStatus | undefined, desk?: Desk | null): "working" | "monitoring" | null {
+  if (!status || isRunActive(status.status)) return null;
+  return desk?.backgroundLiveness ?? status.background ?? null;
+}
+
+/**
  * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
  * question), working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
  * then only monitors: monitoring), a plan ready to act on, then how its last run ended. `desk` adds what runs.
@@ -44,8 +53,9 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   if (status.status === "running" || status.status === "waiting") return working("working");
   if (status.status === "preparing" || status.status === "queued" || status.status === "starting") return working("starting");
   // Between turns but not done: the agent wakes itself when its background work finishes.
-  if (status.background === "working") return working(jobs.agents > 0 ? "subagents running" : "background work");
-  if (status.background === "monitoring") return { label: "monitoring", tone: "working", motion: "monitoring", detail: jobs.detail };
+  const liveness = betweenTurns(status, desk);
+  if (liveness === "working") return working(jobs.agents > 0 ? "subagents running" : "background work");
+  if (liveness === "monitoring") return { label: "monitoring", tone: "working", motion: "monitoring", detail: jobs.detail };
   if (desk?.interactionMode === "plan" && desk.proposedPlan && !desk.proposedPlan.implementedAt) return idle("plan ready", "input");
   // Between runs: how the last one ended. A run that completed, or a thread with none yet, is ready for the next.
   switch (status.status) {
