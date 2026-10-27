@@ -3,6 +3,7 @@ import { preferredVoice, readBoxVoice, readRate, readSource, readVoiceURI, speak
 import { PALETTES, usePalette, useSkin, type SkinChoice } from "../skin.ts";
 import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
+import { AgentsFileDialog } from "./AgentsFile.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
 import { FolderIcon, GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
@@ -56,6 +57,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const [open, setOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [consigliereOpen, setConsigliereOpen] = useState(false);
+  const [agentsFileOpen, setAgentsFileOpen] = useState(false);
   const { presets } = usePresets();
   const consigliereSetting = useConsigliereSetting();
   const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
@@ -65,7 +67,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const notifyOn = useNotifyOn();
   const boxSpeech = Boolean(useBoxStatus()?.available);
   const { toast } = useToast();
-  // Settings → Agents file (src/app/agentsFile.ts): read from the service each time the menu opens; on by default.
+  // Settings → Agents file (src/app/agentsFile.ts): whether it is on, read from the service each time the menu opens; on by default.
   const [agentsFile, setAgentsFile] = useState(true);
   useEffect(() => {
     if (!open) return;
@@ -123,27 +125,16 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
           </button>
           <button
             type="button"
-            role="menuitemcheckbox"
-            aria-checked={agentsFile}
-            title={
-              agentsFile
-                ? "When a room is created in a project with no instructions for agents yet, Backroom writes the default ones into its folder, once per project, kept out of git, with a git hook that copies them into new worktrees (README: The agents file). Click to turn it off."
-                : "Backroom writes no agents file into projects. Click to have new rooms write the default one where a project has no instructions for agents yet."
-            }
-            onClick={pick(async () => {
-              try {
-                await api.command({ type: "agentsFile.enabled.set", enabled: !agentsFile });
-                setAgentsFile(!agentsFile);
-                toast(agentsFile ? "New rooms write no agents file" : "New rooms write the default agents file where a project has no instructions for agents yet", "success");
-              } catch (error) {
-                toast(error instanceof Error ? error.message : String(error));
-              }
-            })}
+            role="menuitem"
+            title={`The habits every agent in a project keeps, in its AGENTS.md: ${
+              agentsFile ? "written once when a project with no instructions for agents yet gets its first room" : "new rooms write none (off)"
+            }. Opens the template ({checks} filled per project), the switch, and the projects already written, with a diff and Apply for those that differ from the saved template (README: The agents file).`}
+            onClick={pick(() => setAgentsFileOpen(true))}
           >
             <span className="menu-icon" aria-hidden="true">
               <FolderIcon />
             </span>
-            Agents file
+            Agents file…
             <span className="menu-value">{agentsFile ? "on" : "off"}</span>
           </button>
           {notificationsSupported ? (
@@ -225,6 +216,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
       ) : null}
       {voiceOpen ? <VoiceDialog onClose={() => setVoiceOpen(false)} /> : null}
       {consigliereOpen ? <ConsigliereDialog onClose={() => setConsigliereOpen(false)} /> : null}
+      {agentsFileOpen ? <AgentsFileDialog onClose={() => setAgentsFileOpen(false)} /> : null}
     </span>
   );
 }

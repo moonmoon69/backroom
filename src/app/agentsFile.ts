@@ -46,10 +46,12 @@
  * every new room). What it wrote is kept in the kv table, one record per project folder, so a project removed from T3
  * and added again keeps its record.
  */
-import { lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { createHash } from "node:crypto";
+import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Repos } from "../db/repos.ts";
+import { RoomError } from "../domain/errors.ts";
 import { canonicalPath, runGit } from "../git/reader.ts";
 
 export const AGENTS_FILE = "AGENTS.md";
@@ -113,6 +115,8 @@ export interface AgentsFileRecord {
   /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, or CLAUDE.md alone. */
   written: string[];
   writtenAt: string;
+  /** When the user last applied the current template over the AGENTS.md Backroom wrote (agentsFile.apply). */
+  appliedAt?: string;
   /** The folder was in a git repository. */
   repo: boolean;
   /** The entries added to the repository's exclude file (`/web/AGENTS.md`); none outside git, or when that failed. */
@@ -131,6 +135,50 @@ export interface AgentsFileWritten {
   hook: HookState | null;
 }
 
+/**
+ * A Backroom-written AGENTS.md against the saved template rendered for its project: the same, different, removed (gone
+ * from the folder: Backroom does not write it again), or blocked (its folder is not on this machine, or it is no longer a
+ * plain file of its own: a link, a folder, a file with another name linked to it, or unreadable). Apply is refused but
+ * for same and differs.
+ */
+export type AgentsFileState = "same" | "differs" | "removed" | "blocked";
+
+/** One project folder where Backroom wrote AGENTS.md, as GET /api/agents-files lists it. */
+export interface AgentsFileEntry {
+  projectId: string;
+  folder: string;
+  state: AgentsFileState;
+  /** Why the state is blocked. */
+  reason?: string;
+  /** The project's title in T3 when T3 still has it; null when it does not (or did not answer). */
+  title: string | null;
+  writtenAt: string;
+  appliedAt: string | null;
+}
+
+/**
+ * The project's AGENTS.md against the saved template rendered for it (GET /api/agents-files/diff), with the digests of
+ * both as read: agentsFile.apply takes them back, and refuses when either side changed since.
+ */
+export interface AgentsFileDiff {
+  projectId: string;
+  folder: string;
+  state: "same" | "differs";
+  /** git diff --no-index from the project's file to the rendered template; empty when they are the same. */
+  diff: string;
+  fileDigest: string;
+  templateDigest: string;
+}
+
+/** A project by its id or its folder, as the diff route and agentsFile.apply name it. */
+export type AgentsFileTarget = { projectId?: string | undefined; folder?: string | undefined };
+
+/** Why there is no diff or nothing was applied: the page shows the message. */
+const refused = (message: string): RoomError => new RoomError("agents_file_refused", message, 409);
+/** Apply's refusal when the file or the rendered template is not what the diff showed. */
+export const STALE = "the file changed since you looked at it: open the diff again";
+const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+
 export interface AgentsFilesOptions {
   log?: (message: string, detail?: unknown) => void;
   /**
@@ -138,7 +186,7 @@ export interface AgentsFilesOptions {
    * ROOMS_FAKE_PROJECT_DIR), so a real folder added to it as a project is never written in. Absent: any folder.
    */
   onlyUnder?: string[];
-  /** Tests only: runs between the look at the folder and each write, where another writer could get in. */
+  /** Tests only: runs between the look at the folder and each write (apply's too), where another writer could get in. */
   beforeWrite?: (folder: string, file: string) => void;
 }
 
@@ -229,36 +277,59 @@ export function projectChecks(folder: string): string[] {
   return checks;
 }
 
+/** The placeholder a template holds for the project's checks, filled when the file is written for a project. */
+export const CHECKS_PLACEHOLDER = "{checks}";
+
+/** The checks phrase {checks} stands for: the project's checks named when they could be read. */
+export function checksPhrase(checks: string[]): string {
+  return checks.length > 0 ? `${checks.map((check) => `\`${check}\``).join(", ")}, and whatever else its README asks for` : "the ones its README or package scripts name";
+}
+
 /**
- * The default AGENTS.md, the one source of its text: the worker's habits in words that fit any project and any
- * harness, the project's checks named when they could be read.
+ * The default template, the one source of the default AGENTS.md: the worker's habits in words that fit any project and
+ * any harness, with {checks} where the project's checks go.
  */
+export const DEFAULT_AGENTS_TEMPLATE = [
+  "# Working in this project",
+  "",
+  "The habits of every agent working here, whoever assigned the work.",
+  "",
+  "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
+  "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
+  "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
+  "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
+  "- A writer delivers the change committed, with its tests and the checks it ran.",
+  "- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails.",
+  "- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone.",
+  "- Before you report ready, review your own diff and fix what it finds.",
+  "- Turn every review finding into a test that fails without the fix.",
+  `- Run the project's checks before you report ready: ${CHECKS_PLACEHOLDER}. Say what you ran and what it printed, and name any check you skipped.`,
+  "- Write no separate status or report files unless asked.",
+  "- End every answer with a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated.",
+  "",
+  "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom changes it only when you apply the current default from Settings → Agents file.",
+  "",
+].join("\n");
+
+/** Settings → Agents file: the user's template, when they saved one; absent, the default. */
+export const AGENTS_TEXT_KEY = "agentsFile.text";
+/** The longest template the editor saves (agentsFile.text.set). */
+export const AGENTS_TEXT_MAX = 20000;
+
+/** A template written for a project: every {checks} filled with its checks phrase, LF line endings, one final newline. */
+export function renderAgentsText(template: string, checks: string[]): string {
+  return `${template.replace(/\r\n?/g, "\n").split(CHECKS_PLACEHOLDER).join(checksPhrase(checks)).trimEnd()}\n`;
+}
+
+/** The default AGENTS.md for a project with these checks: the default template rendered. */
 export function defaultAgentsText(checks: string[]): string {
-  const run =
-    checks.length > 0
-      ? `Run the project's checks before you report ready: ${checks.map((check) => `\`${check}\``).join(", ")}, and whatever else its README asks for.`
-      : "Run the project's checks before you report ready: the ones its README or package scripts name.";
-  return [
-    "# Working in this project",
-    "",
-    "The habits of every agent working here, whoever assigned the work.",
-    "",
-    "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
-    "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
-    "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
-    "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
-    "- A writer delivers the change committed, with its tests and the checks it ran.",
-    "- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails.",
-    "- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone.",
-    "- Before you report ready, review your own diff and fix what it finds.",
-    "- Turn every review finding into a test that fails without the fix.",
-    `- ${run} Say what you ran and what it printed, and name any check you skipped.`,
-    "- Write no separate status or report files unless asked.",
-    "- End every answer with a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated.",
-    "",
-    "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom never changes it.",
-    "",
-  ].join("\n");
+  return renderAgentsText(DEFAULT_AGENTS_TEMPLATE, checks);
+}
+
+/** The template new rooms write: the user's (Settings → Agents file) when they saved one, else the default. */
+export function agentsTemplate(repos: Pick<Repos, "getKv">): { text: string; custom: boolean; defaultText: string } {
+  const saved = repos.getKv(AGENTS_TEXT_KEY)?.trim();
+  return { text: saved ? saved : DEFAULT_AGENTS_TEMPLATE, custom: Boolean(saved), defaultText: DEFAULT_AGENTS_TEMPLATE };
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -461,7 +532,7 @@ export class AgentsFiles {
         try {
           this.beforeWrite(folder, name);
           // "wx": never over a file (or a link) that appeared since the look above.
-          writeFileSync(join(folder, name), name === AGENTS_FILE ? defaultAgentsText(projectChecks(folder)) : CLAUDE_TEXT, { flag: "wx" });
+          writeFileSync(join(folder, name), name === AGENTS_FILE ? renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder)) : CLAUDE_TEXT, { flag: "wx" });
           written.push(name);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") this.log(`could not write ${name} in ${folder}`, errorText(error));
@@ -477,6 +548,147 @@ export class AgentsFiles {
       this.save(record);
       this.log(`wrote ${written.join(" and ")} in ${folder}${git ? `; kept out of git: ${excluded.length > 0 ? "yes" : "no"}; worktree hook: ${hook}` : " (not a git repository)"}`);
       return { projectId: project.id, folder, written, excluded: excluded.length > 0, hook };
+    });
+  }
+
+  /** The records where Backroom wrote AGENTS.md (CLAUDE.md alone is never compared: it is the one import line). */
+  private agentsRecords(): AgentsFileRecord[] {
+    return this.records().filter((record) => Array.isArray(record.written) && record.written.includes(AGENTS_FILE));
+  }
+
+  /** The record for a project id or a folder, with AGENTS.md among what Backroom wrote; null when there is none. */
+  private agentsRecord(target: AgentsFileTarget): AgentsFileRecord | null {
+    if (target.folder !== undefined) {
+      if (!isAbsolute(target.folder)) return null;
+      const record = this.recordAt(canonicalPath(target.folder));
+      return record && record.written.includes(AGENTS_FILE) ? record : null;
+    }
+    return this.agentsRecords().find((record) => record.projectId === target.projectId) ?? null;
+  }
+
+  /**
+   * The project's AGENTS.md as it is today, and the saved template rendered for it. Read without following a link (the
+   * name is looked at with lstat, then opened with O_NOFOLLOW and its handle checked), and a read that fails is
+   * blocked, never removed.
+   */
+  private compare(record: AgentsFileRecord): { state: "same" | "differs"; text: string; rendered: string } | { state: "removed" } | { state: "blocked"; reason: string } {
+    const folder = record.folder;
+    if (!isDirectory(folder)) return { state: "blocked", reason: `${folder} is not on this machine` };
+    const path = join(folder, AGENTS_FILE);
+    let kind: Stats;
+    try {
+      kind = lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "removed" };
+      return { state: "blocked", reason: `AGENTS.md cannot be looked at: ${errorText(error)}` };
+    }
+    const plain = (stats: Stats): string | null =>
+      stats.isSymbolicLink() ? "AGENTS.md is a link now" : !stats.isFile() ? "AGENTS.md is no longer a plain file" : stats.nlink !== 1 ? "AGENTS.md shares its contents with another name (a hard link)" : null;
+    const before = plain(kind);
+    if (before) return { state: "blocked", reason: before };
+    let text: string;
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const now = plain(fstatSync(fd));
+      if (now) return { state: "blocked", reason: now };
+      text = readFileSync(fd, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return { state: "blocked", reason: code === "ELOOP" ? "AGENTS.md is a link now" : `AGENTS.md cannot be read: ${errorText(error)}` };
+    } finally {
+      if (fd !== null) closeSync(fd);
+    }
+    const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder));
+    return { state: text === rendered ? "same" : "differs", text, rendered };
+  }
+
+  /**
+   * Every project folder where Backroom wrote AGENTS.md, with its file's state against the saved template rendered for
+   * it; `projects` are T3's (for the titles), null when T3 did not answer.
+   */
+  list(projects: ReadonlyArray<{ id: string; title: string }> | null = null): AgentsFileEntry[] {
+    return this.agentsRecords()
+      .sort((a, b) => a.folder.localeCompare(b.folder))
+      .map((record) => {
+        const compared = this.compare(record);
+        return {
+          projectId: record.projectId,
+          folder: record.folder,
+          state: compared.state,
+          ...(compared.state === "blocked" ? { reason: compared.reason } : {}),
+          title: projects?.find((project) => project.id === record.projectId)?.title ?? null,
+          writtenAt: record.writtenAt,
+          appliedAt: record.appliedAt ?? null,
+        };
+      });
+  }
+
+  /** The project's AGENTS.md against the saved template rendered for it, as git's line diff, with the digests of both. */
+  async diff(target: AgentsFileTarget): Promise<AgentsFileDiff> {
+    const record = this.agentsRecord(target);
+    if (!record) throw refused("Backroom wrote no AGENTS.md there");
+    const compared = this.compare(record);
+    if (compared.state === "removed") throw refused(`AGENTS.md is gone from ${record.folder}, and Backroom does not write it again`);
+    if (compared.state === "blocked") throw refused(compared.reason);
+    let diff = "";
+    if (compared.state === "differs") {
+      // Two copies in a folder of its own, so nothing of the project's (its git config, attributes or links) is in play.
+      const scratch = mkdtempSync(join(tmpdir(), "backroom-agents-diff-"));
+      try {
+        mkdirSync(join(scratch, "project"));
+        mkdirSync(join(scratch, "template"));
+        writeFileSync(join(scratch, "project", AGENTS_FILE), compared.text);
+        writeFileSync(join(scratch, "template", AGENTS_FILE), compared.rendered);
+        diff = await runGit(scratch, ["diff", "--no-index", "--no-ext-diff", "--no-color", "--", `project/${AGENTS_FILE}`, `template/${AGENTS_FILE}`], { okCodes: [0, 1] });
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    }
+    return { projectId: record.projectId, folder: record.folder, state: compared.state, diff, fileDigest: digest(compared.text), templateDigest: digest(compared.rendered) };
+  }
+
+  /**
+   * The user's Apply: the saved template rendered for the project, written over the whole AGENTS.md Backroom wrote
+   * there, bound to the diff the user looked at (its two digests). Only in a folder Backroom has a record for, on this
+   * machine and under onlyUnder, and only through a handle on a plain file of its own (opened with O_NOFOLLOW and no
+   * O_CREAT, checked with fstat): never through a link, never a file that is missing. CLAUDE.md, the exclude file, the
+   * hook and git are never touched, and worktrees keep their copies. The setting governs automatic writing only.
+   */
+  apply(target: AgentsFileTarget & { fileDigest: string; templateDigest: string }): Promise<AgentsFileEntry> {
+    const record = this.agentsRecord(target);
+    if (!record) return Promise.reject(refused("Backroom wrote no AGENTS.md there, so it applies nothing"));
+    return this.serial(record.folder, async () => {
+      const folder = record.folder;
+      if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || isInside(folder, root))) throw refused(`${folder} is outside the folders this service writes in`);
+      const compared = this.compare(record);
+      if (compared.state === "removed") throw refused(`AGENTS.md is gone from ${folder}, and Backroom does not write it again`);
+      if (compared.state === "blocked") throw refused(compared.reason);
+      if (digest(compared.text) !== target.fileDigest || digest(compared.rendered) !== target.templateDigest) throw refused(STALE);
+      const path = join(folder, AGENTS_FILE);
+      this.beforeWrite(folder, AGENTS_FILE);
+      // No O_CREAT: a file removed meanwhile is not made again. O_NOFOLLOW: a link put there meanwhile is not followed.
+      let fd: number;
+      try {
+        fd = openSync(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        throw refused(code === "ENOENT" ? `AGENTS.md is gone from ${folder}, and Backroom does not write it again` : code === "ELOOP" ? "AGENTS.md is a link now" : `could not write AGENTS.md in ${folder}: ${errorText(error)}`);
+      }
+      try {
+        const stats = fstatSync(fd);
+        if (!stats.isFile() || stats.nlink !== 1) throw refused("AGENTS.md is no longer a plain file of its own");
+        // What the handle holds is what the user looked at, read through the handle itself.
+        if (digest(readFileSync(fd, "utf8")) !== target.fileDigest) throw refused(STALE);
+        ftruncateSync(fd, 0);
+        const bytes = Buffer.from(compared.rendered, "utf8");
+        for (let done = 0; done < bytes.length; ) done += writeSync(fd, bytes, done, bytes.length - done, done);
+      } finally {
+        closeSync(fd);
+      }
+      this.save({ ...(this.recordAt(folder) ?? record), appliedAt: new Date().toISOString() });
+      this.log(`applied the saved agents template to ${path}`);
+      return this.list().find((entry) => entry.folder === folder)!;
     });
   }
 

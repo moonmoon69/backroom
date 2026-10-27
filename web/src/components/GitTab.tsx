@@ -495,6 +495,30 @@ function diffLines(diff: string): DiffLine[] {
   return lines;
 }
 
+function DiffLinesView({ lines, label }: { lines: DiffLine[]; label: string }) {
+  return (
+    <div className="diff-view mono" role="table" aria-label={label}>
+      {lines.map((line, index) => (
+        <div key={index} className={`diff-line diff-${line.kind}`} role="row">
+          <span className="diff-no" aria-hidden="true">
+            {line.oldNo ?? ""}
+          </span>
+          <span className="diff-no" aria-hidden="true">
+            {line.newNo ?? ""}
+          </span>
+          <span className="diff-text">{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}{line.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A unified diff drawn as the Git tab draws one: old and new line numbers, added and removed lines marked. */
+export function DiffView({ diff, label }: { diff: string; label: string }) {
+  const lines = useMemo(() => diffLines(diff), [diff]);
+  return lines.length > 0 ? <DiffLinesView lines={lines} label={label} /> : null;
+}
+
 function GitDiffDialog({ target, onClose }: { target: DiffTarget; onClose: () => void }) {
   const { snapshot } = useRoom();
   const [result, setResult] = useState<GitDiff | null>(null);
@@ -527,21 +551,7 @@ function GitDiffDialog({ target, onClose }: { target: DiffTarget; onClose: () =>
       {error ? <p className="status-error">{error}</p> : null}
       {!result && !error ? <p className="mono muted">reading the diff…</p> : null}
       {result && lines.length === 0 ? <p className="mono muted">No line changes (a rename, a mode change, or an empty file).</p> : null}
-      {lines.length > 0 ? (
-        <div className="diff-view mono" role="table" aria-label={`Diff of ${target.path}`}>
-          {lines.map((line, index) => (
-            <div key={index} className={`diff-line diff-${line.kind}`} role="row">
-              <span className="diff-no" aria-hidden="true">
-                {line.oldNo ?? ""}
-              </span>
-              <span className="diff-no" aria-hidden="true">
-                {line.newNo ?? ""}
-              </span>
-              <span className="diff-text">{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}{line.text}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {lines.length > 0 ? <DiffLinesView lines={lines} label={`Diff of ${target.path}`} /> : null}
       {result?.truncated ? <p className="mono muted">The diff is cut here: it is larger than 400 KB.</p> : null}
     </Dialog>
   );

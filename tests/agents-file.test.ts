@@ -760,7 +760,7 @@ test("the default text, with checks and without: the session, scope, shared-chec
     const lines = text.split("\n");
     assert.ok(lines.length - 1 < 20, `under twenty lines (has ${lines.length - 1})`);
     assert.equal(lines[0], "# Working in this project");
-    assert.match(lines.at(-2) ?? "", /^Backroom wrote this file .* Backroom never changes it\.$/, "the closing line");
+    assert.match(lines.at(-2) ?? "", /^Backroom wrote this file .* Backroom changes it only when you apply the current default from Settings → Agents file\.$/, "the closing line");
     for (const [habit, pattern] of [
       ["keep going without a decision", /Keep going while a step needs no decision from the user/],
       ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing/],

@@ -8219,3 +8219,72 @@ span.reply-to {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+
+/* ---- Settings → Agents file, and the overview's mark (src/app/agentsFile.ts) ---- */
+.agents-file-switch {
+  margin-top: 8px;
+}
+
+.agents-file-projects {
+  margin-top: 16px;
+}
+
+.agents-file-heading {
+  font-size: var(--text-sm);
+  margin: 0 0 4px;
+}
+
+.agents-file-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agents-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.agents-file-folder {
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 12em;
+}
+
+.agents-file-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.agents-file-reason {
+  flex-basis: 100%;
+}
+
+.agents-file-differs,
+.agents-file-blocked {
+  color: var(--pc-text);
+}
+
+/* Quiet: a badge beside the folder, not a toast. */
+.ov-agents-mark {
+  align-self: center;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+.ov-agents-mark:hover,
+.ov-agents-mark:focus-visible {
+  border-color: var(--line);
+  color: var(--fg);
+}

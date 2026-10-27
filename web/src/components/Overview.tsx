@@ -14,8 +14,10 @@ import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
 import { overviewThreads } from "../seenNews.ts";
-import type { AgentsFileWritten, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { AgentsFileEntry, AgentsFileWritten, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
 import { useToast } from "./Toast.tsx";
+import { AgentsFileDiffDialog, AgentsFileMark } from "./AgentsFile.tsx";
+import { reloadAgentsFiles, useAgentsFiles } from "../agentsFiles.ts";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
@@ -104,6 +106,12 @@ export function Overview({
   returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
+  // The agents files Backroom wrote (src/app/agentsFile.ts): a project heading is marked when its AGENTS.md differs from
+  // the saved template. Read when the overview mounts, and again when the editor or a diff dialog closes.
+  const { entries: agentsFiles } = useAgentsFiles();
+  useEffect(() => reloadAgentsFiles(), []);
+  const differs = (projectId: string) => agentsFiles?.find((entry) => entry.projectId === projectId && entry.state === "differs") ?? null;
+  const [agentsDiff, setAgentsDiff] = useState<AgentsFileEntry | null>(null);
   const { toast } = useToast();
   const { presets } = usePresets();
   const consigliereSetting = useConsigliereSetting();
@@ -304,6 +312,7 @@ export function Overview({
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
+                {differs(project.id) ? <AgentsFileMark entry={differs(project.id)!} onOpen={() => setAgentsDiff(differs(project.id)!)} /> : null}
                 <span className="spacer" />
                 {known ? (
                   <button
@@ -356,7 +365,10 @@ export function Overview({
               setDialog(null);
               onOpenRoom(result.roomId as string);
               // Backroom wrote the default agents file in the project's folder just now: said once.
-              if (result.type === "room.created" && result.agentsFile) toast(agentsFileNote(result.agentsFile), agentsFileTone(result.agentsFile));
+              if (result.type === "room.created" && result.agentsFile) {
+                toast(agentsFileNote(result.agentsFile), agentsFileTone(result.agentsFile));
+                reloadAgentsFiles();
+              }
             }
           }}
         />
@@ -375,6 +387,7 @@ export function Overview({
           }}
         />
       ) : null}
+      {agentsDiff ? <AgentsFileDiffDialog entry={agentsDiff} onClose={() => setAgentsDiff(null)} /> : null}
       {dialog?.kind === "arrange" && projects ? <ArrangeDialog rooms={rooms} projects={projects} runCommand={onCommand} onClose={() => setDialog(null)} /> : null}
     </div>
   );

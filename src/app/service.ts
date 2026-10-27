@@ -12,7 +12,7 @@ import type { RoomCommand, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
-import { AGENTS_FILE_SETTING_KEY, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
+import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
 import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
@@ -37,6 +37,8 @@ export type CommandResult =
   /** agentsFile: Backroom wrote the default agents file in the project's folder just now (the page says so). */
   | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "room.updated"; roomId: string }
+  /** agentsFile.apply: the project's AGENTS.md now holds the saved template rendered for it. */
+  | { type: "agentsFile.applied"; file: AgentsFileEntry }
   | { type: "rooms.reordered" }
   | { type: "projects.reordered" }
   | { type: "project.updated"; projectId: string }
@@ -264,6 +266,15 @@ export class RoomService {
         if (command.enabled) this.repos.deleteKv(AGENTS_FILE_SETTING_KEY);
         else this.repos.setKv(AGENTS_FILE_SETTING_KEY, "off");
         return { type: "settings.updated" };
+      case "agentsFile.text.set":
+        if (command.text === null) this.repos.deleteKv(AGENTS_TEXT_KEY);
+        else this.repos.setKv(AGENTS_TEXT_KEY, command.text);
+        return { type: "settings.updated" };
+      case "agentsFile.apply": {
+        if ((command.projectId === undefined) === (command.folder === undefined)) throw new RoomError("bad_request", "agentsFile.apply takes a projectId or a folder");
+        if (!this.agentsFiles) throw new RoomError("agents_file_refused", "this service writes no agents files", 409);
+        return { type: "agentsFile.applied", file: await this.agentsFiles.apply(command) };
+      }
       case "room.delete":
         return this.deleteRoom(command);
       case "participant.create":

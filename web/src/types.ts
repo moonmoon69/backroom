@@ -545,6 +545,30 @@ export interface AgentsFileWritten {
   hook: "installed" | "ours" | "own-hook" | "hooks-path" | "not-main" | "no-exclude" | "failed" | null;
 }
 
+/** One project folder where Backroom wrote AGENTS.md, against the saved template rendered for it (GET /api/agents-files). */
+export interface AgentsFileEntry {
+  projectId: string;
+  folder: string;
+  /** blocked: the folder is not on this machine, or AGENTS.md is no longer a plain file of its own; Apply is refused. */
+  state: "same" | "differs" | "removed" | "blocked";
+  reason?: string;
+  /** The project's title while T3 has it. */
+  title: string | null;
+  writtenAt: string;
+  appliedAt: string | null;
+}
+
+/** A project's AGENTS.md against the saved template rendered for it, with the digests agentsFile.apply takes back. */
+export interface AgentsFileDiff {
+  projectId: string;
+  folder: string;
+  state: "same" | "differs";
+  /** Unified diff from the project's file to the template; empty when the same. */
+  diff: string;
+  fileDigest: string;
+  templateDigest: string;
+}
+
 /** Per-model option from T3's manifest (effort, contextWindow, fastMode, thinking, …). */
 export interface ModelOptionDescriptor {
   id: string;
@@ -1248,6 +1272,10 @@ export type RoomCommand =
   | { type: "project.reorder"; projectIds: string[] }
   /** Settings → Agents file: whether Backroom writes the default agents file in a project's folder (on by default). */
   | { type: "agentsFile.enabled.set"; enabled: boolean }
+  /** Settings → Agents file: the template new rooms write ({checks} filled per project); null goes back to Backroom's. */
+  | { type: "agentsFile.text.set"; text: string | null }
+  /** Apply the saved template to one project's AGENTS.md, bound to the diff the user looked at. */
+  | { type: "agentsFile.apply"; projectId?: string | undefined; folder?: string | undefined; fileDigest: string; templateDigest: string }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
   | {
       type: "participant.create";
@@ -1306,6 +1334,7 @@ export type CommandResult =
   /** agentsFile: Backroom wrote the default agents file in the project's folder just now (the page says so). */
   | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "settings.updated" }
+  | { type: "agentsFile.applied"; file: AgentsFileEntry }
   | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }

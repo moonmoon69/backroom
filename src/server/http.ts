@@ -45,7 +45,7 @@ import { BrowserToolError, type BrowserTools } from "../browser/tools.ts";
 import { BoardError } from "../app/board.ts";
 import { BoardEngine } from "../app/boardEngine.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, ENGINE_DEFAULT_CONSIGLIERE_RULES, designationWarnings, retireThreadChoice } from "../app/consigliere.ts";
-import { AGENTS_FILE_SETTING_KEY } from "../app/agentsFile.ts";
+import { AGENTS_FILE_SETTING_KEY, agentsTemplate } from "../app/agentsFile.ts";
 import { parseExplicit } from "../parser/explicit.ts";
 import { resolveLocalImage } from "./localImage.ts";
 import { previewFile } from "./filePreview.ts";
@@ -884,7 +884,28 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       retireThread: retireThreadChoice(stack.repos),
       // Settings → Agents file: whether a new room writes the default agents file in its project's folder (src/app/agentsFile.ts).
       agentsFile: stack.repos.getKv(AGENTS_FILE_SETTING_KEY) !== "off",
+      // The template it writes, {checks} filled per project: the user's when they saved one, and Backroom's to go back to.
+      agentsFileText: agentsTemplate(stack.repos),
     });
+  });
+  /**
+   * Every project folder where Backroom wrote AGENTS.md, each with its file's state against the saved template rendered
+   * for it (same, differs, removed, blocked) and the project's title when T3 still has it. A few file reads per call.
+   */
+  app.get("/api/agents-files", async (c) => {
+    const files = stack.service.agentsFiles;
+    if (!files) return c.json([]);
+    const projects = await stack.adapter.listProjects().catch(() => null);
+    return c.json(files.list(projects));
+  });
+  /** One project's AGENTS.md (?projectId= or ?folder=) against the saved template rendered for it, with the digests Apply takes back. */
+  app.get("/api/agents-files/diff", async (c) => {
+    const files = stack.service.agentsFiles;
+    if (!files) throw new RoomError("agents_file_refused", "this service writes no agents files", 409);
+    const projectId = c.req.query("projectId");
+    const folder = c.req.query("folder");
+    if (!projectId === !folder) throw new RoomError("bad_request", "give a projectId or a folder");
+    return c.json(await files.diff(projectId ? { projectId } : { folder: folder! }));
   });
   /** What to tell the user before a member is made Consigliere: reasons it may not work. It is allowed all the same. */
   app.get("/api/rooms/:roomId/participants/:participantId/consigliere-warnings", async (c) => {

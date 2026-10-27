@@ -383,6 +383,17 @@ export const ProjectCreateCommand = z
 /** Settings → Agents file: whether a room created in a project without one writes the default agents file (on by default). */
 export const AgentsFileEnabledCommand = z.object({ type: z.literal("agentsFile.enabled.set"), enabled: z.boolean() }).strict();
 
+/** Settings → Agents file: the template new rooms write, {checks} filled per project; null goes back to Backroom's default. */
+export const AgentsFileTextSetCommand = z.object({ type: z.literal("agentsFile.text.set"), text: z.string().trim().min(1).max(20000).nullable() }).strict();
+
+/**
+ * Apply: the saved template rendered for one project, written over the AGENTS.md Backroom wrote there (src/app/agentsFile.ts).
+ * The project by its id or its folder; the two digests are the diff's the user looked at.
+ */
+export const AgentsFileApplyCommand = z
+  .object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty.optional(), folder: nonEmpty.optional(), fileDigest: nonEmpty, templateDigest: nonEmpty })
+  .strict();
+
 /** An image sent inline with a direct thread message: PNG, JPEG, GIF or WebP as a base64 data URL (T3's upload form). */
 export const InlineImageSchema = z
   .object({
@@ -483,6 +494,8 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   NativeUserInputRespondCommand,
   ProjectCreateCommand,
   AgentsFileEnabledCommand,
+  AgentsFileTextSetCommand,
+  AgentsFileApplyCommand,
   ThreadStartCommand,
   ThreadSendCommand,
   ThreadInterruptCommand,
