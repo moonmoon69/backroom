@@ -242,6 +242,10 @@ test("blocked, never removed: a link, a folder, a hard link, an unreadable file,
   t.after(() => chmodSync(join(unreadable.dir, "AGENTS.md"), 0o644));
   const gone = await written(s);
   rmSync(gone.dir, { recursive: true, force: true });
+  // A folder that is there but cannot be searched: AGENTS.md cannot even be looked at, which is no removal.
+  const unsearchable = await written(s);
+  chmodSync(unsearchable.dir, 0o666);
+  t.after(() => chmodSync(unsearchable.dir, 0o755));
 
   const cases: Array<[string, string, RegExp]> = [
     ["a link", linked.dir, /a link now/],
@@ -251,7 +255,7 @@ test("blocked, never removed: a link, a folder, a hard link, an unreadable file,
     ["a folder not on this machine", gone.dir, /is not on this machine/],
   ];
   // Root reads a file whatever its mode: the unreadable case is only for an ordinary account.
-  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.dir, /cannot be read/]);
+  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.dir, /cannot be read/], ["a folder that cannot be searched", unsearchable.dir, /cannot be looked at/]);
   for (const [what, at, reason] of cases) {
     const entry = await s.stateOf(at);
     assert.equal(entry?.state, "blocked", what);

@@ -42,7 +42,9 @@
  * that ends with no further turn gets one follow-up after 30 s of quiet. Nothing holds a request open.
  *
  * `--step ui` goes on, after the model picker, the effort tile and the crew tiles' single button, two lines and hover, with A1's agents file (rehearseAgentsFile): a room created from the overview in a scratch project
- * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; and ends with the per-project browser states.
+ * without one writes it, keeps it out of git and installs the hook that copies it into new worktrees; the template edited in
+ * Settings → Agents file marks the project's heading, the mark opens the diff, and Apply writes the template over the file;
+ * and ends with the per-project browser states.
  * ROOMS_FAKE_PROJECT_DIR, which the service inherits, points the demo project every step uses at a folder of the
  * caller's (a scratch git repository, so the steps run where the agents file is written too).
  *
@@ -67,7 +69,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1875,6 +1877,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
  * own data folder (deleted with it by the next run), added to the fake T3. A room created from the overview's + writes
  * AGENTS.md and a CLAUDE.md importing it, keeps them out of git in the repository's .git/info/exclude, installs the
  * post-checkout hook, opens at once and says so in a toast; a worktree added then holds the two files, copied by the hook.
+ * Then Settings → Agents file: a template saved there lists the project as differing, its heading on the overview gets the
+ * quiet mark, the mark opens the diff, and Apply writes the saved template over the file and nothing else.
  */
 /**
  * As Checks.state, for states that read the service through a probe of their own rather than a room's snapshot: a state
@@ -1961,6 +1965,101 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
     },
     [],
   );
+
+  // The template edited in Settings → Agents file: the scratch project's heading is marked, the mark opens the diff, and
+  // Apply writes the saved template over the file (#31, #49).
+  const template = "# Scratch habits: run {checks} before you report.";
+  const applied = "# Scratch habits: run `npm run test`, and whatever else its README asks for before you report.\n";
+  const claudeBefore = readFileSync(join(folder, "CLAUDE.md"), "utf8");
+  const worktreeCopy = readFileSync(join(worktree, "AGENTS.md"), "utf8");
+  type Entry = { folder: string; state: string; projectId: string };
+  const entry = async () => (await service.call<Entry[]>("GET", "/api/agents-files")).find((e) => e.folder === realpathSync(folder)) ?? null;
+  const textarea = "() => document.querySelector('.agents-file-template textarea')?.value ?? null";
+  const mark = `() => [...document.querySelectorAll('.ov-project')].find((s) => s.getAttribute('aria-label') === ${JSON.stringify(title)})?.querySelector('.ov-project-title .ov-agents-mark')?.textContent ?? null`;
+  browser.click(/button "Back to the overview"/);
+  browser.waitFor(title);
+  // The room's toast sits over the dialog's foot (its Done): dismissed first, as the user would.
+  for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
+  browser.click(/button "Settings"/);
+  browser.click(/menuitem "Agents file…/);
+  browser.waitFor("Projects written");
+  browser.poll<string | null>("the template to be read", textarea, (value) => typeof value === "string" && value.startsWith("# Working in this project"));
+  // Cleared with keys and checked empty before the new text is typed: a fill over a non-empty field can race React.
+  browser.click(/textbox "The template/);
+  browser.on("press", "Control+a");
+  browser.on("press", "Backspace");
+  browser.poll<string | null>("the template to be empty", textarea, (value) => value === "");
+  browser.fill(/textbox "The template/, template);
+  browser.poll<string | null>("the template to hold the new text", textarea, (value) => value === template);
+  // Unsaved: the dialog says Show diff and Apply wait for a save.
+  browser.waitFor("Save the template first");
+  browser.click(/button "Save template"/);
+  await state(
+    "Settings → Agents file: the edited template saved, the scratch project listed as differing from it",
+    async () => {
+      const settings = await service.call<{ agentsFile: boolean; agentsFileText: { text: string; custom: boolean } }>("GET", "/api/settings");
+      if (!settings.agentsFileText.custom || settings.agentsFileText.text !== template) return null;
+      const now = await entry();
+      if (now?.state !== "differs") return null;
+      if (readFileSync(join(folder, "AGENTS.md"), "utf8") === applied) fail("saving the template changed the project's file");
+      return `the saved template is ${JSON.stringify(template)}; ${folder} is listed as differs, its file untouched`;
+    },
+    [],
+    () => {
+      browser.poll<string | null>("the scratch project's row to say it differs", `() => [...document.querySelectorAll('.agents-file-row')].find((r) => r.textContent.includes(${JSON.stringify(realpathSync(folder))}))?.dataset.state ?? null`, (v) => v === "differs");
+      browser.poll<boolean>("Show diff and Apply to be offered now the template is saved", "() => [...document.querySelectorAll('.agents-file-row[data-state=\"differs\"] button')].some((b) => !b.disabled)", (v) => v === true);
+      log("  page: the row says differs, with Show diff and Apply enabled once saved");
+    },
+  );
+  browser.click(/button "Done"/);
+  await state(
+    "the scratch project's heading shows the quiet AGENTS.md differs mark",
+    async () => ((await entry())?.state === "differs" ? `${folder} differs from the saved template` : null),
+    [],
+    () => {
+      browser.poll<number>("the editor to be closed", "() => document.querySelectorAll('.dialog').length", (n) => n === 0);
+      browser.poll<string | null>("the mark on the scratch project's heading", mark, (v) => v === "AGENTS.md differs");
+      log("  page: the heading of agents-scratch carries the mark (a badge, not a toast)");
+    },
+  );
+  browser.poll<string | null>("the mark on the scratch project's heading", mark, (v) => v === "AGENTS.md differs");
+  browser.click(new RegExp(`button "AGENTS.md differs from the template in ${title}`));
+  await state(
+    "the mark opens the diff: the project's lines against the saved template's, with Apply at its end",
+    async () => ((await entry())?.state === "differs" ? "the file still differs: nothing applied by opening the diff" : null),
+    ["Apply the template"],
+    () => {
+      const rows = browser.poll<{ add: string[]; del: number } | null>(
+        "the diff's added and removed lines",
+        "() => { const v = document.querySelector('.dialog .diff-view'); return v ? { add: [...v.querySelectorAll('.diff-add .diff-text')].map((e) => e.textContent), del: v.querySelectorAll('.diff-del').length } : null; }",
+        (v) => v !== null && v.del > 0 && v.add.some((t) => t.includes("Scratch habits")),
+      );
+      log(`  page: the diff removes ${rows?.del} lines of the project's file and adds ${JSON.stringify(rows?.add)}`);
+    },
+  );
+  browser.click(/button "Apply the template"/);
+  await state(
+    "Apply: the file on disk holds the saved template, CLAUDE.md, git and the worktree's copy as they were, and the mark is gone",
+    async () => {
+      if ((await entry())?.state !== "same") return null;
+      const text = readFileSync(join(folder, "AGENTS.md"), "utf8");
+      if (text !== applied) fail(`AGENTS.md on disk: ${JSON.stringify(text)}`);
+      if (readFileSync(join(folder, "CLAUDE.md"), "utf8") !== claudeBefore) fail("CLAUDE.md changed");
+      if (readFileSync(join(worktree, "AGENTS.md"), "utf8") !== worktreeCopy) fail("the worktree's copy changed");
+      const status = git(folder, "status", "--porcelain", "--untracked-files=all").trim();
+      if (status !== "") fail(`git status after Apply: ${JSON.stringify(status)}`);
+      if (git(folder, "log", "--oneline").trim().split("\n").length !== 1) fail("something was committed");
+      return `AGENTS.md is now ${JSON.stringify(text)}; the state is same; CLAUDE.md, git status and the worktree's copy unchanged`;
+    },
+    ["now holds the saved template"],
+    () => {
+      browser.poll<string | null>("the mark to be gone", mark, (v) => v === null);
+      log("  page: the toast says it was applied, and the heading's mark is gone");
+    },
+  );
+  // Later sections write with Backroom's template, and start in a room, as the section's first state left the page.
+  await service.command({ type: "agentsFile.text.set", text: null });
+  browser.openRoom(room.title);
   return passed;
 }
 

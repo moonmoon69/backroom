@@ -110,7 +110,7 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
       {template ? (
         <label className="consigliere-rules agents-file-template">
           The template
-          <textarea className="mono" rows={16} value={template.text} spellCheck={false} onChange={(e) => setTemplate({ ...template, text: e.target.value })} />
+          <textarea className="mono" rows={10} value={template.text} spellCheck={false} onChange={(e) => setTemplate({ ...template, text: e.target.value })} />
           <span className="hint">
             {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name. The file is written
             once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.

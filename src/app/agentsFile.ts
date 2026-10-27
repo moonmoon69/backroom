@@ -45,6 +45,14 @@
  * Backroom writes once per folder: a file the user removes afterwards is not written again (it would come back with
  * every new room). What it wrote is kept in the kv table, one record per project folder, so a project removed from T3
  * and added again keeps its record.
+ *
+ * The text is a template, Backroom's (DEFAULT_AGENTS_TEMPLATE) or the user's (Settings → Agents file, agentsFile.text in
+ * kv), with {checks} filled per project. A saved template reaches only folders written afterwards: Backroom never
+ * changes a file by itself. Settings → Agents file lists each folder where it wrote AGENTS.md with its state against
+ * the saved template rendered for it (same, differs, removed, blocked), shows the diff, and on the user's Apply writes
+ * the rendered template over the file: bound to the digests of the diff the user saw, only through a handle on a plain
+ * file of its own (no link followed, nothing created), never CLAUDE.md, git, the exclude file, the hook or worktrees'
+ * copies. The on/off setting governs the automatic writing only.
  */
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
@@ -115,7 +123,7 @@ export interface AgentsFileRecord {
   /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, or CLAUDE.md alone. */
   written: string[];
   writtenAt: string;
-  /** When the user last applied the current template over the AGENTS.md Backroom wrote (agentsFile.apply). */
+  /** When the user last applied the saved template over the AGENTS.md Backroom wrote (agentsFile.apply). */
   appliedAt?: string;
   /** The folder was in a git repository. */
   repo: boolean;

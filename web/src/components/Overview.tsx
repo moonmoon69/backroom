@@ -307,12 +307,13 @@ export function Overview({
         ) : null}
         {groups.map(({ project, tiles: projectTiles }) => {
           const known = project.id !== "unknown";
+          const agentsMark = known ? differs(project.id) : null;
           return (
             <section key={project.id} className="ov-project" aria-label={project.title}>
               <h2 className="ov-project-title">
                 <span className="ov-project-name">{project.title}</span>
                 <span className="ov-project-path mono muted">{project.workspaceRoot}</span>
-                {differs(project.id) ? <AgentsFileMark entry={differs(project.id)!} onOpen={() => setAgentsDiff(differs(project.id)!)} /> : null}
+                {agentsMark ? <AgentsFileMark entry={agentsMark} onOpen={() => setAgentsDiff(agentsMark)} /> : null}
                 <span className="spacer" />
                 {known ? (
                   <button
