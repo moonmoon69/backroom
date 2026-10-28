@@ -494,6 +494,22 @@ test("thread detail: T3's watch of a pull request is listed beside the provider 
   adapter.close();
 });
 
+test("thread detail: a pull-request watch is not background work for a queued or rolled-back latest run", async (t) => {
+  for (const status of ["queued", "rolled_back"]) await t.test(status, async () => {
+    const completed = { id: RUN, threadId: "thread-1", ordinal: 1, userMessageId: "msg-1", status: "completed", queueHeld: false, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: "2026-10-03T00:00:00.500Z", completedAt: "2026-10-03T00:00:01.000Z", providerInstanceId: "codex", modelSelection: threadShell.modelSelection };
+    const projection = {
+      thread: { ...threadShell, activeProviderThreadId: "pt", pullRequests: [{ host: "github.com", repository: "demo/demo", number: 7, source: "created", watch: { startedAt: "2026-10-03T00:00:01.000Z" } }] },
+      runs: [completed, { ...completed, id: "run:thread:thread-1:ordinal:2", ordinal: 2, userMessageId: "msg-2", status, startedAt: null, completedAt: null }],
+      messages: [], turnItems: [], runtimeRequests: [], nodes: [], attempts: [], subagents: [], providerSessions: [], providerTurns: [], plans: [], checkpoints: [], checkpointScopes: [], contextHandoffs: [], contextTransfers: [], visibleTurnItems: [],
+      providerThreads: [{ id: "pt", driver: "codex", providerInstanceId: "codex", status: "idle", pendingBackgroundTasks: [] }],
+    };
+    const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }), "GET /api/orchestration/threads/thread-1": () => ({ status: 200, body: { snapshotSequence: 10, projection } }) });
+    const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
+    t.after(() => adapter.close());
+    assert.deepEqual((await adapter.getThreadDetail("thread-1"))!.shell.pendingBackgroundTasks, []);
+  });
+});
+
 test("a server on another orchestration protocol is refused with what to do, and can still be asked for its version", async () => {
   const { fetchImpl } = mockFetch({
     ...base,

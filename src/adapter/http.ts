@@ -51,6 +51,7 @@ import type {
   T3ProviderTurn,
   T3Ref,
   T3Run,
+  T3RunStatus,
   T3RuntimeRequest,
   T3RuntimeRequestKind,
   T3ShellChange,
@@ -403,6 +404,20 @@ function pullRequestWatchTasks(raw: unknown): T3BackgroundTask[] {
 function withPullRequestWatches(tasks: T3BackgroundTask[], pullRequests: unknown): T3BackgroundTask[] {
   const known = new Set(tasks.map((task) => task.taskId));
   return [...tasks, ...pullRequestWatchTasks(pullRequests).filter((task) => !known.has(task.taskId))];
+}
+
+/** The run statuses after which T3 lists its pull-request watches: the latest run settled, or waiting on a request. */
+const WATCH_LISTED_AFTER: ReadonlySet<T3RunStatus> = new Set<T3RunStatus>(["cancelled", "completed", "failed", "interrupted", "waiting"]);
+
+/**
+ * Whether T3's shell lists the thread's pull-request watches now, as T3 decides it (derivePendingBackgroundWork): not
+ * while a run is preparing, starting or running, and not until the latest run that is not held in a queue has settled.
+ * A queued run, or a rolled-back one, hides them.
+ */
+function pullRequestWatchesListed(runs: T3Run[]): boolean {
+  if (runs.some((run) => run.status === "preparing" || run.status === "starting" || run.status === "running")) return false;
+  const latest = runs.filter((run) => !(run.status === "queued" && run.queueHeld)).reduce<T3Run | null>((best, run) => (best === null || run.ordinal > best.ordinal ? run : best), null);
+  return latest === null || WATCH_LISTED_AFTER.has(latest.status);
 }
 
 function toAttachments(raw: unknown): T3MessageAttachment[] {
@@ -1360,7 +1375,7 @@ export class HttpT3Adapter implements T3Adapter {
       lastError: failure?.type === "error" ? failure.message : latest?.status === "failed" ? (listed?.lastError ?? null) : null,
       pendingRequest: pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
       // T3's shell lists its pull-request watches with the harness's tasks; the provider thread lists only the latter.
-      pendingBackgroundTasks: active ? [] : withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? [], thread.pullRequests),
+      pendingBackgroundTasks: active ? [] : withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? [], pullRequestWatchesListed(runs) ? thread.pullRequests : []),
     };
     return {
       snapshotSequence: snapshot.snapshotSequence ?? 0,

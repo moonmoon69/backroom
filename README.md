@@ -717,7 +717,7 @@ Replies are read in sentence-sized pieces: the box makes the next piece while th
 
 A turn can end while subagents, background shells or watch loops keep running. T3 reports this, and Backroom shows it on the member and on the overview, so a quiet thread doesn't look finished or dead.
 
-T3's own watch of a pull request (its `watch_pull_request` tool) is listed the same way, as a monitor "Watching pull request #N": the member shows **monitoring** until the pull request merges or closes or its thread is settled in T3, however its checks went, and T3 wakes the member when the pull request changes. The watch is T3's, not work the member left running: it is named in the member's status line and the quiet follow-up says when it ended, but it holds no reseat and no keep-alive.
+T3's own watch of a pull request (its `watch_pull_request` tool) is listed the same way, as a monitor "Watching pull request #N": the member shows **monitoring** until the pull request merges or closes or its thread is settled in T3, however its checks went, and T3 wakes the member when the pull request changes. The watch is T3's, not work the member left running: it is named in the member's status line and the quiet follow-up says when it ended, but it holds no reseat and no keep-alive, and a browser is not busy for it.
 
 ### The overview's header
 

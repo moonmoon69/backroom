@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { agentKey, browserBusy, threadKey } from "../src/browser/catalog.ts";
 import { loadConfig } from "../src/config.ts";
 import { seatsWithLiveRuns } from "../src/runtime/index.ts";
+import { threadHasWork } from "../src/runtime/t3.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack, type TestStack } from "./helpers.ts";
 
@@ -94,4 +95,21 @@ test("a browser besides the default is busy while an agent with work in flight h
   assert.equal(await busy(other), true);
   tabs.set(other, ["thread.ffffffff", "nobody.00000000"]);
   assert.equal(await busy(other), false, "keys that name no thread or room count for nothing");
+});
+
+test("the browser's thread probe: an agent has work with a run or background work of its own, not with T3's pull-request watch alone", async (t) => {
+  const stack = await createTestStack();
+  t.after(() => stack.close());
+  const threadId = stack.threadOf("sol1");
+  const shell = async () => (await stack.fake.getThreadShell(threadId))!;
+  const watch = { taskId: "pull-request-watch:github.com/demo/demo#7", kind: "monitor" as const, description: "Watching pull request #7", childThreadId: null };
+  assert.equal(threadHasWork(await shell()), false, "idle");
+  stack.fake.setBackground(threadId, [watch]);
+  assert.equal(threadHasWork(await shell()), false, "T3 watches a pull request: the agent itself has nothing in flight");
+  stack.fake.setBackground(threadId, [watch, "gate"]);
+  assert.equal(threadHasWork(await shell()), true, "a command of its own beside the watch");
+  stack.fake.setBackground(threadId, []);
+  await stack.run({ type: "message.create", roomId: stack.roomId, assignments: [{ recipients: [stack.participants.sol1!], instruction: "build it" }] });
+  await stack.tick();
+  assert.equal(threadHasWork(await shell()), true, "a run");
 });

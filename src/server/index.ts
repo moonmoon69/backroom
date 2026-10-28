@@ -14,6 +14,7 @@ import { T3Credential, localT3Cli } from "../app/t3Credential.ts";
 import { RoomBrowsers } from "../browser/roomBrowsers.ts";
 import { accessForKey, browserBusy, reconcileBrowserCatalog, roomsMayUseBrowser } from "../browser/catalog.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
+import { threadHasWork } from "../runtime/t3.ts";
 import { mainCheckoutData } from "../browser/ports.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
@@ -102,7 +103,7 @@ const stack = createStack({
           roomBusy: (roomId) => seatsWithLiveRuns(stack.engine.view(roomId)).size > 0,
           threadBusy: async (threadId) => {
             const shell = await adapter.getThreadShell(threadId);
-            return Boolean(shell && (shell.activeRunId !== null || shell.pendingBackgroundTasks.length > 0));
+            return shell !== null && threadHasWork(shell);
           },
           agentsWithTabs: async (id) => (browserTools ? browserTools.agentsWithTabs(id) : []),
         }),

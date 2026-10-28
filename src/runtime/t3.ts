@@ -1,6 +1,6 @@
 /** What the host reads from a member's T3 thread: whose run it is, its final message, and whether the thread is free. */
 import type { T3Message, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { isRunActive, runReplies } from "../adapter/types.ts";
+import { isPullRequestWatch, isRunActive, runReplies } from "../adapter/types.ts";
 
 /**
  * Who started a T3 run on a seat's thread:
@@ -46,6 +46,14 @@ export function runError(detail: T3ThreadDetail, run: T3Run): string {
 /** The thread can take a new run: no active run and no approval or question waiting (R3). */
 export function threadFree(shell: T3ThreadShell): boolean {
   return !isRunActive(shell.status) && shell.activeRunId === null && shell.pendingRequest === null;
+}
+
+/**
+ * The agent on the thread has work in flight: a run, or background work of its own (subagents, commands, monitors).
+ * T3's watch of a pull request is not its work: it lasts for the pull request's life and holds nothing.
+ */
+export function threadHasWork(shell: T3ThreadShell): boolean {
+  return shell.activeRunId !== null || shell.pendingBackgroundTasks.some((task) => !isPullRequestWatch(task));
 }
 
 export function isTerminal(run: T3Run): boolean {
