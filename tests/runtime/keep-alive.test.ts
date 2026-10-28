@@ -20,6 +20,8 @@ let room: Room;
 afterEach(() => room?.close());
 
 const RUNNING = "[T3 status of @W: a turn is running (T3 lists no background tasks while it runs)]";
+/** T3's own watch of a pull request (watch_pull_request), as T3 lists it among the thread's background tasks. */
+const WATCH = { taskId: "pull-request-watch:github.com/demo/demo#7", kind: "monitor" as const, description: "Watching pull request #7", childThreadId: null };
 
 /** When the latest turn on the seat's thread ended, as T3 says. */
 function endedAt(r: Room, seat: string): number {
@@ -365,4 +367,28 @@ test("ROOMS_KEEPALIVE_MS: 55 minutes by default, 0 for off, a minute to under th
   assert.equal(loadConfig({ ...base, ROOMS_KEEPALIVE_MS: "3599999" }).keepAliveMs, 3_599_999);
   // Under a minute is refused: a unit slip (55 for 55 minutes) would wake seats back to back.
   for (const bad of ["55", "1000", "59999", "3600000", "-1", "soon", "1.5"]) assert.throws(() => loadConfig({ ...base, ROOMS_KEEPALIVE_MS: bad }), /ROOMS_KEEPALIVE_MS/, bad);
+});
+
+test("never for T3's watch of a pull request alone: it is T3's, for the pull request's life, not work the seat waits on; beside the seat's own work it is named", async () => {
+  room = await Room.create();
+  room.user("C", "Open the release pull request and have T3 watch it.");
+  await room.tick();
+  room.fake.background(room.threadOf("C"), [WATCH]);
+  room.complete("C", "PR 7 is open; T3 watches it.");
+  await room.tick(2);
+  assert.ok(!room.running("C"));
+  const wakes = room.wakes("C");
+  after(room, "C", 2 * KEEP_ALIVE_MS);
+  await room.tick(3);
+  assert.equal(keepAlives(room).length, 0, "no keep-alive for the watch alone");
+  assert.equal(room.wakes("C"), wakes);
+  // A build of its own beside the watch: the keep-alive comes, and its status line names both.
+  room.fake.background(room.threadOf("C"), [WATCH, "release-build"]);
+  after(room, "C", 2 * KEEP_ALIVE_MS + 60_000);
+  await room.tick(3);
+  assert.equal(keepAlives(room).length, 1);
+  assert.equal(room.wakes("C"), wakes + 1);
+  assert.equal(room.prompt("C"), `${KEEP_ALIVE_LINE}\n[T3 status of @C: still running: monitor "Watching pull request #7", background task "background release-build"]`);
+  room.complete("C", "Nothing to do; the build runs.");
+  await room.tick(2);
 });

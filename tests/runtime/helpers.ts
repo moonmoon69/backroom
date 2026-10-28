@@ -61,9 +61,12 @@ export class RuntimeFake extends FakeT3Adapter {
     return thread;
   }
 
-  /** What T3 lists as still running after a turn: commands and monitors the provider left in the background. */
-  background(threadId: string, taskIds: string[]): void {
-    this.thread(threadId).shell.pendingBackgroundTasks = taskIds.map((taskId): T3BackgroundTask => ({ taskId, kind: "command", description: `background ${taskId}`, childThreadId: null }));
+  /**
+   * What T3 lists as still running after a turn: commands the provider left in the background, by id, or tasks whole
+   * (a monitor, T3's watch of a pull request).
+   */
+  background(threadId: string, tasks: Array<string | T3BackgroundTask>): void {
+    this.thread(threadId).shell.pendingBackgroundTasks = tasks.map((task): T3BackgroundTask => (typeof task === "string" ? { taskId: task, kind: "command", description: `background ${task}`, childThreadId: null } : task));
   }
 
   /** A subagent on the thread's active (or latest) run, in the given state. */

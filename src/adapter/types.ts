@@ -724,3 +724,16 @@ export function backgroundOf(shell: Pick<T3ThreadShell, "pendingBackgroundTasks"
   if (shell.pendingBackgroundTasks.length === 0) return null;
   return shell.pendingBackgroundTasks.every((task) => task.kind === "monitor") ? "monitoring" : "working";
 }
+
+/** The task id T3 gives its watch of a pull request (`watch_pull_request`), as T3 forms it: host and repository lowercased. */
+export const pullRequestWatchTaskId = (host: string, repository: string, number: number): string => `pull-request-watch:${host.toLowerCase()}/${repository.toLowerCase()}#${number}`;
+
+/**
+ * T3's own watch of a pull request, which T3 lists among the thread's background tasks as a monitor "Watching pull
+ * request #N" from `watch_pull_request` until the pull request merges or closes or the thread settles in T3. It wakes
+ * the thread when the pull request changes (checks failed or passed, new commits, a conflict, comments), so it shows
+ * as monitoring; but it is T3's, not work the member left running: it holds no handover and no keep-alive.
+ */
+export function isPullRequestWatch(task: Pick<T3BackgroundTask, "taskId">): boolean {
+  return task.taskId.startsWith("pull-request-watch:");
+}

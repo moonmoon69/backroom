@@ -16,6 +16,9 @@ afterEach(() => room?.close());
 const IDLE = "[T3 status of @W: idle]\n\n";
 const SLOW = 'background task "background slow-check"';
 const SUB = 'subagent "subagent sub-1"';
+/** T3's own watch of a pull request (watch_pull_request), as T3 lists it among the thread's background tasks. */
+const WATCH = { taskId: "pull-request-watch:github.com/demo/demo#7", kind: "monitor" as const, description: "Watching pull request #7", childThreadId: null };
+const WATCHING = 'monitor "Watching pull request #7"';
 
 /** W's follow-up posts (continuations and quiet follow-ups), oldest first, with their IDs. */
 function followUps(r: Room) {
@@ -229,5 +232,30 @@ test("the continuation of background job X is a follow-up on X, not on B, the se
   assert.equal(room.wakes("C"), 3);
   assert.equal(room.answeredClaims(b).length, 1);
   assert.equal(room.answeredClaims(x).length, 1);
+  room.assertQuiet();
+});
+
+test("T3's watch of a pull request is named in the status line as a monitor; when T3 ends it with no turn (a merge), one quiet follow-up says so", async () => {
+  room = await Room.create();
+  const a = room.post("C", "W", "Open the pull request and have T3 watch its checks.");
+  await room.tick();
+  room.fake.background(room.threadOf("W"), [WATCH]);
+  room.complete("W", "PR 7 is open; T3 watches it.");
+  await room.tick();
+  assert.equal(room.state(a), "answered", "the watch holds nothing");
+  assert.equal(room.outputs().find((o) => o.author === "W")!.body, `[T3 status of @W: still running: ${WATCHING}]\n\nPR 7 is open; T3 watches it.`);
+  const answerId = lastOutputId(room);
+  assert.equal(room.running("C"), true);
+  room.complete("C", "Noted.");
+  await room.tick();
+  // The pull request merges: T3 drops the watch without a turn. The quiet follow-up names it, so C learns of the end.
+  room.fake.background(room.threadOf("W"), []);
+  await room.tick();
+  room.clock += 31_000;
+  await room.tick();
+  assert.deepEqual(followUps(room), [{ id: `quiet:${answerId}`, body: `${IDLE}(${WATCHING} ended without a further turn.)`, requestIds: [a] }]);
+  assert.equal(room.wakes("C"), 2, "the follow-up wakes C");
+  room.complete("C", "Ok.");
+  await room.tick(2);
   room.assertQuiet();
 });

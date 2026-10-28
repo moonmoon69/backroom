@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3ThreadDetail, T3ThreadShell, ThreadLifecycleAction } from "../adapter/types.ts";
-import { T3Unavailable } from "../adapter/types.ts";
+import { T3Unavailable, isPullRequestWatch } from "../adapter/types.ts";
 import type { Repos } from "../db/repos.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import type { Participant, Room, SessionBinding } from "../domain/types.ts";
@@ -387,11 +387,14 @@ export class EngineSeats {
     this.handOver(roomId, record);
   }
 
-  /** The seat can be handed over: no run, its T3 thread idle with nothing in the background, no pending activity. */
+  /**
+   * The seat can be handed over: no run, its T3 thread idle with nothing of the member's in the background, no pending
+   * activity. T3's watch of a pull request is not the member's work: a handover does not wait for the merge.
+   */
   private async quiet(roomId: string, record: EngineReseat, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>): Promise<boolean> {
     if (this.view(roomId).seats.get(record.seatId)?.activeRunId || !threadFree(shell)) return false;
     const thread = await detail();
-    if (!thread || backgroundTasks(thread).length > 0) return false;
+    if (!thread || backgroundTasks(thread).some((task) => !isPullRequestWatch(task))) return false;
     const p = this.view(roomId);
     if (p.seats.get(record.seatId)?.activeRunId) return false;
     const activities = pendingActivities(p, record.seatId);
@@ -435,7 +438,7 @@ export class EngineSeats {
         newSeatId: freshBinding.id,
         threadId: freshBinding.threadId,
         body: engineTakeoverInstruction({ from: old.alias, consigliere, plan: record.plan, checkpointNumber: event?.seq ?? null, checkpoint, alsoRead: this.checkpointCompanions(p, record) }),
-        evidence: `lean: checkpoint ${this.number(p, record.requestId)} answered; T3 thread of @${old.alias} idle with no background work`,
+        evidence: `lean: checkpoint ${this.number(p, record.requestId)} answered; T3 thread of @${old.alias} idle with no background work of its own`,
       });
       p = this.view(roomId);
     }

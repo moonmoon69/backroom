@@ -717,6 +717,8 @@ Replies are read in sentence-sized pieces: the box makes the next piece while th
 
 A turn can end while subagents, background shells or watch loops keep running. T3 reports this, and Backroom shows it on the member and on the overview, so a quiet thread doesn't look finished or dead.
 
+T3's own watch of a pull request (its `watch_pull_request` tool) is listed the same way, as a monitor "Watching pull request #N": the member shows **monitoring** until the pull request merges or closes or its thread is settled in T3, however its checks went, and T3 wakes the member when the pull request changes. The watch is T3's, not work the member left running: it is named in the member's status line and the quiet follow-up says when it ended, but it holds no reseat and no keep-alive.
+
 ### The overview's header
 
 The overview's header holds **+** (a new project) and **Arrange** on the left, and the app-wide controls on the right: the **T3** connection status (a green dot while connected, the problem in words otherwise; hover for host, version and pairing; click for the pairing and providers panel), **Updates** (an arrow in a circle, with a count when T3 or a harness can be updated, see [Updates](#updates)) and the settings menu (two sliders): **Consigliere…** (see [The Consigliere](#the-consigliere)), **Agents file…** (see [The agents file](#the-agents-file)), **Poteto mode…** (see [Poteto mode](#poteto-mode)), **Notifications** on this device (see [What finished while you were away](#what-finished-while-you-were-away)), **Voice…** for reading aloud (see [Read aloud](#read-aloud)), the theme (System, Light, Dark) and the look (Plain, [Pixel](#the-pixel-look)). The header of each page opened over the overview carries only that page's controls.

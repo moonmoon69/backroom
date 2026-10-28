@@ -17,6 +17,7 @@ import type {
   SendMessageInput,
   T3Adapter,
   T3Checkpoint,
+  T3BackgroundTask,
   T3Environment,
   T3Message,
   T3MessageAttachment,
@@ -794,11 +795,14 @@ export class FakeT3Adapter implements T3Adapter {
     return id;
   }
 
-  /** Test control: what T3 lists in the thread's background after its turn (commands the provider left running). */
-  setBackground(threadId: string, taskIds: string[]): void {
+  /**
+   * Test control: what T3 lists in the thread's background after its turn: commands the provider left running, by id,
+   * or tasks whole (a monitor, T3's watch of a pull request).
+   */
+  setBackground(threadId: string, tasks: Array<string | T3BackgroundTask>): void {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error("unknown thread");
-    thread.shell.pendingBackgroundTasks = taskIds.map((taskId) => ({ taskId, kind: "command" as const, description: `background ${taskId}`, childThreadId: null }));
+    thread.shell.pendingBackgroundTasks = tasks.map((task) => (typeof task === "string" ? { taskId: task, kind: "command" as const, description: `background ${task}`, childThreadId: null } : task));
     this.changed();
     this.threadChanged(threadId);
   }

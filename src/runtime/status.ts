@@ -4,7 +4,7 @@
  * from the member's latest post, so the line's form is fixed here, written and read in one place.
  */
 import type { T3ThreadDetail } from "../adapter/types.ts";
-import { isRunActive } from "../adapter/types.ts";
+import { isPullRequestWatch, isRunActive } from "../adapter/types.ts";
 import { backgroundTasks } from "../app/threadView.ts";
 import type { Projection } from "../engine/index.ts";
 
@@ -13,6 +13,11 @@ export interface MemberStatus {
   turnRunning: boolean;
   /** What T3 lists in the background: `background task "…"`, `monitor "…"` or `subagent "…"`. */
   running: string[];
+  /**
+   * A turn or work of the member's own is in flight, which the keep-alive waits on. T3's watch of a pull request is
+   * listed and named, but waited on by nobody: it lasts for the pull request's life.
+   */
+  inFlight: boolean;
 }
 
 /** The milestone of a follow-up post: a member's turn that answered nothing, or background work that ended quietly. */
@@ -24,8 +29,9 @@ const LABEL = /(background task|monitor|subagent) ("(?:[^"\\]|\\.)*")/g;
 /** The thread as T3 shows it now, leaving out the turn whose end is being imported. */
 export function memberStatus(detail: T3ThreadDetail, endedRunId: string | null): MemberStatus {
   const turnRunning = detail.runs.some((run) => run.id !== endedRunId && isRunActive(run.status));
-  const running = backgroundTasks(detail).map((task) => `${task.type === "subagent" ? "subagent" : task.type === "monitor" ? "monitor" : "background task"} ${JSON.stringify(task.title)}`);
-  return { turnRunning, running };
+  const tasks = backgroundTasks(detail);
+  const running = tasks.map((task) => `${task.type === "subagent" ? "subagent" : task.type === "monitor" ? "monitor" : "background task"} ${JSON.stringify(task.title)}`);
+  return { turnRunning, running, inFlight: turnRunning || tasks.some((task) => !isPullRequestWatch(task)) };
 }
 
 /**

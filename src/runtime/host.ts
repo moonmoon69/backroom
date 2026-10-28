@@ -959,10 +959,10 @@ export class EngineHost {
       if (!working && !(run === undefined && asked(latestStatusPost(p, member.id)?.requestIds ?? []))) continue;
       const detail = await stateOf(member.id)?.load();
       const status = detail ? memberStatus(detail, null) : null;
-      if (status && (status.turnRunning || status.running.length > 0)) lines.push(statusLine(named(member.id), status));
+      if (status?.inFlight) lines.push(statusLine(named(member.id), status));
     }
     const status = memberStatus(own, null);
-    if (status.running.length > 0) lines.push(statusLine(named(seatId), status));
+    if (status.inFlight) lines.push(statusLine(named(seatId), status));
     return lines;
   }
 

@@ -381,6 +381,33 @@ test("reseat carries every unread input and every owned request exactly once, an
   }
 });
 
+test("a reseat waits for the member's own background work, not for T3's watch of a pull request", async () => {
+  const h = await Seats.create();
+  try {
+    const seatW = h.seat("W");
+    const threadW = h.thread("W");
+    const watch = { taskId: "pull-request-watch:github.com/demo/demo#7", kind: "monitor" as const, description: "Watching pull request #7", childThreadId: null };
+    const { eventId } = (await h.run({ type: "participant.reseat", participantId: h.ids.W!, by: h.ids.C!, plan: "carry on" })) as { eventId: string };
+    await h.tick();
+    assert.ok(h.running("W"), "the checkpoint turn");
+    h.fake.background(threadW, ["gate", watch]);
+    h.complete("W", "CHECKPOINT: nothing open; the gate runs.");
+    await h.tick(2);
+    assert.equal(h.p.requests.get(eventId)!.state, "answered");
+    assert.equal(h.p.seats.get(seatW)!.status, "active", "the gate, the member's own work, holds the handover");
+    assert.equal(h.p.events.some((e) => e.data.kind === "transfer"), false);
+    // The gate ends; T3 still watches the pull request. The watch is T3's: the handover goes ahead.
+    h.fake.background(threadW, [watch]);
+    await h.tick(2);
+    assert.equal(h.p.seats.get(seatW)!.status, "retired", "the watch alone holds nothing");
+    const transfer = h.p.events.find((e) => e.data.kind === "transfer")!;
+    assert.match(transfer.data.kind === "transfer" ? transfer.data.evidence : "", /idle with no background work/);
+    await h.acknowledge();
+  } finally {
+    h.close();
+  }
+});
+
 test("a cancelled checkpoint calls the reseat off: the member keeps its seat and its work", async () => {
   const h = await Seats.create();
   try {

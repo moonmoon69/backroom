@@ -65,7 +65,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId } from "./types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
@@ -384,6 +384,25 @@ function toBackgroundTasks(raw: unknown): T3BackgroundTask[] {
     description: text(task.description),
     childThreadId: text(task.childThreadId),
   }));
+}
+
+/**
+ * T3's watches of the thread's pull requests, as T3 lists them in its shell (derivePendingBackgroundWork): one monitor
+ * per linked pull request with a watch, named as T3 names it. The thread record carries them (its links' `watch`),
+ * where the provider thread's list, the harness's own work, cannot.
+ */
+function pullRequestWatchTasks(raw: unknown): T3BackgroundTask[] {
+  return ((raw as Array<Record<string, unknown>> | undefined) ?? []).flatMap((link) => {
+    if (link.watch === undefined || link.watch === null || link.source === "stack-dismissed") return [];
+    const number = Number(link.number ?? 0);
+    return [{ taskId: pullRequestWatchTaskId(String(link.host ?? ""), String(link.repository ?? ""), number), kind: "monitor" as const, description: `Watching pull request #${number}`, childThreadId: null }];
+  });
+}
+
+/** The provider thread's background tasks with T3's pull-request watches beside them, each task once. */
+function withPullRequestWatches(tasks: T3BackgroundTask[], pullRequests: unknown): T3BackgroundTask[] {
+  const known = new Set(tasks.map((task) => task.taskId));
+  return [...tasks, ...pullRequestWatchTasks(pullRequests).filter((task) => !known.has(task.taskId))];
 }
 
 function toAttachments(raw: unknown): T3MessageAttachment[] {
@@ -1340,7 +1359,8 @@ export class HttpT3Adapter implements T3Adapter {
       latestRunCompletedAt: latest?.completedAt ?? null,
       lastError: failure?.type === "error" ? failure.message : latest?.status === "failed" ? (listed?.lastError ?? null) : null,
       pendingRequest: pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
-      pendingBackgroundTasks: active ? [] : (activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? []),
+      // T3's shell lists its pull-request watches with the harness's tasks; the provider thread lists only the latter.
+      pendingBackgroundTasks: active ? [] : withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? [], thread.pullRequests),
     };
     return {
       snapshotSequence: snapshot.snapshotSequence ?? 0,

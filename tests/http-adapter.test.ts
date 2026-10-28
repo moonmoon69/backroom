@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
 import { REQUESTED_SCOPES, exchangePairingCredential, missingScopeMessage, parsePairingUrl, sameT3Host } from "../src/adapter/auth.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, openRequests, runForMessage } from "../src/adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, isPullRequestWatch, openRequests, runForMessage } from "../src/adapter/types.ts";
 
 interface Recorded {
   url: string;
@@ -460,6 +460,38 @@ test("thread detail: runs by the message that started them or was steered into t
   assert.ok(calls.some((c) => c.url.endsWith("/api/orchestration/threads/thread-1/bounded")));
   assert.equal(bounded?.partial, true, "a bounded read says when T3 holds older history");
   assert.equal(await adapter.getThreadDetail("missing"), null);
+});
+
+test("thread detail: T3's watch of a pull request is listed beside the provider thread's tasks, named as T3's shell names it, and never during a run", async () => {
+  const run = (status: string) => ({ id: RUN, threadId: "thread-1", ordinal: 1, providerInstanceId: "codex", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, userMessageId: "msg-1", status, queuePosition: null, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: "2026-10-03T00:00:00.500Z", completedAt: status === "completed" ? "2026-10-03T00:00:01.000Z" : null, checkpointId: null });
+  const link = (number: number, fields: Record<string, unknown>) => ({ host: "GitHub.com", repository: "Example-Org/shop", number, url: `https://github.com/example-org/shop/pull/${number}`, source: "created", snapshot: { state: "open" }, ...fields });
+  const watch = { startedAt: "2026-10-03T00:00:01.000Z", headSha: "b270406", failedChecks: [], passed: false, passedChecks: [] };
+  const command = { taskId: "bnkojxfme", kind: "command", description: "Rerun the gate" };
+  let projection: Record<string, unknown> = {};
+  const build = (status: string, providerTasks: unknown[], pullRequests: unknown[]) => ({
+    thread: { ...threadShell, activeProviderThreadId: "pt", pullRequests },
+    runs: [run(status)], messages: [], turnItems: [], runtimeRequests: [], nodes: [], attempts: [], subagents: [], providerSessions: [], providerTurns: [], plans: [], checkpoints: [], checkpointScopes: [], contextHandoffs: [], contextTransfers: [], visibleTurnItems: [],
+    providerThreads: [{ id: "pt", driver: "codex", providerInstanceId: "codex", status: "idle", nativeThreadRef: null, pendingBackgroundTasks: providerTasks, contextUsage: null, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:01.000Z" }],
+    updatedAt: "2026-10-03T00:00:01.000Z",
+  });
+  const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }), "GET /api/orchestration/threads/thread-1": () => ({ status: 200, body: { snapshotSequence: 10, projection } }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
+  const tasks = async () => (await adapter.getThreadDetail("thread-1"))!.shell.pendingBackgroundTasks;
+  // Watched #59 is a monitor after the harness's own task; merged #58 has no watch; #60's watch is dismissed with its stack.
+  const links = [link(58, { snapshot: { state: "merged" } }), link(59, { watch }), link(60, { source: "stack-dismissed", watch })];
+  projection = build("completed", [command], links);
+  const WATCHING = { taskId: "pull-request-watch:github.com/example-org/shop#59", kind: "monitor", description: "Watching pull request #59", childThreadId: null };
+  assert.deepEqual(await tasks(), [{ ...command, childThreadId: null }, WATCHING]);
+  assert.equal(backgroundOf({ pendingBackgroundTasks: await tasks() }), "working");
+  // The watch alone: monitoring, as the members panel words it; the provider thread's empty list hides nothing.
+  projection = build("completed", [], links);
+  assert.deepEqual(await tasks(), [WATCHING]);
+  assert.equal(backgroundOf({ pendingBackgroundTasks: await tasks() }), "monitoring");
+  assert.ok(isPullRequestWatch(WATCHING) && !isPullRequestWatch(command));
+  // During a run T3 lists nothing in the background, the watch included.
+  projection = build("running", [command], links);
+  assert.deepEqual(await tasks(), []);
+  adapter.close();
 });
 
 test("a server on another orchestration protocol is refused with what to do, and can still be asked for its version", async () => {
