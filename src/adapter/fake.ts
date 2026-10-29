@@ -41,7 +41,7 @@ import type {
   T3Versions,
   ThreadControl,
 } from "./types.ts";
-import { CONTINUE_TEXT, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, secretRequests, usageLimitOf } from "./types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, secretRequests, usageLimitOf } from "./types.ts";
 import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
@@ -851,6 +851,21 @@ export class FakeT3Adapter implements T3Adapter {
     this.threadChanged(threadId);
   }
 
+  /**
+   * Test control: a subagent of the thread's running (else latest) run in this state, made or moved there: Claude's own
+   * ("provider_native"), or a task T3 delegated to a thread of its own ("app_owned", with `childThreadId`).
+   */
+  setSubagent(threadId: string, input: { id: string; title?: string; status: T3Subagent["status"]; origin?: T3Subagent["origin"]; driver?: string; childThreadId?: string | null }): void {
+    const thread = this.require(threadId);
+    const at = this.stamp(thread);
+    const existing = thread.subagents.find((s) => s.id === input.id);
+    if (existing) Object.assign(existing, { status: input.status, updatedAt: at });
+    else {
+      const runId = this.activeRun(thread)?.id ?? latestExecutedRun(thread.runs)?.id ?? null;
+      thread.subagents.push({ id: input.id, runId, origin: input.origin ?? "provider_native", driver: input.driver ?? "claudeAgent", providerInstanceId: thread.shell.providerInstanceId, childThreadId: input.childThreadId ?? null, title: input.title ?? input.id, model: null, prompt: input.title ?? input.id, status: input.status, progress: null, result: null, startedAt: at, completedAt: null, updatedAt: at });
+    }
+  }
+
   /** Test control: the agent says something in its running turn, a message of the run's before its final one. */
   say(threadId: string, text: string): string {
     const thread = this.threads.get(threadId);
@@ -998,7 +1013,7 @@ export class FakeT3Adapter implements T3Adapter {
   async controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void> {
     const { control } = input;
     const commandId = input.commandId;
-    const type = control.type === "limit.arm" ? "thread.metadata.update" : control.type === "queue.resume" ? "queue.resume" : "message.dispatch";
+    const type = control.type === "limit.arm" ? "thread.metadata.update" : control.type === "queue.resume" || control.type === "thread.stop" || control.type === "subagent.stop" ? control.type : "message.dispatch";
     if (!this.record(type, commandId, input.threadId, input)) return;
     this.applyControl(this.require(input.threadId), commandId, control);
   }
@@ -1025,6 +1040,21 @@ export class FakeT3Adapter implements T3Adapter {
         this.dispatchMessage(thread, { id: commandId, text: CONTINUE_TEXT, attachments: [], createdBy: "user", creationSource: "web", continues: true }, { type: "start" });
         return;
       }
+      case "thread.stop":
+        this.stopThread(thread, commandId);
+        return;
+      case "subagent.stop": {
+        const subagent = thread.subagents.find((s) => s.id === control.subagentId);
+        const open = (s: T3Subagent) => s.status === "pending" || s.status === "running" || s.status === "waiting";
+        if (subagent?.origin === "app_owned" && subagent.childThreadId !== null && subagent.runId === control.runId) {
+          if (open(subagent)) this.cancelSubagent(thread, subagent);
+          return;
+        }
+        if (!subagent || subagent.runId !== control.runId || subagent.origin !== "provider_native" || subagent.driver !== "claudeAgent") throw new T3CommandRejected("The requested native subagent cannot be stopped on this run.", 500, null);
+        // T3 takes a stop of a subagent that has finished, and does nothing.
+        if (open(subagent)) this.cancelSubagent(thread, subagent);
+        return;
+      }
       case "queue.resume": {
         if (thread.shell.archivedAt !== null) throw new T3CommandRejected(`Thread ${thread.shell.id} is not active.`, 500, null);
         if (limit) throw new T3CommandRejected("Continue the limited thread before resuming its queue.", 500, null);
@@ -1034,6 +1064,36 @@ export class FakeT3Adapter implements T3Adapter {
         return;
       }
     }
+  }
+
+  /** A subagent stopped: cancelled, and a delegated task's own thread stops its run. */
+  private cancelSubagent(thread: FakeThread, subagent: T3Subagent): void {
+    const at = this.stamp(thread);
+    Object.assign(subagent, { status: "cancelled", completedAt: at, updatedAt: at });
+    thread.shell.pendingBackgroundTasks = thread.shell.pendingBackgroundTasks.filter((task) => task.taskId !== subagent.id);
+    const child = subagent.childThreadId ? this.threads.get(subagent.childThreadId) : undefined;
+    if (child && this.activeRun(child)) this.completeRun(child.shell.id, { text: "(interrupted)", outcome: "interrupted" });
+  }
+
+  /**
+   * Stop everything on a thread, as T3 does it (dispatchThreadStop, holdStoppedThread): its queued messages held first, a
+   * usage limit's recovery turned off, every subagent and delegated task, background task, monitor and pull-request watch
+   * ended, and the running run interrupted with the stop's reason.
+   */
+  private stopThread(thread: FakeThread, commandId: string): void {
+    for (const run of thread.runs) if (run.status === "queued") run.queueHeld = true;
+    const limit = usageLimitOf(thread, thread.recovery ?? null);
+    if (limit?.resetAt) thread.recovery = { runId: limit.runId, resetAt: limit.resetAt, autoResume: false, snooze: false, requestId: commandId };
+    else if (thread.recovery?.autoResume) thread.recovery = { ...thread.recovery, autoResume: false, requestId: commandId };
+    for (const subagent of thread.subagents) if (subagent.status === "pending" || subagent.status === "running" || subagent.status === "waiting") this.cancelSubagent(thread, subagent);
+    // Its pull-request watches go with the rest of what it lists in the background.
+    thread.shell.pendingBackgroundTasks = [];
+    const at = this.stamp(thread);
+    const active = this.activeRun(thread);
+    // The run interrupted is the running one, else the latest (what its background work belongs to).
+    const target = active ?? latestExecutedRun(thread.runs);
+    if (target) thread.turnItems.push({ ...this.item(thread, target.id, at), title: "Interrupt requested", type: "run_interrupt_request", message: STOP_EVERYTHING_REASON });
+    if (active) this.completeRun(thread.shell.id, { text: "(interrupted)", outcome: "interrupted" });
   }
 
   /**

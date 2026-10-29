@@ -124,7 +124,7 @@ export class EngineMessages {
       case "run.stop":
         return this.journal(async () => {
           const room = this.room(command.roomId);
-          await this.host.stopSeat(room.id, this.seat(room, this.participant(room, command.participantId)).seatId);
+          await this.host.stopSeat(room.id, this.seat(room, this.participant(room, command.participantId)).seatId, command.everything);
           return { type: "run.stopped", participantId: command.participantId };
         });
       default:

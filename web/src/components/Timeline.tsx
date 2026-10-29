@@ -1482,9 +1482,14 @@ function LiveRunBubble({ run }: { run: EngineRunView }) {
             {uncertain ? null : <span className="dot dot-working" aria-hidden="true" />} {label}
           </span>
           {participant && (run.phase === "running" || run.phase === "accepted" || run.phase === "uncertain") ? (
-            <button type="button" className="link-button danger" title="Stop the turn through T3" onClick={() => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId: participant.id })}>
-              Stop
-            </button>
+            <>
+              <button type="button" className="link-button danger" title="Stop the turn through T3" onClick={() => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId: participant.id })}>
+                Stop
+              </button>
+              <button type="button" className="link-button danger" title="Stop the turn and everything it left running through T3: background commands, monitors, subagents; queued messages are held" onClick={() => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId: participant.id, everything: true })}>
+                Stop everything
+              </button>
+            </>
           ) : null}
         </div>
         <div className="bubble bubble-agent bubble-live" aria-label={`${alias} is working`}>

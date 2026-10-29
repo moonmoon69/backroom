@@ -69,7 +69,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { CONTINUE_TEXT, ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, recoveryFor, secretRequests, usageLimitOf } from "./types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, recoveryFor, secretRequests, usageLimitOf } from "./types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
@@ -1731,6 +1731,13 @@ export class HttpT3Adapter implements T3Adapter {
         return;
       case "queue.resume":
         await this.dispatch({ type: "queue.resume", commandId, threadId });
+        return;
+      case "thread.stop":
+        // Delegated tasks under the thread are stopped too (T3's default).
+        await this.dispatch({ type: "thread.stop", commandId, threadId, reason: STOP_EVERYTHING_REASON });
+        return;
+      case "subagent.stop":
+        await this.dispatch({ type: "subagent.stop", commandId, threadId, runId: control.runId, subagentId: control.subagentId });
         return;
     }
   }

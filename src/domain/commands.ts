@@ -344,7 +344,8 @@ export const RequestCorrectCommand = z.object({ type: z.literal("request.correct
 
 export const RunRetryCommand = z.object({ type: z.literal("run.retry"), roomId: nonEmpty, runId: nonEmpty, text: z.string().trim().default("") }).strict();
 
-export const RunStopCommand = z.object({ type: z.literal("run.stop"), roomId: nonEmpty, participantId: nonEmpty }).strict();
+/** Stop a member's turn; with `everything`, also the background work, monitors and subagents it left (T3's thread.stop). */
+export const RunStopCommand = z.object({ type: z.literal("run.stop"), roomId: nonEmpty, participantId: nonEmpty, everything: z.boolean().default(false) }).strict();
 
 /** Drop a question the user will not answer (T3 dismisses it; the agent goes on, or its turn ends, without the answer). */
 export const NativeUserInputDismissCommand = z.object({ type: z.literal("native.userInput.dismiss"), participantId: nonEmpty, requestId: nonEmpty }).strict();
@@ -370,10 +371,16 @@ export const SecretAnswerSchema = z.discriminatedUnion("type", [
 export const NativeSecretRespondCommand = z.object({ type: z.literal("native.secret.respond"), participantId: nonEmpty, requestId: nonEmpty, answer: SecretAnswerSchema }).strict();
 
 /**
- * A control on a thread's runs from the page (src/app/threadControl.ts): continue the turn a usage limit paused, or let a
- * held queue start its next message.
+ * A control on a thread's runs from the page (src/app/threadControl.ts): continue the turn a usage limit paused, let a
+ * held queue start its next message, stop everything on a thread on its own, or stop one subagent.
  */
-export const PageControlSchema = z.discriminatedUnion("type", [z.object({ type: z.literal("resume") }).strict(), z.object({ type: z.literal("queue.resume") }).strict()]);
+export const PageControlSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("resume") }).strict(),
+  z.object({ type: z.literal("queue.resume") }).strict(),
+  /** A thread on its own: stop its turn and everything it left (a member's goes through run.stop with `everything`). */
+  z.object({ type: z.literal("stop.all") }).strict(),
+  z.object({ type: z.literal("subagent.stop"), runId: nonEmpty, subagentId: nonEmpty }).strict(),
+]);
 
 /** A control on a member's thread; the room keeps no record of it, as for its approvals. */
 export const MemberControlCommand = z.object({ type: z.literal("member.control"), roomId: nonEmpty, participantId: nonEmpty, control: PageControlSchema }).strict();

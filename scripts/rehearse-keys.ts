@@ -1383,7 +1383,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("Enter");
     await expect("Enter: the chip's choices open under the bar, as a strip, the ring on Stop", (f) => f.chipOpen && f.strips === 1 && f.action === "stop:0" && f.label === "Stop");
     log(`api: ${running} running turn; page: its chip open, its strip ${JSON.stringify(strip()?.names)}`);
-    names("the working chip's choices", ["Stop", `show #${openPost.number}`]);
+    names("the working chip's choices", ["Stop", "Stop everything", `show #${openPost.number}`]);
     const chipBar = await keyBar(`Stop · ${chipChoices}`);
     if (chipBar.place !== "room-chip-actions" || !chipBar.keys.includes("Esc Backspace fold the choices") || !chipBar.keys.includes("Enter Stop")) fail(`with the chip's strip open the key bar reads ${JSON.stringify(chipBar)}: expected its own place, Enter Stop and Esc and Backspace to fold the chip's choices`);
     log(`  key bar: ${chipBar.keys.join(" · ")}`);
@@ -1979,7 +1979,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await keyBar(liveWhere);
     press("Enter");
     await expect("Enter: the turn's actions, the ring on Stop", (f) => f.strips === 1 && f.item === liveKey && f.action === "stop:0" && f.ring);
-    names("@fable's running turn", ["Stop", `show #${openPost.number}`, "sent to T3"]);
+    names("@fable's running turn", ["Stop", "Stop everything", `show #${openPost.number}`, "sent to T3"]);
     await barSays("the turn's actions", { place: "room-actions", where: `Stop · ${liveWhere}`, keys: ["↑ ↓ previous or next post", "← → choose", "Enter Stop", "Esc Backspace close", "a–z start writing", "Home End first or last post"], end: "? all keys" });
     await state("a running turn's actions: Stop, what it works on, sent to T3", `Stop · ${liveWhere}`);
     press("ArrowDown");
@@ -2277,10 +2277,11 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Down: his running turn (run ${tagRun.id.slice(0, 8)})`, (f) => f.key === `live:${tagRun.id}`);
     press("Enter");
     await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
-    names("his turn, a file named in its feed", ["Stop", `show #${tagAsked.number}`, "release.md", "sent to T3"]);
+    names("his turn, a file named in its feed", ["Stop", "Stop everything", `show #${tagAsked.number}`, "release.md", "sent to T3"]);
     press("ArrowRight");
     press("ArrowRight");
-    await expect("Right ×2: the feed's file chip", (f) => f.action === "file:0");
+    press("ArrowRight");
+    await expect("Right ×3, past Stop everything and the request: the feed's file chip", (f) => f.action === "file:0");
     press("Enter");
     await expect("Enter: its preview over the page", (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
     await room.finish("fable", "The tag is v1.2.");
@@ -2399,7 +2400,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
         await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
         press("ArrowRight");
         press("ArrowRight");
-        await expect("Right ×2: the feed's file chip", (f) => f.action === "file:0");
+        press("ArrowRight");
+        await expect("Right ×3, past Stop everything and the request: the feed's file chip", (f) => f.action === "file:0");
         press("Enter");
       }
       await expect(`${how === "mouse" ? "a click on the feed's file chip" : "Enter on it"}: its preview over the page`, (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
@@ -2582,7 +2584,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`Down: @alpha's running turn (run ${alphaLive.id.slice(0, 8)})`, (f) => f.key === `live:${alphaLive.id}` && f.ring);
     press("Enter");
     await expect("Enter: the turn's actions, on Stop", (f) => f.strips === 1 && f.action === "stop:0");
-    names("@alpha's turn with an approval", ["Stop", "Accept", "Accept for session", "Always accept", "Decline", "Cancel turn", ...alphaOn.map((n) => `show #${n}`), "sent to T3"]);
+    names("@alpha's turn with an approval", ["Stop", "Stop everything", "Accept", "Accept for session", "Always accept", "Decline", "Cancel turn", ...alphaOn.map((n) => `show #${n}`), "sent to T3"]);
     await state("a running turn with an approval waiting: its actions offer the approval's choices", new RegExp("^Stop · @alpha's turn · needs you"));
     press("Escape");
     await expect("Esc: the actions closed, the ring on the turn", (f) => f.strips === 0 && f.key === `live:${alphaLive.id}`);
@@ -3020,7 +3022,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect(`End, Down: @fable's running turn (run ${turn.id.slice(0, 8)})`, (f) => f.key === `live:${turn.id}`);
     press("Enter");
     press("ArrowRight");
-    await expect("Enter, Right: the turn's actions on Accept", (f) => f.item === `live:${turn.id}` && choiceAt(f.action) === 0 && f.label === "Accept");
+    press("ArrowRight");
+    await expect("Enter, Right ×2, past Stop everything: the turn's actions on Accept", (f) => f.item === `live:${turn.id}` && choiceAt(f.action) === 0 && f.label === "Accept");
     press("Enter");
     const bubbleGot = await answered(fromBubble, "Accept from the turn's actions");
     if (bubbleGot.decision !== "accept") fail(`T3's fake got ${JSON.stringify(bubbleGot)} from the turn's actions, expected accept`);
@@ -3232,7 +3235,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await abovePosts(`@fable's working chip`, (f) => f.key === runKey);
     press("Enter");
     await expect("Enter: the turn's choices, the ring on Stop", (f) => f.chipOpen && f.action === "stop:0" && f.label === "Stop");
-    names("@fable's running turn", ["Stop", `show #${turn.number}`]);
+    names("@fable's running turn", ["Stop", "Stop everything", `show #${turn.number}`]);
     await keyBar(`Stop · @fable working: on #${turn.number}`);
     press("Enter");
     const stopped = await until("the API to show @fable's turn stopped", async () => {
@@ -3294,7 +3297,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
-    await section("a paused member's chip: Resume now by keys asks first, Keep waiting folds it with nothing sent, Resume anyway continues it", {
+    await section("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Resume anyway continues it", {
       replay: async () => {
         await secondApproval();
         await listsRead();
@@ -3325,26 +3328,85 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Enter: the paused turn's choices, the ring on Resume now", (f) => f.chipOpen && f.label === "Resume now" && f.ring);
     press("Enter");
     await expect("Enter: it asks first, the ring on Resume anyway", (f) => f.chipOpen && f.label === "Resume anyway");
-    names("@fable's paused turn, asking", ["Resume anyway", "Keep waiting"]);
+    // Stop everything stays offered beside them: it turns T3's recovery off.
+    names("@fable's paused turn, asking", ["Resume anyway", "Keep waiting", "Stop everything"]);
     press("ArrowRight");
     await expect("Right: Keep waiting", (f) => f.label === "Keep waiting");
     press("Enter");
-    await expect("Enter: Keep waiting folds the choices, the ring back on the chip", (f) => f.key === pausedChip && f.ring && !f.chipOpen && f.strips === 0);
+    await expect("Enter: Keep waiting asks no more, the strip still open on another choice", (f) => f.chipOpen && f.strips === 1 && (f.label === "Resume now" || f.label === "Stop everything"));
     if (!(await room.snapshot()).participantStatus[room.participant.fable]?.paused) fail("Keep waiting continued the turn");
     log("api: @fable still paused: Keep waiting sent nothing");
-    press("Enter");
-    await expect("Enter: the choices again, the ring on Resume now", (f) => f.chipOpen && f.label === "Resume now");
+    for (let i = 0; i < 3 && focus().label !== "Resume now"; i += 1) press("ArrowLeft");
+    await expect("Left: Resume now", (f) => f.label === "Resume now");
     press("Enter");
     await expect("Enter: it asks again", (f) => f.label === "Resume anyway");
     press("Enter");
     await until("T3 to continue @fable's turn", async () => ((await room.snapshot()).participantStatus[room.participant.fable]?.paused ? null : true));
     log(`api: @fable no longer paused; T3 runs the continuation of #${turn.number}'s turn`);
     const resumed = await expect("the chip gone: the ring on the newest post, a turn's chip or the composer's strip", (f) => (f.key?.startsWith("post:") === true || f.key?.startsWith("chip:") === true || f.key === "strip") && f.ring && inRoom(f) && f.strips === 0 && !f.chipOpen);
-    await state("a paused member's chip: Resume now by keys asks first, Keep waiting folds it with nothing sent, Resume anyway continues it", resumed.key === "strip" ? /^(Continue your draft|Write a message)/ : resumed.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(resumed.key));
+    await state("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Resume anyway continues it", resumed.key === "strip" ? /^(Continue your draft|Write a message)/ : resumed.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(resumed.key));
     await room.finish("fable", "Continued: the release is built.");
     await room.settle("fable");
     press("Backspace");
     await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  }
+
+  if (
+    await section("a running turn's chip by keys: Stop on one subagent ends it alone, Stop everything ends the turn and the other", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // @fable's turn runs two subagents. His chip's strip names each subagent's Stop apart from the turn's Stop and Stop
+    // everything; Enter on one stops that subagent alone, then Stop everything ends the turn and the other.
+    const turn = await chipTurn();
+    const subagentStatus = async (id: string) => (await service.call<{ status: string }>("GET", `/api/fake/subagent?threadId=${encodeURIComponent(room.thread.fable)}&subagentId=${id}`)).status;
+    await service.fake("subagent", { threadId: room.thread.fable, subagentId: "log-reader", title: "Read the CI logs", status: "running" });
+    await service.fake("subagent", { threadId: room.thread.fable, subagentId: "flake-hunter", title: "Hunt the flaky test", status: "running" });
+    await until("the desk to list both subagents", async () => {
+      const desk = await service.call<{ participants: Record<string, { backgroundTasks?: Array<{ runId: string | null }> }> }>("GET", `/api/rooms/${R}/desk`);
+      return (desk.participants[room.participant.fable]?.backgroundTasks ?? []).filter((t) => t.runId).length === 2 ? true : null;
+    });
+    const runKey = `chip:run:${turn.id}`;
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+    await abovePosts(`@fable's working chip`, (f) => f.key === runKey);
+    press("Enter");
+    await expect("Enter: the turn's choices, the ring on Stop", (f) => f.chipOpen && f.label === "Stop");
+    const labels = browser.eval<string[]>("() => [...document.querySelectorAll('.work-bar .action-strip button')].map((b) => b.getAttribute('aria-label') ?? b.textContent.trim())");
+    for (const want of ["Stop", "Stop everything", "Stop subagent: Read the CI logs", "Stop subagent: Hunt the flaky test"]) if (!labels.includes(want)) fail(`the strip lacks ${JSON.stringify(want)}: ${JSON.stringify(labels)}`);
+    log(`  page: the strip names ${labels.filter((l) => l.startsWith("Stop")).join(", ")}`);
+    for (let i = 0; i < 6 && focus().label !== "Stop subagent: Read the CI logs"; i += 1) press("ArrowRight");
+    await expect("Right: Stop subagent: Read the CI logs", (f) => f.label === "Stop subagent: Read the CI logs");
+    press("Enter");
+    await until("T3 to stop the log reader", async () => ((await subagentStatus("log-reader")) === "cancelled" ? true : null));
+    if ((await subagentStatus("flake-hunter")) !== "running") fail("stopping one subagent stopped the other");
+    if ((await room.snapshot()).runs.find((r: any) => r.id === turn.id)?.phase === "terminal") fail("stopping a subagent stopped the turn");
+    log("api: the log reader cancelled; the flake hunter and the turn run on");
+    await expect("the stopped subagent's Stop gone, the strip still open", (f) => f.strips === 1 && f.chipOpen && !browser.eval<string[]>("() => [...document.querySelectorAll('.work-bar .action-strip button')].map((b) => b.getAttribute('aria-label') ?? '')").includes("Stop subagent: Read the CI logs"), 10_000);
+    for (let i = 0; i < 6 && focus().label !== "Stop everything"; i += 1) press(focus().label === "Stop" ? "ArrowRight" : "ArrowLeft");
+    await expect("on Stop everything", (f) => f.label === "Stop everything");
+    press("Enter");
+    await until("T3 to stop everything on @fable's thread", async () => ((await room.snapshot()).runs.find((r: any) => r.id === turn.id)?.phase === "terminal" && (await subagentStatus("flake-hunter")) === "cancelled" ? true : null));
+    log("api: @fable's turn ended, the flake hunter cancelled");
+    chipRun = undefined;
+    const after = await expect("the chip gone: the ring on a notice's chip, the newest post or the composer's strip", (f) => (f.key?.startsWith("chip:") === true || f.key?.startsWith("post:") === true || f.key === "strip") && f.ring && inRoom(f) && f.strips === 0, 10_000);
+    await state("a running turn's chip by keys: Stop on one subagent ends it alone, Stop everything ends the turn and the other", after.key === "strip" ? /^(Continue your draft|Write a message)/ : after.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(after.key));
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    // The stopped turn's notice needs you (your request): dismissed, so the next section starts quiet.
+    const left = (await room.snapshot()).needsYou as Array<{ id: string }>;
+    if (left.length > 0) await service.call("POST", `/api/rooms/${encodeURIComponent(R)}/notices/dismiss`, { ids: left.map((post) => post.id) });
+    await room.settle("fable");
   }
 
   if (

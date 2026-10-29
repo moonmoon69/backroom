@@ -431,7 +431,7 @@ export interface ParticipantStatus {
 }
 
 /** What the page asks of a thread's runs (member.control, thread.control): resume the paused turn, or the held queue. */
-export type PageControl = { type: "resume" } | { type: "queue.resume" };
+export type PageControl = { type: "resume" } | { type: "queue.resume" } | { type: "stop.all" } | { type: "subagent.stop"; runId: string; subagentId: string };
 
 /** A turn its provider's usage limit stopped (T3's usage-limit pause), as the room shows it. */
 export interface UsageLimitPause {
@@ -467,6 +467,8 @@ export interface QueueState {
 /** Work still running on a thread beside or after its run, as T3 lists it: a subagent ("agent"), or a command or monitor ("background"; `type` says which). */
 export interface BackgroundTask {
   taskId: string;
+  /** A subagent's run, which a stop of it names; null for work T3 lists without one. Absent from an older service. */
+  runId?: string | null;
   title: string;
   kind: string;
   type: string | null;
@@ -936,6 +938,8 @@ export interface ThreadView {
   running: { runId: string; feed: LiveFeedItem[] } | null;
   /** Its queued messages, and what holds them. Absent from an older service. */
   queue?: QueueState | null;
+  /** What runs beside or after its turn: subagents, commands, monitors. Absent from an older service. */
+  backgroundTasks?: BackgroundTask[];
   contextWindow: ContextWindowReading | null;
   /** What its usage card shows besides context and spend, from what T3 reports about the thread. */
   usage: {
@@ -1406,7 +1410,7 @@ export type RoomCommand =
   | { type: "request.cancel"; roomId: string; requestId: string }
   | { type: "request.correct"; roomId: string; requestId: string; text: string }
   | { type: "run.retry"; roomId: string; runId: string; text?: string }
-  | { type: "run.stop"; roomId: string; participantId: string }
+  | { type: "run.stop"; roomId: string; participantId: string; everything?: boolean }
   | { type: "native.approval.respond"; participantId: string; requestId: string; decision: ApprovalDecision }
   | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> }
   | { type: "native.secret.respond"; participantId: string; requestId: string; answer: SecretAnswer }

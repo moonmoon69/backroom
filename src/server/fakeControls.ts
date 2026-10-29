@@ -21,6 +21,9 @@
  *   GET  /api/fake/secret?threadId=…&requestId=…               where a secret request stands, as T3 keeps it -> { secretStatus }
  *                                ("pending", "saved", "declined" or "cancelled"); the fake never keeps the secret itself
  *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
+ *   POST /api/fake/subagent      { threadId, subagentId, status, title?, origin?, driver? }   a subagent of the running
+ *                                (else latest) run, made or moved to `status`
+ *   GET  /api/fake/subagent?threadId=…&subagentId=…            its status as T3 keeps it -> { status }
  *   POST /api/fake/outage        { down, message?, shellOnly? } T3 stops answering (every call fails) or answers again;
  *                                shellOnly: only its projects and threads fail, its descriptor still answers (#8)
  *   GET  /api/fake/request?threadId=…&requestId=…              an approval's or question's record, as T3 keeps it -> { status,
@@ -94,6 +97,27 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
     fake.setBackground(thread(input), Array.isArray(input.taskIds) ? input.taskIds.filter((id): id is string => typeof id === "string") : []);
     return {};
   }));
+  controls.post("/api/fake/subagent", run((input) => {
+    if (typeof input.subagentId !== "string" || typeof input.status !== "string") throw new Error("subagentId and status must be given");
+    fake.setSubagent(thread(input), {
+      id: input.subagentId,
+      status: input.status as never,
+      ...(typeof input.title === "string" ? { title: input.title } : {}),
+      ...(input.origin === "app_owned" ? { origin: "app_owned" as const } : {}),
+      ...(typeof input.driver === "string" ? { driver: input.driver } : {}),
+    });
+    return {};
+  }));
+  controls.get("/api/fake/subagent", async (c) => {
+    try {
+      const input = { threadId: c.req.query("threadId"), subagentId: c.req.query("subagentId") };
+      const subagent = fake.threads.get(thread(input))!.subagents.find((s) => s.id === input.subagentId);
+      if (!subagent) throw new Error("subagentId must name a subagent of the thread");
+      return c.json({ ok: true, status: subagent.status });
+    } catch (error) {
+      return c.json({ error: "fake_control", message: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
   controls.post("/api/fake/outage", run((input) => {
     const shellOnly = input.shellOnly === true;
     const failure = input.down === true ? new T3Unavailable(typeof input.message === "string" && input.message ? input.message : shellOnly ? "T3 did not answer within 30s (orchestration shell)" : "fetch failed: connect ECONNREFUSED (the fake T3 is down)") : null;

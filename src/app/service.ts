@@ -368,6 +368,8 @@ export class RoomService {
         if (participant.roomId !== command.roomId) throw notFound("participant", command.participantId);
         const binding = this.repos.currentBinding(participant.id);
         if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
+        // A member's Stop everything goes on the room's journal (run.stop), so nothing more goes into the turn it stops.
+        if (command.control.type === "stop.all") throw new RoomError("bad_request", "A member's Stop everything is run.stop with everything set.", 400);
         const outcome = await controlThread(this.adapter, binding.threadId, command.control);
         this.notify(participant.roomId);
         return { type: "member.controlled", participantId: participant.id, outcome };

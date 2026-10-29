@@ -54,7 +54,7 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
     return { kind, id: number, label: `${text}${of}`, name: `${text}${of}${of && block?.dataset.to ? ` to ${block.dataset.to}` : ""}`, title, tone, expanded };
   }
   if (element.closest(".notice-actions") && (text === "Retry" || text === "Dismiss")) return { kind: text === "Retry" ? "retry" : "dismiss", label: text, name: text, title, tone };
-  if (element.closest(".live-turn .chat-head, .run-actions") && text === "Stop") return { kind: "stop", label: text, name: text, title, tone };
+  if (element.closest(".live-turn .chat-head, .run-actions") && (text === "Stop" || text === "Stop everything")) return { kind: "stop", label: text, name: text, title, tone };
   if (element.closest(".native-requests")) {
     const input = element instanceof HTMLInputElement ? element : null;
     // A secret's field is named for what it is, never for what is typed in it.

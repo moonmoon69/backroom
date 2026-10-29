@@ -2047,6 +2047,101 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     browser.openRoom(room.title);
   }
 
+  // 23c. The user's #160, B: Stop on one subagent, and Stop everything on a member and on a thread on its own.
+  if (await section("Stop on one subagent of a member's turn: it ends, the turn and the other subagent go on")) {
+    for (const alias of MEMBERS) await room.settle(alias);
+    browser.click(/tab "Board/);
+    const subagentStatus = async (threadId: string, subagentId: string) => (await service.call<{ status: string }>("GET", `/api/fake/subagent?threadId=${encodeURIComponent(threadId)}&subagentId=${encodeURIComponent(subagentId)}`)).status;
+    await room.message("Have @worker run the slow suite with subagents.");
+    await room.live("fable");
+    room.board("fable", "post", `@${room.name.worker} run the slow suite with subagents`);
+    const suite = await posted(seat.worker, "his suite request");
+    await room.finish("fable", "I asked @worker to run the suite.");
+    const turn = await room.live("worker");
+    await service.fake("subagent", { threadId: room.thread.worker, subagentId: "log-reader", title: "Read the CI logs", status: "running" });
+    await service.fake("subagent", { threadId: room.thread.worker, subagentId: "flake-hunter", title: "Hunt the flaky test", status: "running" });
+    await until("the desk to list both subagents", async () => {
+      const desk = await service.call<{ participants: Record<string, { backgroundTasks?: Array<{ taskId: string; runId: string | null }> }> }>("GET", `/api/rooms/${room.roomId}/desk`);
+      const tasks = desk.participants[room.participant.worker]?.backgroundTasks ?? [];
+      return tasks.filter((t) => t.runId).length === 2 ? true : null;
+    });
+    const chip = new RegExp(`button "${room.name.worker} working on #${suite.number}"`);
+    browser.poll<boolean>("@worker's working chip", `() => [...document.querySelectorAll('.work-chip')].some((c) => c.textContent.includes('${room.name.worker}') && c.textContent.includes('on #${suite.number}'))`, (v) => v);
+    browser.click(chip);
+    browser.waitFor("subagent Read the CI logs");
+    browser.click(/button "Stop subagent: Read the CI logs"/);
+    await until("T3 to have stopped the log reader", async () => ((await subagentStatus(room.thread.worker, "log-reader")) === "cancelled" ? true : null));
+    await check.state("Stop on one subagent of a member's turn: it ends, the turn and the other subagent go on", (x) => {
+      const run = x.runs.find((r) => r.id === turn.id);
+      return run && run.phase === "running" ? `@worker's run ${run.id.slice(0, 8)} still running; T3 has the log reader cancelled` : null;
+    }, ["subagent Hunt the flaky test"], {
+      extra: () => {
+        browser.poll<boolean>("the stopped subagent's row to go", "() => ![...document.querySelectorAll('.work-open .thread-controls-subagent')].some((row) => row.textContent.includes('Read the CI logs'))", (gone) => gone);
+        log("  page: the stopped subagent's row is gone, the other's Stop stays");
+      },
+    });
+    if ((await subagentStatus(room.thread.worker, "flake-hunter")) !== "running") fail("stopping one subagent stopped the other");
+
+    // Stop everything on his turn: the turn, the other subagent and a background command end; the notice says so.
+    await service.fake("background", { threadId: room.thread.worker, taskIds: ["slow-suite"] });
+    browser.click(/button "Stop everything"/);
+    await check.state("Stop everything on a member's turn: the turn, its subagent and background command end, and the notice says the user stopped everything", (x) => {
+      const run = x.runs.find((r) => r.id === turn.id);
+      const notice = x.posts.find((p) => p.kind === "output" && p.author === seat.worker && p.body.includes("the user stopped everything on the thread from Backroom"));
+      return run?.phase === "terminal" && notice && room.post(x, suite.request.id).request.state === "open" ? `@worker's run terminal; #${notice.number} says the user stopped everything; #${suite.number} stays open` : null;
+    }, ["the user stopped everything on the thread from Backroom"], {
+      always: () => undefined,
+    });
+    if ((await subagentStatus(room.thread.worker, "flake-hunter")) !== "cancelled") fail("Stop everything left a subagent running");
+    const desk = await service.call<{ participants: Record<string, { backgroundTasks?: unknown[] }> }>("GET", `/api/rooms/${room.roomId}/desk`);
+    if ((desk.participants[room.participant.worker]?.backgroundTasks ?? []).length > 0) fail(`Stop everything left work listed: ${JSON.stringify(desk.participants[room.participant.worker]?.backgroundTasks)}`);
+    log("  api: T3 has every subagent cancelled and lists nothing in @worker's background");
+    await room.settle("fable");
+
+    // Between turns, a background command left: its chip's Stop everything ends it, and the quiet follow-up says why.
+    await service.fake("external-run", { threadId: room.thread.worker, text: "Watch CI for me." });
+    await until("T3 to run it", async () => (await room.snapshot()).participantStatus[room.participant.worker]?.externalActivity === true);
+    await service.fake("background", { threadId: room.thread.worker, taskIds: ["ci-watch"] });
+    await room.finish("worker", "Watching CI.");
+    await until("its end on the board, naming the watch", async () => followUps(await room.snapshot(), seat.worker).some((p) => p.body.includes("Watching CI.") && p.body.includes("ci-watch")));
+    await room.settle("fable");
+    browser.poll<boolean>("@worker's background chip", `() => [...document.querySelectorAll('.work-chip')].some((c) => c.textContent.includes('${room.name.worker}') && c.textContent.includes('background work'))`, (v) => v);
+    browser.click(new RegExp(`button "${room.name.worker} background work`));
+    browser.click(/button "Stop everything"/);
+    // The host waits 30 s of quiet before it says background work ended.
+    await until("the quiet follow-up", async () => followUps(await room.snapshot(), seat.worker).some((p) => p.body.includes("ended: the user stopped everything from Backroom.")), 60_000);
+    await check.state("between turns, Stop everything on a member's background chip ends it, and the quiet follow-up says the user stopped it", (x) => {
+      const f = followUps(x, seat.worker).find((p) => p.body.includes("ended: the user stopped everything from Backroom."));
+      return f ? `#${f.number}: ${f.body.split("\n").at(-1)}` : null;
+    }, ["ended: the user stopped everything from Backroom."]);
+    await room.settle("fable");
+  }
+
+  // 23d. A thread on its own: Stop everything above its composer ends what it left running.
+  if (await section("Stop everything on a thread on its own: its turn and its subagent end")) {
+    const started = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "Run the long migration check." });
+    await service.fake("hold", { threadId: started.threadId, hold: true });
+    await until("T3 to run the loose thread", async () => (await service.call<{ thread: { status: string } }>("GET", `/api/threads/${started.threadId}`)).thread.status === "running");
+    await service.fake("subagent", { threadId: started.threadId, subagentId: "checker", title: "Check each migration", status: "running" });
+    const title = (await service.call<{ thread: { title: string } }>("GET", `/api/threads/${started.threadId}`)).thread.title;
+    browser.click(/button "Back to the overview"/);
+    browser.waitFor(title);
+    browser.click(new RegExp(`button "[^"]*".* description="Open ${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+    browser.waitFor("Stop everything");
+    browser.click(/button "Stop everything"/);
+    await check.state("Stop everything on a thread on its own: its turn and its subagent end", () => "the loose thread's turn and subagent", ["Asked T3 to stop everything on the thread."], {
+      always: () => undefined,
+    });
+    await until("T3 to have stopped the loose thread", async () => {
+      const view = await service.call<{ thread: { status: string }; backgroundTasks?: unknown[] }>("GET", `/api/threads/${started.threadId}`);
+      return view.thread.status === "interrupted" && (view.backgroundTasks ?? []).length === 0 ? true : null;
+    });
+    log("  api: the loose thread's run interrupted, nothing left in its background");
+    await service.fake("hold", { threadId: started.threadId, hold: false });
+    browser.click(/button "Back to the overview"/);
+    browser.openRoom(room.title);
+  }
+
   // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   if (await section("a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast")) {
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));

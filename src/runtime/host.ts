@@ -35,14 +35,14 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { CONTINUE_TEXT, T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
+import { CONTINUE_TEXT, T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isRunActive, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { adoptableSteers, goesIntoTurn, holdsBack, settledOffer, steerMessageIds, steerOffers, steerReceiptId, takenInRun, takesMessages, type SteerOffer } from "./steer.ts";
-import { continuedRun, finalMessage, isTerminal, runEnd, runError, runLimit, runOrigin, threadFree, type RunLimit } from "./t3.ts";
+import { continuedRun, stoppedEverything, finalMessage, isTerminal, runEnd, runError, runLimit, runOrigin, threadFree, type RunLimit } from "./t3.ts";
 import { providerLabel, resetTime } from "../domain/usageLimit.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
@@ -915,7 +915,8 @@ export class EngineHost {
       return;
     }
     if (this.now() - since.at < this.quietMs) return;
-    this.followUp(roomId, seatId, id, `(${ended.join(", ")} ended without a further turn.)`, now, latest.requestIds);
+    const why = stoppedEverything(detail) ? ": the user stopped everything from Backroom" : " without a further turn";
+    this.followUp(roomId, seatId, id, `(${ended.join(", ")} ended${why}.)`, now, latest.requestIds);
     this.quietSince.delete(seatId);
     this.step("imported", roomId, seatId);
   }
@@ -1300,18 +1301,21 @@ export class EngineHost {
    * The room's Stop for a seat (L4a): T3 interrupts the run active on its thread. A host run then ends as a failure with
    * its notice (§6), which the user can retry; a turn the host did not start becomes a follow-up when it ends.
    */
-  async stopSeat(roomId: string, seatId: string): Promise<void> {
+  async stopSeat(roomId: string, seatId: string, everything = false): Promise<void> {
     const seat = this.project(roomId).seats.get(seatId);
     if (!seat || seat.status === "retired") throw new HostRefusal(`@${seatId} is not seated in this room.`);
     const shell = await this.adapter.getThreadShell(seat.threadId);
-    if (!shell?.activeRunId) throw new HostRefusal(`@${seatId} is not running anything in T3 now.`);
+    // Stop everything stops what is left too: background work, monitors, subagents, a held queue, a limit's recovery.
+    const left = shell !== null && (shell.pendingBackgroundTasks.length > 0 || shell.usageLimit?.recovery?.autoResume === true || isRunActive(shell.status));
+    if (!shell || (!shell.activeRunId && !(everything && left))) throw new HostRefusal(`@${seatId} is not running anything in T3 now.`);
     // Nothing more goes into the host run being stopped: a message sent now starts the seat's next turn. A Stop T3 did
     // not take stops nothing, and the run takes messages again.
     const live = this.liveRun(this.project(roomId), seatId);
-    const marked = live?.providerRunId === shell.activeRunId ? live.id : null;
+    const marked = shell.activeRunId && live?.providerRunId === shell.activeRunId ? live.id : null;
     if (marked) this.stopping.add(marked);
     try {
-      await this.adapter.interruptRun({ commandId: randomUUID(), threadId: seat.threadId, runId: shell.activeRunId });
+      if (everything) await this.adapter.controlThread({ commandId: randomUUID(), threadId: seat.threadId, control: { type: "thread.stop" } });
+      else await this.adapter.interruptRun({ commandId: randomUUID(), threadId: seat.threadId, runId: shell.activeRunId });
     } catch (error) {
       if (marked) this.stopping.delete(marked);
       throw error;

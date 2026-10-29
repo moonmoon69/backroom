@@ -355,11 +355,18 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
               <ThreadControls
                 pause={thread.usageLimit ? { runId: thread.usageLimit.runId, provider: thread.usageLimit.provider, resetAt: thread.usageLimit.resetAt, message: thread.usageLimit.message, armed: thread.usageLimit.recovery?.autoResume === true } : null}
                 queue={view?.queue}
+                background={view?.backgroundTasks ?? []}
+                running={running !== null}
                 now={now}
                 send={async (control) => {
                   const outcome = outcomeOf(await runCommand({ type: "thread.control", threadId, control }));
                   hurry();
                   return outcome;
+                }}
+                stopAll={async () => {
+                  const outcome = outcomeOf(await runCommand({ type: "thread.control", threadId, control: { type: "stop.all" } }));
+                  hurry();
+                  return outcome !== null;
                 }}
               />
             ) : null}

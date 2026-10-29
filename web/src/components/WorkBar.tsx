@@ -171,7 +171,8 @@ export function WorkBar() {
     if ((running && !running.startedByRoom) || (!running && status?.externalActivity)) {
       items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "" });
     } else if (betweenTurns(status, memberDesk)) {
-      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()) });
+      // Its choices: Stop on each subagent, and Stop everything.
+      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()), open: { member: participant } });
     }
   }
 
@@ -343,7 +344,11 @@ export function WorkBar() {
               <NoticeActions post={opened.open.notice} />
             </div>
           ) : "run" in opened.open ? (
-            <RunActions run={opened.open.run} onStop={(participantId) => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId })} />
+            <>
+              <RunActions run={opened.open.run} onStop={(participantId, everything) => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId, everything })} />
+              {/* Its subagents, each with a Stop of its own. */}
+              {opened.participant ? <MemberControls participant={opened.participant} now={now} stopAll={false} /> : null}
+            </>
           ) : "member" in opened.open ? (
             <MemberControls participant={opened.open.member} now={now} />
           ) : (
@@ -385,24 +390,28 @@ export function WorkBar() {
 }
 
 /** A member's thread controls (ThreadControls): its paused turn, its held queue. */
-function MemberControls({ participant, now }: { participant: Participant; now: number }) {
+function MemberControls({ participant, now, stopAll = true }: { participant: Participant; now: number; /** Stop everything among them (a running turn's chip has it beside Stop). */ stopAll?: boolean }) {
   const { snapshot, desk, runCommand } = useRoom();
   const status = snapshot.participantStatus[participant.id];
+  const memberDesk = desk?.participants[participant.id];
   return (
     <ThreadControls
       pause={status?.paused ?? null}
-      queue={desk?.participants[participant.id]?.queue}
+      queue={memberDesk?.queue}
+      background={memberDesk?.backgroundTasks ?? []}
+      running={Boolean(status?.activeRunId || status?.externalActivity)}
       now={now}
       send={async (control) => {
         const result = await runCommand({ type: "member.control", roomId: snapshot.room.id, participantId: participant.id, control });
         return outcomeOf(result);
       }}
+      {...(stopAll ? { stopAll: async () => (await runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId: participant.id, everything: true })) !== null } : {})}
     />
   );
 }
 
-/** What can be done about a run: stop it (through T3). An uncertain one is explained. */
-function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantId: string) => void }) {
+/** What can be done about a run: stop it, or everything on its thread (through T3). An uncertain one is explained. */
+function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantId: string, everything: boolean) => void }) {
   const { seatOf } = useRoom();
   const participant = seatOf(run.seatId).participant;
   return (
@@ -415,9 +424,14 @@ function RunActions({ run, onStop }: { run: EngineRunView; onStop: (participantI
             : `${PHASE[run.phase]}${run.startedAt ? ` since ${new Date(run.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`}
       </span>
       {participant && runCanStop(run.phase) ? (
-        <button type="button" className="small danger" title="Stop the turn through T3" onClick={() => onStop(participant.id)}>
-          Stop
-        </button>
+        <>
+          <button type="button" className="small danger" title="Stop the turn through T3" onClick={() => onStop(participant.id, false)}>
+            Stop
+          </button>
+          <button type="button" className="small danger" title="Stop the turn and everything it left running through T3: background commands, monitors, subagents; queued messages are held" onClick={() => onStop(participant.id, true)}>
+            Stop everything
+          </button>
+        </>
       ) : null}
     </div>
   );

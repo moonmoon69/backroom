@@ -545,12 +545,20 @@ export const CONTINUE_TEXT = "Continue where you left off.";
  * - limit.arm: have T3 continue a limited run at its reset (thread.metadata.update limitRecovery, autoResume on): T3's
  *   own recovery worker then sends the continuation;
  * - run.continue: continue a limited run now (message.dispatch manualContinuationOfRunId), as T3's own Continue does;
- * - queue.resume: let a held queue start its next message.
+ * - queue.resume: let a held queue start its next message;
+ * - thread.stop: stop everything on the thread (its run, background tasks, monitors, subagents and delegated tasks under
+ *   it); T3 also holds its queued messages, turns a usage limit's recovery off and ends its pull-request watches;
+ * - subagent.stop: stop one subagent of a run, its parent and siblings going on.
  */
 export type ThreadControl =
   | { type: "limit.arm"; runId: string; resetAt: string }
   | { type: "run.continue"; runId: string }
-  | { type: "queue.resume" };
+  | { type: "queue.resume" }
+  | { type: "thread.stop" }
+  | { type: "subagent.stop"; runId: string; subagentId: string };
+
+/** What T3 writes on the stopped run for Backroom's Stop everything (thread.stop's reason, its run_interrupt_request). */
+export const STOP_EVERYTHING_REASON = "Stopped everything from Backroom";
 
 /** T3's identity of a limited run's reset (UsageLimitRecoveryWorker): thread, run and the reset in epoch milliseconds. */
 export const limitIdentity = (threadId: string, runId: string, resetAt: string): string => `${threadId}:${runId}:${Date.parse(resetAt)}`;

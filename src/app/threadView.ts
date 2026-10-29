@@ -305,6 +305,8 @@ export function compactions(detail: T3ThreadDetail): Array<{ beforeTokens: numbe
 
 export interface BackgroundTask {
   taskId: string;
+  /** A subagent's run, which a stop of it names (subagent.stop); null for work T3 lists without one. */
+  runId: string | null;
   title: string;
   /** "agent" (a subagent) or "background" (a command, a monitor), as the members panel counts them. */
   kind: "agent" | "background";
@@ -328,6 +330,7 @@ export function backgroundTasks(detail: T3ThreadDetail): BackgroundTask[] {
     if (!SUBAGENT_OPEN.has(subagent.status)) continue;
     tasks.set(subagent.id, {
       taskId: subagent.id,
+      runId: subagent.runId,
       title: subagent.title ?? subagent.prompt.split("\n")[0]?.slice(0, 80) ?? "subagent",
       kind: "agent",
       type: "subagent",
@@ -341,6 +344,7 @@ export function backgroundTasks(detail: T3ThreadDetail): BackgroundTask[] {
     if (tasks.has(task.taskId)) continue;
     tasks.set(task.taskId, {
       taskId: task.taskId,
+      runId: null,
       title: task.description ?? (task.kind === "subagent" ? "subagent" : task.kind === "monitor" ? "monitor" : "background task"),
       kind: task.kind === "subagent" ? "agent" : "background",
       type: task.kind,

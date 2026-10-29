@@ -356,6 +356,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       requests: requestCards(detail),
       running: running ? { runId: running.id, feed: liveFeed(detail, running.id) } : null,
       queue: queueOf(detail),
+      backgroundTasks: backgroundTasks(detail),
       contextWindow: contextReading(detail),
       usage: await threadUsage(detail),
       browsers: threadBrowsersView(threadId),

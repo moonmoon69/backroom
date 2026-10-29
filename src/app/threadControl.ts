@@ -1,15 +1,18 @@
 /**
  * The page's controls on a thread's runs, for a room's member and for a thread on its own alike: continue a turn its
- * usage limit paused, and resume a held queue. Each is one T3 command (adapter.controlThread); T3's own guards decide,
- * and what T3 refuses is said in T3's words, never shown as work that started.
+ * usage limit paused, resume a held queue, stop everything on a thread on its own, and stop one subagent. Each is one
+ * T3 command (adapter.controlThread); T3's own guards decide, and what T3 refuses is said in T3's words, never shown as
+ * work that started.
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
 import { RoomError } from "../domain/errors.ts";
+import type { z } from "zod";
+import type { PageControlSchema } from "../domain/commands.ts";
 
-/** What the page asks for: resume the paused turn, or the held queue. */
-export type PageControl = { type: "resume" } | { type: "queue.resume" };
+/** What the page asks for (domain/commands.ts PageControlSchema). */
+export type PageControl = z.infer<typeof PageControlSchema>;
 
 /** What came of it: T3 took the command, or the turn had already continued (T3's worker, another page, a double click). */
 export type ControlOutcome = "sent" | "already";
@@ -28,8 +31,17 @@ export function resumeCommand(shell: T3ThreadShell): { commandId: string; contro
 export async function controlThread(adapter: T3Adapter, threadId: string, control: PageControl): Promise<ControlOutcome> {
   const shell = await call(() => adapter.getThreadShell(threadId));
   if (!shell) throw new RoomError("not_found", "thread not found in T3", 404);
-  if (control.type === "queue.resume") {
-    await call(() => adapter.controlThread({ commandId: randomUUID(), threadId, control: { type: "queue.resume" } }));
+  if (control.type === "queue.resume" || control.type === "stop.all") {
+    await call(() => adapter.controlThread({ commandId: randomUUID(), threadId, control: { type: control.type === "stop.all" ? "thread.stop" : "queue.resume" } }));
+    return "sent";
+  }
+  if (control.type === "subagent.stop") {
+    // T3 takes a stop of a subagent that has finished and does nothing: say so instead of seeming to stop it.
+    const detail = await call(() => adapter.getThreadDetail(threadId, { bounded: true }));
+    const subagent = detail?.subagents.find((s) => s.id === control.subagentId && s.runId === control.runId);
+    if (!subagent) throw new RoomError("not_found", "That subagent is not on this thread's run.", 404);
+    if (subagent.status !== "pending" && subagent.status !== "running" && subagent.status !== "waiting") throw new RoomError("stale", `That subagent has already ${subagent.status === "completed" ? "finished" : subagent.status}.`, 409);
+    await call(() => adapter.controlThread({ commandId: randomUUID(), threadId, control: { type: "subagent.stop", runId: control.runId, subagentId: control.subagentId } }));
     return "sent";
   }
   const command = resumeCommand(shell);
