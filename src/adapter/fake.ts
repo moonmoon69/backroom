@@ -38,12 +38,14 @@ import type {
   T3UserInputQuestion,
   SecretAnswer,
   T3ApprovalOption,
+  T3PullRequest,
+  T3PullRequestChecks,
   T3RuntimeRequestKind,
   T3SecretAsk,
   T3Versions,
   ThreadControl,
 } from "./types.ts";
-import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, secretRequests, usageLimitOf } from "./types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, pullRequestWatchTaskId, secretRequests, usageLimitOf } from "./types.ts";
 import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
@@ -868,6 +870,40 @@ export class FakeT3Adapter implements T3Adapter {
     }
   }
 
+  /** What T3's checks read gives, by pull request ("owner/repo#70"); none read as T3 having none. */
+  readonly pullRequestChecksRead = new Map<string, T3PullRequestChecks | null>();
+
+  async pullRequestChecks(input: { projectId: string; host: string | null; repository: string; number: number }): Promise<T3PullRequestChecks | null> {
+    this.guard();
+    return structuredClone(this.pullRequestChecksRead.get(`${input.repository.toLowerCase()}#${input.number}`) ?? null);
+  }
+
+  /**
+   * Test control: a pull request linked to the thread, as T3 keeps it: its snapshot (state, checksState, syncedAt) and,
+   * while `watched`, T3's watch of it, which T3 lists among the thread's background tasks. `checks` is what T3's checks
+   * read gives for it (names and statuses), apart from the snapshot, as in T3.
+   */
+  linkPullRequest(threadId: string, input: { repository: string; number: number; host?: string; state?: string; checksState?: "passing" | "failing" | "pending" | null; syncedAt?: string; watched: boolean; startedAt?: string; failedChecks?: string[]; checks?: T3PullRequestChecks | null }): void {
+    const thread = this.require(threadId);
+    const host = input.host ?? "github.com";
+    const at = new Date().toISOString();
+    const link: T3PullRequest = {
+      host,
+      repository: input.repository,
+      number: input.number,
+      url: `https://${host}/${input.repository}/pull/${input.number}`,
+      source: "agent",
+      snapshot: { state: input.state ?? "open", title: `Pull request #${input.number}`, checksState: input.checksState ?? null, syncedAt: input.syncedAt ?? at },
+      watch: input.watched ? { startedAt: input.startedAt ?? at, headSha: null, failedChecks: input.failedChecks ?? [], passedChecks: [], passed: false, checksAwaitedSince: null } : null,
+    };
+    thread.shell.pullRequests = [...thread.shell.pullRequests.filter((l) => !(l.repository === link.repository && l.number === link.number)), link];
+    const taskId = pullRequestWatchTaskId(host, input.repository, input.number);
+    const others = thread.shell.pendingBackgroundTasks.filter((task) => task.taskId !== taskId);
+    thread.shell.pendingBackgroundTasks = input.watched ? [...others, { taskId, kind: "monitor", description: `Watching pull request #${input.number}`, childThreadId: null }] : others;
+    if (input.checks !== undefined) this.pullRequestChecksRead.set(`${input.repository.toLowerCase()}#${input.number}`, input.checks);
+    this.stamp(thread);
+  }
+
   /** Test control: the agent says something in its running turn, a message of the run's before its final one. */
   say(threadId: string, text: string): string {
     const thread = this.threads.get(threadId);
@@ -1093,8 +1129,9 @@ export class FakeT3Adapter implements T3Adapter {
     if (limit?.resetAt) thread.recovery = { runId: limit.runId, resetAt: limit.resetAt, autoResume: false, snooze: false, requestId: commandId };
     else if (thread.recovery?.autoResume) thread.recovery = { ...thread.recovery, autoResume: false, requestId: commandId };
     for (const subagent of thread.subagents) if (subagent.status === "pending" || subagent.status === "running" || subagent.status === "waiting") this.cancelSubagent(thread, subagent);
-    // Its pull-request watches go with the rest of what it lists in the background.
+    // Its pull-request watches end with the rest of what it lists in the background.
     thread.shell.pendingBackgroundTasks = [];
+    thread.shell.pullRequests = thread.shell.pullRequests.map((link) => ({ ...link, watch: null }));
     const at = this.stamp(thread);
     const active = this.activeRun(thread);
     // The run interrupted is the running one, else the latest (what its background work belongs to).

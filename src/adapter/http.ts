@@ -25,6 +25,8 @@ import { ShellFeed, type FeedConnection, type ShellSnapshot } from "./shellFeed.
 import { ThreadFeed, type ThreadSnapshot } from "./threadFeed.ts";
 import type {
   ThreadControl,
+  T3PullRequestChecks,
+  T3PullRequestWatch,
   ApprovalDecision,
   ThreadLifecycleAction,
   UsageBucket,
@@ -448,6 +450,15 @@ function pullRequestWatchesListed(runs: T3Run[]): boolean {
   const latest = runs.filter((run) => !(run.status === "queued" && run.queueHeld)).reduce<T3Run | null>((best, run) => (best === null || run.ordinal > best.ordinal ? run : best), null);
   return latest === null || WATCH_LISTED_AFTER.has(latest.status);
 }
+
+function toWatch(raw: unknown): T3PullRequestWatch | null {
+  const watch = raw as Record<string, unknown> | null | undefined;
+  if (!watch || typeof watch.startedAt !== "string") return null;
+  const names = (value: unknown): string[] => (Array.isArray(value) ? value.filter((n): n is string => typeof n === "string") : []);
+  return { startedAt: watch.startedAt, headSha: text(watch.headSha), failedChecks: names(watch.failedChecks), passedChecks: names(watch.passedChecks), passed: watch.passed === true, checksAwaitedSince: text(watch.checksAwaitedSince) };
+}
+
+const CHECK_STATUSES = new Set(["pending", "action-required", "success", "failure", "skipped", "neutral", "cancelled"]);
 
 function toAttachments(raw: unknown): T3MessageAttachment[] {
   return ((raw as Array<Record<string, unknown>> | undefined) ?? [])
@@ -1337,11 +1348,13 @@ export class HttpT3Adapter implements T3Adapter {
       pendingBackgroundTasks: toBackgroundTasks(thread.pendingBackgroundTasks),
       hasActionableProposedPlan: Boolean(thread.hasActionableProposedPlan),
       pullRequests: ((thread.pullRequests as Array<Record<string, unknown>> | undefined) ?? []).map((pr) => ({
+        host: text(pr.host),
         repository: String(pr.repository ?? ""),
         number: Number(pr.number ?? 0),
         url: String(pr.url ?? ""),
         source: text(pr.source),
         snapshot: pr.snapshot ?? null,
+        watch: toWatch(pr.watch),
       })),
       linkedPullRequest: (thread.linkedPullRequest as { repository: string; number: number; url: string } | null | undefined) ?? null,
       lineage: { parentThreadId: lineage.parentThreadId ?? null, relationshipToParent: lineage.relationshipToParent ?? null, rootThreadId: lineage.rootThreadId ?? (thread.id as string) },
@@ -1719,6 +1732,17 @@ export class HttpT3Adapter implements T3Adapter {
             ? { type: "queue_after_active" }
             : { type: "start_immediately" },
     });
+  }
+
+  async pullRequestChecks(input: { projectId: string; host: string | null; repository: string; number: number }): Promise<T3PullRequestChecks | null> {
+    await this.ensureProtocol();
+    // T3's cached read when it has one: a hover is no reason to ask the host again.
+    const result = await this.rpc<{ observedAt?: unknown; checks?: unknown } | null>("pullRequests.checks", { projectId: input.projectId, ...(input.host ? { host: input.host } : {}), repository: input.repository, number: input.number, allowStale: true });
+    if (!result || !Array.isArray(result.checks)) return null;
+    return {
+      observedAt: typeof result.observedAt === "number" && Number.isFinite(result.observedAt) ? new Date(result.observedAt).toISOString() : null,
+      checks: (result.checks as Array<Record<string, unknown>>).filter((c) => typeof c.name === "string" && CHECK_STATUSES.has(String(c.status))).map((c) => ({ name: c.name as string, status: c.status as T3PullRequestChecks["checks"][number]["status"], required: c.required === true })),
+    };
   }
 
   async controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void> {

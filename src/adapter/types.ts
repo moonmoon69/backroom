@@ -151,12 +151,37 @@ export const ACTIVE_RUN_STATUSES: ReadonlySet<T3RunStatus> = new Set<T3RunStatus
 export const isRunActive = (status: T3RunStatus | "idle"): boolean => status !== "idle" && ACTIVE_RUN_STATUSES.has(status);
 
 export interface T3PullRequest {
+  /** The source-control host (github.com), when T3 names it. */
+  host: string | null;
   repository: string;
   number: number;
   url: string;
   source: string | null;
-  /** Provider snapshot as T3 reports it (state, title, checks); shape is T3's and passed through. */
+  /** Provider snapshot as T3 reports it (state, title, checksState, syncedAt); shape is T3's and passed through. */
   snapshot: unknown;
+  /** T3's watch of it (`watch_pull_request`), while it lasts; null once it ended, or with none. */
+  watch: T3PullRequestWatch | null;
+}
+
+/**
+ * T3's watch of a pull request (ThreadPullRequestWatch): since when, and the checks it has seen settle on the head it
+ * watches. It names no check still pending: those come from T3's checks read (pullRequestChecks).
+ */
+export interface T3PullRequestWatch {
+  startedAt: string;
+  headSha: string | null;
+  failedChecks: string[];
+  passedChecks: string[];
+  passed: boolean;
+  /** Since when the head has had no check at all; null once one showed up. */
+  checksAwaitedSince: string | null;
+}
+
+/** A pull request's checks as T3 reads them from its host (pullRequests.checks): each by name with its status. */
+export interface T3PullRequestChecks {
+  /** When T3 read them (ISO); null when it does not say. */
+  observedAt: string | null;
+  checks: Array<{ name: string; status: "pending" | "action-required" | "success" | "failure" | "skipped" | "neutral" | "cancelled"; required: boolean }>;
 }
 
 /** Background work T3 reports as still running on the thread after (or beside) its run: subagents, commands, monitors. */
@@ -745,6 +770,11 @@ export interface T3Adapter {
    * model across all threads, read from the harness transcripts. Not per thread; not money spent on subscriptions.
    */
   usageSummary?(input: { day: string; timeZone: string }): Promise<UsageSummary>;
+  /**
+   * A pull request's checks as T3 reads them from its host (pullRequests.checks, T3's cached read when it has one); null
+   * when T3 has none to give. Optional: an adapter without it gives no check names.
+   */
+  pullRequestChecks?(input: { projectId: string; host: string | null; repository: string; number: number }): Promise<T3PullRequestChecks | null>;
   /** Settle (T3's "settled" list), archive (hidden, reversible), or delete (permanent) a thread; or undo a settle or archive. */
   setThreadLifecycle(input: { commandId: string; threadId: string; action: ThreadLifecycleAction }): Promise<void>;
   /** T3's version and its harnesses' (server.getConfig); `fresh` skips the adapter's short cache. */

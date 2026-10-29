@@ -27,6 +27,9 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
   return { detail: parts.length > 0 ? parts.join(" · ") : null, agents };
 }
 
+/** T3's watch of a pull request, among what runs on the thread. */
+const isWatch = (job: { taskId: string }): boolean => job.taskId.startsWith("pull-request-watch:");
+
 /**
  * What still runs on the thread, each job as T3 lists it with its kind and minutes ("Run the tests (command, 2m) · …"),
  * or that the agent will continue when it finishes when T3 lists none.
@@ -34,7 +37,8 @@ function jobsDetail(desk: Desk | null | undefined): { detail: string | null; age
 export function jobsLine(desk: Desk | null | undefined, now: number): string {
   const jobs = desk?.backgroundTasks ?? [];
   if (jobs.length === 0) return "will continue when it finishes";
-  return jobs.map((job) => `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`).join(" · ");
+  // T3's watch of a pull request says what it waits for in its own line ("Watching pull request #70: 1 check pending…").
+  return jobs.map((job) => (isWatch(job) && job.detail ? job.detail : `${job.title} (${job.kind === "agent" ? "subagent" : job.type === "monitor" ? "monitor" : "command"}, ${Math.max(1, Math.round((now - Date.parse(job.startedAt)) / 60000))}m)`)).join(" · ");
 }
 
 /**
@@ -90,7 +94,11 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   // Between turns but not done: the agent wakes itself when its background work finishes.
   const liveness = betweenTurns(status, desk);
   if (liveness === "working") return working(jobs.agents > 0 ? "subagents running" : "background work");
-  if (liveness === "monitoring") return { label: "monitoring", tone: "working", motion: "monitoring", detail: jobs.detail };
+  if (liveness === "monitoring") {
+    // Watching pull requests: what each waits for, from T3, so a hung check shows without opening GitHub.
+    const watches = (desk?.backgroundTasks ?? []).filter((job) => isWatch(job) && job.detail).map((job) => job.detail!);
+    return { label: "monitoring", tone: "working", motion: "monitoring", detail: watches.length > 0 ? watches.join(" · ") : jobs.detail };
+  }
   if (desk?.queue?.hold?.by === "held") return { label: "queue held", tone: "stopped", motion: null, detail: queueLine(desk.queue) };
   if (desk?.interactionMode === "plan" && desk.proposedPlan && !desk.proposedPlan.implementedAt) return idle("plan ready", "input");
   // Between runs: how the last one ended. A run that completed, or a thread with none yet, is ready for the next.

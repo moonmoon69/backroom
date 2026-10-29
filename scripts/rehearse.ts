@@ -2182,6 +2182,38 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await room.settle("fable");
   }
 
+  // 23f. The user's #160, D: T3's watch of a pull request says what it waits for, from T3, with the watch's age.
+  if (await section("a member watching a pull request: its hover and chip say 1 check pending by name and how long T3 has watched")) {
+    for (const alias of MEMBERS) await room.settle(alias);
+    browser.click(/tab "Board/);
+    const watchRead = `() => [document.querySelector('[aria-label^="Members"]')?.getAttribute('title') ?? '', [...document.querySelectorAll('.work-chip')].map((c) => c.textContent).join(' | ')]`;
+    await service.fake("external-run", { threadId: room.thread.worker, text: "Open the PR and watch it." });
+    await until("T3 to run it", async () => (await room.snapshot()).participantStatus[room.participant.worker]?.externalActivity === true);
+    const eightHours = new Date(Date.now() - 8 * 3_600_000 - 5 * 60_000).toISOString();
+    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "pending", startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "pending", required: true }, { name: "vet + test", status: "success", required: true }] } });
+    await room.finish("worker", "Opened #70; T3 watches it.");
+    await room.settle("fable");
+    const line = "Watching pull request #70: 1 check pending (Browser harness) · watched for 8h";
+    await check.state("a member watching a pull request: its hover and chip say 1 check pending by name and how long T3 has watched", (x) => (x.participantStatus[room.participant.worker] ? "@worker between turns, T3 watching #70" : null), [line], {
+      always: () => {
+        const [hover, chips] = browser.poll<[string, string]>("the hover and the chip to say what #70 waits for", watchRead, ([h, c]) => h.includes(line) && c.includes(line));
+        log(`  page: the Members hover and the chip say ${JSON.stringify(line)} (${hover.length}/${chips.length} chars)`);
+      },
+    });
+    // The checks pass: the line says so at its next read, and no follow-up says the watch ended.
+    const before = followUps(await room.snapshot(), seat.worker).length;
+    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "passing", startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "success", required: true }, { name: "vet + test", status: "success", required: true }] } });
+    await check.state("its checks pass: the line says checks passed, no pending claim left, and no follow-up says the watch ended", () => "T3's checks read gives every check passed", ["Watching pull request #70: checks passed · watched for 8h"], {
+      always: () => {
+        browser.poll<[string, string]>("the line to say checks passed", watchRead, ([h, c]) => h.includes("checks passed") && !h.includes("pending (") && !c.includes("pending ("), 40_000);
+      },
+    });
+    if (followUps(await room.snapshot(), seat.worker).length !== before) fail("the line changing made a follow-up");
+    log("  api: no follow-up from @worker: the watch's task kept its title");
+    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: false, state: "merged", checksState: "passing" });
+    await room.settle("fable");
+  }
+
   // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   if (await section("a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast")) {
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));

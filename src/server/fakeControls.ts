@@ -26,6 +26,10 @@
  *   POST /api/fake/subagent      { threadId, subagentId, status, title?, origin?, driver? }   a subagent of the running
  *                                (else latest) run, made or moved to `status`
  *   GET  /api/fake/subagent?threadId=…&subagentId=…            its status as T3 keeps it -> { status }
+ *   POST /api/fake/pull-request  { threadId, repository, number, watched, state?, checksState?, syncedAt?, startedAt?,
+ *                                failedChecks?, checks?: { observedAt, checks: [{ name, status, required }] } | null }
+ *                                a pull request linked to the thread, watched by T3 or not; `checks` is what T3's checks
+ *                                read gives for it
  *   POST /api/fake/outage        { down, message?, shellOnly? } T3 stops answering (every call fails) or answers again;
  *                                shellOnly: only its projects and threads fail, its descriptor still answers (#8)
  *   GET  /api/fake/request?threadId=…&requestId=…              an approval's or question's record, as T3 keeps it -> { status,
@@ -127,6 +131,11 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
       return c.json({ error: "fake_control", message: error instanceof Error ? error.message : String(error) }, 400);
     }
   });
+  controls.post("/api/fake/pull-request", run((input) => {
+    if (typeof input.repository !== "string" || typeof input.number !== "number") throw new Error("repository and number must name the pull request");
+    fake.linkPullRequest(thread(input), input as never);
+    return {};
+  }));
   controls.post("/api/fake/outage", run((input) => {
     const shellOnly = input.shellOnly === true;
     const failure = input.down === true ? new T3Unavailable(typeof input.message === "string" && input.message ? input.message : shellOnly ? "T3 did not answer within 30s (orchestration shell)" : "fetch failed: connect ECONNREFUSED (the fake T3 is down)") : null;

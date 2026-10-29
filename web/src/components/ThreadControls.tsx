@@ -52,9 +52,11 @@ export function ThreadControls({
   };
   const held = queue?.hold?.by === "held" ? queue : null;
   const subagents = background.filter((task) => task.kind === "agent" && task.runId);
+  // T3's watches of pull requests, with what each waits for.
+  const watches = background.filter((task) => task.taskId.startsWith("pull-request-watch:") && task.detail);
   // Stop everything while anything is left: a turn, background work, a held queue, a recovery T3 would run.
   const left = running || background.length > 0 || held !== null || pause?.armed === true;
-  if (!pause && !held && subagents.length === 0 && !(stopAll && left) && !said) return null;
+  if (!pause && !held && subagents.length === 0 && watches.length === 0 && !(stopAll && left) && !said) return null;
   const before = pause?.resetAt ? Date.parse(pause.resetAt) > now : false;
   const time = pause ? resetTime(pause.resetAt, now) : null;
   return (
@@ -97,6 +99,11 @@ export function ThreadControls({
       ) : queue?.hold?.by === "limit" ? (
         <span className="work-open-text">{queueLine(queue)}.</span>
       ) : null}
+      {watches.map((task) => (
+        <span key={task.taskId} className="work-open-text thread-controls-watch">
+          {task.detail}
+        </span>
+      ))}
       {subagents.map((task) => (
         <span key={task.taskId} className="thread-controls-subagent">
           <span className="work-open-text">subagent {task.title}</span>

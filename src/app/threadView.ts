@@ -4,8 +4,9 @@
  * it left running, and what its runs changed. Pure functions over a thread detail; a room's desk and a thread on its
  * own use the same ones.
  */
-import type { T3Message, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem } from "../adapter/types.ts";
-import { isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
+import type { T3Message, T3PullRequestChecks, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem } from "../adapter/types.ts";
+import { isPullRequestWatch, isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
+import { watchLine, watchedLink } from "./pullRequestWatch.ts";
 import { providerLabel } from "../domain/usageLimit.ts";
 
 // ---------------- the queue ----------------
@@ -325,7 +326,12 @@ const SUBAGENT_OPEN = new Set<T3Subagent["status"]>(["pending", "running", "wait
  * Work still running on the thread: its subagents that have not finished, and what T3 lists as running after the run
  * settled (commands and monitors the provider left in the background).
  */
-export function backgroundTasks(detail: T3ThreadDetail): BackgroundTask[] {
+/**
+ * What runs on the thread beside or after its run: its open subagents, and what T3 lists in its background. T3's watch of
+ * a pull request carries its line (pullRequestWatch.ts) as its detail, from the link alone; `checks` gives the checks T3
+ * read for a watched pull request, by its task id.
+ */
+export function backgroundTasks(detail: T3ThreadDetail, now = Date.now(), checks: ReadonlyMap<string, T3PullRequestChecks | null> = new Map()): BackgroundTask[] {
   const tasks = new Map<string, BackgroundTask>();
   for (const subagent of detail.subagents) {
     if (!SUBAGENT_OPEN.has(subagent.status)) continue;
@@ -343,13 +349,14 @@ export function backgroundTasks(detail: T3ThreadDetail): BackgroundTask[] {
   }
   for (const task of detail.shell.pendingBackgroundTasks) {
     if (tasks.has(task.taskId)) continue;
+    const link = isPullRequestWatch(task) ? watchedLink(detail.shell.pullRequests, task.taskId) : null;
     tasks.set(task.taskId, {
       taskId: task.taskId,
       runId: null,
       title: task.description ?? (task.kind === "subagent" ? "subagent" : task.kind === "monitor" ? "monitor" : "background task"),
       kind: task.kind === "subagent" ? "agent" : "background",
       type: task.kind,
-      detail: null,
+      detail: link ? watchLine(link, checks.get(task.taskId) ?? null, now) : null,
       lastTool: null,
       startedAt: detail.shell.latestRunCompletedAt ?? detail.shell.updatedAt,
       updatedAt: detail.shell.updatedAt,
