@@ -12,6 +12,14 @@ import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, chipTarget, en
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
 
+test("review: keyboard help explains the secret field and saving it", () => {
+  const chip = placeById("room-chip").entries.map(entryText).join("\n");
+  const choices = placeById("room-chip-actions").entries.map(entryText).join("\n");
+  assert.match(chip, /secret/i, "opening the chip exposes a secret field too");
+  assert.match(choices, /secret/i, "the choices explain entering the secret field and leaving it waiting");
+  assert.match(choices, /sav/i, "Enter in the secret field saves it");
+});
+
 /**
  * The page's keys (K1-5 adds a post's action strip: its keys on the bar, the order of its buttons, and the turns running
  * now after the posts).

@@ -435,3 +435,62 @@ test("the page words a secret as T3 does, and a chip with several kinds names ea
   assert.deepEqual([requestsWhat(["secret"]), requestsWhat(["approval", "approval"]), requestsWhat(["user-input"]), requestsWhat(["user-input", "secret"]), requestsWhat(["secret", "approval", "user-input"])], ["secret", "approval", "question", "secret and question", "approval, secret and question"]);
   assert.equal(asksYou("secret"), "is asking for a secret.");
 });
+
+test("review: agent_stopped reaches the HTTP caller and removes the stale secret without recording a value", async (t) => {
+  const s = await service(t);
+  const worker = await s.seat("worker");
+  const requestId = await asked(s, worker.threadId);
+  s.fake.secretFailure = new T3SecretRefused("agent_stopped");
+  const response = await s.command({ type: "native.secret.respond", participantId: worker.participantId, requestId, answer: { type: "save", secret: SENTINEL } });
+  assert.deepEqual(response, { status: 409, body: { error: "secret_stale", message: "The agent that asked has stopped, so this secret can't be used." } });
+  assert.deepEqual((await s.snapshot()).nativeRequests, []);
+  assert.deepEqual(s.fake.secretAnswers, []);
+  s.fake.completeRun(worker.threadId, { text: "Stopped", outcome: "interrupted" });
+  await s.tick();
+  assert.deepEqual((await s.snapshot()).nativeRequests, []);
+  for (const [where, text] of s.written()) assert.ok(!text.includes(SENTINEL), where);
+});
+
+test("review: a reseated member and its retired predecessor cannot answer the predecessor's secret", async (t) => {
+  const s = await service(t);
+  const boss = await s.seat("boss");
+  const worker = await s.seat("worker");
+  await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: boss.participantId });
+  for (let i = 0; i < 5; i++) {
+    await s.tick();
+    for (const member of [boss, worker]) if ((await s.fake.getThreadShell(member.threadId))?.activeRunId) s.fake.completeRun(member.threadId, { text: "Ready." });
+  }
+  await s.tick();
+  const requestId = await asked(s, worker.threadId);
+  await s.run({ type: "participant.reseat", participantId: worker.participantId, by: boss.participantId, plan: "Continue the review." });
+  s.fake.completeRun(worker.threadId, { text: "Finishing the old turn." });
+  await s.tick();
+  assert.ok((await s.fake.getThreadShell(worker.threadId))?.activeRunId, "the checkpoint turn has started");
+  s.fake.completeRun(worker.threadId, { text: "CHECKPOINT: ready for a fresh seat." });
+  await s.tick();
+  const fresh = s.stack.repos.listActiveParticipants(s.roomId).find((p) => p.id !== boss.participantId);
+  assert.ok(fresh && fresh.id !== worker.participantId, "a new member has taken over");
+  assert.equal(s.stack.repos.currentBinding(worker.participantId), null);
+  for (const participantId of [worker.participantId, fresh.id]) {
+    const response = await s.command({ type: "native.secret.respond", participantId, requestId, answer: { type: "save", secret: SENTINEL } });
+    assert.ok(response.status === 404 || response.status === 409, JSON.stringify(response));
+  }
+  assert.deepEqual(s.fake.secretAnswers, []);
+  for (const [where, text] of s.written()) assert.ok(!text.includes(SENTINEL), where);
+});
+
+test("review: room messages wait while a secret blocks the turn and are steered after it is answered", async (t) => {
+  const s = await service(t);
+  const worker = await s.seat("worker");
+  const send = (instruction: string) => s.run({ type: "message.create", roomId: s.roomId, assignments: [{ recipients: [worker.participantId], instruction }] });
+  await send("Start the review.");
+  await s.tick();
+  const requestId = await asked(s, worker.threadId);
+  const before = s.fake.steeredMessages;
+  await send("Also review the error path.");
+  await s.tick();
+  assert.equal(s.fake.steeredMessages, before, "the blocking secret holds the new message");
+  await s.command({ type: "native.secret.respond", participantId: worker.participantId, requestId, answer: { type: "decline" } });
+  await s.tick();
+  assert.equal(s.fake.steeredMessages, before + 1, "the message enters the same turn after the answer");
+});

@@ -1143,6 +1143,17 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
         );
         if (!field || field.type !== "password" || field.autocomplete !== "off" || field.placeholder !== "token" || field.label !== TOKEN || !field.save) fail(`the secret's field is not a password field named by its label, with Save securely waiting: ${JSON.stringify(field)}`);
         log(`  page: a password field (autocomplete off, placeholder "token") labelled "${TOKEN}"; Save securely disabled while it is empty`);
+        browser.fill(new RegExp(`textbox "${TOKEN}"`), "another-visible-copy");
+        browser.click(/button "reviewer secret waiting for you"/);
+        browser.poll<number>("the chip and live bubble to show the same secret", "() => document.querySelectorAll('.secret-card input').length", (n) => n === 2);
+        browser.eval("() => { const input = document.querySelector('.work-bar .secret-card input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'x'.repeat(65537)); input.dispatchEvent(new Event('input', {bubbles: true})); return true; }");
+        browser.poll<boolean>("the chip's oversized answer to enable Save", "() => document.querySelector('.work-bar .secret-card input')?.value.length === 65537 && !document.querySelector('.work-bar .secret-card button[type=submit]')?.disabled", (ready) => ready);
+        browser.click(/button "Save securely"/);
+        browser.waitFor("the secret is too long");
+        browser.poll<boolean>("the failed answer to release both cards", "() => [...document.querySelectorAll('.secret-card input')].every(i => !i.disabled)", (ready) => ready);
+        browser.acceptRefusal();
+        const lengths = browser.eval<number[]>("() => [...document.querySelectorAll('.secret-card input')].map(i => i.value.length)");
+        if (lengths.length !== 2 || lengths.some((length) => length !== 0)) fail(`a rejected save left secret text in another visible copy: field lengths ${JSON.stringify(lengths)}`);
       },
     });
     browser.fill(new RegExp(`textbox "${TOKEN}"`), "rehearsal-value-not-a-secret");
