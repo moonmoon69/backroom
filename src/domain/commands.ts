@@ -358,6 +358,17 @@ export const NativeApprovalRespondCommand = z
   })
   .strict();
 
+/**
+ * A secret a T3 thread asks the user for: saved (T3 stores it, sent as typed; T3 trims it) or declined. Nothing here
+ * says the secret back: no message of these checks repeats what was typed.
+ */
+export const SecretAnswerSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("save"), secret: z.string().max(65536, "the secret is too long").refine((secret) => secret.trim().length > 0, "the secret is empty") }).strict(),
+  z.object({ type: z.literal("decline") }).strict(),
+]);
+
+export const NativeSecretRespondCommand = z.object({ type: z.literal("native.secret.respond"), participantId: nonEmpty, requestId: nonEmpty, answer: SecretAnswerSchema }).strict();
+
 export const NativeUserInputRespondCommand = z
   .object({
     type: z.literal("native.userInput.respond"),
@@ -458,6 +469,8 @@ export const ThreadUserInputRespondCommand = z
   .object({ type: z.literal("thread.userInput.respond"), threadId: nonEmpty, requestId: nonEmpty, answers: z.record(z.string(), z.unknown()) })
   .strict();
 
+export const ThreadSecretRespondCommand = z.object({ type: z.literal("thread.secret.respond"), threadId: nonEmpty, requestId: nonEmpty, answer: SecretAnswerSchema }).strict();
+
 /** Change a direct thread's model or options (the provider stays: a thread's session belongs to one harness). */
 export const ThreadModelSetCommand = z.object({ type: z.literal("thread.model.set"), threadId: nonEmpty, modelSelection: ModelSelectionSchema }).strict();
 
@@ -503,6 +516,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   NativeUserInputDismissCommand,
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,
+  NativeSecretRespondCommand,
   ProjectCreateCommand,
   AgentsFileEnabledCommand,
   AgentsFileTextSetCommand,
@@ -515,6 +529,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ThreadInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadSecretRespondCommand,
   ThreadModelSetCommand,
   ThreadRuntimeModeSetCommand,
   ThreadLifecycleCommand,

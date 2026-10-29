@@ -88,7 +88,10 @@ export function threadTranscript(detail: T3ThreadDetail): ThreadItem[] {
 
 // ---------------- approvals and questions ----------------
 
-/** A T3 request as the request cards read it: what is asked, the provider's choices, and whether it holds the run. */
+/**
+ * A T3 request as the request cards read it: what is asked, the provider's choices, and whether it holds the run; a
+ * secret's label, reason, placeholder and delivery.
+ */
 export function requestPayload(request: T3RuntimeRequest): Record<string, unknown> {
   return {
     requestId: request.id,
@@ -97,17 +100,18 @@ export function requestPayload(request: T3RuntimeRequest): Record<string, unknow
     options: request.options,
     questions: request.questions,
     responseMode: request.responseMode,
+    ...(request.secret ? { secret: request.secret } : {}),
   };
 }
 
 export interface RequestCard {
   requestId: string;
-  kind: "approval" | "user-input";
+  kind: T3RuntimeRequest["type"];
   payload: unknown;
   createdAt: string;
 }
 
-/** Approvals and questions the thread is waiting on. */
+/** Approvals, questions and secrets the thread is waiting on. */
 export function requestCards(detail: T3ThreadDetail): RequestCard[] {
   return openRequests(detail).map((request) => ({ requestId: request.id, kind: request.type, payload: requestPayload(request), createdAt: request.createdAt }));
 }

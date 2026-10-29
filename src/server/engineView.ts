@@ -746,6 +746,7 @@ export function memberStatus(input: {
     externalActivity: active && !ours,
     pendingApprovals: native.some((n) => n.kind === "approval"),
     pendingUserInput: native.some((n) => n.kind === "user-input"),
+    pendingSecret: native.some((n) => n.kind === "secret"),
     activeRunId: seat?.activeRunId ?? null,
     background: shell ? backgroundOf(shell) : null,
     seatId: seat?.seatId ?? null,

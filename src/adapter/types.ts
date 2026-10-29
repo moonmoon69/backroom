@@ -187,7 +187,7 @@ export interface T3ThreadShell {
   latestRunCompletedAt: string | null;
   /** The last failure T3 recorded for the thread (a provider error, a limit), until the next run. */
   lastError: string | null;
-  /** The approval or question T3 is waiting on, when there is one. */
+  /** The approval, question or secret T3 is waiting on, when there is one. */
   pendingRequest: { id: string; kind: T3RuntimeRequestKind; createdAt: string } | null;
   /** Provider work still running after the run settled: the agent wakes itself when it finishes. */
   pendingBackgroundTasks: T3BackgroundTask[];
@@ -252,7 +252,8 @@ export interface T3Message {
   attachments: T3MessageAttachment[];
 }
 
-export type T3RuntimeRequestKind = "command" | "file-read" | "file-change" | "mcp-elicitation" | "permission" | "dynamic_tool_call" | "user_input" | "auth_refresh";
+/** "secret_request" is Backroom's: T3 keeps a secret it asks for as a turn item, not a runtime request (secretRequests). */
+export type T3RuntimeRequestKind = "command" | "file-read" | "file-change" | "mcp-elicitation" | "permission" | "dynamic_tool_call" | "user_input" | "auth_refresh" | "secret_request";
 
 export interface T3UserInputQuestion {
   id: string;
@@ -271,12 +272,21 @@ export interface T3ApprovalOption {
   warning?: string;
 }
 
-/** An approval or question T3 raised, with what it asks (from the run's item) and whether it still waits. */
+/** A secret an agent asks the user for (T3's request_secret tool): what it is, why, and how the agent will get it. */
+export interface T3SecretAsk {
+  label: string;
+  reason: string;
+  placeholder: string | null;
+  /** "file": the agent reads it from a file T3 writes for a shell command; null: it gets a secretRef. */
+  delivery: "file" | null;
+}
+
+/** An approval, question or secret T3 waits on, with what it asks (from the run's item) and whether it still waits. */
 export interface T3RuntimeRequest {
   id: string;
   kind: T3RuntimeRequestKind;
-  /** user_input is a question; everything else is an approval. */
-  type: "approval" | "user-input";
+  /** user_input is a question, secret_request a secret; everything else is an approval. */
+  type: "approval" | "user-input" | "secret";
   status: "pending" | "resolved" | "expired" | "cancelled";
   /** "live" blocks the provider until answered; "message" (Codex's questions) lets the run go on and takes the answer as a message. */
   responseMode: "live" | "message" | "not_resumable";
@@ -289,9 +299,14 @@ export interface T3RuntimeRequest {
   options: T3ApprovalOption[] | null;
   /** A question's questions. */
   questions: T3UserInputQuestion[];
+  /** A secret's ask; null for the others. */
+  secret: T3SecretAsk | null;
   decision: ApprovalDecision | null;
   answers: Record<string, unknown> | null;
 }
+
+/** Where a secret request stands in T3. A timeout ends it as cancelled ("timed_out" is only what the agent is told). */
+export type T3SecretStatus = "pending" | "saved" | "declined" | "cancelled";
 
 export type T3TurnItemStatus = "idle" | "pending" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -320,6 +335,8 @@ export type T3TurnItem =
   | (T3TurnItemBase & { type: "todo_list"; planId: string; steps: Array<{ id: string; text: string; status: "pending" | "running" | "completed" }>; explanation: string | null })
   | (T3TurnItemBase & { type: "user_input_request"; requestId: string; questions: T3UserInputQuestion[]; responseMode: "message" | null })
   | (T3TurnItemBase & { type: "approval_request"; requestId: string; requestKind: string; prompt: string | null; appName: string | null; options: T3ApprovalOption[] | null })
+  /** status "waiting" while it is pending, "completed" once saved, "cancelled" once declined, cancelled or timed out. */
+  | (T3TurnItemBase & T3SecretAsk & { type: "secret_request"; secretStatus: T3SecretStatus })
   | (T3TurnItemBase & { type: "file_change"; fileName: string; additions: number | null; deletions: number | null })
   | (T3TurnItemBase & { type: "command_execution"; input: string; output: string | null; exitCode: number | null; outputIndicatesFailure: boolean })
   | (T3TurnItemBase & { type: "file_search"; pattern: string | null })
@@ -499,6 +516,8 @@ export interface CreateProjectInput {
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel";
 
+export type SecretAnswer = { type: "save"; secret: string } | { type: "decline" };
+
 /** Raised when T3 rejects a command (validation/state) rather than a transport failure. */
 export class T3CommandRejected extends Error {
   readonly status: number;
@@ -518,6 +537,32 @@ export class T3ScopeMissing extends T3CommandRejected {
     super(missingScopeMessage(scope), 403, body);
     this.name = "T3ScopeMissing";
     this.scope = scope;
+  }
+}
+
+/** Why T3 refused to take a secret (its SecretRequestError reasons for secrets.answerRequest), in T3's words. */
+export const SECRET_REFUSALS = {
+  load_failed: "Could not load the secret request.",
+  not_found: "This secret request no longer exists.",
+  already_answered: "This secret request was already answered.",
+  agent_stopped: "The agent that asked has stopped, so this secret can't be used.",
+  store_failed: "Could not store the secret.",
+  record_failed: "Saved the secret, but could not update the request.",
+} as const;
+
+export type SecretRefusal = keyof typeof SECRET_REFUSALS;
+
+/** T3 refused a secret answer. It carries the reason only, never what was sent. */
+export class T3SecretRefused extends T3CommandRejected {
+  readonly reason: SecretRefusal;
+  constructor(reason: SecretRefusal) {
+    super(SECRET_REFUSALS[reason], 409, null);
+    this.name = "T3SecretRefused";
+    this.reason = reason;
+  }
+  /** Nothing is waiting any more: the request is gone, answered elsewhere, or its agent stopped. */
+  get stale(): boolean {
+    return this.reason === "not_found" || this.reason === "already_answered" || this.reason === "agent_stopped";
   }
 }
 
@@ -634,6 +679,11 @@ export interface T3Adapter {
   interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void>;
   respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: ApprovalDecision }): Promise<void>;
   respondUserInput(input: { commandId: string; threadId: string; requestId: string; answers: Record<string, unknown> }): Promise<void>;
+  /**
+   * Save or decline a secret T3 asked the user for (secrets.answerRequest). T3 stores it and never shows it to the agent.
+   * Refusals are T3SecretRefused; every error this throws is free of the secret.
+   */
+  respondSecret(input: { threadId: string; turnItemId: string; answer: SecretAnswer }): Promise<void>;
   /** Drop a question the agent went on without (thread.user-input.dismiss). */
   dismissUserInput(input: { commandId: string; threadId: string; requestId: string }): Promise<void>;
   setRuntimeMode(input: { commandId: string; threadId: string; runtimeMode: RuntimeMode }): Promise<void>;
@@ -710,7 +760,36 @@ export function runReplies(detail: Pick<T3ThreadDetail, "messages">, runId: stri
 }
 
 /**
- * The approvals and questions the thread is waiting on, with what they ask. A question asked in "message" mode
+ * The secrets the thread's agents are asking the user for, as requests: T3 keeps each as a secret_request turn item, and
+ * one waits while it is pending on a run still in progress (as T3's own shell reads it).
+ */
+export function secretRequests(turnItems: readonly T3TurnItem[], runs: readonly Pick<T3Run, "id" | "status">[]): T3RuntimeRequest[] {
+  const active = new Set(runs.filter((run) => isRunActive(run.status)).map((run) => run.id));
+  return turnItems.flatMap((item) =>
+    item.type === "secret_request" && item.secretStatus === "pending" && item.status === "waiting" && item.runId !== null && item.nodeId !== null && active.has(item.runId)
+      ? [{
+          id: item.id,
+          kind: "secret_request" as const,
+          type: "secret" as const,
+          status: "pending" as const,
+          responseMode: "live" as const,
+          runId: item.runId,
+          nodeId: item.nodeId,
+          createdAt: item.startedAt ?? item.updatedAt,
+          resolvedAt: null,
+          prompt: item.label,
+          options: null,
+          questions: [],
+          secret: { label: item.label, reason: item.reason, placeholder: item.placeholder, delivery: item.delivery },
+          decision: null,
+          answers: null,
+        }]
+      : [],
+  );
+}
+
+/**
+ * The approvals, questions and secrets the thread is waiting on, with what they ask. A question asked in "message" mode
  * (Codex) does not hold its run: the agent goes on, and may finish, without the answer. Once that run is over
  * nothing is waiting, so it is left out even if T3 still lists it as pending (it can be dismissed there).
  */

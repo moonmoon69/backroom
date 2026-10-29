@@ -998,7 +998,11 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
 
   app.post("/api/commands", async (c) => {
-    const command = parseCommand(await c.req.json());
+    // Unreadable JSON is refused without the parser's message, which quotes the body (a secret's answer among them).
+    const body: unknown = await c.req.json().catch(() => {
+      throw new RoomError("invalid_json", "the command is not valid JSON");
+    });
+    const command = parseCommand(body);
     const result = await stack.service.execute(command);
     // A deleted browser's process and profile (logins, history) go with it. Rooms never take a browser with them.
     if (command.type === "browser.delete") await stack.browsers?.remove(command.browserId);

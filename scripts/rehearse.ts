@@ -101,7 +101,7 @@ const HELP = `${USAGE}
   --only <state>        check only this state (as often as wanted): its number from --list (under --step all, that
                         number in each step), a range (12-15), a /pattern/ or part of its name; the run jumps to its
                         section, sets up what the section reads, plays the states before it without screenshots or
-                        console reads, and stops after the last state named (ui 1-12 and room 1-14 need the whole
+                        console reads, and stops after the last state named (ui 1-14 and room 1-14 need the whole
                         story before them: --until is as quick for those)
   --until <state>       play the step, every check on, and stop after this state
   --list                print each step's states, numbered, and run nothing
@@ -576,6 +576,8 @@ type Snapshot = {
   needsYou: any[];
   blocked: any[];
   nativeRequests: any[];
+  /** Each member's status, by participant: what it waits on you for among it. */
+  participantStatus: Record<string, { pendingApprovals: boolean; pendingUserInput: boolean; pendingSecret?: boolean }>;
   counts: { needsYou: number; busy: number; waiting: number; working: number; openRequests: number };
   notices: { through: number; ids: string[] };
   news: { seenSeq: number; unseen: number; latest: { seq: number; number: number; kind: string } | null };
@@ -1115,6 +1117,48 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     browser.click(/radio "yes"/);
     browser.click(/button "Submit answers"/);
     await until("the question to be answered", async () => (await room.snapshot()).nativeRequests.length === 0);
+    browser.consoleClean();
+    // A secret the agent asks for (T3's request_secret), saved here, then another declined: T3 has each answer, and the
+    // card goes. Its field is a password field named by what it asks; Save securely waits for something typed.
+    const secretOf = (x: Snapshot, label: string) => x.nativeRequests.find((n) => n.participantId === room.participant.reviewer && n.kind === "secret" && n.payload?.secret?.label === label);
+    const answered = async (requestId: string, outcome: "saved" | "declined") => {
+      const path = `/api/fake/secret?threadId=${encodeURIComponent(room.thread.reviewer)}&requestId=${encodeURIComponent(requestId)}`;
+      await until(`T3 to have the secret ${outcome}`, async () => (await service.call<{ secretStatus: string }>("GET", path)).secretStatus === outcome);
+      await until("the room to drop the secret", async () => !(await room.snapshot()).nativeRequests.some((n) => n.requestId === requestId));
+      browser.poll<boolean>("the secret's card to go from the page", "() => document.querySelector('.secret-card') === null", (gone) => gone);
+      log(`  T3: ${requestId.slice(-8)} ${outcome}; the room and the page no longer show it`);
+    };
+    const TOKEN = "Staging deploy token";
+    let secret = "";
+    await service.fake("secret", { threadId: room.thread.reviewer, label: TOKEN, reason: "To push the reviewed build to staging.", placeholder: "token" });
+    await check.state("a secret from T3, saved here", (x) => {
+      const asked = secretOf(x, TOKEN);
+      if (!asked || !x.participantStatus[room.participant.reviewer]?.pendingSecret || x.counts.needsYou < 1) return null;
+      secret = asked.requestId;
+      return `nativeRequests: secret ${secret.slice(-8)} for @reviewer; participantStatus.pendingSecret; counts.needsYou=${x.counts.needsYou}`;
+    }, [TOKEN, "To push the reviewed build to staging.", "Stored in T3, never shown to the agent", "asking for a secret"], {
+      extra: () => {
+        const field = browser.eval<{ type: string; autocomplete: string | null; placeholder: string; label: string; save: boolean } | null>(
+          "() => { const input = document.querySelector('.secret-card input'); const save = [...document.querySelectorAll('.secret-card button')].find((b) => b.textContent.trim() === 'Save securely'); return input ? { type: input.type, autocomplete: input.getAttribute('autocomplete'), placeholder: input.placeholder, label: input.labels?.[0]?.textContent ?? '', save: Boolean(save?.disabled) } : null; }",
+        );
+        if (!field || field.type !== "password" || field.autocomplete !== "off" || field.placeholder !== "token" || field.label !== TOKEN || !field.save) fail(`the secret's field is not a password field named by its label, with Save securely waiting: ${JSON.stringify(field)}`);
+        log(`  page: a password field (autocomplete off, placeholder "token") labelled "${TOKEN}"; Save securely disabled while it is empty`);
+      },
+    });
+    browser.fill(new RegExp(`textbox "${TOKEN}"`), "rehearsal-value-not-a-secret");
+    browser.poll<number>("the field to hold what was typed", "() => document.querySelector('.secret-card input')?.value.length ?? 0", (n) => n === "rehearsal-value-not-a-secret".length);
+    browser.click(/button "Save securely"/);
+    await answered(secret, "saved");
+    const PASSWORD = "Staging database password";
+    await service.fake("secret", { threadId: room.thread.reviewer, label: PASSWORD, reason: "To run the migration check against staging.", delivery: "file" });
+    await check.state("a secret from T3, declined here", (x) => {
+      const asked = secretOf(x, PASSWORD);
+      if (!asked) return null;
+      secret = asked.requestId;
+      return `nativeRequests: secret ${secret.slice(-8)} for @reviewer (delivery ${asked.payload.secret.delivery})`;
+    }, [PASSWORD, "To run the migration check against staging.", "Decline"]);
+    browser.click(/button "Decline"/);
+    await answered(secret, "declined");
     browser.consoleClean();
 
     // 8. The review passes: the reviewer's answer wakes him, and his report is an update.

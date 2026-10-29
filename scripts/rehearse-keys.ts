@@ -2746,8 +2746,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     chipRun = { id: run.id, request, seq: post.seq, number: post.number };
     return chipRun;
   };
-  /** T3's fake asks @fable an approval or a question; the API shows it. */
-  const fableAsks = async (kind: "approval" | "question", body: Record<string, unknown> = {}): Promise<string> => {
+  /** T3's fake asks @fable an approval, a question or a secret; the API shows it. */
+  const fableAsks = async (kind: "approval" | "question" | "secret", body: Record<string, unknown> = {}): Promise<string> => {
     const { requestId } = (await service.fake(kind, { threadId: room.thread.fable, ...body })) as { requestId: string };
     await until(`the API to show @fable's ${kind}`, async () => ((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === requestId));
     return requestId;
@@ -3153,6 +3153,60 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     log(`api: T3's fake recorded ${dropped.slice(0, 8)} ${gone.status}`);
     await onNewest("Dismiss");
     await state("a status chip's choices: a question's Custom answer typed by keys reaches T3; Dismiss drops the next", landed);
+  }
+
+  if (
+    await section("a status chip's choices: a secret's field takes every key, Esc leaves it waiting, Enter there saves it to T3", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // A secret (T3's request_secret): the chip's strip offers its field, Save securely (passed over until something is
+    // typed) and Decline. Enter goes into the field, and every key typed stays there: no shortcut, no composer, Backspace
+    // deletes. Esc comes back to the field's choice, Esc again folds the chip with the secret still waiting, and what was
+    // typed goes with it. Enter in the field saves it: T3's fake has it saved.
+    const turn = await chipTurn();
+    const secretStatus = async (requestId: string) => (await service.call<{ secretStatus: string }>("GET", `/api/fake/secret?threadId=${encodeURIComponent(room.thread.fable)}&requestId=${encodeURIComponent(requestId)}`)).secretStatus;
+    const asked = await fableAsks("secret", { label: "Release signing key", reason: "To sign the release build.", placeholder: "key" });
+    await toAskChip("secret");
+    press("Enter");
+    await expect("Enter: the secret's choices, the ring on its field", (f) => f.chipOpen && choiceAt(f.action) === 0 && f.label === "Secret");
+    names("@fable's secret", ["Secret", "Save securely", "Decline", `show #${turn.number}`]);
+    press("ArrowRight");
+    await expect("Right, past Save securely (nothing typed yet): Decline", (f) => choiceAt(f.action) === 2 && f.label === "Decline");
+    press("ArrowLeft");
+    await expect("Left: back on the field", (f) => choiceAt(f.action) === 0);
+    press("Enter");
+    await expect("Enter: in the secret's field, the strip still open", (f) => f.tag === "INPUT" && f.strips === 1 && f.chipOpen);
+    for (const key of ["k", "?", "1", "x", "Backspace"]) press(key);
+    await expect("typed k?1x then Backspace: the field holds k?1; no help, no composer, the room and the chip still open", (f) => f.tag === "INPUT" && f.value === "k?1" && !f.help && !f.composerOpen && inRoom(f) && f.chipOpen);
+    if (browser.eval<boolean>(`() => document.querySelector('.work-bar .action-strip button[aria-label="Save securely"]').disabled`)) fail("Save securely can still not be pressed with something typed");
+    if (browser.eval<boolean>(`() => [...document.querySelectorAll('.action-strip button')].some((b) => (b.getAttribute('aria-label') ?? '').includes('k?1') || b.textContent.includes('k?1'))`)) fail("the strip says what was typed");
+    log("  page: Save securely can be pressed; the strip names the field Secret, never what is typed");
+    press("Escape");
+    await expect("Esc: back on the field's choice, the strip open", (f) => choiceAt(f.action) === 0 && f.strips === 1 && f.chipOpen);
+    press("Escape");
+    await expect("Esc: the chip folded", (f) => f.key === askChip() && !f.chipOpen);
+    if ((await secretStatus(asked)) !== "pending") fail("folding the chip answered the secret");
+    log(`api: ${asked.slice(-8)} still pending in T3's fake: Esc declined nothing`);
+    press("Enter");
+    await expect("Enter: the choices again, the ring on the field", (f) => f.chipOpen && choiceAt(f.action) === 0);
+    press("Enter");
+    await expect("Enter: in the field, empty: what was typed went when the chip folded", (f) => f.tag === "INPUT" && f.value === "");
+    for (const key of ["k", "e", "y"]) press(key);
+    press("Enter");
+    await until("T3's fake to have the secret saved", async () => ((await secretStatus(asked)) === "saved" ? true : null));
+    await until("the API to show it answered", async () => !((await room.snapshot()).nativeRequests as Array<{ requestId: string }>).some((r) => r.requestId === asked));
+    log(`api: T3's fake has ${asked.slice(-8)} saved`);
+    await onNewest("Enter in the secret's field");
+    await state("a status chip's choices: a secret's field takes every key, Esc leaves it waiting, Enter there saves it to T3", landed);
   }
 
   if (

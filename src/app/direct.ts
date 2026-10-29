@@ -15,6 +15,7 @@ import type { InlineImage, RoomCommand } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES } from "../domain/types.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
+import { answerSecret } from "./secretAnswer.ts";
 
 export type DirectCommand = Extract<
   RoomCommand,
@@ -26,6 +27,7 @@ export type DirectCommand = Extract<
       | "thread.interrupt"
       | "thread.approval.respond"
       | "thread.userInput.respond"
+      | "thread.secret.respond"
       | "thread.model.set"
       | "thread.runtimeMode.set"
       | "thread.lifecycle";
@@ -135,6 +137,11 @@ export class DirectThreads {
       case "thread.userInput.respond": {
         const shell = await this.requireLooseThread(command.threadId);
         await t3(() => this.adapter.respondUserInput({ commandId: randomUUID(), threadId: shell.id, requestId: command.requestId, answers: command.answers }));
+        return { type: "thread.updated", threadId: shell.id };
+      }
+      case "thread.secret.respond": {
+        const shell = await this.requireLooseThread(command.threadId);
+        await answerSecret(this.adapter, shell.id, command.requestId, command.answer);
         return { type: "thread.updated", threadId: shell.id };
       }
       case "thread.model.set": {

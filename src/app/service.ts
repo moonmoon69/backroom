@@ -12,6 +12,7 @@ import type { RoomCommand, WorkspaceChoice } from "../domain/commands.ts";
 import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
+import { SecretRequestStale, answerSecret } from "./secretAnswer.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
@@ -357,6 +358,8 @@ export class RoomService {
         return this.respondApproval(command);
       case "native.userInput.respond":
         return this.respondUserInput(command);
+      case "native.secret.respond":
+        return this.respondSecret(command);
     }
   }
 
@@ -1116,6 +1119,30 @@ export class RoomService {
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
+      throw error;
+    }
+    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.notify(participant.roomId);
+    return { type: "native.responded", requestId: command.requestId };
+  }
+
+  /**
+   * Save or decline a secret the member's thread asks for. Its row goes once T3 has taken the answer, or once T3 says
+   * nothing waits for it any more (answered elsewhere, gone, its agent stopped); any other failure leaves it waiting.
+   */
+  private async respondSecret(command: Extract<RoomCommand, { type: "native.secret.respond" }>): Promise<CommandResult> {
+    const participant = this.requireParticipant(command.participantId);
+    const binding = this.repos.currentBinding(participant.id);
+    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
+    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
+    if (!request || request.kind !== "secret") throw notFound("secret request", command.requestId);
+    try {
+      await answerSecret(this.adapter, binding.threadId, command.requestId, command.answer);
+    } catch (error) {
+      if (error instanceof SecretRequestStale) {
+        this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+        this.notify(participant.roomId);
+      }
       throw error;
     }
     this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));

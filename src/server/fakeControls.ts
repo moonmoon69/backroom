@@ -1,8 +1,8 @@
 /**
  * Test controls for the fake T3 adapter (ROOMS_ADAPTER=fake only), so a script can play T3's side of a throwaway
  * service the way the tests play it in process: hold a member's run open, end it (completed or failed), start a turn
- * the room did not start (the agent continuing on its own, or someone typing in T3), and raise an approval or a
- * question. scripts/rehearse.ts drives the browser rehearsal (plan items L5 and Z2) with them. They exist only on a
+ * the room did not start (the agent continuing on its own, or someone typing in T3), and raise an approval, a
+ * question or a secret. scripts/rehearse.ts drives the browser rehearsal (plan items L5 and Z2) with them. They exist only on a
  * fake adapter, which never talks to a real T3; with the real adapter nothing is mounted.
  *
  *   POST /api/fake/hold          { threadId, hold }            runs on the thread are not finished automatically
@@ -14,6 +14,10 @@
  *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
  *   POST /api/fake/question      { threadId, questions? }      a question on the running run -> { requestId }
  *                                questions: T3's own shape (options, allowCustomAnswer); T3's "Proceed?" yes/no by default
+ *   POST /api/fake/secret        { threadId, label, reason, placeholder?, delivery? }   the agent asks for a secret in its
+ *                                running turn (T3's request_secret) -> { requestId }; delivery "file" or none
+ *   GET  /api/fake/secret?threadId=…&requestId=…               where a secret request stands, as T3 keeps it -> { secretStatus }
+ *                                ("pending", "saved", "declined" or "cancelled"); the fake never keeps the secret itself
  *   POST /api/fake/background    { threadId, taskIds }         what T3 lists in the thread's background (none: [])
  *   POST /api/fake/outage        { down, message?, shellOnly? } T3 stops answering (every call fails) or answers again;
  *                                shellOnly: only its projects and threads fail, its descriptor still answers (#8)
@@ -57,6 +61,22 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
   controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));
   controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input), Array.isArray(input.questions) ? { questions: input.questions as never } : {}) })));
+  controls.post("/api/fake/secret", run((input) => {
+    const text = (key: string): string | null => (typeof input[key] === "string" && (input[key] as string).length > 0 ? (input[key] as string) : null);
+    const label = text("label");
+    if (!label) throw new Error("label must name the secret");
+    return { requestId: fake.raiseSecret(thread(input), { label, reason: text("reason") ?? "", placeholder: text("placeholder"), delivery: input.delivery === "file" ? "file" : null }) };
+  }));
+  controls.get("/api/fake/secret", async (c) => {
+    try {
+      const input = { threadId: c.req.query("threadId"), requestId: c.req.query("requestId") };
+      const item = fake.threads.get(thread(input))!.turnItems.find((x) => x.id === input.requestId);
+      if (item?.type !== "secret_request") throw new Error("requestId must name a secret request of the thread");
+      return c.json({ ok: true, secretStatus: item.secretStatus });
+    } catch (error) {
+      return c.json({ error: "fake_control", message: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  });
   controls.get("/api/fake/request", async (c) => {
     try {
       const input = { threadId: c.req.query("threadId"), requestId: c.req.query("requestId") };

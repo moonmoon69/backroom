@@ -44,7 +44,7 @@ export function betweenTurns(status: ParticipantStatus | undefined, desk?: Desk 
 
 /**
  * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
- * question), working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
+ * secret, then a question), working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
  * then only monitors: monitoring), a plan ready to act on, then how its last run ended. `desk` adds what runs.
  */
 export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null): MemberActivity {
@@ -54,6 +54,7 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   // A deleted T3 thread outranks everything: the member cannot receive work until it is removed.
   if (status.threadMissing) return idle("thread deleted in T3", "missing");
   if (status.pendingApprovals) return idle("needs approval", "approval");
+  if (status.pendingSecret) return idle("asking for a secret", "input");
   if (status.pendingUserInput) return idle("waiting for your answer", "input");
   const jobs = jobsDetail(desk);
   const working = (label: string): MemberActivity => ({ label, tone: "working", motion: "working", detail: jobs.detail });

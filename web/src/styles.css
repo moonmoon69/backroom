@@ -2511,6 +2511,42 @@ button.primary.destructive {
   width: auto;
 }
 
+.secret-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.secret-label {
+  font-weight: 600;
+}
+
+.secret-reason {
+  margin: 0;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.secret-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.secret-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.secret-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+}
+
 /* ---- dialogs ---- */
 .dialog-backdrop {
   position: fixed;

@@ -34,6 +34,8 @@ import type {
   FolderListing,
   LaunchThreadInput,
   ModelOptionDescriptor,
+  SecretAnswer,
+  SecretRefusal,
   SendMessageInput,
   T3Adapter,
   T3ApprovalOption,
@@ -66,7 +68,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, secretRequests } from "./types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
@@ -193,6 +195,32 @@ function missingPermission(cause: unknown): string | null {
     if (typeof scope === "string" && scope.length > 0) return scope;
   }
   return null;
+}
+
+/** Why T3 refused a secret answer: its SecretRequestError crosses the wire as its tag and reason, with no message. */
+function secretRefusal(cause: unknown): SecretRefusal | null {
+  for (const failure of Array.isArray(cause) ? cause : [cause]) {
+    const error = (failure as { error?: { _tag?: unknown; reason?: unknown } } | null)?.error;
+    if (error?._tag === "SecretRequestError" && typeof error.reason === "string" && Object.hasOwn(SECRET_REFUSALS, error.reason)) return error.reason as SecretRefusal;
+  }
+  return null;
+}
+
+/**
+ * A failed secrets.answerRequest as an error that carries nothing of the call: the frame held the secret, and T3's own
+ * failure (its cause, a decoding error) could echo it. Only T3's reason, a missing permission or an error's tag is kept.
+ */
+function secretFailure(error: unknown): Error {
+  if (error instanceof T3ScopeMissing) return new T3ScopeMissing(error.scope, null);
+  if (error instanceof T3CommandRejected) {
+    const cause = (error.body as { cause?: unknown } | null)?.cause;
+    const reason = secretRefusal(cause);
+    if (reason) return new T3SecretRefused(reason);
+    const tag = (Array.isArray(cause) ? cause : [cause]).map((failure) => (failure as { error?: { _tag?: unknown } } | null)?.error?._tag).find((t): t is string => typeof t === "string" && /^\w{1,60}$/.test(t));
+    return new T3CommandRejected(`T3 refused the secret${tag ? ` (${tag})` : ""}; nothing was saved.`, 502, null);
+  }
+  if (error instanceof T3OutcomeUnknown || !(error instanceof T3Unavailable)) return new T3OutcomeUnknown("T3 did not confirm the secret; it may have been saved. Look at the request before you answer it again.");
+  return new T3Unavailable("T3 is not answering; the secret was not sent.");
 }
 
 function rpcFailure(cause: unknown): string {
@@ -531,6 +559,17 @@ function toTurnItem(item: Record<string, unknown>): T3TurnItem {
       return { ...base, type: "todo_list", planId: item.planId as string, steps: (item.steps as Array<{ id: string; text: string; status: "pending" | "running" | "completed" }> | undefined) ?? [], explanation: text(item.explanation) };
     case "user_input_request":
       return { ...base, type: "user_input_request", requestId: item.requestId as string, questions: (item.questions as T3UserInputQuestion[] | undefined) ?? [], responseMode: item.responseMode === "message" ? "message" : null };
+    case "secret_request":
+      return {
+        ...base,
+        type: "secret_request",
+        label: text(item.label) ?? text(item.title) ?? "a secret",
+        reason: typeof item.reason === "string" ? item.reason : "",
+        placeholder: text(item.placeholder),
+        delivery: item.delivery === "file" ? "file" : null,
+        // A status this version does not know is not one the user can answer.
+        secretStatus: item.secretStatus === "pending" || item.secretStatus === "saved" || item.secretStatus === "declined" ? item.secretStatus : "cancelled",
+      };
     case "approval_request":
       return { ...base, type: "approval_request", requestId: item.requestId as string, requestKind: String(item.requestKind ?? "command"), prompt: text(item.prompt), appName: text(item.appName), options: (item.options as T3ApprovalOption[] | undefined) ?? null };
     case "file_change":
@@ -1326,7 +1365,7 @@ export class HttpT3Adapter implements T3Adapter {
     const runtimeRequests: T3RuntimeRequest[] = list("runtimeRequests")
       // Tool calls and credential refreshes the provider routes through T3 are not the user's to answer.
       .filter((request) => request.kind !== "dynamic_tool_call" && request.kind !== "auth_refresh")
-      .map((request) => {
+      .map((request): T3RuntimeRequest => {
         const item = itemByRequest.get(request.id as string);
         const capability = (request.responseCapability as { type?: string } | undefined)?.type;
         return {
@@ -1342,10 +1381,13 @@ export class HttpT3Adapter implements T3Adapter {
           prompt: item?.type === "approval_request" ? item.prompt : null,
           options: item?.type === "approval_request" ? item.options : null,
           questions: item?.type === "user_input_request" ? item.questions : [],
+          secret: null,
           decision: (text(request.decision) as ApprovalDecision | null) ?? null,
           answers: (request.answers as Record<string, unknown> | undefined) ?? null,
         };
-      });
+      })
+      // T3 keeps a secret it asks for as a turn item, not a runtime request: it waits all the same.
+      .concat(secretRequests(turnItems, runs));
     const providerThreads = list("providerThreads").map(toProviderThread);
     const thread = projection.thread as Record<string, unknown>;
     const active = runs.find((run) => run.status !== "queued" && isRunActive(run.status)) ?? null;
@@ -1682,6 +1724,14 @@ export class HttpT3Adapter implements T3Adapter {
 
   async respondUserInput(input: { commandId: string; threadId: string; requestId: string; answers: Record<string, unknown> }): Promise<void> {
     await this.dispatch({ type: "runtime-request.respond", commandId: input.commandId, threadId: input.threadId, requestId: input.requestId, answers: input.answers });
+  }
+
+  async respondSecret(input: { threadId: string; turnItemId: string; answer: SecretAnswer }): Promise<void> {
+    try {
+      await this.rpc("secrets.answerRequest", { threadId: input.threadId, turnItemId: input.turnItemId, answer: input.answer });
+    } catch (error) {
+      throw secretFailure(error);
+    }
   }
 
   async dismissUserInput(input: { commandId: string; threadId: string; requestId: string }): Promise<void> {

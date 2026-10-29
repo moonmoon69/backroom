@@ -24,6 +24,7 @@ import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { NativeRequestCard } from "./NativeRequests.tsx";
+import { asksYou } from "../requestWords.ts";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { speakableSummary, useAutoRead } from "../speech.ts";
 import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
@@ -243,7 +244,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   useAnnounceNew(
     `room:${snapshot.room.id}:requests`,
     autoRead && !chat,
-    snapshot.nativeRequests.map((request) => ({ id: request.requestId, text: `${snapshot.participants.find((p) => p.id === request.participantId)?.alias ?? "A member"} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })),
+    snapshot.nativeRequests.map((request) => ({ id: request.requestId, text: `${snapshot.participants.find((p) => p.id === request.participantId)?.alias ?? "A member"} ${asksYou(request.kind)}` })),
   );
 
   const scroller = useRef<HTMLDivElement>(null);

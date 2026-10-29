@@ -382,10 +382,21 @@ export interface NativeRequest {
   participantId: string;
   threadId: string;
   requestId: string;
-  kind: "approval" | "user-input";
+  kind: "approval" | "user-input" | "secret";
   payload: unknown;
   createdAt: string;
 }
+
+/** A secret T3 asks you for, as a secret request's payload carries it (`secret`). */
+export interface SecretAsk {
+  label: string;
+  reason: string;
+  placeholder: string | null;
+  delivery: "file" | null;
+}
+
+/** Saved (T3 stores it, never shown to the agent) or declined. */
+export type SecretAnswer = { type: "save"; secret: string } | { type: "decline" };
 
 /**
  * A thread's status in T3 (Orchestrator V2): idle before its first run, otherwise its active run's status, or how
@@ -406,6 +417,8 @@ export interface ParticipantStatus {
   externalActivity: boolean;
   pendingApprovals: boolean;
   pendingUserInput: boolean;
+  /** The member asks you for a secret (T3's request_secret tool). Absent from a service older than the page. */
+  pendingSecret?: boolean;
   activeRunId: string | null;
   /** True when T3 answered but the bound thread no longer exists (deleted in T3 Code). */
   threadMissing: boolean;
@@ -865,10 +878,10 @@ export type ThreadItem =
       files: { count: number; additions: number; deletions: number } | null;
     };
 
-/** An approval or question a thread is waiting on. */
+/** An approval, question or secret a thread is waiting on. */
 export interface ThreadRequest {
   requestId: string;
-  kind: "approval" | "user-input";
+  kind: "approval" | "user-input" | "secret";
   payload: unknown;
   createdAt: string;
 }
@@ -1351,6 +1364,7 @@ export type RoomCommand =
   | { type: "run.stop"; roomId: string; participantId: string }
   | { type: "native.approval.respond"; participantId: string; requestId: string; decision: ApprovalDecision }
   | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> }
+  | { type: "native.secret.respond"; participantId: string; requestId: string; answer: SecretAnswer }
   /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
   | { type: "project.create"; workspaceRoot: string; title?: string; createIfMissing?: boolean }
   /** Direct threads (outside any room): the text goes to T3 as typed. */
@@ -1359,6 +1373,7 @@ export type RoomCommand =
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.approval.respond"; threadId: string; requestId: string; decision: ApprovalDecision }
   | { type: "thread.userInput.respond"; threadId: string; requestId: string; answers: Record<string, unknown> }
+  | { type: "thread.secret.respond"; threadId: string; requestId: string; answer: SecretAnswer }
   | { type: "thread.model.set"; threadId: string; modelSelection: ModelSelection }
   | { type: "thread.runtimeMode.set"; threadId: string; runtimeMode: RuntimeMode }
   | { type: "thread.lifecycle"; threadId: string; action: "settle" | "unsettle" | "archive" | "unarchive" | "delete" };

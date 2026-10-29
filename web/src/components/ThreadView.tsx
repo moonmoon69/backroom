@@ -41,7 +41,8 @@ import { Markdown } from "./Markdown.tsx";
 import { identityStyle, MEMBER_ACCENT } from "./Monogram.tsx";
 import { MemberMark } from "./MemberMark.tsx";
 import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
-import { ApprovalRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
+import { ApprovalRequestCard, SecretRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
+import { asksYou } from "../requestWords.ts";
 import { CopyButton, ThreadSettingsRow } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { SpendFoot } from "./Timeline.tsx";
@@ -197,7 +198,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   useAnnounceNew(
     `thread:${threadId}:requests`,
     autoRead,
-    view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${request.kind === "approval" ? "needs your approval." : "has a question for you."}` })) : null,
+    view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${asksYou(request.kind)}` })) : null,
   );
   const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }) : null;
   const running = view?.running ?? null;
@@ -333,8 +334,9 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 costs={costs}
                 lead={voiceName}
                 onRespond={async (command) => {
-                  const result = await runCommand(command);
-                  if (result) hurry();
+                  await runCommand(command);
+                  // Answered, or refused because it was answered elsewhere or its agent stopped: read T3 again either way.
+                  hurry();
                 }}
               />
             </div>
@@ -725,6 +727,14 @@ function Transcript({
                     payload={request.payload}
                     speaker={speaker}
                     onRespond={(decision) => onRespond({ type: "thread.approval.respond", threadId: thread.id, requestId: request.requestId, decision })}
+                  />
+                ) : request.kind === "secret" ? (
+                  <SecretRequestCard
+                    key={request.requestId}
+                    requestId={request.requestId}
+                    payload={request.payload}
+                    speaker={speaker}
+                    onAnswer={(answer) => onRespond({ type: "thread.secret.respond", threadId: thread.id, requestId: request.requestId, answer })}
                   />
                 ) : (
                   <UserInputRequestCard

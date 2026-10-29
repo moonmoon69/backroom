@@ -234,7 +234,7 @@ export interface NativeRequest {
   participantId: ParticipantId;
   threadId: string;
   requestId: string;
-  kind: "approval" | "user-input";
+  kind: "approval" | "user-input" | "secret";
   payload: unknown;
   createdAt: string;
 }
@@ -262,6 +262,8 @@ export interface ParticipantStatus {
   externalActivity: boolean;
   pendingApprovals: boolean;
   pendingUserInput: boolean;
+  /** The member asks the user for a secret (T3's request_secret tool). */
+  pendingSecret: boolean;
   activeRunId: RunId | null;
   /**
    * Work T3 reports as still running after the run settled: "working" while subagents or commands run (the agent

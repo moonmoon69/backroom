@@ -1,6 +1,6 @@
-import { useCallback, useId, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRoom } from "../context.tsx";
-import type { ApprovalDecision, NativeRequest } from "../types.ts";
+import type { ApprovalDecision, NativeRequest, SecretAnswer, SecretAsk } from "../types.ts";
 import { identityStyle } from "./Monogram.tsx";
 
 interface Question {
@@ -37,7 +37,7 @@ const subscribe = (listener: () => void) => {
 const NO_ANSWERS: Record<string, string | string[]> = {};
 const NO_CUSTOM: Record<string, string> = {};
 
-/** What a room keeps of its approvals and questions (above) for those still waiting: the rest go (a thread's own stay). */
+/** What a room keeps of its approvals, questions and secrets (above; never a secret's text) for those still waiting: the rest go (a thread's own stay). */
 export function keepAnswers(waiting: ReadonlyArray<{ participantId: string; requestId: string }>): void {
   const keep = new Set(waiting.map((request) => `${request.participantId}:${request.requestId}`));
   for (const key of [...shared.keys()]) {
@@ -80,12 +80,25 @@ export function NativeRequestsPanel() {
 }
 
 /**
- * An approval or a question a member's T3 thread is waiting on, answered through the room: the one place a room says
- * how (its status chip's choices and its turn's bubble both draw it, and their action strips press its buttons).
+ * An approval, a question or a secret a member's T3 thread is waiting on, answered through the room: the one place a
+ * room says how (its status chip's choices and its turn's bubble both draw it, and their action strips press its buttons).
  */
 export function NativeRequestCard({ request, speaker }: { request: NativeRequest; speaker: ReactNode }) {
   const { runCommand } = useRoom();
   const { participantId, requestId } = request;
+  if (request.kind === "secret") {
+    return (
+      <SecretRequestCard
+        requestId={requestId}
+        participantId={participantId}
+        payload={request.payload}
+        speaker={speaker}
+        onAnswer={async (answer) => {
+          await runCommand({ type: "native.secret.respond", participantId, requestId, answer });
+        }}
+      />
+    );
+  }
   return request.kind === "approval" ? (
     <ApprovalRequestCard
       requestId={requestId}
@@ -297,6 +310,99 @@ export function UserInputRequestCard({
           </button>
         ) : null}
       </div>
+    </article>
+  );
+}
+
+const asSecret = (value: unknown): SecretAsk => {
+  const secret = asRecord(value);
+  return {
+    label: asString(secret.label) ?? "A secret",
+    reason: asString(secret.reason) ?? "",
+    placeholder: asString(secret.placeholder),
+    delivery: secret.delivery === "file" ? "file" : null,
+  };
+};
+
+/**
+ * A secret T3 is waiting on (an agent's request_secret), in T3's words: what it is, why, a password field, Save securely
+ * and Decline. Used by rooms and direct threads. What is typed stays in this card's own field, never in the shared state
+ * above: it is cleared once sent, and goes with the card when the request ends or the view closes.
+ */
+export function SecretRequestCard({
+  requestId,
+  participantId,
+  payload: raw,
+  speaker,
+  onAnswer,
+}: {
+  requestId: string;
+  /** The member asking, on the card (`data-participant`). */
+  participantId?: string;
+  payload: unknown;
+  speaker: ReactNode;
+  onAnswer: (answer: SecretAnswer) => Promise<void>;
+}) {
+  const [busy, setBusy] = useShared(`busy:${participantId ?? ""}:${requestId}`, false);
+  const [secret, setSecret] = useState("");
+  const field = useId();
+  const reason = useId();
+  const ask = asSecret(asRecord(raw).secret);
+  const answer = async (value: SecretAnswer) => {
+    if (busy) return;
+    setBusy(() => true);
+    setSecret("");
+    try {
+      await onAnswer(value);
+    } finally {
+      setBusy(() => false);
+    }
+  };
+  return (
+    <article className="native-card secret-card" data-participant={participantId} data-request={requestId}>
+      <header>
+        {speaker}
+        <span className="stamp stamp-needs_input">asking for a secret</span>
+      </header>
+      <form
+        className="secret-form"
+        autoComplete="off"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (secret.trim().length > 0) void answer({ type: "save", secret });
+        }}
+      >
+        <label className="secret-label" htmlFor={field}>
+          {ask.label}
+        </label>
+        {ask.reason ? (
+          <p className="secret-reason" id={reason}>
+            {ask.reason}
+          </p>
+        ) : null}
+        <div className="secret-row">
+          <input
+            id={field}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={ask.placeholder ?? ""}
+            aria-describedby={ask.reason ? reason : undefined}
+            value={secret}
+            disabled={busy}
+            onChange={(event) => setSecret(event.target.value)}
+          />
+          <button type="submit" className="small primary" disabled={busy || secret.trim().length === 0}>
+            Save securely
+          </button>
+        </div>
+        <div className="secret-foot">
+          <span className="muted">Stored in T3, never shown to the agent</span>
+          <button type="button" className="small ghost" disabled={busy} onClick={() => void answer({ type: "decline" })}>
+            Decline
+          </button>
+        </div>
+      </form>
     </article>
   );
 }

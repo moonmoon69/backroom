@@ -5,6 +5,7 @@ import { betweenTurns, describeStatus, jobsLine } from "../memberActivity.ts";
 import { chipTitle, oneLine } from "../workChip.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
+import { requestsWhat } from "../requestWords.ts";
 import { flashPost, NoticeActions } from "./Timeline.tsx";
 import { ControlsStrip } from "./ControlsStrip.tsx";
 import type { StripAction } from "./ActionStrip.tsx";
@@ -114,12 +115,11 @@ export function WorkBar() {
       .map((n) => `#${n}`)
       .join(" ");
 
-  // Approvals and questions T3 is waiting on, one chip per member.
+  // Approvals, questions and secrets T3 is waiting on, one chip per member.
   const asking = new Map<string, number>();
   for (const request of snapshot.nativeRequests) asking.set(request.participantId, (asking.get(request.participantId) ?? 0) + 1);
   for (const [participantId, count] of asking) {
-    const kinds = snapshot.nativeRequests.filter((r) => r.participantId === participantId).map((r) => r.kind);
-    const what = kinds.every((kind) => kind === "approval") ? "approval" : kinds.every((kind) => kind !== "approval") ? "question" : "approval and question";
+    const what = requestsWhat(snapshot.nativeRequests.filter((r) => r.participantId === participantId).map((r) => r.kind));
     const on = snapshot.runs.filter((run) => run.phase !== "terminal" && seatOf(run.seatId).participant?.id === participantId).flatMap((run) => numbers(run.requestIds));
     items.push({ key: `ask:${participantId}`, group: "needs", participant: participantById(participantId), what: count > 1 ? `${count} × ${what}` : what, text: "waiting for you", open: { asking: true }, posts: on });
   }

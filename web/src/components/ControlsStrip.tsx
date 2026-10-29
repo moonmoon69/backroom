@@ -57,13 +57,14 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
   if (element.closest(".live-turn .chat-head, .run-actions") && text === "Stop") return { kind: "stop", label: text, name: text, title, tone };
   if (element.closest(".native-requests")) {
     const input = element instanceof HTMLInputElement ? element : null;
-    const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input ? input.placeholder || "Answer" : text;
+    // A secret's field is named for what it is, never for what is typed in it.
+    const label = input && (input.type === "radio" || input.type === "checkbox") ? textOf(input.closest("label") ?? input) || "the answer of your own" : input?.type === "password" ? "Secret" : input ? input.placeholder || "Answer" : text;
     // Each its request's, by the request's id and not its place: answered elsewhere, its buttons go and another
     // request's never take their keys (the ring is not moved onto them). With several drawn, each is named with what it
     // asks ("Accept 2: run tests"), of those the strip offers (`asking`).
     const card = element.closest<HTMLElement>(".native-card");
     const id = card?.dataset.request ? `${card.dataset.request}:${[...card.querySelectorAll(CONTROLS)].indexOf(element)}` : undefined;
-    const subject = card && asking > 1 ? textOf(card.querySelector(".native-detail, legend") ?? card) : "";
+    const subject = card && asking > 1 ? textOf(card.querySelector(".native-detail, legend, .secret-label") ?? card) : "";
     return { kind: "choice", id, label: cut(label), name: cut(subject ? `${label}: ${subject}` : label), title, tone, ...(input && (input.type === "radio" || input.type === "checkbox") ? { pressed: input.checked } : {}) };
   }
   if (element.matches(".copy-button")) {

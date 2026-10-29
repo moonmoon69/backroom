@@ -36,9 +36,11 @@ import type {
   T3ThreadShell,
   T3TurnItem,
   T3UserInputQuestion,
+  SecretAnswer,
+  T3SecretAsk,
   T3Versions,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, isRunActive, openRequests } from "./types.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, openRequests, secretRequests } from "./types.ts";
 import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
@@ -409,7 +411,8 @@ export class FakeT3Adapter implements T3Adapter {
       runs: thread.runs,
       messages: thread.messages,
       turnItems: thread.turnItems,
-      runtimeRequests: thread.runtimeRequests,
+      // As the HTTP adapter reads T3's projection: a secret waits as a turn item, and is read as a request.
+      runtimeRequests: [...thread.runtimeRequests, ...secretRequests(thread.turnItems, thread.runs)],
       checkpoints: thread.checkpoints,
       subagents: thread.subagents,
       providerTurns: thread.providerTurns,
@@ -742,6 +745,7 @@ export class FakeT3Adapter implements T3Adapter {
     for (const turn of thread.providerTurns) if (turn.status === "running") Object.assign(turn, { status: run.status === "completed" ? "completed" : run.status === "failed" ? "failed" : "interrupted", completedAt: at });
     // A request the run ended with is no longer waiting.
     for (const request of thread.runtimeRequests) if (request.status === "pending" && request.runId === run.id && request.responseMode !== "message") Object.assign(request, { status: "cancelled", resolvedAt: at });
+    for (const item of thread.turnItems) if (item.type === "secret_request" && item.secretStatus === "pending" && item.runId === run.id) Object.assign(item, { status: "cancelled", secretStatus: "cancelled", completedAt: at, updatedAt: at });
     Object.assign(thread.shell, { status: run.status, activeRunId: null, latestRunCompletedAt: at, lastError: outcome === "error" ? completion.text : null, pendingRequest: this.shellRequest(thread) });
     // A message that landed as the run ended: T3 moves it to a run of its own, or leaves it after the run's last work.
     const late = this.lateSteered.get(run.id) ?? [];
@@ -765,10 +769,13 @@ export class FakeT3Adapter implements T3Adapter {
     if (item?.type === "user_message") Object.assign(item, { runId: run.id, inputIntent: "turn_start" });
   }
 
-  /** What the shell says is waiting, as the adapter reads T3's: a pending request, while a run is in progress. */
+  /**
+   * What the shell says is waiting, as the adapter reads T3's: a pending request, while a run is in progress. T3's shell
+   * says a secret is a question (user_input).
+   */
   private shellRequest(thread: FakeThread): T3ThreadShell["pendingRequest"] {
-    const pending = openRequests(thread)[0];
-    return pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null;
+    const pending = openRequests({ runs: thread.runs, runtimeRequests: [...thread.runtimeRequests, ...secretRequests(thread.turnItems, thread.runs)] })[0];
+    return pending ? { id: pending.id, kind: pending.kind === "secret_request" ? "user_input" : pending.kind, createdAt: pending.createdAt } : null;
   }
 
   /** Test control: a message the user types in T3 Code into the running run (T3 steers it in). */
@@ -840,7 +847,7 @@ export class FakeT3Adapter implements T3Adapter {
     if (!thread) throw new Error("unknown thread");
     const at = this.stamp(thread);
     const runId = this.activeRun(thread)?.id ?? null;
-    thread.runtimeRequests.push({ ...request, status: "pending", runId, nodeId: `node:${request.id}`, createdAt: at, resolvedAt: null, options: null, decision: null, answers: null });
+    thread.runtimeRequests.push({ ...request, status: "pending", runId, nodeId: `node:${request.id}`, createdAt: at, resolvedAt: null, options: null, secret: null, decision: null, answers: null });
     if (request.type === "approval") thread.turnItems.push({ ...this.item(thread, runId, at), type: "approval_request", requestId: request.id, requestKind: request.kind, prompt: request.prompt, appName: null, options: null });
     else thread.turnItems.push({ ...this.item(thread, runId, at), type: "user_input_request", requestId: request.id, questions: request.questions, responseMode: request.responseMode === "message" ? "message" : null });
     thread.shell.pendingRequest = this.shellRequest(thread);
@@ -865,6 +872,46 @@ export class FakeT3Adapter implements T3Adapter {
       prompt: null,
       questions: options.questions ?? [{ id: "Proceed?", header: "Confirm", question: "Proceed?", options: [{ label: "yes", description: "Proceed" }, { label: "no", description: "Do not proceed" }] }],
     });
+  }
+
+  /**
+   * Test control: the agent asks the user for a secret (T3's request_secret tool) in its running turn: a secret_request
+   * turn item, pending until it is saved, declined, or its run ends. Returns the item's id, which answers it.
+   */
+  raiseSecret(threadId: string, ask: { label: string; reason: string; placeholder?: string | null; delivery?: "file" | null }): string {
+    const thread = this.threads.get(threadId);
+    const run = thread ? this.activeRun(thread) : null;
+    if (!thread || !run) throw new Error("no active run to ask a secret in");
+    const at = this.stamp(thread);
+    const id = `turn-item:secret-request:${threadId}:${randomUUID()}`;
+    const secret: T3SecretAsk = { label: ask.label, reason: ask.reason, placeholder: ask.placeholder ?? null, delivery: ask.delivery ?? null };
+    thread.turnItems.push({ ...this.item(thread, run.id, at), id, status: "waiting", title: ask.label, completedAt: null, type: "secret_request", ...secret, secretStatus: "pending" });
+    thread.shell.pendingRequest = this.shellRequest(thread);
+    return id;
+  }
+
+  /** When set, the next secret answer fails with this error instead (a test's injected failure). */
+  secretFailure: Error | null = null;
+  /** The secret answers T3 took, in order: saved or declined, never the secret. */
+  readonly secretAnswers: Array<{ threadId: string; turnItemId: string; answer: "save" | "decline" }> = [];
+
+  async respondSecret(input: { threadId: string; turnItemId: string; answer: SecretAnswer }): Promise<void> {
+    this.guard();
+    const failure = this.secretFailure;
+    this.secretFailure = null;
+    if (failure) throw failure;
+    // T3 decodes the answer first: it trims the secret and refuses a blank one.
+    if (input.answer.type === "save" && input.answer.secret.trim().length === 0) throw new T3CommandRejected("T3 refused the secret; nothing was saved.", 502, null);
+    const thread = this.require(input.threadId);
+    const item = thread.turnItems.find((x) => x.id === input.turnItemId && x.type === "secret_request");
+    if (!item || item.type !== "secret_request") throw new T3SecretRefused("not_found");
+    if (item.secretStatus !== "pending") throw new T3SecretRefused("already_answered");
+    if (!thread.runs.some((run) => run.id === item.runId && isRunActive(run.status))) throw new T3SecretRefused("agent_stopped");
+    const at = this.stamp(thread);
+    const saved = input.answer.type === "save";
+    Object.assign(item, { status: saved ? "completed" : "cancelled", secretStatus: saved ? "saved" : "declined", completedAt: at, updatedAt: at });
+    this.secretAnswers.push({ threadId: input.threadId, turnItemId: input.turnItemId, answer: input.answer.type });
+    thread.shell.pendingRequest = this.shellRequest(thread);
   }
 
   async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {
