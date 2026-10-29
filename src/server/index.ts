@@ -33,6 +33,8 @@ let credential: T3Credential | null = null;
 if (config.adapter === "fake") {
   // ROOMS_FAKE_PROJECT_DIR points the demo project at a folder of the caller's (a scratch repository for a rehearsal).
   const fake = new FakeT3Adapter({ autoCompleteMs: 4000, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? { projectRoot: process.env.ROOMS_FAKE_PROJECT_DIR } : {}) });
+  // As T3's scheduler runs its usage-limit recovery.
+  fake.sweepLimitsEvery(1000);
   // Kept in a file when asked, so its threads outlive a restart of the service as T3's do (scripts/rehearse.ts --step room).
   const stateFile = process.env.ROOMS_FAKE_STATE;
   adapter = stateFile ? persistFake(fake, stateFile) : fake;
@@ -160,6 +162,7 @@ credential?.start();
 // T3's shell as T3 streams it: the engine's and the page's shell reads come from it while it is live.
 if (adapter instanceof HttpT3Adapter) adapter.startFeed();
 stack.engine.start(config.tickMs);
+stack.limitRecovery.start();
 // In the background: the clone made when it is missing, then the hourly look for the daily update.
 stack.poteto?.start();
 

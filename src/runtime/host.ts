@@ -35,14 +35,15 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
+import { CONTINUE_TEXT, T3CommandRejected, T3OutcomeUnknown, T3Unavailable, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { adoptableSteers, goesIntoTurn, holdsBack, settledOffer, steerMessageIds, steerOffers, steerReceiptId, takenInRun, takesMessages, type SteerOffer } from "./steer.ts";
-import { finalMessage, isTerminal, runEnd, runError, runOrigin, threadFree } from "./t3.ts";
+import { continuedRun, finalMessage, isTerminal, runEnd, runError, runLimit, runOrigin, threadFree, type RunLimit } from "./t3.ts";
+import { providerLabel, resetTime } from "../domain/usageLimit.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
@@ -95,6 +96,8 @@ export interface EngineHostOptions {
   /** H6: the room's keep-alive setting for a seat (src/app/keepAlive.ts); without it, KEEP_ALIVE_MS and the default. */
   keepAlive?: (roomId: string, seatId: string) => KeepAliveSetting;
   now?: () => number;
+  /** The time zone a usage-limit notice gives its reset time in, and names: the service's own by default. */
+  timeZone?: string;
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
   /**
    * Called each tick for every seat with its thread, after the host's own work on it: the app mirrors what stays off the
@@ -125,7 +128,7 @@ export class HostRefusal extends Error {
 }
 
 type Loader = (full?: boolean) => Promise<T3ThreadDetail | null>;
-interface Ending { outcome: "completed" | "stopped" | "failed"; text: string; error: string; status: MemberStatus | null; evidence: string }
+interface Ending { outcome: "completed" | "stopped" | "failed"; text: string; error: string; status: MemberStatus | null; evidence: string; /** The usage limit a failed run stopped on. */ limit?: RunLimit | null }
 
 /** The refusal a member meets when it tries to post. */
 export const MEMBERS_DO_NOT_POST = "Only the Consigliere and the user post on the board. Put what you have to say in your final reply: it is your answer, and the Consigliere decides what happens next.";
@@ -536,6 +539,7 @@ export class EngineHost {
       error: runError(full, t3Run),
       status: memberStatus(full, t3Run.id),
       evidence: `t3run:${t3Run.id} ${t3Run.status}`,
+      limit: runLimit(full, t3Run),
     });
   }
 
@@ -634,7 +638,8 @@ export class EngineHost {
         body = "";
       } else if (end.outcome === "failed" || end.outcome === "stopped" && targets.length > 0) {
         disposition = { kind: "error", requestIds: targets };
-        body = head + (end.text ? `${end.error}\n\n${end.text}` : end.error);
+        const error = end.limit ? this.pausedNotice(roomId, seatId, end.limit) : end.error;
+        body = head + (end.text ? `${error}\n\n${end.text}` : error);
       } else if (end.text && targets.length > 0 && end.outcome === "completed") {
         disposition = { kind: "answer", requestIds: targets };
         body = head + end.text;
@@ -671,6 +676,26 @@ export class EngineHost {
     this.stuck.delete(runId);
     this.interrupted.delete(runId);
     this.stopping.delete(runId);
+  }
+
+  /**
+   * A turn its provider's usage limit stopped: paused, not failed, until the reset (in the service's time zone, named),
+   * when T3 continues it (src/app/limitRecovery.ts arms it). Its reply then comes as a follow-up.
+   */
+  private pausedNotice(roomId: string, seatId: string, limit: RunLimit): string {
+    const timeZone = this.options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const time = resetTime(limit.resetAt, this.now(), timeZone);
+    const said = limit.message ? ` ${providerLabel(limit.provider)} said: "${limit.message}"` : "";
+    if (time === null) return `${this.named(roomId, seatId)}'s turn is paused on ${providerLabel(limit.provider)}'s usage limit, which gave no reset time.${said} T3 cannot continue it by itself: Resume on the member continues it.`;
+    return `${this.named(roomId, seatId)}'s turn is paused on ${providerLabel(limit.provider)}'s usage limit until ${time} (${timeZone}), not failed.${said} T3 continues the turn by itself at the reset, and its reply comes as a follow-up.`;
+  }
+
+  /** What a turn the host did not start said, and how it ended when it did not complete: stopped, failed, or paused on a limit. */
+  private shownEnd(roomId: string, seatId: string, detail: T3ThreadDetail, t3Run: T3Run, text: string): string {
+    const end = runEnd(t3Run);
+    if (end === "completed") return text;
+    const limit = runLimit(detail, t3Run);
+    return `${text ? `${text}\n\n` : ""}(${limit ? this.pausedNotice(roomId, seatId, limit) : `${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)}`})`;
   }
 
   /** A member's status line and a blank line, for the top of its post; nothing for the orchestrator's, or with no T3 run. */
@@ -753,8 +778,10 @@ export class EngineHost {
     let done = true;
     for (const m of detail.messages) {
       if (m.role !== "user" || hostMessages.has(m.id) || m.runId === null || (ordinals.get(m.runId) ?? -1) < baseline) continue;
-      // A T3 notice starts the member's own continuation; that run is imported below.
+      // A T3 notice starts the member's own continuation; that run is imported below. So does T3's continuation of a
+      // turn its usage limit paused, sent by T3 at the reset or by Backroom's Resume: nobody typed it.
       if (m.createdBy !== "user" && m.senderThreadId === null) continue;
+      if (m.text === CONTINUE_TEXT && (m.creationSource === "server" || m.id.startsWith("limit-"))) continue;
       if (!m.text.trim() && m.attachments.length === 0) continue;
       const id = `t3msg:${seat.threadId}:${m.id}`;
       if (imported.has(id)) continue;
@@ -799,7 +826,7 @@ export class EngineHost {
       }
       const end = runEnd(t3Run);
       const text = final.message?.text.trim() ?? "";
-      const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
+      const shown = this.shownEnd(roomId, seatId, detail, t3Run, text);
       try {
         const status = memberStatus(detail, t3Run.id);
         if (runOrigin(detail, t3Run, hostMessages) === "host") {
@@ -810,7 +837,12 @@ export class EngineHost {
           // A message for a running turn that T3 ran as a turn of its own: the reserve pass adopts it, or, once that window has closed, its reply is a follow-up.
           else if (adoptable.has(t3Run.userMessageId)) continue;
           else this.steerNote(roomId, seatId, id, t3Run.userMessageId, shown, status);
-        } else this.followUp(roomId, seatId, id, shown, status);
+        } else {
+          // T3's continuation of a turn its usage limit paused follows up on what that turn was given.
+          const continued = continuedRun(detail, t3Run);
+          const paused = continued ? hostRuns.find((r) => records.get(r.id)?.t3?.id === continued.id) : undefined;
+          this.followUp(roomId, seatId, id, shown, status, paused ? this.given(p, paused) : undefined);
+        }
       } catch (error) {
         this.log("turn import waits", { id, error: message(error) });
         done = false;
@@ -1130,7 +1162,7 @@ export class EngineHost {
         if (final.streaming) return true;
         const end = runEnd(t3Run);
         const text = final.message?.text.trim() ?? "";
-        const shown = end === "completed" ? text : `${text ? `${text}\n\n` : ""}(${end === "interrupted" ? "stopped" : "failed"} in T3: ${runError(detail, t3Run)})`;
+        const shown = this.shownEnd(roomId, seatId, detail, t3Run, text);
         this.steerNote(roomId, seatId, `t3run:${p.seats.get(seatId)!.threadId}:${t3Run.id}`, steer.messageId, shown, memberStatus(detail, t3Run.id));
         return false;
       }

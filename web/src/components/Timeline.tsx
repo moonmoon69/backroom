@@ -1,3 +1,4 @@
+import { isPausedNotice } from "../../../src/domain/usageLimit.ts";
 import {
   Fragment,
   createContext,
@@ -109,7 +110,7 @@ function postWhat(post: EnginePost, nameOf: (principal: string) => string, owner
       : post.kind === "note"
         ? `note from ${author}`
         : post.kind === "notice"
-          ? post.notice?.intent === "error" ? "failed" : post.notice?.intent === "keep-alive" ? "keep-alive" : "attention"
+          ? post.notice?.intent === "error" ? (isPausedNotice(post.body) ? "paused" : "failed") : post.notice?.intent === "keep-alive" ? "keep-alive" : "attention"
           : `${post.kind} by ${author}`;
 }
 
@@ -1018,7 +1019,7 @@ function Reply({ post }: { post: EnginePost }) {
             </span>
           ) : null}
           {output.afterAnswer ? <AfterAnswer /> : null}
-          {output.disposition === "error" ? <span className="turn-state mono turn-failed">failed</span> : null}
+          {output.disposition === "error" ? isPausedNotice(post.body) ? <span className="turn-state mono turn-paused">paused</span> : <span className="turn-state mono turn-failed">failed</span> : null}
           <Stamp post={post} />
         </div>
         <div className="bubble bubble-agent">
@@ -1281,7 +1282,7 @@ function Notice({ post }: { post: EnginePost }) {
   return (
     <div className={`chat-status notice-line notice-${notice.intent}${notice.needsYou ? " notice-needs" : ""}`} data-number={post.number} data-seq={post.seq} title={whenTitle(post)} {...nav}>
       <span className="post-number mono">#{post.number}</span>
-      <span className="notice-mark mono">{notice.intent === "error" ? "failed" : "attention"}</span>
+      <span className={`notice-mark mono${notice.intent === "error" && isPausedNotice(post.body) ? " notice-paused" : ""}`}>{notice.intent === "error" ? (isPausedNotice(post.body) ? "paused" : "failed") : "attention"}</span>
       {post.about.length > 0 ? <span className="mono">on {<Refs numbers={post.about.map((r) => r.number)} />}</span> : null}
       <span className="status-text">{post.body}</span>
       {notice.needsYou ? <span className="pill pill-input">needs you</span> : null}

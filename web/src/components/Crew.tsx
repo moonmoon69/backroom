@@ -23,6 +23,7 @@ import { selectionEffort } from "../../../src/domain/effort.ts";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { describeStatus } from "../memberActivity.ts";
+import { useResetClock } from "../resetClock.ts";
 import { backroomRequest } from "../replyTo.ts";
 import { sinceWords } from "../engineTime.ts";
 import { OpenInT3Dialog } from "./OpenInT3Dialog.tsx";
@@ -126,8 +127,9 @@ export function CrewPanel() {
 export function CrewButton({ active, onClick, nav }: { active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; nav?: NavProps }) {
   const { snapshot, desk } = useRoom();
   const crew = snapshot.participants.filter(isActiveParticipant);
+  const now = useResetClock(crew.map((p) => snapshot.participantStatus[p.id]?.paused?.resetAt));
   const statuses = crew.map((p) => {
-    const activity = describeStatus(snapshot.participantStatus[p.id], desk?.participants[p.id]);
+    const activity = describeStatus(snapshot.participantStatus[p.id], desk?.participants[p.id], now);
     return `@${p.alias}: ${activity.label}${activity.detail ? ` (${activity.detail})` : ""}`;
   });
   return (
@@ -228,7 +230,8 @@ function ParticipantChip({
   const inProgress = costs?.openTurns[participant.id];
   const meter = costs?.contexts?.[participant.id];
   const isConsigliere = snapshot.room.consigliereId === participant.id;
-  const described = describeStatus(status, desk);
+  const now = useResetClock([status?.paused?.resetAt]);
+  const described = describeStatus(status, desk, now);
   const effort = selectionEffort(participant.modelSelection);
   const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
   const pick = (action: MenuAction) => {

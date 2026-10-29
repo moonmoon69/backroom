@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
-import { betweenTurns, describeStatus, jobsLine } from "../memberActivity.ts";
+import { betweenTurns, describeStatus, jobsLine, queueLine } from "../memberActivity.ts";
+import { ThreadControls, outcomeOf } from "./ThreadControls.tsx";
+import { useResetClock } from "../resetClock.ts";
+import { isPausedNotice, pauseLabel } from "../../../src/domain/usageLimit.ts";
 import { chipTitle, oneLine } from "../workChip.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import { keepAnswers, NativeRequestsPanel } from "./NativeRequests.tsx";
@@ -25,7 +28,7 @@ interface Item {
   /** A tone besides its group's: an uncertain run, a blocked delivery. */
   tone?: "warn";
   /** Opens under the bar: a notice's actions, or the approvals and questions. */
-  open?: { notice: EnginePost } | { asking: true } | { run: EngineRunView };
+  open?: { notice: EnginePost } | { asking: true } | { run: EngineRunView } | { member: Participant };
   /** The posts it is about, which its action strip shows ("show #33"): a failed turn's notice, what a turn works on. */
   posts?: number[];
 }
@@ -107,6 +110,7 @@ export function WorkBar() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
+  const now = useResetClock(Object.values(snapshot.participantStatus).map((status) => status.paused?.resetAt));
   const items: Item[] = [];
   const numberOf = (requestId: string) => snapshot.requests.find((q) => q.id === requestId)?.number ?? snapshot.posts.find((p) => p.request?.id === requestId)?.number ?? null;
   const numbers = (ids: readonly string[]) => ids.map(numberOf).filter((n): n is number => n !== null);
@@ -130,7 +134,7 @@ export function WorkBar() {
       key: `notice:${notice.id}`,
       group: "needs",
       participant: seatOf(run?.seatId ?? notice.author).participant,
-      what: notice.notice?.intent === "error" ? "failed" : "attention",
+      what: notice.notice?.intent === "error" ? (isPausedNotice(notice.body) ? "paused" : "failed") : "attention",
       text: `#${notice.number} ${notice.body}`,
       open: { notice },
       posts: [notice.number],
@@ -144,11 +148,13 @@ export function WorkBar() {
     const participant = seatOf(run.seatId).participant;
     if (participant) busy.add(participant.id);
     const on = refs(run.requestIds);
+    // A turn sent to a member its usage limit paused waits in T3's queue behind the limit: waiting, not working.
+    const paused = participant ? Boolean(snapshot.participantStatus[participant.id]?.paused) : false;
     items.push({
       key: `run:${run.id}`,
-      group: "working",
+      group: paused ? "waiting" : "working",
       participant,
-      what: PHASE[run.phase],
+      what: paused ? "queued" : PHASE[run.phase],
       text: on ? `on ${on}` : "",
       ...(run.phase === "uncertain" || run.phase === "rejected" ? { tone: "warn" as const } : {}),
       open: { run },
@@ -166,6 +172,17 @@ export function WorkBar() {
       items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "" });
     } else if (betweenTurns(status, memberDesk)) {
       items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()) });
+    }
+  }
+
+  // Waiting on T3, neither working nor needing you: a turn its usage limit paused (Resume now), a queue T3 holds (Resume queue).
+  for (const participant of snapshot.participants.filter(isActiveParticipant)) {
+    const status = snapshot.participantStatus[participant.id];
+    const memberDesk = desk?.participants[participant.id];
+    if (status?.paused) {
+      items.push({ key: `paused:${participant.id}`, group: "waiting", participant, what: "paused", text: pauseLabel(status.paused, now).replace(/^paused /, ""), open: { member: participant } });
+    } else if (memberDesk?.queue?.hold?.by === "held" && !status?.activeRunId) {
+      items.push({ key: `queue:${participant.id}`, group: "waiting", participant, what: "queue held", text: queueLine(memberDesk.queue) ?? "", open: { member: participant } });
     }
   }
 
@@ -282,7 +299,7 @@ export function WorkBar() {
                 // A chip is a stop only with something to press (keyOrder.ts, chipOffers); a click opens any.
                 const stop =
                   item.open !== undefined &&
-                  chipOffers("asking" in item.open ? { kind: "ask" } : "notice" in item.open ? { kind: "notice" } : { kind: "run", phase: item.open.run.phase, member: item.participant !== undefined, posts: (item.posts ?? []).filter((n) => post(n) !== null).length });
+                  chipOffers("asking" in item.open ? { kind: "ask" } : "notice" in item.open ? { kind: "notice" } : "member" in item.open ? { kind: "member" } : { kind: "run", phase: item.open.run.phase, member: item.participant !== undefined, posts: (item.posts ?? []).filter((n) => post(n) !== null).length });
                 return item.open ? (
                   <button
                     key={item.key}
@@ -327,6 +344,8 @@ export function WorkBar() {
             </div>
           ) : "run" in opened.open ? (
             <RunActions run={opened.open.run} onStop={(participantId) => void runCommand({ type: "run.stop", roomId: snapshot.room.id, participantId })} />
+          ) : "member" in opened.open ? (
+            <MemberControls participant={opened.open.member} now={now} />
           ) : (
             <NativeRequestsPanel />
           )}
@@ -362,6 +381,23 @@ export function WorkBar() {
         />
       ) : null}
     </div>
+  );
+}
+
+/** A member's thread controls (ThreadControls): its paused turn, its held queue. */
+function MemberControls({ participant, now }: { participant: Participant; now: number }) {
+  const { snapshot, desk, runCommand } = useRoom();
+  const status = snapshot.participantStatus[participant.id];
+  return (
+    <ThreadControls
+      pause={status?.paused ?? null}
+      queue={desk?.participants[participant.id]?.queue}
+      now={now}
+      send={async (control) => {
+        const result = await runCommand({ type: "member.control", roomId: snapshot.room.id, participantId: participant.id, control });
+        return outcomeOf(result);
+      }}
+    />
   );
 }
 

@@ -5,7 +5,34 @@
  * own use the same ones.
  */
 import type { T3Message, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem } from "../adapter/types.ts";
-import { isRunActive, openRequests } from "../adapter/types.ts";
+import { isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
+import { providerLabel } from "../domain/usageLimit.ts";
+
+// ---------------- the queue ----------------
+
+/**
+ * The thread's queued messages, as T3 holds them: how many, and what holds them when nothing starts them. "limit": a
+ * usage limit on the provider holds them until the limited turn continues (T3 refuses queue.resume until then). "held":
+ * T3 held the queue (after a provider failure, a Stop, a disabled provider or a missing worktree) until someone resumes
+ * it; `reason` only when T3's runs say it.
+ */
+export interface QueueState {
+  count: number;
+  hold: null | { by: "limit"; reason: string } | { by: "held"; reason: string | null };
+}
+
+export function queueOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems" | "shell">): QueueState | null {
+  const queued = detail.runs.filter((run) => run.status === "queued");
+  if (queued.length === 0) return null;
+  const count = queued.length;
+  const limit = detail.shell.usageLimit;
+  if (limit) return { count, hold: { by: "limit", reason: `waits for the turn paused on ${providerLabel(limit.provider)}'s limit to continue` } };
+  if (!queued.some((run) => run.queueHeld)) return { count, hold: null };
+  const latest = latestExecutedRun(detail.runs);
+  const failure = latest?.status === "failed" ? detail.turnItems.filter((item) => item.runId === latest.id && item.type === "error").pop() : undefined;
+  const reason = failure?.type === "error" ? `held after the last turn failed: ${failure.message}` : latest?.status === "interrupted" || latest?.status === "cancelled" ? "held after the last turn was stopped" : null;
+  return { count, hold: { by: "held", reason } };
+}
 
 // ---------------- the conversation ----------------
 

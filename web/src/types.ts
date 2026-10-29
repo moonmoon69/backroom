@@ -327,6 +327,8 @@ export interface OverviewThread {
   status: T3ThreadStatus;
   pendingRequest: { id: string; kind: string; createdAt: string } | null;
   backgroundLiveness: "working" | "monitoring" | null;
+  /** Its latest run stopped on its provider's usage limit. Absent from an older service. */
+  usageLimit?: T3UsageLimit | null;
   latestRunCompletedAt: string | null;
   updatedAt: string;
   /** The agent's latest line while it works, else what it last said. */
@@ -424,6 +426,42 @@ export interface ParticipantStatus {
   threadMissing: boolean;
   /** Work T3 lists as still running after the run settled: subagents or commands ("working"), only monitors ("monitoring"). */
   background?: "working" | "monitoring" | null;
+  /** Its latest turn stopped on its provider's usage limit, and nothing runs since. Absent from an older service. */
+  paused?: UsageLimitPause | null;
+}
+
+/** What the page asks of a thread's runs (member.control, thread.control): resume the paused turn, or the held queue. */
+export type PageControl = { type: "resume" } | { type: "queue.resume" };
+
+/** A turn its provider's usage limit stopped (T3's usage-limit pause), as the room shows it. */
+export interface UsageLimitPause {
+  runId: string;
+  /** The provider's T3 instance (claudeAgent, codex…). */
+  provider: string;
+  /** ISO time; null when the provider named none. */
+  resetAt: string | null;
+  /** The provider's own sentence. */
+  message: string | null;
+  /** T3 continues the turn at the reset: its recovery is armed. */
+  armed: boolean;
+}
+
+/** A thread's usage-limit pause as T3 records it (the adapter's T3UsageLimit). */
+export interface T3UsageLimit {
+  runId: string;
+  provider: string;
+  resetAt: string | null;
+  message: string | null;
+  recovery: { autoResume: boolean; snooze: boolean; requestId: string | null } | null;
+}
+
+/**
+ * A thread's queued messages: how many, and what holds them when nothing starts them ("limit": the usage limit, until
+ * the limited turn continues; "held": T3 held the queue until it is resumed, with T3's reason when its runs say it).
+ */
+export interface QueueState {
+  count: number;
+  hold: null | { by: "limit"; reason: string } | { by: "held"; reason: string | null };
 }
 
 /** Work still running on a thread beside or after its run, as T3 lists it: a subagent ("agent"), or a command or monitor ("background"; `type` says which). */
@@ -842,6 +880,8 @@ export interface T3ThreadShell {
   latestRunId: string | null;
   latestRunCompletedAt: string | null;
   lastError: string | null;
+  /** Its latest run stopped on its provider's usage limit, and nothing runs since. Absent from an older service. */
+  usageLimit?: T3UsageLimit | null;
   /** The approval or question T3 is waiting on ("user_input" is a question; any other kind an approval). */
   pendingRequest: { id: string; kind: string; createdAt: string } | null;
   pendingBackgroundTasks: Array<{ taskId: string; kind: "subagent" | "command" | "monitor" | "background_task"; description: string | null; childThreadId: string | null }>;
@@ -894,6 +934,8 @@ export interface ThreadView {
   requests: ThreadRequest[];
   /** The run in progress, streamed as T3 shows it. */
   running: { runId: string; feed: LiveFeedItem[] } | null;
+  /** Its queued messages, and what holds them. Absent from an older service. */
+  queue?: QueueState | null;
   contextWindow: ContextWindowReading | null;
   /** What its usage card shows besides context and spend, from what T3 reports about the thread. */
   usage: {
@@ -1101,6 +1143,9 @@ export interface Desk {
   activeRunId: string | null;
   latestRun: { runId: string; status: T3ThreadStatus; completedAt: string | null } | null;
   lastError: string | null;
+  usageLimit?: T3UsageLimit | null;
+  /** Its queued messages, and what holds them. Absent from an older service. */
+  queue?: QueueState | null;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
@@ -1365,6 +1410,7 @@ export type RoomCommand =
   | { type: "native.approval.respond"; participantId: string; requestId: string; decision: ApprovalDecision }
   | { type: "native.userInput.respond"; participantId: string; requestId: string; answers: Record<string, unknown> }
   | { type: "native.secret.respond"; participantId: string; requestId: string; answer: SecretAnswer }
+  | { type: "member.control"; roomId: string; participantId: string; control: PageControl }
   /** Add a T3 project for a folder on the T3 machine; the title defaults to the folder name. */
   | { type: "project.create"; workspaceRoot: string; title?: string; createIfMissing?: boolean }
   /** Direct threads (outside any room): the text goes to T3 as typed. */
@@ -1374,6 +1420,7 @@ export type RoomCommand =
   | { type: "thread.approval.respond"; threadId: string; requestId: string; decision: ApprovalDecision }
   | { type: "thread.userInput.respond"; threadId: string; requestId: string; answers: Record<string, unknown> }
   | { type: "thread.secret.respond"; threadId: string; requestId: string; answer: SecretAnswer }
+  | { type: "thread.control"; threadId: string; control: PageControl }
   | { type: "thread.model.set"; threadId: string; modelSelection: ModelSelection }
   | { type: "thread.runtimeMode.set"; threadId: string; runtimeMode: RuntimeMode }
   | { type: "thread.lifecycle"; threadId: string; action: "settle" | "unsettle" | "archive" | "unarchive" | "delete" };
@@ -1406,6 +1453,9 @@ export type CommandResult =
   | { type: "run.retried"; runId: string; eventId: string }
   | { type: "run.stopped"; participantId: string }
   | { type: "native.responded"; requestId: string }
+  /** A control went to T3 ("sent"), or found the turn already continued ("already"). */
+  | { type: "member.controlled"; participantId: string; outcome: "sent" | "already" }
+  | { type: "thread.controlled"; threadId: string; outcome: "sent" | "already" }
   | { type: "project.created"; projectId: string }
   | { type: "browser.created"; browserId: string }
   | { type: "thread.started"; threadId: string }

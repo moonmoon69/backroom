@@ -577,7 +577,7 @@ type Snapshot = {
   blocked: any[];
   nativeRequests: any[];
   /** Each member's status, by participant: what it waits on you for among it. */
-  participantStatus: Record<string, { pendingApprovals: boolean; pendingUserInput: boolean; pendingSecret?: boolean }>;
+  participantStatus: Record<string, { pendingApprovals: boolean; pendingUserInput: boolean; pendingSecret?: boolean; externalActivity?: boolean; paused?: { resetAt: string | null; armed: boolean } | null }>;
   counts: { needsYou: number; busy: number; waiting: number; working: number; openRequests: number };
   notices: { through: number; ids: string[] };
   news: { seenSeq: number; unseen: number; latest: { seq: number; number: number; kind: string } | null };
@@ -719,7 +719,7 @@ class Room {
     });
   }
   /** End what T3 runs on the member's thread now (the script holds every run), and wait for the host to import it. */
-  async finish(alias: Alias, text: string, extra: { outcome?: "completed" | "error" | "interrupted"; progress?: string[]; files?: unknown[] } = {}): Promise<void> {
+  async finish(alias: Alias, text: string, extra: { outcome?: "completed" | "error" | "interrupted" | "limit"; progress?: string[]; files?: unknown[]; resetInMs?: number } = {}): Promise<void> {
     const before = await this.snapshot();
     const runId = before.seats.find((x) => x.seatId === this.seat[alias])?.activeRunId ?? null;
     await until(`T3 to run @${alias}'s turn`, () => this.service.fake("complete", { threadId: this.thread[alias], text, ...extra }).then(() => true), 20_000, 300);
@@ -1925,6 +1925,126 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     browser.consoleClean();
     browser.openRoom(room.title);
     check.pass(hovered);
+  }
+
+  // 23b. The user's #160, A: a member its provider's usage limit stopped is paused, not failed, and T3 continues it; a
+  // queue T3 holds is resumed from here.
+  if (await section("a member paused on Claude's limit: neither working nor needing you, the Consigliere told it is paused")) {
+    // The story before reseated @fable: these sections talk to his fresh seat.
+    for (const alias of MEMBERS) if ((await room.snapshot()).seats.find((x) => x.seatId === room.seat[alias])?.status === "retired") await room.rebind(alias);
+    for (const alias of MEMBERS) await room.settle(alias);
+    // On the board, where every post is drawn (the story before may have left the chat with @fable open).
+    browser.click(/tab "Board/);
+    const paused = (x: Snapshot) => x.participantStatus[room.participant.reviewer]?.paused ?? null;
+    // The member's label, as the Members button's hover lists it (the card's own, ranked the same).
+    const statusRead = `() => ((document.querySelector('[aria-label^="Members"]')?.getAttribute('title') ?? '').split('\\n').find((line) => line.startsWith('@${room.name.reviewer}: ')) ?? '').slice(${room.name.reviewer.length + 3})`;
+    const statusOf = () => browser.eval<string>(statusRead);
+    // His request to @reviewer; Claude's limit stops her turn on it.
+    const limitAsk = await room.message("Have @reviewer re-run the flaky date tests.");
+    await room.live("fable");
+    room.board("fable", "post", `@${room.name.reviewer} re-run the flaky date tests`);
+    const rerun = await posted(seat.reviewer, "his re-run request");
+    await room.finish("fable", "I asked @reviewer to re-run the date tests.");
+    await room.live("reviewer");
+    await room.finish("reviewer", "Claude API rate limit reached. Try again later.", { outcome: "limit", resetInMs: 2 * 3_600_000 });
+    await check.state("a member paused on Claude's limit: neither working nor needing you, the Consigliere told it is paused", (x) => {
+      const p = paused(x);
+      const notice = x.posts.find((q) => q.kind === "output" && q.author === seat.reviewer && q.body.includes("paused on Claude's usage limit until"));
+      if (!p?.resetAt || !p.armed || !notice || x.counts.needsYou !== 0) return null;
+      return `participantStatus.paused for @reviewer until ${p.resetAt}, armed (T3 continues it at the reset); #${notice.number} says paused, not failed; counts.needsYou=0`;
+    }, ["paused on Claude's limit until", "paused on Claude's usage limit until"], {
+      extra: () => {
+        const members = browser.eval<string>(`() => document.querySelector('[aria-label^="Members"], button[title^="Members"]')?.getAttribute('title') ?? ''`);
+        if (!members.includes("Claude API rate limit reached. Try again later. · T3 continues it at")) fail(`the Members hover lacks the provider's sentence and that T3 continues it: ${JSON.stringify(members)}`);
+        const tags = browser.eval<string[]>("() => [...document.querySelectorAll('.timeline [data-number]')].filter((row) => row.textContent.includes(\"turn is paused on Claude's usage limit\")).map((row) => row.querySelector('.turn-state, .notice-mark')?.textContent ?? '')");
+        if (tags.length < 2 || tags.some((tag) => tag !== "paused")) fail(`the board tags the paused turn's reply and notice ${JSON.stringify(tags)}, not paused`);
+        log(`  page: the paused turn's reply and its notice are tagged ${JSON.stringify(tags)}; the Members hover has the provider's sentence and that T3 continues it`);
+        const label = statusOf();
+        if (!/^paused on Claude's limit until \d\d:\d\d/.test(label)) fail(`@reviewer's card does not read paused until a time: ${JSON.stringify(label)}`);
+        browser.click(/button "Members \(\d+\)"/);
+        const card = browser.poll<{ label: string; className: string }>("@reviewer's card in Members", `() => { const c = [...document.querySelectorAll('.participant-chip')].find((c) => c.textContent.includes('${room.name.reviewer}')); return { label: c?.querySelector('.status-label')?.textContent ?? '', className: c?.className ?? '' }; }`, (c) => c.label.startsWith("paused"));
+        if (/attention-/.test(card.className) || !card.label.startsWith("paused on Claude's limit until")) fail(`@reviewer's card reads ${JSON.stringify(card)} while paused`);
+        browser.screenshot("a-paused-member-in-members");
+        browser.click(/button "Members \(\d+\)"/);
+        const chips = browser.eval<{ needs: string; waiting: string }>("() => ({ needs: document.querySelector('.work-needs')?.textContent ?? '', waiting: document.querySelector('.work-waiting')?.textContent ?? '' })");
+        if (chips.needs.includes(room.name.reviewer) || !chips.waiting.includes("paused")) fail(`the paused member is not under Waiting alone: ${JSON.stringify(chips)}`);
+        log(`  page: @reviewer's card reads ${JSON.stringify(label)}, no attention border; its chip is under Waiting, not Needs you`);
+      },
+    });
+    // Resume now, before the reset: it asks first, then T3 continues the turn at once; her reply follows up on the request.
+    const chip = new RegExp(`button "${room.name.reviewer} paused on Claude's limit until`);
+    browser.click(chip);
+    browser.click(/button "Resume now"/);
+    browser.waitFor("Resume now continues the turn at once, and the limit may stop it again");
+    browser.click(/button "Resume anyway"/);
+    await until("T3 to continue @reviewer's turn", async () => paused(await room.snapshot()) === null);
+    await room.finish("reviewer", "Re-ran the date tests after the pause: 48 passed, none flaky.");
+    await check.state("Resume now before the reset asks first, then the turn continues and its reply follows up on the request", (x) => {
+      const f = followUps(x, seat.reviewer).find((q) => q.body.includes("Re-ran the date tests after the pause"));
+      return f && f.about.some((r: any) => r.requestId === rerun.request.id) && !paused(x) ? `#${f.number} follows up on #${rerun.number}; @reviewer no longer paused` : null;
+    }, ["follow-up", "Re-ran the date tests after the pause: 48 passed, none flaky."]);
+    await room.settle("fable");
+    void limitAsk;
+
+    // At the reset, T3 continues it by itself (Backroom armed it): the card changes without a reload.
+    browser.on("eval", "() => { window.__sameDocument = true; return true; }");
+    await service.fake("external-run", { threadId: room.thread.reviewer, text: "Check the build once more." });
+    await until("T3 to run the turn typed in T3", async () => (await room.snapshot()).participantStatus[room.participant.reviewer]?.externalActivity === true);
+    await service.fake("complete", { threadId: room.thread.reviewer, text: "Claude API rate limit reached. Try again later.", outcome: "limit", resetInMs: 12_000 });
+    await until("@reviewer paused until a reset 12 s away", async () => paused(await room.snapshot()) !== null);
+    browser.poll<string>("@reviewer's label to read paused", statusRead, (label) => label.startsWith("paused on Claude's limit until"));
+    await check.state("at the reset T3 continues the paused turn by itself, and the card says so without a reload", (x) => {
+      const status = x.participantStatus[room.participant.reviewer];
+      return status && !status.paused && status.externalActivity ? "@reviewer no longer paused; T3 runs its continuation (a turn the room did not start)" : null;
+    }, [], {
+      always: () => {
+        browser.poll<string>("@reviewer's label to leave paused", statusRead, (label) => !label.startsWith("paused"), 30_000);
+        if (browser.eval<boolean>("() => window.__sameDocument === true") !== true) fail("the page reloaded across the reset");
+      },
+    });
+    await room.finish("reviewer", "Build is green.");
+    await room.settle("fable");
+
+    // A queue T3 held after a provider failure: its reason, and Resume queue starts it.
+    await service.fake("external-run", { threadId: room.thread.reviewer, text: "Run the slow suite." });
+    await until("T3 to run it", async () => (await room.snapshot()).participantStatus[room.participant.reviewer]?.externalActivity === true);
+    await service.fake("external-run", { threadId: room.thread.reviewer, text: "Then run the lint." });
+    await service.fake("complete", { threadId: room.thread.reviewer, text: "overloaded_error", outcome: "error" });
+    await check.state("a queue T3 held after a provider failure reads queue held with T3's reason, and Resume queue starts it", (x) => {
+      const status = x.participantStatus[room.participant.reviewer];
+      return status && !status.externalActivity && !status.paused ? "@reviewer's turn failed with a message queued behind it" : null;
+    }, ["queue held", "1 queued message held by T3, held after the last turn failed: overloaded_error"], {
+      always: () => {
+        browser.click(new RegExp(`button "${room.name.reviewer} queue held`));
+        browser.click(/button "Resume queue"/);
+      },
+    });
+    await until("T3 to start the queued message", async () => (await room.snapshot()).participantStatus[room.participant.reviewer]?.externalActivity === true);
+    await room.finish("reviewer", "Lint is clean.");
+    await room.settle("fable");
+    browser.consoleClean();
+
+    // A thread on its own, paused: its tile says until when, and Resume now sits above its composer.
+    const started = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "Tidy the changelog." });
+    await service.fake("hold", { threadId: started.threadId, hold: true });
+    await until("T3 to run the loose thread", async () => (await service.call<{ thread: { status: string } }>("GET", `/api/threads/${started.threadId}`)).thread.status === "running");
+    await service.fake("complete", { threadId: started.threadId, text: "Claude API rate limit reached. Try again later.", outcome: "limit", resetInMs: 3 * 3_600_000 });
+    const looseTitle = (await service.call<{ thread: { title: string } }>("GET", `/api/threads/${started.threadId}`)).thread.title;
+    browser.click(/button "Back to the overview"/);
+    browser.waitFor("paused until");
+    browser.click(new RegExp(`button "[^"]*".* description="Open ${looseTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+    await check.state("a thread on its own paused on its limit: its tile and bar say until when, and Resume now continues it", () => "the loose thread's turn stopped on Claude's limit", ["paused on Claude's limit until", "Resume now"], {
+      always: () => {
+        browser.click(/button "Resume now"/);
+        browser.click(/button "Resume anyway"/);
+        browser.poll<boolean>("the loose thread to leave paused", "() => !document.querySelector('.thread-controls') || (document.querySelector('.thread-controls')?.textContent ?? '').includes('Asked T3 to continue the turn')", (gone) => gone, 15_000);
+      },
+    });
+    await until("T3 to continue the loose thread", async () => (await service.call<{ thread: { status: string; usageLimit: unknown } }>("GET", `/api/threads/${started.threadId}`)).thread.usageLimit === null);
+    await service.fake("complete", { threadId: started.threadId, text: "The changelog is tidy." });
+    await service.fake("hold", { threadId: started.threadId, hold: false });
+    browser.click(/button "Back to the overview"/);
+    browser.openRoom(room.title);
   }
 
   // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.

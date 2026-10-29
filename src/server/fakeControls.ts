@@ -6,8 +6,10 @@
  * fake adapter, which never talks to a real T3; with the real adapter nothing is mounted.
  *
  *   POST /api/fake/hold          { threadId, hold }            runs on the thread are not finished automatically
- *   POST /api/fake/complete      { threadId, text, outcome?, progress?, files? }   end the thread's running run
- *                                outcome "completed" | "error" | "interrupted"; progress: messages before the final one
+ *   POST /api/fake/complete      { threadId, text, outcome?, progress?, files?, resetAt? }   end the thread's running run
+ *                                outcome "completed" | "error" | "interrupted" | "limit"; progress: messages before the
+ *                                final one; "limit": the provider's usage limit stopped it, `text` its sentence, resetting
+ *                                at `resetAt` (ISO), or in `resetInMs` from now
  *   POST /api/fake/say           { threadId, text }            the agent says something in its running turn -> { messageId }
  *   POST /api/fake/self-run      { threadId }                  a turn the agent starts itself -> { runId }
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
@@ -50,10 +52,11 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
     return { held: fake.held.has(id) };
   }));
   controls.post("/api/fake/complete", run((input) => {
-    const outcome = input.outcome === "error" || input.outcome === "interrupted" ? input.outcome : "completed";
+    const outcome = input.outcome === "error" || input.outcome === "interrupted" || input.outcome === "limit" ? input.outcome : "completed";
     const progress = Array.isArray(input.progress) ? input.progress.filter((p): p is string => typeof p === "string") : [];
     const files = Array.isArray(input.files) ? (input.files as Array<{ path: string; kind: string; additions: number; deletions: number }>) : [];
-    fake.completeRun(thread(input), { text: typeof input.text === "string" ? input.text : "Done.", outcome, progress, files });
+    const resetAt = typeof input.resetAt === "string" ? input.resetAt : typeof input.resetInMs === "number" ? new Date(Date.now() + input.resetInMs).toISOString() : null;
+    fake.completeRun(thread(input), { text: typeof input.text === "string" ? input.text : "Done.", outcome, progress, files, resetAt });
     return {};
   }));
   controls.post("/api/fake/say", run((input) => ({ messageId: fake.say(thread(input), typeof input.text === "string" ? input.text : "working on it") })));

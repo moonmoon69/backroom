@@ -775,6 +775,11 @@ textarea.invalid,
   color: var(--err) !important;
 }
 
+/* Paused on a usage limit: neither working nor needing you. */
+.status-paused {
+  color: var(--warn) !important;
+}
+
 .menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -4905,6 +4910,10 @@ body.sorting * {
   background: var(--err);
 }
 
+.thread-dot.tone-paused {
+  background: var(--warn);
+}
+
 .thread-dot.tone-new {
   background: var(--ok);
 }
@@ -4931,6 +4940,10 @@ body.sorting * {
 
 .thread-pill.tone-error {
   color: var(--err);
+}
+
+.thread-pill.tone-paused {
+  color: var(--warn);
 }
 
 .thread-bar {
@@ -6238,6 +6251,10 @@ button:has(> .icon):not(.mobile-only) {
   color: var(--err);
 }
 
+.turn-state.turn-paused {
+  color: var(--warn);
+}
+
 .turn-sent {
   margin-top: 6px;
   display: flex;
@@ -6402,6 +6419,10 @@ button.work-chip:hover,
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 6px;
+}
+
+.thread-controls-confirm {
+  display: contents;
 }
 
 .work-open-text {
@@ -7913,6 +7934,9 @@ span.reply-to {
 .notice-line.notice-error .notice-mark {
   color: var(--err);
 }
+.notice-line.notice-error .notice-mark.notice-paused {
+  color: var(--warn);
+}
 .notice-line.notice-attention .notice-mark,
 .notice-line.notice-blocked .notice-mark {
   color: var(--warn);
@@ -8309,4 +8333,9 @@ span.reply-to {
 .ov-agents-mark:focus-visible {
   border-color: var(--line);
   color: var(--fg);
+}
+
+/* A thread's paused turn or held queue, above its composer. */
+.room-centre > .thread-controls {
+  padding: 6px 16px 0;
 }

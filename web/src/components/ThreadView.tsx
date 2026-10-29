@@ -12,6 +12,9 @@ import { deleteImageData, loadImageData, saveImageData } from "../draftImageData
 import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
 import { threadKey } from "../news.ts";
 import { focusWhen } from "../keys.ts";
+import { useResetClock } from "../resetClock.ts";
+import { resetTime } from "../../../src/domain/usageLimit.ts";
+import { ThreadControls, outcomeOf } from "./ThreadControls.tsx";
 import {
   isRunActive,
   ATTACHMENT_MAX_BYTES,
@@ -64,11 +67,18 @@ const time = (iso: string): string => {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
-export type ThreadActivity = { label: string; tone: "input" | "working" | "background" | "error" | "idle" };
+export type ThreadActivity = { label: string; tone: "input" | "working" | "background" | "paused" | "error" | "idle" };
 
-/** What a thread is doing, as one short label: needs you, working, background, error, or idle. */
-export function threadActivity(thread: Pick<T3ThreadShell, "status" | "pendingRequest" | "backgroundLiveness">): ThreadActivity {
+/**
+ * What a thread is doing, as one short label: needs you, paused on a usage limit (until its reset, in the viewer's time
+ * zone), working, background, error, or idle.
+ */
+export function threadActivity(thread: Pick<T3ThreadShell, "status" | "pendingRequest" | "backgroundLiveness" | "usageLimit">, now = Date.now()): ThreadActivity {
   if (thread.pendingRequest) return { label: "needs you", tone: "input" };
+  if (thread.usageLimit) {
+    const at = resetTime(thread.usageLimit.resetAt, now);
+    return { label: at && Date.parse(thread.usageLimit.resetAt!) > now ? `paused until ${at}` : "paused", tone: "paused" };
+  }
   const status = thread.status;
   if (isRunActive(status)) return { label: status === "running" || status === "waiting" ? "working" : "starting", tone: "working" };
   if (thread.backgroundLiveness === "working") return { label: "background", tone: "background" };
@@ -200,7 +210,8 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
     autoRead,
     view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${asksYou(request.kind)}` })) : null,
   );
-  const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }) : null;
+  const now = useResetClock([thread?.usageLimit?.resetAt]);
+  const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }, now) : null;
   const running = view?.running ?? null;
   // The composer is a strip until wanted, then an overlay (composerOverlay.tsx). It names the agent as the thread's
   // card does: the crew member it started as, else its model's name.
@@ -340,6 +351,18 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 }}
               />
             </div>
+            {thread && !thread.boundToRoom ? (
+              <ThreadControls
+                pause={thread.usageLimit ? { runId: thread.usageLimit.runId, provider: thread.usageLimit.provider, resetAt: thread.usageLimit.resetAt, message: thread.usageLimit.message, armed: thread.usageLimit.recovery?.autoResume === true } : null}
+                queue={view?.queue}
+                now={now}
+                send={async (control) => {
+                  const outcome = outcomeOf(await runCommand({ type: "thread.control", threadId, control }));
+                  hurry();
+                  return outcome;
+                }}
+              />
+            ) : null}
             {/* A member's thread is talked to from its room: no composer here (it would take the keys and send nothing). */}
             {thread?.boundToRoom ? (
               <p className="chat-status mono thread-partial">This thread is now a member in a room; talk to it from the room.</p>

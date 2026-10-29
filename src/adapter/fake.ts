@@ -39,8 +39,9 @@ import type {
   SecretAnswer,
   T3SecretAsk,
   T3Versions,
+  ThreadControl,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, openRequests, secretRequests } from "./types.ts";
+import { CONTINUE_TEXT, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, secretRequests, usageLimitOf } from "./types.ts";
 import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
@@ -54,13 +55,17 @@ interface FakeThread {
   providerTurns: T3ProviderTurn[];
   providerThreads: T3ProviderThread[];
   plans: T3Plan[];
+  /** T3's limitRecovery on the thread record: which limited run to continue at which reset, and the command that armed it. */
+  recovery?: { runId: string; resetAt: string; autoResume: boolean; snooze: boolean; requestId: string } | null;
 }
 
 export interface FakeRunCompletion {
   text: string;
   /** Messages the agent wrote earlier in the run, before its final one. */
   progress?: string[];
-  outcome?: "completed" | "error" | "interrupted";
+  outcome?: "completed" | "error" | "interrupted" | "limit";
+  /** outcome "limit": when the provider says its limit resets (ISO); none when it names no time. */
+  resetAt?: string | null;
   files?: Array<{ path: string; kind: string; additions: number; deletions: number }>;
 }
 
@@ -386,19 +391,26 @@ export class FakeT3Adapter implements T3Adapter {
     this.guard();
     if (this.shellOutage) throw this.shellOutage;
     // Like T3's shell snapshot: archived threads are listed apart.
-    return [...this.threads.values()].map((t) => structuredClone(t.shell)).filter((t) => t.archivedAt === null && (!projectId || t.projectId === projectId));
+    return [...this.threads.values()].map((t) => this.shellOf(t)).filter((t) => t.archivedAt === null && (!projectId || t.projectId === projectId));
   }
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
     this.guard();
     if (this.shellOutage) throw this.shellOutage;
-    return [...this.threads.values()].map((t) => structuredClone(t.shell)).filter((t) => t.archivedAt !== null);
+    return [...this.threads.values()].map((t) => this.shellOf(t)).filter((t) => t.archivedAt !== null);
   }
 
   async getThreadShell(threadId: string): Promise<T3ThreadShell | null> {
     this.guard();
-    const shell = this.threads.get(threadId)?.shell;
-    return shell && shell.archivedAt === null ? structuredClone(shell) : null;
+    const thread = this.threads.get(threadId);
+    return thread && thread.shell.archivedAt === null ? this.shellOf(thread) : null;
+  }
+
+  /** The thread's shell as T3 lists it, with what T3 derives from its runs when it is read: the usage-limit pause. */
+  private shellOf(thread: FakeThread): T3ThreadShell {
+    const shell = structuredClone(thread.shell);
+    shell.usageLimit = this.activeRun(thread) ? null : usageLimitOf(thread, thread.recovery ?? null);
+    return shell;
   }
 
   async getThreadDetail(threadId: string): Promise<T3ThreadDetail | null> {
@@ -407,7 +419,7 @@ export class FakeT3Adapter implements T3Adapter {
     if (!thread) return null;
     return structuredClone({
       snapshotSequence: this.commands.length,
-      shell: thread.shell,
+      shell: this.shellOf(thread),
       runs: thread.runs,
       messages: thread.messages,
       turnItems: thread.turnItems,
@@ -520,6 +532,7 @@ export class FakeT3Adapter implements T3Adapter {
         latestRunStartedAt: null,
         latestRunCompletedAt: null,
         lastError: null,
+        usageLimit: null,
         pendingRequest: null,
         pendingBackgroundTasks: [],
         hasActionableProposedPlan: false,
@@ -575,7 +588,7 @@ export class FakeT3Adapter implements T3Adapter {
    */
   private dispatchMessage(
     thread: FakeThread,
-    message: { id: string; text: string; attachments: T3MessageAttachment[]; createdBy: T3Message["createdBy"]; creationSource: string; senderThreadId?: string },
+    message: { id: string; text: string; attachments: T3MessageAttachment[]; createdBy: T3Message["createdBy"]; creationSource: string; senderThreadId?: string; /** A limited run's continuation: it starts though the limit holds the queue. */ continues?: boolean },
     mode: SendMessageInput["mode"],
   ): boolean {
     const at = this.stamp(thread);
@@ -624,8 +637,9 @@ export class FakeT3Adapter implements T3Adapter {
     };
     thread.runs.push(run);
     this.runPrompts.set(run.id, message.text);
-    record(run.id, active ? "queued_turn" : "turn_start");
-    if (!active) this.startRun(thread, run);
+    const held = !active && (usageLimitOf(thread, null) !== null || thread.runs.some((r) => r.status === "queued" && r.queueHeld)) && !message.continues;
+    record(run.id, active || held ? "queued_turn" : "turn_start");
+    if (!active && !held) this.startRun(thread, run);
     return false;
   }
 
@@ -638,7 +652,7 @@ export class FakeT3Adapter implements T3Adapter {
       // The provider never starts: T3 fails the run with the provider's error.
       run.status = "failed";
       run.completedAt = at;
-      thread.turnItems.push({ ...this.item(thread, run.id, at), type: "error", message: this.startFailure, failureClass: "provider_error", retrying: false });
+      thread.turnItems.push({ ...this.item(thread, run.id, at), type: "error", message: this.startFailure, failureClass: "provider_error", retrying: false, resetAt: null });
       Object.assign(thread.shell, { status: "failed", activeRunId: null, latestRunCompletedAt: at, lastError: this.startFailure });
       return;
     }
@@ -725,8 +739,14 @@ export class FakeT3Adapter implements T3Adapter {
       thread.turnItems.push({ ...this.item(thread, run.id, at), type: "assistant_message", messageId: id, text, streaming: false });
     };
     for (const note of completion.progress ?? []) say(note);
-    if (outcome === "error") thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), type: "error", message: completion.text, failureClass: "provider_error", retrying: false });
-    say(completion.text);
+    if (outcome === "error") thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), type: "error", message: completion.text, failureClass: "provider_error", retrying: false, resetAt: null });
+    if (outcome === "limit") {
+      // As T3 records a provider's usage limit: the provider's error with its reset, and T3's notice of the pause.
+      const resetAt = completion.resetAt ?? null;
+      thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), status: "failed", title: "Usage limit reached", type: "error", message: completion.text, failureClass: "usage_limit", retrying: false, resetAt });
+      const left = resetAt ? Math.max(1, Math.round((Date.parse(resetAt) - Date.now()) / 60_000)) : null;
+      thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), type: "system_notice", message: left === null ? "Claude usage limit reached." : `Claude usage limit reached. This turn is paused until the 5-hour limit resets in ${left >= 60 ? `${Math.floor(left / 60)}h ${left % 60}m` : `${left}m`}.` });
+    } else say(completion.text);
     // A message that landed as the run ended shows after the run's last assistant message.
     for (const id of this.lateSteered.get(run.id) ?? []) {
       const m = thread.messages.findIndex((x) => x.id === id);
@@ -737,22 +757,39 @@ export class FakeT3Adapter implements T3Adapter {
     const at = this.stamp(thread);
     const checkpointId = `checkpoint:${run.id}`;
     const files = completion.files ?? [];
-    thread.checkpoints.push({ id: checkpointId, runId: run.id, status: outcome === "error" ? "error" : "ready", files, capturedAt: at });
+    thread.checkpoints.push({ id: checkpointId, runId: run.id, status: run.status === "failed" ? "error" : "ready", files, capturedAt: at });
     thread.turnItems.push({ ...this.item(thread, run.id, at), type: "checkpoint", checkpointId, files });
-    run.status = outcome === "error" ? "failed" : outcome;
+    run.status = outcome === "error" || outcome === "limit" ? "failed" : outcome;
     run.completedAt = at;
     run.checkpointId = checkpointId;
     for (const turn of thread.providerTurns) if (turn.status === "running") Object.assign(turn, { status: run.status === "completed" ? "completed" : run.status === "failed" ? "failed" : "interrupted", completedAt: at });
     // A request the run ended with is no longer waiting.
     for (const request of thread.runtimeRequests) if (request.status === "pending" && request.runId === run.id && request.responseMode !== "message") Object.assign(request, { status: "cancelled", resolvedAt: at });
     for (const item of thread.turnItems) if (item.type === "secret_request" && item.secretStatus === "pending" && item.runId === run.id) Object.assign(item, { status: "cancelled", secretStatus: "cancelled", completedAt: at, updatedAt: at });
-    Object.assign(thread.shell, { status: run.status, activeRunId: null, latestRunCompletedAt: at, lastError: outcome === "error" ? completion.text : null, pendingRequest: this.shellRequest(thread) });
+    Object.assign(thread.shell, { status: run.status, activeRunId: null, latestRunCompletedAt: at, lastError: run.status === "failed" ? completion.text : null, pendingRequest: this.shellRequest(thread) });
     // A message that landed as the run ended: T3 moves it to a run of its own, or leaves it after the run's last work.
     const late = this.lateSteered.get(run.id) ?? [];
     this.lateSteered.delete(run.id);
     if (this.lateSteers === "move") for (const id of late) this.moveToOwnRun(thread, id);
+    this.startNextQueued(thread, outcome === "error" ? run : null);
+  }
+
+  /**
+   * The next queued message starts, as T3 decides it (startNextQueuedRun): not while the queue is held, nor while a usage
+   * limit on the thread's provider holds it (until the limited run continues); after a provider failure, T3 holds the
+   * queue instead.
+   */
+  private startNextQueued(thread: FakeThread, failed: T3Run | null): void {
+    if (this.activeRun(thread) || thread.runs.some((run) => run.status === "queued" && run.queueHeld)) return;
     const next = thread.runs.find((queued) => queued.status === "queued");
-    if (next) this.startRun(thread, next);
+    if (!next || usageLimitOf(thread, null)) return;
+    if (failed && failed.providerInstanceId === next.providerInstanceId) {
+      for (const run of thread.runs) if (run.status === "queued") run.queueHeld = true;
+      this.changed();
+      this.threadChanged(thread.shell.id);
+      return;
+    }
+    this.startRun(thread, next);
   }
 
   /** T3's follow-up for a message the provider turn ended before taking: the same message, in a run of its own (queued). */
@@ -912,6 +949,102 @@ export class FakeT3Adapter implements T3Adapter {
     Object.assign(item, { status: saved ? "completed" : "cancelled", secretStatus: saved ? "saved" : "declined", completedAt: at, updatedAt: at });
     this.secretAnswers.push({ threadId: input.threadId, turnItemId: input.turnItemId, answer: input.answer.type });
     thread.shell.pendingRequest = this.shellRequest(thread);
+  }
+
+  /** When the fake's T3 continues armed limited threads (sweepLimits), as its recovery worker does on its schedule. */
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** T3's clock, for what it decides by the time: a usage limit's reset. Tests set it. */
+  clock: () => number = Date.now;
+
+  /** T3's autoResumeLimitedThreads setting: off on this machine. On, T3 arms every limited thread by itself. */
+  autoResumeLimitedThreads = false;
+
+  /** Run T3's usage-limit recovery every `ms` (the service's fake: as T3's scheduler does); null stops it. */
+  sweepLimitsEvery(ms: number | null): void {
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
+    this.sweepTimer = ms === null ? null : setInterval(() => this.sweepLimits(), ms);
+    this.sweepTimer?.unref?.();
+  }
+
+  /**
+   * One pass of T3's UsageLimitRecoveryWorker (getLimitRecoveryCandidates, limitRecoveryCommand): a limited thread whose
+   * recovery for this run and reset is armed continues once the reset has passed, whatever autoResumeLimitedThreads
+   * says; that setting only arms the ones nobody armed.
+   */
+  sweepLimits(now = this.clock()): void {
+    for (const thread of this.threads.values()) {
+      const shell = this.shellOf(thread);
+      const limit = shell.usageLimit;
+      if (!limit?.resetAt || shell.archivedAt !== null || shell.settledAt !== null || shell.pendingRequest !== null) continue;
+      const run = thread.runs.find((r) => r.id === limit.runId)!;
+      const resetMs = Date.parse(limit.resetAt);
+      if (!Number.isFinite(resetMs) || resetMs <= Date.parse(run.completedAt ?? run.requestedAt)) continue;
+      try {
+        if (!limit.recovery) {
+          if (this.autoResumeLimitedThreads) this.applyControl(thread, limitArmId(shell.id, run.id, limit.resetAt), { type: "limit.arm", runId: run.id, resetAt: limit.resetAt });
+        } else if (limit.recovery.autoResume && resetMs <= now) {
+          // The command and message ID T3's worker gives its continuation (limitRecoveryCommand).
+          const id = `limit-resume:${limitIdentity(shell.id, run.id, limit.resetAt)}:${limit.recovery.requestId ?? "legacy"}`;
+          if (this.record("message.dispatch", id, shell.id, { usageLimitContinuationOfRunId: run.id, usageLimitRecoveryRequestId: limit.recovery.requestId, creationSource: "server" })) this.continueLimited(thread, id, { runId: run.id, resetAt: limit.resetAt, requestId: limit.recovery.requestId }, now);
+        }
+      } catch {
+        // T3 logs a dispatch its worker could not make, and tries again on its next pass.
+      }
+    }
+  }
+
+  /** The commands T3 took for controls, in order (`controlThread`, and the worker's own continuations). */
+  async controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void> {
+    const { control } = input;
+    const commandId = input.commandId;
+    const type = control.type === "limit.arm" ? "thread.metadata.update" : control.type === "queue.resume" ? "queue.resume" : "message.dispatch";
+    if (!this.record(type, commandId, input.threadId, input)) return;
+    this.applyControl(this.require(input.threadId), commandId, control);
+  }
+
+  /** A control as T3 applies it, with T3's own guards and words for what it refuses. */
+  private applyControl(thread: FakeThread, commandId: string, control: ThreadControl): void {
+    const limit = usageLimitOf(thread, thread.recovery ?? null);
+    const limitedRun = limit ? thread.runs.find((r) => r.id === limit.runId)! : null;
+    switch (control.type) {
+      case "limit.arm": {
+        const resetMs = Date.parse(control.resetAt);
+        if (!Number.isFinite(resetMs) || thread.shell.archivedAt !== null || thread.shell.settledAt !== null || limitedRun?.id !== control.runId || limit?.resetAt !== control.resetAt || resetMs <= Date.parse(limitedRun.completedAt ?? limitedRun.requestedAt) || openRequests({ runs: thread.runs, runtimeRequests: thread.runtimeRequests }).length > 0) {
+          throw new T3CommandRejected("The provider limit changed before recovery could be configured.", 500, null);
+        }
+        thread.recovery = { runId: control.runId, resetAt: control.resetAt, autoResume: true, snooze: false, requestId: commandId };
+        this.stamp(thread);
+        return;
+      }
+      case "run.continue": {
+        const source = thread.runs.find((r) => r.id === control.runId);
+        if (!source || (source.status !== "interrupted" && limitedRun?.id !== source.id) || latestExecutedRun(thread.runs)?.id !== source.id || thread.shell.archivedAt !== null || thread.runtimeRequests.some((r) => r.status === "pending")) {
+          throw new T3CommandRejected("This thread can no longer be resumed from that run.", 500, null);
+        }
+        this.dispatchMessage(thread, { id: commandId, text: CONTINUE_TEXT, attachments: [], createdBy: "user", creationSource: "web", continues: true }, { type: "start" });
+        return;
+      }
+      case "queue.resume": {
+        if (thread.shell.archivedAt !== null) throw new T3CommandRejected(`Thread ${thread.shell.id} is not active.`, 500, null);
+        if (limit) throw new T3CommandRejected("Continue the limited thread before resuming its queue.", 500, null);
+        for (const run of thread.runs) if (run.status === "queued") run.queueHeld = false;
+        this.stamp(thread);
+        this.startNextQueued(thread, null);
+        return;
+      }
+    }
+  }
+
+  /**
+   * T3's continuation at the reset (dispatchMessage with usageLimitContinuationOfRunId): it starts only while the run is
+   * still the limited one and its recovery, armed by `requestId`, is on and due; otherwise T3 drops it without a word.
+   */
+  private continueLimited(thread: FakeThread, messageId: string, control: { runId: string; resetAt: string; requestId: string | null }, now: number): void {
+    const limit = usageLimitOf(thread, thread.recovery ?? null);
+    const recovery = thread.recovery;
+    if (!limit || limit.runId !== control.runId || !recovery?.autoResume || recovery.requestId !== control.requestId || recovery.runId !== limit.runId || recovery.resetAt !== limit.resetAt || Date.parse(recovery.resetAt) > now || thread.shell.archivedAt !== null || thread.shell.settledAt !== null || thread.runtimeRequests.some((r) => r.status === "pending")) return;
+    this.dispatchMessage(thread, { id: messageId, text: CONTINUE_TEXT, attachments: [], createdBy: "user", creationSource: "server", continues: true }, { type: "start" });
   }
 
   async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {

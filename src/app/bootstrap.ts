@@ -14,6 +14,7 @@ import { PageChanges, type PageChangesOptions } from "./changes.ts";
 import { PotetoPack, type PotetoOptions } from "./poteto.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
+import { LimitRecovery } from "./limitRecovery.ts";
 import { T3Presence } from "./t3Presence.ts";
 import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
 
@@ -56,6 +57,8 @@ export interface AppStack {
   updates: T3Updates;
   /** Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while a page is open. */
   presence: T3Presence;
+  /** Threads stopped on a usage limit, armed in T3 to continue at the reset (src/app/limitRecovery.ts); started by the server. */
+  limitRecovery: LimitRecovery;
   /** The engine runtime: the host over the rooms' journal, data/board.sqlite. It dispatches to and imports from the members' threads. */
   engine: EngineHost;
   /** The seat lifecycle on the journal (seat, Consigliere, retire, reseat). */
@@ -112,6 +115,7 @@ export function createStack(input: {
   });
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;
   const presence = new T3Presence(input.adapter, input.log ? { log: input.log } : {});
+  const limitRecovery = new LimitRecovery(input.adapter, input.log ? { log: input.log } : {});
   // The rooms' journal, data/board.sqlite next to rooms.sqlite.
   const engineStore = new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"));
   // Each tick, per seat: approvals and questions mirrored, then the seat lifecycle's part (thread title and settings, reseats).
@@ -166,6 +170,7 @@ export function createStack(input: {
     browsers,
     updates: new T3Updates(input.adapter, input.latestRelease),
     presence,
+    limitRecovery,
     engine,
     seats,
     poteto,
@@ -175,6 +180,7 @@ export function createStack(input: {
       engine.close();
       engineStore.close();
       presence.stop();
+      limitRecovery.stop();
       browsers?.detach();
       db.close();
     },

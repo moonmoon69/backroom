@@ -603,7 +603,8 @@ function ThreadCard({ thread, drafted, onOpen }: { thread: OverviewThread; draft
         <span className="ov-room-title">{thread.title || "Thread"}</span>
         {activity.tone === "input" ? <span className="pill pill-input">needs you</span> : null}
         {/* Its turn finished (or failed) since you looked. */}
-        {thread.news ? <span className={`pill ${thread.news.state === "error" ? "pill-failed" : "pill-new"}`}>{thread.news.state === "error" ? "failed" : "new"}</span> : null}
+        {/* A turn its usage limit paused is not a failure: its tile says paused. */}
+        {thread.news && !(thread.news.state === "error" && activity.tone === "paused") ? <span className={`pill ${thread.news.state === "error" ? "pill-failed" : "pill-new"}`}>{thread.news.state === "error" ? "failed" : "new"}</span> : null}
         {drafted ? <DraftMark /> : null}
         <span className="spacer" />
         <span className="mono muted">1 member</span>

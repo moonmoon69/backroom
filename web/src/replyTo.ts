@@ -1,4 +1,5 @@
 import type { EngineClaim, EnginePost, EngineRequestView, EngineRunView } from "./types.ts";
+import { isPausedNotice } from "../../src/domain/usageLimit.ts";
 
 /**
  * What a member's reply did to the requests it named, said truthfully, for the tag over it. The engine decides each
@@ -9,7 +10,7 @@ import type { EngineClaim, EnginePost, EngineRequestView, EngineRunView } from "
  * - superseded: "#12 stays open: input it had not seen came in": its next turn answers it;
  * - pending activity: "#12 stays open: a review or background work is still running".
  * A reply that named no request ("yield": since H5 the Consigliere's replies after his first) is an "update": it
- * answers nothing and wakes nobody; a follow-up on a request is "update on #12"; a failed run's notice is "failed on #12".
+ * answers nothing and wakes nobody; a follow-up on a request is "update on #12"; a failed run's notice is "failed on #12" ("paused on #12" when a usage limit paused it).
  */
 export interface ReplyContext {
   /** The post that made a request, when the page holds it. */
@@ -108,8 +109,11 @@ export function replyPieces(post: EnginePost, context: ReplyContext): ReplyPiece
       return [{ text: "update" }];
     case "progress":
       return post.about.length > 0 ? [{ text: "update on " }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: "update" }];
-    case "error":
-      return post.about.length > 0 ? [{ text: "failed on " }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: "failed" }];
+    case "error": {
+      // A turn a usage limit paused is said as paused, not failed (the host's notice of it).
+      const word = isPausedNotice(post.body) ? "paused" : "failed";
+      return post.about.length > 0 ? [{ text: `${word} on ` }, ...join(post.about.map((r) => [ref(r.number)]))] : [{ text: word }];
+    }
   }
 }
 

@@ -1,10 +1,14 @@
 /** What a room member is doing, from its T3 thread: the Members panel's label, the motion of its card, what runs. */
-import { isRunActive, type Desk, type ParticipantStatus } from "./types.ts";
+import { isRunActive, type Desk, type ParticipantStatus, type QueueState, type UsageLimitPause } from "./types.ts";
+import { pauseLabel, resetTime } from "../../src/domain/usageLimit.ts";
 
 /** What a member is doing, in T3 Code's terms (its thread status pills), with what the room can add. */
 export interface MemberActivity {
   label: string;
-  /** Colour of the label, and of the card's border while it needs a look: working, approval, input, error, missing, idle, stopped, unknown. */
+  /**
+   * Colour of the label, and of the card's border while it needs a look: working, approval, input, error, missing, idle,
+   * stopped, paused (a usage limit: neither working nor needing you), unknown.
+   */
   tone: string;
   /** The card moves while work runs: "working" (a turn, subagents), "monitoring" (only watch loops: slower, fainter). */
   motion: "working" | "monitoring" | null;
@@ -43,11 +47,29 @@ export function betweenTurns(status: ParticipantStatus | undefined, desk?: Desk 
 }
 
 /**
- * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
- * secret, then a question), working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
- * then only monitors: monitoring), a plan ready to act on, then how its last run ended. `desk` adds what runs.
+ * The line under a paused member's label: the provider's own sentence, and whether T3 continues the turn at the reset.
+ * In the viewer's time zone.
  */
-export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null): MemberActivity {
+export function pauseDetail(pause: UsageLimitPause, now: number): string {
+  const time = resetTime(pause.resetAt, now);
+  const then = time === null ? "T3 has no reset time to continue it at" : pause.armed ? (Date.parse(pause.resetAt!) <= now ? "T3 continues it now that the limit reset" : `T3 continues it at ${time}`) : "T3 is not set to continue it";
+  return pause.message ? `${pause.message} · ${then}` : then;
+}
+
+/** What holds a queue, in a line: the paused turn ("limit"), or T3 ("held") with its reason when known. Null when nothing does. */
+export function queueLine(queue: QueueState | null | undefined): string | null {
+  if (!queue?.hold) return null;
+  const messages = `${queue.count} queued message${queue.count === 1 ? "" : "s"}`;
+  return queue.hold.by === "limit" ? `${messages}: ${queue.hold.reason}` : `${messages} held by T3${queue.hold.reason ? `, ${queue.hold.reason}` : ""}`;
+}
+
+/**
+ * The member's activity, most pressing first, as T3 Code ranks its thread pills: waiting on you (an approval, then a
+ * secret, then a question), paused on a usage limit, working (a room turn, a turn of its own that the room did not start, connecting), work left running after the turn (subagents,
+ * then only monitors: monitoring), a queue T3 holds, a plan ready to act on, then how its last run ended. `desk` adds
+ * what runs. `now` places a reset time before or after it.
+ */
+export function describeStatus(status: ParticipantStatus | undefined, desk?: Desk | null, now = Date.now()): MemberActivity {
   const idle = (label: string, tone: string): MemberActivity => ({ label, tone, motion: null, detail: null });
   // Not read yet (a member seated a moment ago, before T3's thread list was read for it): ready for work.
   if (!status) return idle("ready", "idle");
@@ -56,6 +78,8 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   if (status.pendingApprovals) return idle("needs approval", "approval");
   if (status.pendingSecret) return idle("asking for a secret", "input");
   if (status.pendingUserInput) return idle("waiting for your answer", "input");
+  // Paused on a usage limit: a room message sent meanwhile waits in T3's queue behind it, so this outranks working.
+  if (status.paused) return { label: pauseLabel(status.paused, now), tone: "paused", motion: null, detail: pauseDetail(status.paused, now) };
   const jobs = jobsDetail(desk);
   const working = (label: string): MemberActivity => ({ label, tone: "working", motion: "working", detail: jobs.detail });
   if (status.activeRunId) return working("working");
@@ -67,6 +91,7 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   const liveness = betweenTurns(status, desk);
   if (liveness === "working") return working(jobs.agents > 0 ? "subagents running" : "background work");
   if (liveness === "monitoring") return { label: "monitoring", tone: "working", motion: "monitoring", detail: jobs.detail };
+  if (desk?.queue?.hold?.by === "held") return { label: "queue held", tone: "stopped", motion: null, detail: queueLine(desk.queue) };
   if (desk?.interactionMode === "plan" && desk.proposedPlan && !desk.proposedPlan.implementedAt) return idle("plan ready", "input");
   // Between runs: how the last one ended. A run that completed, or a thread with none yet, is ready for the next.
   switch (status.status) {

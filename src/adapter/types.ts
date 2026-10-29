@@ -187,6 +187,8 @@ export interface T3ThreadShell {
   latestRunCompletedAt: string | null;
   /** The last failure T3 recorded for the thread (a provider error, a limit), until the next run. */
   lastError: string | null;
+  /** The thread's latest run stopped on its provider's usage limit, and nothing runs since (T3's lastErrorClass "usage_limit"). */
+  usageLimit: T3UsageLimit | null;
   /** The approval, question or secret T3 is waiting on, when there is one. */
   pendingRequest: { id: string; kind: T3RuntimeRequestKind; createdAt: string } | null;
   /** Provider work still running after the run settled: the agent wakes itself when it finishes. */
@@ -204,6 +206,24 @@ export interface T3ThreadShell {
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * A run its provider stopped on a usage limit (Claude's 5-hour or 7-day limit, Codex's), as T3 records it: the run, when
+ * the provider says the limit resets, the provider's own sentence, and T3's recovery for this run and reset when one is
+ * recorded. A recovery with autoResume makes T3 continue the run at the reset ("Continue where you left off."), whatever
+ * T3's autoResumeLimitedThreads setting (which only decides whether T3 arms one by itself); autoResume false is a
+ * recovery turned off (by a Stop, or by the user in T3), which Backroom leaves off.
+ */
+export interface T3UsageLimit {
+  runId: string;
+  /** The T3 instance of the provider whose limit it is (claudeAgent, codex…). */
+  provider: string;
+  /** ISO time; null when the provider named none (T3 then cannot recover it by itself). */
+  resetAt: string | null;
+  /** The provider's message ("Claude API rate limit reached. Try again later."). */
+  message: string | null;
+  recovery: { autoResume: boolean; snooze: boolean; requestId: string | null } | null;
 }
 
 /** One user message and everything the provider did for it. */
@@ -343,7 +363,8 @@ export type T3TurnItem =
   | (T3TurnItemBase & { type: "web_search"; patterns: string[] })
   | (T3TurnItemBase & { type: "dynamic_tool"; toolName: string | null; input: unknown; output: unknown })
   | (T3TurnItemBase & { type: "checkpoint"; checkpointId: string; files: T3CheckpointFile[] })
-  | (T3TurnItemBase & { type: "error"; message: string; failureClass: string | null; retrying: boolean })
+  /** resetAt: when a usage limit resets (failureClass "usage_limit"), as the provider reported it. */
+  | (T3TurnItemBase & { type: "error"; message: string; failureClass: string | null; retrying: boolean; resetAt: string | null })
   | (T3TurnItemBase & { type: "compaction"; summary: string | null; beforeTokenCount: number | null; afterTokenCount: number | null })
   | (T3TurnItemBase & { type: "subagent"; subagentId: string; origin: "provider_native" | "app_owned"; childThreadId: string | null; prompt: string; progress: string | null; result: string | null })
   | (T3TurnItemBase & { type: "system_notice" | "run_interrupt_request" | "run_interrupt_result"; message: string })
@@ -516,6 +537,26 @@ export interface CreateProjectInput {
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel";
 
+/** What T3 writes to continue a run its usage limit stopped, at the reset or when the user continues it. */
+export const CONTINUE_TEXT = "Continue where you left off.";
+
+/**
+ * A command on a thread's runs beyond messages and requests, each one T3 command:
+ * - limit.arm: have T3 continue a limited run at its reset (thread.metadata.update limitRecovery, autoResume on): T3's
+ *   own recovery worker then sends the continuation;
+ * - run.continue: continue a limited run now (message.dispatch manualContinuationOfRunId), as T3's own Continue does;
+ * - queue.resume: let a held queue start its next message.
+ */
+export type ThreadControl =
+  | { type: "limit.arm"; runId: string; resetAt: string }
+  | { type: "run.continue"; runId: string }
+  | { type: "queue.resume" };
+
+/** T3's identity of a limited run's reset (UsageLimitRecoveryWorker): thread, run and the reset in epoch milliseconds. */
+export const limitIdentity = (threadId: string, runId: string, resetAt: string): string => `${threadId}:${runId}:${Date.parse(resetAt)}`;
+/** The command ID T3's worker arms a recovery with: Backroom arms it the same way, so arming twice is one receipt. */
+export const limitArmId = (threadId: string, runId: string, resetAt: string): string => `limit-arm:${limitIdentity(threadId, runId, resetAt)}`;
+
 export type SecretAnswer = { type: "save"; secret: string } | { type: "decline" };
 
 /** Raised when T3 rejects a command (validation/state) rather than a transport failure. */
@@ -675,6 +716,8 @@ export interface T3Adapter {
   setThreadTitle(input: { commandId: string; threadId: string; title: string }): Promise<void>;
   /** Change a thread's model/options in T3 (thread.model-selection.set). */
   setThreadModel(input: { commandId: string; threadId: string; modelSelection: ModelSelection }): Promise<void>;
+  /** A command on the thread's runs (see ThreadControl). `commandId` makes a resend a replay, as for every command. */
+  controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void>;
   /** Interrupt a run (run.interrupt); null interrupts the thread's active run. */
   interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void>;
   respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: ApprovalDecision }): Promise<void>;
@@ -796,6 +839,37 @@ export function secretRequests(turnItems: readonly T3TurnItem[], runs: readonly 
 export function openRequests(detail: Pick<T3ThreadDetail, "runtimeRequests" | "runs">): T3RuntimeRequest[] {
   const active = new Set(detail.runs.filter((run) => isRunActive(run.status)).map((run) => run.id));
   return detail.runtimeRequests.filter((request) => request.status === "pending" && (request.responseMode !== "message" || (request.runId !== null && active.has(request.runId))));
+}
+
+/** The run T3 counts as the thread's latest: the last to end of those that started (unfinished ones last), as T3 orders them. */
+export function latestExecutedRun<R extends Pick<T3Run, "status" | "startedAt" | "completedAt" | "ordinal">>(runs: readonly R[]): R | null {
+  const end = (run: R) => (run.completedAt ? Date.parse(run.completedAt) : Number.POSITIVE_INFINITY);
+  let latest: R | null = null;
+  for (const run of runs) {
+    if (run.status === "queued" || (run.status === "cancelled" && run.startedAt === null)) continue;
+    if (latest === null || end(run) > end(latest) || (end(run) === end(latest) && run.ordinal > latest.ordinal)) latest = run;
+  }
+  return latest;
+}
+
+/**
+ * The thread's usage-limit pause, as T3 derives it (usageLimitBlockedRun): its latest executed run failed, and that
+ * run's last error is a usage limit. Messages queued behind it do not end it: T3 holds them until the run continues.
+ * `recovery` is the thread's limitRecovery as T3 keeps it; it counts only for this run and reset.
+ */
+export function usageLimitOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems">, recovery: unknown): T3UsageLimit | null {
+  const run = latestExecutedRun(detail.runs);
+  if (run?.status !== "failed") return null;
+  const failure = detail.turnItems.filter((item) => item.type === "error" && item.runId === run.id).pop();
+  if (failure?.type !== "error" || failure.failureClass !== "usage_limit") return null;
+  return { runId: run.id, provider: run.providerInstanceId, resetAt: failure.resetAt, message: failure.message, recovery: recoveryFor(recovery, run.id, failure.resetAt) };
+}
+
+/** T3's limitRecovery record when it is for this run and reset; null otherwise (T3 then treats it as never set). */
+export function recoveryFor(raw: unknown, runId: string, resetAt: string | null): T3UsageLimit["recovery"] {
+  const recovery = raw as { runId?: unknown; resetAt?: unknown; autoResume?: unknown; snooze?: unknown; requestId?: unknown } | null | undefined;
+  if (!recovery || resetAt === null || recovery.runId !== runId || recovery.resetAt !== resetAt) return null;
+  return { autoResume: recovery.autoResume === true, snooze: recovery.snooze === true, requestId: typeof recovery.requestId === "string" ? recovery.requestId : null };
 }
 
 /** What still runs on the thread after its run settled, as the members panel words it: work, or only monitors. */

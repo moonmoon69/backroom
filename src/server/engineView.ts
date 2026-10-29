@@ -9,7 +9,7 @@
  */
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadDetail, T3ThreadShell, T3UsageLimit } from "../adapter/types.ts";
 import { backgroundOf, isRunActive, runForMessage } from "../adapter/types.ts";
 import type { AppStack } from "../app/bootstrap.ts";
 import { isPost } from "../app/boardEngine.ts";
@@ -27,7 +27,8 @@ import type {
   EngineSeatView, EngineStreamData, EngineT3Ref, EngineTime,
 } from "../domain/engineView.ts";
 import { RoomError } from "../domain/errors.ts";
-import type { Participant, Room } from "../domain/types.ts";
+import type { Participant, Room, UsageLimitPause } from "../domain/types.ts";
+import { isPausedNotice } from "../domain/usageLimit.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_REPLY, backroomRequest, finalTargets } from "../runtime/index.ts";
@@ -426,9 +427,11 @@ export function journalView(input: ViewInput): JournalView {
         }) && d.recipients.some((r) => !r.startsWith("$"));
         const toUser = !backroom && (d.recipients.includes("$user") || d.recipients.length === 0);
         const isDismissed = event.seq <= marks.through || dismissed.has(event.id);
+        // A turn a usage limit paused waits on T3, which continues it at the reset, not on you: it keeps Retry.
+        const paused = d.intent === "error" && isPausedNotice(d.body);
         post.notice = {
           intent: d.intent, runId: run?.id ?? null, retryRunId: retryable ? run.id : null, retried: wasRetried, dismissed: isDismissed, backroom,
-          needsYou: toUser && !recovery && !isDismissed && !wasRetried && !settled,
+          needsYou: toUser && !paused && !recovery && !isDismissed && !wasRetried && !settled,
         };
         break;
       }
@@ -720,6 +723,9 @@ export function dismissNotices(repos: Repos, roomId: string, p: Projection, inpu
 
 // ---------------- member status, from the journal and T3 ----------------
 
+/** A thread's usage-limit pause as the room shows it. */
+export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, armed: limit.recovery?.autoResume === true });
+
 export function memberStatus(input: {
   participant: Participant;
   repos: Repos;
@@ -749,6 +755,7 @@ export function memberStatus(input: {
     pendingSecret: native.some((n) => n.kind === "secret"),
     activeRunId: seat?.activeRunId ?? null,
     background: shell ? backgroundOf(shell) : null,
+    paused: shell?.usageLimit && !missing ? pauseOf(shell.usageLimit) : null,
     seatId: seat?.seatId ?? null,
     working: (seat?.activities.length ?? 0) > 0,
     unread: seat?.unread ?? 0,
@@ -1086,7 +1093,7 @@ async function looseThreads(stack: AppStack, list: Map<string, T3ThreadShell> | 
       const news = finishedAt && (thread.status === "completed" || thread.status === "failed") && isAfter(finishedAt, seen.of(`thread:${thread.id}`))
         ? { at: finishedAt, state: thread.status === "failed" ? ("error" as const) : ("completed" as const) }
         : null;
-      return { id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: backgroundOf(thread), latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line, news };
+      return { id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: backgroundOf(thread), usageLimit: thread.usageLimit, latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line, news };
     }),
   );
 }

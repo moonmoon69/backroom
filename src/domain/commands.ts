@@ -369,6 +369,15 @@ export const SecretAnswerSchema = z.discriminatedUnion("type", [
 
 export const NativeSecretRespondCommand = z.object({ type: z.literal("native.secret.respond"), participantId: nonEmpty, requestId: nonEmpty, answer: SecretAnswerSchema }).strict();
 
+/**
+ * A control on a thread's runs from the page (src/app/threadControl.ts): continue the turn a usage limit paused, or let a
+ * held queue start its next message.
+ */
+export const PageControlSchema = z.discriminatedUnion("type", [z.object({ type: z.literal("resume") }).strict(), z.object({ type: z.literal("queue.resume") }).strict()]);
+
+/** A control on a member's thread; the room keeps no record of it, as for its approvals. */
+export const MemberControlCommand = z.object({ type: z.literal("member.control"), roomId: nonEmpty, participantId: nonEmpty, control: PageControlSchema }).strict();
+
 export const NativeUserInputRespondCommand = z
   .object({
     type: z.literal("native.userInput.respond"),
@@ -471,6 +480,8 @@ export const ThreadUserInputRespondCommand = z
 
 export const ThreadSecretRespondCommand = z.object({ type: z.literal("thread.secret.respond"), threadId: nonEmpty, requestId: nonEmpty, answer: SecretAnswerSchema }).strict();
 
+export const ThreadControlCommand = z.object({ type: z.literal("thread.control"), threadId: nonEmpty, control: PageControlSchema }).strict();
+
 /** Change a direct thread's model or options (the provider stays: a thread's session belongs to one harness). */
 export const ThreadModelSetCommand = z.object({ type: z.literal("thread.model.set"), threadId: nonEmpty, modelSelection: ModelSelectionSchema }).strict();
 
@@ -517,6 +528,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   NativeApprovalRespondCommand,
   NativeUserInputRespondCommand,
   NativeSecretRespondCommand,
+  MemberControlCommand,
   ProjectCreateCommand,
   AgentsFileEnabledCommand,
   AgentsFileTextSetCommand,
@@ -530,6 +542,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadSecretRespondCommand,
+  ThreadControlCommand,
   ThreadModelSetCommand,
   ThreadRuntimeModeSetCommand,
   ThreadLifecycleCommand,

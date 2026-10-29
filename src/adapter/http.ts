@@ -24,6 +24,7 @@ import type { ModelSelection } from "../domain/types.ts";
 import { ShellFeed, type FeedConnection, type ShellSnapshot } from "./shellFeed.ts";
 import { ThreadFeed, type ThreadSnapshot } from "./threadFeed.ts";
 import type {
+  ThreadControl,
   ApprovalDecision,
   ThreadLifecycleAction,
   UsageBucket,
@@ -68,7 +69,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, secretRequests } from "./types.ts";
+import { CONTINUE_TEXT, ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, recoveryFor, secretRequests, usageLimitOf } from "./types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
@@ -585,8 +586,8 @@ function toTurnItem(item: Record<string, unknown>): T3TurnItem {
     case "checkpoint":
       return { ...base, type: "checkpoint", checkpointId: item.checkpointId as string, files: toCheckpointFiles(item.files) };
     case "error": {
-      const failure = (item.failure ?? {}) as { message?: unknown; class?: unknown };
-      return { ...base, type: "error", message: text(failure.message) ?? "provider error", failureClass: text(failure.class), retrying: item.retry !== undefined && item.retry !== null };
+      const failure = (item.failure ?? {}) as { message?: unknown; class?: unknown; resetAt?: unknown };
+      return { ...base, type: "error", message: text(failure.message) ?? "provider error", failureClass: text(failure.class), retrying: item.retry !== undefined && item.retry !== null, resetAt: text(failure.resetAt) };
     }
     case "compaction":
       return { ...base, type: "compaction", summary: text(item.summary), beforeTokenCount: num(item.beforeTokenCount), afterTokenCount: num(item.afterTokenCount) };
@@ -1322,6 +1323,12 @@ export class HttpT3Adapter implements T3Adapter {
       latestRunStartedAt: text(thread.latestRunStartedAt),
       latestRunCompletedAt: text(thread.latestRunCompletedAt),
       lastError: text(thread.lastError),
+      // T3 keeps the limited run's outcome as the thread's while messages queued behind it wait, and names no run in the
+      // shell: the latest run is the limited one, unless one has started since.
+      usageLimit:
+        thread.lastErrorClass === "usage_limit" && text(thread.latestRunId) && !text(thread.activeRunId)
+          ? { runId: thread.latestRunId as string, provider: text(thread.providerInstanceId) ?? modelSelection.instanceId, resetAt: text(thread.usageLimitResetAt), message: text(thread.lastError), recovery: recoveryFor(thread.limitRecovery, thread.latestRunId as string, text(thread.usageLimitResetAt)) }
+          : null,
       // Tool calls and credential refreshes the provider routes through T3 are not the user's to answer. And a
       // request only waits while a run is in progress: T3 keeps listing a question the agent went on without
       // (Codex asks in "message" mode) after its run has ended, when nothing waits on it any more.
@@ -1415,6 +1422,7 @@ export class HttpT3Adapter implements T3Adapter {
       latestRunStartedAt: latest?.startedAt ?? null,
       latestRunCompletedAt: latest?.completedAt ?? null,
       lastError: failure?.type === "error" ? failure.message : latest?.status === "failed" ? (listed?.lastError ?? null) : null,
+      usageLimit: usageLimitOf({ runs, turnItems }, thread.limitRecovery),
       pendingRequest: pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
       // T3's shell lists its pull-request watches with the harness's tasks; the provider thread lists only the latter.
       pendingBackgroundTasks: active ? [] : withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? [], pullRequestWatchesListed(runs) ? thread.pullRequests : []),
@@ -1710,6 +1718,21 @@ export class HttpT3Adapter implements T3Adapter {
             ? { type: "queue_after_active" }
             : { type: "start_immediately" },
     });
+  }
+
+  async controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void> {
+    const { commandId, threadId, control } = input;
+    switch (control.type) {
+      case "limit.arm":
+        await this.dispatch({ type: "thread.metadata.update", commandId, threadId, limitRecovery: { runId: control.runId, resetAt: control.resetAt, autoResume: true, snooze: false } });
+        return;
+      case "run.continue":
+        await this.dispatch({ type: "message.dispatch", commandId, messageId: commandId, threadId, manualContinuationOfRunId: control.runId, text: CONTINUE_TEXT, attachments: [], dispatchMode: { type: "start_immediately" }, createdBy: "user", creationSource: CREATION_SOURCE });
+        return;
+      case "queue.resume":
+        await this.dispatch({ type: "queue.resume", commandId, threadId });
+        return;
+    }
   }
 
   async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {

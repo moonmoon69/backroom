@@ -13,6 +13,7 @@ import { RoomError, notFound } from "../domain/errors.ts";
 import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { SecretRequestStale, answerSecret } from "./secretAnswer.ts";
+import { controlThread, type ControlOutcome } from "./threadControl.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
@@ -70,6 +71,8 @@ export type CommandResult =
   | { type: "run.retried"; runId: string; eventId: string }
   | { type: "run.stopped"; participantId: string }
   | { type: "native.responded"; requestId: string }
+  /** A control went to T3 ("sent"), or found the turn already continued ("already"). */
+  | { type: "member.controlled"; participantId: string; outcome: ControlOutcome }
   | { type: "browser.created"; browserId: string }
   | { type: "browser.updated"; browserId: string }
   | { type: "browser.deleted"; browserId: string }
@@ -360,6 +363,15 @@ export class RoomService {
         return this.respondUserInput(command);
       case "native.secret.respond":
         return this.respondSecret(command);
+      case "member.control": {
+        const participant = this.requireParticipant(command.participantId);
+        if (participant.roomId !== command.roomId) throw notFound("participant", command.participantId);
+        const binding = this.repos.currentBinding(participant.id);
+        if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
+        const outcome = await controlThread(this.adapter, binding.threadId, command.control);
+        this.notify(participant.roomId);
+        return { type: "member.controlled", participantId: participant.id, outcome };
+      }
     }
   }
 

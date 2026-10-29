@@ -270,4 +270,19 @@ export interface ParticipantStatus {
    * wakes itself when they finish), "monitoring" when only monitors remain, null when nothing runs in the background.
    */
   background: "working" | "monitoring" | null;
+  /** Its latest turn stopped on its provider's usage limit, and nothing runs since: until when, and whether T3 continues it then. */
+  paused: UsageLimitPause | null;
+}
+
+/** A turn its provider's usage limit stopped (T3's usage-limit pause), as the room shows it. */
+export interface UsageLimitPause {
+  runId: string;
+  /** The provider's T3 instance (claudeAgent, codex…). */
+  provider: string;
+  /** ISO time; null when the provider named none. */
+  resetAt: string | null;
+  /** The provider's own sentence. */
+  message: string | null;
+  /** T3 continues the turn at the reset: its recovery is armed. False when turned off (a Stop), or not armed yet. */
+  armed: boolean;
 }

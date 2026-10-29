@@ -16,6 +16,7 @@ import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES } from "../domain/types.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { answerSecret } from "./secretAnswer.ts";
+import { controlThread, type ControlOutcome } from "./threadControl.ts";
 
 export type DirectCommand = Extract<
   RoomCommand,
@@ -28,13 +29,19 @@ export type DirectCommand = Extract<
       | "thread.approval.respond"
       | "thread.userInput.respond"
       | "thread.secret.respond"
+      | "thread.control"
       | "thread.model.set"
       | "thread.runtimeMode.set"
       | "thread.lifecycle";
   }
 >;
 
-export type DirectResult = { type: "project.created"; projectId: string } | { type: "thread.started"; threadId: string } | { type: "thread.updated"; threadId: string };
+export type DirectResult =
+  | { type: "project.created"; projectId: string }
+  | { type: "thread.started"; threadId: string }
+  | { type: "thread.updated"; threadId: string }
+  /** A control went to T3 ("sent"), or found the turn already continued ("already"). */
+  | { type: "thread.controlled"; threadId: string; outcome: ControlOutcome };
 
 // A thread's browsers are the service's, like a room's: they live here, not in T3.
 export const isDirectCommand = (command: RoomCommand): command is DirectCommand =>
@@ -143,6 +150,11 @@ export class DirectThreads {
         const shell = await this.requireLooseThread(command.threadId);
         await answerSecret(this.adapter, shell.id, command.requestId, command.answer);
         return { type: "thread.updated", threadId: shell.id };
+      }
+      case "thread.control": {
+        const shell = await this.requireLooseThread(command.threadId);
+        const outcome = await controlThread(this.adapter, shell.id, command.control);
+        return { type: "thread.controlled", threadId: shell.id, outcome };
       }
       case "thread.model.set": {
         const shell = await this.requireLooseThread(command.threadId);

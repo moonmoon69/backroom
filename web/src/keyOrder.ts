@@ -733,10 +733,10 @@ export const runCanStop = (phase: string): boolean => phase !== "prepared" && ph
 /**
  * Whether a status chip is a stop of the room's status lane: its choices offer something to press (as a running turn's
  * bubble is a stop only then, K1-5), so Enter on it never does nothing. An approval or a question always; a notice that
- * needs you always (Dismiss at least); a running turn its Stop, in the phases its choices show it, or a post it is about
+ * needs you always (Dismiss at least); a member's paused turn or held queue always (Resume); a running turn its Stop, in the phases its choices show it, or a post it is about
  * ("show #n").
  */
-export function chipOffers(chip: { kind: "ask" | "notice" } | { kind: "run"; phase: string; member: boolean; posts: number }): boolean {
+export function chipOffers(chip: { kind: "ask" | "notice" | "member" } | { kind: "run"; phase: string; member: boolean; posts: number }): boolean {
   return chip.kind !== "run" || (chip.member && runCanStop(chip.phase)) || chip.posts > 0;
 }
 

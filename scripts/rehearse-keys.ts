@@ -99,7 +99,7 @@ export interface KeysRoom {
   post(snapshot: any, requestId: string): any;
   message(text: string): Promise<string>;
   live(alias: Alias, phases?: string[]): Promise<any>;
-  finish(alias: Alias, text: string, extra?: { outcome?: "completed" | "error" | "interrupted"; progress?: string[]; files?: unknown[] }): Promise<void>;
+  finish(alias: Alias, text: string, extra?: { outcome?: "completed" | "error" | "interrupted" | "limit"; progress?: string[]; files?: unknown[]; resetInMs?: number }): Promise<void>;
   settle(alias: Alias): Promise<void>;
   second(title: string, aliases: string[]): Promise<{ roomId: string; participant: Record<string, string>; snapshot: () => Promise<any> }>;
   /** Appends engine commands to the room's journal through a second connection, as another process would. */
@@ -3289,6 +3289,60 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await onNewest("Dismiss");
     chipRun = undefined;
     await state("a failed turn's chip: Retry by keys sends it again, Dismiss by keys takes the next off your list", landed);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+  }
+
+  if (
+    await section("a paused member's chip: Resume now by keys asks first, Keep waiting folds it with nothing sent, Resume anyway continues it", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // Claude's limit stops @fable's turn: his chip under Waiting opens to Resume now. Before the reset it asks first; Keep
+    // waiting leaves him paused, Resume anyway continues the turn in T3.
+    const turn = await chipTurn();
+    await room.finish("fable", "Claude API rate limit reached. Try again later.", { outcome: "limit", resetInMs: 2 * 3_600_000 });
+    chipRun = undefined;
+    const pausedChip = `chip:paused:${room.participant.fable}`;
+    await until("the API to show @fable paused", async () => ((await room.snapshot()).participantStatus[room.participant.fable]?.paused ? true : null));
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    press("Enter");
+    await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+    await abovePosts("@fable's paused chip", (f) => f.key === pausedChip);
+    const needs = (await room.snapshot()).needsYou.length;
+    if (needs !== 0) fail(`a paused turn's notice needs you: ${needs} post(s) under Needs you`);
+    log("api: nothing needs you while @fable is paused");
+    press("Enter");
+    await expect("Enter: the paused turn's choices, the ring on Resume now", (f) => f.chipOpen && f.label === "Resume now" && f.ring);
+    press("Enter");
+    await expect("Enter: it asks first, the ring on Resume anyway", (f) => f.chipOpen && f.label === "Resume anyway");
+    names("@fable's paused turn, asking", ["Resume anyway", "Keep waiting"]);
+    press("ArrowRight");
+    await expect("Right: Keep waiting", (f) => f.label === "Keep waiting");
+    press("Enter");
+    await expect("Enter: Keep waiting folds the choices, the ring back on the chip", (f) => f.key === pausedChip && f.ring && !f.chipOpen && f.strips === 0);
+    if (!(await room.snapshot()).participantStatus[room.participant.fable]?.paused) fail("Keep waiting continued the turn");
+    log("api: @fable still paused: Keep waiting sent nothing");
+    press("Enter");
+    await expect("Enter: the choices again, the ring on Resume now", (f) => f.chipOpen && f.label === "Resume now");
+    press("Enter");
+    await expect("Enter: it asks again", (f) => f.label === "Resume anyway");
+    press("Enter");
+    await until("T3 to continue @fable's turn", async () => ((await room.snapshot()).participantStatus[room.participant.fable]?.paused ? null : true));
+    log(`api: @fable no longer paused; T3 runs the continuation of #${turn.number}'s turn`);
+    const resumed = await expect("the chip gone: the ring on the newest post, a turn's chip or the composer's strip", (f) => (f.key?.startsWith("post:") === true || f.key?.startsWith("chip:") === true || f.key === "strip") && f.ring && inRoom(f) && f.strips === 0 && !f.chipOpen);
+    await state("a paused member's chip: Resume now by keys asks first, Keep waiting folds it with nothing sent, Resume anyway continues it", resumed.key === "strip" ? /^(Continue your draft|Write a message)/ : resumed.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(resumed.key));
+    await room.finish("fable", "Continued: the release is built.");
+    await room.settle("fable");
     press("Backspace");
     await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
   }

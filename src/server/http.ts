@@ -35,6 +35,7 @@ import {
   type BackgroundTask,
   type LiveFeedItem,
   type SubagentRow,
+  queueOf,
 } from "../app/threadView.ts";
 import { CommandValidationError, parseCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
@@ -354,6 +355,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       items: threadTranscript(detail),
       requests: requestCards(detail),
       running: running ? { runId: running.id, feed: liveFeed(detail, running.id) } : null,
+      queue: queueOf(detail),
       contextWindow: contextReading(detail),
       usage: await threadUsage(detail),
       browsers: threadBrowsersView(threadId),
@@ -474,6 +476,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       activeRunId: null,
       latestRun: null,
       lastError: null,
+      usageLimit: null,
+      queue: null,
       modelSelection: participant.modelSelection,
       runtimeMode: participant.runtimeMode,
       interactionMode: participant.interactionMode,
@@ -549,6 +553,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       activeRunId: shell.activeRunId,
       latestRun: latest ? { runId: latest.id, status: latest.status, completedAt: latest.completedAt } : null,
       lastError: shell.lastError,
+      usageLimit: shell.usageLimit,
+      queue: queueOf(detail),
       modelSelection: shell.modelSelection,
       runtimeMode: shell.runtimeMode,
       interactionMode: shell.interactionMode,

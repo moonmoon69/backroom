@@ -1,6 +1,6 @@
 /** What the host reads from a member's T3 thread: whose run it is, its final message, and whether the thread is free. */
 import type { T3Message, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { isPullRequestWatch, isRunActive, runReplies } from "../adapter/types.ts";
+import { CONTINUE_TEXT, isPullRequestWatch, isRunActive, runReplies } from "../adapter/types.ts";
 
 /**
  * Who started a T3 run on a seat's thread:
@@ -41,6 +41,30 @@ export function runError(detail: T3ThreadDetail, run: T3Run): string {
   const last = detail.turnItems.filter((item) => item.runId === run.id && item.type === "error").pop();
   if (last?.type === "error") return last.message;
   return run.status === "interrupted" || run.status === "cancelled" ? "the run was stopped in T3" : (detail.shell.lastError ?? "T3 reported an error");
+}
+
+/** The usage limit a run stopped on: its provider, when the limit resets, and the provider's words. */
+export interface RunLimit {
+  provider: string;
+  resetAt: string | null;
+  message: string | null;
+}
+
+/** The usage limit that failed the run (its last error is of T3's class "usage_limit"), or null. */
+export function runLimit(detail: Pick<T3ThreadDetail, "turnItems">, run: T3Run): RunLimit | null {
+  if (run.status !== "failed") return null;
+  const last = detail.turnItems.filter((item) => item.runId === run.id && item.type === "error").pop();
+  return last?.type === "error" && last.failureClass === "usage_limit" ? { provider: run.providerInstanceId, resetAt: last.resetAt, message: last.message } : null;
+}
+
+/**
+ * The run a continuation continues: T3's "Continue where you left off." after a turn its usage limit paused (at the
+ * reset, or from Resume) continues the latest run before it that the limit stopped. Null for any other run.
+ */
+export function continuedRun(detail: Pick<T3ThreadDetail, "messages" | "runs" | "turnItems">, run: T3Run): T3Run | null {
+  if (detail.messages.find((m) => m.id === run.userMessageId)?.text !== CONTINUE_TEXT) return null;
+  const before = detail.runs.filter((r) => r.ordinal < run.ordinal && r.status !== "queued").sort((a, b) => b.ordinal - a.ordinal)[0];
+  return before && runLimit(detail, before) ? before : null;
 }
 
 /** The thread can take a new run: no active run and no approval or question waiting (R3). */
