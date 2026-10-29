@@ -885,7 +885,7 @@ The arrows keep their own meaning wherever they already have one: in text fields
 | a status chip | `↑` `↓` | The lane above or below |
 |  | `←` `→` | Between the chips (those with choices; it stops at the ends) |
 |  | `Home` `End` | First or last post |
-|  | `Enter` | Its choices (in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a failed turn's Retry, a running turn's Stop, then the posts it is about) |
+|  | `Enter` | Its choices (in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a secret's field, a failed turn's Retry, a running turn's Stop, then the posts it is about) |
 | a post, or a turn running (its live bubble) | `↑` `↓` | Previous or next post (past the first, the earlier posts load, then the status chips, the room state and the header; past the newest, the turns running now, then the composer's strip) |
 |  | `Home` `End` | First or last post |
 |  | `Enter` | Its actions (in a row under it, the ring on the first: every button the post has, then Detail, its detail) |
@@ -896,8 +896,8 @@ The arrows keep their own meaning wherever they already have one: in text fields
 |  | `Home` `End` | First or last post |
 | a status chip's choices | `↑` `↓` | Chip or posts (↑ back to the chip, ↓ on to the posts; the choices fold) |
 |  | `←` `→` | Choose (between its buttons; it stops at the ends) |
-|  | `Enter` | Press it (the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back; a held Enter presses nothing) |
-|  | `Esc` `Backspace` | Leave it waiting (the choices fold, the ring back on the chip; the approval or question still waits for you; on an approval's or a question's choices) |
+|  | `Enter` | Press it (the bar names the button the ring is on; Custom answer and a secret's field go into the field, Esc there comes back; Enter in a secret's field saves it; a held Enter presses nothing) |
+|  | `Esc` `Backspace` | Leave it waiting (the choices fold, the ring back on the chip; the approval, question or secret still waits for you; on an approval's, a question's or a secret's choices) |
 |  | `Esc` `Backspace` | Fold the choices (the ring back on the chip) |
 |  | `Home` `End` | First or last post |
 | the composer's strip | `↑` | The posts (the post you were on, else the newest) |

@@ -1,4 +1,4 @@
-import { useCallback, useId, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRoom } from "../context.tsx";
 import type { ApprovalDecision, NativeRequest, SecretAnswer, SecretAsk } from "../types.ts";
 import { identityStyle } from "./Monogram.tsx";
@@ -345,13 +345,17 @@ export function SecretRequestCard({
 }) {
   const [busy, setBusy] = useShared(`busy:${participantId ?? ""}:${requestId}`, false);
   const [secret, setSecret] = useState("");
+  // Each copy of the request drawn (the status chip's, the turn's bubble) keeps what is typed in it to itself; an answer
+  // sent from any of them empties all of them, told by a count of the attempts, never by sharing the text.
+  const [sent, markSent] = useShared(`sent:${participantId ?? ""}:${requestId}`, 0);
+  useEffect(() => setSecret(""), [sent]);
   const field = useId();
   const reason = useId();
   const ask = asSecret(asRecord(raw).secret);
   const answer = async (value: SecretAnswer) => {
     if (busy) return;
     setBusy(() => true);
-    setSecret("");
+    markSent((count) => count + 1);
     try {
       await onAnswer(value);
     } finally {

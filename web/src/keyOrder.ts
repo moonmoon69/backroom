@@ -15,7 +15,7 @@ const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
   correcting: ["while a correction is open", "while no correction is open"],
   "composer-open": ["while the composer is open", "while the composer is closed"],
   "chip-open": ["while a status chip's choices are open", "while no chip's choices are open"],
-  asking: ["on an approval's or a question's choices", "on a failed or running turn's choices"],
+  asking: ["on an approval's, a question's or a secret's choices", "on a failed or running turn's choices"],
   "panel-open": ["while the side panel is open", "while the side panel is folded"],
   help: ["while this list is open", "while this list is closed"],
   disabled: ["on a button that cannot be pressed now", "on a button that can be pressed"],
@@ -209,7 +209,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["↑", "↓"], does: "the lane above or below" },
           { keys: ["←", "→"], does: "between the chips", more: "those with choices; it stops at the ends" },
           { keys: ["Home", "End"], does: "first or last post" },
-          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a failed turn's Retry, a running turn's Stop, then the posts it is about" },
+          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a secret's field, a failed turn's Retry, a running turn's Stop, then the posts it is about" },
         ],
       },
       {
@@ -241,8 +241,8 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
         entries: [
           { keys: ["↑", "↓"], does: "chip or posts", more: "↑ back to the chip, ↓ on to the posts; the choices fold" },
           { keys: ["←", "→"], does: "choose", more: "between its buttons; it stops at the ends" },
-          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer goes into its field, Esc there comes back; a held Enter presses nothing" },
-          { keys: ["Esc", "Backspace"], does: "leave it waiting", when: "asking", more: "the choices fold, the ring back on the chip; the approval or question still waits for you" },
+          { keys: ["Enter"], does: "press it", named: true, more: "the bar names the button the ring is on; Custom answer and a secret's field go into the field, Esc there comes back; Enter in a secret's field saves it; a held Enter presses nothing" },
+          { keys: ["Esc", "Backspace"], does: "leave it waiting", when: "asking", more: "the choices fold, the ring back on the chip; the approval, question or secret still waits for you" },
           { keys: ["Esc", "Backspace"], does: "fold the choices", more: "the ring back on the chip" },
           { keys: ["Home", "End"], does: "first or last post" },
         ],
