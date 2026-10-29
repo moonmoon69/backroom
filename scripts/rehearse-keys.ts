@@ -3410,6 +3410,52 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
+    await section("a status chip's choices: an MCP server's form request offers its own choices by keys, and Approve answers it", {
+      replay: async () => {
+        await secondApproval();
+        await listsRead();
+      },
+      place: async () => {
+        await goTo(`room:${R}`);
+        press("Enter");
+        await expect("Enter: the room", (f) => inRoom(f) && f.key !== null, 10_000);
+      },
+    })
+  ) {
+    // T3 offers an MCP server's form request with its own choices (describeMcpElicitation): the strip offers those, in
+    // their order and words, and nothing else of an approval's; Approve answers it with accept.
+    const turn = await chipTurn();
+    const asked = await fableAsks("approval", {
+      kind: "mcp-elicitation",
+      prompt: "Allow Linear to create an issue?",
+      appName: "Linear",
+      options: [
+        { decision: "cancel", label: "Cancel" },
+        { decision: "decline", label: "Decline" },
+        { decision: "accept", label: "Approve" },
+      ],
+    });
+    await toAskChip("approval");
+    press("Enter");
+    await expect("Enter: the form request's choices, the ring on Cancel", (f) => f.chipOpen && f.label === "Cancel");
+    names("@fable's form request", ["Cancel", "Decline", "Approve", `show #${turn.number}`]);
+    press("ArrowRight");
+    press("ArrowRight");
+    await expect("Right ×2: Approve", (f) => f.label === "Approve");
+    press("Enter");
+    const got = await answered(asked, "the form request approved");
+    if (got.status !== "resolved" || got.decision !== "accept") fail(`T3's fake got ${JSON.stringify(got)}, expected accept`);
+    log(`api: T3's fake recorded ${asked.slice(0, 8)} resolved with accept`);
+    await onNewest("Approve");
+    await state("a status chip's choices: an MCP server's form request offers its own choices by keys, and Approve answers it", landed);
+    press("Backspace");
+    await expect("Backspace: back on the room's card", (f) => f.drawers.length === 0 && f.key === `room:${R}`);
+    await room.finish("fable", "Filed it in Linear.");
+    chipRun = undefined;
+    await room.settle("fable");
+  }
+
+  if (
     await section("pixel look: from the foot, Up brings the first row and its + into sight below the header", {
       replay: async () => {
         await secondApproval();

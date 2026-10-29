@@ -8339,3 +8339,17 @@ span.reply-to {
 .room-centre > .thread-controls {
   padding: 6px 16px 0;
 }
+
+/* An approval's app (an MCP server's form request) and the cautions its choices carry. */
+.native-app {
+  margin: 4px 0 0;
+  font-size: var(--text-xs);
+  color: var(--fg-dim);
+}
+
+.native-warnings {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: var(--text-xs);
+  color: var(--warn);
+}

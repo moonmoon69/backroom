@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState, useSyncExternalStore, type Rea
 import { useRoom } from "../context.tsx";
 import type { ApprovalDecision, NativeRequest, SecretAnswer, SecretAsk } from "../types.ts";
 import { identityStyle } from "./Monogram.tsx";
+import { approvalChoices } from "../requestWords.ts";
 
 interface Question {
   id: string;
@@ -11,14 +12,6 @@ interface Question {
   allowCustomAnswer?: boolean;
   multiSelect?: boolean;
 }
-
-const DECISIONS: Array<{ decision: ApprovalDecision; label: string; tone?: string }> = [
-  { decision: "accept", label: "Accept", tone: "primary" },
-  { decision: "acceptForSession", label: "Accept for session" },
-  { decision: "acceptAlways", label: "Always accept" },
-  { decision: "decline", label: "Decline", tone: "danger" },
-  { decision: "cancel", label: "Cancel turn", tone: "danger" },
-];
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -147,6 +140,8 @@ export function ApprovalRequestCard({
   const payload = asRecord(raw);
   const requestType = asString(payload.requestType) ?? asString(payload.type) ?? "approval";
   const detail = asString(payload.detail) ?? asString(payload.summary) ?? asString(payload.command) ?? null;
+  const appName = asString(payload.appName);
+  const choices = approvalChoices(payload.options);
   const respond = async (decision: ApprovalDecision) => {
     setBusy(() => true);
     try {
@@ -159,16 +154,26 @@ export function ApprovalRequestCard({
     <article className="native-card" data-participant={participantId} data-request={requestId}>
       <header>
         {speaker}
-        <span className="stamp stamp-needs_input">approval · {requestType}</span>
+        <span className="stamp stamp-needs_input">{requestType === "mcp-elicitation" ? "form request" : `approval · ${requestType}`}</span>
       </header>
+      {appName ? <p className="native-app mono">{appName} asks</p> : null}
       {detail ? <pre className="native-detail">{detail}</pre> : <pre className="native-detail">{JSON.stringify(payload, null, 2)}</pre>}
       <div className="task-actions">
-        {DECISIONS.map((d) => (
-          <button key={d.decision} type="button" className={`small ${d.tone ?? ""}`} disabled={busy} onClick={() => respond(d.decision)}>
+        {choices.map((d) => (
+          <button key={d.decision} type="button" className={`small ${d.tone ?? ""}`} disabled={busy} title={d.warning} onClick={() => respond(d.decision)}>
             {d.label}
           </button>
         ))}
       </div>
+      {choices.some((d) => d.warning) ? (
+        <ul className="native-warnings">
+          {choices.filter((d) => d.warning).map((d) => (
+            <li key={d.decision}>
+              {d.label}: {d.warning}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </article>
   );
 }

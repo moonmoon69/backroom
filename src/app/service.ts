@@ -14,6 +14,7 @@ import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { SecretRequestStale, answerSecret } from "./secretAnswer.ts";
 import { controlThread, type ControlOutcome } from "./threadControl.ts";
+import { requireOffered } from "./approvalChoice.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
@@ -1090,6 +1091,7 @@ export class RoomService {
     if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
     const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
     if (!request || request.kind !== "approval") throw notFound("approval request", command.requestId);
+    requireOffered((request.payload as { options?: unknown } | null)?.options, command.decision);
     const commandId = randomUUID();
     try {
       await this.adapter.respondApproval({ commandId, threadId: binding.threadId, requestId: command.requestId, decision: command.decision });

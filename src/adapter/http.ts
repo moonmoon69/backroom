@@ -1387,6 +1387,7 @@ export class HttpT3Adapter implements T3Adapter {
           resolvedAt: text(request.resolvedAt),
           prompt: item?.type === "approval_request" ? item.prompt : null,
           options: item?.type === "approval_request" ? item.options : null,
+          appName: item?.type === "approval_request" ? item.appName : null,
           questions: item?.type === "user_input_request" ? item.questions : [],
           secret: null,
           decision: (text(request.decision) as ApprovalDecision | null) ?? null,

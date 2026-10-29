@@ -317,6 +317,8 @@ export interface T3RuntimeRequest {
   /** An approval's prompt (the command, the file) and the choices the provider offers, when it names them. */
   prompt: string | null;
   options: T3ApprovalOption[] | null;
+  /** The app an approval is for, when T3 names it: an MCP server's form request (mcp-elicitation) names its app. */
+  appName: string | null;
   /** A question's questions. */
   questions: T3UserInputQuestion[];
   /** A secret's ask; null for the others. */
@@ -830,6 +832,7 @@ export function secretRequests(turnItems: readonly T3TurnItem[], runs: readonly 
           resolvedAt: null,
           prompt: item.label,
           options: null,
+          appName: null,
           questions: [],
           secret: { label: item.label, reason: item.reason, placeholder: item.placeholder, delivery: item.delivery },
           decision: null,

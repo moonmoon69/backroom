@@ -2142,6 +2142,46 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     browser.openRoom(room.title);
   }
 
+  // 23e. The user's #160, C: an MCP server's form request offers its own choices, and answers with the one chosen.
+  if (await section("an MCP server's form request: its app and its own choices, no permanent approval it did not offer, answered here")) {
+    for (const alias of MEMBERS) await room.settle(alias);
+    browser.click(/tab "Board/);
+    await room.message("Have @reviewer file the flaky test in Linear.");
+    await room.live("fable");
+    room.board("fable", "post", `@${room.name.reviewer} file the flaky test in Linear`);
+    await posted(seat.reviewer, "his Linear request");
+    await room.finish("fable", "I asked @reviewer to file it.");
+    await room.live("reviewer");
+    const options = [
+      { decision: "cancel", label: "Cancel" },
+      { decision: "decline", label: "Decline" },
+      { decision: "acceptForSession", label: "Always allow this session" },
+      { decision: "accept", label: "Approve" },
+    ];
+    const { requestId } = (await service.fake("approval", { threadId: room.thread.reviewer, kind: "mcp-elicitation", prompt: "Allow Linear to create an issue in project BACK?", appName: "Linear", options })) as { requestId: string };
+    browser.poll<boolean>("@reviewer's approval chip", `() => [...document.querySelectorAll('.work-chip')].some((c) => c.textContent.includes('${room.name.reviewer}') && c.textContent.includes('approval'))`, (v) => v);
+    browser.click(new RegExp(`button "${room.name.reviewer} approval`));
+    await check.state("an MCP server's form request: its app and its own choices, no permanent approval it did not offer, answered here", (x) => {
+      const asked = x.nativeRequests.find((n) => n.requestId === requestId);
+      return asked && asked.payload?.appName === "Linear" && JSON.stringify(asked.payload?.options) === JSON.stringify(options) ? `nativeRequests: ${requestId.slice(0, 8)} mcp-elicitation from Linear with ${options.length} choices` : null;
+    }, ["Linear asks", "Allow Linear to create an issue in project BACK?", "Always allow this session", "Approve"], {
+      extra: () => {
+        const cards = browser.eval<string[][]>("() => [...document.querySelectorAll('.native-card')].filter((c) => c.textContent.includes('Linear asks')).map((c) => [...c.querySelectorAll('.task-actions button')].map((b) => b.textContent.trim()))");
+        if (cards.length === 0 || cards.some((labels) => JSON.stringify(labels) !== JSON.stringify(options.map((o) => o.label)))) fail(`the form request's cards offer ${JSON.stringify(cards)}, not its own choices in order`);
+        log(`  page: ${cards.length} card(s) of the form request, each offering ${options.map((o) => o.label).join(", ")}; no Accept for session nor Always accept of T3's own`);
+      },
+    });
+    browser.click(/button "Approve"/);
+    const record = await until("T3 to have the form request answered", async () => {
+      const r = await service.call<{ status: string; decision: string | null }>("GET", `/api/fake/request?threadId=${encodeURIComponent(room.thread.reviewer)}&requestId=${encodeURIComponent(requestId)}`);
+      return r.status === "resolved" ? r : null;
+    });
+    if (record.decision !== "accept") fail(`T3 got ${JSON.stringify(record)}, expected accept (Approve)`);
+    log("  api: T3's fake has the form request resolved with accept (Approve)");
+    await room.finish("reviewer", "Filed BACK-12 for the flaky test.");
+    await room.settle("fable");
+  }
+
   // 24. A1: a room created from the page in a project whose folder has no AGENTS.md: Backroom writes it, out of git.
   if (await section("a room created in a project without AGENTS.md: written, kept out of git, the worktree hook installed, said in a toast")) {
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));

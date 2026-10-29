@@ -16,6 +16,7 @@ import { RoomError, notFound } from "../domain/errors.ts";
 import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_TOTAL_BYTES } from "../domain/types.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { answerSecret } from "./secretAnswer.ts";
+import { requireOffered } from "./approvalChoice.ts";
 import { controlThread, type ControlOutcome } from "./threadControl.ts";
 
 export type DirectCommand = Extract<
@@ -138,6 +139,8 @@ export class DirectThreads {
       }
       case "thread.approval.respond": {
         const shell = await this.requireLooseThread(command.threadId);
+        const detail = await t3(() => this.adapter.getThreadDetail(shell.id, { bounded: true }));
+        requireOffered(detail?.runtimeRequests.find((r) => r.id === command.requestId)?.options, command.decision);
         await t3(() => this.adapter.respondApproval({ commandId: randomUUID(), threadId: shell.id, requestId: command.requestId, decision: command.decision }));
         return { type: "thread.updated", threadId: shell.id };
       }

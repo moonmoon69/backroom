@@ -37,6 +37,8 @@ import type {
   T3TurnItem,
   T3UserInputQuestion,
   SecretAnswer,
+  T3ApprovalOption,
+  T3RuntimeRequestKind,
   T3SecretAsk,
   T3Versions,
   ThreadControl,
@@ -894,21 +896,26 @@ export class FakeT3Adapter implements T3Adapter {
     return (thread.runs[thread.runs.length - 1] as T3Run).id;
   }
 
-  private raise(threadId: string, request: Pick<T3RuntimeRequest, "id" | "kind" | "type" | "responseMode" | "prompt" | "questions">): string {
+  private raise(threadId: string, request: Pick<T3RuntimeRequest, "id" | "kind" | "type" | "responseMode" | "prompt" | "questions"> & Partial<Pick<T3RuntimeRequest, "options" | "appName">>): string {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error("unknown thread");
     const at = this.stamp(thread);
     const runId = this.activeRun(thread)?.id ?? null;
-    thread.runtimeRequests.push({ ...request, status: "pending", runId, nodeId: `node:${request.id}`, createdAt: at, resolvedAt: null, options: null, secret: null, decision: null, answers: null });
-    if (request.type === "approval") thread.turnItems.push({ ...this.item(thread, runId, at), type: "approval_request", requestId: request.id, requestKind: request.kind, prompt: request.prompt, appName: null, options: null });
+    const options = request.options ?? null;
+    const appName = request.appName ?? null;
+    thread.runtimeRequests.push({ ...request, status: "pending", runId, nodeId: `node:${request.id}`, createdAt: at, resolvedAt: null, options, appName, secret: null, decision: null, answers: null });
+    if (request.type === "approval") thread.turnItems.push({ ...this.item(thread, runId, at), type: "approval_request", requestId: request.id, requestKind: request.kind, prompt: request.prompt, appName, options });
     else thread.turnItems.push({ ...this.item(thread, runId, at), type: "user_input_request", requestId: request.id, questions: request.questions, responseMode: request.responseMode === "message" ? "message" : null });
     thread.shell.pendingRequest = this.shellRequest(thread);
     return request.id;
   }
 
-  /** Test control: raise a native approval request on the active run. */
-  raiseApproval(threadId: string, requestId: string = randomUUID()): string {
-    return this.raise(threadId, { id: requestId, kind: "command", type: "approval", responseMode: "live", prompt: "run tests", questions: [] });
+  /**
+   * Test control: raise a native approval request on the active run: a command's by default; an MCP server's form request
+   * (kind "mcp-elicitation") with the choices T3 offers for it (describeMcpElicitation), its prompt and its app.
+   */
+  raiseApproval(threadId: string, requestId: string = randomUUID(), ask: { kind?: T3RuntimeRequestKind; prompt?: string; options?: T3ApprovalOption[] | null; appName?: string | null } = {}): string {
+    return this.raise(threadId, { id: requestId, kind: ask.kind ?? "command", type: "approval", responseMode: "live", prompt: ask.prompt ?? "run tests", questions: [], options: ask.options ?? null, appName: ask.appName ?? null });
   }
 
   /**

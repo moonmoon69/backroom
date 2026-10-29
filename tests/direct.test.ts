@@ -136,7 +136,7 @@ test("the thread view shows one reply per run, streams the running run, and list
   assert.equal(view.running.runId, runs[1]);
   assert.deepEqual(view.running.feed.map((f) => [f.kind, f.labels]), [["tools", ["Read"]]], "the running run's items, not the finished one's");
   assert.deepEqual(view.requests.map((r) => [r.requestId, r.kind]), [[approval, "approval"]]);
-  assert.deepEqual(view.requests[0]?.payload, { requestId: approval, requestType: "command", detail: "run tests", options: null, questions: [], responseMode: "live" });
+  assert.deepEqual(view.requests[0]?.payload, { requestId: approval, requestType: "command", detail: "run tests", options: null, appName: null, questions: [], responseMode: "live" });
   assert.equal(view.contextWindow?.maxTokens, 200000);
   assert.equal(view.contextWindow?.usedTokens, 12000 + 5 * 3500, "the latest run's reading");
 

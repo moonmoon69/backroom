@@ -125,6 +125,7 @@ export function requestPayload(request: T3RuntimeRequest): Record<string, unknow
     requestType: request.kind,
     detail: request.prompt,
     options: request.options,
+    appName: request.appName,
     questions: request.questions,
     responseMode: request.responseMode,
     ...(request.secret ? { secret: request.secret } : {}),

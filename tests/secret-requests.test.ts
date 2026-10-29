@@ -135,7 +135,7 @@ test("a secret T3 waits on is read from its turn item: one live request per pend
   const secrets = detail.runtimeRequests.filter((request) => request.type === "secret");
   assert.deepEqual(secrets, [{
     id: PENDING.id, kind: "secret_request", type: "secret", status: "pending", responseMode: "live", runId: RUN, nodeId: NODE, createdAt: "2026-10-29T12:44:16.533Z", resolvedAt: null,
-    prompt: PENDING.label, options: null, questions: [], secret: { label: PENDING.label, reason: PENDING.reason, placeholder: "password", delivery: "file" }, decision: null, answers: null,
+    prompt: PENDING.label, options: null, appName: null, questions: [], secret: { label: PENDING.label, reason: PENDING.reason, placeholder: "password", delivery: "file" }, decision: null, answers: null,
   }], "only the pending item on the running run, with what it asks");
   assert.deepEqual(openRequests(detail).map((request) => request.id), [PENDING.id]);
   assert.deepEqual(detail.shell.pendingRequest, { id: PENDING.id, kind: "secret_request", createdAt: "2026-10-29T12:44:16.533Z" }, "the thread waits on it");

@@ -13,7 +13,9 @@
  *   POST /api/fake/say           { threadId, text }            the agent says something in its running turn -> { messageId }
  *   POST /api/fake/self-run      { threadId }                  a turn the agent starts itself -> { runId }
  *   POST /api/fake/external-run  { threadId, text }            a turn typed in T3 -> { runId }
- *   POST /api/fake/approval      { threadId }                  an approval on the running run -> { requestId }
+ *   POST /api/fake/approval      { threadId, kind?, prompt?, options?, appName? }   an approval on the running run ->
+ *                                { requestId }; a command's by default, or e.g. an MCP server's form request
+ *                                (kind "mcp-elicitation") with the choices T3 offers ([{ decision, label, warning? }])
  *   POST /api/fake/question      { threadId, questions? }      a question on the running run -> { requestId }
  *                                questions: T3's own shape (options, allowCustomAnswer); T3's "Proceed?" yes/no by default
  *   POST /api/fake/secret        { threadId, label, reason, placeholder?, delivery? }   the agent asks for a secret in its
@@ -65,7 +67,14 @@ export function withFakeControls<F extends (request: Request, ...rest: any[]) =>
   controls.post("/api/fake/say", run((input) => ({ messageId: fake.say(thread(input), typeof input.text === "string" ? input.text : "working on it") })));
   controls.post("/api/fake/self-run", run((input) => ({ runId: fake.startSelfRun(thread(input)) })));
   controls.post("/api/fake/external-run", run((input) => ({ runId: fake.startExternalRun(thread(input), typeof input.text === "string" ? input.text : "external prompt") })));
-  controls.post("/api/fake/approval", run((input) => ({ requestId: fake.raiseApproval(thread(input)) })));
+  controls.post("/api/fake/approval", run((input) => ({
+    requestId: fake.raiseApproval(thread(input), undefined, {
+      ...(typeof input.kind === "string" ? { kind: input.kind as never } : {}),
+      ...(typeof input.prompt === "string" ? { prompt: input.prompt } : {}),
+      ...(Array.isArray(input.options) ? { options: input.options as never } : {}),
+      ...(typeof input.appName === "string" ? { appName: input.appName } : {}),
+    }),
+  })));
   controls.post("/api/fake/question", run((input) => ({ requestId: fake.raiseQuestion(thread(input), Array.isArray(input.questions) ? { questions: input.questions as never } : {}) })));
   controls.post("/api/fake/secret", run((input) => {
     const text = (key: string): string | null => (typeof input[key] === "string" && (input[key] as string).length > 0 ? (input[key] as string) : null);
