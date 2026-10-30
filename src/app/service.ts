@@ -14,6 +14,7 @@ import { DirectThreads, isDirectCommand, type DirectResult } from "./direct.ts";
 import { resolveWorkspace } from "./workspaceChoice.ts";
 import { SecretRequestStale, answerSecret } from "./secretAnswer.ts";
 import { controlThread, type ControlOutcome } from "./threadControl.ts";
+import { storedLimitIntents } from "./limitIntent.ts";
 import { requireOffered } from "./approvalChoice.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
 import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
@@ -371,7 +372,7 @@ export class RoomService {
         if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
         // A member's Stop everything goes on the room's journal (run.stop), so nothing more goes into the turn it stops.
         if (command.control.type === "stop.all") throw new RoomError("bad_request", "A member's Stop everything is run.stop with everything set.", 400);
-        const outcome = await controlThread(this.adapter, binding.threadId, command.control);
+        const outcome = await controlThread(this.adapter, binding.threadId, command.control, storedLimitIntents(this.repos));
         this.notify(participant.roomId);
         return { type: "member.controlled", participantId: participant.id, outcome };
       }

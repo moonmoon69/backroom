@@ -3,41 +3,62 @@
  * stopped on its provider's usage limit is armed in T3 to continue at the reset (thread.metadata.update limitRecovery,
  * autoResume on), and T3's own recovery worker continues it then, whatever T3's autoResumeLimitedThreads says: that
  * setting only decides whether T3 arms threads by itself, and it is off here. Backroom sends no continuation of its own
- * and keeps no timer: it arms what T3's shell shows limited, when T3's shell changes. A recovery that is off (a Stop,
- * or the user in T3) stays off.
+ * and keeps no timer.
  *
- * T3's arming command overwrites what is recorded, so an arming decided on an older read could undo a Stop that landed
- * meanwhile. A Stop leaves its mark on the run it reached (T3's interrupt request), and that mark is what decides: a run
- * a stop reached is never armed, and an arming that turns out to have landed after one is turned off again.
+ * T3's thread.metadata.update overwrites the recovery record whatever it held, so no order of reads and writes keeps an
+ * arming from undoing a Stop or a Don't resume that landed meanwhile. The arming is a reconciliation instead: each time
+ * Backroom reads a limited thread it compares T3's record with what the user wants (limitIntent.ts: "stopped", "off",
+ * or nothing) and the mark a stop leaves on the run, and sends what brings the record there. A lost answer, a restart or
+ * an arming in flight when the user turns the resume off all settle at the next read. It never arms within two minutes
+ * of the reset, so T3's worker, due at the reset, never meets an arming before its repair; past the reset, Resume now is
+ * the user's.
  */
-import type { T3Adapter, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadDetail, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
 import { T3CommandRejected, limitArmId, stopReached } from "../adapter/types.ts";
+import { memoryLimitIntents, type LimitIntent, type LimitIntents } from "./limitIntent.ts";
 import { disarmId } from "./threadControl.ts";
 
+/** No arming this close to the reset, or after it: T3's worker may be due before a repair could land. */
+export const ARM_MARGIN_MS = 2 * 60_000;
+
+type Reconcile = { commandId: string; control: Extract<ThreadControl, { type: "limit.arm" | "limit.disarm" }> };
+
 /**
- * The arming of a limited thread nobody armed, as T3's limitRecoveryCommand would arm it, or null: nothing for a thread
- * archived, settled, deleted or waiting on a request, a reset T3 cannot use (none, unreadable, or not after the run
- * ended), or a recovery already recorded for this run and reset (on, or turned off).
+ * What brings T3's recovery record for a limited thread to what the user wants, or null:
+ * - a record on, with an intent of "stopped" or "off", or a stop's mark on the run: turn it off (its ID names the record
+ *   it turns off, so a resend is a replay and a later record gets a command of its own);
+ * - no record, no intent, no stop's mark, and the reset more than two minutes away (and after the run ended): arm it;
+ * - anything else (a record off, an intent with no record, a thread archived, settled, deleted or waiting on a request):
+ *   nothing.
  */
-export function limitStep(shell: T3ThreadShell): { commandId: string; control: Extract<ThreadControl, { type: "limit.arm" }> } | null {
+export function limitAction(shell: T3ThreadShell, detail: Pick<T3ThreadDetail, "turnItems"> | null, intent: LimitIntent | null, now: number): Reconcile | null {
   const limit = shell.usageLimit;
-  if (!limit?.resetAt || limit.recovery || shell.archivedAt !== null || shell.settledAt !== null || shell.deletedAt !== null || shell.pendingRequest !== null) return null;
+  if (!limit?.resetAt || shell.archivedAt !== null || shell.settledAt !== null || shell.deletedAt !== null || shell.pendingRequest !== null) return null;
+  const stopped = detail !== null && stopReached(detail, limit.runId);
+  if (limit.recovery?.autoResume) {
+    return intent !== null || stopped ? { commandId: disarmId(shell.id, limit), control: { type: "limit.disarm", runId: limit.runId, resetAt: limit.resetAt } } : null;
+  }
+  if (limit.recovery || intent !== null || stopped || detail === null) return null;
   const resetMs = Date.parse(limit.resetAt);
-  if (!Number.isFinite(resetMs) || (shell.latestRunCompletedAt !== null && resetMs <= Date.parse(shell.latestRunCompletedAt))) return null;
+  if (!Number.isFinite(resetMs) || resetMs - now <= ARM_MARGIN_MS || (shell.latestRunCompletedAt !== null && resetMs <= Date.parse(shell.latestRunCompletedAt))) return null;
   return { commandId: limitArmId(shell.id, limit.runId, limit.resetAt), control: { type: "limit.arm", runId: limit.runId, resetAt: limit.resetAt } };
 }
 
 export class LimitRecovery {
   private readonly adapter: T3Adapter;
+  private readonly intents: LimitIntents;
+  private readonly now: () => number;
   private readonly log: (message: string, detail?: unknown) => void;
-  /** Armings T3 refused: not sent again (T3's word is final for that run and reset), and logged once. */
+  /** Commands T3 refused: not sent again (T3's word is final for that record), and logged once. */
   private readonly refused = new Set<string>();
   private unsubscribe: (() => void) | null = null;
   private running: Promise<void> | null = null;
   private again = false;
 
-  constructor(adapter: T3Adapter, options: { log?: (message: string, detail?: unknown) => void } = {}) {
+  constructor(adapter: T3Adapter, options: { intents?: LimitIntents; now?: () => number; log?: (message: string, detail?: unknown) => void } = {}) {
     this.adapter = adapter;
+    this.intents = options.intents ?? memoryLimitIntents();
+    this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => {});
   }
 
@@ -74,31 +95,30 @@ export class LimitRecovery {
     try {
       shells = await this.adapter.listThreads();
     } catch {
-      return; // T3 out of reach: its next change, or the next start, looks again.
+      return; // T3 out of reach: its next change looks again.
     }
-    for (const shell of shells) {
-      const step = limitStep(shell);
-      if (!step || this.refused.has(step.commandId)) continue;
-      try {
-        // Against the run as it is now: a stop that reached it decides, whatever the list said.
-        const before = await this.adapter.getThreadDetail(shell.id, { bounded: true });
-        if (!before || stopReached(before, step.control.runId) || before.shell.usageLimit?.recovery) continue;
-        await this.adapter.controlThread({ commandId: step.commandId, threadId: shell.id, control: step.control });
-        const after = await this.adapter.getThreadDetail(shell.id, { bounded: true });
-        const limit = after?.shell.usageLimit;
-        if (after && limit?.runId === step.control.runId && limit.recovery?.autoResume && stopReached(after, step.control.runId)) {
-          // A stop landed before the arming did, and the arming overwrote what it turned off: off again.
-          await this.adapter.controlThread({ commandId: disarmId(shell.id, limit), threadId: shell.id, control: { type: "limit.disarm", runId: step.control.runId, resetAt: step.control.resetAt } });
-          this.log("usage limit: a stop reached the thread before its arming landed; T3's resume turned off again", { threadId: shell.id });
-          continue;
+    for (const listed of shells) {
+      if (!listed.usageLimit?.resetAt) continue;
+      // Read and settle until nothing is left to send: what Backroom just sent is read back like anything else.
+      for (let round = 0; round < 3; round += 1) {
+        let action: Reconcile | null = null;
+        try {
+          const detail = await this.adapter.getThreadDetail(listed.id, { bounded: true });
+          if (!detail) break;
+          const limit = detail.shell.usageLimit;
+          const intent = limit?.resetAt ? this.intents.get(listed.id, limit.runId, limit.resetAt) : null;
+          action = limitAction(detail.shell, detail, intent, this.now());
+          if (!action || this.refused.has(action.commandId)) break;
+          await this.adapter.controlThread({ commandId: action.commandId, threadId: listed.id, control: action.control });
+          this.log(action.control.type === "limit.arm" ? "usage limit: T3 continues the thread at the reset" : "usage limit: T3's resume turned off, as the user wants", { threadId: listed.id, resetAt: action.control.resetAt });
+        } catch (error) {
+          if (error instanceof T3CommandRejected && action) {
+            this.refused.add(action.commandId);
+            this.log("usage limit: T3 refused", { threadId: listed.id, command: action.control.type, error: error.message });
+          }
+          // T3 did not answer: the next read decides again, with the same IDs.
+          break;
         }
-        this.log("usage limit: T3 continues the thread at the reset", { threadId: shell.id, resetAt: step.control.resetAt });
-      } catch (error) {
-        if (error instanceof T3CommandRejected) {
-          this.refused.add(step.commandId);
-          this.log("usage limit: T3 refused to arm its recovery", { threadId: shell.id, error: error.message });
-        }
-        // Otherwise T3 did not answer: the same arming, with the same ID, goes again on the next pass.
       }
     }
   }

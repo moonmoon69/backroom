@@ -28,6 +28,7 @@ import { NOTE_DIRECTIVE, NOTE_GONE, STEER_DIRECTIVE, STEER_GONE, parseExplicit }
 import type { EngineHost } from "../runtime/index.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
 import { controlThread } from "./threadControl.ts";
+import { storedLimitIntents } from "./limitIntent.ts";
 
 const USER = "$user";
 /** §7: the message API refuses a post over 1 MiB. */
@@ -130,14 +131,20 @@ export class EngineMessages {
           const participant = this.participant(room, command.participantId);
           const seat = this.seat(room, participant);
           const shell = await this.adapter.getThreadShell(seat.threadId);
-          const outcome = await controlThread(this.adapter, seat.threadId, { type: "resume.cancel" });
+          const outcome = await controlThread(this.adapter, seat.threadId, { type: "resume.cancel" }, storedLimitIntents(this.repos));
           if (outcome === "sent" && shell?.usageLimit) await this.host.resumeOff(room.id, seat.seatId, shell.usageLimit.runId);
           return { type: "member.controlled", participantId: participant.id, outcome };
         });
       case "run.stop":
         return this.journal(async () => {
           const room = this.room(command.roomId);
-          await this.host.stopSeat(room.id, this.seat(room, this.participant(room, command.participantId)).seatId, command.everything);
+          const seat = this.seat(room, this.participant(room, command.participantId));
+          if (command.everything) {
+            // What the user wants for a paused turn, kept before the stop goes out: no arming in flight undoes it.
+            const limit = (await this.adapter.getThreadShell(seat.threadId))?.usageLimit;
+            if (limit?.resetAt) storedLimitIntents(this.repos).set(seat.threadId, limit.runId, limit.resetAt, "stopped");
+          }
+          await this.host.stopSeat(room.id, seat.seatId, command.everything);
           return { type: "run.stopped", participantId: command.participantId };
         });
       default:

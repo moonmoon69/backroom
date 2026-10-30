@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3ThreadShell, T3UsageLimit, ThreadControl } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable, limitIdentity } from "../adapter/types.ts";
 import { RoomError } from "../domain/errors.ts";
+import { memoryLimitIntents, type LimitIntents } from "./limitIntent.ts";
 import type { z } from "zod";
 import type { PageControlSchema } from "../domain/commands.ts";
 
@@ -40,17 +41,26 @@ export function disarmId(threadId: string, limit: Pick<T3UsageLimit, "runId" | "
   return `limit-disarm:${limitIdentity(threadId, limit.runId, limit.resetAt!)}:${limit.recovery?.requestId ?? "none"}`;
 }
 
-export async function controlThread(adapter: T3Adapter, threadId: string, control: PageControl): Promise<ControlOutcome> {
+/**
+ * One control on a thread. `intents` is where Backroom keeps what the user wants for a paused turn (limitIntent.ts): Stop
+ * everything and Don't resume write it before their command goes out, so the reconciliation keeps T3's record there
+ * whatever arming lands meanwhile; Resume now clears it.
+ */
+export async function controlThread(adapter: T3Adapter, threadId: string, control: PageControl, intents: LimitIntents = memoryLimitIntents()): Promise<ControlOutcome> {
   const shell = await call(() => adapter.getThreadShell(threadId));
   if (!shell) throw new RoomError("not_found", "thread not found in T3", 404);
+  const limit = shell.usageLimit;
+  if (control.type === "stop.all" && limit?.resetAt) intents.set(threadId, limit.runId, limit.resetAt, "stopped");
   if (control.type === "queue.resume" || control.type === "stop.all") {
     await call(() => adapter.controlThread({ commandId: randomUUID(), threadId, control: { type: control.type === "stop.all" ? "thread.stop" : "queue.resume" } }));
     return "sent";
   }
   if (control.type === "resume.cancel") {
-    // T3's own record, turned off for this run and reset; one already off, or none to turn off, sends nothing.
-    const limit = shell.usageLimit;
-    if (!limit?.resetAt || limit.recovery?.autoResume === false) return "already";
+    // Kept as wanted first, then T3's own record turned off for this run and reset; a record off already sends nothing.
+    if (!limit?.resetAt) return "already";
+    const wanted = intents.get(threadId, limit.runId, limit.resetAt);
+    if (wanted === null) intents.set(threadId, limit.runId, limit.resetAt, "off");
+    if (limit.recovery?.autoResume === false) return wanted === null ? "sent" : "already";
     await call(() => adapter.controlThread({ commandId: disarmId(threadId, limit), threadId, control: { type: "limit.disarm", runId: limit.runId, resetAt: limit.resetAt! } }));
     return "sent";
   }
@@ -67,6 +77,7 @@ export async function controlThread(adapter: T3Adapter, threadId: string, contro
   if (!command) return "already";
   try {
     await call(() => adapter.controlThread({ threadId, ...command }));
+    if (limit?.resetAt) intents.clear(threadId, limit.runId, limit.resetAt);
   } catch (error) {
     // T3 refuses a continuation of a run that is no longer the limited one: it continued meanwhile.
     const after = error instanceof RoomError && error.code === "t3_rejected" ? await adapter.getThreadShell(threadId).catch(() => null) : null;

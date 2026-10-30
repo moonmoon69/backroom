@@ -7,11 +7,12 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
 import { CONTINUE_TEXT, T3CommandRejected, limitArmId, runPrompt, type T3Adapter, type ThreadControl } from "../src/adapter/types.ts";
-import { LimitRecovery, limitStep } from "../src/app/limitRecovery.ts";
+import { ARM_MARGIN_MS, LimitRecovery, limitAction } from "../src/app/limitRecovery.ts";
 import { queueOf } from "../src/app/threadView.ts";
 import { isPausedNotice, pauseLabel, resetTime } from "../src/domain/usageLimit.ts";
 import { replyPieces, replyText } from "../web/src/replyTo.ts";
 import { controlThread } from "../src/app/threadControl.ts";
+import { memoryLimitIntents, storedLimitIntents } from "../src/app/limitIntent.ts";
 import { describeStatus, pauseDetail, queueLine } from "../web/src/memberActivity.ts";
 import { createTestStack, type TestStack } from "./helpers.ts";
 import { journalView, memberStatus, pauseOf } from "../src/server/engineView.ts";
@@ -123,24 +124,37 @@ async function limitedThread(inMs = 3_600_000, queued: string[] = []) {
 
 const continuations = (fake: FakeT3Adapter, threadId: string) => fake.threads.get(threadId)!.messages.filter((m) => m.text === CONTINUE_TEXT).length;
 
-test("limitStep arms as T3's limitRecoveryCommand would: a limited thread nobody armed, and nothing else", async () => {
+test("limitAction brings T3's record to what the user wants: arm what nobody armed far from the reset, turn off an armed one the user stopped or turned off, and nothing else", async () => {
   const { fake, threadId, resetAt, runId } = await limitedThread();
   const shell = (await fake.getThreadShell(threadId))!;
-  assert.deepEqual(limitStep(shell), { commandId: limitArmId(threadId, runId, resetAt), control: { type: "limit.arm", runId, resetAt } });
+  const detail = (await fake.getThreadDetail(threadId))!;
+  const now = Date.now();
+  assert.deepEqual(limitAction(shell, detail, null, now), { commandId: limitArmId(threadId, runId, resetAt), control: { type: "limit.arm", runId, resetAt } });
   const recorded = (autoResume: boolean) => ({ ...shell, usageLimit: { ...shell.usageLimit!, recovery: { autoResume, snooze: false, requestId: "req-1" } } });
+  const off = { commandId: `limit-disarm:${threadId}:${runId}:${Date.parse(resetAt)}:req-1`, control: { type: "limit.disarm", runId, resetAt } };
+  assert.deepEqual(limitAction(recorded(true), detail, "stopped", now), off, "Stop everything wants it off");
+  assert.deepEqual(limitAction(recorded(true), detail, "off", now), off, "Don't resume wants it off");
+  const marked = { turnItems: [...detail.turnItems, { ...detail.turnItems[0]!, id: "stop", runId, type: "run_interrupt_request" as const, message: "Stopped by user" }] };
+  assert.deepEqual(limitAction(recorded(true), marked, null, now), off, "a stop's mark on the run wants it off");
   const nothing = {
-    "armed already": recorded(true),
-    "a recovery turned off (a Stop, the user in T3)": recorded(false),
-    archived: { ...shell, archivedAt: resetAt },
-    settled: { ...shell, settledAt: resetAt },
-    deleted: { ...shell, deletedAt: resetAt },
-    "waiting on a request": { ...shell, pendingRequest: { id: "r", kind: "command" as const, createdAt: resetAt } },
-    "no reset time": { ...shell, usageLimit: { ...shell.usageLimit!, resetAt: null } },
-    "an unreadable reset": { ...shell, usageLimit: { ...shell.usageLimit!, resetAt: "soon" } },
-    "a reset before the run ended": { ...shell, latestRunCompletedAt: new Date(Date.parse(resetAt) + 1).toISOString() },
-    "no pause": { ...shell, usageLimit: null },
-  };
-  for (const [why, s] of Object.entries(nothing)) assert.equal(limitStep(s), null, why);
+    "armed, and nobody wants it off": [recorded(true), detail, null],
+    "off already": [recorded(false), detail, "off"],
+    "off, and nothing recorded as wanted": [recorded(false), detail, null],
+    "no record, and the user wants it off": [shell, detail, "off"],
+    "no record, a stop's mark on the run": [shell, marked, null],
+    archived: [{ ...shell, archivedAt: resetAt }, detail, null],
+    settled: [{ ...shell, settledAt: resetAt }, detail, null],
+    deleted: [{ ...shell, deletedAt: resetAt }, detail, null],
+    "waiting on a request": [{ ...shell, pendingRequest: { id: "r", kind: "command" as const, createdAt: resetAt } }, detail, null],
+    "no reset time": [{ ...shell, usageLimit: { ...shell.usageLimit!, resetAt: null } }, detail, null],
+    "an unreadable reset": [{ ...shell, usageLimit: { ...shell.usageLimit!, resetAt: "soon" } }, detail, null],
+    "a reset before the run ended": [{ ...shell, latestRunCompletedAt: new Date(Date.parse(resetAt) + 1).toISOString() }, detail, null],
+    "no pause": [{ ...shell, usageLimit: null }, detail, null],
+  } as const;
+  for (const [why, [s, d, intent]] of Object.entries(nothing)) assert.equal(limitAction(s as never, d, intent as never, now), null, why);
+  assert.equal(limitAction(shell, detail, null, Date.parse(resetAt) - ARM_MARGIN_MS), null, "not within two minutes of the reset");
+  assert.equal(limitAction(shell, detail, null, Date.parse(resetAt) + 1), null, "not after it");
+  assert.notEqual(limitAction(shell, detail, null, Date.parse(resetAt) - ARM_MARGIN_MS - 1), null, "just before the margin");
 });
 
 test("Backroom arms a limited thread once, with T3's identity, and sends nothing else; T3's worker continues it at the reset with autoResumeLimitedThreads off", async () => {
@@ -420,4 +434,72 @@ test("T3's continuation is no one's prompt: the page shows its turn as the membe
   assert.equal(detail.messages.find((m) => m.id === continued.userMessageId)?.text, CONTINUE_TEXT);
   assert.equal(runPrompt(detail, continued), null);
   assert.equal(runPrompt(detail, detail.runs[0]!)?.text, "Fix the build.", "a person's message still is");
+});
+
+// ---------------- the arming as a reconciliation (#364) ----------------
+
+test("Don't resume or Stop everything pressed in Backroom while an arming is in flight: the next read turns T3's resume off again, before T3 is due", async () => {
+  for (const press of ["resume.cancel", "stop.all"] as const) {
+    const intents = memoryLimitIntents();
+    class PressDuringArm extends FakeT3Adapter {
+      override async controlThread(input: Parameters<T3Adapter["controlThread"]>[0]) {
+        if (input.control.type === "limit.arm") await controlThread(this, input.threadId, { type: press }, intents);
+        return super.controlThread(input);
+      }
+    }
+    const fake = new PressDuringArm({ autoCompleteMs: null });
+    await fake.launchThread({ commandId: "l", threadId: "t", projectId: "project_demo", title: "t", modelSelection: SELECTION, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" }, initialMessage: { messageId: "m", text: "Go." } });
+    const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+    fake.completeRun("t", { text: "limit", outcome: "limit", resetAt });
+    const runId = fake.threads.get("t")!.runs[0]!.id;
+    await new LimitRecovery(fake, { intents }).sweep();
+    assert.equal(intents.get("t", runId, resetAt), press === "stop.all" ? "stopped" : "off", "written before its command went out");
+    assert.equal(fake.threads.get("t")!.recovery?.autoResume, false, `${press}: off again in the same pass`);
+    fake.sweepLimits(Date.parse(resetAt) + 1);
+    assert.equal(fake.threads.get("t")!.runs.length, 1, `${press}: T3 does not continue it`);
+  }
+});
+
+test("no arming within two minutes of the reset or after it: T3's worker, due at the reset, has nothing to continue; Resume now still continues it", async () => {
+  const { fake, threadId, resetAt, runId } = await limitedThread(90_000);
+  await new LimitRecovery(fake, { now: () => Date.parse(resetAt) - 90_000 }).sweep();
+  await new LimitRecovery(fake, { now: () => Date.parse(resetAt) + 1 }).sweep();
+  assert.equal(fake.threads.get(threadId)!.recovery ?? null, null, "never armed");
+  fake.sweepLimits(Date.parse(resetAt) + 1);
+  assert.equal(continuations(fake, threadId), 0);
+  await fake.controlThread({ commandId: `limit-continue:${threadId}:${runId}`, threadId, control: { type: "run.continue", runId } });
+  assert.equal(continuations(fake, threadId), 1);
+});
+
+test("what the user wants survives a restart: kept in Backroom's database, a later arming is turned off again; Resume now clears it", async () => {
+  stack = await createTestStack();
+  const threadId = stack.threadOf("sol1");
+  await stack.fake.sendMessage({ commandId: "go", threadId, messageId: "go", text: "Work.", mode: { type: "start" } });
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+  stack.fake.completeRun(threadId, { text: "You've hit your usage limit.", outcome: "limit", resetAt });
+  const runId = stack.fake.threads.get(threadId)!.runs[0]!.id;
+  await stack.run({ type: "member.control", roomId: stack.roomId, participantId: stack.participants.sol1!, control: { type: "resume.cancel" } });
+  assert.equal(storedLimitIntents(stack.repos).get(threadId, runId, resetAt), "off");
+  // Re-armed meanwhile (an arming decided before the press, landing after it), then Backroom restarts.
+  await stack.fake.controlThread({ commandId: "late-arming", threadId, control: { type: "limit.arm", runId, resetAt } });
+  await new LimitRecovery(stack.fake, { intents: storedLimitIntents(stack.repos) }).sweep();
+  assert.equal(stack.fake.threads.get(threadId)!.recovery?.autoResume, false, "off again, from the kept intent");
+  await stack.run({ type: "member.control", roomId: stack.roomId, participantId: stack.participants.sol1!, control: { type: "resume" } });
+  assert.equal(storedLimitIntents(stack.repos).get(threadId, runId, resetAt), null, "Resume now clears it");
+  assert.equal(continuations(stack.fake, threadId), 1);
+});
+
+test("a member's Stop everything keeps \"stopped\" for its paused turn before the stop goes out", async () => {
+  stack = await createTestStack();
+  const threadId = stack.threadOf("sol1");
+  await stack.fake.sendMessage({ commandId: "go", threadId, messageId: "go", text: "Work.", mode: { type: "start" } });
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+  stack.fake.completeRun(threadId, { text: "You've hit your usage limit.", outcome: "limit", resetAt });
+  const runId = stack.fake.threads.get(threadId)!.runs[0]!.id;
+  await new LimitRecovery(stack.fake, { intents: storedLimitIntents(stack.repos) }).sweep();
+  await stack.run({ type: "run.stop", roomId: stack.roomId, participantId: stack.participants.sol1!, everything: true });
+  assert.equal(storedLimitIntents(stack.repos).get(threadId, runId, resetAt), "stopped");
+  await stack.fake.controlThread({ commandId: "late-arming", threadId, control: { type: "limit.arm", runId, resetAt } });
+  await new LimitRecovery(stack.fake, { intents: storedLimitIntents(stack.repos) }).sweep();
+  assert.equal(stack.fake.threads.get(threadId)!.recovery?.autoResume, false);
 });

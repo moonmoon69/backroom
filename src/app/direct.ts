@@ -18,6 +18,7 @@ import { resolveWorkspace } from "./workspaceChoice.ts";
 import { answerSecret } from "./secretAnswer.ts";
 import { requireOffered } from "./approvalChoice.ts";
 import { controlThread, type ControlOutcome } from "./threadControl.ts";
+import { storedLimitIntents } from "./limitIntent.ts";
 
 export type DirectCommand = Extract<
   RoomCommand,
@@ -156,7 +157,7 @@ export class DirectThreads {
       }
       case "thread.control": {
         const shell = await this.requireLooseThread(command.threadId);
-        const outcome = await controlThread(this.adapter, shell.id, command.control);
+        const outcome = await controlThread(this.adapter, shell.id, command.control, storedLimitIntents(this.repos));
         return { type: "thread.controlled", threadId: shell.id, outcome };
       }
       case "thread.model.set": {

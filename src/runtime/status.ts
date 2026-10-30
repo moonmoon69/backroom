@@ -16,8 +16,11 @@ export interface MemberStatus {
    * own name and kind, which do not change while it runs: the quiet follow-up compares them.
    */
   running: string[];
-  /** What a task says beside its label, by label: a pull-request watch's line ("1 check pending (…) · watched for 8h"). */
-  notes: Record<string, string>;
+  /**
+   * The same tasks in the same order, each with what it says beside its label: a pull-request watch's line ("1 check
+   * pending (…) · watched for 8h"). Each its own, by the task's id: two watches can share a label.
+   */
+  listed: Array<{ taskId: string; label: string; note: string | null }>;
   /**
    * A turn or work of the member's own is in flight, which the keep-alive waits on. T3's watch of a pull request is
    * listed and named, but waited on by nobody: it lasts for the pull request's life.
@@ -36,10 +39,9 @@ export function memberStatus(detail: T3ThreadDetail, endedRunId: string | null):
   const turnRunning = detail.runs.some((run) => run.id !== endedRunId && isRunActive(run.status));
   const tasks = backgroundTasks(detail);
   const label = (task: (typeof tasks)[number]) => `${task.type === "subagent" ? "subagent" : task.type === "monitor" ? "monitor" : "background task"} ${JSON.stringify(task.title)}`;
-  const running = tasks.map(label);
   // A watch's line, without its title (the label names it already) and with no quotes, which a label ends with.
-  const notes = Object.fromEntries(tasks.filter((task) => isPullRequestWatch(task) && task.detail).map((task) => [label(task), task.detail!.replace(/^Watching pull request #\d+: /, "").replace(/"/g, "'")]));
-  return { turnRunning, running, notes, inFlight: turnRunning || tasks.some((task) => !isPullRequestWatch(task)) };
+  const listed = tasks.map((task) => ({ taskId: task.taskId, label: label(task), note: isPullRequestWatch(task) && task.detail ? task.detail.replace(/^Watching pull request #\d+: /, "").replace(/"/g, "'") : null }));
+  return { turnRunning, running: listed.map((task) => task.label), listed, inFlight: turnRunning || tasks.some((task) => !isPullRequestWatch(task)) };
 }
 
 /**
@@ -49,7 +51,7 @@ export function memberStatus(detail: T3ThreadDetail, endedRunId: string | null):
 export function statusLine(alias: string, status: MemberStatus): string {
   const parts: string[] = [];
   if (status.turnRunning) parts.push("a turn is running (T3 lists no background tasks while it runs)");
-  if (status.running.length > 0) parts.push(`still running: ${status.running.map((label) => (status.notes[label] ? `${label} (${status.notes[label]})` : label)).join(", ")}`);
+  if (status.listed.length > 0) parts.push(`still running: ${status.listed.map((task) => (task.note ? `${task.label} (${task.note})` : task.label)).join(", ")}`);
   return `${PREFIX}${alias}: ${parts.length ? parts.join("; ") : "idle"}]`;
 }
 

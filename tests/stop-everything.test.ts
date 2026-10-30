@@ -66,7 +66,7 @@ test("thread.stop on the fake does what T3's does: the turn interrupted with Bac
 test("Stop everything on a limited thread turns its recovery off for good: T3's worker and Backroom's leave it paused", async () => {
   const fake = new FakeT3Adapter({ autoCompleteMs: null });
   await fake.launchThread({ commandId: "l", threadId: "t", projectId: "project_demo", title: "limited", modelSelection: SELECTION, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" }, initialMessage: { messageId: "m-1", text: "Go." } });
-  const resetAt = new Date(Date.now() + 60_000).toISOString();
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
   fake.completeRun("t", { text: "limit", outcome: "limit", resetAt });
   let now = Date.now();
   fake.clock = () => now;

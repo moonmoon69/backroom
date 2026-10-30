@@ -15,6 +15,7 @@ import { PotetoPack, type PotetoOptions } from "./poteto.ts";
 import { RoomService } from "./service.ts";
 import { startSeen } from "./seen.ts";
 import { LimitRecovery } from "./limitRecovery.ts";
+import { storedLimitIntents } from "./limitIntent.ts";
 import { T3Presence } from "./t3Presence.ts";
 import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
 
@@ -115,7 +116,7 @@ export function createStack(input: {
   });
   const browsers = input.browsers ? input.browsers({ repos, notify }) : null;
   const presence = new T3Presence(input.adapter, input.log ? { log: input.log } : {});
-  const limitRecovery = new LimitRecovery(input.adapter, input.log ? { log: input.log } : {});
+  const limitRecovery = new LimitRecovery(input.adapter, { intents: storedLimitIntents(repos), ...(input.log ? { log: input.log } : {}) });
   // The rooms' journal, data/board.sqlite next to rooms.sqlite.
   const engineStore = new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"));
   // Each tick, per seat: approvals and questions mirrored, then the seat lifecycle's part (thread title and settings, reseats).

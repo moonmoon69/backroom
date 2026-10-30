@@ -2007,15 +2007,17 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     browser.on("eval", "() => { window.__sameDocument = true; return true; }");
     await service.fake("external-run", { threadId: room.thread.reviewer, text: "Check the build once more." });
     await until("T3 to run the turn typed in T3", async () => (await room.snapshot()).participantStatus[room.participant.reviewer]?.externalActivity === true);
-    await service.fake("complete", { threadId: room.thread.reviewer, text: "Claude API rate limit reached. Try again later.", outcome: "limit", resetInMs: 12_000 });
-    await until("@reviewer paused until a reset 12 s away", async () => paused(await room.snapshot()) !== null);
+    await service.fake("complete", { threadId: room.thread.reviewer, text: "Claude API rate limit reached. Try again later.", outcome: "limit", resetInMs: 135_000 });
+    // Backroom arms T3's resume only more than two minutes before the reset: one 2 min 15 s away is armed, then T3 is due.
+    await until("@reviewer paused, T3's resume armed, the reset 2 min 15 s away", async () => paused(await room.snapshot())?.resume === "on");
     browser.poll<string>("@reviewer's label to read paused", statusRead, (label) => label.startsWith("paused on Claude's limit until"));
+    await until("T3 to continue it at the reset", async () => paused(await room.snapshot()) === null, 180_000);
     await check.state("at the reset T3 continues the paused turn by itself, and the card says so without a reload", (x) => {
       const status = x.participantStatus[room.participant.reviewer];
       return status && !status.paused && status.externalActivity ? "@reviewer no longer paused; T3 runs its continuation (a turn the room did not start)" : null;
     }, [], {
       always: () => {
-        browser.poll<string>("@reviewer's label to leave paused", statusRead, (label) => !label.startsWith("paused"), 30_000);
+        browser.poll<string>("@reviewer's label to leave paused", statusRead, (label) => !label.startsWith("paused"), 180_000);
         if (browser.eval<boolean>("() => window.__sameDocument === true") !== true) fail("the page reloaded across the reset");
         const control = browser.eval<{ tag: string; text: string } | null>(`() => { const chip = [...document.querySelectorAll('.work-working .work-chip')].find((e) => e.textContent.includes(${JSON.stringify(room.name.reviewer)})); return chip ? { tag: chip.tagName, text: chip.textContent } : null; }`);
         if (control?.tag !== "BUTTON") fail(`the auto-resumed member offers no Stop everything control: ${JSON.stringify(control)}`);
