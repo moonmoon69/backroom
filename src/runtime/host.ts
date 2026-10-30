@@ -145,10 +145,11 @@ export const KEEP_ALIVE_REPLY = "keep-alive-reply:";
 function unique(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
-/** A request's words in a notice: one line, at most 200 characters. */
+/** A request's words in a notice: one line, at most 200 characters, ended with a full stop unless it has its own. */
 function clip(text: string): string {
   const line = text.replace(/\s+/g, " ").trim();
-  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+  const short = line.length > 200 ? `${line.slice(0, 199)}…` : line;
+  return /[.?!…]$/.test(short) ? short : `${short}.`;
 }
 
 function message(error: unknown): string {
@@ -984,13 +985,13 @@ export class EngineHost {
     switch (state.state) {
       case "approval": {
         const what = asked?.prompt ?? asked?.appName;
-        return { state: "approval", body: `${who} waits on an approval${what ? `: ${clip(what)}` : ""}. ${answer}` };
+        return { state: "approval", body: `${who} waits on an approval${what ? `: ${clip(what)}` : "."} ${answer}` };
       }
       case "secret":
-        return { state: "secret", body: `${who} asks for a secret${asked?.secret ? `: ${clip(asked.secret.label)}` : ""}. ${answer}` };
+        return { state: "secret", body: `${who} asks for a secret${asked?.secret ? `: ${clip(asked.secret.label)}` : "."} ${answer}` };
       case "input": {
         const question = asked?.questions.map((q) => q.question).join(" / ");
-        return { state: "input", body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : ""}. ${answer}` };
+        return { state: "input", body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : "."} ${answer}` };
       }
       case "limited": {
         // The turn the limit stopped, when it is this run's, ends with its own notice (pausedNotice).

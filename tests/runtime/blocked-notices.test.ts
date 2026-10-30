@@ -59,7 +59,7 @@ test("a secret and a question are each one notice, naming what is asked", async 
   const b = await wOnA(room);
   room.fake.raiseQuestion(room.threadOf("W"), { questions: [{ id: "q", header: "Branch", question: "Which branch do I push to?", options: [] }] });
   await room.tick(3);
-  assert.deepEqual(held(room).map((n) => [n.causeId, n.requestIds, n.body]), [["blocked:W:input", [b], "@W waits on an answer to a question: Which branch do I push to?. Only the user can answer it, from the page; @W's reply comes after."]]);
+  assert.deepEqual(held(room).map((n) => [n.causeId, n.requestIds, n.body]), [["blocked:W:input", [b], "@W waits on an answer to a question: Which branch do I push to? Only the user can answer it, from the page; @W's reply comes after."]]);
 });
 
 test("a usage limit holding a new request is one notice on it, with when and whether T3 continues; the turn the limit stopped keeps its own notice only", async () => {

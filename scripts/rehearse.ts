@@ -1101,12 +1101,14 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
       return run?.phase === "uncertain" ? `run ${run.id.slice(0, 8)} of @reviewer phase=uncertain, requestIds=[${run.requestIds.length}]` : null;
     }, ["Uncertain: Backroom cannot tell whether T3 received this turn", "uncertain"]);
 
-    // 7. What the T3 window showed: an approval, then a question, answered from the page.
+    // 7. What the T3 window showed: an approval, then a question, answered from the page. The Consigliere is told once
+    // what holds the review (#76): the approval is the user's.
     await service.fake("approval", { threadId: room.thread.reviewer });
     await check.state("an approval from T3, answered here", (x) => {
       const approval = x.nativeRequests.find((n) => n.participantId === room.participant.reviewer && n.kind === "approval");
-      return approval && x.counts.needsYou >= 1 ? `nativeRequests: approval ${approval.requestId.slice(0, 8)} for @reviewer; counts.needsYou=${x.counts.needsYou}` : null;
-    }, ["Accept for session", "Needs you ·"]);
+      const told = x.posts.find((p) => p.kind === "notice" && p.notice.intent === "attention" && p.to.includes(seat.fable) && p.about.some((r: any) => r.requestId === review) && p.body.startsWith("@reviewer waits on an approval"));
+      return approval && told && x.counts.needsYou >= 1 ? `nativeRequests: approval ${approval.requestId.slice(0, 8)} for @reviewer; counts.needsYou=${x.counts.needsYou}; notice #${told.number} to @fable on #${V}` : null;
+    }, ["Accept for session", "Needs you ·", "@reviewer waits on an approval"]);
     browser.click(/button "Accept"/);
     await until("the approval to be answered", async () => (await room.snapshot()).nativeRequests.length === 0);
     await service.fake("question", { threadId: room.thread.reviewer });
@@ -1172,7 +1174,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await answered(secret, "declined");
     browser.consoleClean();
 
-    // 8. The review passes: the reviewer's answer wakes him, and his report is an update.
+    // 8. The review passes: the reviewer's answer wakes him, and his report is an update. First he ends the turns the
+    // notices of what held the review woke.
+    await room.settle("fable");
     await room.finish("reviewer", "PASS: the fix is right and the tests cover leap years.", {
       progress: ["Reading the diff of src/dates.ts.", "Ran the date tests: 48 passed."],
       files: [{ path: "tests/dates.test.ts", kind: "modified", additions: 6, deletions: 1 }],
