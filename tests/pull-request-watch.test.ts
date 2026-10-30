@@ -10,7 +10,8 @@ import type { T3PullRequest, T3PullRequestChecks } from "../src/adapter/types.ts
 import { STALE_MS, ageWords, watchLine } from "../src/app/pullRequestWatch.ts";
 import { backgroundTasks } from "../src/app/threadView.ts";
 import { memberStatus } from "../src/runtime/status.ts";
-import { describeStatus, jobsLine } from "../web/src/memberActivity.ts";
+import { memberActivity } from "../web/src/memberActivity.ts";
+import { jobsLine } from "../src/domain/memberState.ts";
 import { t3Stub } from "./t3Stub.ts";
 
 const NOW = Date.parse("2026-10-30T09:00:00.000Z");
@@ -83,10 +84,10 @@ test("a watch's task keeps its title and the member's status line while its line
 
   const desk = { backgroundTasks: after, backgroundLiveness: "monitoring" } as never;
   const status = { status: "completed" as const, externalActivity: false, pendingApprovals: false, pendingUserInput: false, activeRunId: null, threadMissing: false, background: "monitoring" as const };
-  const activity = describeStatus(status, desk);
+  const activity = memberActivity(status, desk);
   assert.equal(activity.label, "monitoring");
   assert.equal(activity.detail, "Watching pull request #70: 1 check pending (Browser harness) · watched for 8h · Watching pull request #12: 1 check failing (lint) · watched for 1h", "the hover says what each waits for");
-  assert.equal(jobsLine(desk, NOW), activity.detail, "and so does the status chip");
+  assert.equal(jobsLine(after, NOW), activity.detail, "and so does the status chip");
 
   fake.linkPullRequest("t", { repository: "example-org/web", number: 12, watched: false, state: "merged", checksState: "passing" });
   assert.deepEqual((await at(new Map())).map((t) => t.taskId), ["pull-request-watch:github.com/example-org/shop#70"], "a merged pull request's watch ends");

@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
-import { betweenTurns, describeStatus, jobsLine, queueHeld, queueLine } from "../memberActivity.ts";
+import { betweenTurns, memberActivity, queueHeld } from "../memberActivity.ts";
+import { jobsLine, queueLine } from "../../../src/domain/memberState.ts";
 import { ThreadControls, outcomeOf } from "./ThreadControls.tsx";
 import { useResetClock } from "../resetClock.ts";
 import { isPausedNotice, pauseLabel } from "../../../src/domain/usageLimit.ts";
@@ -173,7 +174,7 @@ export function WorkBar() {
       items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "", open: { member: participant } });
     } else if (betweenTurns(status, memberDesk)) {
       // Its choices: Stop on each subagent, and Stop everything.
-      items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()), open: { member: participant } });
+      items.push({ key: `background:${participant.id}`, group: "working", participant, what: memberActivity(status, memberDesk).label, text: jobsLine(memberDesk?.backgroundTasks, Date.now()), open: { member: participant } });
     }
   }
 

@@ -18,7 +18,7 @@ import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
 import type { EngineRoomSnapshot } from "../src/domain/engineView.ts";
 import { withFakeControls } from "../src/server/fakeControls.ts";
 import { createHttpApp } from "../src/server/http.ts";
-import { describeStatus } from "../web/src/memberActivity.ts";
+import { memberActivity } from "../web/src/memberActivity.ts";
 import { requestsWhat } from "../web/src/requestWords.ts";
 
 /** A value no other text in a test contains: wherever it turns up, the secret leaked there. */
@@ -276,7 +276,7 @@ test("a member asking for a secret is shown and counted as needing you, and save
   assert.deepEqual(waiting.nativeRequests.map((request) => [request.requestId, request.kind, (request.payload as { secret: unknown }).secret]), [[requestId, "secret", { label: "shop.example admin password", reason: "To run the ban step.", placeholder: "password", delivery: "file" }]]);
   assert.equal(waiting.participantStatus[worker.participantId]!.pendingSecret, true);
   assert.equal(waiting.counts.needsYou, 1);
-  assert.equal(describeStatus(waiting.participantStatus[worker.participantId] as never).label, "asking for a secret");
+  assert.equal(memberActivity(waiting.participantStatus[worker.participantId] as never).label, "asking for a secret");
 
   // It reaches T3 as typed, once.
   const received: SecretAnswer[] = [];
@@ -429,9 +429,9 @@ test("the fake T3 asks for a secret only in a running turn, ends it with the run
 
 test("the page words a secret as T3 does, and a chip with several kinds names each", () => {
   const status = { status: "running" as const, externalActivity: true, pendingApprovals: false, pendingUserInput: true, pendingSecret: true, activeRunId: null, threadMissing: false };
-  assert.equal(describeStatus(status).label, "asking for a secret");
-  assert.equal(describeStatus({ ...status, pendingApprovals: true }).label, "needs approval");
-  assert.equal(describeStatus({ ...status, pendingSecret: false }).label, "waiting for your answer");
+  assert.equal(memberActivity(status).label, "asking for a secret");
+  assert.equal(memberActivity({ ...status, pendingApprovals: true }).label, "needs approval");
+  assert.equal(memberActivity({ ...status, pendingSecret: false }).label, "waiting for your answer");
   assert.deepEqual([requestsWhat(["secret"]), requestsWhat(["approval", "approval"]), requestsWhat(["user-input"]), requestsWhat(["user-input", "secret"]), requestsWhat(["secret", "approval", "user-input"])], ["secret", "approval", "question", "secret and question", "approval, secret and question"]);
 });
 

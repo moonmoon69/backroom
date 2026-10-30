@@ -4,23 +4,16 @@
  * it left running, and what its runs changed. Pure functions over a thread detail; a room's desk and a thread on its
  * own use the same ones.
  */
-import type { T3Message, T3PullRequestChecks, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem } from "../adapter/types.ts";
-import { isPullRequestWatch, isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
+import type { T3Message, T3PullRequestChecks, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem, T3UsageLimit } from "../adapter/types.ts";
+import { backgroundOf, isPullRequestWatch, isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
+import type { MemberFacts, QueueState } from "../domain/memberState.ts";
+import type { UsageLimitPause } from "../domain/types.ts";
 import { watchLine, watchedLink } from "./pullRequestWatch.ts";
 import { providerLabel } from "../domain/usageLimit.ts";
 
 // ---------------- the queue ----------------
 
-/**
- * The thread's queued messages, as T3 holds them: how many, and what holds them when nothing starts them. "limit": a
- * usage limit on the provider holds them until the limited turn continues (T3 refuses queue.resume until then). "held":
- * T3 held the queue (after a provider failure, a Stop, a disabled provider or a missing worktree) until someone resumes
- * it; `reason` only when T3's runs say it.
- */
-export interface QueueState {
-  count: number;
-  hold: null | { by: "limit"; reason: string } | { by: "held"; reason: string | null };
-}
+export type { QueueState };
 
 export function queueOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems" | "shell">): QueueState | null {
   const queued = detail.runs.filter((run) => run.status === "queued");
@@ -33,6 +26,35 @@ export function queueOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems" | "she
   const failure = latest?.status === "failed" ? detail.turnItems.filter((item) => item.runId === latest.id && item.type === "error").pop() : undefined;
   const reason = failure?.type === "error" ? `held after the last turn failed: ${failure.message}` : latest?.status === "interrupted" || latest?.status === "cancelled" ? "held after the last turn was stopped" : null;
   return { count, hold: { by: "held", reason } };
+}
+
+// ---------------- the member's state ----------------
+
+/** A thread's usage-limit pause as the room shows it. */
+export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, resume: limit.recovery ? (limit.recovery.autoResume ? "on" : "off") : null });
+
+/**
+ * What the member state table (src/domain/memberState.ts) reads, from the thread as T3 shows it now: its row, what it
+ * waits on, its queue and what runs. `ownRun`: a room run is on the thread.
+ */
+export function memberFacts(detail: T3ThreadDetail, ownRun: boolean, now = Date.now()): MemberFacts {
+  const { shell } = detail;
+  const waits = new Set(openRequests(detail).map((request) => request.type));
+  const running = runningRun(detail) !== null;
+  return {
+    status: shell.status,
+    missing: shell.deletedAt !== null,
+    approval: waits.has("approval"),
+    secret: waits.has("secret"),
+    input: waits.has("user-input"),
+    paused: shell.usageLimit ? pauseOf(shell.usageLimit) : null,
+    queue: queueOf(detail),
+    ownRun,
+    external: running && !ownRun,
+    background: running ? null : backgroundOf(shell),
+    jobs: backgroundTasks(detail, now),
+    planReady: shell.interactionMode === "plan" && shell.hasActionableProposedPlan,
+  };
 }
 
 // ---------------- the conversation ----------------

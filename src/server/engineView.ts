@@ -9,14 +9,14 @@
  */
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { T3Adapter, T3ThreadDetail, T3ThreadShell, T3UsageLimit } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
 import { backgroundOf, isRunActive, runForMessage } from "../adapter/types.ts";
 import type { AppStack } from "../app/bootstrap.ts";
 import { isPost } from "../app/boardEngine.ts";
 import { messageAttachmentIds, messageOf } from "../app/engineMessages.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { isAfter, seenMarks } from "../app/seen.ts";
-import { liveFeed, runningRun } from "../app/threadView.ts";
+import { liveFeed, pauseOf, runningRun } from "../app/threadView.ts";
 import { browsersForRoom, effectiveBrowser } from "../browser/catalog.ts";
 import { ROOM_NOTE } from "../briefing/envelope.ts";
 import type { Repos } from "../db/repos.ts";
@@ -27,7 +27,7 @@ import type {
   EngineSeatView, EngineStreamData, EngineT3Ref, EngineTime,
 } from "../domain/engineView.ts";
 import { RoomError } from "../domain/errors.ts";
-import type { Participant, Room, UsageLimitPause } from "../domain/types.ts";
+import type { Participant, Room } from "../domain/types.ts";
 import { isPausedNotice } from "../domain/usageLimit.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Activity, Projection, RoomEvent, Run } from "../engine/index.ts";
@@ -722,9 +722,6 @@ export function dismissNotices(repos: Repos, roomId: string, p: Projection, inpu
 }
 
 // ---------------- member status, from the journal and T3 ----------------
-
-/** A thread's usage-limit pause as the room shows it. */
-export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, resume: limit.recovery ? (limit.recovery.autoResume ? "on" : "off") : null });
 
 export function memberStatus(input: {
   participant: Participant;

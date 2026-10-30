@@ -8,14 +8,15 @@ import { afterEach, test } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
 import { CONTINUE_TEXT, T3CommandRejected, limitArmId, runPrompt, type T3Adapter, type ThreadControl } from "../src/adapter/types.ts";
 import { ARM_MARGIN_MS, LimitRecovery, limitAction } from "../src/app/limitRecovery.ts";
-import { queueOf } from "../src/app/threadView.ts";
+import { pauseOf, queueOf } from "../src/app/threadView.ts";
 import { isPausedNotice, pauseLabel, resetTime } from "../src/domain/usageLimit.ts";
 import { replyPieces, replyText } from "../web/src/replyTo.ts";
 import { controlThread } from "../src/app/threadControl.ts";
 import { memoryLimitIntents, storedLimitIntents } from "../src/app/limitIntent.ts";
-import { describeStatus, pauseDetail, queueLine } from "../web/src/memberActivity.ts";
+import { memberActivity } from "../web/src/memberActivity.ts";
+import { pauseDetail, queueLine } from "../src/domain/memberState.ts";
 import { createTestStack, type TestStack } from "./helpers.ts";
-import { journalView, memberStatus, pauseOf } from "../src/server/engineView.ts";
+import { journalView, memberStatus } from "../src/server/engineView.ts";
 import { Room } from "./runtime/helpers.ts";
 import { FOLLOW_UP } from "../src/runtime/index.ts";
 import { t3Stub } from "./t3Stub.ts";
@@ -253,15 +254,15 @@ test("a paused member is neither working nor needing you: its label says until w
   const resetAt = new Date(Date.now() + 3_600_000).toISOString();
   const paused = { runId: "r", provider: "claudeAgent", resetAt, message: "Claude API rate limit reached. Try again later.", resume: "on" as const };
   const status = { status: "queued" as const, externalActivity: false, pendingApprovals: false, pendingUserInput: false, activeRunId: "host-run", threadMissing: false, background: null, paused };
-  const activity = describeStatus(status, null);
+  const activity = memberActivity(status, null);
   assert.equal(activity.label, `paused on Claude's limit until ${resetTime(resetAt, Date.now())}`, "a room message queued behind the limit does not make it working");
   assert.equal(activity.tone, "paused");
   assert.equal(activity.motion, null);
   assert.equal(activity.detail, `Claude API rate limit reached. Try again later. · T3 continues it at ${resetTime(resetAt, Date.now())}`);
   assert.equal(pauseDetail({ ...paused, resume: "off" }, Date.now()), "Claude API rate limit reached. Try again later. · T3 will not continue it");
   assert.equal(pauseDetail({ ...paused, resume: null }, Date.now()), "Claude API rate limit reached. Try again later. · T3 is not yet set to continue it");
-  assert.equal(describeStatus({ ...status, pendingApprovals: true }, null).tone, "approval", "an approval still comes first");
-  assert.equal(describeStatus({ ...status, paused: null, status: "failed", activeRunId: null }, null).label, "error", "an ordinary failure is still an error");
+  assert.equal(memberActivity({ ...status, pendingApprovals: true }, null).tone, "approval", "an approval still comes first");
+  assert.equal(memberActivity({ ...status, paused: null, status: "failed", activeRunId: null }, null).label, "error", "an ordinary failure is still an error");
 });
 
 // ---------------- the room ----------------
@@ -337,7 +338,7 @@ test("the room's member status carries the pause from T3's thread list", async (
   const participant = stack.repos.getParticipant(stack.participants.sol2!)!;
   const status = memberStatus({ participant, repos: stack.repos, view: journalView({ p: stack.engine.view(stack.roomId), marks: { through: 0, ids: [] } }), shells, native: [] });
   assert.deepEqual(status.paused, { runId: stack.fake.threads.get(threadId)!.runs[0]!.id, provider: "codex", resetAt, message: "You've hit your usage limit.", resume: null });
-  assert.equal(describeStatus(status, null).label, `paused on Codex's limit until ${resetTime(resetAt, Date.now())}`);
+  assert.equal(memberActivity(status, null).label, `paused on Codex's limit until ${resetTime(resetAt, Date.now())}`);
 });
 
 test("a paused turn of your own request does not need you: its notice keeps Retry, and an ordinary failure still needs you", async () => {

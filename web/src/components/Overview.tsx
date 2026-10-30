@@ -9,7 +9,7 @@ import { RoomMenu } from "./RoomActions.tsx";
 import { PlusIcon, StarMark } from "./icons.tsx";
 import { useSkin } from "../skin.ts";
 import { carriesPreset, droppedPresetId, usePresets } from "./presets.tsx";
-import { describeStatus } from "../memberActivity.ts";
+import { memberActivity } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
@@ -482,7 +482,7 @@ const tierOf = (state: TileState): number => (state.needs > 0 ? 0 : state.unseen
 function roomState(room: RoomListItem, detail: OverviewRoom | undefined): TileState {
   return {
     needs: detail?.needs ?? room.counts.needsYou,
-    busy: detail ? detail.members.filter((m) => describeStatus(m.status).motion !== null || m.status.working).length : room.counts.busy + room.counts.working,
+    busy: detail ? detail.members.filter((m) => memberActivity(m.status).motion !== null || m.status.working).length : room.counts.busy + room.counts.working,
     unseen: room.news.unseen,
   };
 }
@@ -551,7 +551,7 @@ function RoomCard({
         <ul className="ov-members">
           {/* The Consigliere first: what he says is the room's news. */}
           {[...detail.members].sort((a, b) => Number(b.consigliere) - Number(a.consigliere)).map((member) => {
-            const described = describeStatus(member.status);
+            const described = memberActivity(member.status);
             // A turn's latest line; else the request it is on; else what it last said (also between turns, while its
             // background work runs).
             const line = member.live ?? member.doing ?? member.lastReply?.text ?? "";

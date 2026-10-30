@@ -22,7 +22,7 @@ import { ContextMeterLine, ContextReadout } from "./ContextMeter.tsx";
 import { selectionEffort } from "../../../src/domain/effort.ts";
 import { fmtTokens, money } from "./deskFormat.ts";
 import { identityStyle, Monogram } from "./Monogram.tsx";
-import { describeStatus } from "../memberActivity.ts";
+import { memberActivity } from "../memberActivity.ts";
 import { useResetClock } from "../resetClock.ts";
 import { backroomRequest } from "../replyTo.ts";
 import { sinceWords } from "../engineTime.ts";
@@ -129,7 +129,7 @@ export function CrewButton({ active, onClick, nav }: { active: boolean; onClick:
   const crew = snapshot.participants.filter(isActiveParticipant);
   const now = useResetClock(crew.map((p) => snapshot.participantStatus[p.id]?.paused?.resetAt));
   const statuses = crew.map((p) => {
-    const activity = describeStatus(snapshot.participantStatus[p.id], desk?.participants[p.id], now);
+    const activity = memberActivity(snapshot.participantStatus[p.id], desk?.participants[p.id], now);
     return `@${p.alias}: ${activity.label}${activity.detail ? ` (${activity.detail})` : ""}`;
   });
   return (
@@ -231,7 +231,7 @@ function ParticipantChip({
   const meter = costs?.contexts?.[participant.id];
   const isConsigliere = snapshot.room.consigliereId === participant.id;
   const now = useResetClock([status?.paused?.resetAt]);
-  const described = describeStatus(status, desk, now);
+  const described = memberActivity(status, desk, now);
   const effort = selectionEffort(participant.modelSelection);
   const attention = ["approval", "input", "error", "missing"].includes(described.tone) ? ` attention-${described.tone}` : "";
   const pick = (action: MenuAction) => {

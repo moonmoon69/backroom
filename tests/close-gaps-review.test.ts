@@ -9,7 +9,7 @@ import { runLimit } from "../src/runtime/t3.ts";
 import { memberStatus, statusLine } from "../src/runtime/status.ts";
 import { queueOf } from "../src/app/threadView.ts";
 import { journalView, memberStatus as roomMemberStatus } from "../src/server/engineView.ts";
-import { describeStatus } from "../web/src/memberActivity.ts";
+import { memberActivity } from "../web/src/memberActivity.ts";
 import { t3Stub } from "./t3Stub.ts";
 import { createTestStack } from "./helpers.ts";
 
@@ -46,7 +46,7 @@ test("review: a new room request behind a held queue remains queue held", async 
     const detail = (await stack.fake.getThreadDetail(threadId))!;
     const shells = new Map((await stack.adapter.listThreads()).map((shell) => [shell.id, shell]));
     const status = roomMemberStatus({ participant: stack.repos.getParticipant(stack.participants.sol1!)!, repos: stack.repos, view: journalView({ p: stack.engine.view(stack.roomId), marks: { through: 0, ids: [] } }), shells, native: [] });
-    const activity = describeStatus(status, { backgroundTasks: [], queue: queueOf(detail) } as unknown as Parameters<typeof describeStatus>[1]);
+    const activity = memberActivity(status, { backgroundTasks: [], queue: queueOf(detail) } as unknown as Parameters<typeof memberActivity>[1]);
     assert.equal(activity.label, "queue held");
     assert.equal(activity.motion, null);
   } finally {

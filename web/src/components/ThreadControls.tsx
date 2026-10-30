@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { BackgroundTask, CommandResult, PageControl, QueueState, UsageLimitPause } from "../types.ts";
-import { pauseDetail, queueLine } from "../memberActivity.ts";
+import { pauseDetail, queueLine } from "../../../src/domain/memberState.ts";
 import { pauseLabel, resetTime } from "../../../src/domain/usageLimit.ts";
 
 /** What a control's command came to: T3 took it, the turn had continued already, or null when it was refused. */
