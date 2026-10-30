@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { T3PullRequestChecks, T3ThreadShell } from "../../src/adapter/types.ts";
 import { checksReader } from "../../src/app/pullRequestWatch.ts";
+import { createTestStack } from "../helpers.ts";
 import { Room } from "./helpers.ts";
 
 let room: Room | undefined;
@@ -93,5 +94,38 @@ test("a read that lists no checks says nothing of the run: the failure after it 
   await room.tick();
   watch(room, [["Hex registry", "failure"], ["Elixir tests", "success"]]);
   await room.tick(2);
+  assert.equal(finished(room).length, 1);
+});
+
+test("two rooms whose Consiglieri watch the same pull request and head each get their one notice (Sol, #228)", async () => {
+  const s = await createTestStack({ autoCompleteMs: null }, ["first"]);
+  try {
+    await s.run({ type: "room.consigliere.set", roomId: s.roomId, participantId: s.participants.first! });
+    const { roomId: second } = (await s.run({ type: "room.create", projectId: "project_demo", title: "Second" })) as { roomId: string };
+    const { participantId } = (await s.run({ type: "participant.create", roomId: second, alias: "second", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, thread: { mode: "create" } })) as { participantId: string };
+    await s.run({ type: "room.consigliere.set", roomId: second, participantId });
+    const threads = [s.threadOf("first"), s.repos.currentBinding(participantId)!.threadId];
+    const read = (last: "pending" | "success", second: number) =>
+      threads.forEach((threadId) => s.fake.linkPullRequest(threadId, { repository: "example-org/canvas", number: 77, headSha: "a8a71af", watched: true, checksState: "failing", syncedAt: new Date(Date.UTC(2026, 9, 30, 22, 0, second)).toISOString(), checks: checks([["Hex registry", "failure"], ["Elixir tests", last]]) }));
+    const counts = () => [s.roomId, second].map((id) => s.engine.view(id).events.filter((e) => e.data.kind === "notice" && e.data.causeId.startsWith("checks:")).length);
+    read("pending", 1);
+    await s.tick(2);
+    assert.deepEqual(counts(), [0, 0]);
+    read("success", 2);
+    await s.tick(4);
+    assert.deepEqual(counts(), [1, 1], "one notice on each board");
+  } finally {
+    s.close();
+  }
+});
+
+test("two seats of one room watching the same pull request and head are one notice on its board", async () => {
+  room = await watchedRoom();
+  watch(room, [["Hex registry", "failure"], ["Elixir tests", "pending"]], "a8a71af", "C");
+  watch(room, [["Hex registry", "failure"], ["Elixir tests", "pending"]], "a8a71af", "W");
+  await room.tick();
+  watch(room, [["Hex registry", "failure"], ["Elixir tests", "success"]], "a8a71af", "C");
+  watch(room, [["Hex registry", "failure"], ["Elixir tests", "success"]], "a8a71af", "W");
+  await room.tick(3);
   assert.equal(finished(room).length, 1);
 });

@@ -1046,7 +1046,7 @@ export class EngineHost {
 
   // ---------------- a watched pull request's finished run ----------------
 
-  /** Watched pull requests (by watch task and head) this host has seen a check pending on, since it started. */
+  /** Watched pull requests (by room, seat, watch task and head) this host has seen a check pending on, since it started. */
   private readonly checksPending = new Set<string>();
 
   /**
@@ -1065,12 +1065,15 @@ export class EngineHost {
       // No checks read, or none listed (none started yet, or T3 lost them for a moment), says nothing of the run.
       if (!link?.watch || !checks || checks.checks.length === 0) continue;
       const key = `${taskId}@${link.watch.headSha ?? link.watch.startedAt}`;
+      // What a seat's watch has shown is that seat's, in its room: two rooms (or two seats of one) watching the same pull
+      // request each see it pending; the board's key keeps one notice per room.
+      const seen = JSON.stringify([roomId, seatId, key]);
       const failed = finishedWithFailures(checks);
       if (failed === null) {
-        this.checksPending.add(key);
+        this.checksPending.add(seen);
         continue;
       }
-      if (!this.checksPending.delete(key) || failed.length === 0) continue;
+      if (!this.checksPending.delete(seen) || failed.length === 0) continue;
       if (this.project(roomId).events.some((e) => e.data.kind === "notice" && e.data.causeId === checksCause(key))) continue;
       const names = failed.slice(0, 5).join(", ") + (failed.length > 5 ? `, and ${failed.length - 5} more` : "");
       const body = `Pull request #${link.number} (${link.repository}), watched on ${this.named(roomId, seatId)}'s thread: its checks have finished, ${failed.length} failed (${oneLine(names)}). A rerun of the failed checks is possible now; T3's watch does not wake on a run finishing.`;
