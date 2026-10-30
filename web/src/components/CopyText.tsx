@@ -14,7 +14,7 @@ export async function copyText(text: string, toast: (message: string, kind?: "er
 }
 
 /**
- * Copy a whole message: at the foot of a reply, beside the speaker, and beside the user's own bubbles. A reply is
+ * Copy a whole message: at the foot of a reply, and beside the user's own bubbles. A reply is
  * copied as the Markdown it was written in, so it pastes back with its formatting. A tick shows for a moment after.
  */
 export function CopyTextButton({ text, label, className = "" }: { text: string; label: string; className?: string }) {
