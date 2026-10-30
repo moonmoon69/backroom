@@ -18,6 +18,8 @@ import { LimitRecovery } from "./limitRecovery.ts";
 import { storedLimitIntents } from "./limitIntent.ts";
 import { T3Presence } from "./t3Presence.ts";
 import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
+import { memberFacts } from "./threadView.ts";
+import { memberState, type MemberState } from "../domain/memberState.ts";
 
 export class ChangeHub {
   private readonly listeners = new Map<string, Set<() => void>>();
@@ -64,6 +66,8 @@ export interface AppStack {
   engine: EngineHost;
   /** The seat lifecycle on the journal (seat, Consigliere, retire, reseat). */
   seats: EngineSeats;
+  /** A member's state from its thread as T3 shows it now (src/domain/memberState.ts), as the page's label reads it; `ownRun`: a room run is on it. */
+  memberState(threadId: string, ownRun: boolean): Promise<MemberState>;
   /** Poteto mode's pstack clone (src/app/poteto.ts), when this service keeps one; started by the server. */
   poteto: PotetoPack | null;
   close(): void;
@@ -174,6 +178,7 @@ export function createStack(input: {
     limitRecovery,
     engine,
     seats,
+    memberState: async (threadId, ownRun) => memberState(memberFacts(await input.adapter.getThreadDetail(threadId, { bounded: true }), ownRun)),
     poteto,
     close() {
       poteto?.stop();

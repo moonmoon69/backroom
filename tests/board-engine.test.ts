@@ -85,6 +85,7 @@ class Fixture {
       repos: this.stack.repos,
       host: this.stack.engine!,
       standing: async (participantId) => `standing sections of ${participantId}`,
+      memberState: (threadId, ownRun) => this.stack.memberState(threadId, ownRun),
       afterSeat: async () => {
         await this.stack.engine!.tick();
       },
@@ -823,4 +824,24 @@ test("the CLI: --file and stdin carry a text past the shell's argument limit; ov
   assert.equal(over.code, 1);
   assert.match(over.stderr, /1,048,577 bytes; the board takes at most 1 MiB/);
   assert.equal(f.p().events.length, before);
+});
+
+test("members says what T3 shows of each member beside what the journal says: an approval, a failed run with work still running (#76)", async () => {
+  const f = await Fixture.create();
+  try {
+    await f.cli("c", "post", "@w Fix the flaky test.");
+    await f.tick();
+    assert.equal(f.running("w"), true);
+    const line = async () => (await f.cli("c", "members")).split("\n").find((l) => l.startsWith("@w "))!;
+    assert.match(await line(), / · working on #\d+ · T3: working · owns #\d+/);
+    f.fake.raiseApproval(f.thread("w"), "req-1", { prompt: "git push" });
+    assert.match(await line(), / · working on #\d+ · T3: needs approval · owns #\d+/, "the Consigliere reads what the user's page says");
+    await f.fake.respondApproval({ commandId: "ok", threadId: f.thread("w"), requestId: "req-1", decision: "accept" });
+    f.fake.setBackground(f.thread("w"), [{ taskId: "exec-1", kind: "command", description: "node browser-repl.mjs", childThreadId: null }]);
+    f.complete("w", "The model is at capacity.", "error");
+    await f.tick(2);
+    assert.match(await line(), / · ready · T3: error \(still running: node browser-repl\.mjs \(command, \d+m\)\) · owns #\d+/, "not idle: what still runs is named");
+  } finally {
+    f.close();
+  }
 });

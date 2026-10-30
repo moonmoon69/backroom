@@ -35,9 +35,10 @@ export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit
 
 /**
  * What the member state table (src/domain/memberState.ts) reads, from the thread as T3 shows it now: its row, what it
- * waits on, its queue and what runs. `ownRun`: a room run is on the thread.
+ * waits on, its queue and what runs; a thread T3 no longer has is missing. `ownRun`: a room run is on the thread.
  */
-export function memberFacts(detail: T3ThreadDetail, ownRun: boolean, now = Date.now()): MemberFacts {
+export function memberFacts(detail: T3ThreadDetail | null, ownRun: boolean, now = Date.now()): MemberFacts {
+  if (!detail) return { status: "unknown", missing: true, approval: false, secret: false, input: false, paused: null, queue: null, ownRun, external: false, background: null, jobs: [], planReady: false };
   const { shell } = detail;
   const waits = new Set(openRequests(detail).map((request) => request.type));
   const running = runningRun(detail) !== null;

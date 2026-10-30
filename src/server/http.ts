@@ -868,6 +868,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     execute: (command) => stack.service.execute(parseCommand(command)),
     seats: stack.seats,
     standing: (participantId) => stack.seats.standingText(participantId),
+    memberState: (threadId, ownRun) => stack.memberState(threadId, ownRun),
     // A new room state reaches open pages through the room's stream, like any change.
     notify: (roomId) => stack.hub.notify(roomId),
     contextOf: (participant) => {

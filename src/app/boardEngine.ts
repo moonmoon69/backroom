@@ -15,6 +15,7 @@ import type { RoomCommand } from "../domain/commands.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { Participant, Room } from "../domain/types.ts";
 import { contextPhrase, type ContextMeter } from "../domain/contextMeter.ts";
+import type { MemberState } from "../domain/memberState.ts";
 import { roomForKey } from "../browser/catalog.ts";
 import { roomStateSection } from "../briefing/assemble.ts";
 import { deliveredInputs, inputTree } from "../engine/index.ts";
@@ -47,6 +48,8 @@ export interface BoardEngineDeps {
   /** A member's standing sections in full, as its first briefing gives them. */
   standing?(participantId: string): Promise<string>;
   contextOf?(participant: Participant): ContextMeter | null;
+  /** A member's state from its T3 thread, as the page's label reads it (the stack's memberState). */
+  memberState?(threadId: string, ownRun: boolean): Promise<MemberState>;
   /** Called after seating, so the seat briefing is on its way before the caller sends the new member work. */
   afterSeat?(): Promise<void>;
   notify?(roomId: string): void;
@@ -156,7 +159,7 @@ export class BoardEngine {
       case "read":
         return this.read(c, args);
       case "members":
-        return this.members(c);
+        return await this.members(c);
       case "crew":
         return this.crew();
       case "seat":
@@ -578,12 +581,13 @@ export class BoardEngine {
     return out.join("\n").trimEnd();
   }
 
-  private members(c: Caller): string {
+  private async members(c: Caller): Promise<string> {
     const p = this.view(c.room.id);
     const seats = [...p.seats.values()].filter((s) => s.status !== "retired");
     if (seats.length === 0) return "Nobody is seated on this room's board.";
     const reseating = this.deps.seats?.reseats(c.room.id) ?? [];
-    const lines = seats.map((seat) => {
+    const t3 = await Promise.all(seats.map((seat) => this.t3State(seat.threadId, seat.activeRunId !== null)));
+    const lines = seats.map((seat, i) => {
       const binding = this.deps.repos.getBinding(seat.id);
       const member = binding ? this.deps.repos.getParticipant(binding.participantId) : null;
       const owns = [...p.requests.values()].filter((q) => q.owner === seat.id && q.state === "open").map((q) => q.id);
@@ -593,12 +597,23 @@ export class BoardEngine {
       return [
         `${this.name(seat.id)}${p.orchestrator === seat.id ? " (the Consigliere)" : ""}`,
         member?.modelSelection.model ?? "model unknown",
-        this.doing(c, p, seat.id),
+        this.doing(c, p, seat.id) + t3[i],
         owns.length ? `owns ${this.labels(p, owns)}` : "",
         awaits.length ? `waits on ${this.labels(p, awaits)}` : "",
       ].filter(Boolean).join(" · ") + `${context}${reseat ? ` · being reseated (checkpoint ${this.label(p, reseat.requestId)})` : ""} · thread ${seat.threadId}`;
     });
     return [`Members of "${c.room.title}":`, ...lines, ...(p.orchestrator ? [] : ["This room has no Consigliere."])].join("\n");
+  }
+
+  /** What T3 shows of a seat's thread, in the page's words: " · T3: needs approval", " · T3: error (still running: …)". */
+  private async t3State(threadId: string, ownRun: boolean): Promise<string> {
+    if (!this.deps.memberState) return "";
+    try {
+      const state = await this.deps.memberState(threadId, ownRun);
+      return ` · T3: ${state.label}${state.detail ? ` (${state.detail})` : ""}`;
+    } catch {
+      return " · T3 not reachable";
+    }
   }
 
   /** What a seat is doing now, from the journal: a turn, or input about to start one. */
