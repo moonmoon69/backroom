@@ -501,6 +501,7 @@ function toRun(run: Record<string, unknown>): T3Run {
     threadId: run.threadId as string,
     ordinal: Number(run.ordinal ?? 0),
     userMessageId: run.userMessageId as string,
+    rootNodeId: text(run.rootNodeId),
     status: run.status as T3Run["status"],
     queuePosition: num(run.queuePosition),
     queueHeld: run.queueHeld === true,

@@ -38,7 +38,8 @@ test("the watch's line says what its pull request waits for, from the freshest o
   assert.equal(watchLine(link({ checksState: "failing" }, { failedChecks: ["Trivy (secrets + IaC misconfig)"] }), null, NOW), "Watching pull request #70: 1 check failing (Trivy (secrets + IaC misconfig)) · watched for 8h");
   assert.equal(watchLine(link({ checksState: "passing" }), null, NOW), "Watching pull request #70: checks passed · watched for 8h");
   assert.equal(watchLine(link({ checksState: "pending", syncedAt: ago(40 * 60_000) }), null, NOW), "Watching pull request #70: checks pending, as of 40m ago · watched for 8h", "an old reading says its age");
-  assert.equal(watchLine(link(), checks([["Browser harness", "pending"]], STALE_MS + 60_000), NOW), "Watching pull request #70: 1 check pending (Browser harness), as of 16m ago · watched for 8h");
+  assert.equal(watchLine(link({ syncedAt: ago(STALE_MS + 120_000) }), checks([["Browser harness", "pending"]], STALE_MS + 60_000), NOW), "Watching pull request #70: 1 check pending (Browser harness), as of 16m ago · watched for 8h", "the later of two old readings, with its age");
+  assert.equal(watchLine(link({ checksState: "passing", syncedAt: ago(60_000) }), checks([["Browser harness", "pending"]], 3_600_000), NOW), "Watching pull request #70: checks passed · watched for 8h", "a checks read older than the snapshot gives way to it");
   assert.equal(watchLine(link({ checksState: null }), null, NOW), "Watching pull request #70: checks not known yet · watched for 8h", "nothing known is said so");
   assert.equal(watchLine(link({ checksState: null }, { checksAwaitedSince: ago(25 * 60_000) }), null, NOW), "Watching pull request #70: no checks yet, for 25m · watched for 8h");
   assert.equal(watchLine(link({ state: "merged" }), null, NOW), "Watching pull request #70: merged · watched for 8h");
@@ -92,4 +93,28 @@ test("a watch's task keeps its title and the member's status line while its line
   await fake.controlThread({ commandId: "stop", threadId: "t", control: { type: "thread.stop" } });
   const stopped = (await fake.getThreadDetail("t"))!;
   assert.deepEqual([stopped.shell.pendingBackgroundTasks, stopped.shell.pullRequests.map((pr) => pr.watch)], [[], [null, null]], "Stop everything ends T3's watches");
+});
+
+test("a member's post names the watch with its line; when the line changes, no quiet follow-up says the watch ended", async () => {
+  const { Room } = await import("./runtime/helpers.ts");
+  const room = await Room.create();
+  try {
+    room.post("C", "W", "Open the PR and watch it.");
+    await room.tick();
+    const threadId = room.threadOf("W");
+    room.fake.linkPullRequest(threadId, { repository: "demo/demo", number: 70, watched: true, checksState: "pending" });
+    room.complete("W", "Opened #70; T3 watches it.");
+    await room.tick();
+    const answer = room.outputs().filter((o) => o.author === "W").at(-1)!;
+    assert.match(answer.body, /^\[T3 status of @W: still running: monitor "Watching pull request #70" \(checks pending · watched for 0m\)\]/);
+    room.complete("C", "Noted.");
+    await room.tick();
+    room.fake.linkPullRequest(threadId, { repository: "demo/demo", number: 70, watched: true, checksState: "passing" });
+    await room.tick();
+    room.clock += 5 * 60_000;
+    await room.tick(3);
+    assert.equal(room.p.events.filter((e) => e.data.kind === "progress" && e.data.author === "W").length, 0, "the watch did not end: no follow-up");
+  } finally {
+    room.close();
+  }
 });

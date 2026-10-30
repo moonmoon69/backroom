@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRoom } from "../context.tsx";
 import { isActiveParticipant, type EnginePost, type EngineRunView, type Participant } from "../types.ts";
-import { betweenTurns, describeStatus, jobsLine, queueLine } from "../memberActivity.ts";
+import { betweenTurns, describeStatus, jobsLine, queueHeld, queueLine } from "../memberActivity.ts";
 import { ThreadControls, outcomeOf } from "./ThreadControls.tsx";
 import { useResetClock } from "../resetClock.ts";
 import { isPausedNotice, pauseLabel } from "../../../src/domain/usageLimit.ts";
@@ -148,8 +148,8 @@ export function WorkBar() {
     const participant = seatOf(run.seatId).participant;
     if (participant) busy.add(participant.id);
     const on = refs(run.requestIds);
-    // A turn sent to a member its usage limit paused waits in T3's queue behind the limit: waiting, not working.
-    const paused = participant ? Boolean(snapshot.participantStatus[participant.id]?.paused) : false;
+    // A turn sent to a member its usage limit paused, or whose queue T3 holds, waits in T3's queue: waiting, not working.
+    const paused = participant ? Boolean(snapshot.participantStatus[participant.id]?.paused) || queueHeld(snapshot.participantStatus[participant.id], desk?.participants[participant.id]) : false;
     items.push({
       key: `run:${run.id}`,
       group: paused ? "waiting" : "working",
@@ -169,7 +169,8 @@ export function WorkBar() {
     const memberDesk = desk?.participants[participant.id];
     const running = memberDesk?.runningRun;
     if ((running && !running.startedByRoom) || (!running && status?.externalActivity)) {
-      items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "" });
+      // Its choices: Stop everything (the turn and what it left), and a Stop on each subagent.
+      items.push({ key: `turn:${participant.id}`, group: "working", participant, what: running?.prompt ? "in T3" : "on its own", text: running?.prompt ?? "", open: { member: participant } });
     } else if (betweenTurns(status, memberDesk)) {
       // Its choices: Stop on each subagent, and Stop everything.
       items.push({ key: `background:${participant.id}`, group: "working", participant, what: describeStatus(status, memberDesk).label, text: jobsLine(memberDesk, Date.now()), open: { member: participant } });
@@ -182,8 +183,8 @@ export function WorkBar() {
     const memberDesk = desk?.participants[participant.id];
     if (status?.paused) {
       items.push({ key: `paused:${participant.id}`, group: "waiting", participant, what: "paused", text: pauseLabel(status.paused, now).replace(/^paused /, ""), open: { member: participant } });
-    } else if (memberDesk?.queue?.hold?.by === "held" && !status?.activeRunId) {
-      items.push({ key: `queue:${participant.id}`, group: "waiting", participant, what: "queue held", text: queueLine(memberDesk.queue) ?? "", open: { member: participant } });
+    } else if (queueHeld(status, memberDesk)) {
+      items.push({ key: `queue:${participant.id}`, group: "waiting", participant, what: "queue held", text: queueLine(memberDesk?.queue) ?? "", open: { member: participant } });
     }
   }
 

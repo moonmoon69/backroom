@@ -1,6 +1,6 @@
 /** What the host reads from a member's T3 thread: whose run it is, its final message, and whether the thread is free. */
 import type { T3Message, T3Run, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, isPullRequestWatch, isRunActive, latestExecutedRun, runReplies } from "../adapter/types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, isPullRequestWatch, isRunActive, latestExecutedRun, rootFailure, runReplies } from "../adapter/types.ts";
 
 /**
  * Who started a T3 run on a seat's thread:
@@ -54,9 +54,8 @@ export interface RunLimit {
 
 /** The usage limit that failed the run (its last error is of T3's class "usage_limit"), or null. */
 export function runLimit(detail: Pick<T3ThreadDetail, "turnItems">, run: T3Run): RunLimit | null {
-  if (run.status !== "failed") return null;
-  const last = detail.turnItems.filter((item) => item.runId === run.id && item.type === "error").pop();
-  return last?.type === "error" && last.failureClass === "usage_limit" ? { provider: run.providerInstanceId, resetAt: last.resetAt, message: last.message } : null;
+  const failure = rootFailure(detail, run);
+  return failure?.failureClass === "usage_limit" ? { provider: run.providerInstanceId, resetAt: failure.resetAt, message: failure.message } : null;
 }
 
 /**

@@ -258,6 +258,8 @@ export interface T3Run {
   ordinal: number;
   /** The user message that requested the run (messages carry their run id too). */
   userMessageId: string;
+  /** The run's root node: its own work, apart from its subagents' (T3 takes a run's failure from it). */
+  rootNodeId?: string | null;
   status: T3RunStatus;
   queuePosition: number | null;
   /** A queue held after a restart waits for the user to resume it. */
@@ -836,7 +838,12 @@ export function runForMessage(detail: Pick<T3ThreadDetail, "runs" | "messages">,
 /** The user message that started a run, when a person wrote it: null for a run the agent started on its own notice. */
 export function runPrompt(detail: Pick<T3ThreadDetail, "messages">, run: T3Run): T3Message | null {
   const message = detail.messages.find((m) => m.id === run.userMessageId) ?? null;
-  return message && message.role === "user" && message.createdBy === "user" ? message : null;
+  return message && message.role === "user" && message.createdBy === "user" && !isContinuation(message) ? message : null;
+}
+
+/** T3's continuation of a turn its usage limit paused, sent by T3 at the reset or by Backroom's Resume now: nobody typed it. */
+export function isContinuation(message: Pick<T3Message, "text" | "creationSource" | "id">): boolean {
+  return message.text === CONTINUE_TEXT && (message.creationSource === "server" || message.id.startsWith("limit-"));
 }
 
 /** A run's assistant messages in order, finished ones only: the last is its answer, the earlier ones its progress. */
@@ -902,10 +909,30 @@ export function latestExecutedRun<R extends Pick<T3Run, "status" | "startedAt" |
  */
 export function usageLimitOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems">, recovery: unknown): T3UsageLimit | null {
   const run = latestExecutedRun(detail.runs);
-  if (run?.status !== "failed") return null;
-  const failure = detail.turnItems.filter((item) => item.type === "error" && item.runId === run.id).pop();
-  if (failure?.type !== "error" || failure.failureClass !== "usage_limit") return null;
+  const failure = run ? rootFailure(detail, run) : null;
+  if (!run || failure?.failureClass !== "usage_limit") return null;
   return { runId: run.id, provider: run.providerInstanceId, resetAt: failure.resetAt, message: failure.message, recovery: recoveryFor(recovery, run.id, failure.resetAt) };
+}
+
+/**
+ * The failure T3 takes for a run (latestRootProviderFailure): of a failed run, the latest failed error on its root node,
+ * by when it was last updated, then by order. A subagent's error is not the run's.
+ */
+export function rootFailure(detail: Pick<T3ThreadDetail, "turnItems">, run: Pick<T3Run, "id" | "status" | "rootNodeId">): Extract<T3TurnItem, { type: "error" }> | null {
+  if (run.status !== "failed") return null;
+  let latest: Extract<T3TurnItem, { type: "error" }> | null = null;
+  for (const item of detail.turnItems) {
+    if (item.type !== "error" || item.status !== "failed" || item.runId !== run.id || item.nodeId !== (run.rootNodeId ?? null)) continue;
+    const at = Date.parse(item.updatedAt);
+    const best = latest ? Date.parse(latest.updatedAt) : Number.NEGATIVE_INFINITY;
+    if (latest === null || at > best || (at === best && item.ordinal > latest.ordinal)) latest = item;
+  }
+  return latest;
+}
+
+/** A stop reached the run: T3 writes its interrupt request on the run a Stop or a Stop everything reached. */
+export function stopReached(detail: Pick<T3ThreadDetail, "turnItems">, runId: string): boolean {
+  return detail.turnItems.some((item) => item.runId === runId && item.type === "run_interrupt_request");
 }
 
 /** T3's limitRecovery record when it is for this run and reset; null otherwise (T3 then treats it as never set). */

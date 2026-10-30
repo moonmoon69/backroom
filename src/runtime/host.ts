@@ -35,7 +35,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { CONTINUE_TEXT, T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isRunActive, runForMessage } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
@@ -781,7 +781,7 @@ export class EngineHost {
       // A T3 notice starts the member's own continuation; that run is imported below. So does T3's continuation of a
       // turn its usage limit paused, sent by T3 at the reset or by Backroom's Resume: nobody typed it.
       if (m.createdBy !== "user" && m.senderThreadId === null) continue;
-      if (m.text === CONTINUE_TEXT && (m.creationSource === "server" || m.id.startsWith("limit-"))) continue;
+      if (isContinuation(m)) continue;
       if (!m.text.trim() && m.attachments.length === 0) continue;
       const id = `t3msg:${seat.threadId}:${m.id}`;
       if (imported.has(id)) continue;

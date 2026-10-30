@@ -2211,7 +2211,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await service.fake("external-run", { threadId: room.thread.worker, text: "Open the PR and watch it." });
     await until("T3 to run it", async () => (await room.snapshot()).participantStatus[room.participant.worker]?.externalActivity === true);
     const eightHours = new Date(Date.now() - 8 * 3_600_000 - 5 * 60_000).toISOString();
-    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "pending", startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "pending", required: true }, { name: "vet + test", status: "success", required: true }] } });
+    // T3 read the checks after it last synced the snapshot: the read is the newer of the two, and says which check.
+    const synced = () => new Date(Date.now() - 60_000).toISOString();
+    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "pending", syncedAt: synced(), startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "pending", required: true }, { name: "vet + test", status: "success", required: true }] } });
     await room.finish("worker", "Opened #70; T3 watches it.");
     await room.settle("fable");
     const line = "Watching pull request #70: 1 check pending (Browser harness) · watched for 8h";
@@ -2223,7 +2225,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     });
     // The checks pass: the line says so at its next read, and no follow-up says the watch ended.
     const before = followUps(await room.snapshot(), seat.worker).length;
-    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "passing", startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "success", required: true }, { name: "vet + test", status: "success", required: true }] } });
+    await service.fake("pull-request", { threadId: room.thread.worker, repository: "demo/demo", number: 70, watched: true, checksState: "passing", syncedAt: synced(), startedAt: eightHours, checks: { observedAt: new Date().toISOString(), checks: [{ name: "Browser harness", status: "success", required: true }, { name: "vet + test", status: "success", required: true }] } });
     await check.state("its checks pass: the line says checks passed, no pending claim left, and no follow-up says the watch ended", () => "T3's checks read gives every check passed", ["Watching pull request #70: checks passed · watched for 8h"], {
       always: () => {
         browser.poll<[string, string]>("the line to say checks passed", watchRead, ([h, c]) => h.includes("checks passed") && !h.includes("pending (") && !c.includes("pending ("), 40_000);

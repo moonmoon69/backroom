@@ -5,7 +5,7 @@
  * work that started.
  */
 import { randomUUID } from "node:crypto";
-import type { T3Adapter, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
+import type { T3Adapter, T3ThreadShell, T3UsageLimit, ThreadControl } from "../adapter/types.ts";
 import { T3CommandRejected, T3Unavailable, limitIdentity } from "../adapter/types.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { z } from "zod";
@@ -31,6 +31,15 @@ export function resumeCommand(shell: T3ThreadShell): { commandId: string; contro
   return { commandId: `limit-continue:${shell.id}:${limit.runId}`, control: { type: "run.continue", runId: limit.runId } };
 }
 
+/**
+ * The ID of a Don't resume of this run and reset, while its recovery is the one recorded now: a second press is a replay
+ * of the first, but once the record changes (re-armed in T3, by Backroom) the next one is a command of its own, or T3
+ * would replay the first receipt and leave the new record on.
+ */
+export function disarmId(threadId: string, limit: Pick<T3UsageLimit, "runId" | "resetAt" | "recovery">): string {
+  return `limit-disarm:${limitIdentity(threadId, limit.runId, limit.resetAt!)}:${limit.recovery?.requestId ?? "none"}`;
+}
+
 export async function controlThread(adapter: T3Adapter, threadId: string, control: PageControl): Promise<ControlOutcome> {
   const shell = await call(() => adapter.getThreadShell(threadId));
   if (!shell) throw new RoomError("not_found", "thread not found in T3", 404);
@@ -42,7 +51,7 @@ export async function controlThread(adapter: T3Adapter, threadId: string, contro
     // T3's own record, turned off for this run and reset; one already off, or none to turn off, sends nothing.
     const limit = shell.usageLimit;
     if (!limit?.resetAt || limit.recovery?.autoResume === false) return "already";
-    await call(() => adapter.controlThread({ commandId: `limit-disarm:${limitIdentity(threadId, limit.runId, limit.resetAt!)}`, threadId, control: { type: "limit.disarm", runId: limit.runId, resetAt: limit.resetAt! } }));
+    await call(() => adapter.controlThread({ commandId: disarmId(threadId, limit), threadId, control: { type: "limit.disarm", runId: limit.runId, resetAt: limit.resetAt! } }));
     return "sent";
   }
   if (control.type === "subagent.stop") {

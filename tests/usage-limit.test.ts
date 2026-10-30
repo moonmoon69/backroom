@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
-import { CONTINUE_TEXT, T3CommandRejected, limitArmId, type T3Adapter, type ThreadControl } from "../src/adapter/types.ts";
+import { CONTINUE_TEXT, T3CommandRejected, limitArmId, runPrompt, type T3Adapter, type ThreadControl } from "../src/adapter/types.ts";
 import { LimitRecovery, limitStep } from "../src/app/limitRecovery.ts";
 import { queueOf } from "../src/app/threadView.ts";
 import { isPausedNotice, pauseLabel, resetTime } from "../src/domain/usageLimit.ts";
@@ -36,7 +36,7 @@ const NOTICE = { ...LIMIT_ERROR, id: "turn-item:notice", ordinal: 191000005, sta
 const SELECTION = { instanceId: "claudeAgent", model: "claude-fable-5-1" };
 
 const run = (id: string, ordinal: number, status: string, extra: Record<string, unknown> = {}) => ({
-  id, threadId: THREAD, ordinal, providerInstanceId: "claudeAgent", modelSelection: SELECTION, userMessageId: `msg-${ordinal}`, status, queuePosition: null, queueHeld: false,
+  id, threadId: THREAD, ordinal, providerInstanceId: "claudeAgent", modelSelection: SELECTION, userMessageId: `msg-${ordinal}`, status, rootNodeId: id === LIMITED ? NODE : null, queuePosition: null, queueHeld: false,
   requestedAt: "2026-10-28T04:00:00.000Z", startedAt: status === "queued" ? null : "2026-10-28T04:00:01.000Z", completedAt: status === "queued" ? null : "2026-10-28T04:10:09.928Z", checkpointId: null, ...extra,
 });
 
@@ -360,7 +360,7 @@ test("Don't resume turns T3's recovery off with T3's own command; Backroom does 
   assert.equal(fake.threads.get(loose.id)!.recovery?.autoResume, true, "armed by default");
   const cancel = () => stack!.run({ type: "thread.control", threadId: loose.id, control: { type: "resume.cancel" } });
   assert.deepEqual(await cancel(), { type: "thread.controlled", threadId: loose.id, outcome: "sent" });
-  assert.deepEqual(fake.threads.get(loose.id)!.recovery, { runId, resetAt, autoResume: false, snooze: false, requestId: `limit-disarm:${loose.id}:${runId}:${Date.parse(resetAt)}` });
+  assert.deepEqual(fake.threads.get(loose.id)!.recovery, { runId, resetAt, autoResume: false, snooze: false, requestId: `limit-disarm:${loose.id}:${runId}:${Date.parse(resetAt)}:${limitArmId(loose.id, runId, resetAt)}` }, "named by the record it turns off");
   assert.deepEqual(await cancel(), { type: "thread.controlled", threadId: loose.id, outcome: "already" }, "already off: nothing sent");
   await recovery.sweep();
   await new LimitRecovery(fake).sweep();
@@ -410,4 +410,14 @@ test("from the page, a member's Don't resume goes through the room: T3 has it of
   assert.equal(stack.fake.threads.get(threadId)!.recovery?.autoResume, false);
   assert.deepEqual(await cancel(), { type: "member.controlled", participantId: stack.participants.sol1, outcome: "already" });
   assert.equal(stack.engine.view(stack.roomId).events.filter((e) => e.id === `resume-off:${runId}`).length, 1);
+});
+
+test("T3's continuation is no one's prompt: the page shows its turn as the member's own, not typed in T3", async () => {
+  const { fake, threadId, runId } = await limitedThread();
+  await fake.controlThread({ commandId: `limit-continue:${threadId}:${runId}`, threadId, control: { type: "run.continue", runId } });
+  const detail = (await fake.getThreadDetail(threadId))!;
+  const continued = detail.runs.at(-1)!;
+  assert.equal(detail.messages.find((m) => m.id === continued.userMessageId)?.text, CONTINUE_TEXT);
+  assert.equal(runPrompt(detail, continued), null);
+  assert.equal(runPrompt(detail, detail.runs[0]!)?.text, "Fix the build.", "a person's message still is");
 });

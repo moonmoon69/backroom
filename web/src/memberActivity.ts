@@ -50,6 +50,11 @@ export function betweenTurns(status: ParticipantStatus | undefined, desk?: Desk 
   return desk?.backgroundLiveness ?? status.background ?? null;
 }
 
+/** T3 holds the member's queue and runs nothing: what it was sent waits in that queue, room messages included. */
+export function queueHeld(status: Pick<ParticipantStatus, "status"> | undefined, desk: Pick<Desk, "queue"> | null | undefined): boolean {
+  return desk?.queue?.hold?.by === "held" && !(status && ["preparing", "starting", "running", "waiting"].includes(status.status));
+}
+
 /**
  * The line under a paused member's label: the provider's own sentence, and whether T3 continues the turn at the reset.
  * In the viewer's time zone.
@@ -89,6 +94,8 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
   if (status.pendingUserInput) return idle("waiting for your answer", "input");
   // Paused on a usage limit: a room message sent meanwhile waits in T3's queue behind it, so this outranks working.
   if (status.paused) return { label: pauseLabel(status.paused, now), tone: "paused", motion: null, detail: pauseDetail(status.paused, now) };
+  // T3 holds its queue: a room message sent meanwhile waits in it too, until someone resumes the queue.
+  if (queueHeld(status, desk)) return { label: "queue held", tone: "stopped", motion: null, detail: queueLine(desk!.queue) };
   const jobs = jobsDetail(desk);
   const working = (label: string): MemberActivity => ({ label, tone: "working", motion: "working", detail: jobs.detail });
   if (status.activeRunId) return working("working");
@@ -104,7 +111,6 @@ export function describeStatus(status: ParticipantStatus | undefined, desk?: Des
     const watches = (desk?.backgroundTasks ?? []).filter((job) => isWatch(job) && job.detail).map((job) => job.detail!);
     return { label: "monitoring", tone: "working", motion: "monitoring", detail: watches.length > 0 ? watches.join(" · ") : jobs.detail };
   }
-  if (desk?.queue?.hold?.by === "held") return { label: "queue held", tone: "stopped", motion: null, detail: queueLine(desk.queue) };
   if (desk?.interactionMode === "plan" && desk.proposedPlan && !desk.proposedPlan.implementedAt) return idle("plan ready", "input");
   // Between runs: how the last one ended. A run that completed, or a thread with none yet, is ready for the next.
   switch (status.status) {

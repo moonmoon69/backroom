@@ -2,8 +2,9 @@
  * What T3's watch of a pull request is waiting for, in a line (the user's #160, item D): "Watching pull request #70: 1
  * check pending (Browser harness) · watched for 8h". So a hung job shows in the room without opening GitHub.
  *
- * The sources, freshest first: T3's checks read (pullRequests.checks: each check by name and status), else the link's
- * snapshot (checksState only: pending, failing or passing) with the watch's own record of the checks that failed. Neither
+ * The sources: T3's checks read (pullRequests.checks: each check by name and status) and the link's snapshot
+ * (checksState only: pending, failing or passing, with the watch's own record of the checks that failed), whichever T3
+ * read later; the checks read when the snapshot does not say when it was read. Neither
  * says when a check started, so the time said is the watch's age, labelled as such; a reading older than STALE_MS says
  * how old it is. The line is detail only: the watch's task keeps its title, so a refresh never reads as work ending.
  */
@@ -33,14 +34,16 @@ function counted(n: number, state: string, names: readonly string[]): string {
 
 /** What the checks are doing, from the freshest source there is; null when nothing says. */
 function checksWords(link: T3PullRequest, checks: T3PullRequestChecks | null, now: number): string | null {
-  if (checks && checks.checks.length > 0) {
+  const snapshot = (link.snapshot ?? {}) as { checksState?: unknown; syncedAt?: unknown };
+  const synced = typeof snapshot.syncedAt === "string" ? snapshot.syncedAt : null;
+  // An older checks read than the snapshot gives way to it: a fresh "passing" never reads as a check still pending.
+  const readLater = checks !== null && (synced === null || (checks.observedAt !== null && Date.parse(checks.observedAt) >= Date.parse(synced)));
+  if (checks && checks.checks.length > 0 && readLater) {
     const pending = checks.checks.filter((c) => PENDING.has(c.status));
     const failed = checks.checks.filter((c) => FAILED.has(c.status));
     const words = pending.length > 0 ? counted(pending.length, "pending", pending.map((c) => c.name)) : failed.length > 0 ? counted(failed.length, "failing", failed.map((c) => c.name)) : "checks passed";
     return withAge(words, checks.observedAt, now);
   }
-  const snapshot = (link.snapshot ?? {}) as { checksState?: unknown; syncedAt?: unknown };
-  const synced = typeof snapshot.syncedAt === "string" ? snapshot.syncedAt : null;
   if (snapshot.checksState === "failing") return withAge(link.watch && link.watch.failedChecks.length > 0 ? counted(link.watch.failedChecks.length, "failing", link.watch.failedChecks) : "checks failing", synced, now);
   if (snapshot.checksState === "pending") return withAge("checks pending", synced, now);
   if (snapshot.checksState === "passing") return withAge("checks passed", synced, now);
@@ -61,9 +64,9 @@ export function watchLine(link: T3PullRequest, checks: T3PullRequestChecks | nul
   return `Watching pull request #${link.number}: ${what}${age}`;
 }
 
-/** The thread's link a watch task is for (its task id names host, repository and number). */
+/** The thread's link a watch task is for: its task id names host, repository and number, as T3 forms it (lowercased). */
 export function watchedLink(links: readonly T3PullRequest[], taskId: string): T3PullRequest | null {
-  const match = /^pull-request-watch:[^/]*\/(.+)#(\d+)$/.exec(taskId);
+  const match = /^pull-request-watch:([^/]*)\/(.+)#(\d+)$/.exec(taskId);
   if (!match) return null;
-  return links.find((link) => link.repository.toLowerCase() === match[1] && link.number === Number(match[2])) ?? null;
+  return links.find((link) => (link.host ?? "").toLowerCase() === match[1] && link.repository.toLowerCase() === match[2] && link.number === Number(match[3])) ?? null;
 }

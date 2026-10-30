@@ -629,6 +629,7 @@ export class FakeT3Adapter implements T3Adapter {
       threadId: thread.shell.id,
       ordinal,
       userMessageId: message.id,
+      rootNodeId: `node:run:thread:${thread.shell.id}:ordinal:${ordinal}:root`,
       status: "queued",
       queuePosition: thread.runs.filter((r) => r.status === "queued").length + 1,
       queueHeld: false,
@@ -656,7 +657,7 @@ export class FakeT3Adapter implements T3Adapter {
       // The provider never starts: T3 fails the run with the provider's error.
       run.status = "failed";
       run.completedAt = at;
-      thread.turnItems.push({ ...this.item(thread, run.id, at), type: "error", message: this.startFailure, failureClass: "provider_error", retrying: false, resetAt: null });
+      thread.turnItems.push({ ...this.item(thread, run.id, at), status: "failed", type: "error", message: this.startFailure, failureClass: "provider_error", retrying: false, resetAt: null });
       Object.assign(thread.shell, { status: "failed", activeRunId: null, latestRunCompletedAt: at, lastError: this.startFailure });
       return;
     }
@@ -743,7 +744,7 @@ export class FakeT3Adapter implements T3Adapter {
       thread.turnItems.push({ ...this.item(thread, run.id, at), type: "assistant_message", messageId: id, text, streaming: false });
     };
     for (const note of completion.progress ?? []) say(note);
-    if (outcome === "error") thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), type: "error", message: completion.text, failureClass: "provider_error", retrying: false, resetAt: null });
+    if (outcome === "error") thread.turnItems.push({ ...this.item(thread, run.id, this.stamp(thread)), status: "failed", type: "error", message: completion.text, failureClass: "provider_error", retrying: false, resetAt: null });
     if (outcome === "limit") {
       // As T3 records a provider's usage limit: the provider's error with its reset, and T3's notice of the pause.
       const resetAt = completion.resetAt ?? null;
@@ -803,7 +804,7 @@ export class FakeT3Adapter implements T3Adapter {
     if (!message) return;
     const ordinal = thread.runs.length + 1;
     const at = this.stamp(thread);
-    const run: T3Run = { id: `run:thread:${thread.shell.id}:ordinal:${ordinal}`, threadId: thread.shell.id, ordinal, userMessageId: messageId, status: "queued", queuePosition: thread.runs.filter((r) => r.status === "queued").length + 1, queueHeld: false, requestedAt: at, startedAt: null, completedAt: null, checkpointId: null, providerInstanceId: thread.shell.providerInstanceId, modelSelection: thread.shell.modelSelection };
+    const run: T3Run = { id: `run:thread:${thread.shell.id}:ordinal:${ordinal}`, threadId: thread.shell.id, ordinal, userMessageId: messageId, rootNodeId: `node:run:thread:${thread.shell.id}:ordinal:${ordinal}:root`, status: "queued", queuePosition: thread.runs.filter((r) => r.status === "queued").length + 1, queueHeld: false, requestedAt: at, startedAt: null, completedAt: null, checkpointId: null, providerInstanceId: thread.shell.providerInstanceId, modelSelection: thread.shell.modelSelection };
     thread.runs.push(run);
     this.runPrompts.set(run.id, message.text);
     message.runId = run.id;

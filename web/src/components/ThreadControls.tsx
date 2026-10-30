@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BackgroundTask, CommandResult, PageControl, QueueState, UsageLimitPause } from "../types.ts";
 import { pauseDetail, queueLine } from "../memberActivity.ts";
 import { pauseLabel, resetTime } from "../../../src/domain/usageLimit.ts";
@@ -38,6 +38,16 @@ export function ThreadControls({
   const [said, setSaid] = useState<string | null>(null);
   // Before the reset, Resume now asks first: it continues the turn at once, where the limit may stop it again.
   const [confirming, setConfirming] = useState(false);
+  // The button pressed by keys goes as the confirmation comes (and back): the focus follows, or it would fall to the page.
+  const focusNext = useRef<"anyway" | "resume" | null>(null);
+  const anyway = useRef<HTMLButtonElement>(null);
+  const resume = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const next = focusNext.current === "anyway" ? anyway.current : focusNext.current === "resume" ? resume.current : null;
+    focusNext.current = null;
+    next?.focus({ preventScroll: true });
+  }, [confirming]);
+  const had = (event: { currentTarget: HTMLElement }) => document.activeElement === event.currentTarget;
   const press = async (control: PageControl, done: string, key: string = control.type, already = "It had already continued.") => {
     setBusy(key);
     setSaid(null);
@@ -69,10 +79,18 @@ export function ThreadControls({
           {confirming ? (
             <span className="thread-controls-confirm" role="alert">
               <span className="work-open-text">The limit resets at {time}. Resume now continues the turn at once, and the limit may stop it again{pause.resume === "on" ? `; otherwise T3 continues it by itself at ${time}` : ""}.</span>
-              <button type="button" className="small primary" disabled={busy !== null} onClick={() => void press({ type: "resume" }, "Asked T3 to continue the turn.")}>
+              <button ref={anyway} type="button" className="small primary" disabled={busy !== null} onClick={() => void press({ type: "resume" }, "Asked T3 to continue the turn.")}>
                 Resume anyway
               </button>
-              <button type="button" className="small" disabled={busy !== null} onClick={() => setConfirming(false)}>
+              <button
+                type="button"
+                className="small"
+                disabled={busy !== null}
+                onClick={(event) => {
+                  if (had(event)) focusNext.current = "resume";
+                  setConfirming(false);
+                }}
+              >
                 Keep waiting
               </button>
             </span>
@@ -82,7 +100,12 @@ export function ThreadControls({
               className="small primary"
               disabled={busy !== null}
               title={before ? `Continue the turn now, before the limit resets at ${time}` : "Continue the turn now (Continue where you left off.)"}
-              onClick={() => (before ? setConfirming(true) : void press({ type: "resume" }, "Asked T3 to continue the turn."))}
+              ref={resume}
+              onClick={(event) => {
+                if (!before) return void press({ type: "resume" }, "Asked T3 to continue the turn.");
+                if (had(event)) focusNext.current = "anyway";
+                setConfirming(true);
+              }}
             >
               {busy === "resume" ? "Resuming…" : "Resume now"}
             </button>

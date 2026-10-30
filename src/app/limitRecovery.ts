@@ -5,9 +5,14 @@
  * setting only decides whether T3 arms threads by itself, and it is off here. Backroom sends no continuation of its own
  * and keeps no timer: it arms what T3's shell shows limited, when T3's shell changes. A recovery that is off (a Stop,
  * or the user in T3) stays off.
+ *
+ * T3's arming command overwrites what is recorded, so an arming decided on an older read could undo a Stop that landed
+ * meanwhile. A Stop leaves its mark on the run it reached (T3's interrupt request), and that mark is what decides: a run
+ * a stop reached is never armed, and an arming that turns out to have landed after one is turned off again.
  */
 import type { T3Adapter, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
-import { T3CommandRejected, limitArmId } from "../adapter/types.ts";
+import { T3CommandRejected, limitArmId, stopReached } from "../adapter/types.ts";
+import { disarmId } from "./threadControl.ts";
 
 /**
  * The arming of a limited thread nobody armed, as T3's limitRecoveryCommand would arm it, or null: nothing for a thread
@@ -75,7 +80,18 @@ export class LimitRecovery {
       const step = limitStep(shell);
       if (!step || this.refused.has(step.commandId)) continue;
       try {
+        // Against the run as it is now: a stop that reached it decides, whatever the list said.
+        const before = await this.adapter.getThreadDetail(shell.id, { bounded: true });
+        if (!before || stopReached(before, step.control.runId) || before.shell.usageLimit?.recovery) continue;
         await this.adapter.controlThread({ commandId: step.commandId, threadId: shell.id, control: step.control });
+        const after = await this.adapter.getThreadDetail(shell.id, { bounded: true });
+        const limit = after?.shell.usageLimit;
+        if (after && limit?.runId === step.control.runId && limit.recovery?.autoResume && stopReached(after, step.control.runId)) {
+          // A stop landed before the arming did, and the arming overwrote what it turned off: off again.
+          await this.adapter.controlThread({ commandId: disarmId(shell.id, limit), threadId: shell.id, control: { type: "limit.disarm", runId: step.control.runId, resetAt: step.control.resetAt } });
+          this.log("usage limit: a stop reached the thread before its arming landed; T3's resume turned off again", { threadId: shell.id });
+          continue;
+        }
         this.log("usage limit: T3 continues the thread at the reset", { threadId: shell.id, resetAt: step.control.resetAt });
       } catch (error) {
         if (error instanceof T3CommandRejected) {
