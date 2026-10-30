@@ -78,9 +78,11 @@ test("a run whose checks all pass, or one with a check still pending, posts noth
   watch(room, [["Hex registry", "success"], ["Lint", "success"]]);
   await room.tick(2);
   assert.equal(finished(room).length, 0, "all passed: T3's watch wakes on that change itself");
+  watch(room, [["Hex registry", "pending"], ["Lint", "pending"]], "c0ffee1");
+  await room.tick();
   watch(room, [["Hex registry", "failure"], ["Lint", "pending"]], "c0ffee1");
   await room.tick(3);
-  assert.equal(finished(room).length, 0, "a check still pending");
+  assert.equal(finished(room).length, 0, "one failed, one still pending: a rerun is not possible yet");
 });
 
 test("a read that lists no checks says nothing of the run: the failure after it is still told", async () => {

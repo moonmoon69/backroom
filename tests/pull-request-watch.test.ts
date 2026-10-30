@@ -13,6 +13,7 @@ import { memberStatus } from "../src/runtime/status.ts";
 import { memberActivity } from "../web/src/memberActivity.ts";
 import { jobsLine } from "../src/domain/memberState.ts";
 import { t3Stub } from "./t3Stub.ts";
+import { createTestStack } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-30T09:00:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -117,5 +118,24 @@ test("a member's post names the watch with its line; when the line changes, no q
     assert.equal(room.p.events.filter((e) => e.data.kind === "progress" && e.data.author === "W").length, 0, "the watch did not end: no follow-up");
   } finally {
     room.close();
+  }
+});
+
+test("the service's host reads a watched pull request's checks through the page's reader: a run that finishes with one failed is one notice to the Consigliere", async () => {
+  const stack = await createTestStack();
+  try {
+    await stack.run({ type: "room.consigliere.set", roomId: stack.roomId, participantId: stack.participants.sol1! });
+    const consigliere = stack.repos.currentBinding(stack.participants.sol1!)!.id;
+    const read = (list: Array<[string, T3PullRequestChecks["checks"][number]["status"]]>, second: number) =>
+      stack.fake.linkPullRequest(stack.threadOf("sol2"), { repository: "example-org/canvas", number: 77, watched: true, headSha: "a8a71af", checksState: "failing", syncedAt: new Date(Date.UTC(2026, 9, 30, 22, 0, second)).toISOString(), checks: { observedAt: null, checks: list.map(([name, status]) => ({ name, status, required: true })) } });
+    const finished = () => stack.engine.view(stack.roomId).events.flatMap((e) => (e.data.kind === "notice" && e.data.causeId.startsWith("checks:") ? [e.data] : []));
+    read([["Hex registry", "failure"], ["Elixir tests", "pending"]], 1);
+    await stack.tick(2);
+    assert.equal(finished().length, 0);
+    read([["Hex registry", "failure"], ["Elixir tests", "success"]], 2);
+    await stack.tick(2);
+    assert.deepEqual(finished().map((n) => [n.recipients, n.body]), [[[consigliere], "Pull request #77 (example-org/canvas), watched on @sol2's thread: its checks have finished, 1 failed (Hex registry). A rerun of the failed checks is possible now; T3's watch does not wake on a run finishing."]]);
+  } finally {
+    stack.close();
   }
 });
