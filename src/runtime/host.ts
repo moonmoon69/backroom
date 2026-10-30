@@ -956,14 +956,14 @@ export class EngineHost {
    */
   private async blocked(roomId: string, seatId: string, load: Loader): Promise<void> {
     const p = this.project(roomId);
-    const seat = p.seats.get(seatId)!;
-    if (!p.orchestrator || p.orchestrator === seatId || seat.status !== "active") return;
+    if (!p.orchestrator || p.orchestrator === seatId || p.seats.get(seatId)!.status !== "active") return;
     if (![...p.requests.values()].some((q) => q.owner === seatId && q.state === "open")) return;
     const detail = await load();
-    const live = seat.activeRunId ? p.runs.get(seat.activeRunId) : undefined;
-    const hold = this.holdOf(roomId, seatId, detail, live);
-    if (!hold) return;
     const now = this.project(roomId);
+    const seat = now.seats.get(seatId)!;
+    if (now.orchestrator === null || now.orchestrator === seatId || seat.status !== "active") return;
+    const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined);
+    if (!hold) return;
     const told = blockedNoticed(now, seatId, hold.state);
     // A turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given.
     const said = (id: string) => hold.state === "limited" && now.events.some((e) => (e.data.kind === "notice" || e.data.kind === "progress") && e.data.requestIds.includes(id) && isPausedNotice(e.data.body));
@@ -1002,7 +1002,7 @@ export class EngineHost {
       case "held":
         return { state: "held", body: `T3 holds ${who}'s queue${state.detail ? ` (${state.detail})` : ""}: nothing sent to ${who} runs until the user presses Resume queue on the member.` };
     }
-    if (detail.shell.settledAt !== null) return { state: "settled", body: gone("settled") };
+    if (detail.shell.settledAt !== null) return { state: "settled", body: `${who}'s T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire ${who} if it was.` };
     return null;
   }
 

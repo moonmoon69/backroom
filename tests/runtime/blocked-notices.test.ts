@@ -97,7 +97,10 @@ test("a thread settled, archived or deleted in T3 while seated is one notice on 
     await room.fake.setThreadLifecycle({ commandId: action, threadId: room.threadOf("W"), action });
     await room.tick(3);
     const state = { settle: "settled", archive: "archived", delete: "deleted" }[action];
-    assert.deepEqual(held(room).map((n) => [n.causeId, n.requestIds, n.body]), [[`blocked:W:${state}`, [a], `@W's T3 thread was ${state} in T3 while seated: no reply will come from it. Reseat or retire @W, or report it.`]]);
+    const body = state === "settled"
+      ? "@W's T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire @W if it was."
+      : `@W's T3 thread was ${state} in T3 while seated: no reply will come from it. Reseat or retire @W, or report it.`;
+    assert.deepEqual(held(room).map((n) => [n.causeId, n.requestIds, n.body]), [[`blocked:W:${state}`, [a], body]]);
     room.close();
     room = undefined;
   });

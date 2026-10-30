@@ -13,8 +13,7 @@ import { providerLabel } from "../domain/usageLimit.ts";
 
 // ---------------- the queue ----------------
 
-export type { QueueState };
-
+/** The thread's queued messages, as T3 holds them (QueueState, src/domain/memberState.ts). */
 export function queueOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems" | "shell">): QueueState | null {
   const queued = detail.runs.filter((run) => run.status === "queued");
   if (queued.length === 0) return null;
