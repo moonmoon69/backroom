@@ -8,6 +8,12 @@ function requireThat(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 function unique(ids: readonly string[]): string[] { return [...new Set(ids)]; }
+
+/** The requests of a seat's already told to the Consigliere as held in `state` (the `blocked` command's notices). */
+export function blockedNoticed(p: Pick<Projection, "events">, seatId: string, state: string): Set<string> {
+  const cause = `blocked:${seatId}:${state}`;
+  return new Set(p.events.flatMap((e) => (e.data.kind === "notice" && e.data.causeId === cause ? e.data.requestIds : [])));
+}
 function emissionIdentity(association: Association, disposition: Disposition): string {
   return JSON.stringify([association.kind, "id" in association ? association.id : null,
     disposition.kind, "requestIds" in disposition ? disposition.requestIds : null,
@@ -307,6 +313,24 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       requireThat(s.status === "active" && s.activeRunId === null, "keep-alive needs an idle active seat");
       requireThat(command.body.length > 0, "keep-alive body required");
       notice("keep-alive", command.body, [], [s.id], s.id, "$system");
+      break;
+    }
+    case "blocked": {
+      // Backroom tells the Consigliere that a member's thread is held in a state no reply of its own ends (an approval, a
+      // usage limit, a thread gone in T3): once per request per state, on the member's open requests it holds.
+      system();
+      const s = seat(command.seatId);
+      const o = initial.orchestrator;
+      requireThat(s.status === "active" && o !== null && o !== s.id, "a blocked notice goes from an active member to the Consigliere");
+      requireThat(command.state.length > 0 && command.body.length > 0, "blocked notice needs a state and a body");
+      const told = blockedNoticed(initial, s.id, command.state);
+      const ids = unique(command.requestIds).filter((id) => !told.has(id));
+      for (const id of ids) {
+        const q = request(id);
+        requireThat(q.owner === s.id && q.state === "open", "a blocked notice sits on the member's open requests");
+      }
+      if (ids.length === 0) return result("duplicate");
+      notice("attention", command.body, ids, [o!], `blocked:${s.id}:${command.state}`, s.id);
       break;
     }
     case "transfer": {

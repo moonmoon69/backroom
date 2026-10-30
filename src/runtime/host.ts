@@ -20,6 +20,9 @@
  * - An idle seat with work in flight (a member it asked still working, background work or a subagent of its own) that
  *   nothing has woken for its keep-alive interval gets a keep-alive post: one line, then the status lines of that work.
  * - Keep-alives are on for the orchestrator and off for members, unless the room's setting says otherwise.
+ * - A member's thread held in a state no reply of its own ends (an approval, a secret or a question for the user, a usage
+ *   limit, a queue T3 holds, the thread settled, archived or deleted in T3) is one notice to the orchestrator on each open
+ *   request of the member's, once per request per state; a state that persists or clears posts nothing.
  * - A run that brings only keep-alives ends as a note that wakes nobody, whatever it said.
  * - A request, correction or retry from the user or the orchestrator goes into its member's running turn: it is offered
  *   when T3 runs the turn, confirmed once T3 shows the member working after it in that turn, sent again with its own IDs
@@ -35,15 +38,17 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, runForMessage } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, openRequests, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
-import { deliveredInputs, inputTree, unread } from "../engine/index.ts";
+import { blockedNoticed, deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
 import { adoptableSteers, goesIntoTurn, holdsBack, settledOffer, steerMessageIds, steerOffers, steerReceiptId, takenInRun, takesMessages, type SteerOffer } from "./steer.ts";
 import { continuedRun, stoppedEverything, finalMessage, isTerminal, runEnd, runError, runLimit, runOrigin, threadFree, type RunLimit } from "./t3.ts";
-import { providerLabel, resetTime } from "../domain/usageLimit.ts";
+import { isPausedNotice, providerLabel, resetTime } from "../domain/usageLimit.ts";
+import { memberState } from "../domain/memberState.ts";
+import { memberFacts, pauseOf } from "../app/threadView.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
@@ -140,6 +145,12 @@ export const KEEP_ALIVE_REPLY = "keep-alive-reply:";
 function unique(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
+/** A request's words in a notice: one line, at most 200 characters. */
+function clip(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -408,6 +419,7 @@ export class EngineHost {
       const seat = this.project(roomId).seats.get(seatId)!;
       await this.options.watch?.({ roomId, seatId, threadId: seat.threadId }, state.current() ?? state.shell, () => state.load());
     });
+    await each(async (seatId, state) => this.blocked(roomId, seatId, state.load));
     await each(async (seatId, state) => {
       const shell = state.current();
       if (shell) await this.quiet(roomId, seatId, shell, state.load, state.imported);
@@ -638,7 +650,7 @@ export class EngineHost {
         body = "";
       } else if (end.outcome === "failed" || end.outcome === "stopped" && targets.length > 0) {
         disposition = { kind: "error", requestIds: targets };
-        const error = end.limit ? this.pausedNotice(roomId, seatId, end.limit) : end.error;
+        const error = end.limit ? this.pausedNotice(roomId, seatId, end.limit) : `${end.error}${this.againAfterRetry(p, run, targets)}`;
         body = head + (end.text ? `${error}\n\n${end.text}` : error);
       } else if (end.text && targets.length > 0 && end.outcome === "completed") {
         disposition = { kind: "answer", requestIds: targets };
@@ -676,6 +688,18 @@ export class EngineHost {
     this.stuck.delete(runId);
     this.interrupted.delete(runId);
     this.stopping.delete(runId);
+  }
+
+  /**
+   * When a failing run was a retry of one that failed on the same request: which failure on it this is, so the
+   * orchestrator reports a failure that repeats instead of retrying it again.
+   */
+  private againAfterRetry(p: Projection, run: Run, targets: readonly string[]): string {
+    if (!inputTree(deliveredInputs(p, run.id)).some((i) => i.intent === "retry")) return "";
+    const before = p.events.filter((e) => e.data.kind === "notice" && e.data.intent === "error" && e.data.requestIds.some((id) => targets.includes(id))).length;
+    if (before === 0) return "";
+    const nth = ["second", "third", "fourth", "fifth"][before - 1] ?? `${before + 1}th`;
+    return `\n\nThis is the ${nth} failure on this request, after a retry.`;
   }
 
   /**
@@ -919,6 +943,76 @@ export class EngineHost {
     this.followUp(roomId, seatId, id, `(${ended.join(", ")} ended${why}.)`, now, latest.requestIds);
     this.quietSince.delete(seatId);
     this.step("imported", roomId, seatId);
+  }
+
+  // ---------------- a member held by T3 or the user ----------------
+
+  /**
+   * A member that owns open requests and whose thread is held where no reply of its own will end it: the orchestrator is
+   * told once per request per state (the engine keeps that), as T3 tells the user once per run per state. Working, a
+   * tool running, a task list changing or a check moving is never posted, and neither is a state clearing: the member's
+   * next reply is that news.
+   */
+  private async blocked(roomId: string, seatId: string, load: Loader): Promise<void> {
+    const p = this.project(roomId);
+    const seat = p.seats.get(seatId)!;
+    if (!p.orchestrator || p.orchestrator === seatId || seat.status !== "active") return;
+    if (![...p.requests.values()].some((q) => q.owner === seatId && q.state === "open")) return;
+    const detail = await load();
+    const live = seat.activeRunId ? p.runs.get(seat.activeRunId) : undefined;
+    const hold = this.holdOf(roomId, seatId, detail, live);
+    if (!hold) return;
+    const now = this.project(roomId);
+    const told = blockedNoticed(now, seatId, hold.state);
+    // A turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given.
+    const said = (id: string) => hold.state === "limited" && now.events.some((e) => (e.data.kind === "notice" || e.data.kind === "progress") && e.data.requestIds.includes(id) && isPausedNotice(e.data.body));
+    const ids = [...now.requests.values()].filter((q) => q.owner === seatId && q.state === "open" && !told.has(q.id) && !said(q.id)).map((q) => q.id);
+    if (ids.length === 0) return;
+    this.exec(roomId, { type: "blocked", actor: SYSTEM, id: `blocked:${seatId}:${hold.state}:${ids.join(",")}`, seatId, state: hold.state, requestIds: ids, body: hold.body });
+  }
+
+  /** What holds the member's thread that no reply of its own ends, in a state and the notice's words; null when nothing does. */
+  private holdOf(roomId: string, seatId: string, detail: T3ThreadDetail | null, live: Run | undefined): { state: string; body: string } | null {
+    const who = this.named(roomId, seatId);
+    const gone = (how: string) => `${who}'s T3 thread was ${how} in T3 while seated: no reply will come from it. Reseat or retire ${who}, or report it.`;
+    if (!detail || detail.shell.deletedAt !== null) return { state: "deleted", body: gone("deleted") };
+    if (detail.shell.archivedAt !== null) return { state: "archived", body: gone("archived") };
+    const asked = openRequests(detail)[0];
+    const state = memberState(memberFacts(detail, live !== undefined, this.now()), this.now());
+    const answer = `Only the user can answer it, from the page; ${who}'s reply comes after.`;
+    switch (state.state) {
+      case "approval": {
+        const what = asked?.prompt ?? asked?.appName;
+        return { state: "approval", body: `${who} waits on an approval${what ? `: ${clip(what)}` : ""}. ${answer}` };
+      }
+      case "secret":
+        return { state: "secret", body: `${who} asks for a secret${asked?.secret ? `: ${clip(asked.secret.label)}` : ""}. ${answer}` };
+      case "input": {
+        const question = asked?.questions.map((q) => q.question).join(" / ");
+        return { state: "input", body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : ""}. ${answer}` };
+      }
+      case "limited": {
+        // The turn the limit stopped, when it is this run's, ends with its own notice (pausedNotice).
+        const limited = detail.shell.usageLimit!;
+        const t3 = live ? runRecords(this.project(roomId)).get(live.id)?.t3 : undefined;
+        if (live && (!t3 || t3.id === limited.runId)) return null;
+        return { state: "limited", body: this.pausedHold(roomId, seatId, pauseOf(limited)) };
+      }
+      case "held":
+        return { state: "held", body: `T3 holds ${who}'s queue${state.detail ? ` (${state.detail})` : ""}: nothing sent to ${who} runs until the user presses Resume queue on the member.` };
+    }
+    if (detail.shell.settledAt !== null) return { state: "settled", body: gone("settled") };
+    return null;
+  }
+
+  /** A usage-limit pause that holds what the member was sent: until when, in the service's named time zone, and whether T3 continues it. */
+  private pausedHold(roomId: string, seatId: string, pause: ReturnType<typeof pauseOf>): string {
+    const timeZone = this.options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const time = resetTime(pause.resetAt, this.now(), timeZone);
+    const who = this.named(roomId, seatId);
+    const then = time === null ? "which gave no reset time: T3 cannot continue it by itself"
+      : `until ${time} (${timeZone}): ${pause.resume === "on" ? "T3 continues it at the reset" : pause.resume === "off" ? "T3 will not continue it" : "T3 is not yet set to continue it"}`;
+    return `${who} is paused on ${providerLabel(pause.provider)}'s usage limit, ${then}. What it was sent waits behind it; Resume now on the member continues it sooner.`;
   }
 
   // ---------------- H6: keep-alives ----------------
