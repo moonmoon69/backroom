@@ -433,8 +433,13 @@ function pullRequestWatchTasks(raw: unknown): T3BackgroundTask[] {
 
 /** The provider thread's background tasks with T3's pull-request watches beside them, each task once. */
 function withPullRequestWatches(tasks: T3BackgroundTask[], pullRequests: unknown): T3BackgroundTask[] {
+  return withTasks(tasks, pullRequestWatchTasks(pullRequests));
+}
+
+/** `tasks`, then those of `more` it does not have by id. */
+function withTasks(tasks: T3BackgroundTask[], more: T3BackgroundTask[]): T3BackgroundTask[] {
   const known = new Set(tasks.map((task) => task.taskId));
-  return [...tasks, ...pullRequestWatchTasks(pullRequests).filter((task) => !known.has(task.taskId))];
+  return [...tasks, ...more.filter((task) => !known.has(task.taskId))];
 }
 
 /** The run statuses after which T3 lists its pull-request watches: the latest run settled, or waiting on a request. */
@@ -1439,8 +1444,12 @@ export class HttpT3Adapter implements T3Adapter {
       lastError: failure?.type === "error" ? failure.message : latest?.status === "failed" ? (listed?.lastError ?? null) : null,
       usageLimit: usageLimitOf({ runs, turnItems }, thread.limitRecovery),
       pendingRequest: pending ? { id: pending.id, kind: pending.kind, createdAt: pending.createdAt } : null,
-      // T3's shell lists its pull-request watches with the harness's tasks; the provider thread lists only the latter.
-      pendingBackgroundTasks: active ? [] : withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? listed?.pendingBackgroundTasks ?? [], pullRequestWatchesListed(runs) ? thread.pullRequests : []),
+      // T3's thread row is the authority on what runs after the run: T3 derives it (derivePendingBackgroundWork) from the
+      // active provider thread's tasks, the command, tool and subagent items still running outside a rolled-back run, and
+      // the pull-request watches, and its sidebar's pill reads it. The provider thread alone misses commands a turn left
+      // running (a Codex exec after a failed run), so the row's tasks are listed; the provider thread's and the watches
+      // add what a row read before this projection does not show yet.
+      pendingBackgroundTasks: active ? [] : withTasks(withPullRequestWatches(activeProviderThread?.pendingBackgroundTasks ?? [], pullRequestWatchesListed(runs) ? thread.pullRequests : []), listed?.pendingBackgroundTasks ?? []),
     };
     return {
       snapshotSequence: snapshot.snapshotSequence ?? 0,

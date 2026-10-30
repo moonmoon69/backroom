@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpT3Adapter } from "../src/adapter/http.ts";
+import { memberStatus, statusLine } from "../src/runtime/status.ts";
 import { REQUESTED_SCOPES, exchangePairingCredential, missingScopeMessage, parsePairingUrl, sameT3Host } from "../src/adapter/auth.ts";
 import { T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, isPullRequestWatch, openRequests, runForMessage } from "../src/adapter/types.ts";
 
@@ -491,6 +492,24 @@ test("thread detail: T3's watch of a pull request is listed beside the provider 
   // During a run T3 lists nothing in the background, the watch included.
   projection = build("running", [command], links);
   assert.deepEqual(await tasks(), []);
+  adapter.close();
+});
+
+test("thread detail: the commands T3's row lists after a failed run are the detail's, though the provider thread lists none (Canvas · Sol)", async () => {
+  const failed = { id: RUN, threadId: "thread-1", ordinal: 1, providerInstanceId: "codex", modelSelection: threadShell.modelSelection, userMessageId: "msg-1", status: "failed", queuePosition: null, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: "2026-10-03T00:00:00.500Z", completedAt: "2026-10-03T00:00:01.000Z", checkpointId: null };
+  const commands = [{ taskId: "exec-1", kind: "command", description: "node browser-repl.mjs", childThreadId: null }, { taskId: "exec-2", kind: "command", description: "python3 run.py", childThreadId: null }];
+  const row = { ...threadShell, activeRunId: null, activityRunStatus: "failed", status: "failed", latestRunId: RUN, lastError: "at capacity", pendingRuntimeRequest: null, pendingBackgroundTasks: commands };
+  const projection = {
+    thread: { ...threadShell, activeProviderThreadId: "pt", pullRequests: [] },
+    runs: [failed], messages: [], turnItems: [], runtimeRequests: [], nodes: [], attempts: [], subagents: [], providerSessions: [], providerTurns: [], plans: [], checkpoints: [], checkpointScopes: [], contextHandoffs: [], contextTransfers: [], visibleTurnItems: [],
+    providerThreads: [{ id: "pt", driver: "codex", providerInstanceId: "codex", status: "idle", nativeThreadRef: null, pendingBackgroundTasks: [], contextUsage: null, createdAt: "2026-10-03T00:00:00.000Z", updatedAt: "2026-10-03T00:00:01.000Z" }],
+  };
+  const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: { ...shell, threads: [row] } }), "GET /api/orchestration/threads/thread-1": () => ({ status: 200, body: { snapshotSequence: 10, projection } }) });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl });
+  const detail = (await adapter.getThreadDetail("thread-1"))!;
+  assert.deepEqual(detail.shell.pendingBackgroundTasks.map((task) => task.taskId), ["exec-1", "exec-2"]);
+  assert.equal(backgroundOf(detail.shell), "working");
+  assert.equal(statusLine("sol", memberStatus(detail, null)), '[T3 status of @sol: still running: background task "node browser-repl.mjs", background task "python3 run.py"]', "the status line on its posts names them, not idle");
   adapter.close();
 });
 
