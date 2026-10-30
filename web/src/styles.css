@@ -4459,7 +4459,7 @@ body.sorting * {
   line-height: 1;
   justify-content: center;
 }
-/* The settings menu at the foot of the sidebar: roles, notifications, voice, then the theme under a heading. */
+/* The settings menu at the foot of the sidebar: roles, notifications, then the theme under a heading. */
 .settings-menu {
   position: relative;
 }
@@ -5859,7 +5859,7 @@ button:has(> .icon):not(.mobile-only) {
   gap: 6px;
 }
 
-/* The foot of a reply: copy, read aloud, then what the turn used. */
+/* The foot of a reply: copy, then what the turn used. */
 .bubble .reply-foot {
   display: flex;
   align-items: flex-start;
@@ -5882,7 +5882,6 @@ button:has(> .icon):not(.mobile-only) {
   min-width: 0;
 }
 
-.speak-button,
 .copy-button {
   flex: 0 0 auto;
   width: 22px;
@@ -5898,8 +5897,6 @@ button:has(> .icon):not(.mobile-only) {
   margin-left: -4px;
 }
 
-.speak-button:hover,
-.speak-button.on,
 .copy-button:hover {
   color: var(--fg);
 }
@@ -5940,19 +5937,7 @@ button:has(> .icon):not(.mobile-only) {
   }
 }
 
-.speak-button.on {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-/* Voice dialog: the speed slider at full width. */
-.form label input[type="range"] {
-  width: 100%;
-  padding: 0;
-  accent-color: var(--accent);
-}
-
-/* While the voice is being made: a spinner in the speaker's place (the composer's spinner is placed absolutely). */
-.speak-button .spinner,
+/* A spinner in a dialog's button, in line with its words (the composer's spinner is placed absolutely). */
 .dialog-actions .spinner {
   position: static;
   display: inline-block;
@@ -6078,7 +6063,6 @@ button:has(> .icon):not(.mobile-only) {
 .file-preview-mode {
   flex: none;
 }
-.file-preview-bar .speak-button,
 .file-preview-bar .copy-button {
   margin: 0;
 }

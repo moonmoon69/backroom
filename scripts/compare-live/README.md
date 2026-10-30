@@ -37,14 +37,14 @@ and holds the pass rules, written before any paid run.
    git worktree add --detach ../backroom-wt/compare-old 2fe156a8 && (cd ../backroom-wt/compare-old && npm install)
    mkdir -p ~/Projects/backroom-compare/old/data && install -m 600 data/t3-auth.json ~/Projects/backroom-compare/old/data/
    ln -s ~/Projects/backroom-compare/old/data ../backroom-wt/compare-old/data
-   cd ../backroom-wt/compare-old && ROOMS_PORT=4481 ROOMS_BROWSER_MODE=off ROOMS_SPEECH=off npm start
+   cd ../backroom-wt/compare-old && ROOMS_PORT=4481 ROOMS_BROWSER_MODE=off npm start
    # new (Z1): the engine head, with the harness deleted from that checkout, so the checkers and reference solutions do
    # not sit beside the board command its members run; data starts fresh (a journal from before L6 does not load)
    git worktree add --detach ../backroom-wt/compare-new engine && rm -rf ../backroom-wt/compare-new/scripts/compare-live
    (cd ../backroom-wt/compare-new && npm install)
    mkdir -p ~/Projects/backroom-compare/new/data && install -m 600 data/t3-auth.json ~/Projects/backroom-compare/new/data/
    ln -s ~/Projects/backroom-compare/new/data ../backroom-wt/compare-new/data
-   cd ../backroom-wt/compare-new && ROOMS_ENGINE=1 ROOMS_PORT=4482 ROOMS_BROWSER_MODE=off ROOMS_SPEECH=off npm start
+   cd ../backroom-wt/compare-new && ROOMS_ENGINE=1 ROOMS_PORT=4482 ROOMS_BROWSER_MODE=off npm start
    ```
 
    The runner refuses an instance whose worktree contains `scripts/compare-live` (paid jobs and the dry run), and a side

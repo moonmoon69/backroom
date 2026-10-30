@@ -44,11 +44,6 @@ export interface Config {
     /** The folder this machine's Backrooms share to record which keeps which browser ports (src/browser/ports.ts); null: off. */
     portsDir: string | null;
   };
-  /** Backroom's own voice for reading replies aloud (src/speech/kokoro.ts): on unless turned off, and which voice. */
-  speech: {
-    enabled: boolean;
-    voice: string;
-  };
   /** Where the harnesses keep their transcripts, read for a thread's usage and cost (src/usage/threadCosts.ts). */
   usage: {
     claudeProjectsDir: string;
@@ -115,10 +110,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         env.ROOMS_BROWSER_PORTS_DIR === "off"
           ? null
           : (env.ROOMS_BROWSER_PORTS_DIR ?? join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "backroom", "browser-ports")),
-    },
-    speech: {
-      enabled: env.ROOMS_SPEECH !== "off",
-      voice: env.ROOMS_SPEECH_VOICE ?? "af_heart",
     },
     // The harnesses' own variables for their home, as T3 starts them with the same environment.
     usage: {

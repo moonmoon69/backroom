@@ -293,7 +293,7 @@ test("the adapter says which token T3 refused, checks a token on its own, and th
   const stack = await createTestStack();
   t.after(() => stack.close());
   const { credential } = setup(t, { cli: null });
-  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/nonexistent/rooms-test-credential", ROOMS_PORT: "0" }), "/nonexistent/dist", undefined, null, credential);
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/nonexistent/rooms-test-credential", ROOMS_PORT: "0" }), "/nonexistent/dist", undefined, credential);
   const status = (await (await app.request("/api/status")).json()) as { t3: { credential: unknown } };
   assert.deepEqual(status.t3.credential, credential.status());
 });

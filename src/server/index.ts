@@ -18,7 +18,6 @@ import { threadHasWork } from "../runtime/t3.ts";
 import { mainCheckoutData } from "../browser/ports.ts";
 import { BrowserTools } from "../browser/tools.ts";
 import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
-import { KokoroSpeech } from "../speech/kokoro.ts";
 import { withFakeControls } from "./fakeControls.ts";
 import { createHttpApp } from "./http.ts";
 
@@ -155,9 +154,7 @@ if (adapter instanceof FakeT3Adapter) {
   }
   if (restored > 0) log(`restored ${restored} simulated thread(s) for existing participants`);
 }
-// Backroom's voice: loaded when the UI first asks (the model is fetched once into data/models), off with ROOMS_SPEECH=off.
-const speech = config.speech.enabled ? new KokoroSpeech({ modelsDir: join(config.dataDir, "models"), defaultVoice: config.speech.voice, log }) : null;
-const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, speech, credential);
+const app = createHttpApp(stack, config, config.webDistDir, { tools: browserTools, token: browserApiToken, command: browserCommand }, credential);
 credential?.start();
 // T3's shell as T3 streams it: the engine's and the page's shell reads come from it while it is live.
 if (adapter instanceof HttpT3Adapter) adapter.startFeed();

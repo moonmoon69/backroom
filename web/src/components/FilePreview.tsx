@@ -1,8 +1,7 @@
 /**
  * The file preview: a file chip in a reply (`web/src/App.tsx:42`, `docs/plan.md`) opens the file in a dialog. Markdown
- * and HTML are rendered (or shown as source), code is highlighted with line numbers and scrolled to the line named, images,
- * recordings and sounds are shown, and a document can be read aloud. The service decides what may be read; see
- * src/server/filePreview.ts.
+ * and HTML are rendered (or shown as source), code is highlighted with line numbers and scrolled to the line named, and
+ * images, recordings and sounds are shown. The service decides what may be read; see src/server/filePreview.ts.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
@@ -14,7 +13,6 @@ import { Dialog } from "./Dialog.tsx";
 import { FileBaseContext, FilePreviewContext, ImagePreviewContext, type FilePreviewRequest, type ImagePreviewRequest } from "./filePreviewContext.ts";
 import { Markdown } from "./Markdown.tsx";
 import { fileBadge, parseFileReference } from "./markdownFiles.ts";
-import { SpeakButton } from "./SpeakButton.tsx";
 
 /** Makes file chips open previews for everything under it, and shows the preview asked for. */
 export function FilePreviewHost({ children }: { children: ReactNode }) {
@@ -45,8 +43,6 @@ function ImagePreviewDialog({ request, onClose }: { request: ImagePreviewRequest
 const baseName = (path: string): string => path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1) || path;
 const folderOf = (path: string): string => path.slice(0, Math.max(path.lastIndexOf("/"), 1));
 const isMarkdown = (name: string): boolean => /\.(md|mdx|markdown)$/i.test(name);
-/** Documents worth reading aloud: prose, not code. */
-const isReadable = (name: string): boolean => isMarkdown(name) || /\.(txt|text|rst|adoc)$/i.test(name) || !name.includes(".");
 const sizeOf = (bytes: number): string => (bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
 
 function FilePreviewDialog({ request, onClose, active }: { request: FilePreviewRequest; onClose: () => void; active: boolean }) {
@@ -118,7 +114,6 @@ function FilePreviewDialog({ request, onClose, active }: { request: FilePreviewR
               </button>
             </span>
           ) : null}
-          {text !== null && isReadable(name) ? <SpeakButton id={`file:${path}`} text={text} lead={name} /> : null}
           <CopyTextButton text={path} label="Copy path" />
         </div>
         <div className="file-preview-body">{body}</div>

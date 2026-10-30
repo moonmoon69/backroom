@@ -25,10 +25,7 @@ import { withoutT3ContextRefs } from "../t3Context.ts";
 import { LiveFeed } from "./LiveFeed.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { NativeRequestCard } from "./NativeRequests.tsx";
-import { asksYou } from "../requestWords.ts";
 import { fmtTokens, money } from "./deskFormat.ts";
-import { speakableSummary, useAutoRead } from "../speech.ts";
-import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { identityStyle, Monogram } from "./Monogram.tsx";
 import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
@@ -151,8 +148,7 @@ const StripsContext = createContext<Strips>({ open: null, close: () => {}, detai
 /**
  * An item's action strip, at its foot while it is open (Enter on the item): every control a mouse finds on it, in the
  * order of the design's table, each pressing that control (so the strip does exactly what the mouse does), and for a
- * post Detail last, its detail. It follows the item as it changes (Read aloud becomes Stop reading, an answered
- * request loses Correct… and Cancel).
+ * post Detail last, its detail. It follows the item as it changes (an answered request loses Correct… and Cancel).
  */
 function ItemActions({ navKey, where, detail }: { navKey: string; where: string; detail?: number | undefined }) {
   const strips = useContext(StripsContext);
@@ -203,7 +199,7 @@ const PHASE_WORDS: Record<EngineRunView["phase"], string> = {
  * Consigliere (see consigliereChat). A room without a Consigliere shows the board alone.
  */
 export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat"; limit?: number } = {}) {
-  const { snapshot, desk, nameOf } = useRoom();
+  const { snapshot, desk } = useRoom();
   const chat = view === "chat";
   const consigliereId = snapshot.room.consigliereId;
 
@@ -232,21 +228,6 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   // His seats and threads, across reseats (a reseat seats a fresh member; the transfer posts link them).
   const his = useMemo(() => consigliereSeats(snapshot, allPosts), [snapshot, allPosts]);
   const posts = useMemo(() => (chat ? consigliereChat(allPosts, his) : allPosts), [chat, allPosts, his]);
-
-  // Read aloud, when the room's menu says so: each new reply, and each new approval or question, named by who it is from.
-  const [autoRead] = useAutoRead(`room:${snapshot.room.id}`);
-  useAnnounceNew(
-    `room:${snapshot.room.id}`,
-    autoRead && !chat,
-    snapshot.posts
-      .filter((post) => post.kind === "output" && !post.author.startsWith("$") && post.body.trim().length > 0)
-      .map((post) => ({ id: post.id, text: `${nameOf(post.author).replace(/^@/, "")}. ${speakableSummary(post.body)}` })),
-  );
-  useAnnounceNew(
-    `room:${snapshot.room.id}:requests`,
-    autoRead && !chat,
-    snapshot.nativeRequests.map((request) => ({ id: request.requestId, text: `${snapshot.participants.find((p) => p.id === request.participantId)?.alias ?? "A member"} ${asksYou(request.kind)}` })),
-  );
 
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -1028,7 +1009,6 @@ function Reply({ post }: { post: EnginePost }) {
           {output.t3?.runId ? <TurnInT3 t3={output.t3} /> : null}
           <div className="reply-foot">
             <CopyTextButton text={post.body} label="Copy reply" />
-            {post.body ? <SpeakButton id={post.id} text={post.body} lead={nameOf(post.author).replace(/^@/, "")} /> : null}
             <ReplySpend post={post} />
           </div>
         </div>

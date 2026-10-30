@@ -688,7 +688,7 @@ function startFake(side: Side, port: number): { process: ChildProcess; url: stri
   const out = join(COMPARE_ROOT, "dry", side, "service.log");
   const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
     cwd: INSTANCES[side].worktree,
-    env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(port), ROOMS_DATA_DIR: dataDir, ROOMS_BROWSER_MODE: "off", ROOMS_SPEECH: "off", ...(side === "new" ? { ROOMS_ENGINE: "1" } : {}) },
+    env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(port), ROOMS_DATA_DIR: dataDir, ROOMS_BROWSER_MODE: "off", ...(side === "new" ? { ROOMS_ENGINE: "1" } : {}) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.on("data", (chunk: Buffer) => appendFileSync(out, chunk));

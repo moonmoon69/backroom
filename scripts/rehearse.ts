@@ -256,7 +256,7 @@ class Service {
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_SPEECH: "off", ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ...kept },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });

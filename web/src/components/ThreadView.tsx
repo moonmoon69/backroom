@@ -45,17 +45,14 @@ import { identityStyle, MEMBER_ACCENT } from "./Monogram.tsx";
 import { MemberMark } from "./MemberMark.tsx";
 import { FileBaseContext, useOpenImagePreview } from "./filePreviewContext.ts";
 import { ApprovalRequestCard, SecretRequestCard, UserInputRequestCard } from "./NativeRequests.tsx";
-import { asksYou } from "../requestWords.ts";
 import { CopyButton, ThreadSettingsRow } from "./pickers.tsx";
 import { PageTitle } from "./PageTitle.tsx";
 import { SpendFoot } from "./Timeline.tsx";
-import { speakableSummary, useAutoRead, useSpeechAvailable } from "../speech.ts";
-import { SpeakButton, useAnnounceNew } from "./SpeakButton.tsx";
 import { UsageCard } from "./ThreadUsageCard.tsx";
 import { Popover } from "./Popover.tsx";
 import { BrowserChoices, GlobeIcon } from "./RoomBrowser.tsx";
 import { useToast } from "./Toast.tsx";
-import { CloseIcon, Glyph, ImageIcon, MoreIcon } from "./icons.tsx";
+import { CloseIcon, ImageIcon, MoreIcon } from "./icons.tsx";
 
 type RunCommand = (command: RoomCommand) => Promise<CommandResult | null>;
 
@@ -196,20 +193,6 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
   const { presets } = usePresets();
   const crewPreset = crew ? (presets.find((p) => p.id === crew.presetId) ?? null) : null;
   const thread = view?.thread;
-  // Who is speaking when a reply is read aloud: the crew member it started as, else its model.
-  const voiceName = crew?.name ?? thread?.modelSelection.model ?? "reply";
-  const [autoRead, setAutoRead] = useAutoRead(`thread:${threadId}`);
-  const canSpeak = useSpeechAvailable();
-  useAnnounceNew(
-    `thread:${threadId}`,
-    autoRead,
-    view ? view.items.filter((item) => item.kind === "reply" && item.text.trim().length > 0).map((item) => ({ id: item.id, text: `${voiceName}. ${speakableSummary(item.text)}` })) : null,
-  );
-  useAnnounceNew(
-    `thread:${threadId}:requests`,
-    autoRead,
-    view ? view.requests.map((request) => ({ id: request.requestId, text: `${voiceName} ${asksYou(request.kind)}` })) : null,
-  );
   const now = useResetClock([thread?.usageLimit?.resetAt]);
   const activity = thread ? threadActivity({ ...thread, pendingRequest: thread.pendingRequest ?? ((view?.requests.length ?? 0) > 0 ? { id: "", kind: "approval", createdAt: "" } : null) }, now) : null;
   const running = view?.running ?? null;
@@ -246,9 +229,6 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
         ) : null}
         {thread && !thread.boundToRoom ? (
           <ThreadMenu
-            canSpeak={canSpeak}
-            autoRead={autoRead}
-            onToggleAutoRead={() => setAutoRead(!autoRead)}
             onSettings={() => setDialog("settings")}
             onAddToRoom={() => setDialog("room")}
             settled={Boolean(thread.settledAt)}
@@ -343,7 +323,6 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
                 error={error}
                 readOnly={Boolean(thread?.boundToRoom)}
                 costs={costs}
-                lead={voiceName}
                 onRespond={async (command) => {
                   await runCommand(command);
                   // Answered, or refused because it was answered elsewhere or its agent stopped: read T3 again either way.
@@ -377,7 +356,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
             <ThreadComposer
               key={threadId}
               draftScope={threadKey(threadId)}
-              overlay={{ to: crew?.name ?? modelName ?? voiceName }}
+              overlay={{ to: crew?.name ?? modelName ?? thread?.modelSelection.model ?? "reply" }}
               placeholder={running ? "Message the running turn: T3 steers it in or queues it, as its own client does" : "Message this thread"}
               disabled={!thread || thread.boundToRoom}
               running={running !== null}
@@ -655,14 +634,12 @@ function Transcript({
   error,
   onRespond,
   costs,
-  lead,
   readOnly = false,
 }: {
   view: ThreadViewData | null;
   error: string | null;
   onRespond: (command: RoomCommand) => Promise<void>;
   costs: ThreadCosts | null;
-  lead: string;
   /** A member's thread: its approvals and questions are answered in its room, not here. */
   readOnly?: boolean;
 }) {
@@ -730,7 +707,7 @@ function Transcript({
         <FileBaseContext.Provider value={thread.worktreePath ?? null}>
           {view.partial ? <div className="chat-status mono thread-partial">Earlier turns are in T3 Code</div> : null}
           {view.items.length === 0 && !view.running ? <p className="muted thread-loading">No messages yet.</p> : null}
-          {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} lead={lead} />))}
+          {view.items.map((item, index) => (item.kind === "user" ? <UserRow key={item.id} item={item} continued={view.items[index - 1]?.kind === "user"} /> : <ReplyRow key={item.id} item={item} speaker={speaker} spend={spendOf(index)} />))}
           {view.running ? (
             <div className="chat-row from-agent live-turn wide" style={identityStyle(AGENT_COLOR)} aria-live="off">
               <div className="chat-stack">
@@ -843,7 +820,7 @@ function UserRow({ item, continued }: { item: Extract<ThreadItem, { kind: "user"
 
 const isLong = (text: string): boolean => text.length > 600 || /^\s*\|.*\|\s*$/m.test(text) || text.includes("```");
 
-function ReplyRow({ item, speaker, spend, lead }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode; spend: { spend: ThreadCost; since: number; turns: number } | null; lead: string }) {
+function ReplyRow({ item, speaker, spend }: { item: Extract<ThreadItem, { kind: "reply" }>; speaker: ReactNode; spend: { spend: ThreadCost; since: number; turns: number } | null }) {
   return (
     <div className={`chat-row from-agent${isLong(item.text) ? " wide" : ""}`} style={identityStyle(AGENT_COLOR)}>
       <div className="chat-stack">
@@ -877,7 +854,6 @@ function ReplyRow({ item, speaker, spend, lead }: { item: Extract<ThreadItem, { 
           ) : null}
           <div className="reply-foot">
             <CopyTextButton text={item.text} label="Copy reply" />
-            <SpeakButton id={item.id} text={item.text} lead={lead} />
             {spend ? <SpendFoot spend={spend.spend} since={spend.since} turns={spend.turns} /> : null}
           </div>
         </div>
@@ -1171,9 +1147,6 @@ export function ThreadComposer({
 // ---- menus and dialogs ----
 
 function ThreadMenu({
-  canSpeak,
-  autoRead,
-  onToggleAutoRead,
   onSettings,
   onAddToRoom,
   settled,
@@ -1181,9 +1154,6 @@ function ThreadMenu({
   onArchive,
   onDelete,
 }: {
-  canSpeak: boolean;
-  autoRead: boolean;
-  onToggleAutoRead: () => void;
   onSettings: () => void;
   onAddToRoom: () => void;
   settled: boolean;
@@ -1219,12 +1189,6 @@ function ThreadMenu({
       </button>
       {open ? (
         <Popover anchor={anchor} menuRef={menuRef} role="menu" onClose={() => setOpen(false)}>
-          {canSpeak ? (
-            <button type="button" role="menuitemcheckbox" aria-checked={autoRead} onClick={pick(onToggleAutoRead)} title="Read each new reply and request aloud in this browser, with the voice set in Settings → Voice…">
-              <span className="setting-check">{autoRead ? <Glyph name="check" text="✓" /> : null}</span>
-              Read new replies aloud
-            </button>
-          ) : null}
           <button type="button" role="menuitem" onClick={pick(onSettings)}>
             Model and permissions…
           </button>

@@ -13,7 +13,7 @@ export interface StripAction {
   title?: string | undefined;
   tone?: "primary" | "danger" | undefined;
   disabled?: boolean | undefined;
-  /** As the control it stands for says it (Read aloud while reading, an open "turn in T3"). */
+  /** As the control it stands for says it (a chosen option). */
   pressed?: boolean | undefined;
   expanded?: boolean | undefined;
   press: () => void;

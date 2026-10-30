@@ -766,8 +766,8 @@
   line-height: 16px;
 }
 
-/* Form controls in whole pixels, not the system's: a select's arrow, a checkbox, a radio, the speech slider. A check
-   is the 5 × 5 glyph; a chosen radio is a filled 3 × 3 square; all in the text colour. */
+/* Form controls in whole pixels, not the system's: a select's arrow, a checkbox, a radio. A check is the 5 × 5 glyph;
+   a chosen radio is a filled 3 × 3 square; all in the text colour. */
 html[data-skin="pixel"] select:not([multiple]) {
   -webkit-appearance: none;
   appearance: none;
@@ -814,39 +814,6 @@ html[data-skin="pixel"] select:not([multiple]) {
 
 [data-skin="pixel"] :is(input[type="checkbox"], input[type="radio"]):disabled {
   opacity: 0.5;
-}
-
-[data-skin="pixel"] input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 14px;
-  background: transparent;
-}
-
-[data-skin="pixel"] input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
-  background: var(--px-rule);
-}
-
-[data-skin="pixel"] input[type="range"]::-moz-range-track {
-  height: 4px;
-  background: var(--px-rule);
-}
-
-[data-skin="pixel"] input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 10px;
-  height: 14px;
-  margin-top: -5px;
-  background: var(--px-raised);
-  border: var(--u) solid var(--px-outline);
-}
-
-[data-skin="pixel"] input[type="range"]::-moz-range-thumb {
-  width: 6px;
-  height: 10px;
-  background: var(--px-raised);
-  border: var(--u) solid var(--px-outline);
 }
 
 /* The app's mark: the boss's sprite at 2×. */

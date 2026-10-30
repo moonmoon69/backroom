@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { preferredVoice, readBoxVoice, readRate, readSource, readVoiceURI, speak, speechSupported, stopSpeaking, useBoxStatus, useSpeaking, useVoices, writeBoxVoice, writeRate, writeSource, writeVoiceURI, type SpeechSource } from "../speech.ts";
 import { PALETTES, usePalette, useSkin, type SkinChoice } from "../skin.ts";
 import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
@@ -7,7 +6,7 @@ import { AgentsFileDialog } from "./AgentsFile.tsx";
 import { PotetoDialog } from "./PotetoMode.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { FolderIcon, GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SpeakerIcon, StopIcon, SunIcon } from "./icons.tsx";
+import { FolderIcon, GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SunIcon } from "./icons.tsx";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
@@ -30,7 +29,7 @@ const LOOKS: Array<{ key: SkinChoice; label: string; hint: string; icon: ReactNo
 
 /**
  * App-wide controls in the overview's header: the T3 connection and the updates, then the settings, each a button in the
- * header's row of the keyboard's grid. The Consigliere, notifications, the voice, the theme and the look are set once
+ * header's row of the keyboard's grid. The Consigliere, notifications, the theme and the look are set once
  * in a while, so they share one settings menu.
  */
 export function AppControls({
@@ -53,10 +52,9 @@ export function AppControls({
   );
 }
 
-/** The Consigliere, notifications on this device, the voice replies are read in, the theme, and the look. */
+/** The Consigliere, notifications on this device, the theme, and the look. */
 function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice: ThemeChoice) => void }) {
   const [open, setOpen] = useState(false);
-  const [voiceOpen, setVoiceOpen] = useState(false);
   const [consigliereOpen, setConsigliereOpen] = useState(false);
   const [agentsFileOpen, setAgentsFileOpen] = useState(false);
   const [potetoOpen, setPotetoOpen] = useState(false);
@@ -67,7 +65,6 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const [palette, setPalette] = usePalette();
   const wrapper = useRef<HTMLSpanElement>(null);
   const notifyOn = useNotifyOn();
-  const boxSpeech = Boolean(useBoxStatus()?.available);
   const { toast } = useToast();
   // Settings → Agents file (src/app/agentsFile.ts): whether it is on, read from the service each time the menu opens; on by default.
   const [agentsFile, setAgentsFile] = useState(true);
@@ -109,7 +106,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Settings"
-        title="Settings: the Consigliere, the agents file, Poteto mode, notifications, voice, theme and look"
+        title="Settings: the Consigliere, the agents file, Poteto mode, notifications, theme and look"
         onClick={() => setOpen((v) => !v)}
         data-nav="ov"
         data-nav-key="head:settings"
@@ -176,14 +173,6 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
               <span className="menu-value">{notifyOn ? "on" : "off"}</span>
             </button>
           ) : null}
-          {speechSupported || boxSpeech ? (
-            <button type="button" role="menuitem" title="The voice and speed replies are read aloud in" onClick={pick(() => setVoiceOpen(true))}>
-              <span className="menu-icon" aria-hidden="true">
-                <SpeakerIcon />
-              </span>
-              Voice…
-            </button>
-          ) : null}
           <div className="menu-heading" role="presentation">
             Theme
           </div>
@@ -235,7 +224,6 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             : null}
         </div>
       ) : null}
-      {voiceOpen ? <VoiceDialog onClose={() => setVoiceOpen(false)} /> : null}
       {consigliereOpen ? <ConsigliereDialog onClose={() => setConsigliereOpen(false)} /> : null}
       {agentsFileOpen ? <AgentsFileDialog onClose={() => setAgentsFileOpen(false)} /> : null}
       {potetoOpen ? <PotetoDialog onClose={() => setPotetoOpen(false)} /> : null}
@@ -359,118 +347,6 @@ function ConsigliereDialog({ onClose }: { onClose: () => void }) {
         <button type="button" className="primary" onClick={onClose}>
           Done
         </button>
-      </div>
-    </Dialog>
-  );
-}
-
-const SAMPLE = "Claude. The parser test passes again; the fix is in the tokenizer, and the handoff lists two files.";
-
-const VOICE_LANGUAGE: Record<string, string> = { "en-us": "American", "en-gb": "British" };
-
-function VoiceDialog({ onClose }: { onClose: () => void }) {
-  const box = useBoxStatus(true);
-  const browserVoices = useVoices();
-  const [source, setSource] = useState<SpeechSource>(() => readSource());
-  const [boxVoice, setBoxVoice] = useState<string>(readBoxVoice() ?? "");
-  const [voiceURI, setVoiceURI] = useState<string>(readVoiceURI() ?? "");
-  const [rate, setRate] = useState<number>(readRate());
-  const sample = useSpeaking();
-  const speaking = sample.speaking === "voice-sample";
-  const preparing = sample.preparing === "voice-sample" && !speaking;
-  useEffect(() => stopSpeaking, []);
-  const chosen = browserVoices.find((v) => v.voiceURI === voiceURI) ?? null;
-  const best = preferredVoice(browserVoices);
-  const boxAvailable = Boolean(box?.available);
-  const boxState = !box ? "asking the service…" : !box.available ? "off on the service (ROOMS_SPEECH=off)" : box.state === "ready" ? "ready" : box.state === "loading" ? "getting ready: the model is loaded on the box (about 90 MB, downloaded once)" : box.state === "failed" ? `not working: ${box.error ?? "unknown error"}` : "loads when first used";
-  const save = () => {
-    writeSource(boxAvailable ? source : "browser");
-    writeBoxVoice(boxVoice || null);
-    writeVoiceURI(voiceURI || null);
-    writeRate(rate);
-  };
-  return (
-    <Dialog title="Voice" onClose={onClose}>
-      <div className="form">
-        <p className="muted">
-          Replies are read with Backroom&rsquo;s own voice, made on the box and played here, so every device sounds the same; or with this browser&rsquo;s built-in voice. A room or thread reads its new replies aloud when its <strong>⋯</strong> menu says so; the button at the foot of any reply reads that one.
-        </p>
-        <div className="form-field" role="radiogroup" aria-label="Voice source">
-          <span>Read with</span>
-          <label className="radio">
-            <input type="radio" name="speech-source" checked={source === "box" && boxAvailable} disabled={!boxAvailable} onChange={() => setSource("box")} />
-            <span>
-              Backroom&rsquo;s voice on the box <span className="muted">· {boxState}</span>
-            </span>
-          </label>
-          <label className="radio">
-            <input type="radio" name="speech-source" checked={source === "browser" || !boxAvailable} disabled={!speechSupported} onChange={() => setSource("browser")} />
-            <span>
-              This browser&rsquo;s voice{speechSupported ? "" : " (none in this browser)"}
-            </span>
-          </label>
-        </div>
-        {source === "box" && boxAvailable ? (
-          <label>
-            Voice
-            <select value={boxVoice} onChange={(e) => setBoxVoice(e.target.value)}>
-              <option value="">Backroom&rsquo;s default{box?.defaultVoice ? ` (${box.voices.find((v) => v.id === box.defaultVoice)?.name ?? box.defaultVoice})` : ""}</option>
-              {box?.voices.map((voice) => (
-                <option key={voice.id} value={voice.id}>
-                  {voice.name} · {VOICE_LANGUAGE[voice.language] ?? voice.language} {voice.gender} · grade {voice.grade}
-                </option>
-              ))}
-            </select>
-            <span className="hint">The grades are Kokoro&rsquo;s own; Heart, Bella, Nicole and Emma are the ones worth choosing between.</span>
-          </label>
-        ) : (
-          <label>
-            Voice
-            <select value={voiceURI} onChange={(e) => setVoiceURI(e.target.value)}>
-              <option value="">{best ? `Best available: ${best.name}` : "Browser default (no voices listed yet)"}</option>
-              {browserVoices.map((voice) => (
-                <option key={voice.voiceURI} value={voice.voiceURI}>
-                  {voice.name} ({voice.lang}){voice.localService ? "" : " · online"}
-                </option>
-              ))}
-            </select>
-            <span className="hint">
-              {chosen && !chosen.localService ? "This voice needs the internet; the browser fetches the audio. " : ""}
-              This device&rsquo;s own list; the ones marked online are usually the clearest.
-            </span>
-          </label>
-        )}
-        <label>
-          Speed <span className="mono muted">{rate.toFixed(1)}×</span>
-          <input type="range" min="0.7" max="1.6" step="0.1" value={rate} onChange={(e) => setRate(Number(e.target.value))} />
-        </label>
-        <div className="dialog-actions">
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              if (speaking || preparing) return stopSpeaking();
-              save();
-              speak("voice-sample", SAMPLE);
-            }}
-          >
-            {speaking ? <StopIcon /> : preparing ? <span className="spinner" aria-hidden="true" /> : <SpeakerIcon />} {speaking ? "Stop" : preparing ? "Preparing…" : "Try it"}
-          </button>
-          <span className="spacer" />
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => {
-              save();
-              onClose();
-            }}
-          >
-            Save
-          </button>
-        </div>
       </div>
     </Dialog>
   );

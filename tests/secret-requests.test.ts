@@ -19,7 +19,7 @@ import type { EngineRoomSnapshot } from "../src/domain/engineView.ts";
 import { withFakeControls } from "../src/server/fakeControls.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { describeStatus } from "../web/src/memberActivity.ts";
-import { asksYou, requestsWhat } from "../web/src/requestWords.ts";
+import { requestsWhat } from "../web/src/requestWords.ts";
 
 /** A value no other text in a test contains: wherever it turns up, the secret leaked there. */
 const SENTINEL = "s3cr3t-SENTINEL-7f1e9a";
@@ -433,7 +433,6 @@ test("the page words a secret as T3 does, and a chip with several kinds names ea
   assert.equal(describeStatus({ ...status, pendingApprovals: true }).label, "needs approval");
   assert.equal(describeStatus({ ...status, pendingSecret: false }).label, "waiting for your answer");
   assert.deepEqual([requestsWhat(["secret"]), requestsWhat(["approval", "approval"]), requestsWhat(["user-input"]), requestsWhat(["user-input", "secret"]), requestsWhat(["secret", "approval", "user-input"])], ["secret", "approval", "question", "secret and question", "approval, secret and question"]);
-  assert.equal(asksYou("secret"), "is asking for a secret.");
 });
 
 test("review: agent_stopped reaches the HTTP caller and removes the stale secret without recording a value", async (t) => {

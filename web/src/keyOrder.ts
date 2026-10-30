@@ -765,11 +765,11 @@ export function openLanding<T>(choices: OpenChoices<T>): T | null {
 /**
  * The kinds of button an item's action strip holds, in the order it shows them (the design's section 4, K1-Fable): a
  * request's Correct… and Cancel (a message to several members has a pair for each request, in turn), a failed turn's
- * Retry and Dismiss, a running turn's Stop and the choices of what it asks you; then Copy, Read aloud, each #ref, each
- * file chip, each image, "turn in T3", "sent to T3"; then what else a mouse finds on the item (a link, a code block's
- * Copy, a folded text, a live feed's earlier part, anything more); and Detail, the post's detail, last.
+ * Retry and Dismiss, a running turn's Stop and the choices of what it asks you; then Copy, each #ref, each file chip,
+ * each image, "turn in T3", "sent to T3"; then what else a mouse finds on the item (a link, a code block's Copy, a
+ * folded text, a live feed's earlier part, anything more); and Detail, the post's detail, last.
  */
-export const ACTION_KINDS = ["correct", "cancel", "retry", "dismiss", "stop", "choice", "copy", "speak", "ref", "file", "image", "turn", "sent", "link", "code", "text", "more", "other", "detail"] as const;
+export const ACTION_KINDS = ["correct", "cancel", "retry", "dismiss", "stop", "choice", "copy", "ref", "file", "image", "turn", "sent", "link", "code", "text", "more", "other", "detail"] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 
 /** Where a kind stands in the strip: Cancel with Correct…, so each request's pair stays together. */

@@ -97,14 +97,6 @@ export const UpFolderIcon = () => (
   </Icon>
 );
 
-/** A loudspeaker: read aloud. */
-export const SpeakerIcon = () => (
-  <Icon name="speaker" strokeWidth={1.25}>
-    <path d="M2.5 6.25h2.6L8.5 3.5v9L5.1 9.75H2.5z" />
-    <path d="M10.75 5.75a3.2 3.2 0 0 1 0 4.5M12.6 4a5.75 5.75 0 0 1 0 8" />
-  </Icon>
-);
-
 /** Two overlapping sheets: copy. */
 export const CopyIcon = () => (
   <Icon name="copy" strokeWidth={1.25}>
@@ -143,13 +135,6 @@ export const BellIcon = ({ off = false }: { off?: boolean }) => (
     <path d="M4 11.5V7.25a4 4 0 0 1 8 0v4.25l1 1H3z" />
     <path d="M6.75 14a1.35 1.35 0 0 0 2.5 0" />
     {off ? <path d="M2.5 2.5l11 11" /> : null}
-  </Icon>
-);
-
-/** A square: stop. */
-export const StopIcon = () => (
-  <Icon name="stop" strokeWidth={1.25}>
-    <rect x="4" y="4" width="8" height="8" rx="1" />
   </Icon>
 );
 

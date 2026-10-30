@@ -493,8 +493,8 @@ test("an action strip's buttons in the design's order, Detail last", () => {
   // Your message with an open request: its Copy beside the bubble, then the request's Correct… and Cancel, its #refs.
   assert.deepEqual(order(["copy", "correct", "cancel", "ref", "detail"]), ["correct", "cancel", "copy", "ref", "detail"]);
   // A reply: what it answers (#ref) in its head, then its text's file chips and images, sent to T3, turn in T3, then
-  // Copy and Read aloud at its foot.
-  assert.deepEqual(order(["ref", "file", "image", "file", "sent", "turn", "copy", "speak", "detail"]), ["copy", "speak", "ref", "file", "file", "image", "turn", "sent", "detail"]);
+  // Copy at its foot.
+  assert.deepEqual(order(["ref", "file", "image", "file", "sent", "turn", "copy", "detail"]), ["copy", "ref", "file", "file", "image", "turn", "sent", "detail"]);
   // A failed-turn notice: the post it is on, then Retry and Dismiss.
   assert.deepEqual(order(["ref", "retry", "dismiss", "detail"]), ["retry", "dismiss", "ref", "detail"]);
   // A live bubble: what it works on, Stop, an approval's choices, its feed's earlier part, sent to T3 (no Detail).

@@ -7,7 +7,6 @@ import { Dialog } from "./Dialog.tsx";
 import { CopyButton } from "./pickers.tsx";
 import { useToast } from "./Toast.tsx";
 import { MoreIcon } from "./icons.tsx";
-import { useAutoRead, useSpeechAvailable } from "../speech.ts";
 import { useMenuFocus, type NavProps } from "../keys.ts";
 
 type RunCommand = (command: RoomCommand) => Promise<{ type: string; roomId?: string } | CommandResult | null>;
@@ -71,8 +70,6 @@ type RoomRef = Pick<Room, "id" | "title">;
  */
 export function RoomHeaderMenu({ projectTitle, nav }: { projectTitle: string | null; nav?: NavProps }) {
   const { snapshot, runCommand } = useRoom();
-  const [autoRead, setAutoRead] = useAutoRead(`room:${snapshot.room.id}`);
-  const canSpeak = useSpeechAvailable();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const wrapper = useRef<HTMLSpanElement>(null);
@@ -119,21 +116,6 @@ export function RoomHeaderMenu({ projectTitle, nav }: { projectTitle: string | n
               <CopyButton text={room.projectId} label="Copy the project id" />
             </span>
           </div>
-          {canSpeak ? (
-            <button
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked={autoRead}
-              title="Read each new reply and request aloud in this browser, with the voice set in Settings → Voice…"
-              onClick={() => {
-                setAutoRead(!autoRead);
-                setOpen(false);
-              }}
-            >
-              Read new replies aloud
-              <span className="menu-value">{autoRead ? "on" : "off"}</span>
-            </button>
-          ) : null}
           <button type="button" role="menuitem" onClick={() => pick("rename")}>
             Rename…
           </button>

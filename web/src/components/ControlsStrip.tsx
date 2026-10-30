@@ -71,10 +71,6 @@ function describe(element: HTMLElement, requests: number, asking: number): Omit<
     const label = element.getAttribute("aria-label") === "Copied" ? "Copied" : "Copy";
     return { kind: "copy", label, name: label, title };
   }
-  if (element.matches(".speak-button")) {
-    const label = element.getAttribute("aria-label") ?? "Read aloud";
-    return { kind: "speak", label, name: label, title, pressed: element.getAttribute("aria-pressed") === "true" };
-  }
   if (element.matches(".post-ref")) return { kind: "ref", label: text, name: `show ${text}`, title };
   if (element.matches(".md-file")) {
     const name = textOf(element.querySelector(".md-file-name") ?? element);
@@ -121,7 +117,7 @@ const sameControls = (a: Control[], b: Control[]): boolean =>
  * An item's action strip read off the page: every control a mouse finds in what it is drawn for (`from`: the item
  * itself, a post; or what the item opened, a status chip's choices), in the order of the design's table, each pressing
  * that control; then the strip's own (`extra`: a post's Detail, a chip's "show #n"). It follows the controls as they
- * change (Read aloud becomes Stop reading, an answered request loses Correct… and Cancel, a chosen option is pressed).
+ * change (an answered request loses Correct… and Cancel, a chosen option is pressed).
  * With nothing to offer it is not drawn: `onEmpty`, else `onClose`.
  */
 export function ControlsStrip({ item, from = item, within, extra, where, keeps, onClose, onEmpty }: {

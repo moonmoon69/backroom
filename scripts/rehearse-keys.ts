@@ -49,9 +49,9 @@
  * Up and Down leave it for the post above or below (a running turn's live bubble after the newest post, then the
  * composer's strip), and a letter for the composer; it stays open past a poll. Each button does what the post's own does,
  * checked in the API: Correct… opens its box in place and Enter sends it (in a post's Detail too), Cancel, Retry and
- * Dismiss on failed turns, Stop on a live bubble; on a reply Copy (the clipboard stubbed), Read aloud (speechSynthesis
- * stubbed), a file chip's preview (a file in a project of the run's own) and "turn in T3"; Detail, last, the post's
- * detail, the ring back on Detail when it closes. A live bubble with an approval offers its choices.
+ * Dismiss on failed turns, Stop on a live bubble; on a reply Copy (the clipboard stubbed), a file chip's preview (a file
+ * in a project of the run's own) and "turn in T3"; Detail, last, the post's detail, the ring back on Detail when it
+ * closes. A live bubble with an approval offers its choices.
  *
  * Add member's crew (#152), with eight crew members so it wraps onto several lines: ↓ from New reaches the first, ← →
  * go along it in order onto the next lines and stop at its ends, never picking, the ring drawn whole inside the dialog
@@ -157,7 +157,7 @@ interface Focus {
   action: string | null;
   /** The item the focus is in or on (its `data-nav-key`): a strip's button is in its post. */
   item: string | null;
-  /** The focused button's aria-pressed (a strip's choice, Read aloud). */
+  /** The focused button's aria-pressed (a strip's choice). */
   pressed: string | null;
 }
 
@@ -2144,7 +2144,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
       place: () => enterRoom("the ring on a post", (f) => f.key?.startsWith("post:") === true),
     })
   ) {
-    // A reply's actions: Copy, Read aloud, what it answers, its file chip, turn in T3, sent to T3, Detail. The file is in
+    // A reply's actions: Copy, what it answers, its file chip, turn in T3, sent to T3, Detail. The file is in
     // a project of the run's own (its data folder), named in his text; his turn has earlier messages and a file changed.
     await makeProject();
     await room.settle("fable");
@@ -2168,35 +2168,19 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     browser.eval<boolean>(`() => {
       window.__rehearseCopied = null;
       navigator.clipboard.writeText = (text) => { window.__rehearseCopied = text; return Promise.resolve(); };
-      window.__rehearseSpoken = [];
-      window.__rehearseHushed = 0;
-      speechSynthesis.speak = (u) => { window.__rehearseSpoken.push(u.text); setTimeout(() => u.onstart && u.onstart(new Event('start')), 0); };
-      speechSynthesis.cancel = () => { window.__rehearseHushed += 1; };
       return true;
     }`);
-    log("  page: the clipboard's writeText and speechSynthesis stubbed, recording what the page sends them");
+    log("  page: the clipboard's writeText stubbed, recording what the page sends it");
     await toPost(reply.seq, `@fable's reply #${reply.number}`);
     press("Enter");
     await expect("Enter: the reply's actions, the ring on Copy", (f) => f.strips === 1 && f.item === `post:${reply.seq}` && f.action === "copy:0" && f.ring);
-    names(`#${reply.number}, a reply`, ["Copy", "Read aloud", `show #${asked.number}`, "release.md", "turn in T3", "sent to T3", "Detail"]);
+    names(`#${reply.number}, a reply`, ["Copy", `show #${asked.number}`, "release.md", "turn in T3", "sent to T3", "Detail"]);
     press("Enter");
     await expect("Enter on Copy: Copied", (f) => f.action === "copy:0" && f.label === "Copied");
     const copied = browser.eval<string | null>("() => window.__rehearseCopied");
     if (copied === null || copied !== reply.body) return fail(`the clipboard got ${JSON.stringify(copied)}, the API's post reads ${JSON.stringify(reply.body)}`);
     log(`  page: the clipboard holds the API's body of #${reply.number} (${copied.length} characters)`);
-    press("ArrowRight");
-    await expect("Right: Read aloud", (f) => f.action === "speak:0" && f.label === "Read aloud");
-    press("Enter");
-    await expect("Enter: it reads, the button says Stop reading", (f) => f.action === "speak:0" && f.label === "Stop reading");
-    const spoken = browser.eval<string[]>("() => window.__rehearseSpoken").join(" ");
-    if (!spoken.includes("fable") || !spoken.includes("The notes are in")) fail(`the voice was given ${JSON.stringify(spoken)}`);
-    const hushed = browser.eval<number>("() => window.__rehearseHushed");
-    await keyBar(`Stop reading · ${replyWhere}`);
-    press("Enter");
-    await expect("Enter on Stop reading: it stops, Read aloud again", (f) => f.action === "speak:0" && f.label === "Read aloud");
-    if (browser.eval<number>("() => window.__rehearseHushed") <= hushed) fail("Stop reading did not stop the voice");
-    log(`  page: the voice was given "${spoken.slice(0, 60)}…", then stopped`);
-    await state("a reply's actions: Copy puts it on the clipboard, Read aloud reads it, Stop reading stops", `Read aloud · ${replyWhere}`);
+    await state("a reply's actions: Copy puts it on the clipboard", `Copy · ${replyWhere}`);
     // A #ref shows the post it names and takes the ring there.
     press("ArrowRight");
     await expect(`Right: show #${asked.number}`, (f) => f.action === "ref:0");

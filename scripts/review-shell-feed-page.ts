@@ -66,7 +66,7 @@ const adapter = new HttpT3Adapter({
     return fetch(input, init);
   },
 });
-const config = loadConfig({ ROOMS_ADAPTER: "http", ROOMS_DATA_DIR: data, ROOMS_PORT: String(port), T3_BASE_URL: baseUrl, ROOMS_BROWSER_MODE: "off", ROOMS_SPEECH: "off" });
+const config = loadConfig({ ROOMS_ADAPTER: "http", ROOMS_DATA_DIR: data, ROOMS_PORT: String(port), T3_BASE_URL: baseUrl, ROOMS_BROWSER_MODE: "off" });
 const stack = createStack({ dbPath: join(data, "rooms.sqlite"), adapter, briefingBudgetChars: 60_000, keepAliveMs: 0, latestRelease: async () => null });
 const app = createHttpApp(stack, config, resolve("web/dist"));
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });
