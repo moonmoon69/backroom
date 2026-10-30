@@ -22,7 +22,8 @@
  * - Keep-alives are on for the orchestrator and off for members, unless the room's setting says otherwise.
  * - A member's thread held in a state no reply of its own ends (an approval, a secret or a question for the user, a usage
  *   limit, a queue T3 holds, the thread settled, archived or deleted in T3) is one notice to the orchestrator on each open
- *   request of the member's, once per request per state; a state that persists or clears posts nothing.
+ *   request of the member's, once per request per hold (the state and what holds it: the request T3 waits on, the
+ *   limited run); a hold that persists or clears posts nothing, and a new one posts again.
  * - A run that brings only keep-alives ends as a note that wakes nobody, whatever it said.
  * - A request, correction or retry from the user or the orchestrator goes into its member's running turn: it is offered
  *   when T3 runs the turn, confirmed once T3 shows the member working after it in that turn, sent again with its own IDs
@@ -38,7 +39,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, openRequests, runForMessage } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, latestExecutedRun, openRequests, runForMessage } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { blockedNoticed, deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
@@ -965,45 +966,59 @@ export class EngineHost {
     if (now.orchestrator === null || now.orchestrator === seatId || seat.status !== "active") return;
     const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined);
     if (!hold) return;
-    const told = blockedNoticed(now, seatId, hold.state);
-    // A turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given.
-    const said = (id: string) => hold.state === "limited" && now.events.some((e) => (e.data.kind === "notice" || e.data.kind === "progress") && e.data.requestIds.includes(id) && isPausedNotice(e.data.body));
+    const told = blockedNoticed(now, seatId, hold.state, hold.hold);
+    // The turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given: a host
+    // run's error notice, or the follow-up of a turn the room did not start, both of that limited run.
+    const records = runRecords(now);
+    const ofLimitedRun = (e: (typeof now.events)[number]) =>
+      e.data.kind === "notice" ? records.get(e.data.causeId)?.t3?.id === hold.hold : e.id === `t3run:${seat.threadId}:${hold.hold}`;
+    const said = (id: string) => hold.state === "limited" && now.events.some((e) => (e.data.kind === "notice" || e.data.kind === "progress") && e.data.requestIds.includes(id) && isPausedNotice(e.data.body) && ofLimitedRun(e));
     const ids = [...now.requests.values()].filter((q) => q.owner === seatId && q.state === "open" && !told.has(q.id) && !said(q.id)).map((q) => q.id);
     if (ids.length === 0) return;
-    this.exec(roomId, { type: "blocked", actor: SYSTEM, id: `blocked:${seatId}:${hold.state}:${ids.join(",")}`, seatId, state: hold.state, requestIds: ids, body: hold.body });
+    this.exec(roomId, { type: "blocked", actor: SYSTEM, id: `blocked:${seatId}:${hold.state}:${hold.hold}:${ids.join(",")}`, seatId, state: hold.state, hold: hold.hold, requestIds: ids, body: hold.body });
   }
 
-  /** What holds the member's thread that no reply of its own ends, in a state and the notice's words; null when nothing does. */
-  private holdOf(roomId: string, seatId: string, detail: T3ThreadDetail | null, live: Run | undefined): { state: string; body: string } | null {
+  /**
+   * What holds the member's thread that no reply of its own ends: its state, the hold's own identity (the request T3
+   * waits on, the limited run, the held run, when the thread was settled or archived), and the notice's words. A new
+   * hold in the same state is told again; the same one never. Null when nothing holds it.
+   */
+  private holdOf(roomId: string, seatId: string, detail: T3ThreadDetail | null, live: Run | undefined): { state: string; hold: string; body: string } | null {
     const who = this.named(roomId, seatId);
+    const threadId = this.project(roomId).seats.get(seatId)!.threadId;
     const gone = (how: string) => `${who}'s T3 thread was ${how} in T3 while seated: no reply will come from it. Reseat or retire ${who}, or report it.`;
-    if (!detail || detail.shell.deletedAt !== null) return { state: "deleted", body: gone("deleted") };
-    if (detail.shell.archivedAt !== null) return { state: "archived", body: gone("archived") };
-    const asked = openRequests(detail)[0];
+    if (!detail || detail.shell.deletedAt !== null) return { state: "deleted", hold: threadId, body: gone("deleted") };
+    if (detail.shell.archivedAt !== null) return { state: "archived", hold: detail.shell.archivedAt, body: gone("archived") };
     const state = memberState(memberFacts(detail, live !== undefined, this.now()), this.now());
+    // What T3 waits on of the kind the state names: a question asked before an approval does not word the approval.
+    const asked = (type: "approval" | "secret" | "user-input") => openRequests(detail).find((request) => request.type === type);
     const answer = `Only the user can answer it, from the page; ${who}'s reply comes after.`;
     switch (state.state) {
       case "approval": {
-        const what = asked?.prompt ?? asked?.appName;
-        return { state: "approval", body: `${who} waits on an approval${what ? `: ${clip(what)}` : "."} ${answer}` };
+        const request = asked("approval");
+        const what = request?.prompt ?? request?.appName;
+        return { state: "approval", hold: request?.id ?? threadId, body: `${who} waits on an approval${what ? `: ${clip(what)}` : "."} ${answer}` };
       }
-      case "secret":
-        return { state: "secret", body: `${who} asks for a secret${asked?.secret ? `: ${clip(asked.secret.label)}` : "."} ${answer}` };
+      case "secret": {
+        const request = asked("secret");
+        return { state: "secret", hold: request?.id ?? threadId, body: `${who} asks for a secret${request?.secret ? `: ${clip(request.secret.label)}` : "."} ${answer}` };
+      }
       case "input": {
-        const question = asked?.questions.map((q) => q.question).join(" / ");
-        return { state: "input", body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : "."} ${answer}` };
+        const request = asked("user-input");
+        const question = request?.questions.map((q) => q.question).join(" / ");
+        return { state: "input", hold: request?.id ?? threadId, body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : "."} ${answer}` };
       }
       case "limited": {
         // The turn the limit stopped, when it is this run's, ends with its own notice (pausedNotice).
         const limited = detail.shell.usageLimit!;
         const t3 = live ? runRecords(this.project(roomId)).get(live.id)?.t3 : undefined;
         if (live && (!t3 || t3.id === limited.runId)) return null;
-        return { state: "limited", body: this.pausedHold(roomId, seatId, pauseOf(limited)) };
+        return { state: "limited", hold: limited.runId, body: this.pausedHold(roomId, seatId, pauseOf(limited)) };
       }
       case "held":
-        return { state: "held", body: `T3 holds ${who}'s queue${state.detail ? ` (${state.detail})` : ""}: nothing sent to ${who} runs until the user presses Resume queue on the member.` };
+        return { state: "held", hold: latestExecutedRun(detail.runs)?.id ?? threadId, body: `T3 holds ${who}'s queue${state.detail ? ` (${state.detail})` : ""}: nothing sent to ${who} runs until the user presses Resume queue on the member.` };
     }
-    if (detail.shell.settledAt !== null) return { state: "settled", body: `${who}'s T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire ${who} if it was.` };
+    if (detail.shell.settledAt !== null) return { state: "settled", hold: detail.shell.settledAt, body: `${who}'s T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire ${who} if it was.` };
     return null;
   }
 

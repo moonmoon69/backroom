@@ -1,7 +1,9 @@
 /** What the Members panel says a member is doing, ranked as T3 Code ranks its thread pills (src/domain/memberState.ts). */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import { betweenTurns, memberActivity } from "../web/src/memberActivity.ts";
+import { RANKING, type MemberStateName } from "../src/domain/memberState.ts";
 import type { BackgroundTask, Desk, ParticipantStatus } from "../web/src/types.ts";
 
 const status = (over: Partial<ParticipantStatus> = {}): ParticipantStatus => ({
@@ -65,4 +67,20 @@ test("between turns is read in one place: the status bar's chip and the Members 
   const watching = desk({ backgroundLiveness: "monitoring", backgroundTasks: [job("background", "monitor")] });
   assert.equal(betweenTurns(lagging, watching), "monitoring", "the desk read T3 after the status line");
   assert.equal(memberActivity(lagging, watching).label, "monitoring");
+});
+
+test("the README's Members list ranks the states in the classifier's order", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const list = /ranked as T3 Code ranks its thread statuses[^\n]*\n\n((?:- .*\n)+)/.exec(readme)?.[1];
+  assert.ok(list, "the README's Members list");
+  // Each bold word the list names, as the state the classifier gives it.
+  const STATE: Record<string, MemberStateName> = {
+    "thread deleted in T3": "deleted", "needs approval": "approval", "asking for a secret": "secret", "waiting for your answer": "input",
+    "paused on Claude's limit until 15:30": "limited", "queue held": "held", working: "working", "working on its own": "working", starting: "working",
+    error: "failed", interrupted: "interrupted", "rolled back": "rolled-back", "subagents running": "background", "background work": "background",
+    monitoring: "monitoring", "plan ready": "plan", ready: "ready", Failed: "failed",
+  };
+  const named = [...list.matchAll(/^- (.*)$/gm)].map((line) => [...line[1]!.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => STATE[m[1]!] ?? assert.fail(`the list names "${m[1]}", which no state says`)));
+  const order = named.flatMap((states) => [...new Set(states)]).filter((state, i, all) => all.indexOf(state) === i);
+  assert.deepEqual(order, RANKING.filter((state) => state !== "unknown"));
 });
