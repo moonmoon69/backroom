@@ -2193,8 +2193,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Enter: the reply's actions, on Copy", (f) => f.strips === 1 && f.action === "copy:0");
     press("ArrowRight");
     press("ArrowRight");
-    press("ArrowRight");
-    await expect("Right ×3: the file chip release.md", (f) => f.action === "file:0" && f.label === "release.md");
+    await expect("Right ×2: the file chip release.md", (f) => f.action === "file:0" && f.label === "release.md");
     press("Enter");
     await expect("Enter on release.md: its preview over the page", (f) => (f.dialog ?? "").includes("release.md") && f.inDialog);
     browser.poll<string>("the preview to show the file", "() => document.querySelector('.dialog')?.textContent ?? ''", (text) => text.includes("The parser fix, then the tag, then these notes."));
