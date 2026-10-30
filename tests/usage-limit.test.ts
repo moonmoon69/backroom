@@ -503,3 +503,25 @@ test("a member's Stop everything keeps \"stopped\" for its paused turn before th
   await new LimitRecovery(stack.fake, { intents: storedLimitIntents(stack.repos) }).sweep();
   assert.equal(stack.fake.threads.get(threadId)!.recovery?.autoResume, false);
 });
+
+test("the arming reads T3's record fresh immediately before it goes: a Don't resume made in T3's window, not yet in the stream's read, is not overwritten", async () => {
+  // The thread stream's latest read, taken before the user turned the resume off in T3's own window.
+  class StaleStream extends FakeT3Adapter {
+    stale: Awaited<ReturnType<FakeT3Adapter["getThreadDetail"]>> = null;
+    override async getThreadDetail(threadId: string, options: { bounded?: boolean; fresh?: boolean } = {}) {
+      return options.fresh || !this.stale ? super.getThreadDetail(threadId) : structuredClone(this.stale);
+    }
+  }
+  const fake = new StaleStream({ autoCompleteMs: null });
+  await fake.launchThread({ commandId: "l", threadId: "t", projectId: "project_demo", title: "t", modelSelection: SELECTION, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" }, initialMessage: { messageId: "m", text: "Go." } });
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+  fake.completeRun("t", { text: "limit", outcome: "limit", resetAt });
+  const runId = fake.threads.get("t")!.runs[0]!.id;
+  fake.stale = await fake.getThreadDetail("t");
+  await fake.controlThread({ commandId: "dont-resume-in-t3", threadId: "t", control: { type: "limit.disarm", runId, resetAt } });
+  await new LimitRecovery(fake).sweep();
+  assert.equal(fake.commands.filter((c) => c.type === "thread.metadata.update").length, 1, "no arming: only the user's own command");
+  assert.equal(fake.threads.get("t")!.recovery?.autoResume, false);
+  fake.sweepLimits(Date.parse(resetAt) + 1);
+  assert.equal(continuations(fake, "t"), 0);
+});

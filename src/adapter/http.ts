@@ -1553,10 +1553,11 @@ export class HttpT3Adapter implements T3Adapter {
     return found ? this.toShell(found) : null;
   }
 
-  async getThreadDetail(threadId: string, options: { bounded?: boolean } = {}): Promise<T3ThreadDetail | null> {
+  async getThreadDetail(threadId: string, options: { bounded?: boolean; fresh?: boolean } = {}): Promise<T3ThreadDetail | null> {
     await this.ensureProtocol();
     // A watched thread's from its latest read while its stream shows no change past it; else read now (threadFeed.ts).
-    const snapshot = await this.threadFeed.detail(threadId, options.bounded === true);
+    // Fresh: from T3 now.
+    const snapshot = options.fresh ? await this.readThread(threadId, options.bounded === true) : await this.threadFeed.detail(threadId, options.bounded === true);
     if (!snapshot) return null;
     const shell = await this.shell();
     const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);

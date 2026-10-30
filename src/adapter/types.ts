@@ -735,9 +735,10 @@ export interface T3Adapter {
   getThreadShell(threadId: string): Promise<T3ThreadShell | null>;
   /**
    * The thread's projection. `bounded` asks for the recent window of items and messages only (the runs, requests and
-   * provider state come in full either way); the default reads the whole history.
+   * provider state come in full either way); the default reads the whole history. `fresh` reads it from T3 now, never
+   * from the thread stream's latest read.
    */
-  getThreadDetail(threadId: string, options?: { bounded?: boolean }): Promise<T3ThreadDetail | null>;
+  getThreadDetail(threadId: string, options?: { bounded?: boolean; fresh?: boolean }): Promise<T3ThreadDetail | null>;
   /** T3's default model for new threads in a project (project override, else the server default). */
   defaultModelSelection(projectId: string): Promise<ModelSelection | null>;
   /** Create a thread, with its workspace made by T3, and start it when a first message is given. */

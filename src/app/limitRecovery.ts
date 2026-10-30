@@ -108,6 +108,13 @@ export class LimitRecovery {
           const limit = detail.shell.usageLimit;
           const intent = limit?.resetAt ? this.intents.get(listed.id, limit.runId, limit.resetAt) : null;
           action = limitAction(detail.shell, detail, intent, this.now());
+          if (action?.control.type === "limit.arm") {
+            // Against T3's record as it is now, read immediately before: a choice made in T3's own window meanwhile is
+            // overwritten by an arming only within this one round trip.
+            const now = await this.adapter.getThreadDetail(listed.id, { bounded: true, fresh: true });
+            const current = now?.shell.usageLimit;
+            action = now ? limitAction(now.shell, now, current?.resetAt ? this.intents.get(listed.id, current.runId, current.resetAt) : null, this.now()) : null;
+          }
           if (!action || this.refused.has(action.commandId)) break;
           await this.adapter.controlThread({ commandId: action.commandId, threadId: listed.id, control: action.control });
           this.log(action.control.type === "limit.arm" ? "usage limit: T3 continues the thread at the reset" : "usage limit: T3's resume turned off, as the user wants", { threadId: listed.id, resetAt: action.control.resetAt });
