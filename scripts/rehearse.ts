@@ -2017,6 +2017,10 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
       always: () => {
         browser.poll<string>("@reviewer's label to leave paused", statusRead, (label) => !label.startsWith("paused"), 30_000);
         if (browser.eval<boolean>("() => window.__sameDocument === true") !== true) fail("the page reloaded across the reset");
+        const control = browser.eval<{ tag: string; text: string } | null>(`() => { const chip = [...document.querySelectorAll('.work-working .work-chip')].find((e) => e.textContent.includes(${JSON.stringify(room.name.reviewer)})); return chip ? { tag: chip.tagName, text: chip.textContent } : null; }`);
+        if (control?.tag !== "BUTTON") fail(`the auto-resumed member offers no Stop everything control: ${JSON.stringify(control)}`);
+        browser.click(new RegExp(`button "${room.name.reviewer} (in T3|on its own)`));
+        browser.poll<boolean>("the continuation's Stop everything", "() => [...document.querySelectorAll('.work-open button')].some((e) => e.textContent.trim() === 'Stop everything')", (shown) => shown);
       },
     });
     await room.finish("reviewer", "Build is green.");

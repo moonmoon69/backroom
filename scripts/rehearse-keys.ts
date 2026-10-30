@@ -3904,5 +3904,22 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await expect("Esc: the choices folded", (f) => !f.chipOpen);
   }
 
+  if (await section("review: a loose thread's Resume confirmation keeps keyboard focus")) {
+    for (let i = 0; i < 8 && focus().drawers.length > 0; i += 1) press("Backspace");
+    await expect("back on the overview before the loose-thread check", (f) => f.drawers.length === 0);
+    const started = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "Review loose-thread recovery focus" });
+    await service.fake("hold", { threadId: started.threadId, hold: true });
+    await service.fake("complete", { threadId: started.threadId, text: "Usage limit", outcome: "limit", resetInMs: 3_600_000 });
+    await until("the loose thread's paused tile", () => browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="thread:${started.threadId}"]'))`) || null);
+    await goTo(`thread:${started.threadId}`);
+    press("Enter");
+    await expect("the paused loose thread opens", (f) => f.drawers.some((d) => d.view === "thread" && d.id === started.threadId));
+    for (let i = 0; i < 12 && focus().label !== "Resume now"; i += 1) press("Shift+Tab");
+    await expect("Shift+Tab reaches Resume now", (f) => f.label === "Resume now" && f.ring);
+    press("Enter");
+    await expect("the confirmation keeps the ring on Resume anyway", (f) => f.label === "Resume anyway" && f.ring);
+    await state("review: a loose thread's Resume confirmation keeps keyboard focus", "Resume anyway");
+  }
+
   return passed;
 }
