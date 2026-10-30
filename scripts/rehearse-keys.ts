@@ -3910,8 +3910,8 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     const started = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "Review loose-thread recovery focus" });
     await service.fake("hold", { threadId: started.threadId, hold: true });
     await service.fake("complete", { threadId: started.threadId, text: "Usage limit", outcome: "limit", resetInMs: 3_600_000 });
-    await until("the loose thread's paused tile", () => browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="thread:${started.threadId}"]'))`) || null);
-    await goTo(`thread:${started.threadId}`);
+    await until("the loose thread's paused tile", () => browser.eval<boolean>(`() => Boolean(document.querySelector('[data-nav-key="thread:${started.threadId}"]')?.closest('article')?.textContent?.includes('paused until'))`) || null);
+    await tabTo("the loose thread's paused tile", (f) => f.key === `thread:${started.threadId}`, "Tab", 60);
     press("Enter");
     await expect("the paused loose thread opens", (f) => f.drawers.some((d) => d.view === "thread" && d.id === started.threadId));
     for (let i = 0; i < 12 && focus().label !== "Resume now"; i += 1) press("Shift+Tab");

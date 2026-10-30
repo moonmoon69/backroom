@@ -113,3 +113,14 @@ test("review: the member's post status line says what a watched pull request is 
   const line = statusLine("sol", memberStatus(detail, null));
   assert.match(line, /checks? pending/);
 });
+
+test("review round 2: watches with the same number keep their own status details", async () => {
+  const fake = new FakeT3Adapter({ autoCompleteMs: null });
+  await fake.launchThread({ commandId: "launch", threadId: "t", projectId: "project_demo", title: "watch", modelSelection: selection, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" }, initialMessage: { messageId: "m", text: "Watch both pull requests" } });
+  fake.completeRun("t", { text: "Watching both" });
+  fake.linkPullRequest("t", { repository: "owner/one", number: 70, watched: true, checksState: "pending" });
+  fake.linkPullRequest("t", { repository: "owner/two", number: 70, watched: true, checksState: "passing" });
+  const line = statusLine("sol", memberStatus((await fake.getThreadDetail("t"))!, null));
+  assert.match(line, /checks pending/, "the first watch must retain its pending detail");
+  assert.match(line, /checks passed/, "the second watch must retain its passing detail");
+});
