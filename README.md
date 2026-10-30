@@ -1148,7 +1148,7 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 
 | Path | Purpose |
 | --- | --- |
-| `src/domain` | Room records, the versioned command contract (zod), the read API's shapes (`engineView.ts`) |
+| `src/domain` | Room records, the versioned command contract (zod), the read API's shapes (`engineView.ts`), the member state table shared by the page and the service (`memberState.ts`) |
 | `src/db` | SQLite persistence (`node:sqlite`, WAL) and migrations |
 | `src/app/service.ts` | The single command handler behind every input path |
 | `src/parser` | Composer syntax: mentions, assignments, directives, slash commands, and the waits it refuses (shared with the UI) |
