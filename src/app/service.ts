@@ -27,6 +27,7 @@ import { effectiveBrowser, roomsMayUseBrowser, roomsUsingBrowser, withoutGoneBro
 import {
   POST_KINDS,
   type Browser,
+  type NativeRequest,
   type Participant,
   type Preset,
   type Room,
@@ -1086,59 +1087,59 @@ export class RoomService {
 
   // ---------- native requests ----------
 
+  /**
+   * The member's open request of this kind, on its own thread or a subagent's (the mirror keeps each on the thread it is
+   * on): answered on that thread, since a subagent's prompt is T3's on the subagent's thread.
+   */
+  private openNativeRequest(participantId: string, requestId: string, kind: NativeRequest["kind"], what: string): { participant: Participant; request: NativeRequest } {
+    const participant = this.requireParticipant(participantId);
+    if (!this.repos.currentBinding(participant.id)) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
+    const request = this.repos.listOpenNativeRequests([participant.id]).find((r) => r.requestId === requestId);
+    if (!request || request.kind !== kind) throw notFound(what, requestId);
+    return { participant, request };
+  }
+
   private async respondApproval(command: Extract<RoomCommand, { type: "native.approval.respond" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const binding = this.repos.currentBinding(participant.id);
-    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
-    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
-    if (!request || request.kind !== "approval") throw notFound("approval request", command.requestId);
+    const { participant, request } = this.openNativeRequest(command.participantId, command.requestId, "approval", "approval request");
     requireOffered((request.payload as { options?: unknown } | null)?.options, command.decision);
     const commandId = randomUUID();
     try {
-      await this.adapter.respondApproval({ commandId, threadId: binding.threadId, requestId: command.requestId, decision: command.decision });
+      await this.adapter.respondApproval({ commandId, threadId: request.threadId, requestId: command.requestId, decision: command.decision });
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
       throw error;
     }
-    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.db.transaction(() => this.repos.resolveNativeRequest(request.threadId, command.requestId));
     this.notify(participant.roomId);
     return { type: "native.responded", requestId: command.requestId };
   }
 
   private async dismissUserInput(command: Extract<RoomCommand, { type: "native.userInput.dismiss" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const binding = this.repos.currentBinding(participant.id);
-    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
-    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
-    if (!request || request.kind !== "user-input") throw notFound("user-input request", command.requestId);
+    const { participant, request } = this.openNativeRequest(command.participantId, command.requestId, "user-input", "user-input request");
     try {
-      await this.adapter.dismissUserInput({ commandId: randomUUID(), threadId: binding.threadId, requestId: command.requestId });
+      await this.adapter.dismissUserInput({ commandId: randomUUID(), threadId: request.threadId, requestId: command.requestId });
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
       throw error;
     }
-    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.db.transaction(() => this.repos.resolveNativeRequest(request.threadId, command.requestId));
     this.notify(participant.roomId);
     return { type: "native.responded", requestId: command.requestId };
   }
 
   private async respondUserInput(command: Extract<RoomCommand, { type: "native.userInput.respond" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const binding = this.repos.currentBinding(participant.id);
-    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
-    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
-    if (!request || request.kind !== "user-input") throw notFound("user-input request", command.requestId);
+    const { participant, request } = this.openNativeRequest(command.participantId, command.requestId, "user-input", "user-input request");
     const commandId = randomUUID();
     try {
-      await this.adapter.respondUserInput({ commandId, threadId: binding.threadId, requestId: command.requestId, answers: command.answers });
+      await this.adapter.respondUserInput({ commandId, threadId: request.threadId, requestId: command.requestId, answers: command.answers });
     } catch (error) {
       if (error instanceof T3Unavailable) throw new RoomError("t3_unavailable", error.message, 503);
       if (error instanceof T3CommandRejected) throw new RoomError("t3_rejected", error.message, 502);
       throw error;
     }
-    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.db.transaction(() => this.repos.resolveNativeRequest(request.threadId, command.requestId));
     this.notify(participant.roomId);
     return { type: "native.responded", requestId: command.requestId };
   }
@@ -1148,21 +1149,17 @@ export class RoomService {
    * nothing waits for it any more (answered elsewhere, gone, its agent stopped); any other failure leaves it waiting.
    */
   private async respondSecret(command: Extract<RoomCommand, { type: "native.secret.respond" }>): Promise<CommandResult> {
-    const participant = this.requireParticipant(command.participantId);
-    const binding = this.repos.currentBinding(participant.id);
-    if (!binding) throw new RoomError("no_binding", `@${participant.alias} has no active thread`);
-    const request = this.repos.getOpenNativeRequest(binding.threadId, command.requestId);
-    if (!request || request.kind !== "secret") throw notFound("secret request", command.requestId);
+    const { participant, request } = this.openNativeRequest(command.participantId, command.requestId, "secret", "secret request");
     try {
-      await answerSecret(this.adapter, binding.threadId, command.requestId, command.answer);
+      await answerSecret(this.adapter, request.threadId, command.requestId, command.answer);
     } catch (error) {
       if (error instanceof SecretRequestStale) {
-        this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+        this.db.transaction(() => this.repos.resolveNativeRequest(request.threadId, command.requestId));
         this.notify(participant.roomId);
       }
       throw error;
     }
-    this.db.transaction(() => this.repos.resolveNativeRequest(binding.threadId, command.requestId));
+    this.db.transaction(() => this.repos.resolveNativeRequest(request.threadId, command.requestId));
     this.notify(participant.roomId);
     return { type: "native.responded", requestId: command.requestId };
   }

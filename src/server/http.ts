@@ -14,9 +14,8 @@ import type { AppStack } from "../app/bootstrap.ts";
 import type { T3Credential } from "../app/t3Credential.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
 import { exchangePairingCredential, parsePairingUrl, readStoredAuth, sameT3Host, writeStoredAuth } from "../adapter/auth.ts";
-import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, isPullRequestWatch, runPrompt } from "../adapter/types.ts";
-import type { T3PullRequestChecks, T3ThreadDetail } from "../adapter/types.ts";
-import { watchedLink } from "../app/pullRequestWatch.ts";
+import { ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3ProtocolMismatch, T3ScopeMissing, T3Unavailable, backgroundOf, runPrompt } from "../adapter/types.ts";
+import type { T3ThreadDetail } from "../adapter/types.ts";
 import {
   backgroundTasks,
   changedFiles,
@@ -335,26 +334,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
    * as it streams, the approvals and questions it waits on, and its latest context reading. Read from T3 on every call.
    */
   // A thread's browsers as its header shows them: off until chosen, like a new room's; the default is the one it uses.
-  // T3's checks read for a thread's watched pull requests, by watch task id: read again when T3's snapshot of the pull
-  // request changes, else at most every 20 s; a failure is read as none (the line then says what the snapshot says).
-  const checkReads = new Map<string, { at: number; snapshot: string; value: Promise<T3PullRequestChecks | null> }>();
-  const watchedChecks = async (detail: T3ThreadDetail): Promise<Map<string, T3PullRequestChecks | null>> => {
-    const found = new Map<string, T3PullRequestChecks | null>();
-    const read = stack.adapter.pullRequestChecks?.bind(stack.adapter);
-    if (!read) return found;
-    for (const task of detail.shell.pendingBackgroundTasks.filter(isPullRequestWatch)) {
-      const link = watchedLink(detail.shell.pullRequests, task.taskId);
-      if (!link) continue;
-      const snapshot = JSON.stringify(link.snapshot);
-      let cached = checkReads.get(task.taskId);
-      if (!cached || cached.snapshot !== snapshot || Date.now() - cached.at > 20_000) {
-        cached = { at: Date.now(), snapshot, value: read({ projectId: detail.shell.projectId, host: link.host, repository: link.repository, number: link.number }).catch(() => null) };
-        checkReads.set(task.taskId, cached);
-      }
-      found.set(task.taskId, await cached.value);
-    }
-    return found;
-  };
   const threadBrowsersView = (threadId: string) => {
     const access = stack.repos.getThreadBrowsers(threadId);
     if (!access) return { enabled: false, defaultBrowserId: effectiveBrowser(stack.repos, { defaultBrowserId: null, allowedBrowserIds: null })?.id ?? null, allowedBrowserIds: null };
@@ -376,7 +355,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       requests: requestCards(detail),
       running: running ? { runId: running.id, feed: liveFeed(detail, running.id) } : null,
       queue: queueOf(detail),
-      backgroundTasks: backgroundTasks(detail, Date.now(), await watchedChecks(detail)),
+      backgroundTasks: backgroundTasks(detail, Date.now(), await stack.watchedChecks(detail.shell)),
       contextWindow: contextReading(detail),
       usage: await threadUsage(detail),
       browsers: threadBrowsersView(threadId),
@@ -596,7 +575,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       streamingText: streamingText(detail, shownRunId),
       liveFeed: liveFeed(detail, shownRunId),
       runningRun: runningRunView,
-      backgroundTasks: backgroundTasks(detail, Date.now(), await watchedChecks(detail)),
+      backgroundTasks: backgroundTasks(detail, Date.now(), await stack.watchedChecks(detail.shell)),
       subagents: subagentRows(detail),
       activities: recentActivity(detail),
       // A window of recent history; T3 holds the complete record.

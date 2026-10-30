@@ -1,6 +1,6 @@
 /** Wires the persistence, service, engine host, and change-notification hub. Used by the server and by tests. */
 import { dirname, join } from "node:path";
-import type { T3Adapter } from "../adapter/types.ts";
+import type { T3Adapter, T3PullRequestChecks, T3ThreadShell } from "../adapter/types.ts";
 import { Database } from "../db/database.ts";
 import { Repos } from "../db/repos.ts";
 import type { RoomBrowsers } from "../browser/roomBrowsers.ts";
@@ -18,7 +18,8 @@ import { LimitRecovery } from "./limitRecovery.ts";
 import { storedLimitIntents } from "./limitIntent.ts";
 import { T3Presence } from "./t3Presence.ts";
 import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
-import { memberFacts } from "./threadView.ts";
+import { memberFacts, subagentRequests } from "./threadView.ts";
+import { checksReader } from "./pullRequestWatch.ts";
 import { memberState, type MemberState } from "../domain/memberState.ts";
 
 export class ChangeHub {
@@ -66,8 +67,10 @@ export interface AppStack {
   engine: EngineHost;
   /** The seat lifecycle on the journal (seat, Consigliere, retire, reseat). */
   seats: EngineSeats;
-  /** A member's state from its thread as T3 shows it now (src/domain/memberState.ts), as the page's label reads it; `ownRun`: a room run is on it. */
+  /** A member's state from its thread and its subagents' as T3 shows them now (src/domain/memberState.ts), as the page's label reads it; `ownRun`: a room run is on it. */
   memberState(threadId: string, ownRun: boolean): Promise<MemberState>;
+  /** T3's checks read for a thread's watched pull requests, by watch task id: one cache for the page and the host. */
+  watchedChecks(shell: Pick<T3ThreadShell, "projectId" | "pendingBackgroundTasks" | "pullRequests">): Promise<Map<string, T3PullRequestChecks | null>>;
   /** Poteto mode's pstack clone (src/app/poteto.ts), when this service keeps one; started by the server. */
   poteto: PotetoPack | null;
   close(): void;
@@ -125,6 +128,7 @@ export function createStack(input: {
   const engineStore = new EngineStore(input.dbPath === ":memory:" ? ":memory:" : join(dirname(input.dbPath), "board.sqlite"));
   // Each tick, per seat: approvals and questions mirrored, then the seat lifecycle's part (thread title and settings, reseats).
   const mirror = nativeRequestMirror(repos, notify);
+  const watchedChecks = checksReader(input.adapter.pullRequestChecks?.bind(input.adapter));
   // One briefing source: what the host renders and what `rooms-board rules` prints.
   const briefing = bindingSource(repos, {
     adapter: input.adapter,
@@ -142,8 +146,9 @@ export function createStack(input: {
     briefing,
     budgetChars: input.briefingBudgetChars,
     keepAlive: keepAliveSetting(repos, input.keepAliveMs ?? KEEP_ALIVE_MS),
-    watch: async (at, shell, detail) => {
-      await mirror(at, shell, detail);
+    watchedChecks,
+    watch: async (at, shell, detail, subagents) => {
+      await mirror(at, shell, detail, subagents);
       await seats.watch(at, shell, detail);
     },
     notify,
@@ -178,7 +183,12 @@ export function createStack(input: {
     limitRecovery,
     engine,
     seats,
-    memberState: async (threadId, ownRun) => memberState(memberFacts(await input.adapter.getThreadDetail(threadId, { bounded: true }), ownRun)),
+    memberState: async (threadId, ownRun) => {
+      const detail = await input.adapter.getThreadDetail(threadId, { bounded: true });
+      const subagents = await subagentRequests(await input.adapter.listThreads(), threadId, (id) => input.adapter.getThreadDetail(id, { bounded: true }));
+      return memberState(memberFacts(detail, ownRun, Date.now(), subagents ?? []));
+    },
+    watchedChecks,
     poteto,
     close() {
       poteto?.stop();

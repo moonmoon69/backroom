@@ -4,7 +4,7 @@
  * it left running, and what its runs changed. Pure functions over a thread detail; a room's desk and a thread on its
  * own use the same ones.
  */
-import type { T3Message, T3PullRequestChecks, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3TurnItem, T3UsageLimit } from "../adapter/types.ts";
+import type { T3Message, T3PullRequestChecks, T3Run, T3RuntimeRequest, T3Subagent, T3ThreadDetail, T3ThreadShell, T3TurnItem, T3UsageLimit } from "../adapter/types.ts";
 import { backgroundOf, isPullRequestWatch, isRunActive, latestExecutedRun, openRequests } from "../adapter/types.ts";
 import type { MemberFacts, QueueState } from "../domain/memberState.ts";
 import type { UsageLimitPause } from "../domain/types.ts";
@@ -32,14 +32,46 @@ export function queueOf(detail: Pick<T3ThreadDetail, "runs" | "turnItems" | "she
 /** A thread's usage-limit pause as the room shows it. */
 export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, resume: limit.recovery ? (limit.recovery.autoResume ? "on" : "off") : null });
 
+/** An open request on one of the member's subagent threads: T3's request there, and the thread it is on. */
+export interface SubagentRequest {
+  threadId: string;
+  title: string;
+  request: T3RuntimeRequest;
+}
+
+/**
+ * What the member's subagents wait on. A task T3 delegates runs on a thread of its own, whose lineage names the
+ * member's thread (or a subagent's of it) as parent with relationship "subagent"; T3 keeps the approval, secret or
+ * question it raises on that thread, and its window shows it on the parent. It holds the member as one of its own would:
+ * only the user can answer it. From the shell list, reading only the subagent threads that wait on something; null when
+ * one of those cannot be read.
+ */
+export async function subagentRequests(shells: Iterable<T3ThreadShell>, threadId: string, read: (threadId: string) => Promise<T3ThreadDetail | null>): Promise<SubagentRequest[] | null> {
+  const listed = [...shells];
+  const parents = [threadId];
+  const found: SubagentRequest[] = [];
+  for (let i = 0; i < parents.length; i += 1) {
+    for (const child of listed) {
+      if (child.lineage.relationshipToParent !== "subagent" || child.lineage.parentThreadId !== parents[i] || parents.includes(child.id)) continue;
+      parents.push(child.id);
+      if (!child.pendingRequest) continue;
+      const detail = await read(child.id);
+      if (!detail) return null;
+      for (const request of openRequests(detail)) found.push({ threadId: child.id, title: child.title, request });
+    }
+  }
+  return found;
+}
+
 /**
  * What the member state table (src/domain/memberState.ts) reads, from the thread as T3 shows it now: its row, what it
- * waits on, its queue and what runs; a thread T3 no longer has is missing. `ownRun`: a room run is on the thread.
+ * and its subagents wait on, its queue and what runs; a thread T3 no longer has is missing. `ownRun`: a room run is on
+ * the thread.
  */
-export function memberFacts(detail: T3ThreadDetail | null, ownRun: boolean, now = Date.now()): MemberFacts {
+export function memberFacts(detail: T3ThreadDetail | null, ownRun: boolean, now = Date.now(), subagents: readonly SubagentRequest[] = []): MemberFacts {
   if (!detail) return { status: "unknown", missing: true, approval: false, secret: false, input: false, paused: null, queue: null, ownRun, external: false, background: null, jobs: [], planReady: false };
   const { shell } = detail;
-  const waits = new Set(openRequests(detail).map((request) => request.type));
+  const waits = new Set([...openRequests(detail), ...subagents.map((s) => s.request)].map((request) => request.type));
   const running = runningRun(detail) !== null;
   return {
     status: shell.status,

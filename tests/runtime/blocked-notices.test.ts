@@ -168,3 +168,17 @@ test("a failed turn's notice says when it is the second failure on the same requ
   assert.equal(second.length, 2);
   assert.match(second[1]!.body, /The model is at capacity\.\n\nThis is the second failure on this request, after a retry\./);
 });
+
+test("a subagent's approval holds the member: one notice on its open request, naming the subagent and what is asked", async () => {
+  room = await Room.create();
+  const a = await wOnA(room);
+  const child = "thread:W:pages";
+  room.fake.setSubagent(room.threadOf("W"), { id: "pages", title: "Build the pages", status: "running", origin: "app_owned", childThreadId: child });
+  room.fake.raiseApproval(child, "req-sub", { prompt: "rm -rf build/" });
+  await room.tick(3);
+  room.restart();
+  await room.tick(2);
+  const notices = held(room);
+  assert.deepEqual(notices.map((n) => [kind(n), n.author, n.recipients, n.requestIds]), [["blocked:W:approval", "W", ["C"], [a]]], "once, through ticks and a restart");
+  assert.equal(notices[0]!.body, "@W's subagent \"Build the pages\" waits on an approval: rm -rf build/. Only the user can answer it, from the page; @W's reply comes after.");
+});

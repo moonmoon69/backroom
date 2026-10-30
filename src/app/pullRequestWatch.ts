@@ -8,7 +8,8 @@
  * says when a check started, so the time said is the watch's age, labelled as such; a reading older than STALE_MS says
  * how old it is. The line is detail only: the watch's task keeps its title, so a refresh never reads as work ending.
  */
-import type { T3PullRequest, T3PullRequestChecks } from "../adapter/types.ts";
+import type { T3PullRequest, T3PullRequestChecks, T3ThreadShell } from "../adapter/types.ts";
+import { isPullRequestWatch } from "../adapter/types.ts";
 
 /** A reading of the checks older than this says its age. */
 export const STALE_MS = 15 * 60_000;
@@ -25,6 +26,37 @@ export function ageWords(ms: number): string {
 
 const PENDING = new Set(["pending", "action-required"]);
 const FAILED = new Set(["failure", "cancelled"]);
+
+/** The checks that failed once none is pending any more (none, when all passed); null while a check is pending. */
+export function finishedWithFailures(checks: T3PullRequestChecks): string[] | null {
+  if (checks.checks.some((c) => PENDING.has(c.status))) return null;
+  return checks.checks.filter((c) => FAILED.has(c.status)).map((c) => c.name);
+}
+
+/**
+ * T3's checks read for a thread's watched pull requests, by watch task id: read again when T3's snapshot of the pull
+ * request changes, else at most every 20 s; a failure is read as none (the line then says what the snapshot says). One
+ * reader serves the page's watch line and the host's finished-run notice.
+ */
+export function checksReader(read: ((input: { projectId: string; host: string | null; repository: string; number: number }) => Promise<T3PullRequestChecks | null>) | undefined, now: () => number = Date.now) {
+  const reads = new Map<string, { at: number; snapshot: string; value: Promise<T3PullRequestChecks | null> }>();
+  return async (shell: Pick<T3ThreadShell, "projectId" | "pendingBackgroundTasks" | "pullRequests">): Promise<Map<string, T3PullRequestChecks | null>> => {
+    const found = new Map<string, T3PullRequestChecks | null>();
+    if (!read) return found;
+    for (const task of shell.pendingBackgroundTasks.filter(isPullRequestWatch)) {
+      const link = watchedLink(shell.pullRequests, task.taskId);
+      if (!link) continue;
+      const snapshot = JSON.stringify(link.snapshot);
+      let cached = reads.get(task.taskId);
+      if (!cached || cached.snapshot !== snapshot || now() - cached.at > 20_000) {
+        cached = { at: now(), snapshot, value: read({ projectId: shell.projectId, host: link.host, repository: link.repository, number: link.number }).catch(() => null) };
+        reads.set(task.taskId, cached);
+      }
+      found.set(task.taskId, await cached.value);
+    }
+    return found;
+  };
+}
 
 /** "1 check pending (Browser harness)", "3 checks pending (A, B, …)". */
 function counted(n: number, state: string, names: readonly string[]): string {

@@ -858,7 +858,8 @@ export class FakeT3Adapter implements T3Adapter {
 
   /**
    * Test control: a subagent of the thread's running (else latest) run in this state, made or moved there: Claude's own
-   * ("provider_native"), or a task T3 delegated to a thread of its own ("app_owned", with `childThreadId`).
+   * ("provider_native"), or a task T3 delegated to a thread of its own ("app_owned", with `childThreadId`). That thread
+   * is listed as T3 lists it, its lineage naming the parent with relationship "subagent", and runs the task's prompt.
    */
   setSubagent(threadId: string, input: { id: string; title?: string; status: T3Subagent["status"]; origin?: T3Subagent["origin"]; driver?: string; childThreadId?: string | null }): void {
     const thread = this.require(threadId);
@@ -869,6 +870,50 @@ export class FakeT3Adapter implements T3Adapter {
       const runId = this.activeRun(thread)?.id ?? latestExecutedRun(thread.runs)?.id ?? null;
       thread.subagents.push({ id: input.id, runId, origin: input.origin ?? "provider_native", driver: input.driver ?? "claudeAgent", providerInstanceId: thread.shell.providerInstanceId, childThreadId: input.childThreadId ?? null, title: input.title ?? input.id, model: null, prompt: input.title ?? input.id, status: input.status, progress: null, result: null, startedAt: at, completedAt: null, updatedAt: at });
     }
+    if (input.childThreadId && !this.threads.has(input.childThreadId)) this.delegatedThread(thread, input.childThreadId, input.title ?? input.id);
+  }
+
+  private delegatedThread(parent: FakeThread, id: string, prompt: string): void {
+    const at = new Date().toISOString();
+    const child: FakeThread = {
+      shell: {
+        ...structuredClone(parent.shell),
+        id,
+        title: prompt,
+        status: "idle",
+        activeRunId: null,
+        latestRunId: null,
+        latestRunRequestedAt: null,
+        latestRunStartedAt: null,
+        latestRunCompletedAt: null,
+        lastError: null,
+        usageLimit: null,
+        pendingRequest: null,
+        pendingBackgroundTasks: [],
+        hasActionableProposedPlan: false,
+        pullRequests: [],
+        linkedPullRequest: null,
+        lineage: { parentThreadId: parent.shell.id, relationshipToParent: "subagent", rootThreadId: parent.shell.lineage.rootThreadId },
+        historyOrigin: null,
+        latestUserMessageAt: null,
+        settledAt: null,
+        archivedAt: null,
+        deletedAt: null,
+        createdAt: at,
+        updatedAt: at,
+      },
+      runs: [],
+      messages: [],
+      turnItems: [],
+      runtimeRequests: [],
+      checkpoints: [],
+      subagents: [],
+      providerTurns: [],
+      providerThreads: [],
+      plans: [],
+    };
+    this.threads.set(id, child);
+    this.dispatchMessage(child, { id: `${id}:prompt`, text: prompt, attachments: [], createdBy: "user", creationSource: "delegate" }, { type: "start" });
   }
 
   /** What T3's checks read gives, by pull request ("owner/repo#70"); none read as T3 having none. */
@@ -884,7 +929,7 @@ export class FakeT3Adapter implements T3Adapter {
    * while `watched`, T3's watch of it, which T3 lists among the thread's background tasks. `checks` is what T3's checks
    * read gives for it (names and statuses), apart from the snapshot, as in T3.
    */
-  linkPullRequest(threadId: string, input: { repository: string; number: number; host?: string; state?: string; checksState?: "passing" | "failing" | "pending" | null; syncedAt?: string; watched: boolean; startedAt?: string; failedChecks?: string[]; checks?: T3PullRequestChecks | null }): void {
+  linkPullRequest(threadId: string, input: { repository: string; number: number; host?: string; state?: string; checksState?: "passing" | "failing" | "pending" | null; syncedAt?: string; watched: boolean; startedAt?: string; headSha?: string; failedChecks?: string[]; checks?: T3PullRequestChecks | null }): void {
     const thread = this.require(threadId);
     const host = input.host ?? "github.com";
     const at = new Date().toISOString();
@@ -895,7 +940,7 @@ export class FakeT3Adapter implements T3Adapter {
       url: `https://${host}/${input.repository}/pull/${input.number}`,
       source: "agent",
       snapshot: { state: input.state ?? "open", title: `Pull request #${input.number}`, checksState: input.checksState ?? null, syncedAt: input.syncedAt ?? at },
-      watch: input.watched ? { startedAt: input.startedAt ?? at, headSha: null, failedChecks: input.failedChecks ?? [], passedChecks: [], passed: false, checksAwaitedSince: null } : null,
+      watch: input.watched ? { startedAt: input.startedAt ?? at, headSha: input.headSha ?? null, failedChecks: input.failedChecks ?? [], passedChecks: [], passed: false, checksAwaitedSince: null } : null,
     };
     thread.shell.pullRequests = [...thread.shell.pullRequests.filter((l) => !(l.repository === link.repository && l.number === link.number)), link];
     const taskId = pullRequestWatchTaskId(host, input.repository, input.number);

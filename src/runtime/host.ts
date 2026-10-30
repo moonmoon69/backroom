@@ -39,9 +39,9 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
-import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isRunActive, latestExecutedRun, openRequests, runForMessage } from "../adapter/types.ts";
+import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isPullRequestWatch, isRunActive, latestExecutedRun, openRequests, runForMessage, type T3PullRequestChecks } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
-import { blockedNoticed, deliveredInputs, inputTree, unread } from "../engine/index.ts";
+import { blockedNoticed, checksCause, deliveredInputs, inputTree, unread } from "../engine/index.ts";
 import type { Command, CommitReceipt, Disposition, EngineStore, Projection, Run } from "../engine/index.ts";
 import { KEEP_ALIVE_LINE } from "../briefing/envelope.ts";
 import { attachImages, brief, seatStanding, type BriefingSource } from "./render.ts";
@@ -49,7 +49,8 @@ import { adoptableSteers, goesIntoTurn, holdsBack, settledOffer, steerMessageIds
 import { continuedRun, stoppedEverything, finalMessage, isTerminal, runEnd, runError, runLimit, runOrigin, threadFree, type RunLimit } from "./t3.ts";
 import { isPausedNotice, providerLabel, resetTime } from "../domain/usageLimit.ts";
 import { memberState } from "../domain/memberState.ts";
-import { memberFacts, pauseOf } from "../app/threadView.ts";
+import { memberFacts, pauseOf, subagentRequests, type SubagentRequest } from "../app/threadView.ts";
+import { finishedWithFailures, watchedLink } from "../app/pullRequestWatch.ts";
 import { FOLLOW_UP, latestStatusPost, memberStatus, statusLine, type MemberStatus } from "./status.ts";
 import { DEFERRED_CANCEL, TARGETING, committed, deferredCancels, finalTargets, followedRequests, frozenDispatch, keepAliveRun, openOwned, runRecords, stoppingCancel, type Dispatch } from "./work.ts";
 
@@ -107,9 +108,12 @@ export interface EngineHostOptions {
   onStep?: (step: HostStep, at: { roomId: string; seatId: string; runId?: string }) => void;
   /**
    * Called each tick for every seat with its thread, after the host's own work on it: the app mirrors what stays off the
-   * journal (approvals and questions on the native-requests path, plan §6). `detail` reads the thread at most once.
+   * journal (approvals and questions on the native-requests path, plan §6). `detail` reads the thread at most once, and
+   * `subagents` what its subagents' threads wait on (subagentRequests), once.
    */
-  watch?: (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>) => void | Promise<void>;
+  watch?: (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>, subagents: () => Promise<SubagentRequest[] | null>) => void | Promise<void>;
+  /** T3's checks read for a thread's watched pull requests, by watch task id (src/app/pullRequestWatch.ts checksReader). */
+  watchedChecks?: (shell: T3ThreadShell) => Promise<Map<string, T3PullRequestChecks | null>>;
 }
 
 /**
@@ -146,10 +150,14 @@ export const KEEP_ALIVE_REPLY = "keep-alive-reply:";
 function unique(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
+/** A name in a notice: one line, at most 200 characters. */
+function oneLine(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
 /** A request's words in a notice: one line, at most 200 characters, ended with a full stop unless it has its own. */
 function clip(text: string): string {
-  const line = text.replace(/\s+/g, " ").trim();
-  const short = line.length > 200 ? `${line.slice(0, 199)}…` : line;
+  const short = oneLine(text);
   return /[.?!…]$/.test(short) ? short : `${short}.`;
 }
 
@@ -384,9 +392,15 @@ export class EngineHost {
    */
   private async stepRoom(roomId: string, shells: Map<string, T3ThreadShell>): Promise<void> {
     const seats = [...this.project(roomId).seats.values()].filter((s) => s.status !== "retired");
-    const states = new Map<string, { shell: T3ThreadShell | null; load: Loader; current: () => T3ThreadShell | null; imported: boolean }>();
+    const states = new Map<string, { shell: T3ThreadShell | null; load: Loader; subagents: () => Promise<SubagentRequest[] | null>; current: () => T3ThreadShell | null; imported: boolean }>();
+    // A subagent thread is read while it waits on something, leased so its stream serves the reads after the first.
+    const readSubagent = (threadId: string) => {
+      this.adapter.leaseThread(threadId);
+      return this.adapter.getThreadDetail(threadId, { bounded: true });
+    };
     for (const seat of seats) {
-      const cache: { detail?: T3ThreadDetail | null } = {};
+      const cache: { detail?: T3ThreadDetail | null; subagents?: Promise<SubagentRequest[] | null> } = {};
+      const subagents = () => (cache.subagents ??= subagentRequests(shells.values(), seat.threadId, readSubagent));
       const load: Loader = async (full = false) => {
         if (cache.detail === undefined || full) {
           cache.detail = await this.adapter.getThreadDetail(seat.threadId, full ? {} : { bounded: true });
@@ -395,7 +409,7 @@ export class EngineHost {
         return cache.detail;
       };
       const shell = shells.get(seat.threadId) ?? null;
-      states.set(seat.id, { shell, load, current: () => cache.detail?.shell ?? shell, imported: false });
+      states.set(seat.id, { shell, load, subagents, current: () => cache.detail?.shell ?? shell, imported: false });
     }
     const each = async (pass: (seatId: string, state: NonNullable<ReturnType<typeof states.get>>) => Promise<void>) => {
       for (const seat of seats) {
@@ -419,7 +433,7 @@ export class EngineHost {
       if (live) await this.advance(roomId, seatId, live, state.load);
       state.imported = await this.importThread(roomId, seatId, state.shell, state.load);
       const seat = this.project(roomId).seats.get(seatId)!;
-      await this.options.watch?.({ roomId, seatId, threadId: seat.threadId }, state.current() ?? state.shell, () => state.load());
+      await this.options.watch?.({ roomId, seatId, threadId: seat.threadId }, state.current() ?? state.shell, () => state.load(), state.subagents);
     });
     await each(async (seatId, state) => {
       const shell = state.current();
@@ -433,8 +447,10 @@ export class EngineHost {
       const shell = state.current();
       if (shell) await this.dispatch(roomId, seatId, shell, state.imported, state.load);
     });
-    // Last, on the thread as this tick read it: what holds a member's request that no reply of its own ends.
-    await each(async (seatId, state) => this.blocked(roomId, seatId, state.load));
+    // Last, on the thread as this tick read it: what holds a member's request that no reply of its own ends, and a
+    // watched pull request whose checks have all finished with one failed.
+    await each(async (seatId, state) => this.blocked(roomId, seatId, state.load, state.subagents));
+    await each(async (seatId, state) => this.checksFinished(roomId, seatId, state.current()));
   }
 
   // ---------------- a host run: reserve, send, follow, import ----------------
@@ -956,15 +972,16 @@ export class EngineHost {
    * tool running, a task list changing or a check moving is never posted, and neither is a state clearing: the member's
    * next reply is that news.
    */
-  private async blocked(roomId: string, seatId: string, load: Loader): Promise<void> {
+  private async blocked(roomId: string, seatId: string, load: Loader, subagents: () => Promise<SubagentRequest[] | null>): Promise<void> {
     const p = this.project(roomId);
     if (!p.orchestrator || p.orchestrator === seatId || p.seats.get(seatId)!.status !== "active") return;
     if (![...p.requests.values()].some((q) => q.owner === seatId && q.state === "open")) return;
     const detail = await load();
+    const theirs = (await subagents()) ?? [];
     const now = this.project(roomId);
     const seat = now.seats.get(seatId)!;
     if (now.orchestrator === null || now.orchestrator === seatId || seat.status !== "active") return;
-    const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined);
+    const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined, theirs);
     if (!hold) return;
     const told = blockedNoticed(now, seatId, hold.state, hold.hold);
     // The turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given: a host
@@ -983,30 +1000,35 @@ export class EngineHost {
    * waits on, the limited run, the held run, when the thread was settled or archived), and the notice's words. A new
    * hold in the same state is told again; the same one never. Null when nothing holds it.
    */
-  private holdOf(roomId: string, seatId: string, detail: T3ThreadDetail | null, live: Run | undefined): { state: string; hold: string; body: string } | null {
+  private holdOf(roomId: string, seatId: string, detail: T3ThreadDetail | null, live: Run | undefined, subagents: readonly SubagentRequest[]): { state: string; hold: string; body: string } | null {
     const who = this.named(roomId, seatId);
     const threadId = this.project(roomId).seats.get(seatId)!.threadId;
     const gone = (how: string) => `${who}'s T3 thread was ${how} in T3 while seated: no reply will come from it. Reseat or retire ${who}, or report it.`;
     if (!detail || detail.shell.deletedAt !== null) return { state: "deleted", hold: threadId, body: gone("deleted") };
     if (detail.shell.archivedAt !== null) return { state: "archived", hold: detail.shell.archivedAt, body: gone("archived") };
-    const state = memberState(memberFacts(detail, live !== undefined, this.now()), this.now());
-    // What T3 waits on of the kind the state names: a question asked before an approval does not word the approval.
-    const asked = (type: "approval" | "secret" | "user-input") => openRequests(detail).find((request) => request.type === type);
+    const state = memberState(memberFacts(detail, live !== undefined, this.now(), subagents), this.now());
+    // What T3 waits on of the kind the state names, the member's own first: a question asked before an approval does not
+    // word the approval. A subagent's is named with the subagent.
+    const asked = (type: "approval" | "secret" | "user-input") => {
+      const own = openRequests(detail).find((request) => request.type === type);
+      const theirs = own ? undefined : subagents.find((s) => s.request.type === type);
+      return { request: own ?? theirs?.request, by: theirs ? `${who}'s subagent "${oneLine(theirs.title)}"` : who };
+    };
     const answer = `Only the user can answer it, from the page; ${who}'s reply comes after.`;
     switch (state.state) {
       case "approval": {
-        const request = asked("approval");
+        const { request, by } = asked("approval");
         const what = request?.prompt ?? request?.appName;
-        return { state: "approval", hold: request?.id ?? threadId, body: `${who} waits on an approval${what ? `: ${clip(what)}` : "."} ${answer}` };
+        return { state: "approval", hold: request?.id ?? threadId, body: `${by} waits on an approval${what ? `: ${clip(what)}` : "."} ${answer}` };
       }
       case "secret": {
-        const request = asked("secret");
-        return { state: "secret", hold: request?.id ?? threadId, body: `${who} asks for a secret${request?.secret ? `: ${clip(request.secret.label)}` : "."} ${answer}` };
+        const { request, by } = asked("secret");
+        return { state: "secret", hold: request?.id ?? threadId, body: `${by} asks for a secret${request?.secret ? `: ${clip(request.secret.label)}` : "."} ${answer}` };
       }
       case "input": {
-        const request = asked("user-input");
+        const { request, by } = asked("user-input");
         const question = request?.questions.map((q) => q.question).join(" / ");
-        return { state: "input", hold: request?.id ?? threadId, body: `${who} waits on an answer to a question${question ? `: ${clip(question)}` : "."} ${answer}` };
+        return { state: "input", hold: request?.id ?? threadId, body: `${by} waits on an answer to a question${question ? `: ${clip(question)}` : "."} ${answer}` };
       }
       case "limited": {
         // The turn the limit stopped, when it is this run's, ends with its own notice (pausedNotice).
@@ -1020,6 +1042,40 @@ export class EngineHost {
     }
     if (detail.shell.settledAt !== null) return { state: "settled", hold: detail.shell.settledAt, body: `${who}'s T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire ${who} if it was.` };
     return null;
+  }
+
+  // ---------------- a watched pull request's finished run ----------------
+
+  /** Watched pull requests (by watch task and head) this host has seen a check pending on, since it started. */
+  private readonly checksPending = new Set<string>();
+
+  /**
+   * T3's watch of a pull request wakes its thread when the checks' rolled-up state or the mergeability changes, not
+   * when a run finishes: one failed check makes the state failing while the others still run, and the run's end then
+   * changes nothing T3 compares. GitHub refuses a rerun until the run completes, so the Consigliere is told once when a
+   * watched pull request, on any seat's thread (his own too), goes from a check pending to none with one failed. Once per
+   * pull request and head: a new push is a new run; a run that passes is T3's to wake on.
+   */
+  private async checksFinished(roomId: string, seatId: string, shell: T3ThreadShell | null): Promise<void> {
+    const read = this.options.watchedChecks;
+    const p = this.project(roomId);
+    if (!read || !shell || !p.orchestrator || p.seats.get(seatId)!.status !== "active" || !shell.pendingBackgroundTasks.some(isPullRequestWatch)) return;
+    for (const [taskId, checks] of await read(shell)) {
+      const link = watchedLink(shell.pullRequests, taskId);
+      // No checks read, or none listed (none started yet, or T3 lost them for a moment), says nothing of the run.
+      if (!link?.watch || !checks || checks.checks.length === 0) continue;
+      const key = `${taskId}@${link.watch.headSha ?? link.watch.startedAt}`;
+      const failed = finishedWithFailures(checks);
+      if (failed === null) {
+        this.checksPending.add(key);
+        continue;
+      }
+      if (!this.checksPending.delete(key) || failed.length === 0) continue;
+      if (this.project(roomId).events.some((e) => e.data.kind === "notice" && e.data.causeId === checksCause(key))) continue;
+      const names = failed.slice(0, 5).join(", ") + (failed.length > 5 ? `, and ${failed.length - 5} more` : "");
+      const body = `Pull request #${link.number} (${link.repository}), watched on ${this.named(roomId, seatId)}'s thread: its checks have finished, ${failed.length} failed (${oneLine(names)}). A rerun of the failed checks is possible now; T3's watch does not wake on a run finishing.`;
+      this.exec(roomId, { type: "checks_finished", actor: SYSTEM, id: `checks:${key}`, seatId, key, body });
+    }
   }
 
   /** A usage-limit pause that holds what the member was sent: until when, in the service's named time zone, and whether T3 continues it. */

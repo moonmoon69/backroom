@@ -9,6 +9,8 @@ function requireThat(condition: unknown, message: string): asserts condition {
 }
 function unique(ids: readonly string[]): string[] { return [...new Set(ids)]; }
 const blockedCause = (seatId: string, state: string, hold: string): string => `blocked:${seatId}:${state}:${hold}`;
+/** The cause of the notice that a watched pull request's checks finished with one failed: the watch and its head. */
+export const checksCause = (key: string): string => `checks:${key}`;
 
 /**
  * The requests of a seat's already told to the Consigliere as held in `state` by `hold` (the `blocked` command's
@@ -335,6 +337,19 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
       }
       if (ids.length === 0) return result("duplicate");
       notice("attention", command.body, ids, [o!], blockedCause(s.id, command.state, command.hold), s.id);
+      break;
+    }
+    case "checks_finished": {
+      // Backroom tells the Consigliere that a pull request watched on a seat's thread (his own included) has no check
+      // pending any more and one failed, which T3's watch does not wake on: once per watch and head, on no request.
+      system();
+      const s = seat(command.seatId);
+      const o = initial.orchestrator;
+      requireThat(s.status === "active" && o !== null, "a finished-checks notice goes to the Consigliere about an active seat's watch");
+      requireThat(command.key.length > 0 && command.body.length > 0, "finished-checks notice needs a key and a body");
+      const cause = checksCause(command.key);
+      if (initial.events.some((e) => e.data.kind === "notice" && e.data.causeId === cause)) return result("duplicate");
+      notice("attention", command.body, [], [o!], cause, "$system");
       break;
     }
     case "transfer": {

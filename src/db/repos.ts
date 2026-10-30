@@ -478,13 +478,6 @@ export class Repos {
     ).map(rowToNativeRequest);
   }
 
-  getOpenNativeRequest(threadId: string, requestId: string): NativeRequest | null {
-    const row = this.raw
-      .prepare("SELECT * FROM native_requests WHERE thread_id = ? AND request_id = ? AND resolved_at IS NULL")
-      .get(threadId, requestId) as Row | undefined;
-    return row ? rowToNativeRequest(row) : null;
-  }
-
   // ---- T3 command log (outbox bookkeeping for non-run commands) ----
   logCommand(commandId: string, kind: string, threadId: string | null, status: "pending" | "accepted" | "failed", error: string | null): void {
     const now = new Date().toISOString();

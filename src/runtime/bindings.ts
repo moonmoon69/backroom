@@ -9,7 +9,7 @@ import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.
 import { openRequests } from "../adapter/types.ts";
 import { CONSIGLIERE_RULES_KEY, engineConsigliereRules, engineSeatFacts } from "../app/consigliere.ts";
 import { readRoomState } from "../app/roomState.ts";
-import { requestPayload } from "../app/threadView.ts";
+import { requestPayload, type SubagentRequest } from "../app/threadView.ts";
 import type { PotetoBriefing } from "../app/poteto.ts";
 import { skillsHarness, type BrowsersBriefing, type SkillsHarness } from "../briefing/assemble.ts";
 import { agentKey, browsersForRoom, effectiveBrowser } from "../browser/catalog.ts";
@@ -123,27 +123,36 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
 
 /**
  * Approvals, questions and secrets stay off the journal, on the native-requests path the app already has (plan §6): the
- * open ones T3 lists for a seat's thread are mirrored into native_requests, where the user answers them and the status
- * bar shows them, and the rest are resolved. A secret's row holds what it asks, never the secret.
+ * open ones T3 lists for a seat's thread, and for its subagents' threads (subagentRequests), are mirrored into
+ * native_requests on the thread they are on, where the user answers them and the status bar shows them, and the rest
+ * are resolved. A secret's row holds what it asks, never the secret.
  */
 export function nativeRequestMirror(repos: Repos, notify: (roomId: string) => void) {
-  return async (at: { roomId: string; seatId: string; threadId: string }, shell: T3ThreadShell, detail: () => Promise<T3ThreadDetail | null>): Promise<void> => {
+  return async (
+    at: { roomId: string; seatId: string; threadId: string },
+    shell: T3ThreadShell,
+    detail: () => Promise<T3ThreadDetail | null>,
+    subagents: () => Promise<SubagentRequest[] | null>,
+  ): Promise<void> => {
     const binding = repos.getBinding(at.seatId);
     if (!binding) return;
     const existing = repos.listOpenNativeRequests([binding.participantId]);
-    if (!shell.pendingRequest && existing.length === 0) return;
+    const theirs = await subagents();
+    if (!theirs) return;
+    if (!shell.pendingRequest && theirs.length === 0 && existing.length === 0) return;
     const loaded = shell.pendingRequest ? await detail() : null;
     if (shell.pendingRequest && !loaded) return;
-    const open = loaded ? openRequests(loaded) : [];
-    const ids = new Set(open.map((request) => request.id));
+    const open = [...(loaded ? openRequests(loaded).map((request) => ({ threadId: at.threadId, request })) : []), ...theirs];
+    const key = (threadId: string, requestId: string) => `${threadId}\n${requestId}`;
+    const ids = new Set(open.map((o) => key(o.threadId, o.request.id)));
     let changed = false;
     for (const row of existing) {
-      if (ids.has(row.requestId)) continue;
+      if (ids.has(key(row.threadId, row.requestId))) continue;
       repos.resolveNativeRequest(row.threadId, row.requestId);
       changed = true;
     }
-    for (const request of open) {
-      if (repos.upsertNativeRequest({ participantId: binding.participantId, threadId: at.threadId, requestId: request.id, kind: request.type, payload: requestPayload(request), createdAt: request.createdAt })) changed = true;
+    for (const { threadId, request } of open) {
+      if (repos.upsertNativeRequest({ participantId: binding.participantId, threadId, requestId: request.id, kind: request.type, payload: requestPayload(request), createdAt: request.createdAt })) changed = true;
     }
     if (changed) notify(at.roomId);
   };

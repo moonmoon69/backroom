@@ -153,6 +153,7 @@ export type Command = CommandBase & (
   | { type: "retry"; runId: string; body: string }
   | { type: "keep_alive"; seatId: SeatId; body: string }
   | { type: "blocked"; seatId: SeatId; state: string; hold: string; requestIds: RequestId[]; body: string }
+  | { type: "checks_finished"; seatId: SeatId; key: string; body: string }
   | { type: "transfer"; oldSeatId: SeatId; newSeatId: SeatId; threadId: string; owned: RequestId[]; awaited: RequestId[]; body: string; evidence: string }
 );
 export type Selection = { kind: "idle" } | { kind: "blocked"; eventId: string; requiredBytes: number } | { kind: "ready"; envelope: Envelope };
