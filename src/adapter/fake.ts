@@ -1056,7 +1056,7 @@ export class FakeT3Adapter implements T3Adapter {
   async controlThread(input: { commandId: string; threadId: string; control: ThreadControl }): Promise<void> {
     const { control } = input;
     const commandId = input.commandId;
-    const type = control.type === "limit.arm" ? "thread.metadata.update" : control.type === "queue.resume" || control.type === "thread.stop" || control.type === "subagent.stop" ? control.type : "message.dispatch";
+    const type = control.type === "limit.arm" || control.type === "limit.disarm" ? "thread.metadata.update" : control.type === "queue.resume" || control.type === "thread.stop" || control.type === "subagent.stop" ? control.type : "message.dispatch";
     if (!this.record(type, commandId, input.threadId, input)) return;
     this.applyControl(this.require(input.threadId), commandId, control);
   }
@@ -1066,12 +1066,13 @@ export class FakeT3Adapter implements T3Adapter {
     const limit = usageLimitOf(thread, thread.recovery ?? null);
     const limitedRun = limit ? thread.runs.find((r) => r.id === limit.runId)! : null;
     switch (control.type) {
-      case "limit.arm": {
+      case "limit.arm":
+      case "limit.disarm": {
         const resetMs = Date.parse(control.resetAt);
         if (!Number.isFinite(resetMs) || thread.shell.archivedAt !== null || thread.shell.settledAt !== null || limitedRun?.id !== control.runId || limit?.resetAt !== control.resetAt || resetMs <= Date.parse(limitedRun.completedAt ?? limitedRun.requestedAt) || openRequests({ runs: thread.runs, runtimeRequests: thread.runtimeRequests }).length > 0) {
           throw new T3CommandRejected("The provider limit changed before recovery could be configured.", 500, null);
         }
-        thread.recovery = { runId: control.runId, resetAt: control.resetAt, autoResume: true, snooze: false, requestId: commandId };
+        thread.recovery = { runId: control.runId, resetAt: control.resetAt, autoResume: control.type === "limit.arm", snooze: false, requestId: commandId };
         this.stamp(thread);
         return;
       }

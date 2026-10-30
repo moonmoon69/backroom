@@ -209,7 +209,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
           { keys: ["↑", "↓"], does: "the lane above or below" },
           { keys: ["←", "→"], does: "between the chips", more: "those with choices; it stops at the ends" },
           { keys: ["Home", "End"], does: "first or last post" },
-          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a secret's field, a failed turn's Retry, a running turn's Stop, then the posts it is about" },
+          { keys: ["Enter"], does: "its choices", more: "in a row under the bar, the ring on the first: an approval's Accept…, a question's options, a secret's field, a failed turn's Retry, a running turn's Stop and Stop everything, a paused member's Resume now and Don't resume, a held queue's Resume queue, then the posts it is about" },
         ],
       },
       {

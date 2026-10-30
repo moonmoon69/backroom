@@ -38,13 +38,13 @@ export function ThreadControls({
   const [said, setSaid] = useState<string | null>(null);
   // Before the reset, Resume now asks first: it continues the turn at once, where the limit may stop it again.
   const [confirming, setConfirming] = useState(false);
-  const press = async (control: PageControl, done: string, key: string = control.type) => {
+  const press = async (control: PageControl, done: string, key: string = control.type, already = "It had already continued.") => {
     setBusy(key);
     setSaid(null);
     try {
       const outcome = await send(control);
       if (outcome === "sent") setSaid(done);
-      else if (outcome === "already") setSaid("It had already continued.");
+      else if (outcome === "already") setSaid(already);
     } finally {
       setBusy(null);
       setConfirming(false);
@@ -55,7 +55,7 @@ export function ThreadControls({
   // T3's watches of pull requests, with what each waits for.
   const watches = background.filter((task) => task.taskId.startsWith("pull-request-watch:") && task.detail);
   // Stop everything while anything is left: a turn, background work, a held queue, a recovery T3 would run.
-  const left = running || background.length > 0 || held !== null || pause?.armed === true;
+  const left = running || background.length > 0 || held !== null || pause?.resume === "on";
   if (!pause && !held && subagents.length === 0 && watches.length === 0 && !(stopAll && left) && !said) return null;
   const before = pause?.resetAt ? Date.parse(pause.resetAt) > now : false;
   const time = pause ? resetTime(pause.resetAt, now) : null;
@@ -68,7 +68,7 @@ export function ThreadControls({
           </span>
           {confirming ? (
             <span className="thread-controls-confirm" role="alert">
-              <span className="work-open-text">The limit resets at {time}. Resume now continues the turn at once, and the limit may stop it again{pause.armed ? `; otherwise T3 continues it by itself at ${time}` : ""}.</span>
+              <span className="work-open-text">The limit resets at {time}. Resume now continues the turn at once, and the limit may stop it again{pause.resume === "on" ? `; otherwise T3 continues it by itself at ${time}` : ""}.</span>
               <button type="button" className="small primary" disabled={busy !== null} onClick={() => void press({ type: "resume" }, "Asked T3 to continue the turn.")}>
                 Resume anyway
               </button>
@@ -87,6 +87,17 @@ export function ThreadControls({
               {busy === "resume" ? "Resuming…" : "Resume now"}
             </button>
           )}
+          {before && pause.resume !== "off" && !confirming ? (
+            <button
+              type="button"
+              className="small"
+              disabled={busy !== null}
+              title={`T3 does not continue the turn at ${time}; it stays paused until Resume now`}
+              onClick={() => void press({ type: "resume.cancel" }, "T3 will not continue the turn at the reset.", "resume.cancel", "T3 was already set not to continue it.")}
+            >
+              {busy === "resume.cancel" ? "Saving…" : "Don't resume"}
+            </button>
+          ) : null}
         </>
       ) : null}
       {held ? (

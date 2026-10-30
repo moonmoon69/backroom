@@ -724,7 +724,7 @@ export function dismissNotices(repos: Repos, roomId: string, p: Projection, inpu
 // ---------------- member status, from the journal and T3 ----------------
 
 /** A thread's usage-limit pause as the room shows it. */
-export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, armed: limit.recovery?.autoResume === true });
+export const pauseOf = (limit: T3UsageLimit): UsageLimitPause => ({ runId: limit.runId, provider: limit.provider, resetAt: limit.resetAt, message: limit.message, resume: limit.recovery ? (limit.recovery.autoResume ? "on" : "off") : null });
 
 export function memberStatus(input: {
   participant: Participant;

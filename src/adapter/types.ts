@@ -571,6 +571,7 @@ export const CONTINUE_TEXT = "Continue where you left off.";
  * A command on a thread's runs beyond messages and requests, each one T3 command:
  * - limit.arm: have T3 continue a limited run at its reset (thread.metadata.update limitRecovery, autoResume on): T3's
  *   own recovery worker then sends the continuation;
+ * - limit.disarm: have T3 not continue it at the reset (the same command, autoResume off): T3's worker then leaves it;
  * - run.continue: continue a limited run now (message.dispatch manualContinuationOfRunId), as T3's own Continue does;
  * - queue.resume: let a held queue start its next message;
  * - thread.stop: stop everything on the thread (its run, background tasks, monitors, subagents and delegated tasks under
@@ -579,6 +580,7 @@ export const CONTINUE_TEXT = "Continue where you left off.";
  */
 export type ThreadControl =
   | { type: "limit.arm"; runId: string; resetAt: string }
+  | { type: "limit.disarm"; runId: string; resetAt: string }
   | { type: "run.continue"; runId: string }
   | { type: "queue.resume" }
   | { type: "thread.stop" }

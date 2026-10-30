@@ -353,7 +353,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
             </div>
             {thread && !thread.boundToRoom ? (
               <ThreadControls
-                pause={thread.usageLimit ? { runId: thread.usageLimit.runId, provider: thread.usageLimit.provider, resetAt: thread.usageLimit.resetAt, message: thread.usageLimit.message, armed: thread.usageLimit.recovery?.autoResume === true } : null}
+                pause={thread.usageLimit ? { runId: thread.usageLimit.runId, provider: thread.usageLimit.provider, resetAt: thread.usageLimit.resetAt, message: thread.usageLimit.message, resume: thread.usageLimit.recovery ? (thread.usageLimit.recovery.autoResume ? "on" : "off") : null } : null}
                 queue={view?.queue}
                 background={view?.backgroundTasks ?? []}
                 running={running !== null}

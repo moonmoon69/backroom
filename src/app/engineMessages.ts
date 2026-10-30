@@ -27,6 +27,7 @@ import { ATTACHMENT_MAX_TOTAL_BYTES, type Participant, type Room } from "../doma
 import { NOTE_DIRECTIVE, NOTE_GONE, STEER_DIRECTIVE, STEER_GONE, parseExplicit } from "../parser/explicit.ts";
 import type { EngineHost } from "../runtime/index.ts";
 import type { CommandResult, EngineHandler } from "./service.ts";
+import { controlThread } from "./threadControl.ts";
 
 const USER = "$user";
 /** §7: the message API refuses a post over 1 MiB. */
@@ -120,6 +121,18 @@ export class EngineMessages {
           const receipt = this.host.retry(this.room(command.roomId).id, { actor: USER, id: `retry:${randomUUID()}`, runId: command.runId, body: command.text || "Try this again." });
           const event = receipt.events.find((e) => e.data.kind === "retry")!;
           return { type: "run.retried", runId: command.runId, eventId: event.id };
+        });
+      case "member.control":
+        // Don't resume goes to T3, then the room hears of it once; the other controls are the service's.
+        if (command.control.type !== "resume.cancel") return null;
+        return this.journal(async () => {
+          const room = this.room(command.roomId);
+          const participant = this.participant(room, command.participantId);
+          const seat = this.seat(room, participant);
+          const shell = await this.adapter.getThreadShell(seat.threadId);
+          const outcome = await controlThread(this.adapter, seat.threadId, { type: "resume.cancel" });
+          if (outcome === "sent" && shell?.usageLimit) await this.host.resumeOff(room.id, seat.seatId, shell.usageLimit.runId);
+          return { type: "member.controlled", participantId: participant.id, outcome };
         });
       case "run.stop":
         return this.journal(async () => {

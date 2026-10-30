@@ -56,7 +56,12 @@ export function betweenTurns(status: ParticipantStatus | undefined, desk?: Desk 
  */
 export function pauseDetail(pause: UsageLimitPause, now: number): string {
   const time = resetTime(pause.resetAt, now);
-  const then = time === null ? "T3 has no reset time to continue it at" : pause.armed ? (Date.parse(pause.resetAt!) <= now ? "T3 continues it now that the limit reset" : `T3 continues it at ${time}`) : "T3 is not set to continue it";
+  const passed = time !== null && Date.parse(pause.resetAt!) <= now;
+  const then =
+    time === null ? "T3 has no reset time to continue it at"
+    : pause.resume === "off" ? "T3 will not continue it"
+    : pause.resume === "on" ? (passed ? "T3 continues it now that the limit reset" : `T3 continues it at ${time}`)
+    : "T3 is not yet set to continue it";
   return pause.message ? `${pause.message} · ${then}` : then;
 }
 

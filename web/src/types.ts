@@ -431,7 +431,7 @@ export interface ParticipantStatus {
 }
 
 /** What the page asks of a thread's runs (member.control, thread.control): resume the paused turn, or the held queue. */
-export type PageControl = { type: "resume" } | { type: "queue.resume" } | { type: "stop.all" } | { type: "subagent.stop"; runId: string; subagentId: string };
+export type PageControl = { type: "resume" } | { type: "resume.cancel" } | { type: "queue.resume" } | { type: "stop.all" } | { type: "subagent.stop"; runId: string; subagentId: string };
 
 /** A turn its provider's usage limit stopped (T3's usage-limit pause), as the room shows it. */
 export interface UsageLimitPause {
@@ -442,8 +442,8 @@ export interface UsageLimitPause {
   resetAt: string | null;
   /** The provider's own sentence. */
   message: string | null;
-  /** T3 continues the turn at the reset: its recovery is armed. */
-  armed: boolean;
+  /** What T3 does at the reset: "on" continues the turn, "off" will not (turned off), null nothing recorded yet. */
+  resume: "on" | "off" | null;
 }
 
 /** A thread's usage-limit pause as T3 records it (the adapter's T3UsageLimit). */

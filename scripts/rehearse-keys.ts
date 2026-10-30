@@ -3297,7 +3297,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   }
 
   if (
-    await section("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Resume anyway continues it", {
+    await section("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Don't resume turns T3's resume off, Resume anyway continues it", {
       replay: async () => {
         await secondApproval();
         await listsRead();
@@ -3333,9 +3333,22 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowRight");
     await expect("Right: Keep waiting", (f) => f.label === "Keep waiting");
     press("Enter");
-    await expect("Enter: Keep waiting asks no more, the strip still open on another choice", (f) => f.chipOpen && f.strips === 1 && (f.label === "Resume now" || f.label === "Stop everything"));
+    await expect("Enter: Keep waiting asks no more, the strip still open on another choice", (f) => f.chipOpen && f.strips === 1 && ["Resume now", "Don't resume", "Stop everything"].includes(f.label));
     if (!(await room.snapshot()).participantStatus[room.participant.fable]?.paused) fail("Keep waiting continued the turn");
     log("api: @fable still paused: Keep waiting sent nothing");
+    // Don't resume by keys: T3 will not continue it at the reset; the strip stays, Resume now with it.
+    for (let i = 0; i < 4 && focus().label !== "Don't resume"; i += 1) press(focus().label === "Resume now" ? "ArrowRight" : "ArrowLeft");
+    await expect("on Don't resume", (f) => f.label === "Don't resume");
+    press("Enter");
+    await until("T3's resume of @fable's turn off", async () => ((await room.snapshot()).participantStatus[room.participant.fable]?.paused?.resume === "off" ? true : null));
+    log("api: @fable's resume is off; he stays paused");
+    // While T3 takes it nothing in the strip can be pressed: it folds, the ring back on the chip.
+    const after = await expect("the ring on the chip or still in its strip", (f) => (f.key === pausedChip && f.ring) || (f.chipOpen && f.strips === 1 && f.label !== "Don't resume"), 10_000);
+    if (!after.chipOpen) {
+      press("Enter");
+      await expect("Enter: the choices again", (f) => f.chipOpen && f.strips === 1);
+    }
+    if (browser.eval<boolean>(`() => [...document.querySelectorAll('.work-bar .action-strip button')].some((b) => (b.getAttribute('aria-label') ?? b.textContent.trim()) === "Don't resume")`)) fail("Don't resume is still offered once T3's resume is off");
     for (let i = 0; i < 3 && focus().label !== "Resume now"; i += 1) press("ArrowLeft");
     await expect("Left: Resume now", (f) => f.label === "Resume now");
     press("Enter");
@@ -3344,7 +3357,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     await until("T3 to continue @fable's turn", async () => ((await room.snapshot()).participantStatus[room.participant.fable]?.paused ? null : true));
     log(`api: @fable no longer paused; T3 runs the continuation of #${turn.number}'s turn`);
     const resumed = await expect("the chip gone: the ring on the newest post, a turn's chip or the composer's strip", (f) => (f.key?.startsWith("post:") === true || f.key?.startsWith("chip:") === true || f.key === "strip") && f.ring && inRoom(f) && f.strips === 0 && !f.chipOpen);
-    await state("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Resume anyway continues it", resumed.key === "strip" ? /^(Continue your draft|Write a message)/ : resumed.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(resumed.key));
+    await state("a paused member's chip: Resume now by keys asks first, Keep waiting sends nothing, Don't resume turns T3's resume off, Resume anyway continues it", resumed.key === "strip" ? /^(Continue your draft|Write a message)/ : resumed.key?.startsWith("chip:") ? /^status · @fable / : await postWhere(resumed.key));
     await room.finish("fable", "Continued: the release is built.");
     await room.settle("fable");
     press("Backspace");

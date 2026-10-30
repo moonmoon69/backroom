@@ -11,9 +11,10 @@ import { LimitRecovery, limitStep } from "../src/app/limitRecovery.ts";
 import { queueOf } from "../src/app/threadView.ts";
 import { isPausedNotice, pauseLabel, resetTime } from "../src/domain/usageLimit.ts";
 import { replyPieces, replyText } from "../web/src/replyTo.ts";
+import { controlThread } from "../src/app/threadControl.ts";
 import { describeStatus, pauseDetail, queueLine } from "../web/src/memberActivity.ts";
 import { createTestStack, type TestStack } from "./helpers.ts";
-import { journalView, memberStatus } from "../src/server/engineView.ts";
+import { journalView, memberStatus, pauseOf } from "../src/server/engineView.ts";
 import { Room } from "./runtime/helpers.ts";
 import { FOLLOW_UP } from "../src/runtime/index.ts";
 import { t3Stub } from "./t3Stub.ts";
@@ -236,14 +237,15 @@ test("the reset is said in the viewer's time zone, dated when it is not today th
 
 test("a paused member is neither working nor needing you: its label says until when, its detail the provider's own sentence and whether T3 continues it", () => {
   const resetAt = new Date(Date.now() + 3_600_000).toISOString();
-  const paused = { runId: "r", provider: "claudeAgent", resetAt, message: "Claude API rate limit reached. Try again later.", armed: true };
+  const paused = { runId: "r", provider: "claudeAgent", resetAt, message: "Claude API rate limit reached. Try again later.", resume: "on" as const };
   const status = { status: "queued" as const, externalActivity: false, pendingApprovals: false, pendingUserInput: false, activeRunId: "host-run", threadMissing: false, background: null, paused };
   const activity = describeStatus(status, null);
   assert.equal(activity.label, `paused on Claude's limit until ${resetTime(resetAt, Date.now())}`, "a room message queued behind the limit does not make it working");
   assert.equal(activity.tone, "paused");
   assert.equal(activity.motion, null);
   assert.equal(activity.detail, `Claude API rate limit reached. Try again later. · T3 continues it at ${resetTime(resetAt, Date.now())}`);
-  assert.equal(pauseDetail({ ...paused, armed: false }, Date.now()), "Claude API rate limit reached. Try again later. · T3 is not set to continue it");
+  assert.equal(pauseDetail({ ...paused, resume: "off" }, Date.now()), "Claude API rate limit reached. Try again later. · T3 will not continue it");
+  assert.equal(pauseDetail({ ...paused, resume: null }, Date.now()), "Claude API rate limit reached. Try again later. · T3 is not yet set to continue it");
   assert.equal(describeStatus({ ...status, pendingApprovals: true }, null).tone, "approval", "an approval still comes first");
   assert.equal(describeStatus({ ...status, paused: null, status: "failed", activeRunId: null }, null).label, "error", "an ordinary failure is still an error");
 });
@@ -320,7 +322,7 @@ test("the room's member status carries the pause from T3's thread list", async (
   const shells = new Map((await stack.adapter.listThreads()).map((s) => [s.id, s]));
   const participant = stack.repos.getParticipant(stack.participants.sol2!)!;
   const status = memberStatus({ participant, repos: stack.repos, view: journalView({ p: stack.engine.view(stack.roomId), marks: { through: 0, ids: [] } }), shells, native: [] });
-  assert.deepEqual(status.paused, { runId: stack.fake.threads.get(threadId)!.runs[0]!.id, provider: "codex", resetAt, message: "You've hit your usage limit.", armed: false });
+  assert.deepEqual(status.paused, { runId: stack.fake.threads.get(threadId)!.runs[0]!.id, provider: "codex", resetAt, message: "You've hit your usage limit.", resume: null });
   assert.equal(describeStatus(status, null).label, `paused on Codex's limit until ${resetTime(resetAt, Date.now())}`);
 });
 
@@ -340,4 +342,72 @@ test("a paused turn of your own request does not need you: its notice keeps Retr
   await room.tick(2);
   view = journalView({ p: room.p });
   assert.equal(view.needsYou.length, 1, "an ordinary failure still needs you");
+});
+
+test("Don't resume turns T3's recovery off with T3's own command; Backroom does not arm it again, T3 does not continue it, and Resume now still does", async () => {
+  const { adapter, frames } = stub();
+  await adapter.controlThread({ commandId: "d", threadId: THREAD, control: { type: "limit.disarm", runId: LIMITED, resetAt: RESET } });
+  assert.deepEqual(frames.filter((f) => f.tag === "orchestration.dispatchCommand").map((f) => f.payload), [{ type: "thread.metadata.update", commandId: "d", threadId: THREAD, limitRecovery: { runId: LIMITED, resetAt: RESET, autoResume: false, snooze: false } }]);
+
+  stack = await createTestStack();
+  const fake = stack.fake;
+  const loose = await fake.launchThread({ commandId: "l", threadId: "loose", projectId: "project_demo", title: "loose", modelSelection: SELECTION, runtimeMode: "full-access", interactionMode: "default", workspace: { type: "root" }, initialMessage: { messageId: "lm", text: "Go." } });
+  const resetAt = new Date(Date.now() + 3_600_000).toISOString();
+  fake.completeRun(loose.id, { text: "limit", outcome: "limit", resetAt });
+  const runId = fake.threads.get(loose.id)!.runs[0]!.id;
+  const recovery = new LimitRecovery(fake);
+  await recovery.sweep();
+  assert.equal(fake.threads.get(loose.id)!.recovery?.autoResume, true, "armed by default");
+  const cancel = () => stack!.run({ type: "thread.control", threadId: loose.id, control: { type: "resume.cancel" } });
+  assert.deepEqual(await cancel(), { type: "thread.controlled", threadId: loose.id, outcome: "sent" });
+  assert.deepEqual(fake.threads.get(loose.id)!.recovery, { runId, resetAt, autoResume: false, snooze: false, requestId: `limit-disarm:${loose.id}:${runId}:${Date.parse(resetAt)}` });
+  assert.deepEqual(await cancel(), { type: "thread.controlled", threadId: loose.id, outcome: "already" }, "already off: nothing sent");
+  await recovery.sweep();
+  await new LimitRecovery(fake).sweep();
+  assert.equal(fake.commands.filter((c) => c.threadId === loose.id && c.type === "thread.metadata.update").length, 2, "armed once, turned off once, never armed again");
+  fake.sweepLimits(Date.parse(resetAt) + 600_000);
+  assert.equal(continuations(fake, loose.id), 0, "T3's worker leaves it");
+  const shell = (await fake.getThreadShell(loose.id))!;
+  assert.equal(shell.usageLimit?.recovery?.autoResume, false);
+  assert.equal(pauseOf(shell.usageLimit!).resume, "off");
+  assert.equal(pauseDetail(pauseOf(shell.usageLimit!), Date.now()), "limit · T3 will not continue it", "the member reads that T3 will not continue it");
+  assert.deepEqual(await stack.run({ type: "thread.control", threadId: loose.id, control: { type: "resume" } }), { type: "thread.controlled", threadId: loose.id, outcome: "sent" });
+  assert.equal(continuations(fake, loose.id), 1, "Resume now still continues it");
+  assert.deepEqual(await cancel(), { type: "thread.controlled", threadId: loose.id, outcome: "already" }, "nothing paused any more");
+});
+
+test("a member's Don't resume reaches T3 and the Consigliere hears of it once, on the paused request", async () => {
+  room = await Room.create();
+  const a = room.post("C", "W", "Fix the flaky test.");
+  await room.tick();
+  room.complete("W", "Claude API rate limit reached. Try again later.", { outcome: "limit", resetAt: new Date(Date.now() + 3_600_000).toISOString() });
+  await room.tick(2);
+  const threadId = room.threadOf("W");
+  const limited = room.fake.thread(threadId).runs.at(-1)!;
+  await new LimitRecovery(room.fake).sweep();
+  const outcome = await controlThread(room.fake, threadId, { type: "resume.cancel" });
+  assert.equal(outcome, "sent");
+  await room.host.resumeOff("room", "W", limited.id);
+  await room.host.resumeOff("room", "W", limited.id);
+  await room.tick(2);
+  const said = room.p.events.filter((e) => e.id === `resume-off:${limited.id}`);
+  assert.equal(said.length, 1, "once");
+  const data = said[0]!.data as { kind: string; body: string; requestIds: string[]; milestone: string };
+  assert.equal(data.kind, "progress");
+  assert.deepEqual(data.requestIds, [a]);
+  assert.equal(data.body, "[T3 status of @W: idle]\n\n(The user turned off T3's resume of @W's paused turn: T3 will not continue it at the reset. It stays paused until someone presses Resume now on @W.)");
+  assert.equal(room.fake.thread(threadId).recovery?.autoResume, false);
+});
+
+test("from the page, a member's Don't resume goes through the room: T3 has it off, and the room has its one follow-up", async () => {
+  stack = await createTestStack();
+  const threadId = stack.threadOf("sol1");
+  await stack.fake.sendMessage({ commandId: "go", threadId, messageId: "go", text: "Work.", mode: { type: "start" } });
+  stack.fake.completeRun(threadId, { text: "You've hit your usage limit.", outcome: "limit", resetAt: new Date(Date.now() + 3_600_000).toISOString() });
+  const runId = stack.fake.threads.get(threadId)!.runs[0]!.id;
+  const cancel = () => stack!.run({ type: "member.control", roomId: stack!.roomId, participantId: stack!.participants.sol1!, control: { type: "resume.cancel" } });
+  assert.deepEqual(await cancel(), { type: "member.controlled", participantId: stack.participants.sol1, outcome: "sent" });
+  assert.equal(stack.fake.threads.get(threadId)!.recovery?.autoResume, false);
+  assert.deepEqual(await cancel(), { type: "member.controlled", participantId: stack.participants.sol1, outcome: "already" });
+  assert.equal(stack.engine.view(stack.roomId).events.filter((e) => e.id === `resume-off:${runId}`).length, 1);
 });

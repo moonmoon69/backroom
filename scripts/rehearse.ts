@@ -577,7 +577,7 @@ type Snapshot = {
   blocked: any[];
   nativeRequests: any[];
   /** Each member's status, by participant: what it waits on you for among it. */
-  participantStatus: Record<string, { pendingApprovals: boolean; pendingUserInput: boolean; pendingSecret?: boolean; externalActivity?: boolean; paused?: { resetAt: string | null; armed: boolean } | null }>;
+  participantStatus: Record<string, { pendingApprovals: boolean; pendingUserInput: boolean; pendingSecret?: boolean; externalActivity?: boolean; paused?: { resetAt: string | null; resume: "on" | "off" | null } | null }>;
   counts: { needsYou: number; busy: number; waiting: number; working: number; openRequests: number };
   notices: { through: number; ids: string[] };
   news: { seenSeq: number; unseen: number; latest: { seq: number; number: number; kind: string } | null };
@@ -1950,7 +1950,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     await check.state("a member paused on Claude's limit: neither working nor needing you, the Consigliere told it is paused", (x) => {
       const p = paused(x);
       const notice = x.posts.find((q) => q.kind === "output" && q.author === seat.reviewer && q.body.includes("paused on Claude's usage limit until"));
-      if (!p?.resetAt || !p.armed || !notice || x.counts.needsYou !== 0) return null;
+      if (!p?.resetAt || p.resume !== "on" || !notice || x.counts.needsYou !== 0) return null;
       return `participantStatus.paused for @reviewer until ${p.resetAt}, armed (T3 continues it at the reset); #${notice.number} says paused, not failed; counts.needsYou=0`;
     }, ["paused on Claude's limit until", "paused on Claude's usage limit until"], {
       extra: () => {
@@ -1971,9 +1971,26 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
         log(`  page: @reviewer's card reads ${JSON.stringify(label)}, no attention border; its chip is under Waiting, not Needs you`);
       },
     });
-    // Resume now, before the reset: it asks first, then T3 continues the turn at once; her reply follows up on the request.
+    // Don't resume: T3's recovery turned off for this run; she reads that T3 will not continue it, the Consigliere hears
+    // of it once, and Resume now stays.
     const chip = new RegExp(`button "${room.name.reviewer} paused on Claude's limit until`);
     browser.click(chip);
+    browser.click(/button "Don't resume"/);
+    await check.state("Don't resume: T3 will not continue the paused turn at the reset, the Consigliere is told once, and Resume now stays", (x) => {
+      const p = paused(x);
+      const told = x.posts.filter((q) => q.author === seat.reviewer && q.body.includes("The user turned off T3's resume of"));
+      return p?.resume === "off" && told.length === 1 ? `participantStatus.paused.resume=off; #${told[0].number} tells @fable once` : null;
+    }, ["T3 will not continue the turn at the reset.", "T3 will not continue it at the reset. It stays paused until someone presses Resume now"], {
+      always: () => {
+        browser.poll<string>("@reviewer's hover to say T3 will not continue it", statusRead, (label) => label.startsWith("paused on Claude's limit until"));
+        const members = browser.poll<string>("the Members hover", `() => document.querySelector('[aria-label^="Members"]')?.getAttribute('title') ?? ''`, (t) => t.includes("T3 will not continue it"));
+        void members;
+        browser.poll<boolean>("Don't resume gone, Resume now still there", "() => { const o = document.querySelector('.work-open'); const labels = [...(o?.querySelectorAll('button') ?? [])].map((b) => b.textContent.trim()); return !labels.includes(\"Don't resume\") && labels.includes('Resume now'); }", (v) => v);
+      },
+    });
+    await room.settle("fable");
+    // Resume now, before the reset: it asks first, then T3 continues the turn at once; her reply follows up on the request.
+    if (!browser.eval<boolean>("() => [...(document.querySelector('.work-open')?.querySelectorAll('button') ?? [])].some((b) => b.textContent.trim() === 'Resume now')")) browser.click(chip);
     browser.click(/button "Resume now"/);
     browser.waitFor("Resume now continues the turn at once, and the limit may stop it again");
     browser.click(/button "Resume anyway"/);

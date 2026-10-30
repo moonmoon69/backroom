@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { T3Adapter, T3ThreadShell, ThreadControl } from "../adapter/types.ts";
-import { T3CommandRejected, T3Unavailable } from "../adapter/types.ts";
+import { T3CommandRejected, T3Unavailable, limitIdentity } from "../adapter/types.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { z } from "zod";
 import type { PageControlSchema } from "../domain/commands.ts";
@@ -14,7 +14,10 @@ import type { PageControlSchema } from "../domain/commands.ts";
 /** What the page asks for (domain/commands.ts PageControlSchema). */
 export type PageControl = z.infer<typeof PageControlSchema>;
 
-/** What came of it: T3 took the command, or the turn had already continued (T3's worker, another page, a double click). */
+/**
+ * What came of it: T3 took the command, or there was nothing left to do (the turn had already continued, or its resume
+ * was already off).
+ */
 export type ControlOutcome = "sent" | "already";
 
 /**
@@ -33,6 +36,13 @@ export async function controlThread(adapter: T3Adapter, threadId: string, contro
   if (!shell) throw new RoomError("not_found", "thread not found in T3", 404);
   if (control.type === "queue.resume" || control.type === "stop.all") {
     await call(() => adapter.controlThread({ commandId: randomUUID(), threadId, control: { type: control.type === "stop.all" ? "thread.stop" : "queue.resume" } }));
+    return "sent";
+  }
+  if (control.type === "resume.cancel") {
+    // T3's own record, turned off for this run and reset; one already off, or none to turn off, sends nothing.
+    const limit = shell.usageLimit;
+    if (!limit?.resetAt || limit.recovery?.autoResume === false) return "already";
+    await call(() => adapter.controlThread({ commandId: `limit-disarm:${limitIdentity(threadId, limit.runId, limit.resetAt!)}`, threadId, control: { type: "limit.disarm", runId: limit.runId, resetAt: limit.resetAt! } }));
     return "sent";
   }
   if (control.type === "subagent.stop") {

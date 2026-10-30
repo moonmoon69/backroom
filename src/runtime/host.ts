@@ -1301,6 +1301,23 @@ export class EngineHost {
    * The room's Stop for a seat (L4a): T3 interrupts the run active on its thread. A host run then ends as a failure with
    * its notice (§6), which the user can retry; a turn the host did not start becomes a follow-up when it ends.
    */
+  /**
+   * The user turned off T3's resume of a turn a usage limit paused (Don't resume): one follow-up, on the requests that
+   * turn was given, tells the orchestrator it stays paused. `t3RunId` is the limited run: the follow-up is once per run.
+   */
+  async resumeOff(roomId: string, seatId: string, t3RunId: string): Promise<void> {
+    // A member's post carries its T3 status at the top, as every post of its does.
+    const threadId = this.project(roomId).seats.get(seatId)?.threadId;
+    const detail = threadId ? await this.adapter.getThreadDetail(threadId, { bounded: true }) : null;
+    const p = this.project(roomId);
+    const records = runRecords(p);
+    const paused = [...p.runs.values()].find((r) => r.seatId === seatId && records.get(r.id)?.t3?.id === t3RunId);
+    const name = this.named(roomId, seatId);
+    this.followUp(roomId, seatId, `resume-off:${t3RunId}`, `(The user turned off T3's resume of ${name}'s paused turn: T3 will not continue it at the reset. It stays paused until someone presses Resume now on ${name}.)`, detail ? memberStatus(detail, null) : null, paused ? this.given(p, paused) : undefined);
+    this.options.notify?.(roomId);
+    this.hint();
+  }
+
   async stopSeat(roomId: string, seatId: string, everything = false): Promise<void> {
     const seat = this.project(roomId).seats.get(seatId);
     if (!seat || seat.status === "retired") throw new HostRefusal(`@${seatId} is not seated in this room.`);

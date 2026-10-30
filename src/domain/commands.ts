@@ -377,6 +377,8 @@ export const NativeSecretRespondCommand = z.object({ type: z.literal("native.sec
 export const PageControlSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("resume") }).strict(),
   z.object({ type: z.literal("queue.resume") }).strict(),
+  /** Don't resume: T3 does not continue the paused turn at the reset (Resume now still continues it). */
+  z.object({ type: z.literal("resume.cancel") }).strict(),
   /** A thread on its own: stop its turn and everything it left (a member's goes through run.stop with `everything`). */
   z.object({ type: z.literal("stop.all") }).strict(),
   z.object({ type: z.literal("subagent.stop"), runId: nonEmpty, subagentId: nonEmpty }).strict(),

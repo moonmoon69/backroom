@@ -283,6 +283,9 @@ export interface UsageLimitPause {
   resetAt: string | null;
   /** The provider's own sentence. */
   message: string | null;
-  /** T3 continues the turn at the reset: its recovery is armed. False when turned off (a Stop), or not armed yet. */
-  armed: boolean;
+  /**
+   * What T3 does at the reset: "on", it continues the turn (its recovery is armed); "off", it will not (turned off by
+   * Don't resume, Stop everything, or in T3); null, nothing recorded yet (Backroom arms it when T3's shell shows it).
+   */
+  resume: "on" | "off" | null;
 }

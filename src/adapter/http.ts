@@ -1749,7 +1749,8 @@ export class HttpT3Adapter implements T3Adapter {
     const { commandId, threadId, control } = input;
     switch (control.type) {
       case "limit.arm":
-        await this.dispatch({ type: "thread.metadata.update", commandId, threadId, limitRecovery: { runId: control.runId, resetAt: control.resetAt, autoResume: true, snooze: false } });
+      case "limit.disarm":
+        await this.dispatch({ type: "thread.metadata.update", commandId, threadId, limitRecovery: { runId: control.runId, resetAt: control.resetAt, autoResume: control.type === "limit.arm", snooze: false } });
         return;
       case "run.continue":
         await this.dispatch({ type: "message.dispatch", commandId, messageId: commandId, threadId, manualContinuationOfRunId: control.runId, text: CONTINUE_TEXT, attachments: [], dispatchMode: { type: "start_immediately" }, createdBy: "user", creationSource: CREATION_SOURCE });
