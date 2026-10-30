@@ -376,9 +376,9 @@ export class EngineHost {
   }
 
   /**
-   * One room, in three passes over its seats, so what one seat's import writes is dispatched in the same tick: follow
-   * live runs and import what happened on each thread; post the follow-ups of background work that ended quietly; then
-   * reserve and send.
+   * One room, in passes over its seats, so what one seat's import writes is dispatched in the same tick: follow live
+   * runs and import what happened on each thread; post the follow-ups of background work that ended quietly and the
+   * keep-alives; reserve and send; then tell the orchestrator what holds a member's request.
    */
   private async stepRoom(roomId: string, shells: Map<string, T3ThreadShell>): Promise<void> {
     const seats = [...this.project(roomId).seats.values()].filter((s) => s.status !== "retired");
@@ -419,7 +419,6 @@ export class EngineHost {
       const seat = this.project(roomId).seats.get(seatId)!;
       await this.options.watch?.({ roomId, seatId, threadId: seat.threadId }, state.current() ?? state.shell, () => state.load());
     });
-    await each(async (seatId, state) => this.blocked(roomId, seatId, state.load));
     await each(async (seatId, state) => {
       const shell = state.current();
       if (shell) await this.quiet(roomId, seatId, shell, state.load, state.imported);
@@ -432,6 +431,8 @@ export class EngineHost {
       const shell = state.current();
       if (shell) await this.dispatch(roomId, seatId, shell, state.imported, state.load);
     });
+    // Last, on the thread as this tick read it: what holds a member's request that no reply of its own ends.
+    await each(async (seatId, state) => this.blocked(roomId, seatId, state.load));
   }
 
   // ---------------- a host run: reserve, send, follow, import ----------------

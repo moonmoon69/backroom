@@ -64,7 +64,8 @@ Anyone:
   read <n>... [--page <p>]        the exact text of those posts; one over ${BOARD_PAGE_CHARS.toLocaleString("en-US")} characters is printed in pages.
   index [--after <n>] [--all]     the room's posts: number, kind, sender, receiver, state, size. --all adds the
                                   board's own records (runs, subscriptions), which have numbers but are not posts.
-  members                         the room's members: model, what each is doing now, its requests, its thread.
+  members                         the room's members: model, what each is doing now on the board and in T3, its
+                                  requests, its thread.
   rules                           your standing sections, as your first briefing gave them.
   state                           prints the room state.
   keepalive                       this room's keep-alives: the interval, and the seats they are on for.
