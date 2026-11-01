@@ -1,19 +1,30 @@
 import { useEffect, useState } from "react";
+import { reloadAgentsFiles } from "../agentsFiles.ts";
 import { api } from "../api.ts";
-import { potetoStatus } from "../potetoStatus.ts";
-import type { PotetoState } from "../types.ts";
-import { Dialog } from "./Dialog.tsx";
+import { potetoMove, potetoPosition, potetoStatus, type PotetoPosition } from "../potetoStatus.ts";
+import type { PotetoState, RoomCommand } from "../types.ts";
 import { useToast } from "./Toast.tsx";
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const when = (at: string | null): string => (at ? new Date(at).toLocaleString() : "never");
 
+const POSITIONS: Array<{ key: PotetoPosition; label: string; hint: string }> = [
+  { key: "off", label: "Off", hint: "No seat is pointed at pstack and nothing is fetched; the clone stays. Seats already told get a short note that it is off." },
+  {
+    key: "principles",
+    label: "Principles and reply rules",
+    hint: "Seats follow poteto-mode's principles, reply and comment rules. Its triggers and playbooks (fan-outs, subagent delegation, plan templates, pull requests) apply only when an assignment names them.",
+  },
+  { key: "full", label: "The whole mode", hint: "Triggers and playbooks included: for any non-trivial job a seat reads and follows poteto-mode." },
+];
+
 /**
- * Settings → Poteto mode (src/app/poteto.ts): the switch, what Backroom's pstack clone holds (version, commit, last check,
- * last change, folder), Update now, the pin (Pin this version, Follow latest) and the last error. The settings are read
- * again each second while a clone or an update runs.
+ * Settings → Agents file, Skills (src/app/poteto.ts): how far seats follow pstack's poteto-mode (three positions, on the
+ * service's two keys), what Backroom's clone holds (version, commit, last check, last change, folder), Update now, the pin
+ * (Pin this version, Follow latest) and the last error. The settings are read again each second while a clone or an update
+ * runs. A command reads the projects written again: the position changes what the template renders for them.
  */
-export function PotetoDialog({ onClose }: { onClose: () => void }) {
+export function SkillsSection() {
   const { toast } = useToast();
   const [state, setState] = useState<PotetoState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -35,12 +46,17 @@ export function PotetoDialog({ onClose }: { onClose: () => void }) {
     const timer = setInterval(() => void read(), 1000);
     return () => clearInterval(timer);
   }, [busy]);
-  const run = async (command: Parameters<typeof api.command>[0]) => {
+  const run = async (...commands: RoomCommand[]) => {
     setActing(true);
     try {
-      const result = await api.command(command);
-      if ("poteto" in result && result.poteto) setState(result.poteto as PotetoState);
+      let answer: PotetoState | null = null;
+      for (const command of commands) {
+        const result = await api.command(command);
+        answer = "poteto" in result && result.poteto ? (result.poteto as PotetoState) : null;
+      }
+      if (answer) setState(answer);
       else await read();
+      reloadAgentsFiles();
     } catch (error) {
       toast(message(error));
     } finally {
@@ -49,25 +65,27 @@ export function PotetoDialog({ onClose }: { onClose: () => void }) {
   };
   const short = state?.commit ? state.commit.slice(0, 7) : null;
   return (
-    <Dialog title="Poteto mode" onClose={onClose} wide>
+    <section className="agents-file-part" aria-label="Skills">
+      <h3>Skills</h3>
       <p className="muted">
         pstack, Lauren Tan&rsquo;s skills for rigorous agent work (MIT, from cursor/plugins), kept up to date by Backroom and used as it is. Every seat is pointed at its entry point, poteto-mode: by a line in the agents file (
-        <code>{"{poteto}"}</code> in the template) and by a Skills section in its briefing. Its principles, reply and comment rules apply by default; its triggers and playbooks (fan-outs, subagent delegation, plan templates, pull
-        requests) only when an assignment names them. README, &ldquo;Poteto mode&rdquo;, says more.
+        <code>{"{poteto}"}</code> in the template) and by a Skills section in its briefing. README, &ldquo;Poteto mode&rdquo;, says more.
       </p>
       {loadError ? <p className="status-error">{loadError}</p> : null}
       {state ? (
         <>
-          <label className="checkbox agents-file-switch">
-            <input type="checkbox" checked={state.enabled} disabled={acting} onChange={() => void run({ type: "poteto.enabled.set", enabled: !state.enabled })} />
-            <span>
-              Point every seat at poteto-mode
-              <span className="hint">
-                On by default. Off, nothing is fetched and the clone stays; seats already told get a short note that it is off. AGENTS.md files already written keep their poteto-mode line until you apply the template to them: Settings
-                → Agents file shows them as differing. Turning it on again shows them as differing the other way.
-              </span>
-            </span>
-          </label>
+          <fieldset aria-label="How far seats follow poteto-mode">
+            {POSITIONS.map((option) => (
+              <label key={option.key} className="radio">
+                <input type="radio" name="poteto-position" checked={potetoPosition(state) === option.key} disabled={acting} onChange={() => void run(...potetoMove(state, option.key))} />
+                <span>
+                  <strong>{option.label}</strong>
+                  <span className="hint">{option.hint}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <p className="hint">AGENTS.md files already written keep their line until you apply the template to them: a change here shows them as differing under Projects written, and Apply pushes the new line.</p>
           <dl className="poteto-facts">
             <dt>Version</dt>
             <dd className="mono">{state.version ?? "—"}</dd>
@@ -109,11 +127,6 @@ export function PotetoDialog({ onClose }: { onClose: () => void }) {
           </span>
         </>
       ) : null}
-      <div className="dialog-actions">
-        <button type="button" className="primary" onClick={onClose}>
-          Done
-        </button>
-      </div>
-    </Dialog>
+    </section>
   );
 }

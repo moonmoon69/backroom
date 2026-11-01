@@ -5,6 +5,7 @@ import { templateSaved, type TemplateDraft } from "../agentsTemplate.ts";
 import type { AgentsFileDiff, AgentsFileEntry } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { DiffView } from "./GitTab.tsx";
+import { SkillsSection } from "./SkillsSection.tsx";
 import { useToast } from "./Toast.tsx";
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -22,10 +23,10 @@ const STATE_TITLE: Record<AgentsFileEntry["state"], string> = {
 };
 
 /**
- * Settings → Agents file (src/app/agentsFile.ts): the switch for new rooms, the template they write with Save and Reset
- * to default, and every project where Backroom wrote AGENTS.md with its state against the saved template, and for the
- * ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the overview's mark does).
- * Diff and Apply use the saved template, never the draft in the textarea.
+ * Settings → Agents file, two sections. Instructions (src/app/agentsFile.ts): the switch for new rooms, the template they
+ * write with Save and Reset to default, and every project where Backroom wrote AGENTS.md with its state against the saved
+ * template, and for the ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the
+ * overview's mark does). Diff and Apply use the saved template, never the draft in the textarea. Skills: SkillsSection.
  */
 export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
@@ -79,88 +80,92 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
   };
   return (
     <Dialog title="Agents file" onClose={close} wide>
-      <p className="muted">
-        The habits every agent in a project keeps, whoever assigned the work, in the project&rsquo;s AGENTS.md (with a CLAUDE.md importing it), where every harness reads it. It says nothing of models or routing: those belong to the
-        crew and the Consigliere. README, &ldquo;The agents file&rdquo;, says where it is written and what is never touched.
-      </p>
-      {loadError ? <p className="status-error">{loadError}</p> : null}
-      {enabled !== null ? (
-        <label className="checkbox agents-file-switch">
-          <input type="checkbox" checked={enabled} onChange={() => void toggle()} />
-          <span>
-            Write it when a project gets its first room
-            <span className="hint">
-              Once per project, where it has no instructions for agents yet, kept out of git, with a git hook that copies it into new worktrees. This switch governs that automatic writing only: Apply below is a click of
-              yours and works with it off.
-            </span>
-          </span>
-        </label>
-      ) : null}
-      {template ? (
-        <label className="consigliere-rules agents-file-template">
-          The template
-          <textarea
-            className="mono"
-            rows={10}
-            value={template.text}
-            spellCheck={false}
-            onChange={(e) => {
-              const text = e.target.value;
-              setTemplate((current) => current && { ...current, text });
-            }}
-          />
-          <span className="hint">
-            {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{poteto}"}</code>, on a line of its own, is
-            Poteto mode&rsquo;s line pointing at pstack&rsquo;s poteto-mode while that is on (Settings → Poteto mode), and goes otherwise, so turning it on or off shows written projects as differing. The file is written
-            once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
-          </span>
-          <span className="task-actions">
-            <button type="button" className="small primary" disabled={saving || template.text.trim().length === 0 || !dirty} onClick={() => void save(template.text.trim())}>
-              Save template
-            </button>
-            <button type="button" className="small ghost" disabled={saving || (!template.custom && template.text === template.saved)} title="Go back to Backroom's template" onClick={() => void save(null)}>
-              Reset to default
-            </button>
-          </span>
-        </label>
-      ) : null}
-      <section className="agents-file-projects" aria-label="Projects where Backroom wrote AGENTS.md">
-        <h3 className="agents-file-heading">Projects written</h3>
-        <p className="hint">
-          {APPLY_SAYS} Nothing applies without your click; CLAUDE.md, git and the worktrees that already hold a copy keep theirs.
-          {dirty ? " Save the template first: Show diff and Apply use the saved one." : ""}
+      <section className="agents-file-part" aria-label="Instructions">
+        <h3>Instructions</h3>
+        <p className="muted">
+          The habits every agent in a project keeps, whoever assigned the work, in the project&rsquo;s AGENTS.md (with a CLAUDE.md importing it), where every harness reads it. It says nothing of models or routing: those belong to the
+          crew and the Consigliere. README, &ldquo;The agents file&rdquo;, says where it is written and what is never touched.
         </p>
-        {listError ? <p className="status-error">{listError}</p> : null}
-        {entries === null && !listError ? <p className="mono muted">reading the projects…</p> : null}
-        {entries?.length === 0 ? <p className="muted">Backroom has written AGENTS.md in no project yet.</p> : null}
-        {entries && entries.length > 0 ? (
-          <ul className="agents-file-list">
-            {entries.map((entry) => (
-              <li key={entry.folder} className="agents-file-row" data-state={entry.state}>
-                <span className="agents-file-name">{entry.title ?? folderName(entry.folder)}</span>
-                <span className="agents-file-folder mono muted" title={entry.folder}>
-                  {entry.folder}
-                </span>
-                <span className={`tag agents-file-state agents-file-${entry.state}`} title={entry.reason ?? STATE_TITLE[entry.state]}>
-                  {STATE_LABEL[entry.state]}
-                </span>
-                {entry.state === "differs" ? (
-                  <span className="agents-file-actions">
-                    <button type="button" className="small ghost" disabled={dirty} title={dirty ? "Save the template first" : "The project's file against the saved template"} onClick={() => setDiffFor(entry)}>
-                      Show diff
-                    </button>
-                    <button type="button" className="small" disabled={dirty} title={dirty ? "Save the template first" : "Opens the diff, with Apply at its end: you apply what you see"} onClick={() => setDiffFor(entry)}>
-                      Apply…
-                    </button>
-                  </span>
-                ) : null}
-                {entry.state === "blocked" && entry.reason ? <span className="agents-file-reason hint">{entry.reason}</span> : null}
-                {entry.state === "removed" ? <span className="agents-file-reason hint">Backroom does not write it again.</span> : null}
-              </li>
-            ))}
-          </ul>
+        {loadError ? <p className="status-error">{loadError}</p> : null}
+        {enabled !== null ? (
+          <label className="checkbox agents-file-switch">
+            <input type="checkbox" checked={enabled} onChange={() => void toggle()} />
+            <span>
+              Write it when a project gets its first room
+              <span className="hint">
+                Once per project, where it has no instructions for agents yet, kept out of git, with a git hook that copies it into new worktrees. This switch governs that automatic writing only: Apply below is a click of
+                yours and works with it off.
+              </span>
+            </span>
+          </label>
         ) : null}
+        {template ? (
+          <label className="consigliere-rules agents-file-template">
+            The template
+            <textarea
+              className="mono"
+              rows={10}
+              value={template.text}
+              spellCheck={false}
+              onChange={(e) => {
+                const text = e.target.value;
+                setTemplate((current) => current && { ...current, text });
+              }}
+            />
+            <span className="hint">
+              {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{poteto}"}</code>, on a line of its own, is
+              the line pointing at pstack&rsquo;s poteto-mode that Skills below chooses, and goes while Skills is off, so a change there shows written projects as differing. The file is written
+              once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
+            </span>
+            <span className="task-actions">
+              <button type="button" className="small primary" disabled={saving || template.text.trim().length === 0 || !dirty} onClick={() => void save(template.text.trim())}>
+                Save template
+              </button>
+              <button type="button" className="small ghost" disabled={saving || (!template.custom && template.text === template.saved)} title="Go back to Backroom's template" onClick={() => void save(null)}>
+                Reset to default
+              </button>
+            </span>
+          </label>
+        ) : null}
+        <section className="agents-file-projects" aria-label="Projects where Backroom wrote AGENTS.md">
+          <h4 className="agents-file-heading">Projects written</h4>
+          <p className="hint">
+            {APPLY_SAYS} Nothing applies without your click; CLAUDE.md, git and the worktrees that already hold a copy keep theirs.
+            {dirty ? " Save the template first: Show diff and Apply use the saved one." : ""}
+          </p>
+          {listError ? <p className="status-error">{listError}</p> : null}
+          {entries === null && !listError ? <p className="mono muted">reading the projects…</p> : null}
+          {entries?.length === 0 ? <p className="muted">Backroom has written AGENTS.md in no project yet.</p> : null}
+          {entries && entries.length > 0 ? (
+            <ul className="agents-file-list">
+              {entries.map((entry) => (
+                <li key={entry.folder} className="agents-file-row" data-state={entry.state}>
+                  <span className="agents-file-name">{entry.title ?? folderName(entry.folder)}</span>
+                  <span className="agents-file-folder mono muted" title={entry.folder}>
+                    {entry.folder}
+                  </span>
+                  <span className={`tag agents-file-state agents-file-${entry.state}`} title={entry.reason ?? STATE_TITLE[entry.state]}>
+                    {STATE_LABEL[entry.state]}
+                  </span>
+                  {entry.state === "differs" ? (
+                    <span className="agents-file-actions">
+                      <button type="button" className="small ghost" disabled={dirty} title={dirty ? "Save the template first" : "The project's file against the saved template"} onClick={() => setDiffFor(entry)}>
+                        Show diff
+                      </button>
+                      <button type="button" className="small" disabled={dirty} title={dirty ? "Save the template first" : "Opens the diff, with Apply at its end: you apply what you see"} onClick={() => setDiffFor(entry)}>
+                        Apply…
+                      </button>
+                    </span>
+                  ) : null}
+                  {entry.state === "blocked" && entry.reason ? <span className="agents-file-reason hint">{entry.reason}</span> : null}
+                  {entry.state === "removed" ? <span className="agents-file-reason hint">Backroom does not write it again.</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
       </section>
+      <SkillsSection />
       <div className="dialog-actions">
         <button type="button" className="primary" onClick={close}>
           Done

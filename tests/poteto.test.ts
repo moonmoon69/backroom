@@ -18,6 +18,7 @@ import {
   DAY_MS,
   POTETO_PIN_KEY,
   POTETO_RECORD_KEY,
+  POTETO_SCOPE_KEY,
   POTETO_SETTING_KEY,
   PSTACK_REPO,
   PotetoPack,
@@ -25,6 +26,7 @@ import {
   TICK_MS,
   potetoLine,
   type PotetoClock,
+  type PotetoScope,
   type PotetoState as ServerState,
 } from "../src/app/poteto.ts";
 import type { CommandResult as ServerResult } from "../src/app/service.ts";
@@ -35,13 +37,14 @@ import type { Participant, Room } from "../src/domain/types.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
 import { FIXTURE_SKILLS, makePstackFixture, type PstackFixture } from "../scripts/pstack-fixture.ts";
-import { potetoStatus } from "../web/src/potetoStatus.ts";
+import { potetoMove, potetoPosition, potetoStatus, type PotetoPosition } from "../web/src/potetoStatus.ts";
 
 // The web keeps hand copies of the state and the commands: `npm run typecheck` fails when they drift.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const same: Array<true> = [
   true satisfies Same<Web.PotetoState, ServerState>,
   true satisfies Same<Extract<Web.RoomCommand, { type: "poteto.enabled.set" }>, Extract<RoomCommandInput, { type: "poteto.enabled.set" }>>,
+  true satisfies Same<Extract<Web.RoomCommand, { type: "poteto.scope.set" }>, Extract<RoomCommandInput, { type: "poteto.scope.set" }>>,
   true satisfies Same<Extract<Web.RoomCommand, { type: "poteto.update" }>, Extract<RoomCommandInput, { type: "poteto.update" }>>,
   true satisfies Same<Extract<Web.RoomCommand, { type: "poteto.pin.set" }>, Extract<RoomCommandInput, { type: "poteto.pin.set" }>>,
   true satisfies Same<Extract<Web.CommandResult, { type: "poteto.updated" }>, Extract<ServerResult, { type: "poteto.updated" }>>,
@@ -110,7 +113,7 @@ function packFor(source: string, options: { dataDir?: string; clock?: FakeClock 
 const versionIn = (folder: string) => (JSON.parse(readFileSync(join(folder, "pstack/plugin.json"), "utf8")) as { version: string }).version;
 
 test("the web's copies of Poteto mode's state, commands and result match the server's (checked by npm run typecheck)", () => {
-  assert.equal(same.length, 5);
+  assert.equal(same.length, 6);
 });
 
 // ---------------- the pack ----------------
@@ -139,8 +142,8 @@ test("the clone: sparse to pstack/ and harness/pstack/ on main, from ROOMS_PSTAC
   assert.equal(git(folder, "remote", "get-url", "origin"), up.bare);
   assert.deepEqual(readdirSync(join(real, SKILLS_FOLDER)), [CLONE_FOLDER], "no temporary folder left beside it");
   assert.equal(readFileSync(join(folder, "pstack/skills/poteto-mode/SKILL.md"), "utf8"), readFileSync(join(up.work, "pstack/skills/poteto-mode/SKILL.md"), "utf8"), "pstack as it is");
-  assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: state.commit!.slice(0, 7), names: FIXTURE_SKILLS });
-  assert.equal(pack.pointerLine(), potetoLine(folder));
+  assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: state.commit!.slice(0, 7), scope: "principles", names: FIXTURE_SKILLS });
+  assert.equal(pack.pointerLine(), potetoLine(folder, "principles"));
   assert.equal(record().commit, undefined, "kv keeps no commit: git says it");
   // A new pack over the same data, with nothing in kv, reads the clone as ready from the start, its commit from git.
   const again = new PotetoPack({ getKv: () => null, setKv: () => {}, deleteKv: () => {} }, { dataDir: linked, source: up.bare });
@@ -473,7 +476,7 @@ test("while a clone or an update runs, the agents file and the briefing read the
   renameSync(join(folder, "pstack/plugin.json"), join(folder, "plugin.json.moving"));
   assert.equal(pack.state().busy, true);
   assert.deepEqual(pack.briefing(), before, "the briefing: the checkout as it was");
-  assert.equal(pack.pointerLine(), potetoLine(folder), "the agents file's line: still there");
+  assert.equal(pack.pointerLine(), potetoLine(folder, "principles"), "the agents file's line: still there");
   await running;
   renameSync(join(folder, "plugin.json.moving"), join(folder, "pstack/plugin.json"));
   assert.deepEqual(pack.briefing(), before, "read afresh once nothing runs");
@@ -506,8 +509,8 @@ test("an update queued behind a clone: while its checkout is paused, readers see
     const deadline = Date.now() + 5000;
     while (!existsSync(entered) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 10));
     assert.ok(existsSync(entered), "git reached the paused checkout");
-    assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: first.slice(0, 7), names: FIXTURE_SKILLS }, "the checkout the clone left");
-    assert.equal(pack.pointerLine(), potetoLine(folder));
+    assert.deepEqual(pack.briefing(), { clone: folder, version: "0.15.0", commit: first.slice(0, 7), scope: "principles", names: FIXTURE_SKILLS }, "the checkout the clone left");
+    assert.equal(pack.pointerLine(), potetoLine(folder, "principles"));
   } finally {
     writeFileSync(release, "");
     await updating;
@@ -518,7 +521,7 @@ test("an update queued behind a clone: while its checkout is paused, readers see
 // ---------------- the agents file ----------------
 
 test("{poteto}: one line when on and ready, nothing (and no blank line) when not; a custom template without it gets none", () => {
-  const line = potetoLine("/data/skills/cursor-plugins");
+  const line = potetoLine("/data/skills/cursor-plugins", "principles");
   assert.equal(
     line,
     "- Follow poteto-mode's principles, reply and comment rules at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md); skip setup-pstack. " +
@@ -538,6 +541,13 @@ test("{poteto}: one line when on and ready, nothing (and no blank line) when not
   assert.equal(renderAgentsText("a\n  {poteto}  \nb", [], null), "a\nb\n", "a line holding only {poteto} goes, spaces and all");
   assert.equal(renderAgentsText("a {poteto} b", [], null), "a  b\n", "elsewhere it is emptied");
   assert.equal(renderAgentsText("a\r\n{poteto}\r\nb", [], "X"), "a\nX\nb\n");
+});
+
+test("{poteto} for the whole mode: read and follow it for any non-trivial job, with no scope sentence", () => {
+  assert.equal(
+    potetoLine("/data/skills/cursor-plugins", "full"),
+    "- For any non-trivial job, read and follow poteto-mode at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md); skip setup-pstack. Where the mode conflicts with this file, this file wins.",
+  );
 });
 
 /** The fake T3 with one more provider instance, "work", of the Claude driver: its name does not say which harness it is. */
@@ -577,7 +587,7 @@ test("Poteto mode on or off changes the rendered template: a written project dif
   git(project, "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-q", "-m", "first");
   s.fake.projects.push({ id: "project_p", title: "p", workspaceRoot: project, defaultModelSelection: null });
   await s.run({ type: "room.create", projectId: "project_p", title: "work", consigliere: false });
-  const line = potetoLine(s.folder);
+  const line = potetoLine(s.folder, "principles");
   const file = () => readFileSync(join(project, "AGENTS.md"), "utf8");
   assert.equal(file(), defaultAgentsText(["npm run check"], line), "written with the line while on and ready");
   const stateOf = async () => ((await s.get("/api/agents-files")).body as Array<{ folder: string; state: string }>).find((e) => e.folder === project)?.state;
@@ -603,11 +613,49 @@ test("Poteto mode on or off changes the rendered template: a written project dif
   assert.equal(fresh.poteto!.pointerLine(), null, "missing: nothing to point at");
 });
 
+test("a change of the mode's scope: a written project differs, the diff swaps the line, Apply pushes it and it is the same again", async (t) => {
+  const up = upstream();
+  const s = stackFor(t, up.bare, { agentsFile: true });
+  await s.stack.poteto!.update();
+  const project = dir("project");
+  execFileSync("git", ["init", "-q", "-b", "main", project]);
+  writeFileSync(join(project, "package.json"), JSON.stringify({ scripts: { check: "true" } }));
+  git(project, "add", ".");
+  git(project, "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-q", "-m", "first");
+  s.fake.projects.push({ id: "project_p", title: "p", workspaceRoot: project, defaultModelSelection: null });
+  await s.run({ type: "room.create", projectId: "project_p", title: "work", consigliere: false });
+  const principles = potetoLine(s.folder, "principles");
+  const full = potetoLine(s.folder, "full");
+  const file = () => readFileSync(join(project, "AGENTS.md"), "utf8");
+  const stateOf = async () => ((await s.get("/api/agents-files")).body as Array<{ folder: string; state: string }>).find((e) => e.folder === project)?.state;
+  const diffOf = async () => (await s.get(`/api/agents-files/diff?folder=${encodeURIComponent(project)}`)).body;
+  const apply = async () => {
+    const diff = await diffOf();
+    return s.post({ type: "agentsFile.apply", folder: project, fileDigest: diff.fileDigest, templateDigest: diff.templateDigest });
+  };
+  assert.equal(await stateOf(), "same");
+
+  assert.equal((await s.post({ type: "poteto.scope.set", scope: "full" })).body.type, "settings.updated");
+  assert.equal(await stateOf(), "differs", "the whole mode: the file keeps the principles line");
+  assert.ok(file().includes(`${principles}\n`), "the choice writes nothing by itself");
+  const diff = await diffOf();
+  assert.ok(diff.diff.includes(`\n-${principles}\n`) && diff.diff.includes(`\n+${full}\n`), "the diff swaps the line");
+  assert.equal((await apply()).status, 200);
+  assert.equal(file(), defaultAgentsText(["npm run check"], full));
+  assert.equal(await stateOf(), "same");
+
+  assert.equal((await s.post({ type: "poteto.scope.set", scope: "principles" })).body.type, "settings.updated");
+  assert.equal(await stateOf(), "differs", "back to the principles: differs the other way");
+  assert.equal((await apply()).status, 200);
+  assert.equal(file(), defaultAgentsText(["npm run check"], principles));
+  assert.equal(await stateOf(), "same");
+});
+
 // ---------------- the briefing ----------------
 
 const room: Room = { id: "r", projectId: "p", environmentId: null, title: "payments", nextSequence: 1, browserEnabled: false, defaultBrowserId: null, allowedBrowserIds: null, consigliereId: "c", createdAt: "", updatedAt: "" };
 const member = (id: string, alias: string): Participant => ({ id, roomId: "r", alias, modelSelection: { instanceId: "x", model: "y" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: "", updatedAt: "" });
-const pack = (harness: SkillsBriefing["harness"], commit = "abc1234"): SkillsBriefing => ({ clone: "/data/skills/cursor-plugins", version: "0.15.34", commit, names: ["how", "poteto-mode", "tdd"], harness });
+const pack = (harness: SkillsBriefing["harness"], commit = "abc1234", scope: PotetoScope = "principles"): SkillsBriefing => ({ clone: "/data/skills/cursor-plugins", version: "0.15.34", commit, scope, names: ["how", "poteto-mode", "tdd"], harness });
 
 test("the Skills section: the revision, poteto-mode for the reader's harness, the note where pstack has no adapter, what applies by default and the room's ways, the skills by name", () => {
   const tail =
@@ -638,6 +686,28 @@ test("the Skills section: the revision, poteto-mode for the reader's harness, th
   assert.deepEqual(["claudeAgent", "codex", "antigravity", "cursor", "opencode", "my-claude", "gemini-cli"].map(skillsHarness), ["claude", "codex", "antigravity", "other", "other", "claude", "antigravity"]);
 });
 
+test("the Skills section for the whole mode: read and follow it for any non-trivial job, the room's ways kept, no scope sentence", () => {
+  const room =
+    "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.\n";
+  assert.equal(
+    skillsSection(pack("claude", "abc1234", "full")),
+    "== Skills ==\n" +
+      "Poteto mode is on: pstack 0.15.34 at commit abc1234, Lauren Tan's skills (MIT), kept by Backroom in /data/skills/cursor-plugins.\n" +
+      "For any non-trivial job, read and follow /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md; skip setup-pstack.\n" +
+      room +
+      "pstack's skills: how, poteto-mode, tdd; read /data/skills/cursor-plugins/harness/pstack/claude-code/skills/<name>/SKILL.md for one.",
+  );
+  assert.equal(
+    skillsSection(pack("codex", "abc1234", "full")),
+    "== Skills ==\n" +
+      "Poteto mode is on: pstack 0.15.34 at commit abc1234, Lauren Tan's skills (MIT), kept by Backroom in /data/skills/cursor-plugins.\n" +
+      "For any non-trivial job, read and follow /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md; skip setup-pstack.\n" +
+      "pstack has no adapter for Codex: map its Cursor names to your own tools as its Claude Code adapter note (/data/skills/cursor-plugins/pstack/docs/harness/claude-code.md) does.\n" +
+      room +
+      "pstack's skills: how, poteto-mode, tdd; read /data/skills/cursor-plugins/pstack/skills/<name>/SKILL.md for one.",
+  );
+});
+
 test("every seat gets the section, the Consigliere and members; none while off; sent again when the revision moves; retracted for a seat that had it", () => {
   const c = member("c", "Fable");
   const w = member("w", "Sol");
@@ -650,6 +720,8 @@ test("every seat gets the section, the Consigliere and members; none while off; 
   const moved = standingFingerprint(input(pack("claude", "def5678")));
   assert.deepEqual(changedStanding(told, moved), ["skills"], "the same names and paths at another commit: sent again");
   assert.ok(briefingHeader(input(pack("claude", "def5678")), ["skills"], { seat: false }).join("\n").includes("Changed since your last briefing:\n== Skills ==\nPoteto mode is on: pstack 0.15.34 at commit def5678"));
+
+  assert.deepEqual(changedStanding(told, standingFingerprint(input(pack("claude", "abc1234", "full")))), ["skills"], "the whole mode chosen: sent again");
 
   const off = standingFingerprint(input(null));
   assert.deepEqual(changedStanding(told, off), ["skills"], "off: a seat that had it is told");
@@ -701,6 +773,70 @@ test("the dialog's status line: the setting before the clone, so off never says 
 });
 
 // ---------------- the settings route and the commands ----------------
+
+test("the Skills control's three positions, each reached from each through the commands, on the two keys the service keeps", async (t) => {
+  const s = stackFor(t, upstream().bare);
+  await s.stack.poteto!.update();
+  const state = async () => (await s.get("/api/settings")).body.poteto as ServerState;
+  const keys: Record<PotetoPosition, [string | null, string | null]> = { off: ["off", null], principles: [null, null], full: [null, "full"] };
+  assert.equal(potetoPosition(await state()), "principles", "by default");
+  const positions = Object.keys(keys) as PotetoPosition[];
+  for (const from of positions) {
+    for (const to of positions) {
+      for (const position of [from, to]) {
+        for (const command of potetoMove(await state(), position)) assert.equal((await s.post(command)).status, 200);
+      }
+      assert.equal(potetoPosition(await state()), to, `${from} to ${to}`);
+      if (to === "off") assert.equal(s.stack.repos.getKv(POTETO_SETTING_KEY), "off");
+      else assert.deepEqual([s.stack.repos.getKv(POTETO_SETTING_KEY), s.stack.repos.getKv(POTETO_SCOPE_KEY)], keys[to], `${from} to ${to}`);
+    }
+  }
+});
+
+test("poteto.scope.set: reported by the settings route, kept across a restart; off stays off whichever scope is kept", async (t) => {
+  const up = upstream();
+  const dataDir = dir("data");
+  const dbPath = join(dir("db"), "rooms.sqlite");
+  const start = () => {
+    const stack = createStack({ dbPath, adapter: new FakeT3Adapter({ autoCompleteMs: null }), briefingBudgetChars: 60000, latestRelease: async () => null, agentsFile: false, poteto: { dataDir, source: up.bare, clock: fakeClock() } });
+    const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: dataDir, ROOMS_PORT: "0" }), "/nonexistent/dist");
+    const post = async (command: unknown) => {
+      const response = await app.request("/api/commands", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command) });
+      return { status: response.status, body: (await response.json()) as any };
+    };
+    const reported = async () => ((await (await app.request("/api/settings")).json()) as { poteto: ServerState }).poteto;
+    return { stack, post, reported };
+  };
+  const s = start();
+  await s.stack.poteto!.update();
+  assert.equal((await s.reported()).scope, "principles", "principles by default");
+  assert.equal(s.stack.poteto!.briefing()?.scope, "principles");
+
+  assert.equal((await s.post({ type: "poteto.scope.set", scope: "full" })).body.type, "settings.updated");
+  assert.equal(s.stack.repos.getKv(POTETO_SCOPE_KEY), "full");
+  assert.equal((await s.reported()).scope, "full");
+  assert.equal(s.stack.poteto!.pointerLine(), potetoLine(s.stack.poteto!.folder(), "full"));
+  assert.equal(s.stack.poteto!.briefing()?.scope, "full");
+
+  assert.equal((await s.post({ type: "poteto.scope.set", scope: "playbooks" })).status, 400);
+  assert.equal((await s.post({ type: "poteto.scope.set" })).status, 400);
+  assert.equal(s.stack.repos.getKv(POTETO_SCOPE_KEY), "full", "a refused value changes nothing");
+
+  s.stack.close();
+  const again = start();
+  t.after(() => again.stack.close());
+  assert.equal((await again.reported()).scope, "full", "the choice survives a restart");
+  assert.equal(again.stack.poteto!.pointerLine(), potetoLine(again.stack.poteto!.folder(), "full"));
+
+  await again.post({ type: "poteto.enabled.set", enabled: false });
+  await again.stack.poteto!.settled();
+  assert.equal(again.stack.poteto!.pointerLine(), null, "off: no line, whichever scope is kept");
+  assert.equal(again.stack.poteto!.briefing(), null, "off: no section, whichever scope is kept");
+  assert.equal(potetoPosition(await again.reported()), "off");
+
+  assert.equal((await again.post({ type: "poteto.scope.set", scope: "principles" })).body.type, "settings.updated");
+  assert.equal(again.stack.repos.getKv(POTETO_SCOPE_KEY), null, "principles is the absent key");
+});
 
 test("the settings route reports Poteto mode and starts a missing clone; poteto.enabled.set, poteto.update and poteto.pin.set, refused where they cannot run", async (t) => {
   const up = upstream("0.15.0");

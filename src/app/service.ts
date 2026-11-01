@@ -17,7 +17,7 @@ import { controlThread, type ControlOutcome } from "./threadControl.ts";
 import { storedLimitIntents } from "./limitIntent.ts";
 import { requireOffered } from "./approvalChoice.ts";
 import { AGENTS_FILE_SETTING_KEY, AGENTS_TEXT_KEY, type AgentsFileEntry, type AgentsFileWritten, type AgentsFiles } from "./agentsFile.ts";
-import { POTETO_PIN_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
+import { POTETO_PIN_KEY, POTETO_SCOPE_KEY, POTETO_SETTING_KEY, type PotetoPack, type PotetoState } from "./poteto.ts";
 import { CONSIGLIERE_PRESET_KEY, CONSIGLIERE_RULES_KEY, RETIRE_THREAD_KEY, conversationTitle, startAttemptKey } from "./consigliere.ts";
 import type { EngineReseat } from "./reseat.ts";
 import { EngineSeats } from "./engineSeats.ts";
@@ -296,6 +296,10 @@ export class RoomService {
           // checked out, the fetch skipped while it was off made).
           void this.poteto?.update().catch(() => undefined);
         } else this.repos.setKv(POTETO_SETTING_KEY, "off");
+        return { type: "settings.updated" };
+      case "poteto.scope.set":
+        if (command.scope === "full") this.repos.setKv(POTETO_SCOPE_KEY, "full");
+        else this.repos.deleteKv(POTETO_SCOPE_KEY);
         return { type: "settings.updated" };
       case "poteto.update":
         if (!this.poteto) throw new RoomError("poteto_refused", "this service keeps no pstack clone", 409);

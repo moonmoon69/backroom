@@ -629,9 +629,14 @@ export interface PackError {
   during: "clone" | "update";
 }
 
-/** Settings → Poteto mode, as the settings route reports it and poteto.update answers (src/app/poteto.ts). */
+/** What of poteto-mode a seat is told to follow while it is on (src/app/poteto.ts). */
+export type PotetoScope = "principles" | "full";
+
+/** Settings → Agents file, Skills, as the settings route reports it and poteto.update answers (src/app/poteto.ts). */
 export interface PotetoState {
   enabled: boolean;
+  /** What of the mode seats are told to follow while it is on; kept while it is off. */
+  scope: PotetoScope;
   /** The commit or tag it is pinned at; null: it follows origin's main. */
   pin: string | null;
   folder: string;
@@ -1355,8 +1360,10 @@ export type RoomCommand =
   | { type: "agentsFile.text.set"; text: string | null }
   /** Apply the saved template to one project's AGENTS.md, bound to the diff the user looked at. */
   | { type: "agentsFile.apply"; projectId?: string | undefined; folder?: string | undefined; fileDigest: string; templateDigest: string }
-  /** Settings → Poteto mode: whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
+  /** Settings → Agents file, Skills: whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
   | { type: "poteto.enabled.set"; enabled: boolean }
+  /** Settings → Agents file, Skills: what of the mode they tell a seat to follow, its principles (the default) or the whole mode. */
+  | { type: "poteto.scope.set"; scope: PotetoScope }
   /** Update now: pstack's clone fetched and moved, or made when it is missing. */
   | { type: "poteto.update" }
   /** Pin this version (a commit or a tag), or with null follow origin's main again. */

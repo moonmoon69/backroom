@@ -2248,7 +2248,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
   }
 
-  // 24b. Settings → Poteto mode: the switch, the fixture's version, and Update now after a commit upstream (its section opens in the function).
+  // 24b. Settings → Agents file, Skills: the three positions, the fixture's version, Update now after a commit upstream, and a written project following the choice (its section opens in the function).
   check.passed.push(...(await rehearsePoteto(service, browser, room, selection, section)));
 
   // 25. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
@@ -2496,16 +2496,19 @@ const PSTACK_FIXTURE_VERSION = "0.15.0-rehearsal";
 const PSTACK_FIXTURE_NEXT = "0.15.1-rehearsal";
 
 /**
- * Settings → Poteto mode (src/app/poteto.ts, board #158): the service cloned the run's pstack fixture at its start; the
- * dialog shows the switch on and the fixture's version; a commit added to the fixture, Update now fetches and
- * fast-forwards to it, and the dialog shows its version and its subject as the last change; switched off, the status
- * says seats are not pointed at it (review #206), and on again it is ready. Its section begins here.
+ * Settings → Agents file, Skills (src/app/poteto.ts, board #158, #119): the menu has one item for the two, and its dialog
+ * two sections. The service cloned the run's pstack fixture at its start; the section shows Principles and reply rules
+ * chosen and the fixture's version; a commit added to the fixture, Update now fetches and fast-forwards to it, and the
+ * section shows its version and its subject as the last change; at Off, the status says seats are not pointed at it
+ * (review #206), and on again it is ready. A project written with Backroom's template then follows the choice: the whole
+ * mode shows it as differing in the open dialog, its diff swaps the line, Apply pushes it, and Principles shows it as
+ * differing the other way. Its section begins here.
  */
 async function rehearsePoteto(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
-  if (!(await section("Settings → Poteto mode: on, the fixture's version, Update now brings a commit added to the fixture, and off says seats are not pointed at it"))) return passed;
+  if (!(await section("Settings → Agents file, Skills: one menu item, two sections, the fixture's version, Update now brings a commit added to the fixture, and Off says seats are not pointed at it"))) return passed;
   const state = probedStates(browser, selection, passed);
-  type Poteto = { enabled: boolean; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
+  type Poteto = { enabled: boolean; scope: string; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
   const poteto = async () => (await service.call<{ poteto: Poteto | null }>("GET", "/api/settings")).poteto;
   const ready = await until("the service to have cloned the pstack fixture", async () => {
     const now = await poteto();
@@ -2513,17 +2516,36 @@ async function rehearsePoteto(service: Service, browser: Browser, room: Room, se
     return now?.ready && !now.busy ? now : null;
   });
   if (ready.version !== PSTACK_FIXTURE_VERSION) fail(`the clone holds pstack ${ready.version}, not the fixture's ${PSTACK_FIXTURE_VERSION}`);
+  // A project of its own, written with the template while the clone is ready: the section stands alone under --only.
+  const folder = join(room.dataDir, "skills-project");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "skills-scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
+  execFileSync("git", ["init", "-q", "-b", "main", folder]);
+  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title: "skills-scratch" });
+  await service.command({ type: "room.create", projectId, title: "skills-scratch", consigliere: false });
+  const agentsText = () => readFileSync(join(folder, "AGENTS.md"), "utf8");
+  const entry = async () => (await service.call<Array<{ folder: string; state: string }>>("GET", "/api/agents-files")).find((e) => e.folder === realpathSync(folder))?.state ?? null;
+  const written = agentsText();
+  const FOLLOW_PRINCIPLES = "- Follow poteto-mode's principles, reply and comment rules at ";
+  const FOLLOW_WHOLE = "- For any non-trivial job, read and follow poteto-mode at ";
+  if (!written.includes(FOLLOW_PRINCIPLES)) fail(`the written file has no principles line: ${JSON.stringify(written)}`);
   const facts = "() => Object.fromEntries([...document.querySelectorAll('.poteto-facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent ?? '']))";
+  const position = "document.querySelector('input[name=\"poteto-position\"]:checked')?.closest('label')?.querySelector('strong')?.textContent ?? null";
+  const rowOf = `[...document.querySelectorAll('.agents-file-row')].find((r) => r.textContent.includes(${JSON.stringify(realpathSync(folder))}))`;
+  const rowState = `() => ${rowOf}?.dataset.state ?? null`;
+  const diffLines = "() => { const v = [...document.querySelectorAll('.dialog')].at(-1)?.querySelector('.diff-view'); return v ? { add: [...v.querySelectorAll('.diff-add .diff-text')].map((e) => e.textContent.slice(1)), del: [...v.querySelectorAll('.diff-del .diff-text')].map((e) => e.textContent.slice(1)) } : null; }";
   browser.click(/button "Back to the overview"/);
   browser.click(/button "Settings"/);
-  browser.click(/menuitem "Poteto mode…/);
-  browser.waitFor("Point every seat at poteto-mode");
+  const items = browser.poll<string[]>("the settings menu", "() => [...document.querySelectorAll('.menu [role=\"menuitem\"]')].map((b) => b.textContent)", (v) => v.length > 0);
+  if (items.some((text) => text.includes("Poteto"))) fail(`the menu still has a Poteto item: ${JSON.stringify(items)}`);
+  browser.click(/menuitem "Agents file…/);
+  browser.waitFor("Principles and reply rules");
   browser.poll<Record<string, string>>("the fixture's version in the dialog", facts, (v) => v.Version === PSTACK_FIXTURE_VERSION);
-  if (!browser.eval<boolean>("() => document.querySelector('.agents-file-switch input')?.checked === true")) fail("the switch is not on: Poteto mode is on by default");
+  if (browser.eval<string | null>(`() => ${position}`) !== "Principles and reply rules") fail("Principles and reply rules is not chosen: it is the default");
   const next = service.pstack!.commit("pstack: a newer skill (rehearsal)", { version: PSTACK_FIXTURE_NEXT, files: { "pstack/skills/tdd/SKILL.md": "# tdd (fixture, newer)\n" } });
   browser.click(/button "Update now"/);
   await state(
-    "Settings → Poteto mode: on, the fixture's version, Update now brings a commit added to the fixture, and off says seats are not pointed at it",
+    "Settings → Agents file, Skills: one menu item, two sections, the fixture's version, Update now brings a commit added to the fixture, and Off says seats are not pointed at it",
     async () => {
       const now = await poteto();
       if (now?.error) fail(`Update now failed: ${now.error.reason}`);
@@ -2533,17 +2555,79 @@ async function rehearsePoteto(service: Service, browser: Browser, room: Room, se
     },
     [PSTACK_FIXTURE_NEXT, "pstack: a newer skill (rehearsal)"],
     () => {
+      const sections = browser.eval<string[]>("() => [...document.querySelectorAll('.dialog h3')].map((h) => h.textContent)");
+      if (sections.join() !== "Instructions,Skills") fail(`the dialog's sections: ${JSON.stringify(sections)}`);
       const shown = browser.poll<Record<string, string>>("the new commit in the dialog", facts, (v) => v.Commit?.startsWith(next.slice(0, 7)) === true && v["Last change"] === `${next.slice(0, 7)} pstack: a newer skill (rehearsal)`);
-      if (!browser.eval<boolean>("() => document.querySelector('.agents-file-switch input')?.checked === true")) fail("the switch went off");
-      log(`  page: the switch on, version ${shown.Version}, commit ${shown.Commit}, last change ${JSON.stringify(shown["Last change"])}, folder ${shown.Folder}`);
-      // Review #206: switched off, the status says seats are not pointed at it (the clone kept); on again, ready.
-      const status = "() => ({ on: document.querySelector('.agents-file-switch input')?.checked ?? null, status: document.querySelector('.poteto-facts + .hint')?.textContent ?? null })";
-      browser.click(/checkbox "Point every seat at poteto-mode/);
-      const off = browser.poll<{ on: boolean | null; status: string | null }>("the switch off and the status saying so", status, (v) => v.on === false && v.status === "Off: seats are not pointed at it; the clone is kept.");
+      log(`  page: the menu's items are ${JSON.stringify(items)}; the dialog's sections ${JSON.stringify(sections)}; version ${shown.Version}, commit ${shown.Commit}, last change ${JSON.stringify(shown["Last change"])}, folder ${shown.Folder}`);
+      // Review #206: at Off, the status says seats are not pointed at it (the clone kept); on again, ready.
+      const status = `() => ({ position: ${position}, status: document.querySelector('.poteto-facts + .hint')?.textContent ?? null })`;
+      browser.click(/radio "Off/);
+      const off = browser.poll<{ position: string | null; status: string | null }>("Off chosen and the status saying so", status, (v) => v.position === "Off" && v.status === "Off: seats are not pointed at it; the clone is kept.");
       if (off.status?.includes("seats are pointed at it")) fail(`Off still says: ${off.status}`);
-      browser.click(/checkbox "Point every seat at poteto-mode/);
-      browser.poll<{ on: boolean | null; status: string | null }>("the switch on again and the clone ready", status, (v) => v.on === true && v.status === "Ready: seats are pointed at it.", 30_000);
-      log(`  page: switched off, the status said ${JSON.stringify(off.status)}; on again, ready`);
+      browser.click(/radio "Principles and reply rules/);
+      browser.poll<{ position: string | null; status: string | null }>("Principles chosen again and the clone ready", status, (v) => v.position === "Principles and reply rules" && v.status === "Ready: seats are pointed at it.", 30_000);
+      log(`  page: at Off, the status said ${JSON.stringify(off.status)}; on again, ready`);
+    },
+  );
+  browser.poll<string | null>("the written project's row, the same as the template", rowState, (v) => v === "same");
+  browser.click(/radio "The whole mode/);
+  await state(
+    "Skills at the whole mode: the written project shows as differing in the open dialog, its file untouched",
+    async () => {
+      const now = await poteto();
+      if (now?.scope !== "full" || !now.enabled || (await entry()) !== "differs") return null;
+      if (agentsText() !== written) fail("the choice changed the project's file");
+      return `the scope is full and ${folder} differs from the template, its file as written`;
+    },
+    [],
+    () => {
+      browser.poll<string | null>("the row to say it differs with the dialog open", rowState, (v) => v === "differs");
+      if (browser.eval<string | null>(`() => ${position}`) !== "The whole mode") fail("The whole mode is not chosen on the page");
+      log("  page: The whole mode chosen, and the row says differs without the dialog being reopened");
+    },
+  );
+  browser.poll<string | null>("the row to say it differs with the dialog open", rowState, (v) => v === "differs");
+  browser.eval<boolean>(`() => { const button = [...${rowOf}.querySelectorAll('button')].find((b) => b.textContent === 'Show diff'); button.click(); return true; }`);
+  await state(
+    "the project's diff swaps the principles line for the whole mode's",
+    async () => ((await entry()) === "differs" ? "the file still differs: nothing applied by opening the diff" : null),
+    ["Apply the template"],
+    () => {
+      const lines = browser.poll<{ add: string[]; del: string[] } | null>("the diff's lines", diffLines, (v) => v !== null && v.add.length === 1 && v.del.length === 1);
+      if (!lines?.add[0]?.startsWith(FOLLOW_WHOLE) || !lines.del[0]?.startsWith(FOLLOW_PRINCIPLES)) fail(`the diff: ${JSON.stringify(lines)}`);
+      if (lines.add[0].includes("Its triggers and playbooks")) fail(`the whole mode's line has the scope sentence: ${lines.add[0]}`);
+      log(`  page: the diff removes ${JSON.stringify(lines.del[0].slice(0, 60))}… and adds ${JSON.stringify(lines.add[0].slice(0, 60))}…`);
+    },
+  );
+  browser.click(/button "Apply the template"/);
+  await state(
+    "Apply pushes the whole mode's line: the project's file holds it and the row is the same again",
+    async () => {
+      if ((await entry()) !== "same") return null;
+      const text = agentsText();
+      if (!text.includes(FOLLOW_WHOLE) || text.includes(FOLLOW_PRINCIPLES)) fail(`AGENTS.md after Apply: ${JSON.stringify(text)}`);
+      return `AGENTS.md in ${folder} holds the whole mode's line, and the state is same`;
+    },
+    ["now holds the saved template"],
+    () => {
+      browser.poll<string | null>("the row to be the same again", rowState, (v) => v === "same");
+      log("  page: the toast says it was applied, and the row is the same as the template");
+    },
+  );
+  browser.poll<string | null>("the row to be the same again", rowState, (v) => v === "same");
+  for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
+  browser.click(/radio "Principles and reply rules/);
+  await state(
+    "Skills back at Principles and reply rules: the project differs the other way, and the scope is the default again",
+    async () => {
+      const now = await poteto();
+      if (now?.scope !== "principles" || (await entry()) !== "differs") return null;
+      return `the scope is principles; ${folder} holds the whole mode's line and differs`;
+    },
+    [],
+    () => {
+      browser.poll<string | null>("the row to say it differs", rowState, (v) => v === "differs");
+      log("  page: Principles and reply rules chosen, and the row says differs again");
     },
   );
   browser.click(/button "Done"/);

@@ -8229,7 +8229,7 @@ span.reply-to {
   outline-offset: -2px;
 }
 
-/* ---- Settings → Poteto mode (src/app/poteto.ts) ---- */
+/* ---- Settings → Agents file, Skills (src/app/poteto.ts) ---- */
 .poteto-facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -8251,6 +8251,16 @@ span.reply-to {
 }
 
 /* ---- Settings → Agents file, and the overview's mark (src/app/agentsFile.ts) ---- */
+.agents-file-part h3 {
+  margin: 0 0 6px;
+}
+
+.agents-file-part + .agents-file-part {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 .agents-file-switch {
   margin-top: 8px;
 }

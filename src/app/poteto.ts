@@ -8,8 +8,9 @@
  * (the generated copy with the Claude Code adapter), on main only, blobs fetched as the sparse checkout needs them. The
  * folder layout is kept as cloned: poteto-mode indexes the other skills by relative path.
  *
- * - Settings → Poteto mode (poteto.enabled in kv, "off" when off; on by default). Off: nothing is cloned or fetched, by
- *   the timer, the settings route or Update now; the clone stays.
+ * - Settings → Agents file, Skills: one control with three positions on two keys in kv. poteto.enabled, "off" when off and
+ *   on by default: off, nothing is cloned or fetched, by the timer, the settings route or Update now, and the clone stays.
+ *   poteto.scope, "full" for the whole mode and principles by default, chooses what the line and the section say (POTETO_WORDS).
  * - Prepared in the background (at service start, when the settings are read, and each hour while it is missing),
  *   never holding up a room or a seat; one git operation at a time (a serial queue). A clone goes into a temporary
  *   sibling folder and is renamed into place only once it validates (plugin.json readable, poteto-mode's SKILL.md in both
@@ -32,8 +33,10 @@ import { join, resolve } from "node:path";
 import type { Repos } from "../db/repos.ts";
 import { runGit } from "../git/reader.ts";
 
-/** Settings → Poteto mode: "off" when the user turned it off; on (absent) by default. */
+/** Settings → Agents file, Skills: "off" when the user turned it off; on (absent) by default. */
 export const POTETO_SETTING_KEY = "poteto.enabled";
+/** Settings → Agents file, Skills: "full" for the whole mode; its principles (absent) by default. */
+export const POTETO_SCOPE_KEY = "poteto.scope";
 /** The commit or tag the clone is pinned at; absent: it follows origin's main. */
 export const POTETO_PIN_KEY = "poteto.pin";
 /** What the last clone or update found (PackRecord). */
@@ -60,27 +63,44 @@ export const TICK_MS = 60 * 60 * 1000;
 const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** What of poteto-mode a seat is told to follow while it is on. */
+export type PotetoScope = "principles" | "full";
+
+const POTETO_FOLLOW = "Follow poteto-mode's principles, reply and comment rules at";
+const POTETO_READ = "For any non-trivial job, read and follow";
+
 /**
- * What of poteto-mode applies by default (the user's #74 and #89 in the agents.md room, after shop's AGENTS.md narrowed
- * the mode the same way): its principles, reply and comment rules. Its triggers and playbooks, the process half, are the
- * room's to call for: the Consigliere routes work, seats the reviewer and names the playbook a job needs, so a member
- * running them on its own duplicates the room or conflicts with it (a pull request against the Handoff, its own
- * subagents and model routing against the crew's). One scope sentence, in the agents file's line and in the briefing's
- * Skills section; the briefing adds the room's ways.
+ * The words of each scope, the one source of the agents file's line and the briefing's Skills section: how each starts,
+ * before the mode's path, and the scope sentence.
+ *
+ * Principles (the user's #74 and #89 in the agents.md room, after shop's AGENTS.md narrowed the mode the same way): its
+ * principles, reply and comment rules apply. Its triggers and playbooks, the process half, are the room's to call for:
+ * the Consigliere routes work, seats the reviewer and names the playbook a job needs, so a member running them on its
+ * own duplicates the room or conflicts with it (a pull request against the Handoff, its own subagents and model routing
+ * against the crew's). Full (#119): the mode as its author publishes it, and no scope sentence.
  */
-export const POTETO_FOLLOW = "Follow poteto-mode's principles, reply and comment rules";
-export const POTETO_SCOPE =
-  "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no mandatory subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.";
+export const POTETO_WORDS: Record<PotetoScope, { line: string; section: string; limit: string | null }> = {
+  principles: {
+    line: POTETO_FOLLOW,
+    section: POTETO_FOLLOW,
+    limit:
+      "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no mandatory subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.",
+  },
+  full: { line: `${POTETO_READ} poteto-mode at`, section: POTETO_READ, limit: null },
+};
+
+/** The briefing's closing words on the mode, whichever the scope. */
 export const POTETO_ROOM =
   "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.";
 
 /**
- * The agents file's {poteto} line for a clone: what to follow at the mode's two paths, the scope sentence, and that the
- * file wins where the mode conflicts with it. Read by every session in the project, subagents too (the user's #387); the
- * briefing's Skills section carries the longer form, with the adapter note and the room's ways.
+ * The agents file's {poteto} line for a clone: what to follow at the mode's two paths, the scope's sentence if it has one,
+ * and that the file wins where the mode conflicts with it. Read by every session in the project, subagents too (the
+ * user's #387); the briefing's Skills section carries the longer form, with the adapter note and the room's ways.
  */
-export function potetoLine(clone: string): string {
-  return `- ${POTETO_FOLLOW} at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}); skip setup-pstack. ${POTETO_SCOPE} Where the mode conflicts with this file, this file wins.`;
+export function potetoLine(clone: string, scope: PotetoScope): string {
+  const { line, limit } = POTETO_WORDS[scope];
+  return `- ${line} ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}); skip setup-pstack. ${limit ? `${limit} ` : ""}Where the mode conflicts with this file, this file wins.`;
 }
 
 /** Why the last clone or update did not do what it was for. */
@@ -105,6 +125,8 @@ export interface PackRecord {
 /** Poteto mode as the settings route reports it and poteto.update answers. */
 export interface PotetoState {
   enabled: boolean;
+  /** What of the mode seats are told to follow while it is on; kept while it is off. */
+  scope: PotetoScope;
   /** The commit or tag it is pinned at; null: it follows origin's main. */
   pin: string | null;
   /** Where the clone is, or will be. */
@@ -129,6 +151,7 @@ export interface PotetoBriefing {
   version: string | null;
   /** The commit checked out, short. */
   commit: string | null;
+  scope: PotetoScope;
   /** The skills in pstack/skills (each a folder with a SKILL.md), sorted. */
   names: string[];
 }
@@ -232,6 +255,10 @@ export class PotetoPack {
     return this.repos.getKv(POTETO_SETTING_KEY) !== "off";
   }
 
+  scope(): PotetoScope {
+    return this.repos.getKv(POTETO_SCOPE_KEY) === "full" ? "full" : "principles";
+  }
+
   pin(): string | null {
     return this.repos.getKv(POTETO_PIN_KEY) ?? null;
   }
@@ -310,7 +337,7 @@ export class PotetoPack {
 
   /** The agents file's {poteto} line while Poteto mode is on and the clone is ready; null otherwise. */
   pointerLine(): string | null {
-    return this.enabled() && this.readyNow() ? potetoLine(this.folder()) : null;
+    return this.enabled() && this.readyNow() ? potetoLine(this.folder(), this.scope()) : null;
   }
 
   /** The Skills section's makings while Poteto mode is on and the clone is ready; null otherwise. */
@@ -318,7 +345,7 @@ export class PotetoPack {
     if (!this.enabled()) return null;
     const snap = this.snapshot();
     if (!snap.ready) return null;
-    return { clone: this.folder(), version: snap.version, commit: snap.commit ? snap.commit.slice(0, 7) : null, names: snap.names };
+    return { clone: this.folder(), version: snap.version, commit: snap.commit ? snap.commit.slice(0, 7) : null, scope: this.scope(), names: snap.names };
   }
 
   state(): PotetoState {
@@ -328,6 +355,7 @@ export class PotetoPack {
     const latest = pin && snap.ready ? this.gitNow(["rev-parse", "--short", UPSTREAM]) : null;
     return {
       enabled: this.enabled(),
+      scope: this.scope(),
       pin,
       folder: this.folder(),
       source: this.source,

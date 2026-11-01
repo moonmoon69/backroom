@@ -423,8 +423,11 @@ export const AgentsFileApplyCommand = z
   .object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty.optional(), folder: nonEmpty.optional(), fileDigest: nonEmpty, templateDigest: nonEmpty })
   .strict();
 
-/** Settings → Poteto mode (src/app/poteto.ts): whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
+/** Settings → Agents file, Skills (src/app/poteto.ts): whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
 export const PotetoEnabledCommand = z.object({ type: z.literal("poteto.enabled.set"), enabled: z.boolean() }).strict();
+
+/** Settings → Agents file, Skills: what of the mode they tell a seat to follow, its principles (the default) or the whole mode. */
+export const PotetoScopeCommand = z.object({ type: z.literal("poteto.scope.set"), scope: z.enum(["principles", "full"]) }).strict();
 
 /** Update now: pstack's clone fetched and moved (fast-forwarded, or kept at its pin), or made when it is missing. */
 export const PotetoUpdateCommand = z.object({ type: z.literal("poteto.update") }).strict();
@@ -543,6 +546,7 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   AgentsFileTextSetCommand,
   AgentsFileApplyCommand,
   PotetoEnabledCommand,
+  PotetoScopeCommand,
   PotetoUpdateCommand,
   PotetoPinCommand,
   ThreadStartCommand,

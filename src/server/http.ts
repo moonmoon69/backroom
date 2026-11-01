@@ -891,7 +891,7 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       agentsFile: stack.repos.getKv(AGENTS_FILE_SETTING_KEY) !== "off",
       // The template it writes, {checks} filled per project: the user's when they saved one, and Backroom's to go back to.
       agentsFileText: agentsTemplate(stack.repos),
-      // Settings → Poteto mode (src/app/poteto.ts): the switch, the pin and what the clone holds; null when this service
+      // Settings → Agents file, Skills (src/app/poteto.ts): the choice, the pin and what the clone holds; null when this service
       // keeps none. Reading the settings (the menu or a dialog opening) starts the clone in the background when it is on
       // and missing.
       poteto: stack.poteto ? (void stack.poteto.prepare(), stack.poteto.state()) : null,
