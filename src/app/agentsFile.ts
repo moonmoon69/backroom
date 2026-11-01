@@ -316,7 +316,7 @@ export const DEFAULT_AGENTS_TEMPLATE = [
   "",
   "## Approach",
   "",
-  "- Measure a change by the system it leaves behind, not by the size of its diff: the concepts, owners, paths, settings and special cases after it, counted against before. A patch that adds a special case loses to a wider change that removes one. Add no shim, compatibility path, setting or table unless the data is new; reuse what exists first.",
+  "- Measure a change by the system it leaves behind, not by the size of its diff: count the concepts, owners, paths, settings and special cases after it against those before. A patch that adds a special case loses to a wider change that removes one. Add no shim, compatibility path, setting or table unless the data is new; reuse what exists first.",
   "- Say what the change adds and removes before building, with the files. When it grows past that by adding, stop and report the excess as the user's decision; when it grows by removing, continue and report what it removed.",
   "- For a design or product decision, offer two or three shapes with the simplest result first, each with what it adds and removes and the one case it cannot handle, and recommend the one that leaves the simplest system. When the user has proposed a shape, build it unless you can name the case it fails. A routine change gets no alternatives: make it.",
   "- Read the code that owns a behaviour and its tests before you change it, trace the callers and update every consumer. Fix a problem at its owner; when the owner's shape is the problem, change the owner rather than patch around it. Keep the change to the task.",
