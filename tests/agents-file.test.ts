@@ -755,30 +755,39 @@ test("the project's checks: package scripts with its package manager, and make t
   assert.match(defaultAgentsText([]), /the ones its README or package scripts name/);
 });
 
-test("the default text, with checks and without: the session, scope, shared-checkout, commit, role and report habits, under twenty lines, nothing of a model, a harness, Backroom's own work or another project's", () => {
+test("the default text, with checks and without: approach, assignment, validation and documentation habits in four sections, under forty lines, nothing of a model, a harness, Backroom's own work or another project's (the user's #3: shop's generic rules)", () => {
   for (const text of [defaultAgentsText(["npm run check"]), defaultAgentsText([])]) {
     const lines = text.split("\n");
-    assert.ok(lines.length - 1 < 20, `under twenty lines (has ${lines.length - 1})`);
+    assert.ok(lines.length - 1 < 40, `under forty lines (has ${lines.length - 1})`);
     assert.equal(lines[0], "# Working in this project");
+    assert.match(lines[2] ?? "", /^The habits of every agent working here, whoever assigned the work\. .*this file holds only how to work\.$/, "the opening line");
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith("## ")),
+      ["## Approach", "## Working on an assignment", "## Validation", "## Documentation"],
+      "the four sections, in shop's order",
+    );
     assert.match(lines.at(-2) ?? "", /^Backroom wrote this file .* Backroom changes it only when you apply the current default from Settings → Agents file\.$/, "the closing line");
     for (const [habit, pattern] of [
-      ["keep going without a decision", /Keep going while a step needs no decision from the user/],
-      ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing/],
-      ["read the owner and its tests first", /Read the code that owns a behaviour and its tests before you change it/],
-      ["fix at the owner, keep to the task", /fix a problem at its owner, keep the change to the task/],
-      ["docs made untrue, in the same change", /update in the same change the docs it makes untrue/],
-      ["a worktree of its own in a shared checkout", /When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need/],
-      ["commits", /Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked\. The user releases/],
-      ["the writer", /\n- A writer delivers the change committed, with its tests and the checks it ran\.\n/],
-      ["the reviewer", /\n- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails\.\n/],
-      ["the planner", /\n- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone\.\n/],
-      ["self-review", /Before you report ready, review your own diff and fix what it finds/],
-      ["finding to test", /Turn every review finding into a test that fails without the fix/],
-      ["the checks", /Run the project's checks before you report ready: /],
-      ["no status files", /Write no separate status or report files unless asked/],
-      ["the Handoff", /End every answer with a Handoff/],
+      ["the system a change leaves behind", /Measure a change by the system it leaves behind, not by the size of its diff/],
+      ["no shim unless the data is new", /Add no shim, compatibility path, setting or table unless the data is new; reuse what exists first/],
+      ["adds and removes said first; growth by adding stops", /Say what the change adds and removes before building, with the files\. When it grows past that by adding, stop and report the excess as the user's decision/],
+      ["two or three shapes for a decision, the user's shape built", /offer two or three shapes with the simplest result first.*When the user has proposed a shape, build it unless you can name the case it fails\. A routine change gets no alternatives: make it/],
+      ["read the owner and its tests first, trace the callers", /Read the code that owns a behaviour and its tests before you change it, trace the callers and update every consumer/],
+      ["fix at the owner, change the owner, keep to the task", /Fix a problem at its owner; when the owner's shape is the problem, change the owner rather than patch around it\. Keep the change to the task/],
+      ["one definition; docs made untrue, in the same change", /one authoritative definition\. Regenerate every derived view from it, and update the docs a change makes untrue, in the same change/],
+      ["keep going without a decision; what to raise", /Keep going while a step needs no decision from the user: resolve routine choices yourself, and raise decisions that change scope, product behaviour or shared contracts/],
+      ["stop before what is hard to undo", /Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing\. The user releases/],
+      ["a branch of its own, a worktree in a shared checkout", /Commit on a branch of your own, in a worktree of your own when another agent works in the same checkout\. Integrate into the branch you were given and remove the worktrees you no longer need; merge into the default branch only when it is the branch you were given or you were asked/],
+      ["the writer, after its own review", /\n- A writer delivers the change committed on the assigned branch, with its tests and the checks it ran, after reviewing its own diff and fixing what that found\.\n/],
+      ["the reviewer: what a fail is, a note, one round", /\n- A reviewer reads the diff, runs the checks and answers pass or fail\. A fail is a reproducible defect, an addition the task did not ask for, or a result more complex than one that meets the same words, named by file, line and reason, with how to show it fails or what it exceeds; an unproven concern is a note\. One round by default; then whoever assigned the work rules\. A reproducible behavioural finding gets a regression check that fails without the fix\.\n/],
+      ["the plan: only across slices, disjoint ownership, an integration check", /\n- A plan is for work that needs coordination across several slices\. It names each slice's files, behaviour, contracts and verification, gives concurrent edits disjoint ownership \(slices that edit the same files are one slice\) and ends with an integration check on the merged tree, so anyone can start a slice from the plan alone\.\n/],
+      ["the checks, skipped ones and missing prerequisites named", /Run the project's checks before you report ready: .*\. Say what you ran and what it printed, and name every check you skipped and every prerequisite you lacked\./],
+      ["tests of behaviour, shared state restored", /Test observable behaviour and failure handling, not implementation\. A test that alters shared state restores it/],
+      ["docs: present tense, a detail once, history in commits", /Describe the current system in concise present-tense prose\. A detail lives once, with its owner, and everything else points to it\. Change history belongs in commit messages/],
+      ["comments for the why; no status files", /Comments explain only non-obvious invariants, ordering, security, concurrency and data-integrity constraints\. Write no separate status or report files unless asked/],
+      ["the ending: decisions, changes, verification, limits, the Handoff", /End every answer with what needs a decision, what changed, what was verified and any limits, then a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated/],
     ] as const) assert.match(text, pattern, habit);
     assert.doesNotMatch(text, /subagent|sub-agent|\btiers?\b|\bmodels?\b|harness|workflow|Claude|Codex|Cursor|Gemini|GPT|Opus|Sonnet|Haiku|Fable/i, "no model, tier, harness or subagent named");
-    assert.doesNotMatch(text, /build:web|rehears|rooms-board|Consigliere|\bwaves?\b|partition|licen[cs]e|SPDX|Co-Authored-By/i, "nothing of Backroom's own work or Shop's");
+    assert.doesNotMatch(text, /build:web|rehears|rooms-board|Consigliere|coordinator|\bwaves?\b|partition|licen[cs]e|SPDX|Co-Authored-By|ARCHITECTURE|tenan|arca:|stages?\.tsv|heavy-check|pull request|Fair Source/i, "nothing of Backroom's own work or Shop's");
   }
 });

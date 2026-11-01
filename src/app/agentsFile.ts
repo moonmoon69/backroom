@@ -1,8 +1,10 @@
 /**
- * The agents file (A1): the habits every agent working in a project keeps whoever assigned the work (how far to go
- * without the user, the scope of a change, a worktree of its own in a shared checkout, commits, what each role delivers,
- * review its own diff, turn review findings into tests, run the project's checks, end with a Handoff), in the project's
- * folder, where every harness reads it. Codex, Cursor and Antigravity read AGENTS.md; Claude Code reads
+ * The agents file (A1): the habits every agent working in a project keeps whoever assigned the work (the approach to a
+ * change: measured by the system it leaves, said before building, two or three shapes for a decision, fixed at the owner,
+ * one authoritative definition; the assignment: how far to go without the user, a branch and worktree of its own, what a
+ * writer, a reviewer and a plan deliver; validation: the project's checks, tests of behaviour; documentation: present
+ * tense, a detail once, comments for the why, and every answer ending with decisions, changes, verification and a
+ * Handoff), in the project's folder, where every harness reads it. Codex, Cursor and Antigravity read AGENTS.md; Claude Code reads
  * CLAUDE.md (AGENTS.md only where no CLAUDE.md is), and follows a line `@AGENTS.md` in it as an import. So one AGENTS.md
  * and a one-line CLAUDE.md importing it reach all four; a copy of the text would drift, and Cursor, which reads both
  * files, would load it twice. README.md ("The agents file") has the table and its evidence.
@@ -310,21 +312,35 @@ export function checksPhrase(checks: string[]): string {
 export const DEFAULT_AGENTS_TEMPLATE = [
   "# Working in this project",
   "",
-  "The habits of every agent working here, whoever assigned the work.",
+  "The habits of every agent working here, whoever assigned the work. What the project is and how it is built is in its own documents; this file holds only how to work.",
   "",
-  "- Keep going while a step needs no decision from the user. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing.",
-  "- Read the code that owns a behaviour and its tests before you change it, fix a problem at its owner, keep the change to the task, and update in the same change the docs it makes untrue.",
+  "## Approach",
+  "",
+  "- Measure a change by the system it leaves behind, not by the size of its diff: the concepts, owners, paths, settings and special cases after it, counted against before. A patch that adds a special case loses to a wider change that removes one. Add no shim, compatibility path, setting or table unless the data is new; reuse what exists first.",
+  "- Say what the change adds and removes before building, with the files. When it grows past that by adding, stop and report the excess as the user's decision; when it grows by removing, continue and report what it removed.",
+  "- For a design or product decision, offer two or three shapes with the simplest result first, each with what it adds and removes and the one case it cannot handle, and recommend the one that leaves the simplest system. When the user has proposed a shape, build it unless you can name the case it fails. A routine change gets no alternatives: make it.",
+  "- Read the code that owns a behaviour and its tests before you change it, trace the callers and update every consumer. Fix a problem at its owner; when the owner's shape is the problem, change the owner rather than patch around it. Keep the change to the task.",
+  "- Each rule, format and state transition has one authoritative definition. Regenerate every derived view from it, and update the docs a change makes untrue, in the same change.",
   POTETO_PLACEHOLDER,
-  "- When another agent works in the same checkout, work in a worktree of your own; before you finish, merge what you keep into the branch you were given, and remove the worktrees you no longer need.",
-  "- Commit on your own branch; merge into the default branch only when it is the branch you were given or you were asked. The user releases.",
-  "- A writer delivers the change committed, with its tests and the checks it ran.",
-  "- A reviewer reads the diff, runs the checks and answers pass or fail, each fail naming the file, the line and how to show it fails.",
-  "- A planner delivers steps that each name their files and how they are verified, so anyone can start one from the plan alone.",
-  "- Before you report ready, review your own diff and fix what it finds.",
-  "- Turn every review finding into a test that fails without the fix.",
-  `- Run the project's checks before you report ready: ${CHECKS_PLACEHOLDER}. Say what you ran and what it printed, and name any check you skipped.`,
-  "- Write no separate status or report files unless asked.",
-  "- End every answer with a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated.",
+  "",
+  "## Working on an assignment",
+  "",
+  "- Keep going while a step needs no decision from the user: resolve routine choices yourself, and raise decisions that change scope, product behaviour or shared contracts. Stop and ask before anything hard to undo: rewriting published history, deleting runtime state, merging into the default branch when it is not the branch you were given, tagging or releasing. The user releases.",
+  "- Commit on a branch of your own, in a worktree of your own when another agent works in the same checkout. Integrate into the branch you were given and remove the worktrees you no longer need; merge into the default branch only when it is the branch you were given or you were asked.",
+  "- A writer delivers the change committed on the assigned branch, with its tests and the checks it ran, after reviewing its own diff and fixing what that found.",
+  "- A reviewer reads the diff, runs the checks and answers pass or fail. A fail is a reproducible defect, an addition the task did not ask for, or a result more complex than one that meets the same words, named by file, line and reason, with how to show it fails or what it exceeds; an unproven concern is a note. One round by default; then whoever assigned the work rules. A reproducible behavioural finding gets a regression check that fails without the fix.",
+  "- A plan is for work that needs coordination across several slices. It names each slice's files, behaviour, contracts and verification, gives concurrent edits disjoint ownership (slices that edit the same files are one slice) and ends with an integration check on the merged tree, so anyone can start a slice from the plan alone.",
+  "",
+  "## Validation",
+  "",
+  `- Run the project's checks before you report ready: ${CHECKS_PLACEHOLDER}. Say what you ran and what it printed, and name every check you skipped and every prerequisite you lacked.`,
+  "- Test observable behaviour and failure handling, not implementation. A test that alters shared state restores it; a check on a shared resource asserts on what the test itself made.",
+  "",
+  "## Documentation",
+  "",
+  "- Describe the current system in concise present-tense prose. A detail lives once, with its owner, and everything else points to it. Change history belongs in commit messages, not in comments or docs.",
+  "- Comments explain only non-obvious invariants, ordering, security, concurrency and data-integrity constraints. Write no separate status or report files unless asked.",
+  "- End every answer with what needs a decision, what changed, what was verified and any limits, then a Handoff: the paths, the branch and the commit where your work is, and anything left unintegrated.",
   "",
   "Backroom wrote this file when the first room was made for this project. It is the project's to edit; Backroom changes it only when you apply the current default from Settings → Agents file.",
   "",

@@ -528,10 +528,11 @@ test("{poteto}: one line when on and ready, nothing (and no blank line) when not
   const checks = ["npm run check"];
   const on = defaultAgentsText(checks, line);
   const off = defaultAgentsText(checks);
-  assert.ok(on.includes(`untrue.\n${line}\n- When another agent`), "the line in the habits, after the one on reading the owner's code");
+  assert.ok(on.includes(`in the same change.\n${line}\n\n## Working on an assignment`), "the line closes the Approach section, after the one on the authoritative definition");
   assert.equal(off.includes(POTETO_PLACEHOLDER), false);
   assert.equal(off, on.replace(`${line}\n`, ""), "off: the line gone and no blank line left");
-  assert.equal(off.includes("\n\n- When"), false);
+  assert.ok(off.includes("in the same change.\n\n## Working on an assignment"), "off: the section closes on its last habit");
+  assert.equal(off.includes("\n\n\n"), false);
   assert.equal(renderAgentsText("# Ours\nRun {checks}.", checks, line), "# Ours\nRun `npm run check`, and whatever else its README asks for.\n", "a custom template without {poteto} gets no line");
   assert.equal(renderAgentsText("a\n  {poteto}  \nb", [], null), "a\nb\n", "a line holding only {poteto} goes, spaces and all");
   assert.equal(renderAgentsText("a {poteto} b", [], null), "a  b\n", "elsewhere it is emptied");
