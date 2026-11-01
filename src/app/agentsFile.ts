@@ -44,6 +44,13 @@
  * is the main checkout; otherwise it installs nothing, and README says how to add the copy line by hand (COPY_LINE, the
  * hook's own line). What could not be written (the exclude entries, the hook) is said once and not tried again.
  *
+ * A project's own instruction file (INSTRUCTION_FILES, in its folder) that git ignores is in the same state: a new
+ * worktree lacks it, so in every row of the table a plain file git ignores is listed in the same block, and the hook
+ * goes in on the same conditions (the user's #8). With nothing written that is the log's to say, not the room's, and the
+ * record's written is empty, so Settings → Agents file does not list the folder. Files git tracks are in every worktree
+ * already. Files untracked and not ignored stay as they are: listing them would hide them from git status while the
+ * project may be about to commit them. Nothing to add to the block and no hook to install leaves no record.
+ *
  * Backroom writes once per folder: a file the user removes afterwards is not written again (it would come back with
  * every new room). What it wrote is kept in the kv table, one record per project folder, so a project removed from T3
  * and added again keeps its record.
@@ -124,14 +131,14 @@ export interface AgentsFileRecord {
   projectId: string;
   /** The project's folder when Backroom wrote in it (symlinks resolved): the record's key. */
   folder: string;
-  /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, or CLAUDE.md alone. */
+  /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, CLAUDE.md alone, or none (it only listed the project's own ignored files). */
   written: string[];
   writtenAt: string;
   /** When the user last applied the saved template over the AGENTS.md Backroom wrote (agentsFile.apply). */
   appliedAt?: string;
   /** The folder was in a git repository. */
   repo: boolean;
-  /** The entries added to the repository's exclude file (`/web/AGENTS.md`); none outside git, or when that failed. */
+  /** The entries it listed in the repository's exclude file (`/web/AGENTS.md`); none outside git, or when that failed. */
   excluded: string[];
   /** The worktree hook; null outside git. */
   hook: HookState | null;
@@ -229,6 +236,14 @@ const isFile = (path: string): boolean => {
   }
 };
 
+const isPlainFile = (path: string): boolean => {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
 /**
  * `name` as the folder lists it: under that very name, else in other capitals, as a file, a folder or a link (even one
  * to nowhere); null when it is not there. Read from the folder's listing, so a filesystem that ignores capitals does
@@ -259,6 +274,43 @@ function agentsState(folder: string, tracked: Set<string>): "missing" | "there" 
   if (name === AGENTS_FILE && isFile(join(folder, AGENTS_FILE))) return "there";
   if (name !== null || tracked.has(AGENTS_FILE) || AGENTS_ALTERNATIVES.some((alternative) => present(folder, alternative))) return "other";
   return "missing";
+}
+
+/**
+ * What the header's table says to write in this folder; none when the project has instructions of its own. `top` is its
+ * repository's top, null outside git.
+ */
+function filesToWrite(folder: string, top: string | null, tracked: Set<string>): string[] {
+  // A CLAUDE.md of the project's own: it has its own instructions, and nothing is written.
+  if ([CLAUDE_FILE, ...CLAUDE_ALTERNATIVES].some((name) => present(folder, name) || tracked.has(name))) return [];
+  // Instructions in a folder above, up to the repository's top: the project's own too (and an import here would miss them).
+  if (top !== null) {
+    const root = canonicalPath(top);
+    for (let above = dirname(folder); above !== folder && !relative(root, above).startsWith(".."); above = dirname(above)) {
+      if (INSTRUCTION_FILES.some((name) => present(above, name))) return [];
+      if (above === root) break;
+    }
+  }
+  const agents = agentsState(folder, tracked);
+  if (agents === "other") return [];
+  return agents === "missing" ? [AGENTS_FILE, CLAUDE_FILE] : [CLAUDE_FILE];
+}
+
+/**
+ * The project's own instruction files a worktree cannot get from git: plain files in the folder that git ignores, which
+ * a tracked file never is. One question per file: git refuses a whole list over one path beyond a link.
+ */
+async function ignoredInstructions(folder: string): Promise<string[]> {
+  const plain = INSTRUCTION_FILES.filter((name) => found(folder, name) === name && isPlainFile(join(folder, name)));
+  const ignored = await Promise.all(
+    plain.map((name) =>
+      runGit(folder, ["check-ignore", "--", name], { okCodes: [0, 1] }).then(
+        (out) => out.trim() !== "",
+        () => false,
+      ),
+    ),
+  );
+  return plain.filter((_, index) => ignored[index]);
 }
 
 /**
@@ -526,8 +578,9 @@ export class AgentsFiles {
 
   /**
    * A room was created in this project: write the default when the table above says so, the setting is on and Backroom
-   * has not written in its folder before; in a git repository keep the files out of git and see to the worktree hook.
-   * `others` are T3's other projects (a folder holding one gets nothing). Answers what was written, or null.
+   * has not written in its folder before; in a git repository keep the files, and the project's own ignored ones, out of
+   * git and see to the worktree hook. `others` are T3's other projects (a folder holding one gets nothing). Answers what
+   * was written, or null when nothing was.
    */
   async roomCreated(project: { id: string; workspaceRoot: string }, others: ReadonlyArray<{ workspaceRoot: string }> = []): Promise<AgentsFileWritten | null> {
     // T3 gives absolute folders; anything else would be resolved against Backroom's own folder, which is never meant.
@@ -573,20 +626,10 @@ export class AgentsFiles {
       }
       const names = [AGENTS_FILE, CLAUDE_FILE, ...CLAUDE_ALTERNATIVES];
       const tracked = git ? new Set((await runGit(folder, ["ls-files", "-z", "--", ...names]).catch(() => "")).split("\0").filter(Boolean)) : new Set<string>();
-      // A CLAUDE.md of the project's own: it has its own instructions, and nothing is written.
-      if ([CLAUDE_FILE, ...CLAUDE_ALTERNATIVES].some((name) => present(folder, name) || tracked.has(name))) return null;
-      // Instructions in a folder above, up to the repository's top: the project's own too (and an import here would miss them).
-      if (git) {
-        const root = canonicalPath(git.top);
-        for (let above = dirname(folder); above !== folder && !relative(root, above).startsWith(".."); above = dirname(above)) {
-          if (INSTRUCTION_FILES.some((name) => present(above, name))) return null;
-          if (above === root) break;
-        }
-      }
-      const agents = agentsState(folder, tracked);
-      if (agents === "other") return null;
+      const carried = git ? await ignoredInstructions(folder) : [];
+      const wanted = filesToWrite(folder, git?.top ?? null, tracked);
       const written: string[] = [];
-      for (const name of agents === "missing" ? [AGENTS_FILE, CLAUDE_FILE] : [CLAUDE_FILE]) {
+      for (const name of wanted) {
         try {
           this.beforeWrite(folder, name);
           // "wx": never over a file (or a link) that appeared since the look above.
@@ -598,14 +641,19 @@ export class AgentsFiles {
           break;
         }
       }
-      if (written.length === 0) return null;
-      const excluded = git ? this.exclude(git.exclude, written.map((file) => `/${git.prefix}${file}`)) : [];
+      // Nothing to carry, or a file the table asked for that could not be written: the next room looks again.
+      if (written.length === 0 && (wanted.length > 0 || carried.length === 0)) return null;
+      const listed = git ? this.exclude(git.exclude, [...carried, ...written].map((file) => `/${git.prefix}${file}`)) : { held: [], added: false };
+      const excluded = listed.held;
       // The hook reads the exclude block: without it there is nothing to copy.
       const hook = git ? (excluded.length > 0 ? await this.hook(folder, git) : "no-exclude") : null;
+      // Carried already (listed by hand, or by another project's room): nothing was done here to remember.
+      if (written.length === 0 && excluded.length > 0 && !listed.added && hook !== "installed") return null;
       const record: AgentsFileRecord = { projectId: project.id, folder, written, writtenAt: new Date().toISOString(), repo: git !== null, excluded, hook };
       this.save(record);
-      this.log(`wrote ${written.join(" and ")} in ${folder}${git ? `; kept out of git: ${excluded.length > 0 ? "yes" : "no"}; worktree hook: ${hook}` : " (not a git repository)"}`);
-      return { projectId: project.id, folder, written, excluded: excluded.length > 0, hook };
+      const did = `${written.length > 0 ? `wrote ${written.join(" and ")}` : "wrote nothing"}${carried.length > 0 ? `, carried ${carried.join(" and ")}` : ""}`;
+      this.log(`${did} in ${folder}${git ? `; kept out of git: ${excluded.length > 0 ? "yes" : "no"}; worktree hook: ${hook}` : " (not a git repository)"}`);
+      return written.length > 0 ? { projectId: project.id, folder, written, excluded: excluded.length > 0, hook } : null;
     });
   }
 
@@ -766,8 +814,8 @@ export class AgentsFiles {
     });
   }
 
-  /** Backroom's entries in the repository's exclude file; the ones it holds now, none when it could not be written. */
-  private exclude(file: string, patterns: string[]): string[] {
+  /** Backroom's entries in the repository's exclude file: the ones it holds now (none when it could not be written), and whether that took a write. */
+  private exclude(file: string, patterns: string[]): { held: string[]; added: boolean } {
     try {
       let text = "";
       try {
@@ -777,11 +825,12 @@ export class AgentsFiles {
         // git's own info folder, inside .git: made when a repository came without one.
         mkdirSync(dirname(file), { recursive: true });
       }
-      writeFileSync(file, withExcluded(text, patterns));
-      return patterns;
+      const next = withExcluded(text, patterns);
+      if (next !== text) writeFileSync(file, next);
+      return { held: patterns, added: next !== text };
     } catch (error) {
       this.log(`could not keep ${patterns.join(" and ")} out of git in ${file}`, errorText(error));
-      return [];
+      return { held: [], added: false };
     }
   }
 

@@ -471,8 +471,15 @@ test("Backroom's own repository keeps both files out of git, as every project do
   if (!existsSync(join(repo, "AGENTS.md"))) return t.skip("this checkout has no agents files");
   assert.equal(read(join(repo, "CLAUDE.md")), "@AGENTS.md\n");
   const projectId = project(repo);
+  // This room looks at the live repository's exclude file, which its worktrees share: whatever a broken change does to it is undone.
+  const excludeFile = resolve(repo, git(repo, "rev-parse", "--git-path", "info/exclude").trim());
+  const before = read(excludeFile);
+  t.after(() => {
+    if (read(excludeFile) !== before) writeFileSync(excludeFile, before);
+  });
   assert.equal((await room(projectId)).agentsFile, undefined);
   assert.equal(stack.service.agentsFiles!.record(projectId), null);
+  assert.equal(read(excludeFile), before, "already listed: nothing is listed twice");
 });
 
 // ---------------- kept out of git ----------------
@@ -518,6 +525,223 @@ test("a project whose place in its repository cannot be written in the exclude f
   const repo = folder({ files: { "we[b]/index.html": "<p>hi</p>\n" } });
   assert.equal((await room(project(join(repo, "we[b]")))).agentsFile, undefined);
   assert.equal(existsSync(join(repo, "we[b]", "AGENTS.md")), false);
+});
+
+// ---------------- the project's own files that git ignores ----------------
+
+const ownFiles = { "AGENTS.md": "# Our habits\n", "CLAUDE.md": "# Our Claude notes\n" };
+/** A repository whose committed .gitignore lists `files`, which are in the folder and in no commit. */
+function ignoring(files: Record<string, string>, committed: Record<string, string> = {}): string {
+  const dir = folder({ files: { ".gitignore": `${Object.keys(files).join("\n")}\n`, ...committed } });
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  }
+  return dir;
+}
+const worktreeOf = (repo: string, ...from: string[]) => {
+  const tree = join(scratch, `worktree-${++folders}`);
+  git(repo, "worktree", "add", "-q", "-b", `carried-${folders}`, tree, ...from);
+  return tree;
+};
+
+test("AGENTS.md and CLAUDE.md that .gitignore ignores: listed and the hook installed, nothing written or committed, and a new worktree has copies (the user's #8)", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const dir = ignoring(ownFiles);
+  const before = status(dir);
+  const projectId = project(dir);
+
+  assert.equal((await room(projectId)).agentsFile, undefined, "nothing written, so nothing for the page to say");
+  assert.deepEqual(block(dir), ["/AGENTS.md", "/CLAUDE.md"]);
+  assert.equal(read(hookOf(dir)), HOOK_TEXT);
+  for (const [name, text] of Object.entries(ownFiles)) assert.equal(read(join(dir, name)), text, `${name} is untouched`);
+  assert.deepEqual(status(dir), before);
+  assert.equal(commits(dir), 1, "nothing committed");
+
+  const record = stack.service.agentsFiles!.record(projectId);
+  assert.deepEqual([record?.written, record?.excluded, record?.hook], [[], ["/AGENTS.md", "/CLAUDE.md"], "installed"]);
+  assert.deepEqual(stack.service.agentsFiles!.list(), [], "Settings → Agents file lists only the AGENTS.md Backroom wrote");
+
+  const tree = worktreeOf(dir);
+  for (const [name, text] of Object.entries(ownFiles)) assert.equal(read(join(tree, name)), text, `${name} in the new worktree`);
+  assert.deepEqual(status(tree), [""]);
+
+  // A second room does nothing more: what was undone stays undone.
+  writeFileSync(join(dir, ".git", "info", "exclude"), "");
+  unlinkSync(hookOf(dir));
+  assert.equal((await room(projectId)).agentsFile, undefined);
+  assert.equal(exclude(dir), "");
+  assert.equal(existsSync(hookOf(dir)), false);
+});
+
+test("the same files tracked by git: no block, no hook, no record, also when a .gitignore lists them", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const listed = folder({ files: { ".gitignore": "AGENTS.md\nCLAUDE.md\n" } });
+  for (const [name, text] of Object.entries(ownFiles)) writeFileSync(join(listed, name), text);
+  git(listed, "add", "-f", "AGENTS.md", "CLAUDE.md");
+  git(listed, "commit", "-q", "-m", "our own instructions");
+  for (const dir of [folder({ files: ownFiles }), listed]) {
+    const projectId = project(dir);
+    assert.equal((await room(projectId)).agentsFile, undefined);
+    assert.equal(exclude(dir).includes(EXCLUDE_START), false, "the exclude file untouched");
+    assert.equal(existsSync(hookOf(dir)), false, "no hook");
+    assert.equal(stack.service.agentsFiles!.record(projectId), null);
+  }
+});
+
+test("the same files untracked and not ignored: nothing, and git status unchanged, since listing them would hide a file the project may be about to commit", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const dir = folder();
+  for (const [name, text] of Object.entries(ownFiles)) writeFileSync(join(dir, name), text);
+  const before = status(dir);
+  assert.deepEqual(before, ["?? AGENTS.md", "?? CLAUDE.md"]);
+  const projectId = project(dir);
+  assert.equal((await room(projectId)).agentsFile, undefined);
+  assert.deepEqual(status(dir), before);
+  assert.equal(exclude(dir).includes(EXCLUDE_START), false, "the exclude file untouched");
+  assert.equal(existsSync(hookOf(dir)), false, "no hook");
+  assert.equal(stack.service.agentsFiles!.record(projectId), null);
+});
+
+test("one file ignored and the other not: only the ignored one is listed, beside a tracked file and beside a merely untracked one", async (t) => {
+  const { project, room } = stackFor(t);
+  const beside = ignoring({ "AGENTS.md": ownFiles["AGENTS.md"] }, { "CLAUDE.md": "@AGENTS.md\n" });
+  await room(project(beside));
+  assert.deepEqual(block(beside), ["/AGENTS.md"]);
+  assert.equal(read(join(worktreeOf(beside), "AGENTS.md")), ownFiles["AGENTS.md"], "the tracked import reaches a copy");
+
+  const loose = ignoring({ "CLAUDE.md": ownFiles["CLAUDE.md"] });
+  writeFileSync(join(loose, "AGENTS.md"), ownFiles["AGENTS.md"]);
+  await room(project(loose));
+  assert.deepEqual(block(loose), ["/CLAUDE.md"]);
+  assert.deepEqual(status(loose), ["?? AGENTS.md"], "still there for the project to commit");
+});
+
+test("AGENTS.md ignored and CLAUDE.md missing: Backroom's CLAUDE.md is written and both are listed, so a worktree's import finds its file", async (t) => {
+  const { project, room } = stackFor(t);
+  const dir = ignoring({ "AGENTS.md": ownFiles["AGENTS.md"] });
+  const created = await room(project(dir));
+  assert.deepEqual(created.agentsFile, { projectId: "project_1", folder: dir, written: ["CLAUDE.md"], excluded: true, hook: "installed" });
+  assert.equal(read(join(dir, "CLAUDE.md")), "@AGENTS.md\n");
+  assert.deepEqual(block(dir), ["/AGENTS.md", "/CLAUDE.md"]);
+  const tree = worktreeOf(dir);
+  assert.equal(read(join(tree, "AGENTS.md")), ownFiles["AGENTS.md"]);
+  assert.equal(read(join(tree, "CLAUDE.md")), "@AGENTS.md\n");
+
+  // Untracked and not ignored: the project's to commit, so only what Backroom wrote is listed.
+  const loose = folder();
+  writeFileSync(join(loose, "AGENTS.md"), ownFiles["AGENTS.md"]);
+  await room(project(loose));
+  assert.deepEqual(block(loose), ["/CLAUDE.md"]);
+  assert.deepEqual(status(loose), ["?? AGENTS.md"]);
+});
+
+test("files already in the block are not listed twice and the hook stays as it is; with nothing to do, nothing is remembered", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const dir = ignoring(ownFiles);
+  const listed = `# theirs\n\n${EXCLUDE_START}\n/AGENTS.md\n/CLAUDE.md\n${EXCLUDE_END}\n`;
+  writeFileSync(join(dir, ".git", "info", "exclude"), listed);
+  writeFileSync(hookOf(dir), HOOK_TEXT, { mode: 0o755 });
+  const projectId = project(dir);
+  assert.equal((await room(projectId)).agentsFile, undefined);
+  assert.equal(exclude(dir), listed);
+  assert.equal(read(hookOf(dir)), HOOK_TEXT);
+  assert.equal(stack.service.agentsFiles!.record(projectId), null);
+
+  // The block has one of the two: the other joins it, and the first stays once.
+  const partly = ignoring(ownFiles);
+  writeFileSync(join(partly, ".git", "info", "exclude"), `${EXCLUDE_START}\n/AGENTS.md\n${EXCLUDE_END}\n`);
+  writeFileSync(hookOf(partly), HOOK_TEXT, { mode: 0o755 });
+  const partlyId = project(partly);
+  await room(partlyId);
+  assert.deepEqual(block(partly), ["/AGENTS.md", "/CLAUDE.md"]);
+  assert.equal(stack.service.agentsFiles!.record(partlyId)?.hook, "ours");
+
+  // The block is complete and the hook gone: the hook is what is missing, so a worktree gets its copies.
+  const hookless = ignoring(ownFiles);
+  writeFileSync(join(hookless, ".git", "info", "exclude"), listed);
+  await room(project(hookless));
+  assert.equal(exclude(hookless), listed);
+  assert.equal(read(hookOf(hookless)), HOOK_TEXT);
+});
+
+test("a subfolder project's ignored files are listed with its folder in front, and AGENTS.override.md and .claude/CLAUDE.md count like the others", async (t) => {
+  const { project, room } = stackFor(t);
+  const repo = ignoring({ "web/AGENTS.md": ownFiles["AGENTS.md"], "web/CLAUDE.md": ownFiles["CLAUDE.md"] }, { "web/index.html": "<p>hi</p>\n" });
+  assert.equal((await room(project(join(repo, "web")))).agentsFile, undefined);
+  assert.deepEqual(block(repo), ["/web/AGENTS.md", "/web/CLAUDE.md"]);
+  assert.equal(read(join(worktreeOf(repo), "web", "CLAUDE.md")), ownFiles["CLAUDE.md"]);
+
+  // Nothing to write here (Codex's file stands in for AGENTS.md), and .claude is in the worktree through a tracked file.
+  const others = ignoring({ "AGENTS.override.md": "# Codex's\n", ".claude/CLAUDE.md": "# Claude's\n" }, { ".claude/settings.json": "{}\n" });
+  assert.equal((await room(project(others))).agentsFile, undefined);
+  assert.deepEqual(block(others), ["/AGENTS.override.md", "/.claude/CLAUDE.md"]);
+  const tree = worktreeOf(others);
+  assert.equal(read(join(tree, "AGENTS.override.md")), "# Codex's\n");
+  assert.equal(read(join(tree, ".claude", "CLAUDE.md")), "# Claude's\n");
+});
+
+test("only plain files are carried: an ignored link is not listed, and a .claude that is a link leaves the rest listed", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const linked = ignoring({ "CLAUDE.md": ownFiles["CLAUDE.md"] }, { ".gitignore": "AGENTS.md\nCLAUDE.md\n", "docs/agents.md": "# ours\n" });
+  symlinkSync("docs/agents.md", join(linked, "AGENTS.md"));
+  await room(project(linked));
+  assert.deepEqual(block(linked), ["/CLAUDE.md"]);
+
+  const onlyLink = folder({ files: { ".gitignore": "CLAUDE.md\n", "docs/claude.md": "# ours\n" } });
+  symlinkSync("docs/claude.md", join(onlyLink, "CLAUDE.md"));
+  const onlyLinkId = project(onlyLink);
+  assert.equal((await room(onlyLinkId)).agentsFile, undefined);
+  assert.equal(stack.service.agentsFiles!.record(onlyLinkId), null);
+  assert.equal(existsSync(hookOf(onlyLink)), false);
+
+  // git refuses a path beyond a link, whole lists of paths with it.
+  const behind = ignoring({ "AGENTS.md": ownFiles["AGENTS.md"], "CLAUDE.md": ownFiles["CLAUDE.md"] }, { "real/CLAUDE.md": "# ours\n" });
+  symlinkSync("real", join(behind, ".claude"));
+  await room(project(behind));
+  assert.deepEqual(block(behind), ["/AGENTS.md", "/CLAUDE.md"]);
+});
+
+test("the hook's own conditions hold for ignored files: a hook of the repository's own stays, core.hooksPath gets none, and an exclude file that cannot be written is said once", async (t) => {
+  const { project, room, stack } = stackFor(t);
+  const own = ignoring(ownFiles);
+  const theirs = "#!/bin/sh\necho 'their own hook'\n";
+  writeFileSync(hookOf(own), theirs, { mode: 0o755 });
+  const ownId = project(own);
+  await room(ownId);
+  assert.deepEqual(block(own), ["/AGENTS.md", "/CLAUDE.md"]);
+  assert.equal(read(hookOf(own)), theirs, "byte for byte");
+  assert.equal(stack.service.agentsFiles!.record(ownId)?.hook, "own-hook");
+
+  const pathed = ignoring(ownFiles);
+  git(pathed, "config", "core.hooksPath", ".githooks");
+  const pathedId = project(pathed);
+  await room(pathedId);
+  assert.equal(existsSync(hookOf(pathed)), false);
+  assert.equal(stack.service.agentsFiles!.record(pathedId)?.hook, "hooks-path");
+
+  const locked = ignoring(ownFiles);
+  chmodSync(join(locked, ".git", "info", "exclude"), 0o444);
+  t.after(() => chmodSync(join(locked, ".git", "info", "exclude"), 0o644));
+  const logged: string[] = [];
+  const files = new AgentsFiles(stack.repos, { log: (message) => logged.push(message) });
+  await files.roomCreated({ id: "p_locked", workspaceRoot: locked });
+  assert.deepEqual([files.record("p_locked")?.excluded, files.record("p_locked")?.hook], [[], "no-exclude"]);
+  assert.equal(existsSync(hookOf(locked)), false, "no hook: it would have no block to read");
+  const said = logged.length;
+  assert.ok(said > 0);
+  assert.equal(await files.roomCreated({ id: "p_locked", workspaceRoot: locked }), null);
+  assert.equal(logged.length, said, "not tried again");
+});
+
+test("the log says what was carried, for which folder, whether it is kept out of git, and the hook's state", async (t) => {
+  const { stack } = stackFor(t);
+  const logged: string[] = [];
+  const files = new AgentsFiles(stack.repos, { log: (message) => logged.push(message) });
+  const dir = ignoring(ownFiles);
+  await files.roomCreated({ id: "p_log", workspaceRoot: dir });
+  assert.equal(logged.length, 1, logged.join("\n"));
+  for (const part of ["AGENTS.md and CLAUDE.md", dir, "kept out of git: yes", "worktree hook: installed"]) assert.ok(logged[0]!.includes(part), `${part} in: ${logged[0]}`);
 });
 
 // ---------------- copied into new worktrees ----------------
