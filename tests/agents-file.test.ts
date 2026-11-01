@@ -471,8 +471,15 @@ test("Backroom's own repository keeps both files out of git, as every project do
   if (!existsSync(join(repo, "AGENTS.md"))) return t.skip("this checkout has no agents files");
   assert.equal(read(join(repo, "CLAUDE.md")), "@AGENTS.md\n");
   const projectId = project(repo);
+  // This room looks at the live repository's exclude file, which its worktrees share: whatever a broken change does to it is undone.
+  const excludeFile = resolve(repo, git(repo, "rev-parse", "--git-path", "info/exclude").trim());
+  const before = read(excludeFile);
+  t.after(() => {
+    if (read(excludeFile) !== before) writeFileSync(excludeFile, before);
+  });
   assert.equal((await room(projectId)).agentsFile, undefined);
   assert.equal(stack.service.agentsFiles!.record(projectId), null);
+  assert.equal(read(excludeFile), before, "already listed: nothing is listed twice");
 });
 
 // ---------------- kept out of git ----------------
