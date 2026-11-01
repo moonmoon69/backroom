@@ -70,7 +70,7 @@ const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
  */
 export const POTETO_FOLLOW = "Follow poteto-mode's principles, reply and comment rules";
 export const POTETO_SCOPE =
-  "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.";
+  "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no mandatory subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.";
 export const POTETO_ROOM =
   "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.";
 

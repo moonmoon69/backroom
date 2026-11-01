@@ -522,7 +522,7 @@ test("{poteto}: one line when on and ready, nothing (and no blank line) when not
   assert.equal(
     line,
     "- Follow poteto-mode's principles, reply and comment rules at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md); skip setup-pstack. " +
-      "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise. " +
+      "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no mandatory subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise. " +
       "Where the mode conflicts with this file, this file wins.",
   );
   assert.equal(DEFAULT_AGENTS_TEMPLATE.split("\n").filter((l) => l === POTETO_PLACEHOLDER).length, 1, "the default holds it once, on a line of its own");
@@ -611,7 +611,7 @@ const pack = (harness: SkillsBriefing["harness"], commit = "abc1234"): SkillsBri
 
 test("the Skills section: the revision, poteto-mode for the reader's harness, the note where pstack has no adapter, what applies by default and the room's ways, the skills by name", () => {
   const tail =
-    "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.\n" +
+    "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no mandatory subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.\n" +
     "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.\n";
   assert.equal(
     skillsSection(pack("claude")),
