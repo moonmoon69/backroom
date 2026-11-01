@@ -60,22 +60,27 @@ export const TICK_MS = 60 * 60 * 1000;
 const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Where Backroom differs from poteto-mode, one sentence each: in the briefing's Skills section. */
-export const POTETO_DIFFERENCES = [
-  "Deliver the change committed on your branch with a Handoff instead of opening a pull request.",
-  "In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome.",
-  "Model routing is the crew's: skip setup-pstack.",
-] as const;
-export const PRECEDENCE = "Backroom's three differences take precedence over the mode where they conflict";
+/**
+ * What of poteto-mode applies by default (the user's #74 and #89 in the agents.md room, after shop's AGENTS.md narrowed
+ * the mode the same way): its principles, reply and comment rules. Its triggers and playbooks, the process half, are the
+ * room's to call for: the Consigliere routes work, seats the reviewer and names the playbook a job needs, so a member
+ * running them on its own duplicates the room or conflicts with it (a pull request against the Handoff, its own
+ * subagents and model routing against the crew's). One scope sentence, in the agents file's line and in the briefing's
+ * Skills section; the briefing adds the room's ways.
+ */
+export const POTETO_FOLLOW = "Follow poteto-mode's principles, reply and comment rules";
+export const POTETO_SCOPE =
+  "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.";
+export const POTETO_ROOM =
+  "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.";
 
 /**
- * The agents file's {poteto} line for a clone: the mode's two paths, and that the file wins where the mode conflicts
- * with it (the mode's pull-request step against the file's branch and Handoff rules; its model routing). Two sentences,
- * read by every session in the project, subagents too (the user's #387); the briefing's Skills section carries the
- * longer form, with the adapter note and the three differences.
+ * The agents file's {poteto} line for a clone: what to follow at the mode's two paths, the scope sentence, and that the
+ * file wins where the mode conflicts with it. Read by every session in the project, subagents too (the user's #387); the
+ * briefing's Skills section carries the longer form, with the adapter note and the room's ways.
  */
 export function potetoLine(clone: string): string {
-  return `- For any non-trivial job, read and follow poteto-mode at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}). Where it conflicts with this file, this file wins; skip setup-pstack.`;
+  return `- ${POTETO_FOLLOW} at ${clone}/${PSTACK_SKILLS}/${MODE_SKILL} (Claude Code: the copy at ${clone}/${CLAUDE_SKILLS}/${MODE_SKILL}); skip setup-pstack. ${POTETO_SCOPE} Where the mode conflicts with this file, this file wins.`;
 }
 
 /** Why the last clone or update did not do what it was for. */

@@ -22,7 +22,7 @@ export interface BrowsersBriefing {
 }
 import { engineConsigliereRules, engineSeatFacts } from "../app/consigliere.ts";
 import { crewListing } from "../app/crew.ts";
-import { ADAPTER_NOTE, CLAUDE_SKILLS, POTETO_DIFFERENCES, PRECEDENCE, PSTACK_SKILLS, type PotetoBriefing } from "../app/poteto.ts";
+import { ADAPTER_NOTE, CLAUDE_SKILLS, POTETO_FOLLOW, POTETO_ROOM, POTETO_SCOPE, PSTACK_SKILLS, type PotetoBriefing } from "../app/poteto.ts";
 import type { RoomState } from "../app/roomState.ts";
 import type { Participant, Preset, Room } from "../domain/types.ts";
 import type { Workspace } from "../git/workspaces.ts";
@@ -165,8 +165,9 @@ export function workspaceSection(participantId: string, workspaces: Workspace[])
 
 /**
  * Poteto mode as a briefing section, for every seat: the pack's revision, poteto-mode for the reader's harness (Claude
- * Code's copy for Claude, Cursor's tree for the others, with a note where pstack has no adapter), Backroom's three
- * differences, and pstack's skills by name (poteto-mode indexes them, so no descriptions here).
+ * Code's copy for Claude, Cursor's tree for the others, with a note where pstack has no adapter), what of the mode applies
+ * by default and the room's ways (POTETO_SCOPE, POTETO_ROOM), and pstack's skills by name (poteto-mode indexes them, so
+ * no descriptions here).
  */
 export function skillsSection(skills: SkillsBriefing): string {
   const folder = `${skills.clone}/${skills.harness === "claude" ? CLAUDE_SKILLS : PSTACK_SKILLS}`;
@@ -175,10 +176,10 @@ export function skillsSection(skills: SkillsBriefing): string {
   return [
     "== Skills ==",
     `Poteto mode is on: ${revision}, Lauren Tan's skills (MIT), kept by Backroom in ${skills.clone}.`,
-    `For any non-trivial job, read and follow ${folder}/poteto-mode/SKILL.md.`,
+    `${POTETO_FOLLOW} at ${folder}/poteto-mode/SKILL.md; skip setup-pstack.`,
     ...(harness ? [`pstack has no adapter for ${harness}: map its Cursor names to your own tools as its Claude Code adapter note (${skills.clone}/${ADAPTER_NOTE}) does.`] : []),
-    `${PRECEDENCE}:`,
-    ...POTETO_DIFFERENCES.map((difference) => `- ${difference}`),
+    POTETO_SCOPE,
+    POTETO_ROOM,
     `pstack's skills: ${skills.names.join(", ")}; read ${folder}/<name>/SKILL.md for one.`,
   ].join("\n");
 }

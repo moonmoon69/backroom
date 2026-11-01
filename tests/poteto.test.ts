@@ -521,8 +521,9 @@ test("{poteto}: one line when on and ready, nothing (and no blank line) when not
   const line = potetoLine("/data/skills/cursor-plugins");
   assert.equal(
     line,
-    "- For any non-trivial job, read and follow poteto-mode at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md). " +
-      "Where it conflicts with this file, this file wins; skip setup-pstack.",
+    "- Follow poteto-mode's principles, reply and comment rules at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md (Claude Code: the copy at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md); skip setup-pstack. " +
+      "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise. " +
+      "Where the mode conflicts with this file, this file wins.",
   );
   assert.equal(DEFAULT_AGENTS_TEMPLATE.split("\n").filter((l) => l === POTETO_PLACEHOLDER).length, 1, "the default holds it once, on a line of its own");
   const checks = ["npm run check"];
@@ -608,17 +609,15 @@ const room: Room = { id: "r", projectId: "p", environmentId: null, title: "payme
 const member = (id: string, alias: string): Participant => ({ id, roomId: "r", alias, modelSelection: { instanceId: "x", model: "y" }, runtimeMode: "full-access", interactionMode: "default", bindingGeneration: 1, retiredAt: null, presetId: null, createdAt: "", updatedAt: "" });
 const pack = (harness: SkillsBriefing["harness"], commit = "abc1234"): SkillsBriefing => ({ clone: "/data/skills/cursor-plugins", version: "0.15.34", commit, names: ["how", "poteto-mode", "tdd"], harness });
 
-test("the Skills section: the revision, poteto-mode for the reader's harness, the note where pstack has no adapter, the differences, the skills by name", () => {
+test("the Skills section: the revision, poteto-mode for the reader's harness, the note where pstack has no adapter, what applies by default and the room's ways, the skills by name", () => {
   const tail =
-    "Backroom's three differences take precedence over the mode where they conflict:\n" +
-    "- Deliver the change committed on your branch with a Handoff instead of opening a pull request.\n" +
-    "- In a room, the Consigliere hands parallel work to the room's members, and a member uses subagents only within its own outcome.\n" +
-    "- Model routing is the crew's: skip setup-pstack.\n";
+    "Its triggers and playbooks apply only when your assignment names them: no how, architect, arena, interrogate or swarm fan-out, no subagent delegation, no data-shape-first or lever-building rule, no plan template and no pull request otherwise.\n" +
+    "In a room, the Consigliere hands parallel work to the room's members and names in the assignment the playbook and skills a job needs; a member uses subagents only within its own outcome and delivers the change committed on its branch with a Handoff. Where the mode conflicts with the project's instructions or this briefing, those win.\n";
   assert.equal(
     skillsSection(pack("claude")),
     "== Skills ==\n" +
       "Poteto mode is on: pstack 0.15.34 at commit abc1234, Lauren Tan's skills (MIT), kept by Backroom in /data/skills/cursor-plugins.\n" +
-      "For any non-trivial job, read and follow /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md.\n" +
+      "Follow poteto-mode's principles, reply and comment rules at /data/skills/cursor-plugins/harness/pstack/claude-code/skills/poteto-mode/SKILL.md; skip setup-pstack.\n" +
       tail +
       "pstack's skills: how, poteto-mode, tdd; read /data/skills/cursor-plugins/harness/pstack/claude-code/skills/<name>/SKILL.md for one.",
   );
@@ -627,14 +626,14 @@ test("the Skills section: the revision, poteto-mode for the reader's harness, th
       skillsSection(pack(harness)),
       "== Skills ==\n" +
         "Poteto mode is on: pstack 0.15.34 at commit abc1234, Lauren Tan's skills (MIT), kept by Backroom in /data/skills/cursor-plugins.\n" +
-        "For any non-trivial job, read and follow /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md.\n" +
+        "Follow poteto-mode's principles, reply and comment rules at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md; skip setup-pstack.\n" +
         `pstack has no adapter for ${name}: map its Cursor names to your own tools as its Claude Code adapter note (/data/skills/cursor-plugins/pstack/docs/harness/claude-code.md) does.\n` +
         tail +
         "pstack's skills: how, poteto-mode, tdd; read /data/skills/cursor-plugins/pstack/skills/<name>/SKILL.md for one.",
     );
   }
   const cursor = skillsSection(pack("other"));
-  assert.ok(cursor.includes("read and follow /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md."), "Cursor and the rest: pstack's own tree");
+  assert.ok(cursor.includes("reply and comment rules at /data/skills/cursor-plugins/pstack/skills/poteto-mode/SKILL.md; skip setup-pstack."), "Cursor and the rest: pstack's own tree");
   assert.equal(cursor.includes("no adapter"), false, "no note for a harness pstack is written for");
   assert.deepEqual(["claudeAgent", "codex", "antigravity", "cursor", "opencode", "my-claude", "gemini-cli"].map(skillsHarness), ["claude", "codex", "antigravity", "other", "other", "claude", "antigravity"]);
 });
@@ -680,13 +679,13 @@ test("the briefing source: each seat's harness from T3's catalog, the section wh
   const commit = git(up.work, "rev-parse", "--short=7", "HEAD");
   const claudeText = await s.stack.seats.standingText(claude);
   assert.ok(claudeText.includes(`Poteto mode is on: pstack 0.15.0 at commit ${commit}`));
-  assert.ok(claudeText.includes(`read and follow ${s.folder}/harness/pstack/claude-code/skills/poteto-mode/SKILL.md.`));
+  assert.ok(claudeText.includes(`reply and comment rules at ${s.folder}/harness/pstack/claude-code/skills/poteto-mode/SKILL.md; skip setup-pstack.`));
   assert.ok(claudeText.includes(`pstack's skills: ${FIXTURE_SKILLS.join(", ")}; read ${s.folder}/harness/pstack/claude-code/skills/<name>/SKILL.md for one.`));
   const codexText = await s.stack.seats.standingText(codex);
-  assert.ok(codexText.includes(`read and follow ${s.folder}/pstack/skills/poteto-mode/SKILL.md.`));
+  assert.ok(codexText.includes(`reply and comment rules at ${s.folder}/pstack/skills/poteto-mode/SKILL.md; skip setup-pstack.`));
   assert.ok(codexText.includes("pstack has no adapter for Codex"));
   assert.ok((await s.stack.seats.standingText(gemini)).includes("pstack has no adapter for Antigravity"));
-  assert.ok((await s.stack.seats.standingText(work)).includes(`read and follow ${s.folder}/harness/pstack/claude-code/skills/poteto-mode/SKILL.md.`), "the harness from T3's driver, not the instance's name");
+  assert.ok((await s.stack.seats.standingText(work)).includes(`reply and comment rules at ${s.folder}/harness/pstack/claude-code/skills/poteto-mode/SKILL.md; skip setup-pstack.`), "the harness from T3's driver, not the instance's name");
   await s.run({ type: "poteto.enabled.set", enabled: false });
   assert.equal((await s.stack.seats.standingText(claude)).includes("== Skills =="), false, "off");
 });

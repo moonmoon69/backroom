@@ -52,8 +52,8 @@ export function PotetoDialog({ onClose }: { onClose: () => void }) {
     <Dialog title="Poteto mode" onClose={onClose} wide>
       <p className="muted">
         pstack, Lauren Tan&rsquo;s skills for rigorous agent work (MIT, from cursor/plugins), kept up to date by Backroom and used as it is. Every seat is pointed at its entry point, poteto-mode: by a line in the agents file (
-        <code>{"{poteto}"}</code> in the template) and by a Skills section in its briefing, with Backroom&rsquo;s three differences (a Handoff instead of a pull request, parallel work through the room&rsquo;s members, routing by the
-        crew). README, &ldquo;Poteto mode&rdquo;, says more.
+        <code>{"{poteto}"}</code> in the template) and by a Skills section in its briefing. Its principles, reply and comment rules apply by default; its triggers and playbooks (fan-outs, subagent delegation, plan templates, pull
+        requests) only when an assignment names them. README, &ldquo;Poteto mode&rdquo;, says more.
       </p>
       {loadError ? <p className="status-error">{loadError}</p> : null}
       {state ? (
