@@ -2502,13 +2502,14 @@ const PSTACK_FIXTURE_NEXT = "0.15.1-rehearsal";
  * section shows its version and its subject as the last change; at Off, the status says seats are not pointed at it
  * (review #206), and on again it is ready. A project written with Backroom's template then follows the choice: the whole
  * mode shows it as differing in the open dialog, its diff swaps the line, Apply pushes it, and Principles shows it as
- * differing the other way. Its section begins here.
+ * differing the other way. From Off with the clone gone and the project written for Off, Principles clones it again, and
+ * the dialog left open shows the project as differing once it says Ready. Its section begins here.
  */
 async function rehearsePoteto(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
   if (!(await section("Settings → Agents file, Skills: one menu item, two sections, the fixture's version, Update now brings a commit added to the fixture, and Off says seats are not pointed at it"))) return passed;
   const state = probedStates(browser, selection, passed);
-  type Poteto = { enabled: boolean; scope: string; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
+  type Poteto = { enabled: boolean; scope: string; folder: string; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
   const poteto = async () => (await service.call<{ poteto: Poteto | null }>("GET", "/api/settings")).poteto;
   const ready = await until("the service to have cloned the pstack fixture", async () => {
     const now = await poteto();
@@ -2630,6 +2631,39 @@ async function rehearsePoteto(service: Service, browser: Browser, room: Room, se
       log("  page: Principles and reply rules chosen, and the row says differs again");
     },
   );
+  // Off with the clone gone: the project applied there holds no line, the same as the template until the clone is back.
+  const skillsStatus = "() => document.querySelector('.poteto-facts + .hint')?.textContent ?? null";
+  browser.click(/radio "Off/);
+  browser.poll<string | null>("the section at Off", skillsStatus, (v) => v?.startsWith("Off:") === true);
+  const { folder: clone } = await until("the service at Off, nothing running", async () => {
+    const now = await poteto();
+    return now && !now.enabled && !now.busy ? now : null;
+  });
+  const offDiff = await service.call<{ fileDigest: string; templateDigest: string }>("GET", `/api/agents-files/diff?folder=${encodeURIComponent(realpathSync(folder))}`);
+  await service.command({ type: "agentsFile.apply", folder: realpathSync(folder), fileDigest: offDiff.fileDigest, templateDigest: offDiff.templateDigest });
+  rmSync(clone, { recursive: true });
+  browser.click(/button "Done"/);
+  browser.poll<number>("the dialog to be closed", "() => document.querySelectorAll('.dialog').length", (n) => n === 0);
+  browser.click(/button "Settings"/);
+  browser.click(/menuitem "Agents file…/);
+  browser.poll<string | null>("Off with no clone", skillsStatus, (v) => v === "Off: seats are not pointed at it.");
+  browser.poll<string | null>("the written project's row, the same as the template at Off", rowState, (v) => v === "same");
+  browser.click(/radio "Principles and reply rules/);
+  await state(
+    "the clone made again after Off: the open dialog shows the written project as differing once it says Ready",
+    async () => {
+      const now = await poteto();
+      if (!now?.ready || now.busy || !now.enabled || (await entry()) !== "differs") return null;
+      if (agentsText().includes(FOLLOW_PRINCIPLES)) fail("the clone changed the project's file");
+      return `the clone is back at ${now.folder} and ${folder} differs from the template`;
+    },
+    ["Ready: seats are pointed at it."],
+    () => {
+      browser.poll<string | null>("the row to say it differs with the dialog left open", rowState, (v) => v === "differs");
+      log("  page: Ready shown, and the row says differs without the dialog being reopened");
+    },
+  );
+  browser.poll<string | null>("the row to say it differs with the dialog left open", rowState, (v) => v === "differs");
   browser.click(/button "Done"/);
   browser.openRoom(room.title);
   return passed;

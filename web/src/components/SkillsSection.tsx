@@ -22,7 +22,9 @@ const POSITIONS: Array<{ key: PotetoPosition; label: string; hint: string }> = [
  * Settings → Agents file, Skills (src/app/poteto.ts): how far seats follow pstack's poteto-mode (three positions, on the
  * service's two keys), what Backroom's clone holds (version, commit, last check, last change, folder), Update now, the pin
  * (Pin this version, Follow latest) and the last error. The settings are read again each second while a clone or an update
- * runs. A command reads the projects written again: the position changes what the template renders for them.
+ * runs. A command, or the clone turning ready or no longer ready, reads the projects written again: both change what the
+ * template renders for them. The radios stay enabled while a save runs, since disabling the focused one drops the focus
+ * out of the group: a change meanwhile is ignored.
  */
 export function SkillsSection() {
   const { toast } = useToast();
@@ -46,6 +48,10 @@ export function SkillsSection() {
     const timer = setInterval(() => void read(), 1000);
     return () => clearInterval(timer);
   }, [busy]);
+  const ready = state?.ready;
+  useEffect(() => {
+    if (ready !== undefined) reloadAgentsFiles();
+  }, [ready]);
   const run = async (...commands: RoomCommand[]) => {
     setActing(true);
     try {
@@ -74,10 +80,10 @@ export function SkillsSection() {
       {loadError ? <p className="status-error">{loadError}</p> : null}
       {state ? (
         <>
-          <fieldset aria-label="How far seats follow poteto-mode">
+          <fieldset aria-label="How far seats follow poteto-mode" aria-busy={acting}>
             {POSITIONS.map((option) => (
               <label key={option.key} className="radio">
-                <input type="radio" name="poteto-position" checked={potetoPosition(state) === option.key} disabled={acting} onChange={() => void run(...potetoMove(state, option.key))} />
+                <input type="radio" name="poteto-position" checked={potetoPosition(state) === option.key} onChange={() => acting || void run(...potetoMove(state, option.key))} />
                 <span>
                   <strong>{option.label}</strong>
                   <span className="hint">{option.hint}</span>
