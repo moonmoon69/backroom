@@ -113,7 +113,7 @@ const shell = {
 };
 /** The shell as T3 0.0.46 serves it over HTTP and in its subscribeShell snapshot: the active shell, no archived threads. */
 const activeShell = { ...shell, archivedThreads: [] };
-/** T3's archived shell (getArchivedShellSnapshot, subscribeArchivedShell's snapshot): the archived threads as `threads`. */
+/** T3's archived shell, as getArchivedShellSnapshot answers it: the archived threads as `threads`. */
 const archivedShell = { schemaVersion: 2, snapshotSequence: 10, projects: shell.projects, threads: shell.archivedThreads };
 
 test("a message is dispatched over the RPC socket with the contract's fields; every request names the protocol", async () => {
@@ -787,7 +787,7 @@ const opening = () => ({ [SHELL]: [[{ kind: "snapshot", snapshot: activeShell }]
 /** T3's archived shell as its RPC answers it. */
 const archivedRpc = { "orchestration.getArchivedShellSnapshot": () => archivedShell };
 
-test("Astra review: a waiting read resumes when an archive removal advances the stream's sequence without changing a row", async (t) => {
+test("Astra review: a waiting read resumes when a removal of a thread not held advances the stream's sequence without changing a row", async (t) => {
   const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
   const held: Array<() => void> = [];
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -807,9 +807,9 @@ test("Astra review: a waiting read resumes when an archive removal advances the 
   await settle();
   assert.equal(held.length, 1);
   assert.equal(answered, false, "the stream has not caught up yet");
-  t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-1" });
+  t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-x" });
   await settle();
-  assert.equal(answered, true, "the stream now shows the archive: the pending GET must yield to the feed");
+  assert.equal(answered, true, "the stream has reached the command's sequence: the pending GET must yield to the feed");
   await read;
 });
 

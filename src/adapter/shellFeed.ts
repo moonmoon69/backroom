@@ -213,7 +213,7 @@ export class ShellFeed {
   /** The socket told to onConnection, until it is given up. */
   private announced: FeedConnection | null = null;
   private cancels: Array<() => void> = [];
-  /** The current attempt's timers not yet run: its deadline for the snapshots, its next ping. */
+  /** The current attempt's timers not yet run: its deadline for the snapshot, its next ping. */
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private retry: ReturnType<typeof setTimeout> | null = null;
 
@@ -247,7 +247,7 @@ export class ShellFeed {
   }
 
   /**
-   * Open again at once (on another credential): what was live stops being served until the new socket's snapshots are
+   * Open again at once (on another credential): what was live stops being served until the new socket's snapshot is
    * in. It goes straight to connecting, never through stopped.
    */
   restart(): void {
