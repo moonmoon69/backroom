@@ -98,6 +98,8 @@ export const api = {
     get(`/api/t3/threads?projectId=${encodeURIComponent(projectId)}`),
   /** The overview's shelf of a project: its settled and archived threads outside rooms, a few fields each. */
   shelf: (projectId: string): Promise<EngineShelfThread[]> => get(`/api/t3/threads?shelf=1&projectId=${encodeURIComponent(projectId)}`),
+  /** One thread's shelf row: null while it is not settled or archived (active, seated, or gone). */
+  shelfRow: async (threadId: string): Promise<EngineShelfThread | null> => (await get<EngineShelfThread[]>(`/api/t3/threads?shelf=1&threadId=${encodeURIComponent(threadId)}`))[0] ?? null,
   /** A thread used directly (outside any room). */
   thread: (threadId: string): Promise<ThreadView> => get(`/api/threads/${encodeURIComponent(threadId)}`),
   rooms: (): Promise<RoomListItem[]> => get("/api/rooms"),

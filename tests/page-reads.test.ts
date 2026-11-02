@@ -101,6 +101,11 @@ test("the shelf query answers the settled and archived threads outside rooms, wi
   assert.ok(shelf.find((row) => row.id === archived)?.archivedAt);
   assert.ok(shelf.find((row) => row.id === settled)?.settledAt);
   assert.deepEqual(await (await app.request("/api/t3/threads?shelf=1&projectId=elsewhere")).json(), []);
+  // One thread's row, the open thread's lifecycle (App.tsx): none for a thread that is not on the shelf.
+  const one = async (threadId: string) => (await (await app.request(`/api/t3/threads?shelf=1&threadId=${threadId}`)).json()) as Array<{ id: string; archivedAt: string | null }>;
+  assert.deepEqual((await one(archived)).map((row) => [row.id, Boolean(row.archivedAt)]), [[archived, true]]);
+  assert.deepEqual(await one(active), []);
+  assert.deepEqual(await one(seated), []);
 
   const overview = (await (await app.request("/api/overview")).json()) as { threads: Array<{ id: string }>; shelf: Array<{ projectId: string; settled: number; archived: number | null }> };
   assert.deepEqual(overview.shelf.find((count) => count.projectId === "project_demo"), { projectId: "project_demo", settled: 1, archived: 1 });

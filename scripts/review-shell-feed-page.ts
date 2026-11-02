@@ -104,7 +104,7 @@ try {
       const original = window.fetch;
       window.fetch = async (...args) => {
         const response = await original(...args);
-        if (String(args[0]).startsWith("/api/t3/projects") || String(args[0]).startsWith("/api/t3/threads")) window.__reviewFallback.push({ url: String(args[0]), status: response.status });
+        if (String(args[0]).startsWith("/api/t3/projects") || String(args[0]).startsWith("/api/overview")) window.__reviewFallback.push({ url: String(args[0]), status: response.status });
         return response;
       };
     }`);
@@ -131,7 +131,9 @@ try {
     const reads = JSON.parse(/\x60\x60\x60json\s*([\s\S]*?)\s*\x60\x60\x60/.exec(readsOutput)![1]!) as Array<{ url: string; status: number }>;
     console.log("Successful fallback released, no new page action:", after, "list responses:", reads);
     assert.ok(reads.some((read) => read.url === "/api/t3/projects" && read.status === 200), "projects read succeeded");
-    assert.ok(reads.some((read) => read.url.startsWith("/api/t3/threads") && read.status === 200), "threads read succeeded");
+    // T3's threads come to the page in the overview's read (App.tsx); it never reads T3's whole thread list.
+    assert.ok(reads.some((read) => read.url === "/api/overview" && read.status === 200), "overview read succeeded");
+    assert.ok(!reads.some((read) => read.url.startsWith("/api/t3/threads")), "no read of T3's thread list");
     await command(tab, "screenshot", "--out", join(out, "retry-invalidates-fallback.png"));
     assert.equal(after.feed, "down");
     assert.equal(after.banner, "feed", "a successful read begun during this outage must apply despite a second down notification");

@@ -311,7 +311,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   });
   /**
    * T3's active threads, for the pickers. ?shelf=1 answers instead the overview's shelf (Overview.tsx, ThreadShelf):
-   * the settled and archived threads outside rooms, a few fields each; its archived part is best effort.
+   * the settled and archived threads outside rooms, a few fields each; its archived part is best effort. With
+   * &threadId= it is that thread's row alone, if it is on the shelf (the open thread's lifecycle, App.tsx).
    */
   app.get("/api/t3/threads", async (c) => {
     const projectId = c.req.query("projectId") || undefined;
@@ -322,8 +323,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         console.warn(`[backroom] archived threads not read: ${(error as Error).message}`);
         return [];
       });
+      const threadId = c.req.query("threadId");
       const shelved = [...threads.filter((t) => t.settledAt), ...archived.filter((t) => !projectId || t.projectId === projectId)];
-      return c.json(shelved.filter((t) => isLoose(t, bound)).map(shelfThread));
+      return c.json(shelved.filter((t) => isLoose(t, bound) && (!threadId || t.id === threadId)).map(shelfThread));
     }
     return c.json(threads.map((t) => ({ ...t, backgroundLiveness: backgroundOf(t), boundToRoom: bound.has(t.id) })));
   });

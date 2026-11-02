@@ -29,7 +29,7 @@ import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
 import { overviewThreads } from "./seenNews.ts";
 import type { Selection } from "./selection.ts";
-import { isRunActive, type BrowserListItem, type CommandResult, type Overview as OverviewRead, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project } from "./types.ts";
+import { isRunActive, type BrowserListItem, type CommandResult, type EngineShelfThread, type Overview as OverviewRead, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project } from "./types.ts";
 
 const SELECTION_KEY = "backroom.selection";
 /** Where the selected room was kept before threads could be selected too. */
@@ -70,8 +70,6 @@ export function App() {
   // (page clock): a read started during the outage that succeeded is what words the banner as T3's lists read the slow way.
   const [listsReadAt, setListsReadAt] = useState<number | null>(null);
   const [outageSince, setOutageSince] = useState<number | null>(null);
-  // T3 serves an archived thread's conversation only after it is unarchived; such a selection gets its own panel.
-  const selectedArchived = selection?.kind === "thread" ? (selection.archived ?? null) : null;
   // The open room's side panel (Members, Browser, Git); the Git tab reads in full only while it shows.
   const [roomPanel, setRoomPanel] = useState<InspectorTab | null>(null);
   const [pairingOpen, setPairingOpen] = useState(false);
@@ -399,6 +397,29 @@ export function App() {
   // The threads outside rooms as the overview read them, less what this page has marked seen since (seenNews.ts).
   const looseThreads = useMemo(() => overviewThreads(overview?.threads ?? [], seenThreads), [overview, seenThreads]);
   const openThreadAt = openThreadId ? looseThreads.find((t) => t.id === openThreadId)?.news?.at : undefined;
+  // The open thread's shelf row: whether it is settled or archived, and its title, read again after every read of the
+  // overview while it is not one of the overview's active threads (a change made elsewhere comes with a shell push). The
+  // row it was opened from stands until the first read; what opened it is never the truth of its lifecycle.
+  const [openRow, setOpenRow] = useState<{ id: string; row: EngineShelfThread | null } | null>(null);
+  const openThreadActive = openThreadId !== null && (overview?.threads.some((thread) => thread.id === openThreadId) ?? false);
+  useEffect(() => {
+    if (!openThreadId) return;
+    if (openThreadActive) {
+      setOpenRow({ id: openThreadId, row: null });
+      return;
+    }
+    let live = true;
+    api.shelfRow(openThreadId).then(
+      (row) => live && setOpenRow({ id: openThreadId, row }),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [openThreadId, openThreadActive, overview]);
+  const shelfRow = openRow && openRow.id === openThreadId ? openRow.row : null;
+  // T3 serves an archived thread's conversation only after it is unarchived; such a thread gets its own panel.
+  const selectedArchived = shelfRow?.archivedAt ? shelfRow : null;
   useEffect(() => {
     if (!openRoomId || openRoomSeq === undefined || !lookingHere) return;
     api.markRoomSeen(openRoomId, openRoomSeq).then(
@@ -596,7 +617,7 @@ export function App() {
     selection?.kind === "room"
       ? `Room ${rooms.find((room) => room.id === selection.id)?.title ?? ""}`.trim()
       : selection?.kind === "thread"
-        ? `Thread ${selection.archived?.title ?? looseThreads.find((thread) => thread.id === selection.id)?.title ?? ""}`.trim()
+        ? `Thread ${looseThreads.find((thread) => thread.id === selection.id)?.title ?? shelfRow?.title ?? ""}`.trim()
         : `Browser ${browsers?.find((browser) => browser.id === selection?.id)?.name ?? ""}`.trim();
 
   // The drawer's page for what is selected besides a room: a thread or a browser.
@@ -614,7 +635,7 @@ export function App() {
             project={projects?.find((p) => p.id === selectedArchived.projectId) ?? null}
             runCommand={runCommand}
             onUnarchived={() => {
-              setSelection({ kind: "thread", id: selectedArchived.id });
+              setOpenRow({ id: selectedArchived.id, row: null });
               loadOverview();
             }}
             onGone={() => {
@@ -635,7 +656,7 @@ export function App() {
             }}
             onChanged={loadOverview}
             onArchived={(archived) => {
-              setSelection({ kind: "thread", id: archived.id, archived });
+              setOpenRow({ id: archived.id, row: archived });
               loadOverview();
             }}
             onOpenRoom={(roomId) => {
@@ -692,7 +713,10 @@ export function App() {
           browsers={browsers}
           controls={appControls}
           onOpenRoom={(roomId) => openInDrawer({ kind: "room", id: roomId })}
-          onOpenThread={(threadId, archived) => openInDrawer(archived ? { kind: "thread", id: threadId, archived } : { kind: "thread", id: threadId })}
+          onOpenThread={(threadId, row) => {
+            setOpenRow(row ? { id: threadId, row } : null);
+            openInDrawer({ kind: "thread", id: threadId });
+          }}
           onOpenBrowser={(browserId) => openInDrawer({ kind: "browser", id: browserId })}
           onSeatPreset={seatPreset}
           onCommand={runCommand}

@@ -82,8 +82,8 @@ export function Overview({
   /** The shared browsers on this machine; null when the service cannot run browsers. */
   browsers: BrowserListItem[] | null;
   onOpenRoom: (roomId: string) => void;
-  /** A thread's tile, or a row of its project's shelf: an archived thread's row is what its panel shows. */
-  onOpenThread: (threadId: string, archived?: EngineShelfThread) => void;
+  /** A thread's tile, or a row of its project's shelf (what the drawer shows until it reads the thread's own). */
+  onOpenThread: (threadId: string, shelfRow?: EngineShelfThread) => void;
   onOpenBrowser: (browserId: string) => void;
   onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
@@ -305,7 +305,7 @@ export function Overview({
                   ),
                 )}
               </ProjectTiles>
-              {known ? <ThreadShelf projectId={project.id} count={overview?.shelf.find((count) => count.projectId === project.id) ?? null} drafted={(threadId) => drafts.has(threadKey(threadId))} onOpen={(thread) => onOpenThread(thread.id, thread.archivedAt ? thread : undefined)} /> : null}
+              {known ? <ThreadShelf projectId={project.id} count={overview?.shelf.find((count) => count.projectId === project.id) ?? null} drafted={(threadId) => drafts.has(threadKey(threadId))} onOpen={(thread) => onOpenThread(thread.id, thread)} /> : null}
             </section>
           );
         })}

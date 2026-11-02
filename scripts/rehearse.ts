@@ -3034,6 +3034,9 @@ async function rehearsePageReads(service: Service, browser: Browser, room: Room,
 
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const drawerShows = (what: string, test: string) => browser.poll<boolean>(what, `() => document.querySelector('.ov-drawer')?.dataset.id === ${JSON.stringify(threadId)} && ${test}`, (v) => v, 10_000);
+  /** The drawer's accessible name, as assistive technology says it when the focus goes in. */
+  const drawerName = () => browser.eval<string | null>("() => document.querySelector('.ov-drawer')?.getAttribute('aria-label') ?? null");
+  const named = `Thread ${title}`;
   await service.command({ type: "thread.lifecycle", threadId, action: "settle" });
   backHome();
   browser.poll<boolean>("the settled count under the demo project", `() => /Settled · [1-9]/.test(document.querySelector('[data-nav-key="shelf:project_demo:settled"]')?.textContent ?? '')`, (v) => v, 10_000);
@@ -3041,18 +3044,41 @@ async function rehearsePageReads(service: Service, browser: Browser, room: Room,
   browser.waitFor(title);
   browser.click(new RegExp(`button "${escaped}`));
   drawerShows("the settled thread open in the drawer", "Boolean(document.querySelector('.ov-drawer .thread-header')) && !document.querySelector('.ov-drawer .archived-thread')");
+  const settledName = drawerName();
+  // Archived elsewhere while it is open here: the drawer follows on the shell push, before the page goes back.
   await service.command({ type: "thread.lifecycle", threadId, action: "archive" });
+  drawerShows("the archived panel in place of the settled thread's conversation", "Boolean(document.querySelector('.ov-drawer .archived-thread'))");
   backHome();
   browser.poll<boolean>("the archived count under the demo project", `() => /Archived · [1-9]/.test(document.querySelector('[data-nav-key="shelf:project_demo:archived"]')?.textContent ?? '')`, (v) => v, 10_000);
   browser.click(/button "Archived · \d+"/);
   browser.poll<boolean>("the archived thread's row on the shelf", `() => [...document.querySelectorAll('.ov-thread-title')].some((t) => t.textContent === ${JSON.stringify(title)})`, (v) => v, 10_000);
   browser.click(new RegExp(`button "${escaped}`));
   drawerShows("the archived panel in the drawer", "Boolean(document.querySelector('.ov-drawer .archived-thread'))");
+  const archivedName = drawerName();
   await state(
-    "the overview's shelf: a settled thread outside rooms is counted, its rows are read when opened and its row opens it; archived, the same under Archived",
+    "the overview's shelf: a settled thread outside rooms is counted, its rows are read when opened and its row opens it, the drawer named by its title; archived, the same under Archived",
     async () => ((await service.call<Array<{ id: string; archivedAt: string | null }>>("GET", "/api/t3/threads?shelf=1&projectId=project_demo")).some((t) => t.id === threadId && t.archivedAt) ? `GET /api/t3/threads?shelf=1: ${threadId.slice(0, 8)} archived` : null),
     ["Archived in T3", "Unarchive"],
-    () => log("  page: settled, the thread was counted, its row listed on opening and opened its conversation; archived, the same under Archived, opening its archived panel"),
+    () => {
+      if (settledName !== named) fail(`the drawer of the thread opened from Settled is named ${JSON.stringify(settledName)}, not ${JSON.stringify(named)}`);
+      if (archivedName !== named) fail(`the drawer of the thread opened from Archived is named ${JSON.stringify(archivedName)}, not ${JSON.stringify(named)}`);
+      log(`  page: settled, the thread was counted, its row listed on opening and opened its conversation; archived, the same under Archived, opening its archived panel; the drawer named "${named}" both times`);
+    },
+  );
+
+  // Unarchived elsewhere (T3, another page) while its archived panel is open here: back to settled.
+  await service.command({ type: "thread.lifecycle", threadId, action: "unarchive" });
+  drawerShows("the thread's conversation back in the drawer", "Boolean(document.querySelector('.ov-drawer .thread-header')) && !document.querySelector('.ov-drawer .archived-thread')");
+  await state(
+    "an archived thread open in the drawer follows its unarchiving elsewhere: the shell push brings back its conversation, the drawer still named by its title",
+    // It was settled before it was archived: it comes back settled.
+    async () => ((await service.call<Array<{ id: string; settledAt: string | null; archivedAt: string | null }>>("GET", `/api/t3/threads?shelf=1&threadId=${threadId}`)).some((t) => t.settledAt && !t.archivedAt) ? `GET /api/t3/threads?shelf=1&threadId=: ${threadId.slice(0, 8)} settled, not archived` : null),
+    [],
+    () => {
+      const name = drawerName();
+      if (name !== named) fail(`the drawer is named ${JSON.stringify(name)}, not ${JSON.stringify(named)}`);
+      log(`  page: the archived panel gave way to the thread's conversation without a click; the drawer named "${name}"`);
+    },
   );
   backHome();
   return passed;
