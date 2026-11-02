@@ -37,10 +37,13 @@ const same: Array<true> = [
   true satisfies Same<Journal<Web.RoomSnapshot>, Journal<Server.EngineRoomSnapshot>>,
   true satisfies Same<Omit<Web.RoomListItem, RoomPart>, Omit<Server.EngineRoomListItem, RoomPart>>,
   true satisfies Same<Omit<Web.OverviewRoom, "members">, Omit<Server.EngineOverviewRoom, "members">>,
+  true satisfies Same<Web.EngineShelfCount, Server.EngineShelfCount>,
+  true satisfies Same<Web.EngineShelfThread, Server.EngineShelfThread>,
+  true satisfies Same<Omit<Web.Overview, "rooms" | "threads">, Omit<Server.EngineOverview, "rooms" | "threads">>,
   true satisfies Same<Omit<Web.OverviewRoom["members"][number], "modelSelection" | "status">, Omit<OverviewMember, "modelSelection" | "status">>,
   true satisfies Same<Omit<Web.RoomCosts, "room" | "participants" | "replies" | "openTurns" | "contexts">, Omit<Server.EngineRoomCosts, "room" | "participants" | "replies" | "openTurns" | "contexts">>,
 ];
 
 test("the web's copies of the read API's shapes match src/domain/engineView.ts (checked by npm run typecheck)", () => {
-  assert.equal(same.length, 24);
+  assert.equal(same.length, 27);
 });

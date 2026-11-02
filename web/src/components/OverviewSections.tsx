@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from "react";
-import type { BrowserListItem, CommandResult, Preset, RoomCommand, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api.ts";
+import type { BrowserListItem, CommandResult, EngineShelfCount, EngineShelfThread, Preset, RoomCommand, RoomListItem, T3Project } from "../types.ts";
 import { BrowserFormDialog } from "./BrowserForm.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ChevronIcon, PlusIcon } from "./icons.tsx";
@@ -129,29 +130,52 @@ export function BrowsersSection({ browsers, onOpen, onChanged, runCommand }: { b
   );
 }
 
-/** A project's settled and archived threads (T3's done list and its hidden one), folded under its tiles until opened. */
-export function ThreadShelf({ settled, archived, drafted, onOpen }: { settled: T3ThreadShell[]; archived: T3ThreadShell[]; drafted: (threadId: string) => boolean; onOpen: (threadId: string) => void }) {
+/**
+ * A project's settled and archived threads (T3's done list and its hidden one), folded under its tiles until opened. The
+ * overview's read counts them; the rows are read when a section opens, and again while it is open when a count moves.
+ */
+export function ThreadShelf({ projectId, count, drafted, onOpen }: { projectId: string; count: EngineShelfCount | null; drafted: (threadId: string) => boolean; onOpen: (thread: EngineShelfThread) => void }) {
   const [open, setOpen] = useState<"settled" | "archived" | null>(null);
-  if (settled.length + archived.length === 0) return null;
+  const [rows, setRows] = useState<EngineShelfThread[] | null>(null);
+  const settledCount = count?.settled ?? 0;
+  const archivedCount = count?.archived ?? null;
+  useEffect(() => {
+    if (!open) return;
+    // Only the latest read lands: one begun before a count moved, or before the section closed, is dropped.
+    let live = true;
+    api.shelf(projectId).then(
+      (next) => live && setRows(next),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [open, projectId, settledCount, archivedCount]);
+  // Archived unknown (T3 would not list them): the section is offered, uncounted.
+  if (!count || (settledCount === 0 && archivedCount === 0)) return null;
+  const settled = (rows ?? []).filter((t) => t.settledAt && !t.archivedAt).sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
+  const archived = (rows ?? []).filter((t) => t.archivedAt).sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
   const shown = open === "settled" ? settled : open === "archived" ? archived : [];
-  const toggle = (section: "settled" | "archived", count: number, title: string) =>
-    count > 0 ? (
-      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)} data-nav="ov" data-nav-key={`shelf:${(settled[0] ?? archived[0])?.projectId}:${section}`} data-where={`${section === "settled" ? "Settled" : "Archived"} threads · ${count}`}>
+  const toggle = (section: "settled" | "archived", count: number | null, title: string) =>
+    count !== 0 ? (
+      <button type="button" className="thread-section-toggle mono" aria-expanded={open === section} title={title} onClick={() => setOpen(open === section ? null : section)} data-nav="ov" data-nav-key={`shelf:${projectId}:${section}`} data-where={`${section === "settled" ? "Settled" : "Archived"} threads${typeof count === "number" ? ` · ${count}` : ""}`}>
         <ChevronIcon dir={open === section ? "down" : "right"} />
-        {section === "settled" ? "Settled" : "Archived"} · {count}
+        {section === "settled" ? "Settled" : "Archived"}
+        {typeof count === "number" ? ` · ${count}` : ""}
       </button>
     ) : null;
   return (
     <div className="ov-thread-shelf">
       <div className="ov-thread-shelf-toggles">
-        {toggle("settled", settled.length, "Threads in T3's settled list: done for now. Sending one a message makes it active again.")}
-        {toggle("archived", archived.length, "Threads archived in T3: hidden there, reversible. Open one to unarchive or delete it.")}
+        {toggle("settled", settledCount, "Threads in T3's settled list: done for now. Sending one a message makes it active again.")}
+        {toggle("archived", archivedCount, "Threads archived in T3: hidden there, reversible. Open one to unarchive or delete it.")}
       </div>
+      {open && rows === null ? <p className="muted mono ov-loading">reading…</p> : null}
       {shown.length > 0 ? (
         <ul className="ov-threads">
           {shown.map((thread) => (
             <li key={thread.id}>
-              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.modelSelection.model}`} onClick={() => onOpen(thread.id)} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
+              <button type="button" className="ov-thread" title={`${thread.title}\n${thread.model}`} onClick={() => onOpen(thread)} data-nav="ov" data-nav-key={`thread:${thread.id}`} data-where={thread.title}>
                 <span className="ov-thread-title">{thread.title}</span>
                 {drafted(thread.id) ? (
                   <span className="pill pill-draft" title="You have an unsent message here">

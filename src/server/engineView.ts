@@ -22,7 +22,7 @@ import { ROOM_NOTE } from "../briefing/envelope.ts";
 import type { Repos } from "../db/repos.ts";
 import type {
   EngineActivityView, EngineBlockedView, EngineBoardPage, EngineClaim, EngineMemberStatus, EngineNews, EngineNoticeMarks,
-  EngineOverview, EngineOverviewMember, EngineOverviewRoom, EnginePost, EnginePostKind, EngineRef, EngineRequestView,
+  EngineOverview, EngineOverviewMember, EngineOverviewRoom, EngineShelfCount, EngineShelfThread, EnginePost, EnginePostKind, EngineRef, EngineRequestView,
   EngineRoomCosts, EngineRoomCounts, EngineRoomListItem, EngineRoomSnapshot, EngineRunDetail, EngineRunView,
   EngineSeatView, EngineStreamData, EngineT3Ref, EngineTime,
 } from "../domain/engineView.ts";
@@ -794,11 +794,29 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
   const pollMs = options.pollMs ?? 1000;
   const shellsMs = options.shellsMs ?? 1000;
   let shellsMemo: { at: number; value: Promise<Map<string, T3ThreadShell> | null> } | null = null;
-  // A change of T3's threads (or of reaching T3) told to the pages drops the memo first: the read a page makes on it is
+  // T3's archived threads, for the shelf's counts: read once per change of T3's threads (archiving, unarchiving and
+  // deleting are each one), not on every overview read; null when T3 would not list them, and read again next time.
+  let archivedMemo: Promise<T3ThreadShell[] | null> | null = null;
+  // A change of T3's threads (or of reaching T3) told to the pages drops the memos first: the read a page makes on it is
   // T3's threads as they are now, not as they were up to a second before.
   stack.changes.observe((event) => {
-    if (event.type === "shell" || event.type === "status") shellsMemo = null;
+    if (event.type === "shell" || event.type === "status") {
+      shellsMemo = null;
+      archivedMemo = null;
+    }
   });
+  const archivedShells = (): Promise<T3ThreadShell[] | null> => {
+    if (archivedMemo) return archivedMemo;
+    const read: Promise<T3ThreadShell[] | null> = adapter.listArchivedThreads().then(
+      (list) => list,
+      () => {
+        if (archivedMemo === read) archivedMemo = null;
+        return null;
+      },
+    );
+    archivedMemo = read;
+    return read;
+  };
   const shells = (): Promise<Map<string, T3ThreadShell> | null> => {
     if (shellsMemo && Date.now() - shellsMemo.at < shellsMs) return shellsMemo.value;
     const value = adapter.listThreads().then((list) => new Map(list.map((s) => [s.id, s])), () => null);
@@ -990,7 +1008,9 @@ export function mountEngineView(app: Hono, stack: AppStack, costs: ThreadCosts, 
         return { id: room.id, projectId: room.projectId, title: room.title, consigliereId: room.consigliereId, needs: counted(room, view).needsYou, members, state: state ? { line: state.line, by: state.by, at: state.at } : null, updatedAt: room.updatedAt };
       }),
     );
-    const overview: EngineOverview = { rooms, threads: await looseThreads(stack, list), readAt: new Date().toISOString() };
+    const [threads, archived] = await Promise.all([looseThreads(stack, list), archivedShells()]);
+    const shelf = shelfCounts(stack, list, archived);
+    const overview: EngineOverview = { rooms, threads, shelf, readAt: new Date().toISOString() };
     return c.json(overview);
   });
 
@@ -1067,16 +1087,34 @@ async function liveLine(adapter: T3Adapter, threadId: string): Promise<string | 
   return null;
 }
 
-/** Threads outside rooms (they are on no journal): live line or last words, and news. */
+/** A thread used on its own: no room seats it, and it is no member's subagent. The overview and its shelf list these. */
+export const isLoose = (thread: T3ThreadShell, bound: ReadonlySet<string>): boolean => !bound.has(thread.id) && !thread.deletedAt && thread.lineage.relationshipToParent !== "subagent";
+
+/** A settled or archived loose thread as the overview's shelf lists it (GET /api/t3/threads?shelf=1). */
+export const shelfThread = (thread: T3ThreadShell): EngineShelfThread => ({ id: thread.id, projectId: thread.projectId, title: thread.title, model: thread.modelSelection.model, settledAt: thread.settledAt ?? null, archivedAt: thread.archivedAt, updatedAt: thread.updatedAt });
+
+/** Per project, the settled loose threads among T3's active ones and the archived loose threads; the archived read is best effort. */
+function shelfCounts(stack: AppStack, list: Map<string, T3ThreadShell> | null, archivedList: T3ThreadShell[] | null): EngineShelfCount[] {
+  const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
+  const archived = archivedList?.filter((t) => isLoose(t, bound)) ?? null;
+  const counts = new Map<string, EngineShelfCount>();
+  const of = (projectId: string) => counts.get(projectId) ?? counts.set(projectId, { projectId, settled: 0, archived: archived ? 0 : null }).get(projectId)!;
+  for (const thread of list?.values() ?? []) if (isLoose(thread, bound) && thread.settledAt && !thread.archivedAt) of(thread.projectId).settled += 1;
+  for (const thread of archived ?? []) of(thread.projectId).archived! += 1;
+  return [...counts.values()];
+}
+
+/** Threads outside rooms (they are on no journal), every one: live line or last words for the first forty, and news. */
 async function looseThreads(stack: AppStack, list: Map<string, T3ThreadShell> | null): Promise<unknown[]> {
   const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
-  const loose = [...(list?.values() ?? [])].filter((t) => !bound.has(t.id) && !t.archivedAt && !t.settledAt && !t.deletedAt && t.lineage.relationshipToParent !== "subagent").slice(0, 40);
+  const loose = [...(list?.values() ?? [])].filter((t) => isLoose(t, bound) && !t.archivedAt && !t.settledAt);
   const seen = seenMarks(stack.repos);
   return Promise.all(
-    loose.map(async (thread) => {
+    loose.map(async (thread, index) => {
       let line: string | null = null;
       try {
-        const detail = await stack.adapter.getThreadDetail(thread.id, { bounded: true });
+        // Each line is a read of the thread from T3: forty at most per overview read.
+        const detail = index < 40 ? await stack.adapter.getThreadDetail(thread.id, { bounded: true }) : null;
         const running = detail ? runningRun(detail) : null;
         if (detail && running) line = await liveLine(stack.adapter, thread.id);
         else if (detail) {

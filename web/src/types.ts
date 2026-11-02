@@ -337,6 +337,32 @@ export interface OverviewThread {
   news: { at: string; state: "completed" | "error" } | null;
 }
 
+/** GET /api/overview: per project, how many threads outside rooms are settled and archived (EngineShelfCount); archived null when T3 would not list them. */
+export interface EngineShelfCount {
+  projectId: string;
+  settled: number;
+  archived: number | null;
+}
+
+/** GET /api/t3/threads?shelf=1: a settled or archived thread outside rooms, as the overview's shelf lists it (EngineShelfThread). */
+export interface EngineShelfThread {
+  id: string;
+  projectId: string;
+  title: string;
+  model: string;
+  settledAt: string | null;
+  archivedAt: string | null;
+  updatedAt: string;
+}
+
+/** GET /api/overview (EngineOverview). */
+export interface Overview {
+  rooms: OverviewRoom[];
+  threads: OverviewThread[];
+  shelf: EngineShelfCount[];
+  readAt: string;
+}
+
 /** GET /api/overview: every room with its members and what each is doing, for Look → Overview (EngineOverviewRoom). */
 export interface OverviewRoom {
   id: string;

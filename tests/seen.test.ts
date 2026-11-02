@@ -25,7 +25,12 @@ test("a thread outside rooms has news when its turn finishes after it was last s
   const stack = await createTestStack();
   t.after(() => stack.close());
   const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-seen", ROOMS_PORT: "0" }), "/nonexistent/dist");
-  const threads = async () => (await (await app.request("/api/t3/threads")).json()) as Array<{ id: string; news: { at: string; state: string } | null }>;
+  // The overview's threads outside rooms carry their news: the tiles, the tab's count and the finish notifications (App.tsx).
+  // Each read follows a change of T3's threads, as the page's reads do (the push that has it read again).
+  const threads = async () => {
+    stack.changes.shellChanged();
+    return ((await (await app.request("/api/overview")).json()) as { threads: Array<{ id: string; news: { at: string; state: string } | null }> }).threads;
+  };
 
   await later();
   const { threadId } = (await stack.run({ type: "thread.start", projectId: "project_demo", text: "hi", modelSelection: { instanceId: "codex", model: "gpt-6-sol" } })) as { threadId: string };
@@ -39,7 +44,7 @@ test("a thread outside rooms has news when its turn finishes after it was last s
   const list = await threads();
   const loose = list.find((x) => x.id === threadId)?.news;
   assert.equal(loose?.state, "completed");
-  assert.equal(list.find((x) => x.id === stack.threadOf("sol1"))?.news, null, "a seated thread's turns are the room's news");
+  assert.equal(list.find((x) => x.id === stack.threadOf("sol1")), undefined, "a seated thread's turns are the room's news");
 
   await app.request("/api/seen", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: `thread:${threadId}`, at: loose!.at }) });
   assert.equal((await threads()).find((x) => x.id === threadId)?.news, null);

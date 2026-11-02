@@ -2260,6 +2260,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 27. The thread streams (C, #349): a running turn's new item shows in the member's live turn and its thread at once.
   check.passed.push(...(await rehearseThreadPush(service, browser, room, selection, section)));
 
+  // 28. What the page reads (#354): a shell push reads no whole thread list; the overview's shelf reads its rows when opened.
+  check.passed.push(...(await rehearsePageReads(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -2979,6 +2982,79 @@ async function rehearseThreadPush(service: Service, browser: Browser, room: Room
   browser.click(/button "Back to the room"/);
   await room.finish("fable", "src/dates.ts has 820 lines.");
   await room.settle("fable");
+  return passed;
+}
+
+/**
+ * What the page reads (#354). A shell push (a thread outside rooms started and finished through the API) has the page
+ * read T3's projects, the overview and the open room's snapshot, and never T3's whole thread list; each read's bytes on
+ * the wire and in full are logged, per push. Then the overview's shelf: that thread, settled, is counted under its
+ * project, its section reads its rows when opened, and its row opens the thread; archived, the same under Archived, its
+ * row opening the archived panel. Its section begins here, before its states.
+ */
+async function rehearsePageReads(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("push: a shell push reads T3's projects, the overview and the open room's snapshot, never T3's whole thread list"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const backHome = () => {
+    if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+  };
+  // In the room, as the user had it when a room took ten seconds to open.
+  if (browser.eval<string | null>("() => document.querySelector('.sheet-title h1')?.textContent ?? null") !== room.title) {
+    backHome();
+    browser.openRoom(room.title);
+  }
+  browser.poll<string | null>("the page's stream to be open", "() => document.documentElement.dataset.stream ?? null", (v) => v === "open", 10_000);
+  browser.on("eval", "() => { performance.setResourceTimingBufferSize(100000); performance.clearResourceTimings(); return true; }");
+  const { threadId } = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "Sort the release notes." });
+  await until("T3 to finish the thread", async () => (await service.call<{ thread: { status: string } }>("GET", `/api/threads/${threadId}`)).thread.status === "completed");
+  const title = (await service.call<{ thread: { title: string } }>("GET", `/api/threads/${threadId}`)).thread.title;
+  // The fake T3 is checked every 2 s: its pushes for the thread's start and finish have come, and the page's reads.
+  execFileSync("sleep", ["4"]);
+  const reads = browser.eval<Array<{ path: string; query: string; wire: number; full: number }>>(
+    "() => performance.getEntriesByType('resource').map((e) => ({ url: new URL(e.name), wire: e.transferSize, full: e.decodedBodySize })).filter((e) => e.url.pathname.startsWith('/api/')).map((e) => ({ path: e.url.pathname, query: e.url.search, wire: e.wire, full: e.full }))",
+  );
+  await state(
+    "push: a shell push reads T3's projects, the overview and the open room's snapshot, never T3's whole thread list",
+    async () => ((await service.call<{ threads: Array<{ id: string }> }>("GET", "/api/overview")).threads.some((t) => t.id === threadId) ? `GET /api/overview: the thread ${threadId.slice(0, 8)} is outside rooms` : null),
+    [],
+    () => {
+      const pushes = reads.filter((r) => r.path === "/api/overview").length;
+      const named = (path: string) => reads.filter((r) => r.path === path);
+      const sum = (list: typeof reads, key: "wire" | "full") => list.reduce((total, r) => total + r[key], 0);
+      const pushed = [...named("/api/t3/projects"), ...named("/api/overview"), ...named(`/api/rooms/${room.roomId}`)];
+      log(`  page: ${reads.length} reads in the 4 s after the thread's start: ${reads.map((r) => `${r.path}${r.query} ${r.wire} B on the wire, ${r.full} B in full`).join("; ")}`);
+      if (pushes > 0) log(`  page: per push (${pushes}): ${Math.round(sum(pushed, "wire") / pushes)} B on the wire, ${Math.round(sum(pushed, "full") / pushes)} B in full (T3's projects, the overview, the room's snapshot)`);
+      const whole = reads.filter((r) => r.path === "/api/t3/threads" && !/[?&]shelf=1/.test(r.query));
+      if (whole.length > 0) fail(`the page read T3's whole thread list ${whole.length} time(s) on a shell push: ${whole.map((r) => `${r.path}${r.query} (${r.full} B)`).join(", ")}`);
+      if (pushes === 0) fail("the page did not read the overview on the shell push");
+      if (named(`/api/rooms/${room.roomId}`).length === 0) fail("the page did not read the open room's snapshot on the shell push");
+    },
+  );
+
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const drawerShows = (what: string, test: string) => browser.poll<boolean>(what, `() => document.querySelector('.ov-drawer')?.dataset.id === ${JSON.stringify(threadId)} && ${test}`, (v) => v, 10_000);
+  await service.command({ type: "thread.lifecycle", threadId, action: "settle" });
+  backHome();
+  browser.poll<boolean>("the settled count under the demo project", `() => /Settled · [1-9]/.test(document.querySelector('[data-nav-key="shelf:project_demo:settled"]')?.textContent ?? '')`, (v) => v, 10_000);
+  browser.click(/button "Settled · \d+"/);
+  browser.waitFor(title);
+  browser.click(new RegExp(`button "${escaped}`));
+  drawerShows("the settled thread open in the drawer", "Boolean(document.querySelector('.ov-drawer .thread-header')) && !document.querySelector('.ov-drawer .archived-thread')");
+  await service.command({ type: "thread.lifecycle", threadId, action: "archive" });
+  backHome();
+  browser.poll<boolean>("the archived count under the demo project", `() => /Archived · [1-9]/.test(document.querySelector('[data-nav-key="shelf:project_demo:archived"]')?.textContent ?? '')`, (v) => v, 10_000);
+  browser.click(/button "Archived · \d+"/);
+  browser.poll<boolean>("the archived thread's row on the shelf", `() => [...document.querySelectorAll('.ov-thread-title')].some((t) => t.textContent === ${JSON.stringify(title)})`, (v) => v, 10_000);
+  browser.click(new RegExp(`button "${escaped}`));
+  drawerShows("the archived panel in the drawer", "Boolean(document.querySelector('.ov-drawer .archived-thread'))");
+  await state(
+    "the overview's shelf: a settled thread outside rooms is counted, its rows are read when opened and its row opens it; archived, the same under Archived",
+    async () => ((await service.call<Array<{ id: string; archivedAt: string | null }>>("GET", "/api/t3/threads?shelf=1&projectId=project_demo")).some((t) => t.id === threadId && t.archivedAt) ? `GET /api/t3/threads?shelf=1: ${threadId.slice(0, 8)} archived` : null),
+    ["Archived in T3", "Unarchive"],
+    () => log("  page: settled, the thread was counted, its row listed on opening and opened its conversation; archived, the same under Archived, opening its archived panel"),
+  );
+  backHome();
   return passed;
 }
 

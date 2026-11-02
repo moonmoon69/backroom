@@ -175,7 +175,7 @@ test("threads can be settled and archived and brought back; archived ones are li
 
   await stack.run({ type: "thread.lifecycle", threadId, action: "archive" });
   assert.equal(await listed(), undefined, "T3 leaves archived threads out of the live list");
-  assert.ok((await listed("?includeArchived=1"))?.archivedAt, "listed as archived on request");
+  assert.ok((await listed("?shelf=1"))?.archivedAt, "listed as archived on the overview's shelf");
   // T3 V2 reads a thread by id whether or not it is archived, so its conversation can still be opened.
   const archived = await app.request(`/api/threads/${threadId}`);
   assert.equal(archived.status, 200);

@@ -17,14 +17,10 @@ test("a thread marked seen on the page has no news in the overview's read until 
 test("the overview's threads: a thread just marked seen has lost its news at once, though the overview's read still carries it", () => {
   const at = "2026-10-11T12:00:00.000Z";
   const news = { at, state: "completed" as const };
-  // The overview's own read, from before the mark landed; T3's list stands in for a thread the read left out.
+  // The overview's own read, from before the mark landed.
   const read = [{ id: "looked-at", news }, { id: "other", news }];
-  const standIn = [{ id: "looked-at", news: null }, { id: "left-out", news }];
   const seen = new Map([["looked-at", at]]);
-  assert.deepEqual(overviewThreads(read, standIn, seen), [{ id: "looked-at", news: null }, { id: "other", news }, { id: "left-out", news }]);
-  // A stand-in read before the mark loses it too; before the overview's first read, the stand-ins alone.
-  assert.deepEqual(overviewThreads(null, [{ id: "looked-at", news }], seen), [{ id: "looked-at", news: null }]);
+  assert.deepEqual(overviewThreads(read, seen), [{ id: "looked-at", news: null }, { id: "other", news }]);
   // Nothing marked: the read's news as it is.
-  assert.deepEqual(overviewThreads(read, [], new Map()), read);
+  assert.deepEqual(overviewThreads(read, new Map()), read);
 });
-

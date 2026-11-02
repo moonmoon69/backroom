@@ -427,7 +427,26 @@ export interface EngineOverviewRoom {
 export interface EngineOverview {
   rooms: EngineOverviewRoom[];
   threads: unknown[];
+  /** Per project, how many threads outside rooms are settled and archived: the shelf's counts (`archived` null when T3's archived list could not be read). */
+  shelf: EngineShelfCount[];
   readAt: string;
+}
+
+export interface EngineShelfCount {
+  projectId: string;
+  settled: number;
+  archived: number | null;
+}
+
+/** GET /api/t3/threads?shelf=1: a settled or archived thread outside rooms, as the overview's shelf lists it. */
+export interface EngineShelfThread {
+  id: string;
+  projectId: string;
+  title: string;
+  model: string;
+  settledAt: string | null;
+  archivedAt: string | null;
+  updatedAt: string;
 }
 
 /** SSE data of "hello" and "room.changed": the room and its journal head when the event was sent. */

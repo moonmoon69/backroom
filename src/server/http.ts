@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
+import { compress } from "hono/compress";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { AppStack } from "../app/bootstrap.ts";
 import type { T3Credential } from "../app/t3Credential.ts";
@@ -55,10 +56,10 @@ import { roomFolders as listRoomFolders } from "../git/workspaces.ts";
 import type { Config } from "../config.ts";
 import { ThreadCosts } from "../usage/threadCosts.ts";
 import type { ContextMeter } from "../domain/contextMeter.ts";
-import { SEEN_KEY, isAfter, markSeen, seenMarks } from "../app/seen.ts";
+import { SEEN_KEY, markSeen } from "../app/seen.ts";
 import { roomStateView } from "../app/roomState.ts";
 import { orderProjects } from "../app/service.ts";
-import { mountEngineView, startedByHost } from "./engineView.ts";
+import { isLoose, mountEngineView, shelfThread, startedByHost } from "./engineView.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
 
 /** Agents' browser tools (bin/rooms-browser): the engine, the token the CLI presents, and the command briefings name. */
@@ -70,6 +71,9 @@ export interface BrowserToolsHttp {
 
 export function createHttpApp(stack: AppStack, config: Config, webDistDir: string, browserTools?: BrowserToolsHttp, t3Credential?: T3Credential | null): Hono {
   const app = new Hono();
+  // gzip for what compresses (JSON, scripts, styles, HTML) when the client takes it; the event streams and binary files
+  // are left as they are (Hono's content-type filter).
+  app.use(compress());
   const httpAdapter = stack.adapter.kind === "http" ? (stack.adapter as HttpT3Adapter) : null;
   const costs = new ThreadCosts({
     // T3's Orchestrator V2 database (its V1 database, state.sqlite, stays beside it untouched).
@@ -305,28 +309,23 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       throw error;
     }
   });
+  /**
+   * T3's active threads, for the pickers. ?shelf=1 answers instead the overview's shelf (Overview.tsx, ThreadShelf):
+   * the settled and archived threads outside rooms, a few fields each; its archived part is best effort.
+   */
   app.get("/api/t3/threads", async (c) => {
-    const projectId = c.req.query("projectId");
+    const projectId = c.req.query("projectId") || undefined;
     const bound = new Set(stack.repos.listActiveBindings().map((b) => b.threadId));
-    const threads = (await stack.adapter.listThreads(projectId || undefined)).filter((t) => t.archivedAt === null);
-    // ?includeArchived=1 adds T3's archived threads (the sidebar's Archived sections). Their read is best effort: the
-    // live list is still served when it fails.
-    if (c.req.query("includeArchived") === "1" && stack.adapter.listArchivedThreads) {
-      try {
-        threads.push(...(await stack.adapter.listArchivedThreads()).filter((t) => !projectId || t.projectId === projectId));
-      } catch (error) {
+    const threads = (await stack.adapter.listThreads(projectId)).filter((t) => t.archivedAt === null);
+    if (c.req.query("shelf") === "1") {
+      const archived = await stack.adapter.listArchivedThreads().catch((error: unknown) => {
         console.warn(`[backroom] archived threads not read: ${(error as Error).message}`);
-      }
+        return [];
+      });
+      const shelved = [...threads.filter((t) => t.settledAt), ...archived.filter((t) => !projectId || t.projectId === projectId)];
+      return c.json(shelved.filter((t) => isLoose(t, bound)).map(shelfThread));
     }
-    // A thread outside rooms has news when its last run finished (or failed) after you last looked at it. A seated
-    // thread's runs are the room's news; settled and archived threads are done with.
-    const seen = seenMarks(stack.repos);
-    const news = (t: (typeof threads)[number]) => {
-      const at = t.latestRunCompletedAt;
-      if (bound.has(t.id) || t.archivedAt || t.settledAt || !at || (t.status !== "completed" && t.status !== "failed")) return null;
-      return isAfter(at, seen.of(`thread:${t.id}`)) ? { at, state: t.status === "failed" ? "error" : "completed" } : null;
-    };
-    return c.json(threads.map((t) => ({ ...t, backgroundLiveness: backgroundOf(t), boundToRoom: bound.has(t.id), news: news(t) })));
+    return c.json(threads.map((t) => ({ ...t, backgroundLiveness: backgroundOf(t), boundToRoom: bound.has(t.id) })));
   });
 
   /**
@@ -999,7 +998,15 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
   // ---- static UI ----
   if (existsSync(join(webDistDir, "index.html"))) {
     const distRoot = webDistDir.replace(process.cwd() + "/", "");
-    app.use("/assets/*", serveStatic({ root: distRoot }));
+    // Asset file names carry their content's hash: a rebuilt bundle has new names, so a copy kept a year is never stale.
+    app.use(
+      "/assets/*",
+      async (c, next) => {
+        await next();
+        if (c.res.status === 200) c.header("Cache-Control", "public, max-age=31536000, immutable");
+      },
+      serveStatic({ root: distRoot }),
+    );
     app.use("/icons/*", serveStatic({ root: distRoot }));
     // PWA shell files live at the site root. They are revalidated on every load so an updated worker or manifest
     // is picked up without a hard refresh.

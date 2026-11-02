@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { api } from "../api.ts";
-import { Latest } from "../pageStream.ts";
-import { isSubagentThread, type BrowserListItem, type CommandResult, type RoomCommand } from "../types.ts";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import type { BrowserListItem, CommandResult, RoomCommand } from "../types.ts";
 import { NewProjectDialog, NewRoomDialog } from "./NewDialogs.tsx";
 import { ArrangeDialog, BrowsersSection, CrewSection, ThreadShelf } from "./OverviewSections.tsx";
 import { ProjectBrowsersButton } from "./ProjectBrowsers.tsx";
@@ -13,8 +11,7 @@ import { memberActivity } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
-import { overviewThreads } from "../seenNews.ts";
-import type { AgentsFileEntry, AgentsFileWritten, OverviewRoom, OverviewThread, RoomListItem, T3Project, T3ThreadShell } from "../types.ts";
+import type { AgentsFileEntry, AgentsFileWritten, EngineShelfCount, EngineShelfThread, OverviewRoom, OverviewThread, RoomListItem, T3Project } from "../types.ts";
 import { useToast } from "./Toast.tsx";
 import { AgentsFileDiffDialog, AgentsFileMark } from "./AgentsFile.tsx";
 import { reloadAgentsFiles, useAgentsFiles } from "../agentsFiles.ts";
@@ -59,8 +56,8 @@ const oneLine = (text: string, max = 140): string => {
 export function Overview({
   rooms,
   projects,
-  threads,
-  seenThreads,
+  overview,
+  overviewError,
   t3Banner,
   browsers,
   onOpenRoom,
@@ -70,34 +67,29 @@ export function Overview({
   onCommand,
   onT3Changed,
   onBrowsersChanged,
-  changed,
-  streaming,
   controls,
   active,
   returnTo,
 }: {
   rooms: RoomListItem[];
   projects: T3Project[] | null;
-  /** Every T3 thread, archived ones too. */
-  threads: T3ThreadShell[];
-  /** The finish time each thread was marked seen up to on this page: its news up to then is left out of the overview's read. */
-  seenThreads: ReadonlyMap<string, string>;
+  /** The overview's read (App.tsx): each room's members, the threads outside rooms (less the news this page marked seen) and the shelf's counts; null before the first. */
+  overview: { rooms: ReadonlyMap<string, OverviewRoom>; threads: OverviewThread[]; shelf: EngineShelfCount[] } | null;
+  /** Why the overview's latest read failed, if it did. */
+  overviewError: string | null;
   /** The T3 banner, while the service says T3 is down (t3Connection.ts, t3Banner). */
   t3Banner: { kind: "down" | "feed"; error: string } | null;
   /** The shared browsers on this machine; null when the service cannot run browsers. */
   browsers: BrowserListItem[] | null;
   onOpenRoom: (roomId: string) => void;
-  onOpenThread: (threadId: string) => void;
+  /** A thread's tile, or a row of its project's shelf: an archived thread's row is what its panel shows. */
+  onOpenThread: (threadId: string, archived?: EngineShelfThread) => void;
   onOpenBrowser: (browserId: string) => void;
   onSeatPreset: (roomId: string, presetId: string) => Promise<void>;
   onCommand: (command: RoomCommand) => Promise<CommandResult | null>;
   /** Re-read projects from T3 (after one was added). */
   onT3Changed: () => void;
   onBrowsersChanged: () => void;
-  /** Changes when the service tells of a change (App.tsx, the page's stream): the overview reads again at once. */
-  changed: number;
-  /** Whether the page's stream is open: the overview's own timer then only backs it up. */
-  streaming: boolean;
   /** The app-wide controls (connection, updates, settings) for the page's header. */
   controls: ReactNode;
   /** Nothing covers the page (no room, thread or browser open over it): the arrows are the page's. */
@@ -134,37 +126,9 @@ export function Overview({
       onDrop(presetId);
     },
   });
-  const [detail, setDetail] = useState<Map<string, OverviewRoom>>(new Map());
-  const [looseThreads, setLooseThreads] = useState<OverviewThread[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const detail = overview?.rooms ?? new Map<string, OverviewRoom>();
   // Conversations with unsent text (drafts.ts) carry a mark.
   const drafts = useDraftScopes();
-  // The newest read's answer wins (pageStream.ts, Latest), and none lands after the page is gone.
-  const reads = useRef({ order: new Latest(), stopped: false }).current;
-  const read = useCallback(() => {
-    const ticket = reads.order.start();
-    api.overview().then(
-      (result) => {
-        if (reads.stopped || !reads.order.take(ticket)) return;
-        setDetail(new Map(result.rooms.map((room) => [room.id, room])));
-        setLooseThreads(result.threads);
-        setError(null);
-      },
-      (caught) => !reads.stopped && reads.order.take(ticket) && setError(caught instanceof Error ? caught.message : String(caught)),
-    );
-  }, [reads]);
-  useEffect(() => {
-    reads.stopped = false;
-    return () => {
-      reads.stopped = true;
-    };
-  }, [reads]);
-  // At the start and at each change the stream tells of.
-  useEffect(() => read(), [read, changed]);
-  useEffect(() => {
-    const timer = setInterval(read, streaming ? 60000 : 5000);
-    return () => clearInterval(timer);
-  }, [read, streaming]);
 
   // ---- the keys (keys.ts): the arrows move the focus over the page's rows of tiles and buttons ----
   const root = useRef<HTMLDivElement>(null);
@@ -248,16 +212,8 @@ export function Overview({
     return () => document.removeEventListener("keydown", onKey);
   }, [active]);
 
-  // Threads outside rooms are shown as rooms of one. Until the service has described them, T3's thread list stands in;
-  // it also stands in for any the service left out (it describes forty at most).
-  const loose = threads.filter((thread) => !thread.boundToRoom && !thread.deletedAt && !isSubagentThread(thread));
-  const standIn: OverviewThread[] = loose
-    .filter((thread) => !thread.archivedAt && !thread.settledAt)
-    .map((thread) => ({ id: thread.id, projectId: thread.projectId, title: thread.title, modelSelection: thread.modelSelection, status: thread.status, pendingRequest: thread.pendingRequest, backgroundLiveness: thread.backgroundLiveness ?? null, latestRunCompletedAt: thread.latestRunCompletedAt, updatedAt: thread.updatedAt, line: null, news: thread.news ?? null }));
-  // What this page marked seen leaves them at once, not at the overview's next read (seenNews.ts).
-  const described = overviewThreads(looseThreads, standIn, seenThreads);
-  const settledIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.settledAt && !t.archivedAt).sort((a, b) => (b.settledAt ?? "").localeCompare(a.settledAt ?? ""));
-  const archivedIn = (projectId: string) => loose.filter((t) => t.projectId === projectId && t.archivedAt).sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
+  // Threads outside rooms are shown as rooms of one.
+  const described = overview?.threads ?? [];
   const tiles = (projectRooms: RoomListItem[], projectThreads: OverviewThread[]): Tile[] =>
     [
       ...projectRooms.map((room): Tile => ({ kind: "room", room, tier: tierOf(roomState(room, detail.get(room.id))) })),
@@ -288,7 +244,7 @@ export function Overview({
           Arrange
         </button>
         <span className="spacer" />
-        {error ? <span className="status-error mono">{error}</span> : null}
+        {overviewError ? <span className="status-error mono">{overviewError}</span> : null}
         {controls}
       </header>
       <div className="overview-grid">
@@ -349,7 +305,7 @@ export function Overview({
                   ),
                 )}
               </ProjectTiles>
-              {known ? <ThreadShelf settled={settledIn(project.id)} archived={archivedIn(project.id)} drafted={(threadId) => drafts.has(threadKey(threadId))} onOpen={onOpenThread} /> : null}
+              {known ? <ThreadShelf projectId={project.id} count={overview?.shelf.find((count) => count.projectId === project.id) ?? null} drafted={(threadId) => drafts.has(threadKey(threadId))} onOpen={(thread) => onOpenThread(thread.id, thread.archivedAt ? thread : undefined)} /> : null}
             </section>
           );
         })}

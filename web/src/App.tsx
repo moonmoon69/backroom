@@ -27,8 +27,9 @@ import { byKey, focusWhen, inFront, isTextField, itemOf, keyOf, trackFocus } fro
 import { useTheme } from "./theme.ts";
 import { useFinishNotifications, useLooking } from "./news.ts";
 import { usePresence } from "./presence.ts";
+import { overviewThreads } from "./seenNews.ts";
 import type { Selection } from "./selection.ts";
-import { isRunActive, type BrowserListItem, type CommandResult, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project, type T3ThreadShell } from "./types.ts";
+import { isRunActive, type BrowserListItem, type CommandResult, type Overview as OverviewRead, type Preset, type RoomCommand, type RoomListItem, type RoomSnapshot, type StatusResponse, type T3Project } from "./types.ts";
 
 const SELECTION_KEY = "backroom.selection";
 /** Where the selected room was kept before threads could be selected too. */
@@ -54,24 +55,23 @@ export function App() {
   const [roomRead, setSnapshot] = useState<RoomSnapshot | null>(null);
   // Only the selected room's snapshot is ever shown: a late answer for the room left a moment ago is not.
   const snapshot = shownSnapshot(roomRead, selectedRoomId);
-  // T3's projects and threads, for the overview. Kept at the last good reading while T3 does not answer.
+  // T3's projects, for the overview. Kept at the last good reading while T3 does not answer.
   const [projects, setProjects] = useState<T3Project[] | null>(null);
-  const [threads, setThreads] = useState<T3ThreadShell[]>([]);
+  // The overview's read (GET /api/overview): each room's members, the threads outside rooms with their news, and the
+  // shelf's counts. T3's whole thread list is never read here: the shelf reads its rows when opened (ThreadShelf).
+  const [overview, setOverview] = useState<OverviewRead | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   /** The finish time each thread outside rooms was marked seen up to on this page (see the news effects below). */
   const [seenThreads, setSeenThreads] = useState<ReadonlyMap<string, string>>(new Map());
-  // Why T3's projects and threads could not be read, if the latest read failed. It words the banner; the service's
-  // status alone decides whether there is one (t3Connection.ts, t3Banner).
+  // Why T3's projects could not be read, if the latest read failed. It words the banner; the service's status alone
+  // decides whether there is one (t3Connection.ts, t3Banner).
   const [listsError, setListsError] = useState<string | null>(null);
-  // When the latest read of T3's lists that succeeded was started, and since when the service has said T3 is down (page
-  // clock): a read started during the outage that succeeded is what words the banner as T3's lists read the slow way.
+  // When the latest read of T3's projects that succeeded was started, and since when the service has said T3 is down
+  // (page clock): a read started during the outage that succeeded is what words the banner as T3's lists read the slow way.
   const [listsReadAt, setListsReadAt] = useState<number | null>(null);
   const [outageSince, setOutageSince] = useState<number | null>(null);
-  // Archive and unarchive switch the view before the next thread-list read confirms them.
-  const markThread = useCallback((threadId: string, patch: Partial<T3ThreadShell>) => {
-    setThreads((list) => list.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread)));
-  }, []);
   // T3 serves an archived thread's conversation only after it is unarchived; such a selection gets its own panel.
-  const selectedArchived = selection?.kind === "thread" ? threads.find((t) => t.id === selection.id && t.archivedAt) ?? null : null;
+  const selectedArchived = selection?.kind === "thread" ? (selection.archived ?? null) : null;
   // The open room's side panel (Members, Browser, Git); the Git tab reads in full only while it shows.
   const [roomPanel, setRoomPanel] = useState<InspectorTab | null>(null);
   const [pairingOpen, setPairingOpen] = useState(false);
@@ -106,7 +106,7 @@ export function App() {
 
   // Each loader applies an answer only if no newer read of it has been applied (pageStream.ts, Latest): a read that hung
   // on T3 for 30 s does not put back what a newer one replaced.
-  const order = useRef({ status: new Latest(), rooms: new Latest(), t3: new Latest(), snapshot: new Latest(), browsers: new Latest(), presets: new Latest() }).current;
+  const order = useRef({ status: new Latest(), rooms: new Latest(), projects: new Latest(), overview: new Latest(), snapshot: new Latest(), browsers: new Latest(), presets: new Latest() }).current;
   const loadStatus = useCallback(() => {
     const ticket = order.status.start();
     api.status().then(
@@ -146,18 +146,29 @@ export function App() {
     );
   }, [order]);
 
-  const loadT3 = useCallback(() => {
-    const ticket = order.t3.start();
+  const loadProjects = useCallback(() => {
+    const ticket = order.projects.start();
     const started = Date.now();
-    Promise.all([api.projects(), api.allThreads()]).then(
-      ([projectList, threadList]) => {
-        if (!order.t3.take(ticket)) return;
+    api.projects().then(
+      (projectList) => {
+        if (!order.projects.take(ticket)) return;
         setProjects(projectList);
-        setThreads(threadList);
         setListsError(null);
         setListsReadAt(started);
       },
-      (error: unknown) => order.t3.take(ticket) && setListsError(error instanceof Error ? error.message : String(error)),
+      (error: unknown) => order.projects.take(ticket) && setListsError(error instanceof Error ? error.message : String(error)),
+    );
+  }, [order]);
+
+  const loadOverview = useCallback(() => {
+    const ticket = order.overview.start();
+    api.overview().then(
+      (next) => {
+        if (!order.overview.take(ticket)) return;
+        setOverview(next);
+        setOverviewError(null);
+      },
+      (error: unknown) => order.overview.take(ticket) && setOverviewError(error instanceof Error ? error.message : String(error)),
     );
   }, [order]);
 
@@ -183,17 +194,15 @@ export function App() {
     );
   }, [selectedRoomId, report, order]);
 
-  // The overview's own read (Overview.tsx) goes again when this changes.
-  const [overviewChanged, setOverviewChanged] = useState(0);
   const loadAll = useCallback(() => {
     loadStatus();
     loadRooms();
-    loadT3();
+    loadProjects();
+    loadOverview();
     loadBrowsers();
     loadPresets();
     loadSnapshot();
-    setOverviewChanged((n) => n + 1);
-  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets, loadSnapshot]);
+  }, [loadStatus, loadRooms, loadProjects, loadOverview, loadBrowsers, loadPresets, loadSnapshot]);
   // What the service pushes (GET /api/events): each event reads again what it names; the stream's every (re)open and the
   // page's every return into view read it all.
   const streaming = usePageStream({
@@ -202,17 +211,17 @@ export function App() {
       loadRooms();
       // A browser's change is told to the rooms that may use it.
       loadBrowsers();
-      setOverviewChanged((n) => n + 1);
+      loadOverview();
     },
     room: (roomId) => {
       if (roomId === selectedRoomId) loadSnapshot();
     },
     shell: () => {
-      // T3's threads: the overview's, and the members' status in the room list and the open room.
-      loadT3();
-      loadRooms();
+      // T3's projects and threads: the overview's (its members' status and the threads outside rooms), and the open
+      // room's members. The room list is the journal's, told by `rooms`.
+      loadProjects();
+      loadOverview();
       loadSnapshot();
-      setOverviewChanged((n) => n + 1);
     },
     status: (reach: T3Reach) => {
       // The service's word on T3, at once, for the chip and the banner alike: newer than any read of the status still in
@@ -232,38 +241,42 @@ export function App() {
   useEffect(() => {
     loadStatus();
     loadRooms();
-    loadT3();
+    loadProjects();
+    loadOverview();
     loadBrowsers();
     loadPresets();
-  }, [loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  }, [loadStatus, loadRooms, loadProjects, loadOverview, loadBrowsers, loadPresets]);
   const t3Down = Boolean(status?.t3.error);
   useEffect(() => {
     // Taken now, before the read the next effect may start: React runs the updater later.
     const now = Date.now();
     setOutageSince((since) => (t3Down ? (since ?? now) : null));
   }, [t3Down]);
-  // The service says T3's live feed is down: T3's lists are read once, the slow way, and whether they could be read words
-  // the banner. With the fake T3 (its feed always connected) an outage reads nothing it would only fail.
+  // The service says T3's live feed is down: T3's lists are read once, the slow way, and whether its projects could be
+  // read words the banner. With the fake T3 (its feed always connected) an outage reads nothing it would only fail.
   const listsTheSlowWay = feedOut(status?.t3 ?? null);
   useEffect(() => {
-    if (listsTheSlowWay) loadT3();
-  }, [listsTheSlowWay, loadT3]);
+    if (!listsTheSlowWay) return;
+    loadProjects();
+    loadOverview();
+  }, [listsTheSlowWay, loadProjects, loadOverview]);
   // Whether the stream is open, on the page's root: the rehearsal waits for it (scripts/rehearse.ts, page push).
   useEffect(() => {
     document.documentElement.dataset.stream = streaming ? "open" : "closed";
   }, [streaming]);
   useEffect(() => {
-    // The room list and thread list carry live activity (working, background, needs you) for the overview, and the
+    // The room list, the projects and the overview carry live activity (working, background, needs you), and the
     // connection status asks T3 itself. The stream tells their changes as they happen, so while it is open the timers
     // only back it up; while it is not they run at their own pace. Browsers and presets are not told by the stream (a
     // browser no room may use, a preset changed on another device): read every 8 s, from the service only.
     const covered = setInterval(
       () => {
         loadRooms();
-        loadT3();
+        loadProjects();
       },
       streaming ? 60000 : 8000,
     );
+    const overviewTimer = setInterval(loadOverview, streaming ? 60000 : 5000);
     const local = setInterval(() => {
       loadBrowsers();
       loadPresets();
@@ -271,10 +284,11 @@ export function App() {
     const status = setInterval(loadStatus, streaming ? 60000 : 30000);
     return () => {
       clearInterval(covered);
+      clearInterval(overviewTimer);
       clearInterval(local);
       clearInterval(status);
     };
-  }, [streaming, loadStatus, loadRooms, loadT3, loadBrowsers, loadPresets]);
+  }, [streaming, loadStatus, loadRooms, loadProjects, loadOverview, loadBrowsers, loadPresets]);
 
   /** Open something in the drawer over the overview; the focus comes back to the item it was opened from. */
   const openInDrawer = useCallback((next: Selection) => {
@@ -382,7 +396,9 @@ export function App() {
   const openRoomId = selection?.kind === "room" ? selection.id : null;
   const openThreadId = selection?.kind === "thread" ? selection.id : null;
   const openRoomSeq = openRoomId ? rooms.find((r) => r.id === openRoomId)?.news.latest?.seq : undefined;
-  const openThreadAt = openThreadId ? threads.find((t) => t.id === openThreadId)?.news?.at : undefined;
+  // The threads outside rooms as the overview read them, less what this page has marked seen since (seenNews.ts).
+  const looseThreads = useMemo(() => overviewThreads(overview?.threads ?? [], seenThreads), [overview, seenThreads]);
+  const openThreadAt = openThreadId ? looseThreads.find((t) => t.id === openThreadId)?.news?.at : undefined;
   useEffect(() => {
     if (!openRoomId || openRoomSeq === undefined || !lookingHere) return;
     api.markRoomSeen(openRoomId, openRoomSeq).then(
@@ -394,8 +410,7 @@ export function App() {
     if (!openThreadId || !openThreadAt || !lookingHere) return;
     api.markThreadSeen(openThreadId, openThreadAt).then(
       () => {
-        setThreads((list) => list.map((thread) => (thread.id === openThreadId && thread.news?.at === openThreadAt ? { ...thread, news: null } : thread)));
-        // The overview's own read may still carry it: it leaves out what is marked here (seenNews.ts).
+        // The overview's read may still carry it: it leaves out what is marked here (seenNews.ts).
         setSeenThreads((seen) => (seen.get(openThreadId) === openThreadAt ? seen : new Map(seen).set(openThreadId, openThreadAt)));
       },
       () => undefined,
@@ -407,15 +422,16 @@ export function App() {
     [rooms, lookingHere, selection],
   );
   const sideThreads = useMemo(
-    () => (lookingHere && selection?.kind === "thread" ? threads.map((thread) => (thread.id === selection.id && thread.news ? { ...thread, news: null } : thread)) : threads),
-    [threads, lookingHere, selection],
+    () => (lookingHere && selection?.kind === "thread" ? looseThreads.map((thread) => (thread.id === selection.id && thread.news ? { ...thread, news: null } : thread)) : looseThreads),
+    [looseThreads, lookingHere, selection],
   );
+  const overviewShown = useMemo(() => (overview ? { rooms: new Map(overview.rooms.map((room) => [room.id, room])), threads: sideThreads, shelf: overview.shelf } : null), [overview, sideThreads]);
   // The tab's title counts what is new, so a background tab shows it: "(3) Backroom".
   const newCount = sideRooms.reduce((sum, room) => sum + room.news.unseen, 0) + sideThreads.filter((thread) => thread.news).length;
   useEffect(() => {
     document.title = newCount > 0 ? `(${newCount}) Backroom` : "Backroom";
   }, [newCount]);
-  useFinishNotifications(rooms, threads, looking, (key) => {
+  useFinishNotifications(rooms, looseThreads, looking, (key) => {
     const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
     if (kind !== "room" && kind !== "thread") return;
     openInDrawer({ kind, id });
@@ -462,17 +478,18 @@ export function App() {
           if (selectedRoomId === command.roomId) setSelection(null);
           setOutside(true);
           loadRooms();
-          loadT3();
+          loadOverview();
         } else if (command.type.startsWith("room.")) {
           loadRooms();
           if (command.type === "room.browser") loadBrowsers();
         } else if (command.type.startsWith("browser.")) loadBrowsers();
         else if (command.type.startsWith("preset.")) loadPresets();
-        else if (command.type === "project.create" || command.type === "project.reorder" || command.type.startsWith("thread.")) loadT3();
+        else if (command.type === "project.create" || command.type === "project.reorder") loadProjects();
+        else if (command.type.startsWith("thread.")) loadOverview();
         else {
           onRoomChanged();
           // Seating or removing a participant moves a thread into or out of the overview's loose threads.
-          if (command.type === "participant.create" || command.type === "participant.fromPreset" || command.type === "participant.retire") loadT3();
+          if (command.type === "participant.create" || command.type === "participant.fromPreset" || command.type === "participant.retire") loadOverview();
           // A preset may be seated in a room other than the open one: its count in the list changes.
           if (command.type === "participant.fromPreset") loadRooms();
           // A deleted role is cleared from the presets that had it.
@@ -487,7 +504,7 @@ export function App() {
         return null;
       }
     },
-    [loadRooms, loadT3, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId],
+    [loadRooms, loadProjects, loadOverview, loadBrowsers, loadPresets, onRoomChanged, report, toast, selectedRoomId],
   );
 
   const seatPreset = useCallback(
@@ -542,7 +559,8 @@ export function App() {
     setPairingOpen(false);
     loadStatus();
     loadRooms();
-    loadT3();
+    loadProjects();
+    loadOverview();
   };
 
   // After a rebuild the server serves a new bundle; offer a reload instead of silently running old code.
@@ -578,7 +596,7 @@ export function App() {
     selection?.kind === "room"
       ? `Room ${rooms.find((room) => room.id === selection.id)?.title ?? ""}`.trim()
       : selection?.kind === "thread"
-        ? `Thread ${threads.find((thread) => thread.id === selection.id)?.title ?? ""}`.trim()
+        ? `Thread ${selection.archived?.title ?? looseThreads.find((thread) => thread.id === selection.id)?.title ?? ""}`.trim()
         : `Browser ${browsers?.find((browser) => browser.id === selection?.id)?.name ?? ""}`.trim();
 
   // The drawer's page for what is selected besides a room: a thread or a browser.
@@ -596,12 +614,12 @@ export function App() {
             project={projects?.find((p) => p.id === selectedArchived.projectId) ?? null}
             runCommand={runCommand}
             onUnarchived={() => {
-              markThread(selectedArchived.id, { archivedAt: null });
-              loadT3();
+              setSelection({ kind: "thread", id: selectedArchived.id });
+              loadOverview();
             }}
             onGone={() => {
               setSelection(null);
-              loadT3();
+              loadOverview();
             }}
             headerStart={overviewButton}
           />
@@ -613,17 +631,17 @@ export function App() {
             runCommand={runCommand}
             onGone={() => {
               setSelection(null);
-              loadT3();
+              loadOverview();
             }}
-            onChanged={loadT3}
-            onArchived={() => {
-              markThread(selection.id, { archivedAt: new Date().toISOString() });
-              loadT3();
+            onChanged={loadOverview}
+            onArchived={(archived) => {
+              setSelection({ kind: "thread", id: archived.id, archived });
+              loadOverview();
             }}
             onOpenRoom={(roomId) => {
               setSelection({ kind: "room", id: roomId });
               loadRooms();
-              loadT3();
+              loadOverview();
             }}
             headerStart={overviewButton}
           />
@@ -668,20 +686,18 @@ export function App() {
         <Overview
           rooms={sideRooms}
           projects={projects}
-          threads={sideThreads}
-          seenThreads={seenThreads}
+          overview={overviewShown}
+          overviewError={overviewError}
           t3Banner={t3Banner(status?.t3 ?? null, listsError, outageSince !== null && listsReadAt !== null && listsReadAt >= outageSince)}
           browsers={browsers}
           controls={appControls}
           onOpenRoom={(roomId) => openInDrawer({ kind: "room", id: roomId })}
-          onOpenThread={(threadId) => openInDrawer({ kind: "thread", id: threadId })}
+          onOpenThread={(threadId, archived) => openInDrawer(archived ? { kind: "thread", id: threadId, archived } : { kind: "thread", id: threadId })}
           onOpenBrowser={(browserId) => openInDrawer({ kind: "browser", id: browserId })}
           onSeatPreset={seatPreset}
           onCommand={runCommand}
-          onT3Changed={loadT3}
+          onT3Changed={loadProjects}
           onBrowsersChanged={loadBrowsers}
-          changed={overviewChanged}
-          streaming={streaming}
           active={!open}
           returnTo={returnTo}
         />
@@ -756,7 +772,7 @@ export function App() {
                     browsers={browsers}
                     runCommand={runCommand}
                     onGone={closeMember}
-                    onChanged={loadT3}
+                    onChanged={loadOverview}
                     onArchived={closeMember}
                     onOpenRoom={closeMember}
                     headerStart={backToRoomButton}

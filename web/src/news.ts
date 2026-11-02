@@ -5,7 +5,7 @@
  * finishes while Backroom is open but not in front.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { RoomListItem, T3ThreadShell } from "./types.ts";
+import type { RoomListItem } from "./types.ts";
 
 /** Whether you are looking: the page is on screen and its window is the one in front. */
 export function useLooking(): boolean {
@@ -101,7 +101,7 @@ export async function setNotify(on: boolean): Promise<string | null> {
  * Notify about each finish that arrives while you are not looking, once. Finishes from before this page opened are
  * the overview's to show, not announced. `onOpen` opens what a clicked notification is about.
  */
-export function useFinishNotifications(rooms: RoomListItem[], threads: T3ThreadShell[], looking: boolean, onOpen: (key: string) => void): void {
+export function useFinishNotifications(rooms: RoomListItem[], threads: ReadonlyArray<{ id: string; title: string; news: { at: string; state: "completed" | "error" } | null }>, looking: boolean, onOpen: (key: string) => void): void {
   const on = useNotifyOn();
   const openedAt = useRef(Date.now());
   const announced = useRef(new Map<string, string>());

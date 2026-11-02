@@ -28,6 +28,7 @@ import {
   type RoomListItem,
   type RuntimeMode,
   type T3Project,
+  type EngineShelfThread,
   type T3ThreadShell,
   type ThreadItem,
   type ThreadView as ThreadViewData,
@@ -170,8 +171,8 @@ interface ThreadViewProps {
   onGone: () => void;
   /** Something the overview shows changed (title, status, lifecycle). */
   onChanged: () => void;
-  /** Archived here: T3 stops serving the conversation, so the archived panel takes over. */
-  onArchived: () => void;
+  /** Archived here: T3 stops serving the conversation, so the archived panel takes over, from the thread's shelf row. */
+  onArchived: (archived: EngineShelfThread) => void;
   onOpenRoom: (roomId: string) => void;
   headerStart: ReactNode;
   /** The transcript takes the focus when the thread opens (a member's thread over its room: the arrows scroll it). */
@@ -211,7 +212,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
     const result = await runCommand({ type: "thread.lifecycle", threadId, action });
     if (!result) return;
     onChanged();
-    if (action === "archive") onArchived();
+    if (action === "archive" && thread) onArchived({ id: thread.id, projectId: thread.projectId, title: thread.title, model: thread.modelSelection.model, settledAt: thread.settledAt ?? null, archivedAt: new Date().toISOString(), updatedAt: thread.updatedAt });
     else if (action === "delete") onGone();
     else refresh();
   };
@@ -424,7 +425,7 @@ export function ThreadView({ threadId, rooms, browsers, runCommand, onGone, onCh
 
 /**
  * An archived thread. T3 keeps it but serves neither its conversation nor its state by id until it is unarchived,
- * so this shows what the thread list carries and offers the two ways out.
+ * so this shows what the shelf's row carries and offers the two ways out.
  */
 export function ArchivedThreadView({
   thread,
@@ -434,7 +435,7 @@ export function ArchivedThreadView({
   onGone,
   headerStart,
 }: {
-  thread: T3ThreadShell;
+  thread: EngineShelfThread;
   project: T3Project | null;
   runCommand: RunCommand;
   onUnarchived: () => void;
@@ -464,7 +465,7 @@ export function ArchivedThreadView({
         <p className="serif">Archived in T3{archivedOn ? ` on ${archivedOn}` : ""}.</p>
         <p className="muted">
           T3 keeps an archived thread but does not serve its conversation. Unarchive it to read it or continue it here; it keeps its model (
-          <span className="mono">{thread.modelSelection.model}</span>), permission mode and history.
+          <span className="mono">{thread.model}</span>), permission mode and history.
         </p>
         <div className="row">
           <button type="button" className="primary" disabled={busy} onClick={() => void run("unarchive")}>

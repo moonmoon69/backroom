@@ -37,8 +37,8 @@ import type {
   T3Project,
   T3ThreadShell,
   ThreadView,
-  OverviewRoom,
-  OverviewThread,
+  EngineShelfThread,
+  Overview,
   ThreadLifecycleChoice,
 } from "./types.ts";
 
@@ -96,8 +96,8 @@ export const api = {
   catalog: (): Promise<CatalogEntry[]> => get("/api/t3/catalog"),
   threads: (projectId: string): Promise<T3ThreadShell[]> =>
     get(`/api/t3/threads?projectId=${encodeURIComponent(projectId)}`),
-  /** Every thread in every project, archived ones included, each marked with whether a room participant holds it. */
-  allThreads: (): Promise<T3ThreadShell[]> => get("/api/t3/threads?includeArchived=1"),
+  /** The overview's shelf of a project: its settled and archived threads outside rooms, a few fields each. */
+  shelf: (projectId: string): Promise<EngineShelfThread[]> => get(`/api/t3/threads?shelf=1&projectId=${encodeURIComponent(projectId)}`),
   /** A thread used directly (outside any room). */
   thread: (threadId: string): Promise<ThreadView> => get(`/api/threads/${encodeURIComponent(threadId)}`),
   rooms: (): Promise<RoomListItem[]> => get("/api/rooms"),
@@ -159,7 +159,7 @@ export const api = {
   /** The folders T3 lists for a path being typed: "/a/b/" lists b's subfolders, "/a/b" those of a whose names start with b. */
   folders: (path: string): Promise<FolderListing> => get(`/api/t3/folders?path=${encodeURIComponent(path)}`),
   presets: (): Promise<Preset[]> => get("/api/presets"),
-  overview: (): Promise<{ rooms: OverviewRoom[]; threads: OverviewThread[]; readAt: string }> => get("/api/overview"),
+  overview: (): Promise<Overview> => get("/api/overview"),
   /** App-wide settings: which saved crew member is the Consigliere of new rooms, his rules, and what his retiring does to a thread (absent from an older service). */
   settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean; agentsFileText?: { text: string; custom: boolean; defaultText: string }; poteto?: PotetoState | null }> => get("/api/settings"),
   /** Every project folder where Backroom wrote AGENTS.md, with its state against the saved template. */
