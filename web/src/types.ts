@@ -917,15 +917,7 @@ export interface T3ThreadShell {
   deletedAt: string | null;
   updatedAt: string;
   boundToRoom: boolean;
-  /** Outside rooms: its last run finished (or failed) after it was last seen on any device. */
-  news?: { at: string; state: "completed" | "error" } | null;
 }
-
-/**
- * A thread a member made for part of its own task (its harness's subagent tool or T3's delegate_task). T3's own list
- * leaves these out, and so does the overview: the parent member shows them as "subagents running".
- */
-export const isSubagentThread = (thread: Pick<T3ThreadShell, "lineage">): boolean => thread.lineage?.relationshipToParent === "subagent";
 
 /** One entry of a direct thread's conversation (GET /api/threads/:threadId). */
 export type ThreadItem =

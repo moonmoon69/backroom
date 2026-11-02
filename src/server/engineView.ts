@@ -1088,7 +1088,7 @@ async function liveLine(adapter: T3Adapter, threadId: string): Promise<string | 
 }
 
 /** A thread used on its own: no room seats it, and it is no member's subagent. The overview and its shelf list these. */
-export const isLoose = (thread: T3ThreadShell, bound: ReadonlySet<string>): boolean => !bound.has(thread.id) && !thread.deletedAt && thread.lineage.relationshipToParent !== "subagent";
+export const isLoose = (thread: Pick<T3ThreadShell, "id" | "deletedAt" | "lineage">, bound: ReadonlySet<string>): boolean => !bound.has(thread.id) && !thread.deletedAt && thread.lineage.relationshipToParent !== "subagent";
 
 /** A settled or archived loose thread as the overview's shelf lists it (GET /api/t3/threads?shelf=1). */
 export const shelfThread = (thread: T3ThreadShell): EngineShelfThread => ({ id: thread.id, projectId: thread.projectId, title: thread.title, model: thread.modelSelection.model, settledAt: thread.settledAt ?? null, archivedAt: thread.archivedAt, updatedAt: thread.updatedAt });
