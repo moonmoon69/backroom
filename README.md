@@ -795,7 +795,7 @@ Terminals, the browser preview and full diff text stay in T3 Code.
 
 ### On a phone
 
-Backroom works on a phone. Below about 760px the overview is one column of tiles and what you open from it takes the whole screen, member menus open as bottom sheets, dialogs stay centred in the part of the screen the keyboard leaves, the side panel covers the area under the header, and the composer sits above the keyboard. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
+Backroom works on a phone. Below about 760px the overview is one column of tiles and what you open from it takes the whole screen, member menus open as bottom sheets, dialogs stay centred in the part of the screen the keyboard leaves, the side panel covers the area under the header, and the composer sits above the keyboard. The page treats the keyboard as open when the visible area is more than 80px shorter than the window, or when a text field has focus and lies below the visible area; it then sizes the app to the visible area and brings the field into view if it is still covered, and it checks again on every viewport, focus and input change and every 250ms while a field has focus, so one missed event cannot leave the composer hidden. If the keyboard still covers the composer, **Copy keyboard log** in the settings menu in the overview's header copies the page's last 40 measurements and what it did with each, to paste into a report so the case can become a test. On a touch keyboard, Enter inserts a newline and the **Send** button sends.
 
 It also installs as an app. Open Backroom over HTTPS (for example a Tailscale Serve address; the offline shell only registers on a secure origin), then:
 

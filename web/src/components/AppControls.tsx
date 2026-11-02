@@ -5,7 +5,9 @@ import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
 import { AgentsFileDialog } from "./AgentsFile.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { FolderIcon, GridIcon, PeopleIcon, BellIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SunIcon } from "./icons.tsx";
+import { FolderIcon, GridIcon, PeopleIcon, BellIcon, CopyIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SunIcon } from "./icons.tsx";
+import { copyText } from "./CopyText.tsx";
+import { keyboardLog } from "../viewportFit.ts";
 import { UpdatesButton } from "./Updates.tsx";
 import { notificationsSupported, setNotify, useNotifyOn } from "../news.ts";
 import { useToast } from "./Toast.tsx";
@@ -51,7 +53,7 @@ export function AppControls({
   );
 }
 
-/** The Consigliere, notifications on this device, the theme, and the look. */
+/** The Consigliere, notifications on this device, the keyboard log, the theme, and the look. */
 function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice: ThemeChoice) => void }) {
   const [open, setOpen] = useState(false);
   const [consigliereOpen, setConsigliereOpen] = useState(false);
@@ -152,6 +154,19 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
               <span className="menu-value">{notifyOn ? "on" : "off"}</span>
             </button>
           ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            title="Copies what this device's last on-screen keyboard changes measured and how the page fitted them, to paste into a report when the keyboard covers the composer"
+            onClick={pick(async () => {
+              if (await copyText(keyboardLog(), toast)) toast("Keyboard log copied", "success");
+            })}
+          >
+            <span className="menu-icon" aria-hidden="true">
+              <CopyIcon />
+            </span>
+            Copy keyboard log
+          </button>
           <div className="menu-heading" role="presentation">
             Theme
           </div>
