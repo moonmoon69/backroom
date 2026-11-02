@@ -2,10 +2,11 @@
  * HTTP and WebSocket adapter for a T3 Code server speaking orchestration protocol 2 (Orchestrator V2; contracts:
  * packages/contracts/src/orchestrationV2.ts, rpc.ts, environmentHttp.ts).
  *
- * Reads:     orchestration.subscribeShell, subscribeArchivedShell   projects, thread shells, archived thread shells, as
- *              (WebSocket RPC streams, src/adapter/shellFeed.ts)   T3 streams them, once the feed is started
- *            GET /api/orchestration/shell                   the same while the feed is not live (archived thread
- *            orchestration.getArchivedShellSnapshot         shells over the RPC: T3's HTTP shell lists none)
+ * Reads:     orchestration.subscribeShell (WebSocket RPC   projects and thread shells, as T3 streams them, once the
+ *              stream, src/adapter/shellFeed.ts)             feed is started
+ *            GET /api/orchestration/shell                   the same while the feed is not live
+ *            orchestration.getArchivedShellSnapshot         archived thread shells (T3 streams none, and its HTTP
+ *                                                             shell lists none)
  *            orchestration.subscribeThread (on the feed's   a watched thread's changes, each read once with the GET
  *              socket, src/adapter/threadFeed.ts)            below and shared until its next change
  *            GET /api/orchestration/threads/:id[/bounded]   a thread's projection: runs, messages, items, requests
@@ -714,9 +715,9 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   /**
-   * Keep T3's shell live from its streams (orchestration.subscribeShell and subscribeArchivedShell) on a socket of its
-   * own, open until close(): the shell reads are served from it while it is live, with no HTTP snapshot. It reconnects
-   * by itself after a drop; meanwhile, and before its first snapshots, the reads go over HTTP as before.
+   * Keep T3's shell live from its stream (orchestration.subscribeShell) on a socket of its own, open until close(): the
+   * shell reads are served from it while it is live, with no HTTP snapshot. It reconnects by itself after a drop;
+   * meanwhile, and before its first snapshot, the reads go over HTTP as before.
    */
   startFeed(): void {
     this.shellFeed.start();
@@ -1134,18 +1135,16 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   /**
-   * The feed's shell, when it is live and has caught up with the latest command; otherwise null. Each list is caught up
-   * by its own stream: the projects and threads by the active one, the archived threads by the archived one (archiving
-   * a thread is a removal on one and an update on the other, in either order). The command is behind both once both
-   * have reached its sequence, or after FEED_CATCH_UP_MS.
+   * The feed's shell, when it is live and has caught up with the latest command (its stream has reached the command's
+   * sequence, or FEED_CATCH_UP_MS have passed); otherwise null.
    */
-  private liveShell(list: "active" | "archive" = "active"): ShellSnapshot | null {
+  private liveShell(): ShellSnapshot | null {
     const live = this.shellFeed.live();
     if (!live) return null;
     const floor = this.feedFloor;
     if (floor) {
-      if (Date.now() >= floor.until || (live.activeSequence >= floor.sequence && live.archiveSequence >= floor.sequence)) this.feedFloor = null;
-      else if ((list === "active" ? live.activeSequence : live.archiveSequence) < floor.sequence) return null;
+      if (Date.now() >= floor.until || live.sequence >= floor.sequence) this.feedFloor = null;
+      else return null;
     }
     return live.read();
   }
@@ -1159,11 +1158,11 @@ export class HttpT3Adapter implements T3Adapter {
    * or the feed once it is live and caught up (a T3 that is restarting can take its time with the HTTP snapshot, and
    * T3 streams a command's change long before a slow snapshot comes). No read waits for the feed.
    */
-  private orFromFeed<T>(read: Promise<T>, pick: (live: ShellSnapshot) => T, list: "active" | "archive" = "active"): Promise<T> {
+  private orFromFeed<T>(read: Promise<T>, pick: (live: ShellSnapshot) => T): Promise<T> {
     if (!this.shellFeed.started) return read;
     return new Promise<T>((resolve, reject) => {
       const waiter = () => {
-        const live = this.liveShell(list);
+        const live = this.liveShell();
         if (!live) return;
         this.feedWaiters.delete(waiter);
         resolve(pick(live));
@@ -1526,14 +1525,14 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   async listArchivedThreads(): Promise<T3ThreadShell[]> {
-    const live = this.liveShell("archive");
-    const archived = live ? (live.archivedThreads ?? []) : await this.orFromFeed(this.readArchived(), (recovered) => recovered.archivedThreads ?? [], "archive");
-    return archived.map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
+    return (await this.readArchived()).map((thread) => this.toShell(thread)).filter((thread) => thread.deletedAt === null);
   }
 
   /**
-   * The archived thread shells without the feed: T3's HTTP shell lists none (it builds the active shell only), so they
-   * are read as T3's own client reads them (orchestration.getArchivedShellSnapshot), shared and cached as the shell is.
+   * The archived thread shells: T3 streams none and its HTTP shell lists none (it builds the active shell only), so they
+   * are read as T3's own client reads them (orchestration.getArchivedShellSnapshot), shared and cached as the shell is:
+   * dropped after every command and with every change the feed shows (archiving, unarchiving and deleting a thread
+   * are each a change on the stream), so a read after any of them is T3's current list.
    */
   private readArchived(): Promise<Array<Record<string, unknown>>> {
     const cached = this.archivedCache;
@@ -1569,7 +1568,7 @@ export class HttpT3Adapter implements T3Adapter {
     const snapshot = options.fresh ? await this.readThread(threadId, options.bounded === true) : await this.threadFeed.detail(threadId, options.bounded === true);
     if (!snapshot) return null;
     const shell = await this.shell();
-    const listed = shell.threads.find((thread) => thread.id === threadId) ?? (shell.archivedThreads ?? []).find((thread) => thread.id === threadId);
+    const listed = shell.threads.find((thread) => thread.id === threadId);
     return this.toDetail(snapshot, listed ? this.toShell(listed) : null);
   }
 

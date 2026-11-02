@@ -46,7 +46,7 @@ class ReadOnlySocket extends WebSocket {
     const frame = JSON.parse(String(data)) as { _tag: string; tag?: string };
     if (frame._tag === "Request") {
       assert.ok(!/dispatchCommand|launchThread|mutate|interruptRun/.test(frame.tag ?? ""), `unexpected mutating RPC ${frame.tag}`);
-      if (frame.tag === "orchestration.subscribeShell" || frame.tag === "orchestration.subscribeArchivedShell") {
+      if (frame.tag === "orchestration.subscribeShell") {
         this.feed = true;
         if (blocked) { queueMicrotask(() => this.close()); return; }
       }

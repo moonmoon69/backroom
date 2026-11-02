@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Read-only check of T3's shell streams against a real T3 Code server (`npm run t3:feed`), the source of the shell
+ * Read-only check of T3's shell stream against a real T3 Code server (`npm run t3:feed`), the source of the shell
  * feed (src/adapter/shellFeed.ts). It dispatches nothing: it asks for WebSocket tickets, subscribes, and reads.
  *
- *   1. The wire: subscribes to orchestration.subscribeShell and subscribeArchivedShell on a socket of its own and
- *      prints the frames T3 sends for `--seconds` (default 6), acknowledging each chunk, then interrupts both.
+ *   1. The wire: subscribes to orchestration.subscribeShell on a socket of its own, prints the frames T3 sends for
+ *      `--seconds` (default 6), acknowledging each chunk, then interrupts it; and reads
+ *      orchestration.getArchivedShellSnapshot once.
  *   2. The adapter: starts the adapter's feed, and once it is live compares its shell reads (projects, threads,
  *      archived threads, a thread by id) with the same reads made over HTTP by an adapter without the feed, and
  *      counts the HTTP shell snapshots the feed's reads made (none expected).
@@ -67,7 +68,7 @@ async function wire(): Promise<void> {
   const socket = new WebSocket(url);
   const started = Date.now();
   const at = () => `${String(Date.now() - started).padStart(5)} ms`;
-  const tags: Record<string, string> = { "1": "orchestration.subscribeShell", "2": "orchestration.subscribeArchivedShell" };
+  const tags: Record<string, string> = { "1": "orchestration.subscribeShell", "2": "orchestration.getArchivedShellSnapshot" };
   const chunks: Record<string, number> = { "1": 0, "2": 0 };
   const exits: Record<string, unknown> = {};
   let pong = false;
@@ -104,16 +105,18 @@ async function wire(): Promise<void> {
     socket.send(JSON.stringify(request));
   }
   await sleep(seconds * 1000);
-  for (const id of Object.keys(tags)) socket.send(JSON.stringify({ _tag: "Interrupt", requestId: id }));
+  socket.send(JSON.stringify({ _tag: "Interrupt", requestId: "1" }));
   await sleep(500);
   socket.close();
   if (pong) ok("wire: ping", "T3 answers a Ping with a Pong");
   else fail("wire: ping", "no Pong");
-  if (chunks["1"]! >= 1 && chunks["2"]! >= 1) ok("wire: subscriptions", `${chunks["1"]} chunk(s) of the active shell and ${chunks["2"]} of the archived one in ${seconds} s, each acknowledged`);
-  else fail("wire: subscriptions", `chunks ${JSON.stringify(chunks)}`);
-  const interrupted = Object.values(exits).filter((exit) => JSON.stringify(exit).includes('"Interrupt"')).length;
-  if (interrupted === 2) ok("wire: interrupt", "both streams ended with an Exit after Interrupt");
-  else fail("wire: interrupt", `exits ${brief(exits)}`);
+  if (chunks["1"]! >= 1) ok("wire: subscription", `${chunks["1"]} chunk(s) of the shell in ${seconds} s, each acknowledged`);
+  else fail("wire: subscription", `chunks ${JSON.stringify(chunks)}`);
+  const archived = exits["2"] as { _tag?: string; value?: { threads?: unknown[] } } | undefined;
+  if (archived?._tag === "Success" && Array.isArray(archived.value?.threads)) ok("wire: archived snapshot", `${archived.value!.threads!.length} archived thread(s)`);
+  else fail("wire: archived snapshot", `exit ${brief(archived)}`);
+  if (JSON.stringify(exits["1"] ?? null).includes('"Interrupt"')) ok("wire: interrupt", "the stream ended with an Exit after Interrupt");
+  else fail("wire: interrupt", `exit ${brief(exits["1"])}`);
 }
 
 try {
@@ -147,7 +150,7 @@ try {
   const fromFeed = { projects: await feed.listProjects(), threads: await feed.listThreads(), archived: await feed.listArchivedThreads() };
   const sample = fromFeed.threads.slice(-3).map((thread) => thread.id);
   const feedSample = await Promise.all(sample.map((id) => feed.getThreadShell(id)));
-  if (shellGets === before) ok("feed: no HTTP snapshot", "projects, threads, archived threads and threads by id read from the feed");
+  if (shellGets === before) ok("feed: no HTTP snapshot", "projects, threads and threads by id read from the feed, archived threads over the RPC");
   else fail("feed: no HTTP snapshot", `${shellGets - before} GET /api/orchestration/shell`);
   const fromHttp = { projects: await overHttp.listProjects(), threads: await overHttp.listThreads(), archived: await overHttp.listArchivedThreads() };
   const httpSample = await Promise.all(sample.map((id) => overHttp.getThreadShell(id)));

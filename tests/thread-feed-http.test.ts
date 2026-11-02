@@ -21,10 +21,9 @@ const row = (id: string) => ({
 });
 const project = { id: "proj", title: "demo", workspaceRoot: "/tmp/demo", defaultModelSelection: null, scripts: [], createdAt: "2026-10-13T00:00:00.000Z" };
 const SHELL = "orchestration.subscribeShell";
-const ARCHIVED = "orchestration.subscribeArchivedShell";
 const THREAD = "orchestration.subscribeThread";
 
-/** T3: its shell streams, a thread stream per subscription (synchronized at once), and its thread reads over HTTP. */
+/** T3: its shell stream, a thread stream per subscription (synchronized at once), and its thread reads over HTTP. */
 function t3() {
   type Subscription = { id: string; tag: string; payload: any; queue: unknown[][]; awaitingAck: boolean; ended: boolean };
   const sockets: Socket[] = [];
@@ -66,7 +65,6 @@ function t3() {
       } else if (frame._tag === "Request") {
         const initial =
           frame.tag === SHELL ? [[{ kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 30, projects: [project], threads: [row("thread-1"), row("thread-2"), row("thread-3")], archivedThreads: [] } }]]
-          : frame.tag === ARCHIVED ? [[{ kind: "snapshot", snapshot: { snapshotSequence: 30, projects: [project], threads: [] } }]]
           : frame.tag === THREAD ? [[{ kind: "synchronized" }]]
           : null;
         if (!initial) {

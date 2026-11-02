@@ -782,11 +782,12 @@ function streamingT3(initial: () => Record<string, unknown[][]>, handlers: Recor
 }
 
 const SHELL = "orchestration.subscribeShell";
-const ARCHIVED = "orchestration.subscribeArchivedShell";
-/** T3's two shell streams as they open: a snapshot each. */
-const opening = () => ({ [SHELL]: [[{ kind: "snapshot", snapshot: activeShell }]], [ARCHIVED]: [[{ kind: "snapshot", snapshot: archivedShell }]] });
+/** T3's shell stream as it opens: its snapshot. */
+const opening = () => ({ [SHELL]: [[{ kind: "snapshot", snapshot: activeShell }]] });
+/** T3's archived shell as its RPC answers it. */
+const archivedRpc = { "orchestration.getArchivedShellSnapshot": () => archivedShell };
 
-test("Astra review: a waiting read resumes when an archive removal advances the active sequence without changing a row", async (t) => {
+test("Astra review: a waiting read resumes when an archive removal advances the stream's sequence without changing a row", async (t) => {
   const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
   const held: Array<() => void> = [];
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -805,29 +806,37 @@ test("Astra review: a waiting read resumes when an archive removal advances the 
   const read = adapter.listThreads().then(() => { answered = true; });
   await settle();
   assert.equal(held.length, 1);
-  t3.feedSocket().push(ARCHIVED, { kind: "thread.updated", sequence: 15, thread: { ...threadShell, archivedAt: "2026-10-03T00:00:09.000Z" } });
-  await settle();
-  assert.equal(answered, false, "the active stream has not caught up yet");
+  assert.equal(answered, false, "the stream has not caught up yet");
   t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-1" });
   await settle();
-  assert.equal(answered, true, "both streams now show the archive: the pending GET must yield to the feed");
+  assert.equal(answered, true, "the stream now shows the archive: the pending GET must yield to the feed");
   await read;
 });
 
-test("Astra review: archived reads after archive wait for the archived stream or use its RPC snapshot", async (t) => {
+test("archived threads are read with T3's RPC snapshot while the feed is live, afresh after a command and after a change the feed shows", async (t) => {
   const archived = { ...threadShell, archivedAt: "2026-10-03T00:00:09.000Z", updatedAt: "2026-10-03T00:00:09.000Z" };
+  let threads: Array<Record<string, unknown>> = archivedShell.threads;
   const t3 = streamingT3(opening, {
     "orchestration.dispatchCommand": () => ({ sequence: 15 }),
-    "orchestration.getArchivedShellSnapshot": () => ({ ...archivedShell, snapshotSequence: 15, threads: [...archivedShell.threads, archived] }),
+    "orchestration.getArchivedShellSnapshot": () => ({ ...archivedShell, threads }),
   });
-  const { adapter } = feedAdapter(t3);
+  const { adapter, gets } = feedAdapter(t3);
   t.after(() => adapter.close());
   adapter.startFeed();
   await settle();
+  const calls = () => t3.sockets.flatMap((socket) => socket.sent).filter((f) => f.tag === "orchestration.getArchivedShellSnapshot").length;
+  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old"]);
+  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old"]);
+  assert.equal(calls(), 1, "cached");
+  threads = [...archivedShell.threads, archived];
   await adapter.setThreadLifecycle({ commandId: "archive", threadId: "thread-1", action: "archive" });
+  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old", "thread-1"], "read again after the command");
+  assert.equal(calls(), 2);
   t3.feedSocket().push(SHELL, { kind: "thread.removed", sequence: 15, location: "active", threadId: "thread-1" });
   await settle();
-  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old", "thread-1"], "the active removal cannot prove that the archived stream includes the command");
+  threads = archivedShell.threads;
+  assert.deepEqual((await adapter.listArchivedThreads()).map((row) => row.id), ["thread-old"], "read again after a change the feed shows");
+  assert.deepEqual([calls(), gets()], [3, 0], "never the HTTP shell");
 });
 
 test("Astra review: the one-second catch-up deadline releases a read already waiting on HTTP", async (t) => {
@@ -886,8 +895,9 @@ async function reads(adapter: HttpT3Adapter) {
   };
 }
 
-test("the shell feed subscribes to both streams on a socket of its own, acknowledges each chunk, and serves the shell reads with no HTTP snapshot", async () => {
-  const t3 = streamingT3(opening);
+test("the shell feed subscribes to T3's shell stream on a socket of its own, acknowledges each chunk, and serves the shell reads with no HTTP snapshot", async () => {
+  let archivedThreads: Array<Record<string, unknown>> = archivedShell.threads;
+  const t3 = streamingT3(opening, { "orchestration.getArchivedShellSnapshot": () => ({ ...archivedShell, threads: archivedThreads }) });
   const { adapter, gets, calls } = feedAdapter(t3);
   assert.deepEqual(adapter.feed().state, "down", "not started");
   adapter.startFeed();
@@ -895,7 +905,7 @@ test("the shell feed subscribes to both streams on a socket of its own, acknowle
   await settle();
   assert.equal(adapter.feed().state, "connected");
   const socket = t3.feedSocket();
-  assert.deepEqual(socket.sent.filter((f) => f._tag === "Request").map((f) => [f.tag, f.payload, f.headers]), [[SHELL, {}, []], [ARCHIVED, {}, []]]);
+  assert.deepEqual(socket.sent.filter((f) => f._tag === "Request" && f.tag === SHELL).map((f) => [f.tag, f.payload, f.headers]), [[SHELL, {}, []]]);
   assert.equal(new URL(socket.url).searchParams.get("wsTicket"), "tk1");
 
   // The same data as T3's HTTP snapshot reads the same, with no HTTP snapshot.
@@ -918,100 +928,76 @@ test("the shell feed subscribes to both streams on a socket of its own, acknowle
   assert.equal((await adapter.listProjects())[0]?.title, "demo 2");
   const shellId = socket.subscriptions.get(SHELL)!.id;
   assert.equal(socket.sent.filter((f) => f._tag === "Ack" && f.requestId === shellId).length, 4, "the snapshot's chunk and the three after it");
-  // Several frames in one message: each is taken.
-  const archivedId = socket.subscriptions.get(ARCHIVED)!.id;
+  // Several frames in one message: each is taken. thread-2 is archived: removed from the stream, listed by the RPC.
+  archivedThreads = [...archivedShell.threads, { ...threadShell, id: "thread-2", title: "new", archivedAt: "2026-10-03T00:00:07.000Z", updatedAt: "2026-10-03T00:00:07.000Z" }];
   socket.message([
     { _tag: "Chunk", requestId: shellId, values: [{ kind: "thread.removed", sequence: 14, location: "active", threadId: "thread-2" }] },
-    { _tag: "Chunk", requestId: archivedId, values: [{ kind: "thread.updated", sequence: 14, thread: { ...threadShell, id: "thread-2", title: "new", archivedAt: "2026-10-03T00:00:07.000Z", updatedAt: "2026-10-03T00:00:07.000Z" } }] },
+    { _tag: "Chunk", requestId: shellId, values: [{ kind: "project.updated", sequence: 15, project: { ...shell.projects[0], title: "demo 3" } }] },
   ]);
   await settle();
-  assert.deepEqual([(await adapter.listThreads()).map((t) => t.id), (await adapter.listArchivedThreads()).map((t) => t.id)], [["thread-1"], ["thread-old", "thread-2"]]);
+  assert.deepEqual([(await adapter.listThreads()).map((t) => t.id), (await adapter.listArchivedThreads()).map((t) => t.id), (await adapter.listProjects())[0]?.title], [["thread-1"], ["thread-old", "thread-2"], "demo 3"]);
   assert.equal(gets(), 0);
-  assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 1, "one socket");
+  assert.equal(t3.sockets.filter((s) => s.subscriptions.size > 0).length, 1, "one feed socket");
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/auth/websocket-ticket")).length, 2, "the feed's socket, and the command link's for the archived read");
   adapter.close();
 });
 
-test("the feed's shell holds each thread once, in T3's order, and no late change overwrites a newer one", async () => {
+test("the feed's shell holds each thread once, in T3's order, and takes no change the stream has gone past", async () => {
   const { ShellState } = await import("../src/adapter/shellFeed.ts");
   const row = (id: string, updatedAt: string, extra: Record<string, unknown> = {}) => ({ ...threadShell, id, updatedAt, ...extra });
   const project = (id: string, createdAt: string, extra: Record<string, unknown> = {}) => ({ id, title: id, workspaceRoot: `/w/${id}`, createdAt, updatedAt: createdAt, repositoryIdentity: null, ...extra });
   const state = new ShellState();
   const ids = () => {
     const read = state.read();
-    return { active: read.threads.map((t) => t.id), archived: (read.archivedThreads ?? []).map((t) => t.id), projects: read.projects.map((p) => p.id) };
+    return { threads: read.threads.map((t) => t.id), projects: read.projects.map((p) => p.id) };
   };
-  const both = () => {
-    const read = state.read();
-    const active = new Set(read.threads.map((t) => t.id));
-    return (read.archivedThreads ?? []).filter((t) => active.has(t.id as string)).map((t) => t.id);
-  };
-  // Changes before a stream's snapshot are not taken (T3's client skips them too).
-  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 5, location: "active", thread: row("x", "t0") }), undefined);
+  // Changes before the snapshot are not taken (T3's client skips them too).
+  assert.equal(state.apply({ kind: "thread.updated", sequence: 5, location: "active", thread: row("x", "t0") }), undefined);
+  assert.equal(state.whole, false, "not whole until the snapshot is in");
   assert.deepEqual(
-    state.apply("active", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 10, threads: [row("a", "t1"), row("b", "t2"), row("c", "t3")], archivedThreads: [], projects: [project("p2", "c2"), project("p1", "c1")] } }),
+    state.apply({ kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 10, threads: [row("a", "t1"), row("b", "t2"), row("c", "t3")], archivedThreads: [], projects: [project("p2", "c2"), project("p1", "c1")] } }),
     { threadIds: null },
   );
-  assert.equal(state.whole, false, "not whole until the archived snapshot is in");
-  state.apply("archive", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 9, projects: [], threads: [row("d", "t0", { archivedAt: "t0" })] } });
   assert.equal(state.whole, true);
-  assert.deepEqual(ids(), { active: ["a", "b", "c"], archived: ["d"], projects: ["p1", "p2"] }, "threads by updatedAt then id, projects by createdAt then id");
+  assert.deepEqual(ids(), { threads: ["a", "b", "c"], projects: ["p1", "p2"] }, "threads by updatedAt then id, projects by createdAt then id");
+  assert.deepEqual(state.held("a"), { row: row("a", "t1"), sequence: 10 });
 
   // An update moves the thread where T3's snapshot would list it; a new thread goes by its updatedAt too.
-  assert.deepEqual(state.apply("active", { kind: "thread.updated", sequence: 11, location: "active", thread: row("a", "t4") }), { threadIds: ["a"] });
-  state.apply("active", { kind: "thread.updated", sequence: 12, location: "active", thread: row("e", "t4") });
-  assert.deepEqual(ids().active, ["b", "c", "a", "e"]);
+  assert.deepEqual(state.apply({ kind: "thread.updated", sequence: 11, location: "active", thread: row("a", "t4") }), { threadIds: ["a"] });
+  state.apply({ kind: "thread.updated", sequence: 12, location: "active", thread: row("e", "t4") });
+  assert.deepEqual(ids().threads, ["b", "c", "a", "e"]);
+  assert.deepEqual(state.held("a")?.sequence, 11);
   // A change the stream has gone past changes nothing.
-  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 12, location: "active", thread: row("b", "t9") }), undefined);
-  assert.equal(state.apply("active", { kind: "thread.updated", sequence: 3, location: "active", thread: row("b", "t9") }), undefined);
+  assert.equal(state.apply({ kind: "thread.updated", sequence: 12, location: "active", thread: row("b", "t9") }), undefined);
+  assert.equal(state.apply({ kind: "thread.updated", sequence: 3, location: "active", thread: row("b", "t9") }), undefined);
+  assert.deepEqual(ids().threads, ["b", "c", "a", "e"]);
 
-  // Archived: a removal on the active stream and an update on the archived one, at one sequence, in either order.
-  state.apply("archive", { kind: "thread.updated", sequence: 13, thread: row("b", "t5", { archivedAt: "t5" }) });
-  assert.deepEqual([both(), ids().archived], [[], ["d", "b"]], "archived first: moved, never in both");
-  state.apply("active", { kind: "thread.removed", sequence: 13, location: "active", threadId: "b" });
-  assert.deepEqual([ids().active, ids().archived], [["c", "a", "e"], ["d", "b"]], "the active stream's removal does not take it from the archived list");
-  state.apply("active", { kind: "thread.removed", sequence: 14, location: "active", threadId: "c" });
-  state.apply("archive", { kind: "thread.updated", sequence: 14, thread: row("c", "t6", { archivedAt: "t6" }) });
-  assert.deepEqual([ids().active, ids().archived], [["a", "e"], ["d", "b", "c"]], "removed first: then archived");
-  // Unarchived: the active stream's update first, then the archived stream's removal, and the other way round.
-  state.apply("active", { kind: "thread.updated", sequence: 15, location: "active", thread: row("d", "t7") });
-  assert.deepEqual(both(), [], "never in both");
-  state.apply("archive", { kind: "thread.removed", sequence: 15, threadId: "d" });
-  state.apply("archive", { kind: "thread.removed", sequence: 16, threadId: "b" });
-  state.apply("active", { kind: "thread.updated", sequence: 16, location: "active", thread: row("b", "t8") });
-  assert.deepEqual([ids().active, ids().archived], [["a", "e", "d", "b"], ["c"]]);
+  // Archived or deleted: T3 removes the thread; one not listed changes nothing. Unarchived: it is updated back in.
+  assert.deepEqual(state.apply({ kind: "thread.removed", sequence: 13, location: "active", threadId: "b" }), { threadIds: ["b"] });
+  assert.equal(state.apply({ kind: "thread.removed", sequence: 14, location: "active", threadId: "nope" }), undefined);
+  assert.deepEqual([ids().threads, state.held("b"), state.sequence], [["c", "a", "e"], null, 14]);
+  state.apply({ kind: "thread.updated", sequence: 15, location: "active", thread: row("b", "t8") });
+  assert.deepEqual(ids().threads, ["c", "a", "e", "b"]);
   // An update placed outside the active list takes the thread out of it, as T3's client reads it.
-  state.apply("active", { kind: "thread.updated", sequence: 17, location: "archive", thread: row("e", "t9") });
-  assert.deepEqual(ids().active, ["a", "d", "b"]);
+  assert.deepEqual(state.apply({ kind: "thread.updated", sequence: 16, location: "archive", thread: row("e", "t9") }), { threadIds: ["e"] });
+  assert.deepEqual(ids().threads, ["c", "a", "b"]);
 
   // Projects: updated, removed; an enrichment snapshot only patches the repository identity in.
-  assert.deepEqual(state.apply("active", { kind: "project.updated", sequence: 18, project: project("p0", "c3") }), { threadIds: [] });
-  state.apply("active", { kind: "project.removed", sequence: 19, projectId: "p1" });
+  assert.deepEqual(state.apply({ kind: "project.updated", sequence: 17, project: project("p0", "c3") }), { threadIds: [] });
+  state.apply({ kind: "project.removed", sequence: 18, projectId: "p1" });
   assert.deepEqual(ids().projects, ["p2", "p0"]);
   const identity = { canonicalKey: "github.com/x/p2" };
-  assert.deepEqual(state.apply("active", { kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 19, threads: [], archivedThreads: [], projects: [project("p2", "c2", { repositoryIdentity: identity })] }, resolvedRepositoryIdentityRoots: ["/w/p2"] }), { threadIds: [] });
-  assert.deepEqual([ids().active, state.read().projects.find((p) => p.id === "p2")?.repositoryIdentity], [["a", "d", "b"], identity], "threads kept");
-  assert.equal(state.apply("active", { kind: "synchronized" }), undefined);
-  assert.equal(state.apply("active", { kind: "something.new", sequence: 20 }), undefined);
-  assert.equal(state.sequence, 20);
-
-  // Snapshots from two streams that disagree: the newer one holds, whichever comes first.
-  const late = new ShellState();
-  late.apply("archive", { kind: "snapshot", snapshot: { snapshotSequence: 30, projects: [], threads: [row("z", "t1", { archivedAt: "t1" })] } });
-  late.apply("active", { kind: "snapshot", snapshot: { snapshotSequence: 28, threads: [row("z", "t0")], archivedThreads: [], projects: [] } });
-  assert.deepEqual([late.read().threads.map((t) => t.id), late.read().archivedThreads?.map((t) => t.id)], [[], ["z"]]);
-  // A change on the active stream older than what the archived one holds: past for the active stream, not for z.
-  assert.equal(late.apply("active", { kind: "thread.updated", sequence: 29, location: "active", thread: row("z", "t0") }), undefined);
-  assert.deepEqual([late.read().threads.map((t) => t.id), late.read().archivedThreads?.map((t) => t.id)], [[], ["z"]]);
-  assert.equal(late.apply("active", { kind: "thread.removed", sequence: 29, location: "active", threadId: "z" }), undefined);
-  const early = new ShellState();
-  early.apply("archive", { kind: "snapshot", snapshot: { snapshotSequence: 28, projects: [], threads: [row("z", "t0", { archivedAt: "t0" })] } });
-  early.apply("active", { kind: "snapshot", snapshot: { snapshotSequence: 30, threads: [row("z", "t1")], archivedThreads: [], projects: [] } });
-  assert.deepEqual([early.read().threads.map((t) => t.id), early.read().archivedThreads?.map((t) => t.id)], [["z"], []]);
+  assert.deepEqual(state.apply({ kind: "snapshot", snapshot: { schemaVersion: 2, snapshotSequence: 18, threads: [], archivedThreads: [], projects: [project("p2", "c2", { repositoryIdentity: identity })] }, resolvedRepositoryIdentityRoots: ["/w/p2"] }), { threadIds: [] });
+  assert.deepEqual([ids().threads, state.read().projects.find((p) => p.id === "p2")?.repositoryIdentity], [["c", "a", "b"], identity], "threads kept");
+  assert.equal(state.apply({ kind: "snapshot", snapshot: { snapshotSequence: 18, threads: [], archivedThreads: [], projects: [project("p9", "c9")] }, resolvedRepositoryIdentityRoots: ["/w/p9"] }), undefined, "an enrichment of a project not held patches nothing");
+  assert.equal(state.apply({ kind: "synchronized" }), undefined);
+  assert.equal(state.apply({ kind: "something.new", sequence: 19 }), undefined);
+  assert.deepEqual([state.sequence, state.read().snapshotSequence, state.read().schemaVersion], [19, 19, 2]);
 });
 
-test("before the feed's first snapshots, and after its subscription fails, the shell reads go over HTTP without waiting for it", async () => {
-  // T3 takes the subscriptions and sends nothing yet.
-  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }), { "orchestration.getArchivedShellSnapshot": () => archivedShell });
+test("before the feed's first snapshot, and after its subscription fails, the shell reads go over HTTP without waiting for it", async () => {
+  // T3 takes the subscription and sends nothing yet.
+  const t3 = streamingT3(() => ({ [SHELL]: [] }), archivedRpc);
   const { adapter, gets } = feedAdapter(t3);
   adapter.startFeed();
   await settle();
@@ -1019,22 +1005,17 @@ test("before the feed's first snapshots, and after its subscription fails, the s
   assert.deepEqual((await adapter.listThreads()).map((t) => t.id), ["thread-1"]);
   assert.deepEqual((await adapter.listArchivedThreads()).map((t) => t.id), ["thread-old"]);
   assert.equal(gets(), 1);
-  // Only the active snapshot: not whole, still not served.
-  t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
-  await settle();
-  assert.equal(adapter.feed().state, "connecting");
-  // T3 refuses the archived subscription: down, with T3's reason; reads over HTTP; it tries again by itself.
-  t3.feedSocket().end(ARCHIVED, { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "Refused", message: "not now" } }] });
+  // T3 refuses the subscription: down, with T3's reason; reads over HTTP; it tries again by itself.
+  t3.feedSocket().end(SHELL, { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "Refused", message: "not now" } }] });
   await settle();
   const down = adapter.feed();
-  assert.deepEqual([down.state, down.error], ["down", "T3 refused orchestration.subscribeArchivedShell: not now"]);
+  assert.deepEqual([down.state, down.error], ["down", "T3 refused orchestration.subscribeShell: not now"]);
   assert.ok(t3.sockets[0]!.closed, "the failed socket is closed");
   await adapter.listThreads();
   await sleep(30);
   await settle();
   assert.equal(adapter.feed().state, "down", "a retry that brings no snapshot yet leaves it down");
   t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
-  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: archivedShell });
   await settle();
   assert.equal(adapter.feed().state, "connected");
   const ticket = (socket: { url: string }) => new URL(socket.url).searchParams.get("wsTicket");
@@ -1043,7 +1024,7 @@ test("before the feed's first snapshots, and after its subscription fails, the s
 });
 
 test("a read waiting on a slow HTTP snapshot is answered from the feed once it is live, not held behind the older read", async () => {
-  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }));
+  const t3 = streamingT3(() => ({ [SHELL]: [] }));
   const held: Array<() => void> = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const path = new URL(String(input)).pathname;
@@ -1061,7 +1042,6 @@ test("a read waiting on a slow HTTP snapshot is answered from the feed once it i
   await settle();
   assert.equal(held.length, 1, "one HTTP read, shared");
   t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: { ...activeShell, snapshotSequence: 11, threads: [{ ...threadShell, title: "from the feed" }] } });
-  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: archivedShell });
   await settle();
   assert.deepEqual((await waiting).map((t) => t.title), ["from the feed"]);
   assert.equal((await alsoWaiting)?.title, "from the feed");
@@ -1074,7 +1054,7 @@ test("a read waiting on a slow HTTP snapshot is answered from the feed once it i
 
 test("a dropped feed reconnects with backoff on a fresh ticket and subscribes again; the shell is heard of once its snapshots are in", async () => {
   let snapshotTitle = "first";
-  const t3 = streamingT3(() => ({ [SHELL]: [[{ kind: "snapshot", snapshot: { ...activeShell, threads: [{ ...threadShell, title: snapshotTitle }] } }]], [ARCHIVED]: [[{ kind: "snapshot", snapshot: archivedShell }]] }));
+  const t3 = streamingT3(() => ({ [SHELL]: [[{ kind: "snapshot", snapshot: { ...activeShell, threads: [{ ...threadShell, title: snapshotTitle }] } }]] }));
   const { adapter, gets, calls } = feedAdapter(t3);
   const heard: unknown[] = [];
   adapter.onShellChange((change) => heard.push(change));
@@ -1098,7 +1078,7 @@ test("a dropped feed reconnects with backoff on a fresh ticket and subscribes ag
   await settle();
   assert.deepEqual([adapter.feed().state, adapter.feed().error], ["connected", null]);
   assert.equal(t3.sockets.filter((s) => s.subscriptions.size > 0).length, 2);
-  assert.deepEqual(t3.feedSocket().sent.filter((f) => f._tag === "Request").map((f) => f.tag), [SHELL, ARCHIVED], "subscribed again");
+  assert.deepEqual(t3.feedSocket().sent.filter((f) => f._tag === "Request").map((f) => f.tag), [SHELL], "subscribed again");
   assert.equal(new URL(t3.feedSocket().url).searchParams.get("wsTicket"), "tk2");
   assert.deepEqual(heard, [{ threadIds: null }, { threadIds: null }], "heard of once per connection, nothing on the drop");
   assert.equal((await adapter.getThreadShell("thread-1"))?.title, "second");
@@ -1151,7 +1131,7 @@ test("closing the adapter stops the feed: its subscriptions are interrupted, its
   await settle();
   await adapter.listThreads();
   assert.equal(gets(), 2, "over HTTP afresh: the snapshot cached before the feed was live is not reused");
-  assert.deepEqual(socket.sent.filter((f) => f._tag === "Interrupt").map((f) => f.requestId).sort(), [socket.subscriptions.get(SHELL)!.id, socket.subscriptions.get(ARCHIVED)!.id].sort());
+  assert.deepEqual(socket.sent.filter((f) => f._tag === "Interrupt").map((f) => f.requestId), [socket.subscriptions.get(SHELL)!.id]);
   assert.ok(socket.closed);
   assert.deepEqual([adapter.feed().state, adapter.feed().error], ["down", "stopped"]);
   await sleep(60);
@@ -1336,22 +1316,6 @@ test("the feed's heartbeat holds one timer at a time, however long the socket st
   assert.equal(timers(), 0);
 });
 
-test("after a command, a change on the archived stream does not count as the feed showing it", async () => {
-  let title = "before";
-  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
-  const { adapter, gets } = feedAdapter(t3, { shellBody: () => ({ ...activeShell, snapshotSequence: 16, threads: [{ ...threadShell, title }] }) });
-  adapter.startFeed();
-  await settle();
-  title = "after";
-  await adapter.setThreadTitle({ commandId: "c1", threadId: "thread-1", title: "after" });
-  // Another thread is archived in T3 at 16; the archived stream tells it before the active stream tells 15.
-  t3.feedSocket().push(ARCHIVED, { kind: "thread.updated", sequence: 16, thread: { ...threadShell, id: "thread-x", archivedAt: "2026-10-03T00:00:09.000Z", updatedAt: "2026-10-03T00:00:09.000Z" } });
-  await settle();
-  assert.equal((await adapter.getThreadShell("thread-1"))?.title, "after");
-  assert.equal(gets(), 1, "over HTTP");
-  adapter.close();
-});
-
 test("during the wait after a command T3 gave no sequence for, a read made after a change is heard of sees it", async () => {
   // T3's HTTP snapshot is T3's state: it has the rename by the time T3 streams it.
   let title = "t";
@@ -1371,8 +1335,8 @@ test("during the wait after a command T3 gave no sequence for, a read made after
 });
 
 test("a read made after a command is answered from the feed once it shows the command, not held behind a slow HTTP snapshot", async () => {
-  // T3 is slow with its snapshots, the archived one too.
-  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }), "orchestration.getArchivedShellSnapshot": () => new Promise(() => {}) });
+  // T3 is slow with its snapshot.
+  const t3 = streamingT3(opening, { "orchestration.dispatchCommand": () => ({ sequence: 15 }) });
   const held: Array<() => void> = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const path = new URL(String(input)).pathname;
@@ -1387,32 +1351,37 @@ test("a read made after a command is answered from the feed once it shows the co
   await adapter.setThreadTitle({ commandId: "c1", threadId: "thread-1", title: "after" });
   let answered: string | undefined;
   const read = adapter.getThreadShell("thread-1").then((thread) => (answered = thread?.title));
-  const archived = adapter.listArchivedThreads();
   await settle();
   assert.equal(held.length, 1, "over HTTP while the feed has not shown the command");
   t3.feedSocket().push(SHELL, { kind: "thread.updated", sequence: 15, location: "active", thread: { ...threadShell, title: "after" } });
   await settle();
   assert.equal(answered, "after", "answered from the feed while the HTTP snapshot is still unanswered");
-  assert.deepEqual((await archived).map((t) => t.id), ["thread-old"], "the archived threads too");
   held.splice(0).forEach((release) => release());
   await read;
   adapter.close();
 });
 
-test("archived thread reads without the feed share one call in flight, and take the feed when it comes live first", async () => {
-  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }), { "orchestration.getArchivedShellSnapshot": () => new Promise(() => {}) });
+test("archived thread reads share one call in flight, and the feed coming live meanwhile does not answer them", async () => {
+  let answer!: (value: unknown) => void;
+  const t3 = streamingT3(() => ({ [SHELL]: [] }), { "orchestration.getArchivedShellSnapshot": () => new Promise((resolve) => { answer = resolve; }) });
   const { adapter } = feedAdapter(t3);
   adapter.startFeed();
   await settle();
   const first = adapter.listArchivedThreads();
   const second = adapter.listArchivedThreads();
   await settle();
-  const calls = t3.sockets.flatMap((socket) => socket.sent).filter((f) => f.tag === "orchestration.getArchivedShellSnapshot");
-  assert.equal(calls.length, 1, "one call for both reads");
+  const calls = () => t3.sockets.flatMap((socket) => socket.sent).filter((f) => f.tag === "orchestration.getArchivedShellSnapshot").length;
+  assert.equal(calls(), 1, "one call for both reads");
   t3.feedSocket().push(SHELL, { kind: "snapshot", snapshot: activeShell });
-  t3.feedSocket().push(ARCHIVED, { kind: "snapshot", snapshot: { ...archivedShell, threads: [{ ...shell.archivedThreads[0], title: "from the feed" }] } });
   await settle();
-  assert.deepEqual((await Promise.all([first, second])).map((list) => list.map((t) => t.title)), [["from the feed"], ["from the feed"]]);
+  assert.equal(adapter.feed().state, "connected");
+  let settled = false;
+  void Promise.all([first, second]).then(() => { settled = true; });
+  await settle();
+  assert.equal(settled, false, "the feed has no archived list to answer with");
+  answer({ ...archivedShell, threads: [{ ...shell.archivedThreads[0], title: "from the RPC" }] });
+  assert.deepEqual((await Promise.all([first, second])).map((list) => list.map((t) => t.title)), [["from the RPC"], ["from the RPC"]]);
+  assert.equal(calls(), 1);
   adapter.close();
 });
 
@@ -1444,7 +1413,7 @@ test("a new token while the feed's first ticket is still coming leaves one feed 
 });
 
 test("a T3 that takes the subscriptions and never sends its snapshots is given up at the time limit, and asked again", async () => {
-  const t3 = streamingT3(() => ({ [SHELL]: [], [ARCHIVED]: [] }));
+  const t3 = streamingT3(() => ({ [SHELL]: [] }));
   const { adapter } = feedAdapter(t3, { requestTimeoutMs: 60 });
   adapter.startFeed();
   await settle();
