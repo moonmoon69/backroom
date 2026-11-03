@@ -341,7 +341,8 @@ export function decideProjection(transaction: ProjectionOverlay, command: Comman
     }
     case "checks_finished": {
       // Backroom tells the Consigliere that a pull request watched on a seat's thread (his own included) has no check
-      // pending any more and one failed, which T3's watch does not wake on: once per watch and head, on no request.
+      // pending any more and one failed, which T3's watch does not wake on: once per run (a rerun on the same head is a
+      // run of its own; the key names the watch, its head and when T3 observed the finish), on no request.
       system();
       const s = seat(command.seatId);
       const o = initial.orchestrator;

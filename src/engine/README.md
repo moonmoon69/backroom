@@ -54,7 +54,7 @@ folders.
 | `activity_status` | `$system` | `activity.status` of a pending or uncertain activity |
 | `retry` | user or orchestrator (never the run's own seat) | `retry` of a failed or rejected run: its delivered input goes to the seat again |
 | `keep_alive` | `$system` | `notice` with intent `keep-alive` to one idle active seat (H6): it wakes the seat to keep its thread's prompt cache warm, asks nothing and answers nothing, and an error notice never counts it as fresh work |
-| `checks_finished` | `$system` | `notice` with intent `attention` to the orchestrator, on no request, from `$system`: a pull request watched on an active seat's thread has no check pending any more and one failed (T3's watch does not wake on that); once per key (the watch and its head), the same key again is `duplicate` |
+| `checks_finished` | `$system` | `notice` with intent `attention` to the orchestrator, on no request, from `$system`: a pull request watched on an active seat's thread has no check pending any more and one failed (T3's watch does not wake on that); once per key (the watch, its head and when T3 observed the finish: one per run), the same key again is `duplicate` |
 
 A seat is quiet when it has no unresolved run and no pending or uncertain activity, and the command carries an
 evidence reference.

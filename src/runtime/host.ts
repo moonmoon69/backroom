@@ -1046,15 +1046,24 @@ export class EngineHost {
 
   // ---------------- a watched pull request's finished run ----------------
 
-  /** Watched pull requests (by room, seat, watch task and head) this host has seen a check pending on, since it started. */
-  private readonly checksPending = new Set<string>();
+  /**
+   * The runs of watched pull requests (by room, watch task and head) this host has seen a check pending on, since it
+   * started: the time T3 observed the run's first pending reading, or the time it observed the finish that was told. A
+   * room's seats watching one pull request share the entry: they see one run, told once on their board; two rooms each
+   * see it and are each told.
+   */
+  private readonly checksRuns = new Map<string, { pending: number } | { told: number }>();
 
   /**
    * T3's watch of a pull request wakes its thread when the checks' rolled-up state or the mergeability changes, not
    * when a run finishes: one failed check makes the state failing while the others still run, and the run's end then
-   * changes nothing T3 compares. GitHub refuses a rerun until the run completes, so the Consigliere is told once when a
-   * watched pull request, on any seat's thread (his own too), goes from a check pending to none with one failed. Once per
-   * pull request and head: a new push is a new run; a run that passes is T3's to wake on.
+   * changes nothing T3 compares. GitHub refuses a rerun until the run completes, so the Consigliere is told once per run
+   * when a watched pull request, on any seat's thread (his own too), goes from a check pending to none with one failed.
+   * A rerun on the same head is a run of its own and is told again; a run that passes is T3's to wake on; a run this
+   * host first sees finished posts nothing. Readings are ordered by when T3 observed them (T3 serves its cached read,
+   * which may be older than one served before): a pending reading observed no later than a told finish is an older
+   * read of that finished run, not a rerun, and a finished reading observed before the run's pending one is not its end.
+   * The notice's key names the run by the time its finish was observed, so the board keeps the rule across restarts.
    */
   private async checksFinished(roomId: string, seatId: string, shell: T3ThreadShell | null): Promise<void> {
     const read = this.options.watchedChecks;
@@ -1064,17 +1073,23 @@ export class EngineHost {
       const link = watchedLink(shell.pullRequests, taskId);
       // No checks read, or none listed (none started yet, or T3 lost them for a moment), says nothing of the run.
       if (!link?.watch || !checks || checks.checks.length === 0) continue;
-      const key = `${taskId}@${link.watch.headSha ?? link.watch.startedAt}`;
-      // What a seat's watch has shown is that seat's, in its room: two rooms (or two seats of one) watching the same pull
-      // request each see it pending; the board's key keeps one notice per room.
-      const seen = JSON.stringify([roomId, seatId, key]);
+      const head = `${taskId}@${link.watch.headSha ?? link.watch.startedAt}`;
+      const seen = JSON.stringify([roomId, head]);
+      const at = checks.observedAt === null ? this.now() : Date.parse(checks.observedAt);
+      const run = this.checksRuns.get(seen);
       const failed = finishedWithFailures(checks);
       if (failed === null) {
-        this.checksPending.add(seen);
+        if (run && "pending" in run) continue;
+        // The board's notices for this head name their finishes; a new host has no other memory of what was told.
+        const told = p.events.map((e) => (e.data.kind === "notice" && e.data.causeId.startsWith(checksCause(`${head}@`)) ? Date.parse(e.data.causeId.slice(checksCause(`${head}@`).length)) : Number.NaN)).filter(Number.isFinite);
+        if (at <= Math.max(run ? run.told : -Infinity, ...told)) continue;
+        this.checksRuns.set(seen, { pending: at });
         continue;
       }
-      if (!this.checksPending.delete(seen) || failed.length === 0) continue;
-      if (this.project(roomId).events.some((e) => e.data.kind === "notice" && e.data.causeId === checksCause(key))) continue;
+      if (!run || "told" in run || at < run.pending) continue;
+      this.checksRuns.set(seen, { told: at });
+      if (failed.length === 0) continue;
+      const key = `${head}@${new Date(at).toISOString()}`;
       const names = failed.slice(0, 5).join(", ") + (failed.length > 5 ? `, and ${failed.length - 5} more` : "");
       const body = `Pull request #${link.number} (${link.repository}), watched on ${this.named(roomId, seatId)}'s thread: its checks have finished, ${failed.length} failed (${oneLine(names)}). A rerun of the failed checks is possible now; T3's watch does not wake on a run finishing.`;
       this.exec(roomId, { type: "checks_finished", actor: SYSTEM, id: `checks:${key}`, seatId, key, body });
