@@ -15,14 +15,14 @@ import { test, type TestContext } from "node:test";
 import { FakeT3Adapter } from "../src/adapter/fake.ts";
 import { DEFAULT_AGENTS_TEMPLATE, SKILLS_PLACEHOLDER, renderAgentsText } from "../src/app/agentsFile.ts";
 import { createStack } from "../src/app/bootstrap.ts";
-import { DAY_MS, Packs, SKILLS_FOLDER, frontmatter, packName, type PackClock, type PackState as ServerPackState, type PackUpdateDetail as ServerDetail } from "../src/app/packs.ts";
+import { DAY_MS, Packs, SKILLS_FOLDER, packName, type PackClock, type PackState as ServerPackState, type PackUpdateDetail as ServerDetail } from "../src/app/packs.ts";
 import type { CommandResult as ServerResult } from "../src/app/service.ts";
 import type { SkillRow as ServerRow } from "../src/app/skillRoster.ts";
 import { loadConfig } from "../src/config.ts";
 import { Database, MIGRATIONS } from "../src/db/database.ts";
 import { Repos } from "../src/db/repos.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
-import { POTETO_WORDS, PSTACK_FOLDER, PSTACK_PACK, PSTACK_REPO } from "../src/domain/skills.ts";
+import { POTETO_WORDS, PSTACK_FOLDER, PSTACK_PACK, PSTACK_REPO, frontmatter } from "../src/domain/skills.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
 import { makePackFixture, makePstackFixture } from "../scripts/pstack-fixture.ts";
@@ -247,6 +247,35 @@ test("Take update takes out Backroom's links to skills the update removed, and o
   assert.deepEqual(taken.unlinked, [`${join(home, ".agents/skills")}/beta`]);
   assert.equal(isLink(join(home, ".agents/skills/beta")), false);
   assert.ok(isLink(join(home, ".claude/skills/alpha")), "alpha's link stays");
+});
+
+test("a skill that stops being one loses its links: the preview names them before the take; a hand checkout loses them at the next look; the user's lines stay", async () => {
+  const fx = makePackFixture(dir("up"));
+  const { packs, repos, home } = packsFor();
+  const pack = await packs.add(fx.bare);
+  const first = pack.pinned!;
+  await packs.link("skills-pack", "skills/alpha", "claude");
+  await packs.link("skills-pack", "skills/beta", "agents");
+  const alphaRow = JSON.stringify(["pack", "skills-pack", "skills/alpha"]);
+  repos.setSkillHint(alphaRow, { useWhen: "a first pass", avoid: "" });
+  // alpha's SKILL.md goes upstream, its script stays: alpha is no longer a skill.
+  rmSync(join(fx.work, "skills/alpha/SKILL.md"));
+  const next = fx.commit("alpha is a script now");
+  await packs.checkNow("skills-pack");
+  const detail = await packs.updateDetail("skills-pack", next);
+  assert.deepEqual(detail.unlinks, [`${join(home, ".claude/skills")}/alpha`], "named before the take");
+  assert.ok(isLink(join(home, ".claude/skills/alpha")), "and still there until it is taken");
+  // A checkout moved by hand to that commit: the next hourly look takes the link out.
+  git(pack.folder, "checkout", "-q", "--detach", next);
+  assert.deepEqual(packs.state(repos.getPack("skills-pack")!).skills.map((s) => s.path), ["skills/beta"]);
+  await packs.tick();
+  assert.equal(isLink(join(home, ".claude/skills/alpha")), false);
+  assert.ok(isLink(join(home, ".agents/skills/beta")), "beta, still a skill, keeps its link");
+  assert.deepEqual(repos.listSkillHints().get(alphaRow), { useWhen: "a first pass", avoid: "" }, "the user's lines kept, as Remove keeps them");
+  // Back at the first commit by hand, alpha is a skill again, linked nowhere: nothing comes back by itself.
+  git(pack.folder, "checkout", "-q", "--detach", first);
+  await packs.tick();
+  assert.deepEqual(packs.state(repos.getPack("skills-pack")!).skills.find((s) => s.path === "skills/alpha")!.linked, []);
 });
 
 test("links: per folder, named after the skill's folder, to its real path, the folder made; refused where the name is taken or synced; unlink removes only Backroom's own", async () => {

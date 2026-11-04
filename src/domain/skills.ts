@@ -89,3 +89,23 @@ export const skillRowId = {
   skill: (instanceId: string, scope: string | null, path: string | null, name: string) => JSON.stringify(["skill", instanceId, scope ?? "", path ?? "", name]),
   pack: (pack: string, path: string) => JSON.stringify(["pack", pack, path]),
 };
+
+/** A SKILL.md's frontmatter name and description: plain, quoted, folded or indented-continued values, on one line. */
+export function frontmatter(text: string): { name: string | null; description: string | null } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+  if (!match) return { name: null, description: null };
+  const lines = (match[1] ?? "").split(/\r?\n/);
+  const value = (key: string): string | null => {
+    const index = lines.findIndex((line) => line.startsWith(`${key}:`));
+    if (index < 0) return null;
+    let first = (lines[index] ?? "").slice(key.length + 1).trim();
+    const more: string[] = [];
+    for (let i = index + 1; i < lines.length && /^(\s|$)/.test(lines[i] ?? ""); i += 1) more.push((lines[i] ?? "").trim());
+    if (/^[>|][-+]?$/.test(first)) first = "";
+    let text = [first, ...more].filter(Boolean).join(" ");
+    const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(text) ?? /^'((?:[^']|'')*)'$/.exec(text);
+    if (quoted) text = text.startsWith('"') ? (quoted[1] ?? "").replace(/\\(.)/g, "$1") : (quoted[1] ?? "").replace(/''/g, "'");
+    return text.replace(/\s+/g, " ").trim() || null;
+  };
+  return { name: value("name"), description: value("description") };
+}

@@ -52,8 +52,15 @@ async function linkedPack() {
   return { fx, repos, home, packs, input: () => ({ packs: packs.list().map((pack) => ({ pack, skills: packs.skills(pack) })), folders: packs.folders() }) };
 }
 
-const claude = (commands: string[]): T3ProviderInfo =>
-  ({ instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", slashCommands: commands.map((name) => ({ name, description: `${name}, by its author`, hint: null })), skills: [] }) as unknown as T3ProviderInfo;
+/** Claude as T3 lists it: its skills as slash commands, with no path; a command's description its author's (or the one given). */
+const claude = (commands: Array<string | [string, string]>): T3ProviderInfo =>
+  ({
+    instanceId: "claudeAgent",
+    driver: "claudeAgent",
+    displayName: "Claude",
+    slashCommands: commands.map((c) => (typeof c === "string" ? { name: c, description: `${c}, by its author`, hint: null } : { name: c[0], description: c[1], hint: null })),
+    skills: [],
+  }) as unknown as T3ProviderInfo;
 
 test("the roster: directives, commands per provider, T3's skills by source, linked pack skills; what a harness found of a pack's skill is that pack's row", async () => {
   const { home, input } = await linkedPack();
@@ -61,13 +68,15 @@ test("the roster: directives, commands per provider, T3's skills by source, link
     instanceId: "codex",
     driver: "codex",
     displayName: "Codex",
-    slashCommands: [{ name: "compact", description: "Codex's compact", hint: null }],
+    // A command named and described as beta, linked in a folder Codex reads: Codex gives paths, so it stays Codex's command.
+    slashCommands: [{ name: "compact", description: "Codex's compact", hint: null }, { name: "beta", description: "Beta, for the second kind.", hint: null }],
     // beta as Codex found it, through Backroom's link in ~/.agents/skills, under its frontmatter name.
     skills: [...CODEX_SKILLS, { name: "beta-skill", description: "Beta, for the second kind.", shortDescription: null, path: join(home, ".agents/skills/beta/SKILL.md"), scope: "user", enabled: true, displayName: null, userInvocationOnly: true, userInvocable: true }],
   } as unknown as T3ProviderInfo;
   const rows = skillRoster({
     ...input(),
-    providers: [claude(["compact", "alpha", "dataviz"]), codex],
+    // Claude lists alpha, linked in its folder, as a command named by its folder and described by its frontmatter.
+    providers: [claude(["compact", ["alpha", "Use alpha for the first kind of job."], "dataviz"]), codex],
     crew: [preset("Opus", "claudeAgent"), preset("Sol", "codex")],
     hints: new Map([[skillRowId.command("claudeAgent", "dataviz"), { useWhen: "charts for the user", avoid: "" }]]),
   });
@@ -76,6 +85,7 @@ test("the roster: directives, commands per provider, T3's skills by source, link
     ["directive", "now", "room", "", ""],
     ["directive", "add", "room", "", ""],
     ["directive", "remove", "room", "", ""],
+    ["command", "beta", "Codex", "codex", "Sol"],
     ["command", "compact", "Claude", "claudeAgent", "Opus"],
     ["command", "compact", "Codex", "codex", "Sol"],
     ["command", "dataviz", "Claude", "claudeAgent", "Opus"],
@@ -98,6 +108,13 @@ test("the roster: directives, commands per provider, T3's skills by source, link
   assert.equal(row("alpha").id, skillRowId.pack("skills-pack", "skills/alpha"));
   assert.deepEqual([row("dataviz").useWhen, row("dataviz").avoid], ["charts for the user", ""]);
   assert.equal(row("imagegen").useWhen, "", "the author's line is never copied into the user's");
+  // A Claude command with a linked skill's name but not its description is Claude's own: it stays a command, and the pack
+  // row is not Claude's.
+  const native = skillRoster({ ...input(), providers: [claude([["alpha", "Claude's own alpha"]])], crew: [], hints: new Map() });
+  assert.deepEqual(native.filter((r) => r.name === "alpha").map((r) => [r.kind, r.instances.join(",")]), [
+    ["command", "claudeAgent"],
+    ["pack", ""],
+  ]);
   // T3 unreadable: its rows go, the directives and the linked pack skills stand.
   const without = skillRoster({ ...input(), providers: null, crew: [], hints: new Map() });
   assert.deepEqual(without.map((r) => [r.kind, r.name]), [...ROOM_DIRECTIVES.map((d) => ["directive", d.name]), ["pack", "alpha"], ["pack", "beta-skill"]]);

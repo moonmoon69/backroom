@@ -6,7 +6,10 @@
  * Rows are the room's directives, what T3 reports per provider (its slash commands, and its skills list with each skill's
  * path, scope and who may invoke it), and the packs' skills Backroom has linked (src/app/packs.ts). A row's identity is its
  * source (skillRowId in src/domain/skills.ts), never a display name. A T3 skill whose real path is a pack's skill folder is
- * that pack's row; so is a slash command with no path of a harness that reads a folder holding Backroom's link of that name.
+ * that pack's row, for every harness that gives a path. A harness that gives none (Claude lists its skills as slash
+ * commands) has a command taken for a pack's skill only when it reads a folder holding Backroom's link to it and the
+ * command's name and description are the skill's folder name and frontmatter description; every other command, a native
+ * one of the same name included, stays a harness command.
  * T3 lists what a harness found at its session's start, so a newly linked skill reaches a member after a reseat.
  */
 import { realpathSync } from "node:fs";
@@ -91,13 +94,14 @@ const blank = (row: Pick<SkillRow, "id" | "kind" | "name" | "source"> & Partial<
 export function skillRoster(input: RosterInput): SkillRow[] {
   const rows: SkillRow[] = ROOM_DIRECTIVES.map((d) => blank({ id: skillRowId.directive(d.name), kind: "directive", name: d.name, description: d.description, source: "room", hint: d.hint }));
   const packRows = new Map<string, SkillRow>();
-  const byLink = new Map<string, SkillRow>();
+  /** By folder and link name: the pack row and the description a harness listing it as a command would give. */
+  const byLink = new Map<string, { row: SkillRow; description: string | null }>();
   for (const { pack, skills } of input.packs) {
     for (const skill of skills) {
       const row = blank({ id: skillRowId.pack(pack.name, skill.path), kind: "pack", name: skill.name, description: skill.description, source: `${pack.name} · ${skill.path}`, path: skill.realPath, linked: skill.linked });
       packRows.set(skill.realPath, row);
       // A harness names a skill it found by its frontmatter's name, else its folder's.
-      for (const folder of skill.linked) for (const name of new Set([skill.linkName, skill.name])) byLink.set(`${folder}/${name}`, row);
+      for (const folder of skill.linked) byLink.set(`${folder}/${skill.linkName}`, { row, description: skill.description });
     }
   }
   const addInstance = (row: SkillRow, instanceId: string) => {
@@ -105,6 +109,8 @@ export function skillRoster(input: RosterInput): SkillRow[] {
   };
   for (const provider of input.providers ?? []) {
     const folders = input.folders.filter((folder) => provider.driver !== undefined && folder.drivers.includes(provider.driver)).map((folder) => folder.id);
+    // A harness that reports where its skills are is merged by path alone; only one that reports none falls back on names.
+    const givesPaths = (provider.skills ?? []).some((skill) => skill.path);
     for (const skill of provider.skills ?? []) {
       const real = realDir(skill.path);
       const packRow = real ? packRows.get(real) : undefined;
@@ -132,9 +138,9 @@ export function skillRoster(input: RosterInput): SkillRow[] {
       );
     }
     for (const command of provider.slashCommands ?? []) {
-      const linked = folders.map((folder) => byLink.get(`${folder}/${command.name}`)).find(Boolean);
+      const linked = givesPaths ? undefined : folders.map((folder) => byLink.get(`${folder}/${command.name}`)).find((link) => link && link.description !== null && link.description === command.description);
       if (linked) {
-        addInstance(linked, provider.instanceId);
+        addInstance(linked.row, provider.instanceId);
         continue;
       }
       rows.push(blank({ id: skillRowId.command(provider.instanceId, command.name), kind: "command", name: command.name, description: command.description, source: provider.displayName, hint: command.hint, instances: [provider.instanceId] }));

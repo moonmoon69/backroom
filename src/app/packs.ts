@@ -8,7 +8,8 @@
  * - Pinned. A pack is installed at a commit (the commit cloned, or for a folder already there its checkout, or the pin it
  *   had) and stays there. The daily check (an hourly look at when it last checked; a failure is tried again the next hour)
  *   only fetches: the page then says "update available" with the upstream commit, and the stat, files, description
- *   changes and full diff on demand. Take update checks out exactly the commit the user looked at.
+ *   changes, the links it would take out and the full diff on demand. Take update checks out exactly the commit the user
+ *   looked at.
  * - Local changes. Only tracked modifications stop a checkout; untracked files are left as they are, and a checkout that
  *   would overwrite one is refused, naming it.
  * - One git operation at a time (a serial queue, links and removals too). Readers take a pack's commit from git's HEAD,
@@ -21,7 +22,9 @@
  * - Links (SKILL_FOLDERS in src/domain/skills.ts): per skill and folder, a symlink named after the skill's folder,
  *   pointing at the skill's folder by its real path. Every harness that reads a folder sees what is linked there, so a
  *   link is never per harness. Refused, with nothing changed: an entry of that name that is not Backroom's link to that
- *   skill, and the name Claude's sync owns. Unlinking removes only Backroom's link to that skill.
+ *   skill, and the name Claude's sync owns. Unlinking removes only Backroom's link to that skill. A link to what is no
+ *   longer one of the pack's skills (its SKILL.md gone, or its folder) is taken out at Take update, at an install and at
+ *   the hourly look, so one moved by hand goes too; the user's lines on it are kept.
  * - Standing text. A pack may have one line every seat is given, in the agents file ({skills}) and the briefing's Skills
  *   section, with {folder} for its folder; pstack's two presets are POTETO_WORDS.
  */
@@ -31,7 +34,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Repos } from "../db/repos.ts";
 import { RoomError } from "../domain/errors.ts";
-import { FOLDER_PLACEHOLDER, POTETO_WORDS, PSTACK_PACK, PSTACK_TREES, SKILL_FOLDERS, SYNCED_NAME, DRIVER_NAMES } from "../domain/skills.ts";
+import { DRIVER_NAMES, FOLDER_PLACEHOLDER, POTETO_WORDS, PSTACK_PACK, PSTACK_TREES, SKILL_FOLDERS, SYNCED_NAME, frontmatter } from "../domain/skills.ts";
 import type { Pack, PackError } from "../domain/types.ts";
 import { runGit } from "../git/reader.ts";
 
@@ -115,6 +118,8 @@ export interface PackUpdateDetail {
   files: Array<{ status: string; path: string }>;
   /** Each SKILL.md whose frontmatter description changes, before and after (null where the file is not there). */
   descriptions: Array<{ path: string; before: string | null; after: string | null }>;
+  /** Backroom's links, as folder/name, that taking it removes: their skill is no longer one in the commit. */
+  unlinks: string[];
   diff: string;
   truncated: boolean;
 }
@@ -192,26 +197,6 @@ function head(path: string, bytes = 16384): string {
   } finally {
     closeSync(fd);
   }
-}
-
-/** A SKILL.md's frontmatter name and description: plain, quoted, folded or indented-continued values, on one line. */
-export function frontmatter(text: string): { name: string | null; description: string | null } {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
-  if (!match) return { name: null, description: null };
-  const lines = (match[1] ?? "").split(/\r?\n/);
-  const value = (key: string): string | null => {
-    const index = lines.findIndex((line) => line.startsWith(`${key}:`));
-    if (index < 0) return null;
-    let first = (lines[index] ?? "").slice(key.length + 1).trim();
-    const more: string[] = [];
-    for (let i = index + 1; i < lines.length && /^(\s|$)/.test(lines[i] ?? ""); i += 1) more.push((lines[i] ?? "").trim());
-    if (/^[>|][-+]?$/.test(first)) first = "";
-    let text = [first, ...more].filter(Boolean).join(" ");
-    const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(text) ?? /^'((?:[^']|'')*)'$/.exec(text);
-    if (quoted) text = text.startsWith('"') ? (quoted[1] ?? "").replace(/\\(.)/g, "$1") : (quoted[1] ?? "").replace(/''/g, "'");
-    return text.replace(/\s+/g, " ").trim() || null;
-  };
-  return { name: value("name"), description: value("description") };
 }
 
 /** A pack's name from its URL: the repository's name, lower case, letters, digits and . _ -. */
@@ -527,7 +512,17 @@ export class Packs {
       if (was !== now) descriptions.push({ path: after, before: was, after: now });
     }
     const full = await runGit(folder, ["diff", ...range], { timeoutMs: FETCH_TIMEOUT_MS, maxBytes: 64 * 1024 * 1024 });
-    return { from: pack.pinned, commit, stat, files, descriptions, diff: full.slice(0, DIFF_MAX_CHARS), truncated: full.length > DIFF_MAX_CHARS };
+    // The skills the commit holds (a sparse clone's within its paths): a link to anything else of the pack's goes with the take.
+    const incoming = new Set(
+      (await runGit(folder, ["ls-tree", "-r", "--name-only", "-z", commit, "--", ...paths], { maxBytes: 64 * 1024 * 1024 }))
+        .split("\0")
+        .filter((file) => file === "SKILL.md" || file.endsWith("/SKILL.md"))
+        .map((file) => (file === "SKILL.md" ? folder : join(folder, file.slice(0, -"/SKILL.md".length)))),
+    );
+    const unlinks = this.links()
+      .filter((link) => inside(link.target, folder) && !incoming.has(link.target))
+      .map((link) => link.label);
+    return { from: pack.pinned, commit, stat, files, descriptions, unlinks, diff: full.slice(0, DIFF_MAX_CHARS), truncated: full.length > DIFF_MAX_CHARS };
   }
 
   // ---------------- the timer ----------------
@@ -544,15 +539,32 @@ export class Packs {
     this.timer = null;
   }
 
-  /** Each pack: installed when it is missing or has no pin yet, checked when a day has passed or the last attempt failed. */
+  /**
+   * Each pack: installed when it is missing or has no pin yet; else its links to what is no longer one of its skills
+   * taken out (a checkout moved by hand, a SKILL.md deleted), and checked when a day has passed or the last attempt failed.
+   */
   tick(): Promise<void> {
     return Promise.all(
       this.list().map((pack) => {
         if (!pack.pinned || !isFullSha(pack.pinned) || !this.read(pack).ready) return this.background(pack.name, () => this.install(pack.name));
         const due = pack.error !== null || pack.checkedAt === null || this.clock.now() - Date.parse(pack.checkedAt) >= DAY_MS;
-        return due ? this.background(pack.name, () => this.check(pack.name)) : Promise.resolve();
+        return this.background(pack.name, async () => {
+          this.tidy(pack.name);
+          if (due) await this.check(pack.name);
+        });
       }),
     ).then(() => undefined);
+  }
+
+  /** Backroom's links into a ready pack whose target is no longer one of its skills, taken out; what went, as folder/name. */
+  private tidy(name: string): string[] {
+    const pack = this.repos.getPack(name);
+    if (!pack || !this.read(pack).ready) return [];
+    const folder = this.folderOf(pack);
+    const skills = new Set(this.skillsNow(pack).map((skill) => skill.realPath));
+    const removed = this.unlinkWhere((target) => inside(target, folder) && !skills.has(target));
+    if (removed.length > 0) this.log(`skills: ${name}: links to what is no longer a skill of it taken out: ${removed.join(", ")}`);
+    return removed;
   }
 
   /** A background install or check, never queued twice for one pack, never rejecting. */
@@ -672,6 +684,7 @@ export class Packs {
       }
       this.repos.savePack({ ...this.repos.getPack(name)!, pinned });
       this.record(name, "install", null);
+      this.tidy(name);
       this.log(`skills: ${name} installed at ${pinned.slice(0, 7)} in ${folder}`);
     } catch (error) {
       this.record(name, "install", errorText(error));
@@ -777,40 +790,41 @@ export class Packs {
       await this.checkout(pack, folder, commit);
       this.repos.savePack({ ...this.known(name), pinned: commit, error: null });
       this.log(`skills: ${name} moved to ${commit.slice(0, 7)}`);
-      return this.unlinkWhere((target) => inside(target, folder) && !this.exists(target));
+      return this.tidy(name);
     });
     return { state: this.state(this.known(name)), unlinked };
   }
 
-  private exists(path: string): boolean {
-    try {
-      statSync(path);
-      return true;
-    } catch {
-      return false;
-    }
+  /** Every symlink in the skill folders, as folder/name with the path it holds. */
+  private links(): Array<{ label: string; path: string; target: string }> {
+    return this.folders().flatMap((folder) => {
+      let names: string[] = [];
+      try {
+        names = readdirSync(folder.path);
+      } catch {
+        return [];
+      }
+      return names.flatMap((entry) => {
+        const path = join(folder.path, entry);
+        try {
+          return lstatSync(path).isSymbolicLink() ? [{ label: `${folder.label}/${entry}`, path, target: readlinkSync(path) }] : [];
+        } catch {
+          return [];
+        }
+      });
+    });
   }
 
   /** Backroom's links whose target matches, removed from every folder; what was removed, as folder/name. */
   private unlinkWhere(match: (target: string) => boolean): string[] {
     const removed: string[] = [];
-    for (const folder of this.folders()) {
-      let names: string[] = [];
+    for (const link of this.links()) {
+      if (!match(link.target)) continue;
       try {
-        names = readdirSync(folder.path);
+        unlinkSync(link.path);
+        removed.push(link.label);
       } catch {
-        continue;
-      }
-      for (const entry of names) {
-        const path = join(folder.path, entry);
-        try {
-          if (!lstatSync(path).isSymbolicLink()) continue;
-          if (!match(readlinkSync(path))) continue;
-          unlinkSync(path);
-          removed.push(`${folder.label}/${entry}`);
-        } catch {
-          // gone meanwhile
-        }
+        // gone meanwhile
       }
     }
     return removed;

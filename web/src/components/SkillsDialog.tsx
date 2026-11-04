@@ -370,6 +370,11 @@ function UpdateDetail({ detail }: { detail: PackUpdateDetail }) {
           ))}
         </ul>
       ) : null}
+      {detail.unlinks.length > 0 ? (
+        <p className="status-error pack-unlinks">
+          Taking it removes {detail.unlinks.length === 1 ? "this link, whose skill is" : "these links, whose skills are"} no longer in it: <span className="mono">{detail.unlinks.join(", ")}</span>
+        </p>
+      ) : null}
       <pre className="mono pack-stat">{detail.stat || "No change in the files Backroom keeps."}</pre>
       <ul className="pack-files mono" aria-label="Files">
         {detail.files.map((file) => (

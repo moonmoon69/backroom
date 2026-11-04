@@ -700,6 +700,8 @@ export interface PackUpdateDetail {
   stat: string;
   files: Array<{ status: string; path: string }>;
   descriptions: Array<{ path: string; before: string | null; after: string | null }>;
+  /** Backroom's links, as folder/name, that taking it removes: their skill is no longer one in the commit. */
+  unlinks: string[];
   diff: string;
   truncated: boolean;
 }

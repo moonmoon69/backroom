@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { SKILL_FOLDERS } from "../domain/skills.ts";
+import { SKILL_FOLDERS, frontmatter } from "../domain/skills.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import type {
   T3ProviderSkill,
@@ -424,7 +424,7 @@ export class FakeT3Adapter implements T3Adapter {
       return names.flatMap((name) => {
         try {
           const text = readFileSync(join(at, name, "SKILL.md"), "utf8");
-          return [{ name, path: join(at, name, "SKILL.md"), description: /^description:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? null }];
+          return [{ name, path: join(at, name, "SKILL.md"), description: frontmatter(text).description }];
         } catch {
           return [];
         }
