@@ -34,7 +34,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Repos } from "../db/repos.ts";
 import { RoomError } from "../domain/errors.ts";
-import { DRIVER_NAMES, FOLDER_PLACEHOLDER, POTETO_WORDS, PSTACK_PACK, PSTACK_TREES, SKILL_FOLDERS, SYNCED_NAME, frontmatter } from "../domain/skills.ts";
+import { DRIVER_NAMES, FOLDER_PLACEHOLDER, frontmatter, linkNameFor, POTETO_WORDS, PSTACK_PACK, PSTACK_TREES, SKILL_FOLDERS, SYNCED_NAME } from "../domain/skills.ts";
 import type { Pack, PackError } from "../domain/types.ts";
 import { runGit } from "../git/reader.ts";
 
@@ -70,7 +70,7 @@ export interface PackSkill {
   path: string;
   /** The frontmatter's name, else the folder's name. */
   name: string;
-  /** What a link to it is called: its folder's name. */
+  /** What a link to it is called: its frontmatter name when that is a plain folder name, else its folder's (linkNameFor). */
   linkName: string;
   /** The author's, from the frontmatter; null when it has none. */
   description: string | null;
@@ -381,7 +381,7 @@ export class Packs {
         } catch {
           // unreadable: named by its folder
         }
-        const linkName = path === "." ? pack.name : basename(path);
+        const linkName = linkNameFor(meta.name, path === "." ? pack.name : basename(path));
         let realPath = at;
         try {
           realPath = realpathSync(at);

@@ -68,10 +68,10 @@ test("the roster: directives, commands per provider, T3's skills by source, link
     instanceId: "codex",
     driver: "codex",
     displayName: "Codex",
-    // A command named and described as beta, linked in a folder Codex reads: Codex gives paths, so it stays Codex's command.
-    slashCommands: [{ name: "compact", description: "Codex's compact", hint: null }, { name: "beta", description: "Beta, for the second kind.", hint: null }],
+    // A command named and described as beta-skill (beta's link name, from its frontmatter), linked in a folder Codex reads: Codex gives paths, so it stays Codex's command.
+    slashCommands: [{ name: "compact", description: "Codex's compact", hint: null }, { name: "beta-skill", description: "Beta, for the second kind.", hint: null }],
     // beta as Codex found it, through Backroom's link in ~/.agents/skills, under its frontmatter name.
-    skills: [...CODEX_SKILLS, { name: "beta-skill", description: "Beta, for the second kind.", shortDescription: null, path: join(home, ".agents/skills/beta/SKILL.md"), scope: "user", enabled: true, displayName: null, userInvocationOnly: true, userInvocable: true }],
+    skills: [...CODEX_SKILLS, { name: "beta-skill", description: "Beta, for the second kind.", shortDescription: null, path: join(home, ".agents/skills/beta-skill/SKILL.md"), scope: "user", enabled: true, displayName: null, userInvocationOnly: true, userInvocable: true }],
   } as unknown as T3ProviderInfo;
   const rows = skillRoster({
     ...input(),
@@ -85,7 +85,7 @@ test("the roster: directives, commands per provider, T3's skills by source, link
     ["directive", "now", "room", "", ""],
     ["directive", "add", "room", "", ""],
     ["directive", "remove", "room", "", ""],
-    ["command", "beta", "Codex", "codex", "Sol"],
+    ["command", "beta-skill", "Codex", "codex", "Sol"],
     ["command", "compact", "Claude", "claudeAgent", "Opus"],
     ["command", "compact", "Codex", "codex", "Sol"],
     ["command", "dataviz", "Claude", "claudeAgent", "Opus"],
@@ -96,14 +96,15 @@ test("the roster: directives, commands per provider, T3's skills by source, link
     ["pack", "alpha", "skills-pack · skills/alpha", "claudeAgent", "Opus"],
     ["pack", "beta-skill", "skills-pack · skills/beta", "codex", "Sol"],
   ]);
-  const row = (name: string) => rows.find((r) => r.name === name)!;
+  // beta-skill is two rows, Codex's command and the pack's: the pack row is the one asked about.
+  const row = (name: string) => rows.find((r) => r.name === name && r.kind === "pack") ?? rows.find((r) => r.name === name)!;
   assert.notEqual(rows.filter((r) => r.name === "compact")[0]!.id, rows.filter((r) => r.name === "compact")[1]!.id, "a command is one row per provider");
   assert.equal(row("openai-templates:artifact-template-analytics-dashboard").label, "Analytics Dashboard", "the display name a label, the prefixed name kept");
   assert.equal(row("imagegen").description, "Generate or edit images", "the author's short line");
   assert.equal(rows.some((r) => r.name === "retired-skill"), false, "a skill its harness turned off is no one's");
   assert.deepEqual([row("house-style").userInvocable, row("deploy-check").userInvocationOnly], [false, true]);
   assert.equal(row("beta-skill").userInvocationOnly, true, "the pack row takes T3's restriction");
-  assert.equal(row("beta-skill").path, realpathSync(join(home, ".agents/skills/beta")), "the real source path");
+  assert.equal(row("beta-skill").path, realpathSync(join(home, ".agents/skills/beta-skill")), "the real source path");
   assert.deepEqual(row("alpha").linked, ["claude"]);
   assert.equal(row("alpha").id, skillRowId.pack("skills-pack", "skills/alpha"));
   assert.deepEqual([row("dataviz").useWhen, row("dataviz").avoid], ["charts for the user", ""]);
@@ -151,7 +152,7 @@ test("T3's skills list read beside its commands: through the HTTP adapter's mapp
   const providers = await fake.listProviders();
   const of = (id: string) => providers.find((p) => p.instanceId === id)!;
   assert.ok(of("claudeAgent").slashCommands!.some((c) => c.name === "alpha"), "Claude lists what it finds in its folder as a command");
-  assert.ok(of("codex").skills!.some((s) => s.name === "beta" && s.path === join(home, ".agents/skills/beta/SKILL.md")), "Codex lists it with the path it found it at");
+  assert.ok(of("codex").skills!.some((s) => s.name === "beta-skill" && s.path === join(home, ".agents/skills/beta-skill/SKILL.md")), "Codex lists it with the path it found it at");
   assert.equal(of("codex").skills!.some((s) => s.name === "alpha"), false, "Claude's folder is not Codex's");
 });
 

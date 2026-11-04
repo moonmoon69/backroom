@@ -22,7 +22,7 @@ import { loadConfig } from "../src/config.ts";
 import { Database, MIGRATIONS } from "../src/db/database.ts";
 import { Repos } from "../src/db/repos.ts";
 import { parseCommand, type RoomCommandInput } from "../src/domain/commands.ts";
-import { POTETO_WORDS, PSTACK_FOLDER, PSTACK_PACK, PSTACK_REPO, frontmatter } from "../src/domain/skills.ts";
+import { POTETO_WORDS, PSTACK_FOLDER, PSTACK_PACK, PSTACK_REPO, frontmatter, linkNameFor } from "../src/domain/skills.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import type * as Web from "../web/src/types.ts";
 import { makePackFixture, makePstackFixture } from "../scripts/pstack-fixture.ts";
@@ -110,6 +110,12 @@ test("a SKILL.md's frontmatter: plain, quoted and folded descriptions on one lin
   assert.deepEqual(frontmatter("---\nname: c\ndescription: >-\n  folded over\n  two lines\nlicense: MIT\n---\n"), { name: "c", description: "folded over two lines" });
   assert.deepEqual(frontmatter("---\ndescription: 'it''s'\n---\n"), { name: null, description: "it's" });
   assert.deepEqual(frontmatter("# no frontmatter\n"), { name: null, description: null });
+  // A link is named as the skill's own installers name it: the frontmatter name when it is a plain folder name, else the folder's.
+  assert.equal(linkNameFor("design-taste-frontend", "taste-skill"), "design-taste-frontend");
+  assert.equal(linkNameFor(null, "taste-skill"), "taste-skill");
+  assert.equal(linkNameFor("Has Spaces/and a slash", "folder"), "folder");
+  assert.equal(linkNameFor("..", "folder"), "folder");
+  assert.equal(linkNameFor("x".repeat(65), "folder"), "folder");
   assert.equal(packName("https://github.com/Leonxlnx/taste-skill.git"), "taste-skill");
   assert.equal(packName("git@github.com:owner/My Skills.git"), "my-skills");
   assert.equal(packName("/srv/repos/pack.git/"), "pack");
@@ -129,7 +135,7 @@ test("Add pack: a whole clone in data/skills/<name>, pinned at the commit cloned
     state.skills.map((s) => [s.path, s.name, s.linkName, s.description, s.folders, s.linked]),
     [
       ["skills/alpha", "alpha", "alpha", "Use alpha for the first kind of job.", ["claude", "agents", "grok"], []],
-      ["skills/beta", "beta-skill", "beta", "Beta, for the second kind.", ["claude", "agents", "grok"], []],
+      ["skills/beta", "beta-skill", "beta-skill", "Beta, for the second kind.", ["claude", "agents", "grok"], []],
     ],
   );
   assert.equal(existsSync(fx.marker), false, "no script of the pack ran");
@@ -244,8 +250,8 @@ test("Take update takes out Backroom's links to skills the update removed, and o
   const next = fx.commit("skills: beta goes");
   await packs.checkNow("skills-pack");
   const taken = await packs.takeUpdate("skills-pack", next);
-  assert.deepEqual(taken.unlinked, [`${join(home, ".agents/skills")}/beta`]);
-  assert.equal(isLink(join(home, ".agents/skills/beta")), false);
+  assert.deepEqual(taken.unlinked, [`${join(home, ".agents/skills")}/beta-skill`]);
+  assert.equal(isLink(join(home, ".agents/skills/beta-skill")), false);
   assert.ok(isLink(join(home, ".claude/skills/alpha")), "alpha's link stays");
 });
 
@@ -270,7 +276,7 @@ test("a skill that stops being one loses its links: the preview names them befor
   assert.deepEqual(packs.state(repos.getPack("skills-pack")!).skills.map((s) => s.path), ["skills/beta"]);
   await packs.tick();
   assert.equal(isLink(join(home, ".claude/skills/alpha")), false);
-  assert.ok(isLink(join(home, ".agents/skills/beta")), "beta, still a skill, keeps its link");
+  assert.ok(isLink(join(home, ".agents/skills/beta-skill")), "beta, still a skill, keeps its link");
   assert.deepEqual(repos.listSkillHints().get(alphaRow), { useWhen: "a first pass", avoid: "" }, "the user's lines kept, as Remove keeps them");
   // Back at the first commit by hand, alpha is a skill again, linked nowhere: nothing comes back by itself.
   git(pack.folder, "checkout", "-q", "--detach", first);
@@ -278,7 +284,7 @@ test("a skill that stops being one loses its links: the preview names them befor
   assert.deepEqual(packs.state(repos.getPack("skills-pack")!).skills.find((s) => s.path === "skills/alpha")!.linked, []);
 });
 
-test("links: per folder, named after the skill's folder, to its real path, the folder made; refused where the name is taken or synced; unlink removes only Backroom's own", async () => {
+test("links: per folder, named after the skill (its frontmatter name, else its folder's), to its real path, the folder made; refused where the name is taken or synced; unlink removes only Backroom's own", async () => {
   const fx = makePackFixture(dir("up"));
   const { packs, home } = packsFor();
   const pack = await packs.add(fx.bare);
@@ -299,18 +305,18 @@ test("links: per folder, named after the skill's folder, to its real path, the f
   await packs.link("skills-pack", "skills/alpha", "claude");
   assert.equal(readlinkSync(entry), join(pack.folder, "skills/alpha"), "linking again changes nothing");
 
-  // beta's folder name is taken in two folders, by a folder and by someone else's link.
-  mkdirSync(join(home, ".agents/skills/beta"), { recursive: true });
-  writeFileSync(join(home, ".agents/skills/beta/SKILL.md"), "the user's own\n");
-  await assert.rejects(packs.link("skills-pack", "skills/beta", "agents"), /\.agents\/skills\/beta is a folder, not Backroom's link to skills-pack's skills\/beta: nothing changed/);
-  assert.equal(readFileSync(join(home, ".agents/skills/beta/SKILL.md"), "utf8"), "the user's own\n");
+  // beta's name (beta-skill, from its frontmatter, not its folder beta) is taken in two folders, by a folder and by someone else's link.
+  mkdirSync(join(home, ".agents/skills/beta-skill"), { recursive: true });
+  writeFileSync(join(home, ".agents/skills/beta-skill/SKILL.md"), "the user's own\n");
+  await assert.rejects(packs.link("skills-pack", "skills/beta", "agents"), /\.agents\/skills\/beta-skill is a folder, not Backroom's link to skills-pack's skills\/beta: nothing changed/);
+  assert.equal(readFileSync(join(home, ".agents/skills/beta-skill/SKILL.md"), "utf8"), "the user's own\n");
   mkdirSync(join(home, ".grok/skills"), { recursive: true });
-  symlinkSync("/somewhere/else", join(home, ".grok/skills/beta"));
+  symlinkSync("/somewhere/else", join(home, ".grok/skills/beta-skill"));
   await assert.rejects(packs.link("skills-pack", "skills/beta", "grok"), /is a link to \/somewhere\/else, not Backroom's link/);
-  assert.equal(readlinkSync(join(home, ".grok/skills/beta")), "/somewhere/else");
+  assert.equal(readlinkSync(join(home, ".grok/skills/beta-skill")), "/somewhere/else");
   await assert.rejects(packs.unlink("skills-pack", "skills/beta", "agents"), /is not Backroom's link to skills-pack's skills\/beta: nothing changed/);
   await assert.rejects(packs.unlink("skills-pack", "skills/beta", "grok"), /is not Backroom's link/);
-  assert.ok(existsSync(join(home, ".agents/skills/beta/SKILL.md")) && isLink(join(home, ".grok/skills/beta")), "neither touched");
+  assert.ok(existsSync(join(home, ".agents/skills/beta-skill/SKILL.md")) && isLink(join(home, ".grok/skills/beta-skill")), "neither touched");
   await assert.rejects(packs.link("skills-pack", "skills/nothing", "claude"), /has no skill at skills\/nothing/);
   await assert.rejects(packs.link("skills-pack", "skills/alpha", "elsewhere"), /no skill folder elsewhere/);
 
@@ -433,7 +439,7 @@ test("Remove: Backroom's links to the pack out first, then its folder and row; r
   await packs.link("skills-pack", "skills/beta", "agents");
   symlinkSync("/the/users/own", join(home, ".claude/skills/mine"));
   const { unlinked } = await packs.remove("skills-pack");
-  assert.deepEqual(unlinked.sort(), [`${join(home, ".agents/skills")}/beta`, `${join(home, ".claude/skills")}/alpha`]);
+  assert.deepEqual(unlinked.sort(), [`${join(home, ".agents/skills")}/beta-skill`, `${join(home, ".claude/skills")}/alpha`]);
   assert.equal(existsSync(pack.folder), false);
   assert.equal(repos.getPack("skills-pack"), null);
   assert.equal(readlinkSync(join(home, ".claude/skills/mine")), "/the/users/own", "a link not to the pack stays");

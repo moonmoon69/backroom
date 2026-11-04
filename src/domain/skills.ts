@@ -90,6 +90,18 @@ export const skillRowId = {
   pack: (pack: string, path: string) => JSON.stringify(["pack", pack, path]),
 };
 
+/** A link's name: a plain folder name, as the Agent Skills specification bounds a skill's name (64 characters, no separators). */
+const PLAIN_LINK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * What a skill's link is called: its frontmatter name when that is a plain folder name, as the skill's own installers
+ * name its folder (Taste's folder is skills/taste-skill, its name design-taste-frontend, and Claude lists it by that
+ * name); its folder's name otherwise, or when the frontmatter has none.
+ */
+export function linkNameFor(name: string | null, folderName: string): string {
+  return name && PLAIN_LINK_NAME.test(name) && name !== "." && name !== ".." ? name : folderName;
+}
+
 /** A SKILL.md's frontmatter name and description: plain, quoted, folded or indented-continued values, on one line. */
 export function frontmatter(text: string): { name: string | null; description: string | null } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
