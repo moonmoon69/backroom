@@ -75,7 +75,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { EngineStore } from "../src/engine/index.ts";
-import { makePstackFixture, type PstackFixture } from "./pstack-fixture.ts";
+import { makePackFixture, makePstackFixture, type PstackFixture } from "./pstack-fixture.ts";
 import { rehearseKeys } from "./rehearse-keys.ts";
 import { forSteps, sectionNames, Selection, SelectionDone, stateNames, stepSource } from "./rehearse-select.ts";
 import { clearRecord, ourTabs, parseArgs, portOf, recordOf, recordText, serviceRecord, stepPassed, tabGone, type ServiceRecord } from "./rehearse-launch.ts";
@@ -226,7 +226,7 @@ class Service {
   readonly base: string;
   private readonly o: Options;
   private child: ChildProcess | null = null;
-  /** Poteto mode's pstack, a local bare repository in the run's data folder: the service clones it, never the network. */
+  /** pstack, a local bare repository in the run's data folder: the service clones it, never the network. */
   pstack: PstackFixture | null = null;
   constructor(o: Options) {
     this.o = o;
@@ -256,7 +256,7 @@ class Service {
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ...kept },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ROOMS_SKILLS_HOME: join(this.o.data, "home"), ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
@@ -440,12 +440,18 @@ class Browser {
     return fresh;
   }
   /**
-   * After a command the service was meant to refuse: Chrome's own line for that one 400 is expected and not counted
-   * again; any other error-level line fails as always.
+   * After a command the service was meant to refuse: Chrome's own line for that one 400 (or 409, a refusal of the
+   * service's own) is expected and not counted again; any other error-level line fails as always. Chrome's line can come
+   * a moment after the page shows the refusal: it is waited for a few seconds.
    */
   acceptRefusal(): string[] {
-    const fresh = this.errorLines().filter((line) => !this.outage.has(line));
-    const refusals = fresh.filter((line) => /Failed to load resource: the server responded with a status of 400 \(Bad Request\)/.test(line));
+    const refusal = /Failed to load resource: the server responded with a status of (400 \(Bad Request\)|409 \(Conflict\))/;
+    let fresh = this.errorLines().filter((line) => !this.outage.has(line));
+    for (let i = 0; i < 10 && !fresh.some((line) => refusal.test(line)); i += 1) {
+      execFileSync("sleep", ["0.5"]);
+      fresh = this.errorLines().filter((line) => !this.outage.has(line));
+    }
+    const refusals = fresh.filter((line) => refusal.test(line));
     if (refusals.length !== 1 || fresh.length !== 1) fail(`expected one console line for the refused command, got:\n${fresh.join("\n")}`);
     for (const line of refusals) this.outage.add(line);
     return refusals;
@@ -2248,8 +2254,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
     check.passed.push(...(await rehearseAgentsFile(service, browser, room, selection)));
   }
 
-  // 24b. Settings → Agents file, Skills: the three positions, the fixture's version, Update now after a commit upstream, and a written project following the choice (its section opens in the function).
-  check.passed.push(...(await rehearsePoteto(service, browser, room, selection, section)));
+  // 24b. Settings → Skills: the roster, a pack added, linked, refused, annotated, updated and removed, pstack's standing line followed by a written project, the composer's grouped list and the Consigliere's lines (its section opens in the function).
+  check.passed.push(...(await rehearseSkills(service, browser, room, selection, section)));
 
   // 25. A project's browsers for its new rooms, set on its section of the overview (its section opens in the function).
   check.passed.push(...(await rehearseProjectBrowsers(service, browser, room, selection, section)));
@@ -2494,180 +2500,296 @@ async function rehearseAgentsFile(service: Service, browser: Browser, room: Room
   return passed;
 }
 
-/** The pstack version the rehearsal's fixture starts at, and the one its added commit brings. */
+/** The pstack version the rehearsal's fixture starts at. */
 const PSTACK_FIXTURE_VERSION = "0.15.0-rehearsal";
-const PSTACK_FIXTURE_NEXT = "0.15.1-rehearsal";
 
 /**
- * Settings → Agents file, Skills (src/app/poteto.ts, board #158, #119): the menu has one item for the two, and its dialog
- * two sections. The service cloned the run's pstack fixture at its start; the section shows Principles and reply rules
- * chosen and the fixture's version; a commit added to the fixture, Update now fetches and fast-forwards to it, and the
- * section shows its version and its subject as the last change; at Off, the status says seats are not pointed at it
- * (review #206), and on again it is ready. A project written with Backroom's template then follows the choice: the whole
- * mode shows it as differing in the open dialog, its diff swaps the line, Apply pushes it, and Principles shows it as
- * differing the other way. From Off with the clone gone and the project written for Off, Principles clones it again, and
- * the dialog left open shows the project as differing once it says Ready. Its section begins here.
+ * Settings → Skills (src/app/packs.ts, src/app/skillRoster.ts; board #199, #218), its own item in the Settings menu. The
+ * service cloned the run's pstack fixture at its start: the roster shows the room's directives and the fake T3's commands
+ * and skills grouped, pstack has its principles line and nothing is linked. Add pack clones the run's second fixture;
+ * a tick links one of its skills into Claude's folder under the run's own home (ROOMS_SKILLS_HOME), and the fake Claude
+ * lists it, so the crew member on Claude has it; a tick where the user's own folder has the name is refused with the
+ * reason. The user's two lines on it reach the Consigliere's `rooms-board rules` with who has it, and the composer's "/"
+ * list after @worker shows it grouped with the line, and picking it writes "using the alpha skill". An update upstream:
+ * Check now flags it, Show what changes lists the description change, Take update checks out that commit. pstack at the
+ * whole mode shows a project written at principles as differing; Remove takes the pack's link out and its folder. Its
+ * section begins here.
  */
-async function rehearsePoteto(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+async function rehearseSkills(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
-  if (!(await section("Settings → Agents file, Skills: one menu item, two sections, the fixture's version, Update now brings a commit added to the fixture, and Off says seats are not pointed at it"))) return passed;
+  if (!(await section("Settings → Skills: its own menu item, the roster grouped by kind, pstack seeded with its principles line and nothing linked"))) return passed;
   const state = probedStates(browser, selection, passed);
-  type Poteto = { enabled: boolean; scope: string; folder: string; ready: boolean; busy: boolean; version: string | null; commit: string | null; lastChange: string | null; error: { reason: string } | null };
-  const poteto = async () => (await service.call<{ poteto: Poteto | null }>("GET", "/api/settings")).poteto;
-  const ready = await until("the service to have cloned the pstack fixture", async () => {
-    const now = await poteto();
-    if (now?.error) fail(`the clone of the fixture failed: ${now.error.reason}`);
-    return now?.ready && !now.busy ? now : null;
+  type Skill = { path: string; name: string; linked: string[] };
+  type Pack = { name: string; pinned: string | null; standing: string | null; ready: boolean; busy: boolean; folder: string; update: { commit: string } | null; skills: Skill[]; error: { reason: string } | null };
+  type Row = { kind: string; name: string; instances: string[]; members: string[]; useWhen: string; avoid: string };
+  const skills = () => service.call<{ rows: Row[]; packs: Pack[]; t3Error: string | null }>("GET", "/api/skills");
+  const packOf = async (name: string) => (await skills()).packs.find((p) => p.name === name) ?? null;
+  const pstack = await until("the service to have installed the pstack fixture", async () => {
+    const now = await packOf("pstack");
+    if (now?.error) fail(`the pstack fixture's install failed: ${now.error.reason}`);
+    return now?.ready && now.pinned && !now.busy ? now : null;
   });
-  if (ready.version !== PSTACK_FIXTURE_VERSION) fail(`the clone holds pstack ${ready.version}, not the fixture's ${PSTACK_FIXTURE_VERSION}`);
-  // A project of its own, written with the template while the clone is ready: the section stands alone under --only.
-  const folder = join(room.dataDir, "skills-project");
-  mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "package.json"), `${JSON.stringify({ name: "skills-scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
-  execFileSync("git", ["init", "-q", "-b", "main", folder]);
-  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title: "skills-scratch" });
+  const home = join(room.dataDir, "home");
+  const fixture = makePackFixture(join(room.dataDir, "skills-fixture"));
+  // The crew member on Claude whose chips light up: the fake Claude lists what is linked in its folder.
+  const presets = await service.call<Array<{ name: string }>>("GET", "/api/presets");
+  if (!presets.some((p) => p.name === "skillful")) await service.command({ type: "preset.create", name: "skillful", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" } });
+  // A project written with the template while pstack has its principles line: it follows pstack's line later.
+  const project = join(room.dataDir, "skills-project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "package.json"), `${JSON.stringify({ name: "skills-scratch", scripts: { test: "node --test" } }, null, 2)}\n`);
+  execFileSync("git", ["init", "-q", "-b", "main", project]);
+  const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: project, title: "skills-scratch" });
   await service.command({ type: "room.create", projectId, title: "skills-scratch", consigliere: false });
-  const agentsText = () => readFileSync(join(folder, "AGENTS.md"), "utf8");
-  const entry = async () => (await service.call<Array<{ folder: string; state: string }>>("GET", "/api/agents-files")).find((e) => e.folder === realpathSync(folder))?.state ?? null;
-  const written = agentsText();
-  const FOLLOW_PRINCIPLES = "- Follow poteto-mode's principles, reply and comment rules at ";
-  const FOLLOW_WHOLE = "- For any non-trivial job, read and follow poteto-mode at ";
-  if (!written.includes(FOLLOW_PRINCIPLES)) fail(`the written file has no principles line: ${JSON.stringify(written)}`);
-  const facts = "() => Object.fromEntries([...document.querySelectorAll('.poteto-facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent ?? '']))";
-  const position = "document.querySelector('input[name=\"poteto-position\"]:checked')?.closest('label')?.querySelector('strong')?.textContent ?? null";
-  const rowOf = `[...document.querySelectorAll('.agents-file-row')].find((r) => r.textContent.includes(${JSON.stringify(realpathSync(folder))}))`;
-  const rowState = `() => ${rowOf}?.dataset.state ?? null`;
-  const diffLines = "() => { const v = [...document.querySelectorAll('.dialog')].at(-1)?.querySelector('.diff-view'); return v ? { add: [...v.querySelectorAll('.diff-add .diff-text')].map((e) => e.textContent.slice(1)), del: [...v.querySelectorAll('.diff-del .diff-text')].map((e) => e.textContent.slice(1)) } : null; }";
+  const written = readFileSync(join(project, "AGENTS.md"), "utf8");
+  const PRINCIPLES = "- Follow poteto-mode's principles, reply and comment rules at ";
+  if (!written.includes(`${PRINCIPLES}${pstack.folder}/pstack/skills/poteto-mode/SKILL.md`)) fail(`the written file has no principles line: ${JSON.stringify(written)}`);
+  const entry = async () => (await service.call<Array<{ folder: string; state: string }>>("GET", "/api/agents-files")).find((e) => e.folder === realpathSync(project))?.state ?? null;
+  const card = (name: string) => `document.querySelector('[data-pack="${name}"]')`;
+  const clickIn = (scope: string, text: string) => {
+    const found = browser.eval<boolean>(`() => { const b = [...(${scope}?.querySelectorAll('button, summary') ?? [])].find((e) => e.textContent.trim().startsWith(${JSON.stringify(text)})); b?.click(); return Boolean(b); }`);
+    if (!found) fail(`no ${JSON.stringify(text)} in ${scope}`);
+  };
+  const tick = (path: string, folder: "claude" | "agents") =>
+    browser.eval<boolean>(`() => { const box = [...${card("skills-pack")}.querySelectorAll('[data-path="${path}"] label.checkbox')].find((l) => l.textContent.includes('.${folder}/skills'))?.querySelector('input'); box?.click(); return Boolean(box); }`);
+  const openSkills = () => {
+    browser.click(/button "Settings"/);
+    browser.click(/menuitem "Skills…/);
+    browser.waitFor("Roster");
+  };
+
+  // A toast an earlier section left lies over the dialog's lower right, where Add pack and Done are.
+  for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
   browser.click(/button "Back to the overview"/);
   browser.click(/button "Settings"/);
   const items = browser.poll<string[]>("the settings menu", "() => [...document.querySelectorAll('.menu [role=\"menuitem\"]')].map((b) => b.textContent)", (v) => v.length > 0);
-  if (items.some((text) => text.includes("Poteto"))) fail(`the menu still has a Poteto item: ${JSON.stringify(items)}`);
-  browser.click(/menuitem "Agents file…/);
-  browser.waitFor("Principles and reply rules");
-  browser.poll<Record<string, string>>("the fixture's version in the dialog", facts, (v) => v.Version === PSTACK_FIXTURE_VERSION);
-  if (browser.eval<string | null>(`() => ${position}`) !== "Principles and reply rules") fail("Principles and reply rules is not chosen: it is the default");
-  const next = service.pstack!.commit("pstack: a newer skill (rehearsal)", { version: PSTACK_FIXTURE_NEXT, files: { "pstack/skills/tdd/SKILL.md": "# tdd (fixture, newer)\n" } });
-  browser.click(/button "Update now"/);
+  if (!items.some((text) => text.startsWith("Skills…")) || items.some((text) => text.includes("Poteto"))) fail(`the menu's items: ${JSON.stringify(items)}`);
+  browser.click(/menuitem "Skills…/);
+  browser.waitFor("Roster");
   await state(
-    "Settings → Agents file, Skills: one menu item, two sections, the fixture's version, Update now brings a commit added to the fixture, and Off says seats are not pointed at it",
+    "Settings → Skills: its own menu item, the roster grouped by kind, pstack seeded with its principles line and nothing linked",
     async () => {
-      const now = await poteto();
-      if (now?.error) fail(`Update now failed: ${now.error.reason}`);
-      if (!now || now.busy || now.commit !== next) return null;
-      if (now.version !== PSTACK_FIXTURE_NEXT || !now.enabled || !now.ready) fail(`after Update now: ${JSON.stringify(now)}`);
-      return `the clone is at the fixture's new commit ${next.slice(0, 7)}, pstack ${now.version}, last change ${JSON.stringify(now.lastChange)}`;
+      const now = await skills();
+      const pack = now.packs.find((p) => p.name === "pstack");
+      if (!pack?.standing?.startsWith("Follow poteto-mode's principles")) fail(`pstack's standing line: ${JSON.stringify(pack?.standing)}`);
+      if (pack.skills.some((s) => s.linked.length > 0)) fail("a pstack skill is linked by itself");
+      if (now.rows.some((r) => r.kind === "pack")) fail("a pack skill in the roster with nothing linked");
+      return `pstack at ${pack.pinned?.slice(0, 7)} with its principles line and ${pack.skills.length} skills, none linked; the roster has ${now.rows.length} rows`;
     },
-    [PSTACK_FIXTURE_NEXT, "pstack: a newer skill (rehearsal)"],
+    ["Room directives", "Harness commands", "Packs"],
     () => {
-      const sections = browser.eval<string[]>("() => [...document.querySelectorAll('.dialog h3')].map((h) => h.textContent)");
-      if (sections.join() !== "Instructions,Skills") fail(`the dialog's sections: ${JSON.stringify(sections)}`);
-      const shown = browser.poll<Record<string, string>>("the new commit in the dialog", facts, (v) => v.Commit?.startsWith(next.slice(0, 7)) === true && v["Last change"] === `${next.slice(0, 7)} pstack: a newer skill (rehearsal)`);
-      log(`  page: the menu's items are ${JSON.stringify(items)}; the dialog's sections ${JSON.stringify(sections)}; version ${shown.Version}, commit ${shown.Commit}, last change ${JSON.stringify(shown["Last change"])}, folder ${shown.Folder}`);
-      // Review #206: at Off, the status says seats are not pointed at it (the clone kept); on again, ready.
-      const status = `() => ({ position: ${position}, status: document.querySelector('.poteto-facts + .hint')?.textContent ?? null })`;
-      browser.click(/radio "Off/);
-      const off = browser.poll<{ position: string | null; status: string | null }>("Off chosen and the status saying so", status, (v) => v.position === "Off" && v.status === "Off: seats are not pointed at it; the clone is kept.");
-      if (off.status?.includes("seats are pointed at it")) fail(`Off still says: ${off.status}`);
-      browser.click(/radio "Principles and reply rules/);
-      browser.poll<{ position: string | null; status: string | null }>("Principles chosen again and the clone ready", status, (v) => v.position === "Principles and reply rules" && v.status === "Ready: seats are pointed at it.", 30_000);
-      log(`  page: at Off, the status said ${JSON.stringify(off.status)}; on again, ready`);
+      const groups = browser.eval<string[]>("() => [...document.querySelectorAll('.skills-group > summary')].map((s) => s.textContent.replace(/\\s*\\(\\d+\\)$/, ''))");
+      if (groups.join() !== "Room directives,Harness commands,Skills") fail(`the roster's groups: ${JSON.stringify(groups)}`);
+      const pressed = browser.eval<string | null>(`() => ${card("pstack")}?.querySelector('button[aria-pressed="true"]')?.textContent ?? null`);
+      if (pressed !== "Principles and reply rules") fail(`pstack's chosen preset on the page: ${JSON.stringify(pressed)}`);
+      const restricted = browser.eval<string[]>("() => [...document.querySelectorAll('.skill-restriction')].map((t) => t.closest('.skill-row').querySelector('.skill-name').textContent + ': ' + t.textContent)");
+      log(`  page: the menu's items ${JSON.stringify(items)}; the roster's groups ${JSON.stringify(groups)}; restrictions ${JSON.stringify(restricted)}; pstack's preset ${pressed}`);
     },
   );
-  browser.poll<string | null>("the written project's row, the same as the template", rowState, (v) => v === "same");
-  browser.click(/radio "The whole mode/);
+
+  // Set as React sees an input (a fill from script can be undone by a re-render, as the composer's can).
+  browser.eval<boolean>(`() => { const input = [...document.querySelectorAll('.skills-add input')][0]; input.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(fixture.bare)}); input.dispatchEvent(new Event('input', { bubbles: true })); return true; }`);
+  browser.poll<boolean>("Add pack to be enabled", "() => [...document.querySelectorAll('.skills-add button')].some((b) => !b.disabled)", (v) => v);
+  clickIn("document.querySelector('.skills-add')", "Add pack");
   await state(
-    "Skills at the whole mode: the written project shows as differing in the open dialog, its file untouched",
+    "Add pack: the fixture cloned and pinned at its commit, its two skills listed with no folder ticked",
     async () => {
-      const now = await poteto();
-      if (now?.scope !== "full" || !now.enabled || (await entry()) !== "differs") return null;
-      if (agentsText() !== written) fail("the choice changed the project's file");
-      return `the scope is full and ${folder} differs from the template, its file as written`;
+      const pack = await packOf("skills-pack");
+      if (!pack || pack.busy) return null;
+      const head = execFileSync("git", ["-C", fixture.work, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      if (pack.pinned !== head || pack.skills.map((s) => s.path).join() !== "skills/alpha,skills/beta" || pack.skills.some((s) => s.linked.length > 0)) fail(`the added pack: ${JSON.stringify(pack)}`);
+      if (existsSync(fixture.marker)) fail("a script of the pack ran");
+      return `skills-pack pinned at ${head.slice(0, 7)}, alpha and beta unlinked, no script run`;
     },
-    [],
+    ["skills-pack"],
     () => {
-      browser.poll<string | null>("the row to say it differs with the dialog open", rowState, (v) => v === "differs");
-      if (browser.eval<string | null>(`() => ${position}`) !== "The whole mode") fail("The whole mode is not chosen on the page");
-      log("  page: The whole mode chosen, and the row says differs without the dialog being reopened");
+      clickIn(card("skills-pack"), "Skills");
+      const boxes = browser.poll<boolean[]>("the pack's folder tickboxes", `() => [...${card("skills-pack")}.querySelectorAll('.pack-skill input[type=checkbox]')].map((b) => b.checked)`, (v) => v.length === 6);
+      if (boxes.some(Boolean)) fail(`a tickbox is ticked: ${JSON.stringify(boxes)}`);
+      log("  page: the pack's card with alpha and beta, three folders each, none ticked");
     },
   );
-  browser.poll<string | null>("the row to say it differs with the dialog open", rowState, (v) => v === "differs");
-  browser.eval<boolean>(`() => { const button = [...${rowOf}.querySelectorAll('button')].find((b) => b.textContent === 'Show diff'); button.click(); return true; }`);
+
+  if (!tick("skills/alpha", "claude")) fail("no tickbox for alpha in Claude's folder");
   await state(
-    "the project's diff swaps the principles line for the whole mode's",
-    async () => ((await entry()) === "differs" ? "the file still differs: nothing applied by opening the diff" : null),
-    ["Apply the template"],
-    () => {
-      const lines = browser.poll<{ add: string[]; del: string[] } | null>("the diff's lines", diffLines, (v) => v !== null && v.add.length === 1 && v.del.length === 1);
-      if (!lines?.add[0]?.startsWith(FOLLOW_WHOLE) || !lines.del[0]?.startsWith(FOLLOW_PRINCIPLES)) fail(`the diff: ${JSON.stringify(lines)}`);
-      if (lines.add[0].includes("Its triggers and playbooks")) fail(`the whole mode's line has the scope sentence: ${lines.add[0]}`);
-      log(`  page: the diff removes ${JSON.stringify(lines.del[0].slice(0, 60))}… and adds ${JSON.stringify(lines.add[0].slice(0, 60))}…`);
-    },
-  );
-  browser.click(/button "Apply the template"/);
-  await state(
-    "Apply pushes the whole mode's line: the project's file holds it and the row is the same again",
+    "a skill linked into Claude's folder: a link to its real path, its roster row with the folder's readers and the crew member on Claude who has it",
     async () => {
-      if ((await entry()) !== "same") return null;
-      const text = agentsText();
-      if (!text.includes(FOLLOW_WHOLE) || text.includes(FOLLOW_PRINCIPLES)) fail(`AGENTS.md after Apply: ${JSON.stringify(text)}`);
-      return `AGENTS.md in ${folder} holds the whole mode's line, and the state is same`;
+      const link = join(home, ".claude/skills/alpha");
+      if (!existsSync(link)) return null;
+      const pack = (await packOf("skills-pack"))!;
+      if (realpathSync(link) !== realpathSync(join(pack.folder, "skills/alpha"))) fail(`the link leads to ${realpathSync(link)}`);
+      const row = (await skills()).rows.find((r) => r.kind === "pack" && r.name === "alpha");
+      if (!row?.instances.includes("claudeAgent") || !row.members.includes("skillful")) return null;
+      return `${link} → ${pack.folder}/skills/alpha; the roster row has ${row.members.join(", ")}`;
     },
-    ["now holds the saved template"],
+    ["Pack skills"],
     () => {
-      browser.poll<string | null>("the row to be the same again", rowState, (v) => v === "same");
-      log("  page: the toast says it was applied, and the row is the same as the template");
+      const shown = browser.poll<{ members: string[]; links: string } | null>(
+        "alpha's roster row",
+        "() => { const row = [...document.querySelectorAll('.skill-row[data-kind=\"pack\"]')].find((r) => r.querySelector('.skill-name')?.textContent === 'alpha'); return row ? { members: [...row.querySelectorAll('.skill-member')].map((m) => m.textContent), links: row.querySelector('.skill-links')?.textContent ?? '' } : null; }",
+        (v) => v !== null && v.members.includes("skillful"),
+      );
+      if (!shown?.links.includes("read by Claude, Cursor, OpenCode")) fail(`alpha's links line: ${JSON.stringify(shown?.links)}`);
+      log(`  page: alpha's row: ${JSON.stringify(shown)}`);
     },
   );
-  browser.poll<string | null>("the row to be the same again", rowState, (v) => v === "same");
+
+  mkdirSync(join(home, ".agents/skills/beta"), { recursive: true });
+  writeFileSync(join(home, ".agents/skills/beta/SKILL.md"), "the user's own\n");
+  if (!tick("skills/beta", "agents")) fail("no tickbox for beta in the agents' folder");
+  await state(
+    "a link refused where the user's own folder has the name: the reason shown, the folder untouched, nothing ticked",
+    async () => {
+      const pack = (await packOf("skills-pack"))!;
+      if (pack.busy) return null;
+      if (readFileSync(join(home, ".agents/skills/beta/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder was changed");
+      if (pack.skills.find((s) => s.path === "skills/beta")!.linked.length > 0) fail("beta is linked");
+      return `${home}/.agents/skills/beta is the user's folder still, and beta is linked nowhere`;
+    },
+    ["is a folder, not Backroom's link"],
+    () => {
+      const ticked = browser.eval<boolean>(`() => [...${card("skills-pack")}.querySelectorAll('[data-path="skills/beta"] input[type=checkbox]')].some((b) => b.checked)`);
+      if (ticked) fail("a beta tickbox is ticked after the refusal");
+      log("  page: the toast gives the reason, and no beta tickbox is ticked");
+    },
+    { refusal: true },
+  );
   for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
-  browser.click(/radio "Principles and reply rules/);
+
+  const typeLine = (label: "Use when" | "Avoid", text: string) =>
+    browser.eval<boolean>(`() => {
+      const row = [...document.querySelectorAll('.skill-row[data-kind="pack"]')].find((r) => r.querySelector('.skill-name')?.textContent === 'alpha');
+      const input = [...(row?.querySelectorAll('.skill-lines label') ?? [])].find((l) => l.textContent.startsWith(${JSON.stringify(label)}))?.querySelector('input');
+      if (!input) return false;
+      input.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(text)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.blur();
+      return true;
+    }`);
+  if (!typeLine("Use when", "a quick first pass")) fail("no use-when field on alpha's row");
+  await until("the use-when line saved", async () => ((await skills()).rows.find((r) => r.kind === "pack" && r.name === "alpha")?.useWhen === "a quick first pass" ? true : null));
+  if (!typeLine("Avoid", "anything public")) fail("no avoid field on alpha's row");
   await state(
-    "Skills back at Principles and reply rules: the project differs the other way, and the scope is the default again",
+    "the user's lines on the linked skill saved, and the Consigliere's rooms-board rules carry them with who has it; a member's do not",
     async () => {
-      const now = await poteto();
-      if (now?.scope !== "principles" || (await entry()) !== "differs") return null;
-      return `the scope is principles; ${folder} holds the whole mode's line and differs`;
+      const row = (await skills()).rows.find((r) => r.kind === "pack" && r.name === "alpha");
+      if (row?.avoid !== "anything public") return null;
+      const his = room.boardRaw("fable", "rules");
+      const wanted = "- alpha (skills-pack · skills/alpha) · use when: a quick first pass · avoid: anything public · has it: ";
+      const line = his.split("\n").find((l) => l.startsWith(wanted));
+      if (!line?.includes("skillful")) fail(`@fable's rules lack ${JSON.stringify(wanted)}…skillful: ${his.slice(his.indexOf("== Skills the user"), his.indexOf("== Skills the user") + 600)}`);
+      if (room.boardRaw("worker", "rules").includes("== Skills the user wrote lines for ==")) fail("@worker's rules carry the Consigliere's section");
+      writeFileSync(join(room.outDir, "rules-skills-as-consigliere.txt"), his);
+      return `@fable's rules: ${line}`;
     },
     [],
     () => {
-      browser.poll<string | null>("the row to say it differs", rowState, (v) => v === "differs");
-      log("  page: Principles and reply rules chosen, and the row says differs again");
+      const values = browser.eval<string[]>("() => { const row = [...document.querySelectorAll('.skill-row[data-kind=\"pack\"]')].find((r) => r.querySelector('.skill-name')?.textContent === 'alpha'); return [...row.querySelectorAll('.skill-lines input')].map((i) => i.value); }");
+      if (values.join("|") !== "a quick first pass|anything public") fail(`alpha's fields: ${JSON.stringify(values)}`);
+      log("  page: alpha's two fields hold the saved lines");
     },
   );
-  // Off with the clone gone: the project applied there holds no line, the same as the template until the clone is back.
-  const skillsStatus = "() => document.querySelector('.poteto-facts + .hint')?.textContent ?? null";
-  browser.click(/radio "Off/);
-  browser.poll<string | null>("the section at Off", skillsStatus, (v) => v?.startsWith("Off:") === true);
-  const { folder: clone } = await until("the service at Off, nothing running", async () => {
-    const now = await poteto();
-    return now && !now.enabled && !now.busy ? now : null;
-  });
-  const offDiff = await service.call<{ fileDigest: string; templateDigest: string }>("GET", `/api/agents-files/diff?folder=${encodeURIComponent(realpathSync(folder))}`);
-  await service.command({ type: "agentsFile.apply", folder: realpathSync(folder), fileDigest: offDiff.fileDigest, templateDigest: offDiff.templateDigest });
-  rmSync(clone, { recursive: true });
+
   browser.click(/button "Done"/);
   browser.poll<number>("the dialog to be closed", "() => document.querySelectorAll('.dialog').length", (n) => n === 0);
-  browser.click(/button "Settings"/);
-  browser.click(/menuitem "Agents file…/);
-  browser.poll<string | null>("Off with no clone", skillsStatus, (v) => v === "Off: seats are not pointed at it.");
-  browser.poll<string | null>("the written project's row, the same as the template at Off", rowState, (v) => v === "same");
-  browser.click(/radio "Principles and reply rules/);
+  browser.openRoom(room.title);
+  // The composer opens from its strip when it is closed (as the room opens).
+  if (!browser.eval<boolean>("() => Boolean(document.querySelector('textarea[aria-label=\"Message\"]'))")) browser.click(/button "Write a message"/);
+  // The worker by its name now: a reseat earlier in the story numbers it.
+  const worker = room.name.worker;
+  browser.compose(`@${worker} /`);
+  type Entry = { kind: string; name: string; line: string; avoid: string | null };
+  const entries = "() => [...document.querySelectorAll('.slash-menu li')].map((li) => ({ kind: li.dataset.kind, name: li.querySelector('.slash-name').textContent, line: li.querySelector('.slash-desc')?.textContent ?? '', avoid: li.querySelector('.slash-avoid-line')?.textContent ?? null }))";
+  const listed = browser.poll<Entry[]>("the / list with alpha", entries, (v) => v.some((e) => e.name === "alpha"));
+  browser.eval<boolean>("() => { const li = [...document.querySelectorAll('.slash-menu li')].find((l) => l.querySelector('.slash-name').textContent === 'alpha'); li.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; }");
   await state(
-    "the clone made again after Off: the open dialog shows the written project as differing once it says Ready",
-    async () => {
-      const now = await poteto();
-      if (!now?.ready || now.busy || !now.enabled || (await entry()) !== "differs") return null;
-      if (agentsText().includes(FOLLOW_PRINCIPLES)) fail("the clone changed the project's file");
-      return `the clone is back at ${now.folder} and ${folder} differs from the template`;
-    },
-    ["Ready: seats are pointed at it."],
+    "the composer's / list after @worker: grouped by kind with the user's line under the pack skill; picking it writes \"using the alpha skill\", never a slash",
+    async () => "the roster read again as the list opened",
+    [],
     () => {
-      browser.poll<string | null>("the row to say it differs with the dialog left open", rowState, (v) => v === "differs");
-      log("  page: Ready shown, and the row says differs without the dialog being reopened");
+      const order = ["directive", "command", "skill", "pack"];
+      const kinds = listed.map((e) => order.indexOf(e.kind));
+      if (kinds.some((k, i) => k < 0 || (i > 0 && k < kinds[i - 1]!))) fail(`the list is not grouped by kind: ${JSON.stringify(listed)}`);
+      const alpha = listed.find((e) => e.name === "alpha")!;
+      if (alpha.kind !== "pack" || alpha.line !== "a quick first pass" || alpha.avoid !== "avoid: anything public") fail(`alpha in the list: ${JSON.stringify(alpha)}`);
+      if (!listed.some((e) => e.kind === "command" && e.name === "/compact")) fail(`no /compact in the list: ${JSON.stringify(listed)}`);
+      const text = browser.poll<string | null>("the composer's text", "() => document.querySelector('textarea[aria-label=\"Message\"]')?.value ?? null", (v) => v === `@${worker} using the alpha skill `);
+      log(`  page: the list ${JSON.stringify(listed.map((e) => `${e.kind}:${e.name}`))}; alpha's line ${JSON.stringify(alpha.line)} and ${JSON.stringify(alpha.avoid)}; the text now ${JSON.stringify(text)}`);
     },
   );
-  browser.poll<string | null>("the row to say it differs with the dialog left open", rowState, (v) => v === "differs");
+  browser.on("press", "Control+a");
+  browser.on("press", "Backspace");
+  browser.on("press", "Escape");
+
+  const next = fixture.commit("skills: alpha says more", { files: { "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Use alpha for every job.\n---\n\n# alpha\n" } });
+  browser.click(/button "Back to the overview"/);
+  openSkills();
+  clickIn(card("skills-pack"), "Check now");
+  browser.poll<boolean>("the update flagged", `() => Boolean(${card("skills-pack")}?.querySelector('.pack-update'))`, (v) => v, 20_000);
+  clickIn(card("skills-pack"), "Show what changes");
+  const seen = browser.poll<{ descriptions: string; files: string } | null>(
+    "what the update changes",
+    `() => { const d = ${card("skills-pack")}?.querySelector('.pack-update-detail'); return d ? { descriptions: d.querySelector('.pack-descriptions')?.textContent ?? '', files: d.querySelector('.pack-files')?.textContent ?? '' } : null; }`,
+    (v) => v !== null,
+  );
+  clickIn(card("skills-pack"), "Take update");
+  await state(
+    "an update upstream: Check now flags it, Show what changes gives the description change and files, Take update checks out the commit looked at",
+    async () => {
+      const pack = (await packOf("skills-pack"))!;
+      if (pack.pinned !== next || pack.busy) return null;
+      const head = execFileSync("git", ["-C", pack.folder, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      if (head !== next) fail(`the checkout is at ${head}, not ${next}`);
+      if (pack.skills.find((s) => s.path === "skills/alpha")!.linked.join() !== "claude") fail("alpha's link did not survive the update");
+      return `skills-pack pinned and checked out at ${next.slice(0, 7)}`;
+    },
+    [],
+    () => {
+      if (!seen?.descriptions.includes("− Use alpha for the first kind of job.") || !seen.descriptions.includes("+ Use alpha for every job.")) fail(`the description change shown: ${JSON.stringify(seen)}`);
+      if (!seen.files.includes("M skills/alpha/SKILL.md")) fail(`the files shown: ${JSON.stringify(seen)}`);
+      browser.poll<boolean>("the update gone from the card", `() => !${card("skills-pack")}?.querySelector('.pack-update')`, (v) => v);
+      log(`  page: the description change ${JSON.stringify(seen.descriptions)}, the files ${JSON.stringify(seen.files)}; no update left`);
+    },
+  );
+
+  clickIn(card("pstack"), "The whole mode");
+  await state(
+    "pstack's standing line at the whole mode: a project written at principles shows as differing, its file untouched",
+    async () => {
+      const pack = (await packOf("pstack"))!;
+      if (!pack.standing?.startsWith("For any non-trivial job, read and follow poteto-mode") || (await entry()) !== "differs") return null;
+      if (readFileSync(join(project, "AGENTS.md"), "utf8") !== written) fail("the project's file was changed");
+      return `pstack's line is the whole mode's, and ${project} differs from the template`;
+    },
+    [],
+    () => {
+      const pressed = browser.poll<string | null>("the whole mode chosen", `() => ${card("pstack")}?.querySelector('button[aria-pressed="true"]')?.textContent ?? null`, (v) => v === "The whole mode");
+      log(`  page: pstack's preset now ${pressed}`);
+    },
+  );
+  await service.command({ type: "pack.standing.set", name: "pstack", text: pstack.standing });
+
+  clickIn(card("skills-pack"), "Remove…");
+  clickIn(card("skills-pack"), "Remove skills-pack and its links");
+  await state(
+    "Remove: the pack's link taken out first, then its folder; the user's own folder of the same name kept",
+    async () => {
+      if (await packOf("skills-pack")) return null;
+      if (existsSync(join(home, ".claude/skills/alpha"))) fail("alpha's link is still there");
+      if (existsSync(join(room.dataDir, "skills", "skills-pack"))) fail("the pack's folder is still there");
+      if (readFileSync(join(home, ".agents/skills/beta/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder went with it");
+      return "skills-pack, its folder and its link gone; the user's beta folder kept";
+    },
+    ["Links taken out"],
+    () => {
+      browser.poll<boolean>("the card gone", `() => !${card("skills-pack")}`, (v) => v);
+      log("  page: the toast names the link taken out, and the card is gone");
+    },
+  );
+  for (let i = 0; i < 5 && browser.eval<boolean>("() => Boolean(document.querySelector('.toast button[aria-label=\"Dismiss\"]'))"); i += 1) browser.click(/button "Dismiss"/);
   browser.click(/button "Done"/);
+  browser.poll<number>("the dialog to be closed", "() => document.querySelectorAll('.dialog').length", (n) => n === 0);
   browser.openRoom(room.title);
   return passed;
 }

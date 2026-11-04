@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { compress } from "hono/compress";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { readRoster } from "../app/skillRoster.ts";
 import type { AppStack } from "../app/bootstrap.ts";
 import type { T3Credential } from "../app/t3Credential.ts";
 import type { HttpT3Adapter } from "../adapter/http.ts";
@@ -892,11 +893,22 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       agentsFile: stack.repos.getKv(AGENTS_FILE_SETTING_KEY) !== "off",
       // The template it writes, {checks} filled per project: the user's when they saved one, and Backroom's to go back to.
       agentsFileText: agentsTemplate(stack.repos),
-      // Settings → Agents file, Skills (src/app/poteto.ts): the choice, the pin and what the clone holds; null when this service
-      // keeps none. Reading the settings (the menu or a dialog opening) starts the clone in the background when it is on
-      // and missing.
-      poteto: stack.poteto ? (void stack.poteto.prepare(), stack.poteto.state()) : null,
     });
+  });
+  /**
+   * Settings → Skills and the composer's "/" list: the roster (src/app/skillRoster.ts), the skill folders with who reads
+   * each, and the packs (src/app/packs.ts). T3 unreadable: the rows it reports are missing and t3Error says why.
+   */
+  app.get("/api/skills", async (c) => {
+    const roster = await readRoster({ packs: stack.packs, adapter: stack.adapter, repos: stack.repos });
+    return c.json({ rows: roster.rows, t3Error: roster.t3Error, folders: stack.packs?.folders() ?? [], packs: stack.packs?.states() ?? [] });
+  });
+  /** What a pack's update brings (?commit=, the commit the page was told of): stat, files, description changes, the diff. */
+  app.get("/api/skills/packs/:name/update", async (c) => {
+    if (!stack.packs) throw new RoomError("pack_refused", "this service keeps no skill packs", 409);
+    const commit = c.req.query("commit") ?? "";
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new RoomError("bad_request", "commit must be a full commit id");
+    return c.json(await stack.packs.updateDetail(c.req.param("name"), commit));
   });
   /**
    * Every project folder where Backroom wrote AGENTS.md, each with its file's state against the saved template rendered

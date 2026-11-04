@@ -5,8 +5,12 @@
  * the next queued run then starts. The thread's shell names the active run and the latest one.
  */
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { SKILL_FOLDERS } from "../domain/skills.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import type {
+  T3ProviderSkill,
   ApprovalDecision,
   ThreadLifecycleAction,
   CatalogEntry,
@@ -93,6 +97,18 @@ export interface FakeAdapterOptions {
   /** The demo project's folder (ROOMS_FAKE_PROJECT_DIR for the service); /tmp/demo by default, which is never created. */
   projectRoot?: string;
 }
+
+/**
+ * Codex's skills list in the fake, as T3 reports a real one's: a system skill with a display name, a plugin's skill under
+ * its prefixed name, one only the user may invoke, and one only the model may.
+ */
+export const CODEX_SKILLS: T3ProviderSkill[] = [
+  { name: "imagegen", description: "Generate or edit raster images when the task benefits from AI-created bitmap visuals.", shortDescription: "Generate or edit images", path: "/fake/.codex/skills/.system/imagegen/SKILL.md", scope: "system", enabled: true, displayName: "Image Gen", userInvocationOnly: false, userInvocable: true },
+  { name: "openai-templates:artifact-template-analytics-dashboard", description: "Build an analytics dashboard artifact from a template.", shortDescription: "An analytics dashboard from a template", path: "/fake/.codex/plugins/openai-templates/skills/analytics-dashboard/SKILL.md", scope: "plugin", enabled: true, displayName: "Analytics Dashboard", userInvocationOnly: false, userInvocable: true },
+  { name: "deploy-check", description: "Check a deploy before it goes out.", shortDescription: null, path: "/fake/.codex/skills/deploy-check/SKILL.md", scope: "user", enabled: true, displayName: null, userInvocationOnly: true, userInvocable: true },
+  { name: "house-style", description: "Apply the house style to prose.", shortDescription: null, path: "/fake/.codex/skills/house-style/SKILL.md", scope: "user", enabled: true, displayName: null, userInvocationOnly: false, userInvocable: false },
+  { name: "retired-skill", description: "Turned off in Codex.", shortDescription: null, path: "/fake/.codex/skills/retired-skill/SKILL.md", scope: "user", enabled: false, displayName: null, userInvocationOnly: false, userInvocable: true },
+];
 
 export class FakeT3Adapter implements T3Adapter {
   readonly kind = "fake" as const;
@@ -381,12 +397,44 @@ export class FakeT3Adapter implements T3Adapter {
   async listProviders(): Promise<T3ProviderInfo[]> {
     this.guard();
     const later = (ms: number) => new Date(Date.now() + ms).toISOString();
-    return [
-      { instanceId: "claudeAgent", displayName: "Claude", enabled: true, installed: true, status: "ready", version: "2.1.281", authStatus: "authenticated", authLabel: "Claude Max Subscription", message: null, usageWindows: [{ id: "five_hour", label: "Session", usedPercent: 10, resetsAt: later(3 * 3600000) }, { id: "seven_day", label: "Weekly", usedPercent: 42, resetsAt: later(3 * 86400000) }, { id: "seven_day_fable", label: "Weekly · Fable", usedPercent: 2, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation and reduce context usage", hint: "<optional custom summarization instructions>" }, { name: "review", description: "Review the current changes", hint: null }] },
-      { instanceId: "codex", displayName: "Codex", enabled: true, installed: true, status: "ready", version: "0.155.1", authStatus: "authenticated", authLabel: "ChatGPT Pro", message: null, usageWindows: [{ id: "primary", label: "Weekly", usedPercent: 87, resetsAt: new Date(Date.now() + 2 * 86400000).toISOString() }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation to free context", hint: null }, { name: "review", description: "Review uncommitted changes", hint: null }] },
+    const listed: T3ProviderInfo[] = [
+      { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", enabled: true, installed: true, status: "ready", version: "2.1.281", authStatus: "authenticated", authLabel: "Claude Max Subscription", message: null, usageWindows: [{ id: "five_hour", label: "Session", usedPercent: 10, resetsAt: later(3 * 3600000) }, { id: "seven_day", label: "Weekly", usedPercent: 42, resetsAt: later(3 * 86400000) }, { id: "seven_day_fable", label: "Weekly · Fable", usedPercent: 2, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation and reduce context usage", hint: "<optional custom summarization instructions>" }, { name: "review", description: "Review the current changes", hint: null }, { name: "dataviz", description: "Use whenever you are about to create a chart, graph or plot", hint: null }], skills: [] },
+      { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, installed: true, status: "ready", version: "0.155.1", authStatus: "authenticated", authLabel: "ChatGPT Pro", message: null, usageWindows: [{ id: "primary", label: "Weekly", usedPercent: 87, resetsAt: new Date(Date.now() + 2 * 86400000).toISOString() }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: true, autoCompactWindow: null, slashCommands: [{ name: "compact", description: "Summarize the conversation to free context", hint: null }, { name: "review", description: "Review uncommitted changes", hint: null }], skills: CODEX_SKILLS },
       // Antigravity's windows as T3 reports them: two families, interleaved.
-      { instanceId: "antigravity", displayName: "Antigravity", enabled: true, installed: true, status: "ready", version: "1.0.0", authStatus: "authenticated", authLabel: "Google account", message: null, usageWindows: [{ id: "3p-5h", label: "Claude & GPT (shared) · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "gemini-5h", label: "Gemini · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "3p-weekly", label: "Claude & GPT (shared) · Weekly", usedPercent: 0, resetsAt: later(7 * 86400000) }, { id: "gemini-weekly", label: "Gemini · Weekly", usedPercent: 3, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: false, autoCompactWindow: null, slashCommands: [] },
+      { instanceId: "antigravity", driver: "antigravity", displayName: "Antigravity", enabled: true, installed: true, status: "ready", version: "1.0.0", authStatus: "authenticated", authLabel: "Google account", message: null, usageWindows: [{ id: "3p-5h", label: "Claude & GPT (shared) · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "gemini-5h", label: "Gemini · 5-hour", usedPercent: 0, resetsAt: later(5 * 3600000) }, { id: "3p-weekly", label: "Claude & GPT (shared) · Weekly", usedPercent: 0, resetsAt: later(7 * 86400000) }, { id: "gemini-weekly", label: "Gemini · Weekly", usedPercent: 3, resetsAt: later(3 * 86400000) }], usageCheckedAt: new Date().toISOString(), reportsContextWindow: false, autoCompactWindow: null, slashCommands: [], skills: [] },
     ];
+    return this.skillsHome ? listed.map((provider) => this.withHomeSkills(provider, this.skillsHome!)) : listed;
+  }
+
+  /**
+   * The home folder whose skill folders the fake's harnesses read, as each real one does at its session's start: Claude
+   * lists a skill it finds as a slash command, Codex in its skills list with the path it found it at. Null: none read.
+   */
+  skillsHome: string | null = null;
+
+  private withHomeSkills(provider: T3ProviderInfo, home: string): T3ProviderInfo {
+    const found = SKILL_FOLDERS.filter((folder) => provider.driver !== undefined && folder.drivers.includes(provider.driver)).flatMap((folder) => {
+      const at = join(home, folder.relative);
+      let names: string[] = [];
+      try {
+        names = readdirSync(at);
+      } catch {
+        return [];
+      }
+      return names.flatMap((name) => {
+        try {
+          const text = readFileSync(join(at, name, "SKILL.md"), "utf8");
+          return [{ name, path: join(at, name, "SKILL.md"), description: /^description:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? null }];
+        } catch {
+          return [];
+        }
+      });
+    });
+    if (provider.driver === "claudeAgent") return { ...provider, slashCommands: [...(provider.slashCommands ?? []), ...found.map((skill) => ({ name: skill.name, description: skill.description, hint: null }))] };
+    return {
+      ...provider,
+      skills: [...(provider.skills ?? []), ...found.map((skill) => ({ name: skill.name, description: skill.description, shortDescription: null, path: skill.path, scope: "user", enabled: true, displayName: null, userInvocationOnly: false, userInvocable: true }))],
+    };
   }
 
   // ---------------- threads ----------------

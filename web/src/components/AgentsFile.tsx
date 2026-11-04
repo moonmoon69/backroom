@@ -5,7 +5,6 @@ import { templateSaved, type TemplateDraft } from "../agentsTemplate.ts";
 import type { AgentsFileDiff, AgentsFileEntry } from "../types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { DiffView } from "./GitTab.tsx";
-import { SkillsSection } from "./SkillsSection.tsx";
 import { useToast } from "./Toast.tsx";
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -23,10 +22,11 @@ const STATE_TITLE: Record<AgentsFileEntry["state"], string> = {
 };
 
 /**
- * Settings → Agents file, two sections. Instructions (src/app/agentsFile.ts): the switch for new rooms, the template they
+ * Settings → Agents file. Instructions (src/app/agentsFile.ts): the switch for new rooms, the template they
  * write with Save and Reset to default, and every project where Backroom wrote AGENTS.md with its state against the saved
  * template, and for the ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the
- * overview's mark does). Diff and Apply use the saved template, never the draft in the textarea. Skills: SkillsSection.
+ * overview's mark does). Diff and Apply use the saved template, never the draft in the textarea. The packs' standing
+ * lines that {skills} becomes are Settings → Skills' (SkillsDialog.tsx).
  */
 export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
@@ -113,8 +113,8 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
               }}
             />
             <span className="hint">
-              {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{poteto}"}</code>, on a line of its own, is
-              the line pointing at pstack&rsquo;s poteto-mode that Skills below chooses, and goes while Skills is off, so a change there shows written projects as differing. The file is written
+              {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{skills}"}</code>, on a line of its own, is
+              one line per skill pack with a standing line (Settings → Skills), and goes when none has one, so a change there shows written projects as differing. The file is written
               once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
             </span>
             <span className="task-actions">
@@ -165,7 +165,6 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
           ) : null}
         </section>
       </section>
-      <SkillsSection />
       <div className="dialog-actions">
         <button type="button" className="primary" onClick={close}>
           Done

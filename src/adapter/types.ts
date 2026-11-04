@@ -66,8 +66,29 @@ export interface CatalogEntry {
   driver?: string;
 }
 
+/** One skill a harness found, as T3 lists it per provider (src/app/skillRoster.ts reads them). */
+export interface T3ProviderSkill {
+  /** As invoked, a plugin's prefix kept (openai-templates:artifact-…). */
+  name: string;
+  description: string | null;
+  shortDescription: string | null;
+  /** Its SKILL.md; through a link where it was linked. */
+  path: string | null;
+  /** Where the harness found it (user, project, system, a plugin…). */
+  scope: string | null;
+  enabled: boolean;
+  /** A label, never its identity. */
+  displayName: string | null;
+  /** Its author lets only the user invoke it (Claude's disable-model-invocation). */
+  userInvocationOnly: boolean;
+  /** False: its author lets only the model invoke it (no slash command). */
+  userInvocable: boolean;
+}
+
 export interface T3ProviderInfo {
   instanceId: string;
+  /** The harness kind (claudeAgent, codex, cursor, …); absent when T3 does not say. */
+  driver?: string;
   displayName: string;
   enabled: boolean;
   installed: boolean;
@@ -82,8 +103,10 @@ export interface T3ProviderInfo {
   reportsContextWindow: boolean;
   /** Explicit auto-compaction window in tokens when configured in T3; null means the harness default ("auto"). */
   autoCompactWindow: number | null;
-  /** The harness's slash commands and skills, as T3's "/" menu lists them (e.g. compact). */
+  /** The harness's slash commands, as T3's "/" menu lists them (e.g. compact; Claude's skills are among them). */
   slashCommands?: Array<{ name: string; description: string | null; hint: string | null }>;
+  /** The skills the harness found, as T3 lists them apart from its commands. */
+  skills?: T3ProviderSkill[];
 }
 
 /** A client's state as T3's background policy weighs it; in view means visible and focused or recently used. */

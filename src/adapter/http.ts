@@ -123,6 +123,7 @@ interface ServerConfigLike {
     message?: string;
     reportsContextWindow?: boolean;
     slashCommands?: Array<{ name: string; description?: string; input?: { hint?: string } }>;
+    skills?: Array<{ name: string; description?: string; shortDescription?: string; path?: string; scope?: string; enabled?: boolean; displayName?: string; userInvocationOnly?: boolean; userInvocable?: boolean }>;
     auth?: { status?: string; type?: string; label?: string };
     usageLimits?: { checkedAt?: string; windows?: Array<{ id: string; kind?: string; label?: string; usedPercent?: number; resetsAt?: string }> };
     versionAdvisory?: {
@@ -1016,6 +1017,7 @@ export class HttpT3Adapter implements T3Adapter {
     const config = await this.getServerConfig();
     return (config.providers ?? []).map((provider) => ({
       instanceId: provider.instanceId,
+      ...(provider.driver ? { driver: provider.driver } : {}),
       displayName: provider.displayName ?? provider.instanceId,
       enabled: Boolean(provider.enabled),
       installed: Boolean(provider.installed),
@@ -1037,6 +1039,17 @@ export class HttpT3Adapter implements T3Adapter {
         name: command.name,
         description: command.description ?? null,
         hint: command.input?.hint ?? null,
+      })),
+      skills: (provider.skills ?? []).map((skill) => ({
+        name: skill.name,
+        description: skill.description ?? null,
+        shortDescription: skill.shortDescription ?? null,
+        path: skill.path ?? null,
+        scope: skill.scope ?? null,
+        enabled: skill.enabled !== false,
+        displayName: skill.displayName ?? null,
+        userInvocationOnly: skill.userInvocationOnly === true,
+        userInvocable: skill.userInvocable !== false,
       })),
     }));
   }

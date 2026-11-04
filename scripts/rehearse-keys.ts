@@ -53,9 +53,6 @@
  * in a project of the run's own) and "turn in T3"; Detail, last, the post's detail, the ring back on Detail when it
  * closes. A live bubble with an approval offers its choices.
  *
- * Settings → Agents file, Skills (#181): Tab reaches the chosen radio; the arrows walk the three positions, each saved in
- * the API with the focus on it, so a save never drops the focus out of the group, and Tab goes on from there.
- *
  * Add member's crew (#152), with eight crew members so it wraps onto several lines: ↓ from New reaches the first, ← →
  * go along it in order onto the next lines and stop at its ends, never picking, the ring drawn whole inside the dialog
  * in both looks; Space picks one and fills in its settings, ↓ goes on to Name, ↑ back to New and ↓ to the crew member
@@ -3905,49 +3902,6 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("Enter");
     await expect("the confirmation keeps the ring on Resume anyway", (f) => f.label === "Resume anyway" && f.ring);
     await state("review: a loose thread's Resume confirmation keeps keyboard focus", "Resume anyway");
-  }
-
-  if (await section("Settings → Agents file, Skills: the arrows walk the three positions, each saved, the focus staying in the radio group")) {
-    for (let i = 0; i < 8 && focus().drawers.length > 0; i += 1) press("Backspace");
-    await expect("back on the overview", (f) => f.drawers.length === 0);
-    type Poteto = { enabled: boolean; scope: string; busy: boolean };
-    const poteto = async () => (await service.call<{ poteto: Poteto }>("GET", "/api/settings")).poteto;
-    const radios = () =>
-      browser.eval<{ focused: string | null; chosen: string | null; radios: number }>(
-        "() => { const text = (input) => input?.closest('label')?.querySelector('strong')?.textContent ?? null; const a = document.activeElement; return { focused: a?.name === 'poteto-position' ? text(a) : null, chosen: text(document.querySelector('input[name=\"poteto-position\"]:checked')), radios: document.querySelectorAll('input[name=\"poteto-position\"]').length }; }",
-      );
-    /** The key pressed: the position saved in the API, chosen on the page, the focus on it, and nothing running. */
-    const walk = async (key: string, position: string, enabled: boolean, scope: string) => {
-      press(key);
-      await until(`${key} to save ${position}`, async () => {
-        const now = await poteto();
-        const page = radios();
-        return now.enabled === enabled && (!enabled || now.scope === scope) && !now.busy && page.chosen === position && page.focused === position ? page : null;
-      });
-      await expect(`${key}: ${position} saved, the ring on it`, (f) => f.tag === "INPUT" && f.ring);
-    };
-    await tabTo("Settings in the header", (f) => f.label === "Settings", "Tab", 60);
-    press("Enter");
-    await expect("Enter: the Settings menu", (f) => f.menu && (f.role ?? "").startsWith("menuitem"));
-    for (let i = 0; i < 6 && !focus().label.startsWith("Agents file"); i += 1) press("ArrowDown");
-    await expect("Down to Agents file…", (f) => f.menu && f.label.startsWith("Agents file"));
-    press("Enter");
-    await expect("Enter: the Agents file dialog", (f) => f.dialog === "Agents file" && f.inDialog);
-    await until("the three positions", () => (radios().radios === 3 ? true : null));
-    for (let i = 0; i < 40 && radios().focused === null; i += 1) press("Tab");
-    if (radios().focused !== "Principles and reply rules") fail(`Tab did not reach the chosen radio: ${JSON.stringify(radios())}`);
-    await walk("ArrowDown", "The whole mode", true, "full");
-    await walk("ArrowUp", "Principles and reply rules", true, "principles");
-    await walk("ArrowUp", "Off", false, "principles");
-    await walk("ArrowDown", "Principles and reply rules", true, "principles");
-    await until("Update now to be offered, the page's read of the clone done", () => browser.eval<boolean>("() => [...document.querySelectorAll('.dialog button')].some((b) => b.textContent === 'Update now' && !b.disabled)") || null);
-    press("Tab");
-    await expect("Tab: on to Update now, not back to the dialog's start", (f) => f.inDialog && f.label === "Update now");
-    press("Shift+Tab");
-    await until("Shift+Tab back on the chosen radio", () => (radios().focused === "Principles and reply rules" ? true : null));
-    await state("Settings → Agents file, Skills: the arrows walk the three positions, each saved, the focus staying in the radio group", /Agents file/);
-    press("Escape");
-    await expect("Esc: the dialog closed", (f) => f.dialog === null);
   }
 
   return passed;

@@ -648,36 +648,90 @@ export interface AgentsFileDiff {
   templateDigest: string;
 }
 
-/** Why pstack's last clone or update did not do what it was for (src/app/poteto.ts). */
+/** Why a pack's last install, check or update did not do what it was for (src/app/packs.ts). */
 export interface PackError {
   reason: string;
   at: string;
-  during: "clone" | "update";
+  during: "install" | "check" | "update";
 }
 
-/** What of poteto-mode a seat is told to follow while it is on (src/app/poteto.ts). */
-export type PotetoScope = "principles" | "full";
+/** A folder harnesses discover skills in, and who reads it (src/app/packs.ts). */
+export interface LinkFolder {
+  id: string;
+  path: string;
+  label: string;
+  readBy: string[];
+  drivers: string[];
+}
 
-/** Settings → Agents file, Skills, as the settings route reports it and poteto.update answers (src/app/poteto.ts). */
-export interface PotetoState {
-  enabled: boolean;
-  /** What of the mode seats are told to follow while it is on; kept while it is off. */
-  scope: PotetoScope;
-  /** The commit or tag it is pinned at; null: it follows origin's main. */
-  pin: string | null;
+/** One of a pack's skills: a tracked SKILL.md in its checkout. */
+export interface PackSkill {
+  path: string;
+  name: string;
+  linkName: string;
+  description: string | null;
+  realPath: string;
+  folders: string[];
+  linked: string[];
+}
+
+/** A pack as Settings → Skills shows it (GET /api/skills; src/app/packs.ts). */
+export interface PackState {
+  name: string;
+  url: string;
   folder: string;
-  source: string;
-  /** The clone validates: the agents file's line and the Skills section point at it. */
-  ready: boolean;
-  /** A clone or an update is running or waiting. */
-  busy: boolean;
-  version: string | null;
-  commit: string | null;
-  checkedAt: string | null;
-  lastChange: string | null;
-  /** "pinned at <pin>, latest is <short>" while pinned. */
   pinned: string | null;
+  pinnedSubject: string | null;
+  checkedOut: string | null;
+  standing: string | null;
+  presets: Array<{ label: string; text: string }>;
+  checkedAt: string | null;
   error: PackError | null;
+  ready: boolean;
+  busy: boolean;
+  update: { commit: string; subject: string } | null;
+  skills: PackSkill[];
+}
+
+/** What a pack's update brings (GET /api/skills/packs/:name/update). */
+export interface PackUpdateDetail {
+  from: string;
+  commit: string;
+  stat: string;
+  files: Array<{ status: string; path: string }>;
+  descriptions: Array<{ path: string; before: string | null; after: string | null }>;
+  diff: string;
+  truncated: boolean;
+}
+
+/** The kinds of the roster's rows, in the order they are grouped (src/domain/skills.ts). */
+export type SkillKind = "directive" | "command" | "skill" | "pack";
+
+/** A roster row (src/app/skillRoster.ts). */
+export interface SkillRow {
+  id: string;
+  kind: SkillKind;
+  name: string;
+  label: string | null;
+  description: string | null;
+  source: string;
+  path: string | null;
+  hint: string | null;
+  userInvocationOnly: boolean;
+  userInvocable: boolean;
+  instances: string[];
+  members: string[];
+  linked: string[];
+  useWhen: string;
+  avoid: string;
+}
+
+/** GET /api/skills. */
+export interface SkillsResponse {
+  rows: SkillRow[];
+  t3Error: string | null;
+  folders: LinkFolder[];
+  packs: PackState[];
 }
 
 /** Per-model option from T3's manifest (effort, contextWindow, fastMode, thinking, …). */
@@ -860,7 +914,7 @@ export interface ProviderInfo {
   message: string | null;
   usageWindows: UsageWindow[];
   usageCheckedAt: string | null;
-  /** The harness's slash commands and skills, as T3's "/" menu lists them. */
+  /** The harness's slash commands, as T3's "/" menu lists them. */
   slashCommands?: Array<{ name: string; description: string | null; hint: string | null }>;
 }
 
@@ -1378,14 +1432,18 @@ export type RoomCommand =
   | { type: "agentsFile.text.set"; text: string | null }
   /** Apply the saved template to one project's AGENTS.md, bound to the diff the user looked at. */
   | { type: "agentsFile.apply"; projectId?: string | undefined; folder?: string | undefined; fileDigest: string; templateDigest: string }
-  /** Settings → Agents file, Skills: whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
-  | { type: "poteto.enabled.set"; enabled: boolean }
-  /** Settings → Agents file, Skills: what of the mode they tell a seat to follow, its principles (the default) or the whole mode. */
-  | { type: "poteto.scope.set"; scope: PotetoScope }
-  /** Update now: pstack's clone fetched and moved, or made when it is missing. */
-  | { type: "poteto.update" }
-  /** Pin this version (a commit or a tag), or with null follow origin's main again. */
-  | { type: "poteto.pin.set"; pin: string | null }
+  /** Settings → Skills (src/app/packs.ts): a pack cloned from a URL, removed, checked now, moved to the commit looked at. */
+  | { type: "pack.add"; url: string }
+  | { type: "pack.remove"; name: string }
+  | { type: "pack.check"; name: string }
+  | { type: "pack.update.take"; name: string; commit: string }
+  /** A pack's standing line, {folder} for its folder; null for none. */
+  | { type: "pack.standing.set"; name: string; text: string | null }
+  /** A link to a pack's skill placed in, or taken out of, a skill folder. */
+  | { type: "skill.link"; pack: string; path: string; folder: string }
+  | { type: "skill.unlink"; pack: string; path: string; folder: string }
+  /** The user's two lines on a roster row; both empty removes them. */
+  | { type: "skill.hint.set"; skillId: string; useWhen?: string | undefined; avoid?: string | undefined }
   | { type: "room.delete"; roomId: string; threads: Record<string, ThreadLifecycleChoice> }
   | {
       type: "participant.create";
@@ -1449,7 +1507,7 @@ export type CommandResult =
   | { type: "room.created"; roomId: string; agentsFile?: AgentsFileWritten }
   | { type: "settings.updated" }
   | { type: "agentsFile.applied"; file: AgentsFileEntry }
-  | { type: "poteto.updated"; poteto: PotetoState }
+  | { type: "pack.updated"; pack: PackState | null; unlinked: string[] }
   | { type: "consigliere.started"; roomId: string; participantId: string }
   | { type: "room.updated"; roomId: string }
   | { type: "rooms.reordered" }

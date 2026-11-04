@@ -14,7 +14,9 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { api, ApiError, attachmentUrl, useProviders } from "../api.ts";
+import { api, ApiError, attachmentUrl, useProviders, useSkillRows } from "../api.ts";
+import { slashEntries, slashInsert, type SlashEntry } from "../slashList.ts";
+import { KIND_LABEL } from "./SkillsDialog.tsx";
 import { COARSE_POINTER_QUERY, useMediaQuery } from "../useMediaQuery.ts";
 import { useRoom } from "../context.tsx";
 import { changeDraftImages, readDraftImages, useDraft } from "../drafts.ts";
@@ -93,6 +95,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const crew = useMemo(() => snapshot.participants.filter(isActiveParticipant), [snapshot.participants]);
   const consigliere = crew.find((p) => p.id === snapshot.room.consigliereId) ?? null;
   const { providers } = useProviders(true, 120_000);
+  const { rows: skillRows, refresh: refreshSkills } = useSkillRows(true, 120_000);
   /** Examples built from this room's members, so every placeholder can be run as is. */
   const placeholders = useMemo(() => {
     // With a Consigliere the plain message is his; the other examples would teach the wrong habit.
@@ -129,7 +132,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
   const removedKeys = useRef(new Set<string>());
   const [submitting, setSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
-  /** "/" typed: the room's commands, plus the addressed members' T3 commands after an @name. */
+  /** "/" typed: the room's directives, plus what the addressed members have after an @name (slashList.ts). */
   const [slashPick, setSlashPick] = useState<(MentionState & { recipients: string[]; atStart: boolean }) | null>(null);
   const [dragging, setDragging] = useState(false);
   const [focusAssignment, setFocusAssignment] = useState<number | null>(null);
@@ -333,24 +336,26 @@ export function Composer({ overlay: asOverlay = false }: Props) {
     return crew.length > 1 && "all".startsWith(mention.query) ? [{ id: "@all", alias: "all", modelSelection: { model: `everyone (${crew.length})` } }, ...people] : people;
   }, [mention, crew]);
 
-  const slashMatches = useMemo(() => {
+  // The roster read again as the list opens: lines just saved in Settings → Skills show.
+  const slashListOpen = slashPick !== null;
+  useEffect(() => {
+    if (slashListOpen) refreshSkills();
+  }, [slashListOpen, refreshSkills]);
+  const slashMatches = useMemo((): SlashEntry[] => {
     if (!slashPick) return [];
-    const room = (slashPick.atStart ? ROOM_COMMANDS : ADDRESSED_ROOM_COMMANDS).map((c) => ({ ...c, group: "room" as const }));
-    const t3 = slashPick.recipients.length > 0
-      ? commandsFor(slashPick.recipients).map((c) => ({ name: c.name, description: c.description ?? "", hint: c.hint, group: "t3" as const }))
-      : [];
-    return [...room, ...t3].filter((c) => c.name.toLowerCase().includes(slashPick.query)).slice(0, 12);
-  }, [slashPick, commandsFor]);
+    const instances = slashPick.recipients.map((id) => crew.find((p) => p.id === id)?.modelSelection.instanceId ?? null);
+    return slashEntries(skillRows ?? [], instances, { atStart: slashPick.atStart, query: slashPick.query });
+  }, [slashPick, skillRows, crew]);
   // The list open under the field, if any (the / list wins, as it is drawn first), and its id for the field's
   // aria-activedescendant.
   const listId = useId();
   const slashOpen = slashPick !== null && slashMatches.length > 0;
   const mentionOpen = mention !== null && mentionMatches.length > 0;
 
-  const acceptSlash = (name: string) => {
+  const acceptSlash = (entry: SlashEntry) => {
     if (!slashPick) return;
     const caret = textarea.current?.selectionStart ?? text.length;
-    const token = `/${name} `;
+    const token = slashInsert(entry);
     applyEdit({ text: `${text.slice(0, slashPick.start)}${token}${text.slice(caret).replace(/^\s+/, "")}`, caret: slashPick.start + token.length });
     setSlashPick(null);
   };
@@ -465,7 +470,7 @@ export function Composer({ overlay: asOverlay = false }: Props) {
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
         const pick = slashMatches[slashPick.index] ?? slashMatches[0];
-        if (pick) acceptSlash(pick.name);
+        if (pick) acceptSlash(pick);
         return;
       }
       if (event.key === "Escape") {
@@ -601,23 +606,25 @@ export function Composer({ overlay: asOverlay = false }: Props) {
         </div>
         {slashOpen ? (
           <ul className="mention-menu slash-menu" role="listbox" aria-label="Commands" id={`${listId}-slash`}>
-            {slashMatches.map((command, index) => (
+            {slashMatches.map((entry, index) => (
               <li
-                key={`${command.group}:${command.name}`}
+                key={entry.key}
                 id={`${listId}-slash-${index}`}
                 role="option"
                 aria-selected={index === slashPick.index}
-                className={`${index === slashPick.index ? "active" : ""}${index > 0 && slashMatches[index - 1]?.group !== command.group ? " group-start" : ""}`}
+                data-kind={entry.kind}
+                className={`${index === slashPick.index ? "active" : ""}${index > 0 && slashMatches[index - 1]?.kind !== entry.kind ? " group-start" : ""}${entry.avoid ? " slash-avoid" : ""}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  acceptSlash(command.name);
+                  acceptSlash(entry);
                 }}
               >
-                <span className="mono slash-name">/{command.name}</span>
-                {command.hint ? <span className="muted mono"> {command.hint}</span> : null}
-                <span className="slash-desc muted">{command.description}</span>
+                <span className="mono slash-name">{entry.kind === "directive" || entry.kind === "command" ? `/${entry.name}` : entry.name}</span>
+                {entry.hint ? <span className="muted mono"> {entry.hint}</span> : null}
+                <span className={`slash-desc${entry.mine ? " slash-mine" : " muted"}`}>{entry.line ?? ""}</span>
+                {entry.avoid ? <span className="slash-desc slash-avoid-line">avoid: {entry.avoid}</span> : null}
                 <span className="slash-group mono">
-                  {command.group === "room" ? "room" : `T3 · ${slashPick.recipients.map((id) => `@${aliasOf(id)}`).join(" ")}`}
+                  {entry.kind === "directive" ? "room" : `${KIND_LABEL[entry.kind]} · ${slashPick.recipients.map((id) => `@${aliasOf(id)}`).join(" ")}`}
                 </span>
               </li>
             ))}
@@ -1187,13 +1194,6 @@ const formatBytes = (bytes: number): string =>
  * Room commands for the "/" menu. At the start of a message: all of them; right after an @name: the per-assignment
  * ones. /after and /hold are gone (D2): nothing waits on other work.
  */
-const ROOM_COMMANDS: Array<{ name: string; description: string; hint: string | null }> = [
-  { name: "now", description: "Start now", hint: null },
-  { name: "add", description: "Seat a new member on a new T3 thread", hint: "name" },
-  { name: "remove", description: "Remove a member from the room", hint: "@name" },
-];
-const ADDRESSED_ROOM_COMMANDS = ROOM_COMMANDS.filter((c) => c.name === "now");
-
 /** Placeholder examples from the room's own participants (generic names only when the room is empty). */
 function roomPlaceholders(aliases: string[]): string[] {
   const [a = "alice", b = aliases.length > 1 ? (aliases[1] as string) : "bob"] = aliases;

@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { PSTACK_REPO } from "./app/poteto.ts";
+import { PSTACK_REPO } from "./domain/skills.ts";
 
 export interface Config {
   port: number;
@@ -22,8 +22,14 @@ export interface Config {
   webDistDir: string;
   /** Delivery budget for a single briefing, in characters. */
   briefingBudgetChars: number;
-  /** Where Poteto mode's pstack is cloned from (ROOMS_PSTACK_REPO, a URL or a local path; src/app/poteto.ts). */
+  /** Where the pstack pack is cloned from (ROOMS_PSTACK_REPO, a URL or a local path; src/app/packs.ts). */
   pstackRepo: string;
+  /**
+   * The home folder whose skill folders (~/.claude/skills and the others) Backroom links skills into (ROOMS_SKILLS_HOME):
+   * the user's own, or for a service on the fake T3 a folder in its data folder, so a throwaway service never links into
+   * the user's harnesses.
+   */
+  skillsHome: string;
   /** How long deleting a room waits for T3 to answer each thread action, in milliseconds. */
   threadActionTimeoutMs: number;
   /**
@@ -97,6 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
     // A local path is taken from the service's folder, as the other paths here: git clones from another folder.
     pstackRepo: env.ROOMS_PSTACK_REPO ? (/^[a-z][a-z0-9+.-]*:\/\/|^[^/]+@[^/:]+:/i.test(env.ROOMS_PSTACK_REPO) ? env.ROOMS_PSTACK_REPO : resolve(env.ROOMS_PSTACK_REPO)) : PSTACK_REPO,
+    skillsHome: env.ROOMS_SKILLS_HOME ? resolve(env.ROOMS_SKILLS_HOME) : adapter === "fake" ? join(dataDir, "home") : homedir(),
     threadActionTimeoutMs: Number(env.ROOMS_THREAD_ACTION_TIMEOUT_MS ?? 5000),
     keepAliveMs: parseKeepAliveMs(env.ROOMS_KEEPALIVE_MS),
     browser: {

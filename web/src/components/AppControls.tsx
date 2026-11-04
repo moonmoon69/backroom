@@ -3,9 +3,10 @@ import { PALETTES, usePalette, useSkin, type SkinChoice } from "../skin.ts";
 import type { ThemeChoice } from "../theme.ts";
 import type { StatusResponse, ThreadLifecycleChoice } from "../types.ts";
 import { AgentsFileDialog } from "./AgentsFile.tsx";
+import { SkillsDialog } from "./SkillsDialog.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ConnectionChip } from "./StatusStrip.tsx";
-import { FolderIcon, GridIcon, PeopleIcon, BellIcon, CopyIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, SunIcon } from "./icons.tsx";
+import { FolderIcon, GridIcon, PeopleIcon, BellIcon, CopyIcon, MonitorIcon, MoonIcon, PixelIcon, SettingsIcon, StarIcon, SunIcon } from "./icons.tsx";
 import { copyText } from "./CopyText.tsx";
 import { keyboardLog } from "../viewportFit.ts";
 import { UpdatesButton } from "./Updates.tsx";
@@ -58,6 +59,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
   const [open, setOpen] = useState(false);
   const [consigliereOpen, setConsigliereOpen] = useState(false);
   const [agentsFileOpen, setAgentsFileOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const { presets } = usePresets();
   const consigliereSetting = useConsigliereSetting();
   const consigliere = presets.find((p) => p.id === consigliereSetting) ?? null;
@@ -101,7 +103,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Settings"
-        title="Settings: the Consigliere, the agents file and skills, notifications, theme and look"
+        title="Settings: the Consigliere, the agents file, skills, notifications, theme and look"
         onClick={() => setOpen((v) => !v)}
         data-nav="ov"
         data-nav-key="head:settings"
@@ -127,7 +129,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             role="menuitem"
             title={`The habits every agent in a project keeps, in its AGENTS.md: ${
               agentsFile ? "written once when a project with no instructions for agents yet gets its first room" : "new rooms write none (off)"
-            }. Opens the template ({checks} filled per project), the switch, the projects already written, with a diff and Apply for those that differ from the saved template, and Skills: how far seats follow pstack's poteto-mode, its version, Update now and the pin (README: The agents file, Poteto mode).`}
+            }. Opens the template ({checks} filled per project, {skills} with the packs' standing lines), the switch, and the projects already written, with a diff and Apply for those that differ from the saved template (README: The agents file).`}
             onClick={pick(() => setAgentsFileOpen(true))}
           >
             <span className="menu-icon" aria-hidden="true">
@@ -135,6 +137,17 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             </span>
             Agents file…
             <span className="menu-value">{agentsFile ? "on" : "off"}</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            title="Every skill, harness command and room directive you can name, with your lines on when to use each and what to avoid; the skill packs Backroom keeps, their standing lines, updates and links (README: Skills)"
+            onClick={pick(() => setSkillsOpen(true))}
+          >
+            <span className="menu-icon" aria-hidden="true">
+              <StarIcon />
+            </span>
+            Skills…
           </button>
           {notificationsSupported ? (
             <button
@@ -220,6 +233,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
       ) : null}
       {consigliereOpen ? <ConsigliereDialog onClose={() => setConsigliereOpen(false)} /> : null}
       {agentsFileOpen ? <AgentsFileDialog onClose={() => setAgentsFileOpen(false)} /> : null}
+      {skillsOpen ? <SkillsDialog onClose={() => setSkillsOpen(false)} /> : null}
     </span>
   );
 }

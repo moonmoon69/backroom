@@ -1,9 +1,10 @@
 /**
- * A local stand-in for cursor/plugins, for the tests and the rehearsal (ROOMS_PSTACK_REPO), so neither reaches the
- * network: a bare repository on main whose tree has pstack's shape as Poteto mode reads it (src/app/poteto.ts):
+ * Local stand-ins for skill packs, for the tests and the rehearsal, so neither reaches the network (src/app/packs.ts).
+ * makePstackFixture is cursor/plugins (ROOMS_PSTACK_REPO): a bare repository on main whose tree has pstack's shape,
  * pstack/plugin.json with its version, poteto-mode and a few skills in pstack/skills and in the Claude Code copy under
- * harness/pstack/claude-code/skills, pstack's Claude Code adapter note, and folders outside the sparse paths that a
- * clone must leave out. `commit` adds a commit to it, as upstream would.
+ * harness/pstack/claude-code/skills, pstack's Claude Code adapter note, and other plugins' folders. makePackFixture is
+ * another pack: two skills, one with a script beside it, and a setup script at its root that no one may run (each writes
+ * a marker file when run). `commit` adds a commit to either, as upstream would.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -50,8 +51,8 @@ export function makePstackFixture(dir: string, version = "0.15.0"): PstackFixtur
     "other-plugin/README.md": "outside the sparse paths\n",
   };
   for (const name of FIXTURE_SKILLS) {
-    files[`pstack/skills/${name}/SKILL.md`] = `---\nname: ${name}\n---\n\n# ${name} (fixture)\n`;
-    files[`harness/pstack/claude-code/skills/${name}/SKILL.md`] = `---\nname: ${name}\n---\n\n# ${name} (fixture, Claude Code)\n`;
+    files[`pstack/skills/${name}/SKILL.md`] = `---\nname: ${name}\ndescription: The ${name} skill (fixture).\n---\n\n# ${name} (fixture)\n`;
+    files[`harness/pstack/claude-code/skills/${name}/SKILL.md`] = `---\nname: ${name}\ndescription: The ${name} skill (fixture, Claude Code).\n---\n\n# ${name} (fixture, Claude Code)\n`;
   }
   write(work, files);
   git(work, "add", ".");
@@ -64,6 +65,45 @@ export function makePstackFixture(dir: string, version = "0.15.0"): PstackFixtur
     commit(subject, options = {}) {
       write(work, { ...(options.version ? { "pstack/plugin.json": pluginJson(options.version), "harness/pstack/claude-code/plugin.json": pluginJson(options.version) } : {}), ...options.files });
       git(work, "add", ".");
+      git(work, "commit", "-q", "--allow-empty", "-m", subject);
+      git(work, "push", "-q", bare, "main");
+      return git(work, "rev-parse", "HEAD");
+    },
+  };
+}
+
+/** The two skills makePackFixture holds, by their folders. */
+export const PACK_FIXTURE_SKILLS = ["skills/alpha", "skills/beta"];
+
+/**
+ * Another pack under `dir`, its bare repository named `<name>.git`: skills/alpha (with scripts/run.sh) and skills/beta,
+ * and setup.sh at its root. Every script writes `<marker>` when run, so a test can show none ever was.
+ */
+export function makePackFixture(dir: string, name = "skills-pack", marker = join(dir, "script-ran")): PstackFixture & { marker: string } {
+  const work = join(dir, name);
+  const bare = join(dir, `${name}.git`);
+  mkdirSync(work, { recursive: true });
+  execFileSync("git", ["init", "-q", "-b", "main", work]);
+  const script = `#!/bin/sh\necho ran > '${marker}'\n`;
+  write(work, {
+    "README.md": "# skills (fixture)\n",
+    "setup.sh": script,
+    "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: >-\n  Use alpha for the first\n  kind of job.\n---\n\n# alpha\n",
+    "skills/alpha/scripts/run.sh": script,
+    "skills/beta/SKILL.md": '---\nname: beta-skill\ndescription: "Beta, for the second kind."\n---\n\n# beta\n',
+  });
+  execFileSync("chmod", ["+x", join(work, "setup.sh"), join(work, "skills/alpha/scripts/run.sh")]);
+  git(work, "add", ".");
+  git(work, "commit", "-q", "-m", "skills: first commit");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare]);
+  git(work, "push", "-q", bare, "main");
+  return {
+    bare,
+    work,
+    marker,
+    commit(subject, options = {}) {
+      write(work, options.files ?? {});
+      git(work, "add", "-A");
       git(work, "commit", "-q", "--allow-empty", "-m", subject);
       git(work, "push", "-q", bare, "main");
       return git(work, "rev-parse", "HEAD");

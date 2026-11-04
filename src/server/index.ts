@@ -32,6 +32,8 @@ let credential: T3Credential | null = null;
 if (config.adapter === "fake") {
   // ROOMS_FAKE_PROJECT_DIR points the demo project at a folder of the caller's (a scratch repository for a rehearsal).
   const fake = new FakeT3Adapter({ autoCompleteMs: 4000, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? { projectRoot: process.env.ROOMS_FAKE_PROJECT_DIR } : {}) });
+  // Its harnesses read the skill folders Backroom links into, as real ones read the user's.
+  fake.skillsHome = config.skillsHome;
   // As T3's scheduler runs its usage-limit recovery.
   fake.sweepLimitsEvery(1000);
   // Kept in a file when asked, so its threads outlive a restart of the service as T3's do (scripts/rehearse.ts --step room).
@@ -87,8 +89,9 @@ const stack = createStack({
   // A throwaway service on the fake T3 writes agents files only in its own data folder and ROOMS_FAKE_PROJECT_DIR: a real
   // folder added to it as a project is never written in (and it does not know what the user's Backroom wrote there).
   agentsFile: config.adapter === "fake" ? { onlyUnder: [config.dataDir, ...(process.env.ROOMS_FAKE_PROJECT_DIR ? [process.env.ROOMS_FAKE_PROJECT_DIR] : [])] } : true,
-  // Poteto mode's pstack clone, in this data folder (a throwaway service's own too), from ROOMS_PSTACK_REPO or GitHub.
-  poteto: { dataDir: config.dataDir, source: config.pstackRepo },
+  // The skill packs, in this data folder (a throwaway service's own too), pstack from ROOMS_PSTACK_REPO or GitHub, linked
+  // into the skill folders under config.skillsHome.
+  packs: { dataDir: config.dataDir, home: config.skillsHome, pstackSource: config.pstackRepo },
   browserCommand,
   boardCommand,
   log,
@@ -160,8 +163,8 @@ credential?.start();
 if (adapter instanceof HttpT3Adapter) adapter.startFeed();
 stack.engine.start(config.tickMs);
 stack.limitRecovery.start();
-// In the background: the clone made when it is missing, then the hourly look for the daily update.
-stack.poteto?.start();
+// In the background: each pack installed when it is missing, then the hourly look for the daily check.
+stack.packs?.start();
 
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
 const fetch = adapter instanceof FakeT3Adapter ? withFakeControls(app.fetch, adapter) : app.fetch;

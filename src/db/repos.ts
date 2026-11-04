@@ -12,6 +12,9 @@ import type {
   SessionBinding,
   ThreadBrowsers,
   Attachment,
+  Pack,
+  PackError,
+  SkillHint,
 } from "../domain/types.ts";
 
 type Row = Record<string, unknown>;
@@ -27,6 +30,19 @@ function rowToThreadBrowsers(row: Row): ThreadBrowsers {
     defaultBrowserId: ns(row.default_browser_id),
     allowedBrowserIds: row.browser_ids_json ? (JSON.parse(s(row.browser_ids_json)) as string[]) : null,
     updatedAt: s(row.updated_at),
+  };
+}
+
+function rowToPack(row: Row): Pack {
+  return {
+    name: s(row.name),
+    url: s(row.url),
+    folder: s(row.folder),
+    pinned: ns(row.pinned_commit),
+    standing: ns(row.standing_text),
+    checkedAt: ns(row.checked_at),
+    error: row.error_json ? (JSON.parse(s(row.error_json)) as PackError) : null,
+    createdAt: s(row.created_at),
   };
 }
 
@@ -553,6 +569,46 @@ export class Repos {
       provider: s(row.provider),
       sessionId: s(row.session_id),
     }));
+  }
+
+  // ---- skill packs and the user's lines on skills ----
+  listPacks(): Pack[] {
+    return (this.raw.prepare("SELECT * FROM packs ORDER BY created_at, name").all() as Row[]).map(rowToPack);
+  }
+
+  getPack(name: string): Pack | null {
+    const row = this.raw.prepare("SELECT * FROM packs WHERE name = ?").get(name) as Row | undefined;
+    return row ? rowToPack(row) : null;
+  }
+
+  savePack(p: Pack): void {
+    this.raw
+      .prepare(
+        `INSERT INTO packs (name, url, folder, pinned_commit, standing_text, checked_at, error_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET url = excluded.url, folder = excluded.folder, pinned_commit = excluded.pinned_commit,
+           standing_text = excluded.standing_text, checked_at = excluded.checked_at, error_json = excluded.error_json`,
+      )
+      .run(p.name, p.url, p.folder, p.pinned, p.standing, p.checkedAt, p.error ? JSON.stringify(p.error) : null, p.createdAt);
+  }
+
+  deletePack(name: string): void {
+    this.raw.prepare("DELETE FROM packs WHERE name = ?").run(name);
+  }
+
+  listSkillHints(): Map<string, SkillHint> {
+    const rows = this.raw.prepare("SELECT skill_id, use_when, avoid FROM skill_hints").all() as Row[];
+    return new Map(rows.map((row) => [s(row.skill_id), { useWhen: s(row.use_when), avoid: s(row.avoid) }]));
+  }
+
+  /** Both lines empty: the row goes. */
+  setSkillHint(skillId: string, hint: SkillHint): void {
+    if (!hint.useWhen && !hint.avoid) {
+      this.raw.prepare("DELETE FROM skill_hints WHERE skill_id = ?").run(skillId);
+      return;
+    }
+    this.raw
+      .prepare("INSERT INTO skill_hints (skill_id, use_when, avoid, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(skill_id) DO UPDATE SET use_when = excluded.use_when, avoid = excluded.avoid, updated_at = excluded.updated_at")
+      .run(skillId, hint.useWhen, hint.avoid, new Date().toISOString());
   }
 
   // ---- kv ----

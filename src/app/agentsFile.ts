@@ -56,8 +56,8 @@
  * and added again keeps its record.
  *
  * The text is a template, Backroom's (DEFAULT_AGENTS_TEMPLATE) or the user's (Settings → Agents file, agentsFile.text in
- * kv), with {checks} filled per project and {poteto} with Poteto mode's line while it is on and its clone ready
- * (src/app/poteto.ts; turning it on or off changes the rendered template, so written projects then differ). A saved
+ * kv), with {checks} filled per project and {skills} with the packs' standing lines (src/app/packs.ts; a change of a
+ * standing text, or a pack turning ready, changes the rendered template, so written projects then differ). A saved
  * template reaches only folders written afterwards: Backroom never changes a file by itself. Settings → Agents file
  * lists each folder where it wrote AGENTS.md with its state against the saved template rendered for it (same, differs,
  * removed, blocked), shows the diff, and on the user's Apply writes the rendered template over the file: bound to the
@@ -207,8 +207,8 @@ export interface AgentsFilesOptions {
   onlyUnder?: string[];
   /** Tests only: runs between the look at the folder and each write (apply's too), where another writer could get in. */
   beforeWrite?: (folder: string, file: string) => void;
-  /** Poteto mode's line for {poteto} (src/app/poteto.ts), read at each rendering; null or absent: none. */
-  poteto?: () => string | null;
+  /** The packs' standing lines for {skills} (src/app/packs.ts), read at each rendering; absent: none. */
+  skills?: () => string[];
 }
 
 const exists = (path: string): boolean => {
@@ -347,10 +347,10 @@ export function projectChecks(folder: string): string[] {
 export const CHECKS_PLACEHOLDER = "{checks}";
 
 /**
- * The placeholder for Poteto mode's line (src/app/poteto.ts): on a line of its own, it is that one line while Poteto
- * mode is on and its clone is ready, and the line goes when it is not.
+ * The placeholder for the skill packs' standing lines (src/app/packs.ts): on a line of its own, one line per ready pack
+ * with a standing text, and the line goes when there is none.
  */
-export const POTETO_PLACEHOLDER = "{poteto}";
+export const SKILLS_PLACEHOLDER = "{skills}";
 
 /** The checks phrase {checks} stands for: the project's checks named when they could be read. */
 export function checksPhrase(checks: string[]): string {
@@ -359,7 +359,7 @@ export function checksPhrase(checks: string[]): string {
 
 /**
  * The default template, the one source of the default AGENTS.md: the worker's habits in words that fit any project and
- * any harness, with {checks} where the project's checks go and {poteto} where Poteto mode's line goes.
+ * any harness, with {checks} where the project's checks go and {skills} where the skill packs' standing lines go.
  */
 export const DEFAULT_AGENTS_TEMPLATE = [
   "# Working in this project",
@@ -373,7 +373,7 @@ export const DEFAULT_AGENTS_TEMPLATE = [
   "- For a design or product decision, offer two or three shapes with the simplest result first, each with what it adds and removes and the one case it cannot handle, and recommend the one that leaves the simplest system. When the user has proposed a shape, build it unless you can name the case it fails. A routine change gets no alternatives: make it.",
   "- Read the code that owns a behaviour and its tests before you change it, trace the callers and update every consumer. Fix a problem at its owner; when the owner's shape is the problem, change the owner rather than patch around it. Keep the change to the task.",
   "- Each rule, format and state transition has one authoritative definition. Regenerate every derived view from it, and update the docs a change makes untrue, in the same change.",
-  POTETO_PLACEHOLDER,
+  SKILLS_PLACEHOLDER,
   "",
   "## Working on an assignment",
   "",
@@ -404,19 +404,18 @@ export const AGENTS_TEXT_KEY = "agentsFile.text";
 export const AGENTS_TEXT_MAX = 20000;
 
 /**
- * A template written for a project: every {checks} filled with its checks phrase, every {poteto} with Poteto mode's line
- * (`poteto`, null while it is off or its clone is not ready: then a line that holds only {poteto} goes, and any other is
- * emptied), LF line endings, one final newline.
+ * A template written for a project: every {checks} filled with its checks phrase, every {skills} with the packs' standing
+ * lines (`skills`; none: a line that holds only {skills} goes, and any other is emptied), LF line endings, one final newline.
  */
-export function renderAgentsText(template: string, checks: string[], poteto: string | null = null): string {
+export function renderAgentsText(template: string, checks: string[], skills: string[] = []): string {
   const lines = template.replace(/\r\n?/g, "\n").split("\n");
-  const kept = poteto === null ? lines.filter((line) => line.trim() !== POTETO_PLACEHOLDER) : lines;
-  return `${kept.join("\n").split(CHECKS_PLACEHOLDER).join(checksPhrase(checks)).split(POTETO_PLACEHOLDER).join(poteto ?? "").trimEnd()}\n`;
+  const kept = skills.length === 0 ? lines.filter((line) => line.trim() !== SKILLS_PLACEHOLDER) : lines;
+  return `${kept.join("\n").split(CHECKS_PLACEHOLDER).join(checksPhrase(checks)).split(SKILLS_PLACEHOLDER).join(skills.join("\n")).trimEnd()}\n`;
 }
 
-/** The default AGENTS.md for a project with these checks (and Poteto mode's line, when it has one): the default template rendered. */
-export function defaultAgentsText(checks: string[], poteto: string | null = null): string {
-  return renderAgentsText(DEFAULT_AGENTS_TEMPLATE, checks, poteto);
+/** The default AGENTS.md for a project with these checks (and the packs' standing lines): the default template rendered. */
+export function defaultAgentsText(checks: string[], skills: string[] = []): string {
+  return renderAgentsText(DEFAULT_AGENTS_TEMPLATE, checks, skills);
 }
 
 /** The template new rooms write: the user's (Settings → Agents file) when they saved one, else the default. */
@@ -513,7 +512,7 @@ export class AgentsFiles {
   private readonly log: (message: string, detail?: unknown) => void;
   private readonly onlyUnder: string[] | null;
   private readonly beforeWrite: (folder: string, file: string) => void;
-  private readonly poteto: () => string | null;
+  private readonly skills: () => string[];
   /** One room at a time per folder: two rooms created at once write once. */
   private readonly queues = new Map<string, Promise<unknown>>();
 
@@ -522,7 +521,7 @@ export class AgentsFiles {
     this.log = options.log ?? (() => {});
     this.onlyUnder = options.onlyUnder ? options.onlyUnder.map((root) => canonicalPath(root)) : null;
     this.beforeWrite = options.beforeWrite ?? (() => {});
-    this.poteto = options.poteto ?? (() => null);
+    this.skills = options.skills ?? (() => []);
   }
 
   private records(): AgentsFileRecord[] {
@@ -633,7 +632,7 @@ export class AgentsFiles {
         try {
           this.beforeWrite(folder, name);
           // "wx": never over a file (or a link) that appeared since the look above.
-          writeFileSync(join(folder, name), name === AGENTS_FILE ? renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.poteto()) : CLAUDE_TEXT, { flag: "wx" });
+          writeFileSync(join(folder, name), name === AGENTS_FILE ? renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.skills()) : CLAUDE_TEXT, { flag: "wx" });
           written.push(name);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") this.log(`could not write ${name} in ${folder}`, errorText(error));
@@ -707,7 +706,7 @@ export class AgentsFiles {
     } finally {
       if (fd !== null) closeSync(fd);
     }
-    const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.poteto());
+    const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.skills());
     return { state: text === rendered ? "same" : "differs", text, rendered };
   }
 

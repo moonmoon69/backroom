@@ -289,3 +289,31 @@ export interface UsageLimitPause {
    */
   resume: "on" | "off" | null;
 }
+
+/** Why a pack's last install, check or update did not do what it was for (src/app/packs.ts). */
+export interface PackError {
+  reason: string;
+  at: string;
+  during: "install" | "check" | "update";
+}
+
+/** A git repository of skills Backroom keeps in data/skills (src/app/packs.ts). */
+export interface Pack {
+  name: string;
+  url: string;
+  /** Its folder's name under data/skills. */
+  folder: string;
+  /** The commit it is pinned at, checked out; null until it is installed (a pin from before may name a tag). */
+  pinned: string | null;
+  /** The line every seat is given for it, {folder} standing for its folder; null for none. */
+  standing: string | null;
+  checkedAt: string | null;
+  error: PackError | null;
+  createdAt: string;
+}
+
+/** The user's two lines on a skill, as on a crew member: when to use it and what to avoid it for. */
+export interface SkillHint {
+  useWhen: string;
+  avoid: string;
+}

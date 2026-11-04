@@ -423,19 +423,31 @@ export const AgentsFileApplyCommand = z
   .object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty.optional(), folder: nonEmpty.optional(), fileDigest: nonEmpty, templateDigest: nonEmpty })
   .strict();
 
-/** Settings → Agents file, Skills (src/app/poteto.ts): whether pstack's poteto-mode is pointed at by the agents file and the briefing (on by default). */
-export const PotetoEnabledCommand = z.object({ type: z.literal("poteto.enabled.set"), enabled: z.boolean() }).strict();
+const PACK_NAME = z.string().trim().min(1).max(100);
+/** A skill's folder in its pack, as Settings → Skills lists it ("." for the pack's root). */
+const PACK_PATH = z.string().min(1).max(1000);
 
-/** Settings → Agents file, Skills: what of the mode they tell a seat to follow, its principles (the default) or the whole mode. */
-export const PotetoScopeCommand = z.object({ type: z.literal("poteto.scope.set"), scope: z.enum(["principles", "full"]) }).strict();
+/** Settings → Skills, Add pack: a git repository cloned whole into data/skills and pinned at the commit cloned (src/app/packs.ts). */
+export const PackAddCommand = z.object({ type: z.literal("pack.add"), url: z.string().trim().min(1).max(2000) }).strict();
 
-/** Update now: pstack's clone fetched and moved (fast-forwarded, or kept at its pin), or made when it is missing. */
-export const PotetoUpdateCommand = z.object({ type: z.literal("poteto.update") }).strict();
+/** Remove: Backroom's links to the pack's skills out first, then its folder. */
+export const PackRemoveCommand = z.object({ type: z.literal("pack.remove"), name: PACK_NAME }).strict();
 
-/** Pin this version (a commit or a tag) or, with null, follow origin's main again. */
-export const PotetoPinCommand = z
-  .object({ type: z.literal("poteto.pin.set"), pin: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/, "a commit or a tag: letters, digits and . _ / -").nullable() })
-  .strict();
+/** Check now: the daily check at once, a fetch that moves nothing. */
+export const PackCheckCommand = z.object({ type: z.literal("pack.check"), name: PACK_NAME }).strict();
+
+/** Take update: exactly the commit the user looked at checked out and pinned. */
+export const PackTakeUpdateCommand = z.object({ type: z.literal("pack.update.take"), name: PACK_NAME, commit: z.string().regex(/^[0-9a-f]{40}$/, "a full commit id") }).strict();
+
+/** A pack's standing line, {folder} for its folder; null for none. */
+export const PackStandingCommand = z.object({ type: z.literal("pack.standing.set"), name: PACK_NAME, text: z.string().trim().min(1).max(4000).nullable() }).strict();
+
+/** A link to a pack's skill placed in, or taken out of, one of the skill folders (SKILL_FOLDERS in src/domain/skills.ts). */
+export const SkillLinkCommand = z.object({ type: z.literal("skill.link"), pack: PACK_NAME, path: PACK_PATH, folder: z.string().min(1).max(40) }).strict();
+export const SkillUnlinkCommand = z.object({ type: z.literal("skill.unlink"), pack: PACK_NAME, path: PACK_PATH, folder: z.string().min(1).max(40) }).strict();
+
+/** The user's two lines on a roster row (src/app/skillRoster.ts), with a crew member's cap; both empty removes them. */
+export const SkillHintCommand = z.object({ type: z.literal("skill.hint.set"), skillId: z.string().min(1).max(4000), useWhen: PresetLineSchema.default(""), avoid: PresetLineSchema.default("") }).strict();
 
 /** An image sent inline with a direct thread message: PNG, JPEG, GIF or WebP as a base64 data URL (T3's upload form). */
 export const InlineImageSchema = z
@@ -545,10 +557,14 @@ export const RoomCommandSchema = z.discriminatedUnion("type", [
   AgentsFileEnabledCommand,
   AgentsFileTextSetCommand,
   AgentsFileApplyCommand,
-  PotetoEnabledCommand,
-  PotetoScopeCommand,
-  PotetoUpdateCommand,
-  PotetoPinCommand,
+  PackAddCommand,
+  PackRemoveCommand,
+  PackCheckCommand,
+  PackTakeUpdateCommand,
+  PackStandingCommand,
+  SkillLinkCommand,
+  SkillUnlinkCommand,
+  SkillHintCommand,
   ThreadStartCommand,
   ThreadSendCommand,
   ThreadInterruptCommand,

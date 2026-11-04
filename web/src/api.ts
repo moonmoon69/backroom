@@ -4,7 +4,9 @@ import { DetailLoader, FALLBACK_MS, PagePush, PageStream, withPush, type EventSo
 import type {
   AgentsFileDiff,
   AgentsFileEntry,
-  PotetoState,
+  PackUpdateDetail,
+  SkillRow,
+  SkillsResponse,
   FilePreviewResponse,
   UpdatesView,
   ApiErrorBody,
@@ -163,7 +165,11 @@ export const api = {
   presets: (): Promise<Preset[]> => get("/api/presets"),
   overview: (): Promise<Overview> => get("/api/overview"),
   /** App-wide settings: which saved crew member is the Consigliere of new rooms, his rules, and what his retiring does to a thread (absent from an older service). */
-  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean; agentsFileText?: { text: string; custom: boolean; defaultText: string }; poteto?: PotetoState | null }> => get("/api/settings"),
+  settings: (): Promise<{ consiglierePresetId: string | null; consigliereRules: { text: string; custom: boolean; defaultText: string }; retireThread?: ThreadLifecycleChoice; agentsFile?: boolean; agentsFileText?: { text: string; custom: boolean; defaultText: string }}> => get("/api/settings"),
+  /** Settings → Skills and the composer's "/" list: the roster, the skill folders and the packs. */
+  skills: (): Promise<SkillsResponse> => get("/api/skills"),
+  /** What a pack's update to `commit` brings. */
+  packUpdate: (name: string, commit: string): Promise<PackUpdateDetail> => get(`/api/skills/packs/${encodeURIComponent(name)}/update?commit=${commit}`),
   /** Every project folder where Backroom wrote AGENTS.md, with its state against the saved template. */
   agentsFiles: (): Promise<AgentsFileEntry[]> => get("/api/agents-files"),
   /** One project's AGENTS.md against the saved template rendered for it. */
@@ -221,6 +227,38 @@ export function useProviders(enabled: boolean, intervalMs = 60000): { providers:
     };
   }, [enabled, intervalMs]);
   return { providers, error };
+}
+
+/**
+ * The skills roster's rows (GET /api/skills), read now and every `intervalMs` while `enabled`, and again on `refresh()`:
+ * the composer's "/" list, which refreshes as it opens.
+ */
+export function useSkillRows(enabled: boolean, intervalMs = 60000): { rows: SkillRow[] | null; refresh: () => void } {
+  const [rows, setRows] = useState<SkillRow[] | null>(null);
+  const [asked, setAsked] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const next = await api.skills();
+        if (!cancelled) setRows(next.rows);
+      } catch {
+        // kept as last read
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, intervalMs);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [enabled, intervalMs, asked]);
+  // Stable across renders (the state setter is), so a caller may list it as an effect's dependency.
+  const refresh = useRef(() => setAsked((n) => n + 1)).current;
+  return { rows, refresh };
 }
 
 /**

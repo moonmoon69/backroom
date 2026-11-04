@@ -2,6 +2,46 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { POTETO_WORDS, PSTACK_FOLDER, PSTACK_PACK, PSTACK_REPO } from "../domain/skills.ts";
+
+const sql = (text: string): string => `'${text.replace(/'/g, "''")}'`;
+
+/**
+ * Skill packs (src/app/packs.ts) and the user's lines on skills (src/app/skillRoster.ts). pstack, which Poteto mode kept in
+ * data/skills/cursor-plugins, is the first pack, in the same folder, with what Poteto mode's keys said: Off is no standing
+ * text, Principles and the whole mode their two texts, and a pin its pin (its commit is read from the clone when there is
+ * none). The old keys go, and a saved agents-file template's {poteto} becomes {skills}.
+ */
+const SKILL_PACKS = `
+  CREATE TABLE packs (
+    name TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    folder TEXT NOT NULL UNIQUE,
+    pinned_commit TEXT,
+    standing_text TEXT,
+    checked_at TEXT,
+    error_json TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE skill_hints (
+    skill_id TEXT PRIMARY KEY,
+    use_when TEXT NOT NULL DEFAULT '',
+    avoid TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO packs (name, url, folder, pinned_commit, standing_text, created_at) VALUES (
+    ${sql(PSTACK_PACK)}, ${sql(PSTACK_REPO)}, ${sql(PSTACK_FOLDER)},
+    (SELECT value FROM kv WHERE key = 'poteto.pin'),
+    CASE
+      WHEN (SELECT value FROM kv WHERE key = 'poteto.enabled') = 'off' THEN NULL
+      WHEN (SELECT value FROM kv WHERE key = 'poteto.scope') = 'full' THEN ${sql(POTETO_WORDS.full.text)}
+      ELSE ${sql(POTETO_WORDS.principles.text)}
+    END,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  );
+  DELETE FROM kv WHERE key IN ('poteto.enabled', 'poteto.scope', 'poteto.pin', 'poteto.pack');
+  UPDATE kv SET value = replace(value, '{poteto}', '{skills}') WHERE key = 'agentsFile.text';
+`;
 
 /**
  * Members seated before seats recorded their preset are matched to one where that is safe: their alias is the preset's
@@ -271,6 +311,7 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE presets RENAME COLUMN description TO good_at;
   ALTER TABLE presets ADD COLUMN avoid TEXT NOT NULL DEFAULT '';
   `,
+  SKILL_PACKS,
 ];
 
 export class Database {

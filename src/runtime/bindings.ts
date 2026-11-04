@@ -2,7 +2,7 @@
  * Seats are participant bindings: a seat's ID is its binding's ID and its thread the binding's thread, so a reseat (a
  * new binding on a fresh thread) is a new seat. This is the briefing source the app gives the host: the room, the
  * member and the room's members from rooms.sqlite, where each member works (T3 and git), the room's browsers, the
- * user's saved crew (the Consigliere's section), Poteto mode's pack for the seat's harness, the engine's wording of the
+ * user's saved crew and the skills the user wrote lines for (the Consigliere's sections), the packs' standing lines, the engine's wording of the
  * standing facts and the Consigliere's rules (L4b), and which envelope seats a member.
  */
 import type { T3Adapter, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
@@ -10,8 +10,9 @@ import { openRequests } from "../adapter/types.ts";
 import { CONSIGLIERE_RULES_KEY, engineConsigliereRules, engineSeatFacts } from "../app/consigliere.ts";
 import { readRoomState } from "../app/roomState.ts";
 import { requestPayload, type SubagentRequest } from "../app/threadView.ts";
-import type { PotetoBriefing } from "../app/poteto.ts";
-import { skillsHarness, type BrowsersBriefing, type SkillsHarness } from "../briefing/assemble.ts";
+import type { Packs } from "../app/packs.ts";
+import { readRoster, skillLines } from "../app/skillRoster.ts";
+import type { BrowsersBriefing } from "../briefing/assemble.ts";
 import { agentKey, browsersForRoom, effectiveBrowser } from "../browser/catalog.ts";
 import type { BrowserBriefing } from "../browser/roomBrowsers.ts";
 import type { Repos } from "../db/repos.ts";
@@ -38,8 +39,8 @@ export interface BindingSourceOptions {
   browserCommand?: string;
   /** The images a user message came with (L4a, src/app/engineMessages.ts). */
   images?: BriefingSource["images"];
-  /** Poteto mode's pack (src/app/poteto.ts): the Skills section while it is on and its clone ready. */
-  poteto?: { briefing(): PotetoBriefing | null } | null;
+  /** The skill packs (src/app/packs.ts): the Skills section, and with T3 the Consigliere's skills the user wrote lines for. */
+  packs?: Packs | null;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -68,18 +69,6 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
     const binding = repos.getBinding(seatId);
     return binding ? repos.getParticipant(binding.participantId) : null;
   };
-  // A provider instance's driver does not change: T3's catalog is asked once per instance (again after a failed read).
-  const drivers = new Map<string, string>();
-  const harnessOf = async (instanceId: string): Promise<SkillsHarness> => {
-    if (!drivers.has(instanceId) && options.adapter) {
-      const catalog = await options.adapter.listCatalog().catch(() => null);
-      for (const entry of catalog ?? []) if (entry.driver) drivers.set(entry.instanceId, entry.driver);
-      // Read, and the instance not in it (or with no driver): its name it is, without asking again.
-      if (catalog && !drivers.has(instanceId)) drivers.set(instanceId, instanceId);
-    }
-    // Without T3's catalog the instance's name stands in for the harness, as for the Consigliere's warnings.
-    return skillsHarness(drivers.get(instanceId) ?? instanceId);
-  };
   return {
     async standing(roomId, seatId) {
       const participant = member(seatId);
@@ -98,8 +87,12 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
           return null;
         })
         : null;
-      const pack = options.poteto?.briefing() ?? null;
-      const skills = pack ? { ...pack, harness: await harnessOf(participant.modelSelection.instanceId) } : null;
+      const skills = options.packs?.standing() ?? null;
+      // The Consigliere's alone, and only once T3 says who has each skill: unread, it is not a change.
+      const lines =
+        room.consigliereId === participant.id && options.adapter
+          ? await readRoster({ packs: options.packs ?? null, adapter: options.adapter, repos }).then((roster) => (roster.t3Error ? undefined : skillLines(roster.rows)))
+          : null;
       return {
         room,
         participant,
@@ -112,6 +105,7 @@ export function bindingSource(repos: Repos, options: BindingSourceOptions = {}):
         browsers,
         workspaces,
         skills,
+        ...(lines === undefined ? {} : { skillLines: lines }),
       };
     },
     alias: (_roomId, seatId) => member(seatId)?.alias ?? null,
