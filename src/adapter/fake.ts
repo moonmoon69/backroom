@@ -1258,7 +1258,10 @@ export class FakeT3Adapter implements T3Adapter {
     const thread = this.require(input.threadId);
     const request = thread.runtimeRequests.find((r) => r.id === input.requestId && r.status === "pending");
     if (!request) throw new T3CommandRejected(`Runtime request ${input.requestId} is not pending.`, 500, null);
-    Object.assign(request, change, { resolvedAt: this.stamp(thread) });
+    const at = this.stamp(thread);
+    Object.assign(request, change, { resolvedAt: at });
+    // T3 stamps an approval's turn item with its resolution.
+    if (request.type === "approval") for (const item of thread.turnItems) if (item.type === "approval_request" && item.requestId === request.id) item.updatedAt = at;
     thread.shell.pendingRequest = this.shellRequest(thread);
   }
 

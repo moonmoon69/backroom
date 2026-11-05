@@ -94,7 +94,7 @@ test("a new item ends the spell: the next notice comes five minutes after it, na
   assert.match(notices[0]!.body, /npm test \(completed, started 5 minutes ago\)/);
 });
 
-test("a member held on an approval is told the approval, not silent; once answered, the silence is told", async () => {
+test("a member held on an approval is told the approval, not silent; once answered, the silence counts from the answer", async () => {
   const { r, ids, t0 } = await working();
   room = r;
   command(r, "git push", t0);
@@ -106,7 +106,12 @@ test("a member held on an approval is told the approval, not silent; once answer
   assert.deepEqual(r.notices().filter((n) => n.causeId.startsWith("blocked:W:approval:")).map((n) => n.requestIds), [ids]);
   await r.fake.respondApproval({ commandId: "ok", threadId, requestId, decision: "accept" });
   await at(r, t0 + 10 * MIN);
-  assert.equal(silent(r).length, 1, "the hold cleared, the turn is still silent");
+  assert.equal(silent(r).length, 0, "T3 stamps the answered approval's item: a new spell starts at the answer");
+  await at(r, t0 + 14 * MIN - 1000);
+  assert.equal(silent(r).length, 0);
+  await at(r, t0 + 14 * MIN);
+  assert.equal(silent(r).length, 1, "five minutes after the answer");
+  assert.match(silent(r)[0]!.body, /its last item is a approval_request \(completed/);
 });
 
 test("the Consigliere's own silent turn posts nothing; a member's beside it is told", async () => {
