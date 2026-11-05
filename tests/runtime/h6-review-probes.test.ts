@@ -44,7 +44,7 @@ async function handOff(r: Room): Promise<string> {
 }
 
 test("K1 never into a running turn: T3's listed shell still says C is idle, but a turn has started on C's thread", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   staleList(room, [room.threadOf("C")]);
@@ -57,7 +57,7 @@ test("K1 never into a running turn: T3's listed shell still says C is idle, but 
 });
 
 test("K2 never with nothing in flight: W's listed shell still shows its background task, which T3's thread already says ended", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   const w = room.post("C", "W", "Build it.");
   await room.tick();
   room.fake.background(room.threadOf("W"), ["build"]);
@@ -78,7 +78,7 @@ test("K2 never with nothing in flight: W's listed shell still shows its backgrou
 });
 
 test("K3 a stale keep-alive beside real work does not put an out-of-date status in the briefing", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   room.crashOnce("keep-alive", "C");
@@ -100,7 +100,7 @@ test("K4 ROOMS_KEEPALIVE_MS under a minute is refused, as the board refuses it (
 });
 
 test("K5 what a 55 ms interval does while W works (the storm K4 guards against)", async () => {
-  room = await Room.create({ host: { keepAlive: (): KeepAliveSetting => ({ intervalMs: 55, on: null }) } });
+  room = await Room.create({ host: { silentMs: Infinity, keepAlive: (): KeepAliveSetting => ({ intervalMs: 55, on: null }) } });
   await handOff(room);
   const before = room.wakes("C");
   for (let i = 0; i < 5; i += 1) {
@@ -113,7 +113,7 @@ test("K5 what a 55 ms interval does while W works (the storm K4 guards against)"
 });
 
 test("K6 a keep-alive T3 runs after Backroom recorded its run as failed: the reply still wakes nobody", async () => {
-  room = await Room.create({ host: { unrecordedMs: 60_000 } });
+  room = await Room.create({ host: { silentMs: Infinity, unrecordedMs: 60_000 } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   // T3 takes the message but does not record it yet.
@@ -148,7 +148,7 @@ test("K6 a keep-alive T3 runs after Backroom recorded its run as failed: the rep
 });
 
 test("K7 a subagent W left running after its answer is work in flight, as H5's status line says", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   const w = room.post("C", "W", "Survey the imports with a subagent.");
   await room.tick();
   room.fake.subagent(room.threadOf("W"), "sub-imports", "running");
@@ -166,7 +166,7 @@ test("K7 a subagent W left running after its answer is work in flight, as H5's s
 });
 
 test("K8 C's own subagent running after its turn is work in flight", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   room.user("C", "Survey the imports.");
   await room.tick();
   room.fake.subagent(room.threadOf("C"), "sub-c", "running");
@@ -179,7 +179,7 @@ test("K8 C's own subagent running after its turn is work in flight", async () =>
 });
 
 test("K9 drift: with W working for three intervals, C gets exactly one keep-alive per interval after each keep-alive turn", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   const before = room.wakes("C");
   const times: number[] = [];
@@ -206,7 +206,7 @@ test("K9 drift: with W working for three intervals, C gets exactly one keep-aliv
 });
 
 test("K10 a keep-alive run that also carries the user's message ends as an answer to the user, not as a note", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   // The user's message lands while the host reads W's thread for the keep-alive's status lines.
@@ -223,7 +223,7 @@ test("K10 a keep-alive run that also carries the user's message ends as an answe
 });
 
 test("K11 the keep-alive text: one line, then status lines, and the rules line", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   await room.tick();
@@ -232,7 +232,7 @@ test("K11 the keep-alive text: one line, then status lines, and the rules line",
 });
 
 test("K12 reads stay bounded when T3's list says the seat is free but its thread does not (a request left pending after the run)", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   // The real adapter's list drops a pending request once no run is active; the thread's detail keeps it (openRequests).

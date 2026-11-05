@@ -194,7 +194,7 @@ test("while a seat's thread is unchanged its ticks read none of it from T3; a ch
 
 test("keep-alives fall due on the clock while the seat's thread, unchanged, is served from its read", async () => {
   let fake!: StreamedFake;
-  room = await Room.create({ fake: () => (fake = new StreamedFake()) });
+  room = await Room.create({ fake: () => (fake = new StreamedFake()), host: { silentMs: Infinity } });
   room.user("C", "Have W build the release.");
   await room.tick();
   room.post("C", "W", "Build the release; it takes a while.");
@@ -217,7 +217,7 @@ test("keep-alives fall due on the clock while the seat's thread, unchanged, is s
 
 test("review #1: a turn the room did not start, whose end the shell shows while the thread's own read is throttled, is imported from a detail read beside that shell", async () => {
   let fake!: StreamedFake;
-  room = await Room.create({ fake: () => (fake = new StreamedFake()) });
+  room = await Room.create({ fake: () => (fake = new StreamedFake()), host: { silentMs: Infinity } });
   const id = room.id("ask-C");
   room.host.request(room.room, { actor: "C", id, to: "W", body: "First job." });
   const settle = async () => {

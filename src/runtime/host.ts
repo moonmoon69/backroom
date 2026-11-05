@@ -24,6 +24,10 @@
  *   limit, a queue T3 holds, the thread settled, archived or deleted in T3) is one notice to the orchestrator on each open
  *   request of the member's, once per request per hold (the state and what holds it: the request T3 waits on, the
  *   limited run); a hold that persists or clears posts nothing, and a new one posts again.
+ * - A member with an open request whose running turn has had no new item from T3 for `silentMs` (measured from the
+ *   item's time as T3 records it), and is held in none of those states, is one notice to the orchestrator on each open
+ *   request, and one more at each doubling of the silence; a new item ends the spell. It names the last item, and
+ *   stops, restarts and corrects nothing.
  * - A run that brings only keep-alives ends as a note that wakes nobody, whatever it said.
  * - A request, correction or retry from the user or the orchestrator goes into its member's running turn: it is offered
  *   when T3 runs the turn, confirmed once T3 shows the member working after it in that turn, sent again with its own IDs
@@ -38,7 +42,7 @@
  * was last woken is T3's: the end of the latest turn on its thread, read from the thread itself.
  */
 import { randomUUID } from "node:crypto";
-import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell } from "../adapter/types.ts";
+import type { T3Adapter, T3Run, T3ShellChange, T3ThreadDetail, T3ThreadShell, T3TurnItem } from "../adapter/types.ts";
 import { T3CommandRejected, T3OutcomeUnknown, T3Unavailable, isContinuation, isPullRequestWatch, isRunActive, latestExecutedRun, openRequests, runForMessage, type T3PullRequestChecks } from "../adapter/types.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import { blockedNoticed, checksCause, deliveredInputs, inputTree, unread } from "../engine/index.ts";
@@ -94,6 +98,8 @@ export interface EngineHostOptions {
   maxBytes?: number;
   /** How long a member's thread stays quiet, after background work its latest post named has ended, before one follow-up says so: 30 s. */
   quietMs?: number;
+  /** How long a member's running turn may go without a new item from T3 before the orchestrator is told it is silent, then again at each doubling: 5 minutes. */
+  silentMs?: number;
   /** How long a sent message may stay unrecorded by T3 before its run fails visibly. */
   unrecordedMs?: number;
   /** How many times T3 may refuse a message before its run fails visibly (a passing refusal is retried). */
@@ -161,6 +167,27 @@ function clip(text: string): string {
   return /[.?!…]$/.test(short) ? short : `${short}.`;
 }
 
+/** A turn item's words in a notice: a command's input, a tool's name, a message's first line. */
+function itemText(item: T3TurnItem): string {
+  const firstLine = (text: string) => oneLine(text.trim().split("\n", 1)[0] ?? "");
+  switch (item.type) {
+    case "command_execution":
+      return oneLine(item.input);
+    case "dynamic_tool":
+      return oneLine(item.toolName ?? item.title ?? "");
+    case "file_change":
+      return oneLine(item.fileName);
+    case "subagent":
+      return firstLine(item.prompt);
+    case "user_message":
+    case "assistant_message":
+    case "reasoning":
+      return firstLine(item.text);
+    default:
+      return oneLine(item.title ?? "");
+  }
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -181,6 +208,7 @@ export class EngineHost {
   private readonly options: EngineHostOptions;
   private readonly maxBytes: number;
   private readonly quietMs: number;
+  private readonly silentMs: number;
   private readonly unrecordedMs: number;
   private readonly refusalLimit: number;
   private readonly stuckMs: number;
@@ -236,6 +264,7 @@ export class EngineHost {
     this.budgetChars = options.budgetChars ?? 60_000;
     this.maxBytes = options.maxBytes ?? 4 * MiB;
     this.quietMs = options.quietMs ?? 30_000;
+    this.silentMs = options.silentMs ?? 5 * 60_000;
     this.unrecordedMs = options.unrecordedMs ?? 5 * 60_000;
     this.refusalLimit = options.refusals ?? 3;
     this.stuckMs = options.stuckMs ?? 2 * 60_000;
@@ -388,7 +417,7 @@ export class EngineHost {
   /**
    * One room, in passes over its seats, so what one seat's import writes is dispatched in the same tick: follow live
    * runs and import what happened on each thread; post the follow-ups of background work that ended quietly and the
-   * keep-alives; reserve and send; then tell the orchestrator what holds a member's request.
+   * keep-alives; reserve and send; then tell the orchestrator what holds a member's request, or that its turn is silent.
    */
   private async stepRoom(roomId: string, shells: Map<string, T3ThreadShell>): Promise<void> {
     const seats = [...this.project(roomId).seats.values()].filter((s) => s.status !== "retired");
@@ -970,7 +999,8 @@ export class EngineHost {
    * A member that owns open requests and whose thread is held where no reply of its own will end it: the orchestrator is
    * told once per request per state (the engine keeps that), as T3 tells the user once per run per state. Working, a
    * tool running, a task list changing or a check moving is never posted, and neither is a state clearing: the member's
-   * next reply is that news.
+   * next reply is that news. A member held in none of those states whose running turn is silent is told the same way
+   * (silence).
    */
   private async blocked(roomId: string, seatId: string, load: Loader, subagents: () => Promise<SubagentRequest[] | null>): Promise<void> {
     const p = this.project(roomId);
@@ -981,7 +1011,7 @@ export class EngineHost {
     const now = this.project(roomId);
     const seat = now.seats.get(seatId)!;
     if (now.orchestrator === null || now.orchestrator === seatId || seat.status !== "active") return;
-    const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined, theirs);
+    const hold = this.holdOf(roomId, seatId, detail, seat.activeRunId ? now.runs.get(seat.activeRunId) : undefined, theirs) ?? this.silence(roomId, seatId, detail);
     if (!hold) return;
     const told = blockedNoticed(now, seatId, hold.state, hold.hold);
     // The turn the limit stopped already says so in its own notice (pausedNotice), on the requests it was given: a host
@@ -1042,6 +1072,28 @@ export class EngineHost {
     }
     if (detail.shell.settledAt !== null) return { state: "settled", hold: detail.shell.settledAt, body: `${who}'s T3 thread was settled in T3 (marked done there) while seated, with this request open. Ask the user whether that was meant; reseat or retire ${who} if it was.` };
     return null;
+  }
+
+  /**
+   * A member's running turn that T3 has delivered no new item on for `silentMs` or longer, as the "silent" hold: the spell
+   * is its last item at that item's time (T3's, so a restart measures the same silence), and the hold names the largest
+   * doubling of `silentMs` reached, so each threshold is told once per request and a new item starts a new spell. A
+   * long command looks the same until it returns: the notice is information, and the Consigliere judges it.
+   */
+  private silence(roomId: string, seatId: string, detail: T3ThreadDetail | null): { state: string; hold: string; body: string } | null {
+    const run = detail?.runs.find((r) => r.status !== "queued" && isRunActive(r.status));
+    if (!detail || !run) return null;
+    const last = detail.turnItems.filter((item) => item.runId === run.id).reduce<T3TurnItem | null>((a, b) => (a === null || Date.parse(b.updatedAt) >= Date.parse(a.updatedAt) ? b : a), null);
+    const since = last?.updatedAt ?? run.startedAt ?? run.requestedAt;
+    const quiet = this.now() - Date.parse(since);
+    if (!(this.silentMs > 0 && quiet >= this.silentMs)) return null;
+    let threshold = this.silentMs;
+    while (threshold * 2 <= quiet) threshold *= 2;
+    const minutes = (ms: number) => `${Math.floor(ms / 60_000)} minute${Math.floor(ms / 60_000) === 1 ? "" : "s"}`;
+    const who = this.named(roomId, seatId);
+    const what = last ? `its last item is a ${last.type}${itemText(last) ? `, ${itemText(last)}` : ""} (${last.status}${last.startedAt ? `, started ${minutes(this.now() - Date.parse(last.startedAt))} ago` : ""})` : `it has had no item since the turn started`;
+    const body = `${who} has been silent for ${minutes(quiet)} in a running turn: T3 has delivered nothing new on it, and ${what}. A long command looks the same until it returns: check on it or wait, and report to the user if it does not end. Backroom stops nothing; this is information, not a failure.`;
+    return { state: "silent", hold: `${last?.id ?? run.id}@${since}:${threshold}`, body };
   }
 
   // ---------------- a watched pull request's finished run ----------------

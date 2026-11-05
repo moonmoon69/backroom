@@ -7,7 +7,8 @@
  * nobody.
  *
  * When a seat was last woken is T3's: the end of the latest turn on its thread. The fake T3 stamps turns with the wall
- * clock, so these tests set the host's clock from it.
+ * clock, so these tests set the host's clock from it. A member working through the intervals they step is silent in T3,
+ * so these rooms leave the silent notice out (silentMs): its wake of the Consigliere is tests/runtime/silent-notice.test.ts's.
  */
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -54,7 +55,7 @@ async function handOff(r: Room): Promise<string> {
 }
 
 test("fires at the interval while a member works; the post is one line and the status lines; the reply is a note that wakes nobody; the next comes an interval after the keep-alive's own turn", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   const w = await handOff(room);
   const wakes = room.wakes("C");
   const userAnswers = room.outputs().filter((o) => o.recipients.includes("$user")).length;
@@ -112,7 +113,7 @@ test("fires at the interval while a member works; the post is one line and the s
 });
 
 test("never with nothing in flight: a member that answered and is idle, one whose turn failed, one working for someone else", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   room.user("C", "Have the docs and the tests checked.");
   await room.tick();
   room.post("C", "W", "Check the docs.");
@@ -136,7 +137,7 @@ test("never with nothing in flight: a member that answered and is idle, one whos
 });
 
 test("an overdue seat with nothing in flight has its threads read once a minute, not on every tick", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   room.user("C", "Have the docs checked.");
   await room.tick();
   room.post("C", "W", "Check the docs.");
@@ -165,7 +166,7 @@ test("an overdue seat with nothing in flight has its threads read once a minute,
 });
 
 test("never during the seat's own turn: a long host run, then a turn T3 starts itself; the interval counts from that turn's end", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   room.user("C", "Have W build the release.");
   await room.tick();
   room.post("C", "W", "Build the release.");
@@ -206,7 +207,7 @@ test("never during the seat's own turn: a long host run, then a turn T3 starts i
 });
 
 test("never into a turn the listed shell does not show yet: no keep-alive is posted, and one posted earlier is not sent", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   after(room, "C", KEEP_ALIVE_MS);
   // T3's thread list answers from a snapshot taken before a turn started on C's thread (typed in T3 just now).
@@ -238,7 +239,7 @@ test("never into a turn the listed shell does not show yet: no keep-alive is pos
 
 test("the setting: members off by default and on when set; the orchestrator on by default and off when set; the interval is the setting's", async () => {
   const setting: { intervalMs: number; on: Record<string, boolean> } = { intervalMs: 10 * 60_000, on: {} };
-  room = await Room.create({ host: { keepAlive: (_room, seatId): KeepAliveSetting => ({ intervalMs: setting.intervalMs, on: setting.on[seatId] ?? null }) } });
+  room = await Room.create({ host: { silentMs: Infinity, keepAlive: (_room, seatId): KeepAliveSetting => ({ intervalMs: setting.intervalMs, on: setting.on[seatId] ?? null }) } });
   const w = room.post("C", "W", "Build it.");
   await room.tick();
   room.fake.background(room.threadOf("W"), ["build"]);
@@ -292,7 +293,7 @@ test("the setting: members off by default and on when set; the orchestrator on b
 });
 
 test("a crash and restart does not double it: the keep-alive posted before the crash is the one sent, and the next waits an interval after its turn", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   const wakes = room.wakes("C");
   after(room, "C", KEEP_ALIVE_MS);
@@ -317,7 +318,7 @@ test("a crash and restart does not double it: the keep-alive posted before the c
 });
 
 test("a keep-alive overtaken by a turn of the seat's is not sent on its own; beside real work it is left out, so the briefing holds only the reply's own fresh status", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   await handOff(room);
   const wakes = room.wakes("C");
   after(room, "C", KEEP_ALIVE_MS);
@@ -370,7 +371,7 @@ test("ROOMS_KEEPALIVE_MS: 55 minutes by default, 0 for off, a minute to under th
 });
 
 test("never for T3's watch of a pull request alone: it is T3's, for the pull request's life, not work the seat waits on; beside the seat's own work it is named", async () => {
-  room = await Room.create();
+  room = await Room.create({ host: { silentMs: Infinity } });
   room.user("C", "Open the release pull request and have T3 watch it.");
   await room.tick();
   room.fake.background(room.threadOf("C"), [WATCH]);
