@@ -4,6 +4,8 @@
  * file-type badge, and local image paths are served through the room server.
  */
 
+import { decodeNamedCharacterReference } from "decode-named-character-reference";
+
 export interface FileReference {
   /** Full text as written, including any :line[:col] or :line-line suffix. */
   raw: string;
@@ -98,21 +100,30 @@ export function imageSource(src: string, base: string | null = null): string {
 /** Elements that embed a picture, a recording or a sound, and the attributes that name one. */
 const MEDIA_ELEMENTS = new Set(["img", "source", "video", "audio"]);
 const MEDIA_ATTRIBUTES = new Set(["src", "poster", "srcset"]);
-/** Elements whose content is text, not markup, up to their end tag. */
-const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title"]);
-const TAG_NAME = /<([a-z][a-z0-9-]*)/iy;
-/** One attribute: its name, then an optional value in double quotes, single quotes or bare (a quoted value may hold `>`). */
-const ATTRIBUTE = /(\s*[^\s"'<>/=]+)(?:(\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/y;
-const ENTITY = /&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi;
-const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
-const decodeEntities = (text: string): string => text.replace(ENTITY, (_, decimal?: string, hex?: string, name?: string) => (decimal ? String.fromCodePoint(Number(decimal)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : NAMED_ENTITIES[name!.toLowerCase()]!));
+/** Elements whose content is text up to their end tag, not markup (noscript among them: the preview runs scripts). */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title", "noscript", "xmp", "iframe", "noembed", "noframes", "plaintext"]);
+/** HTML's whitespace: not JavaScript's `\s`, which takes a no-break space for one. */
+const SPACE = "[\\t\\n\\f\\r ]";
+const TAG_NAME = /<([a-z][^\t\n\f\r />]*)/iy;
+/** One attribute: its name, then an optional value in double quotes, single quotes or bare (quoted may hold `>`; bare runs to whitespace or `>`). */
+const ATTRIBUTE = /([\t\n\f\r ]*[^\t\n\f\r "'<>/=]+)(?:([\t\n\f\r ]*=[\t\n\f\r ]*)(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]+)))?/y;
+const trimSpace = (text: string): string => text.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "");
+/** A character reference: numeric with or without its semicolon, named with it. */
+const CHARACTER_REFERENCE = /&(?:#([0-9]+);?|#[xX]([0-9a-fA-F]+);?|([a-zA-Z][a-zA-Z0-9]*);)/g;
+/** What the HTML tokenizer makes of a numeric reference in the C1 range: the Windows-1252 characters. */
+const C1_REPLACEMENTS: Readonly<Record<number, number>> = { 0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153, 0x9e: 0x017e, 0x9f: 0x0178 };
+const numericReference = (code: number): string => (C1_REPLACEMENTS[code] !== undefined ? String.fromCodePoint(C1_REPLACEMENTS[code]!) : code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? "�" : String.fromCodePoint(code));
+const decodeCharacterReferences = (text: string): string =>
+  text.replace(CHARACTER_REFERENCE, (reference, decimal?: string, hex?: string, name?: string) => (decimal !== undefined ? numericReference(Number(decimal)) : hex !== undefined ? numericReference(parseInt(hex, 16)) : decodeNamedCharacterReference(name!) || reference));
 const encodeAttribute = (text: string): string => text.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 
 /**
  * A previewed HTML document's local media (`shots/desk.png` next to it, `/tmp/shot.png`, a file URL) on img, source,
  * video and audio (src, poster, srcset), as Backroom URLs: the rule of a Markdown document's pictures, since the
- * preview's sandbox gives the document no folder of its own. Only those attributes change; web, data and app URLs,
- * comments, scripts, styles and everything else stay as written. Pictures named in CSS (`url()`) are not mapped.
+ * preview's sandbox gives the document no folder of its own. The document is read as the HTML tokenizer reads it:
+ * comments, CDATA and raw-text elements are text, a tag's attributes are read one at a time (a quoted value may hold
+ * anything but its quote), character references are decoded before a path is mapped. Only the mapped attributes
+ * change; the rest of the document is kept byte for byte. Pictures named in CSS (`url()`) are not mapped.
  */
 export function localizeHtmlMedia(html: string, base: string): string {
   let out = "";
@@ -121,8 +132,9 @@ export function localizeHtmlMedia(html: string, base: string): string {
   for (;;) {
     const open = html.indexOf("<", at);
     if (open < 0) break;
-    if (html.startsWith("<!--", open)) {
-      const close = html.indexOf("-->", open + 4);
+    const text = html.startsWith("<!--", open) ? "-->" : html.startsWith("<![CDATA[", open) ? "]]>" : null;
+    if (text) {
+      const close = html.indexOf(text, open + (text === "-->" ? 4 : 9));
       at = close < 0 ? html.length : close + 3;
       continue;
     }
@@ -134,13 +146,6 @@ export function localizeHtmlMedia(html: string, base: string): string {
     }
     const name = tag[1]!.toLowerCase();
     let p = TAG_NAME.lastIndex;
-    if (RAW_TEXT_ELEMENTS.has(name)) {
-      const end = new RegExp(`</${name}\\s*>`, "ig");
-      end.lastIndex = p;
-      const close = end.exec(html);
-      at = close ? close.index + close[0].length : html.length;
-      continue;
-    }
     let rewritten = html.slice(open, p);
     let changed = false;
     for (;;) {
@@ -148,16 +153,16 @@ export function localizeHtmlMedia(html: string, base: string): string {
       const attribute = ATTRIBUTE.exec(html);
       if (!attribute) break;
       p = ATTRIBUTE.lastIndex;
-      const [text, lead, equals, double, single, bare] = attribute;
-      const value = (double ?? single ?? bare)?.trim();
-      const key = lead!.trim().toLowerCase();
+      const [whole, lead, equals, double, single, bare] = attribute;
+      const value = trimSpace(double ?? single ?? bare ?? "");
+      const key = trimSpace(lead!).toLowerCase();
       if (!value || !MEDIA_ELEMENTS.has(name) || !MEDIA_ATTRIBUTES.has(key)) {
-        rewritten += text;
+        rewritten += whole;
         continue;
       }
-      const decoded = decodeEntities(value);
+      const decoded = decodeCharacterReferences(value);
       const resolved = key === "srcset" ? localizeSrcset(decoded, base) : imageSource(decoded, base);
-      if (resolved === decoded) rewritten += text;
+      if (resolved === decoded) rewritten += whole;
       else {
         rewritten += `${lead}${equals}"${encodeAttribute(resolved)}"`;
         changed = true;
@@ -168,6 +173,13 @@ export function localizeHtmlMedia(html: string, base: string): string {
     if (changed) {
       out += html.slice(copied, open) + rewritten + html.slice(p, at);
       copied = at;
+    }
+    // A raw-text element's content runs from the end of its start tag to its end tag, whatever its attributes held.
+    if (RAW_TEXT_ELEMENTS.has(name)) {
+      const end = new RegExp(`</${name}(?=${SPACE}|/|>)`, "ig");
+      end.lastIndex = at;
+      const endTag = end.exec(html);
+      at = endTag ? endTag.index : html.length;
     }
   }
   return out + html.slice(copied);
@@ -183,11 +195,11 @@ function localizeSrcset(srcset: string, base: string): string {
   let changed = false;
   let p = 0;
   while (p < srcset.length) {
-    const start = /[^\s,]/g;
+    const start = /[^\t\n\f\r ,]/g;
     start.lastIndex = p;
     const first = start.exec(srcset);
     if (!first) break;
-    const space = /\s|$/g;
+    const space = /[\t\n\f\r ]|$/g;
     space.lastIndex = first.index;
     const end = space.exec(srcset)!.index;
     let url = srcset.slice(first.index, end);
@@ -196,7 +208,7 @@ function localizeSrcset(srcset: string, base: string): string {
     if (url.endsWith(",")) url = url.replace(/,+$/, "");
     else {
       const comma = srcset.indexOf(",", p);
-      descriptors = (comma < 0 ? srcset.slice(p) : srcset.slice(p, comma)).trim();
+      descriptors = trimSpace(comma < 0 ? srcset.slice(p) : srcset.slice(p, comma));
       p = comma < 0 ? srcset.length : comma + 1;
     }
     const resolved = imageSource(url, base);

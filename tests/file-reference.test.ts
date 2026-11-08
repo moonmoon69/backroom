@@ -108,3 +108,32 @@ test("the HTML media mapping reads the document as a browser does (Sol's review 
   // The document around a mapped element is kept byte for byte, an unclosed tag included.
   assert.equal(localizeHtmlMedia(`<p>a</p>\n<img src="plain.png" alt="x"\n<p>b</p>`, base), `<p>a</p>\n<img src="${served("plain.png")}" alt="x"\n<p>b</p>`);
 });
+
+test("the HTML media mapping reads the document as the HTML tokenizer does (Sol's review #39)", () => {
+  const base = "/tmp/prism-design";
+  const served = (path: string) => `/api/local-file?path=${encodeURIComponent(`${base}/${path}`)}`;
+  // A raw-text element's content starts after its whole start tag, whatever its attributes hold; noscript is raw text too.
+  for (const raw of [
+    `<script data-note="</script>">const markup = "<img src=plain.png>";</script>`,
+    `<noscript><img src="plain.png"></noscript>`,
+    `<svg><![CDATA[ <img src="plain.png"> ]]></svg>`,
+    `<plaintext><img src="plain.png">`,
+  ]) {
+    assert.equal(localizeHtmlMedia(raw, base), raw);
+  }
+  // An end tag counts only when its name is followed by whitespace, a slash or >.
+  assert.equal(localizeHtmlMedia(`<script>"</scripts>"</script><img src="plain.png">`, base), `<script>"</scripts>"</script><img src="${served("plain.png")}">`);
+  // Character references as the tokenizer decodes them: every named one, numeric ones with or without the semicolon,
+  // the C1 range as Windows-1252, and a replacement character where a browser puts one (nothing throws).
+  assert.equal(localizeHtmlMedia(`<img src="caf&eacute;.png">`, base), `<img src="${served("café.png")}">`);
+  assert.equal(localizeHtmlMedia(`<img src="&#128;.png">`, base), `<img src="${served("€.png")}">`);
+  assert.equal(localizeHtmlMedia(`<img src="a&#38b.png">`, base), `<img src="${served("a&b.png")}">`);
+  for (const invalid of ["&#x110000;", "&#xD800;", "&#0;"]) assert.equal(localizeHtmlMedia(`<img src="${invalid}.png">`, base), `<img src="${served("�.png")}">`);
+  // An unknown name, or a name without its semicolon, stays as written.
+  assert.equal(localizeHtmlMedia(`<img src="x&nosuch;y&amp.png">`, base), `<img src="${served("x&nosuch;y&amp.png")}">`);
+  // Whitespace is HTML's: a no-break space belongs to a file's name, in srcset and in a bare value.
+  assert.equal(localizeHtmlMedia(`<img srcset="a b.png 1x">`, base), `<img srcset="${served("a b.png")} 1x">`);
+  assert.equal(localizeHtmlMedia(`<img src=a b.png>`, base), `<img src="${served("a b.png")}">`);
+  // A bare value runs to whitespace or >, a stray quote included, as a browser reads it.
+  assert.equal(localizeHtmlMedia(`<img src=a"b.png alt=x>`, base), `<img src="${served('a"b.png')}" alt=x>`);
+});
