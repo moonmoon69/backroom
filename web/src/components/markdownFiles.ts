@@ -75,7 +75,9 @@ export function fileBadge(reference: FileReference): { label: string; tone: stri
   return { label: (ext || name.slice(0, 3)).toUpperCase().slice(0, 4), tone: "muted" };
 }
 
-const LOCAL_FILE_ENDPOINT = "/api/local-file?path=";
+/** The route the service serves a local picture, recording or sound from; the HTML preview's sandbox admits only it. */
+export const LOCAL_FILE_ROUTE = "/api/local-file";
+const LOCAL_FILE_ENDPOINT = `${LOCAL_FILE_ROUTE}?path=`;
 
 /** True for an absolute path on the machine (or a file URL), as opposed to a web URL or one of the app's own routes. */
 export const isLocalPath = (src: string): boolean => src.startsWith("file://") || (src.startsWith("/") && !src.startsWith("//") && !src.startsWith("/api/") && !src.startsWith("/assets/"));
@@ -92,6 +94,31 @@ export function imageSource(src: string, base: string | null = null): string {
   if (base && !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(src)) return LOCAL_FILE_ENDPOINT + encodeURIComponent(`${base.replace(/\/+$/, "")}/${src.replace(/^\.\//, "")}`);
   return src;
 }
+
+/** Elements that embed a picture, a recording or a sound, and the attributes that name one. */
+const MEDIA_ELEMENT = /<(img|source|video|audio)\b([^>]*)>/gi;
+const MEDIA_ATTRIBUTE = /(\s(src|poster|srcset)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+))/gi;
+
+/**
+ * A previewed HTML document's local media (`shots/desk.png` next to it, `/tmp/shot.png`, a file URL) on img, source,
+ * video and audio (src, poster, srcset), as Backroom URLs: the rule of a Markdown document's pictures, since the
+ * preview's sandbox gives the document no folder of its own. Web, data and app URLs stay as written, as does the rest
+ * of the document.
+ */
+export function localizeHtmlMedia(html: string, base: string): string {
+  return html.replace(MEDIA_ELEMENT, (element: string, name: string, attributes: string) => {
+    const mapped = attributes.replace(MEDIA_ATTRIBUTE, (attribute: string, prefix: string, key: string, quoted?: string, single?: string, bare?: string) => {
+      const value = quoted ?? single ?? bare ?? "";
+      if (!value.trim()) return attribute;
+      const resolved = key.toLowerCase() === "srcset" ? localizeSrcset(value, base) : imageSource(value, base);
+      return resolved === value ? attribute : `${prefix}"${resolved}"`;
+    });
+    return mapped === attributes ? element : `<${name}${mapped}>`;
+  });
+}
+
+/** Each candidate's URL (`a.png 1x, b.png 2x`); a data URL's comma has no space after it, so it is not a separator. */
+const localizeSrcset = (srcset: string, base: string): string => srcset.split(/,\s+/).map((candidate) => candidate.replace(/^(\s*)(\S+)/, (_, space: string, url: string) => `${space}${imageSource(url, base)}`)).join(", ");
 
 export type MediaKind = "image" | "video" | "audio";
 const VIDEO = /\.(mp4|m4v|webm|mov|ogv)(\?|#|$)/i;

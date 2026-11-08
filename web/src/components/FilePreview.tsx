@@ -1,7 +1,8 @@
 /**
  * The file preview: a file chip in a reply (`web/src/App.tsx:42`, `docs/plan.md`) opens the file in a dialog. Markdown
- * and HTML are rendered (or shown as source), code is highlighted with line numbers and scrolled to the line named, and
- * images, recordings and sounds are shown. The service decides what may be read; see src/server/filePreview.ts.
+ * and HTML are rendered (or shown as source) with their local pictures, recordings and sounds served by the service,
+ * code is highlighted with line numbers and scrolled to the line named, and images, recordings and sounds are shown.
+ * The service decides what may be read; see src/server/filePreview.ts.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
@@ -12,7 +13,7 @@ import { CopyTextButton } from "./CopyText.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { FileBaseContext, FilePreviewContext, ImagePreviewContext, type FilePreviewRequest, type ImagePreviewRequest } from "./filePreviewContext.ts";
 import { Markdown } from "./Markdown.tsx";
-import { fileBadge, parseFileReference } from "./markdownFiles.ts";
+import { fileBadge, LOCAL_FILE_ROUTE, localizeHtmlMedia, parseFileReference } from "./markdownFiles.ts";
 
 /** Makes file chips open previews for everything under it, and shows the preview asked for. */
 export function FilePreviewHost({ children }: { children: ReactNode }) {
@@ -77,7 +78,7 @@ function FilePreviewDialog({ request, onClose, active }: { request: FilePreviewR
     const { kind, url } = state.preview;
     body = kind === "image" ? <img className="file-media" src={url} alt={name} /> : kind === "video" ? <video className="file-media" src={url} controls preload="metadata" /> : <audio className="file-media" src={url} controls preload="metadata" />;
   } else if (html && !showSource) {
-    body = <HtmlView content={state.preview.content} name={baseName(path)} onClose={() => active && onClose()} />;
+    body = <HtmlView content={state.preview.content} name={baseName(path)} folder={folderOf(path)} onClose={() => active && onClose()} />;
   } else if (markdown && !html && !source) {
     // Paths in a document are looked for next to it first, then in the projects.
     body = (
@@ -126,7 +127,11 @@ function FilePreviewDialog({ request, onClose, active }: { request: FilePreviewR
 const HTML_CLOSE_MESSAGE = "backroom:html-preview:close";
 // Restrict supported CSP request paths while allowing inline interactions and embedded data.
 // This isolates the app; it is not full network confinement (e.g. WebRTC is outside connect-src).
-const HTML_POLICY = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'";
+// Pictures, recordings and sounds come from data URLs and the service's media route alone, where localizeHtmlMedia
+// sends the document's local paths. The route is named by the page's origin and its path: the sandbox's origin is
+// opaque, so 'self' would match nothing, and by its path the policy admits no other route of the service.
+const MEDIA_SOURCE = `${location.origin}${LOCAL_FILE_ROUTE}`;
+const HTML_POLICY = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: ${MEDIA_SOURCE}; font-src data:; media-src data: ${MEDIA_SOURCE}; connect-src 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'`;
 const htmlHead = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${HTML_POLICY}"><meta name="referrer" content="no-referrer">`;
 
 /**
@@ -134,7 +139,7 @@ const htmlHead = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content
  * to a network URL (its own CSP alone cannot do that). srcdoc inherits the policy without a network request.
  * Each boundary accepts only the close literal from its current child; neither exposes an app command bridge.
  */
-function HtmlView({ content, name, onClose }: { content: string; name: string; onClose: () => void }) {
+function HtmlView({ content, name, folder, onClose }: { content: string; name: string; folder: string; onClose: () => void }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -151,7 +156,7 @@ function HtmlView({ content, name, onClose }: { content: string; name: string; o
 
   // Runs before supplied scripts, including ones that stop key propagation inside the document.
   // In the document Esc, and Backspace outside its text fields, close the preview, as they close any dialog.
-  const document = `${htmlHead}<script>window.addEventListener("keydown",function(event){var t=event.target;if(event.key==="Escape"||(event.key==="Backspace"&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))))){event.preventDefault();event.stopImmediatePropagation();parent.postMessage("${HTML_CLOSE_MESSAGE}","*");}},true);</script>${content}`;
+  const document = `${htmlHead}<script>window.addEventListener("keydown",function(event){var t=event.target;if(event.key==="Escape"||(event.key==="Backspace"&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))))){event.preventDefault();event.stopImmediatePropagation();parent.postMessage("${HTML_CLOSE_MESSAGE}","*");}},true);</script>${localizeHtmlMedia(content, folder)}`;
   // Encode '<' so supplied </script> or other markup can never break out of the trusted envelope's script string.
   const encodedDocument = JSON.stringify(document).replace(/</g, "\\u003c");
   const srcDoc = `${htmlHead}<style>html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="HTML document"></iframe><script>(function(){const frame=document.querySelector("iframe");window.addEventListener("message",function(event){if(event.data==="${HTML_CLOSE_MESSAGE}"&&event.source===frame.contentWindow)parent.postMessage("${HTML_CLOSE_MESSAGE}","*");});frame.srcdoc=${encodedDocument};})();</script>`;

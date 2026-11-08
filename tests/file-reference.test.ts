@@ -1,7 +1,7 @@
 /** Inline code that names a file becomes a chip that opens its preview: what counts, and the lines it points at. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { headingAnchor, imageSource, isDataImage, isImageLink, linkTarget, mediaKind, parseFileReference } from "../web/src/components/markdownFiles.ts";
+import { headingAnchor, imageSource, isDataImage, isImageLink, linkTarget, localizeHtmlMedia, mediaKind, parseFileReference } from "../web/src/components/markdownFiles.ts";
 
 test("a path with a line, a line and column, or a range of lines", () => {
   assert.deepEqual(parseFileReference("src/parser.ts:42"), { raw: "src/parser.ts:42", path: "src/parser.ts", basename: "parser.ts", extension: "ts", line: 42 });
@@ -48,4 +48,32 @@ test("links in a document: its own headings, files beside it or in the project, 
   assert.deepEqual(linkTarget("file:///tmp/check%20run.log#L3"), { kind: "file", path: "/tmp/check run.log", line: 3 });
   assert.deepEqual(linkTarget("https://github.com/pingdotgg/t3code"), { kind: "web" });
   assert.deepEqual(linkTarget("mailto:someone@example.com"), { kind: "web" });
+});
+
+test("a previewed HTML document's local media is served by the service, looked for next to the document", () => {
+  const base = "/tmp/prism-design";
+  const served = (path: string) => `/api/local-file?path=${encodeURIComponent(path)}`;
+  const untouched = [
+    `<img src="https://example.com/x.png?a=1&amp;b=2"><img src="data:image/png;base64,AAAA"><img src="/api/attachments/abc"><img src="" alt="none">`,
+    `<a href="opus/index.html">a link</a><script src="app.js"></script><link rel="stylesheet" href="style.css"><div data-src="x.png"></div>`,
+  ];
+  const html = [
+    `<img src="opus/shots/desk-1440x900.png" alt="Opus, desk">`,
+    `<img src='./opus2/shots/phone.png'><IMG SRC=opus3/shots/hand.png>`,
+    `<picture><source srcset="shots/a.png 1x, /tmp/shots/b.png 2x" type="image/png"><img src="shots/a.png"></picture>`,
+    `<video poster="clips/poster.jpg" src="file:///tmp/clips/demo.mp4" controls></video><audio src="sounds/ping.wav"></audio>`,
+    ...untouched,
+  ].join("\n");
+  assert.equal(
+    localizeHtmlMedia(html, base),
+    [
+      `<img src="${served("/tmp/prism-design/opus/shots/desk-1440x900.png")}" alt="Opus, desk">`,
+      `<img src="${served("/tmp/prism-design/opus2/shots/phone.png")}"><IMG SRC="${served("/tmp/prism-design/opus3/shots/hand.png")}">`,
+      `<picture><source srcset="${served("/tmp/prism-design/shots/a.png")} 1x, ${served("/tmp/shots/b.png")} 2x" type="image/png"><img src="${served("/tmp/prism-design/shots/a.png")}"></picture>`,
+      `<video poster="${served("/tmp/prism-design/clips/poster.jpg")}" src="${served("/tmp/clips/demo.mp4")}" controls></video><audio src="${served("/tmp/prism-design/sounds/ping.wav")}"></audio>`,
+      ...untouched,
+    ].join("\n"),
+  );
+  // A document with nothing local to map is returned as it was.
+  assert.equal(localizeHtmlMedia(untouched.join("\n"), base), untouched.join("\n"));
 });
