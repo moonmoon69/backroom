@@ -77,3 +77,34 @@ test("a previewed HTML document's local media is served by the service, looked f
   // A document with nothing local to map is returned as it was.
   assert.equal(localizeHtmlMedia(untouched.join("\n"), base), untouched.join("\n"));
 });
+
+test("the HTML media mapping reads the document as a browser does (Sol's review #23)", () => {
+  const base = "/tmp/prism-design";
+  const served = (path: string) => `/api/local-file?path=${encodeURIComponent(`${base}/${path}`)}`;
+  // Text in a script, a style, a textarea or a comment is not markup.
+  for (const raw of [
+    `<script>const markup = "<img src=plain.png>"; document.body.textContent = "ran";</script>`,
+    `<style>/* <img src="x.png"> */ .a { background: url(plain.png) }</style>`,
+    `<textarea><img src="x.png"></textarea>`,
+    `<!-- <img src="x.png"> -->`,
+    `<div style="background-image:url(plain.png)">test</div>`,
+  ]) {
+    assert.equal(localizeHtmlMedia(raw, base), raw);
+  }
+  // Attributes are read one at a time: a quoted value may hold `>` or something that looks like another attribute.
+  assert.equal(localizeHtmlMedia(`<img alt="a > b" src="plain.png">`, base), `<img alt="a > b" src="${served("plain.png")}">`);
+  assert.equal(localizeHtmlMedia(`<img alt="hello src='note.png'" src="plain.png">`, base), `<img alt="hello src='note.png'" src="${served("plain.png")}">`);
+  assert.equal(localizeHtmlMedia(`<img title='say "hi" > there' src=plain.png />`, base), `<img title='say "hi" > there' src="${served("plain.png")}" />`);
+  // An entity in a path names the file it decodes to.
+  assert.equal(localizeHtmlMedia(`<img src="a&amp;b.png">`, base), `<img src="${served("a&b.png")}">`);
+  assert.equal(localizeHtmlMedia(`<img src="caf&#233;&#x20;shot.png">`, base), `<img src="${served("café shot.png")}">`);
+  // srcset candidates as a browser reads them: a comma needs no space after it, a data URL's commas are its own.
+  assert.equal(localizeHtmlMedia(`<img srcset="small.png 1w,large.png 9000w">`, base), `<img srcset="${served("small.png")} 1w, ${served("large.png")} 9000w">`);
+  const data = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  assert.equal(localizeHtmlMedia(`<img srcset="${data} 1x, plain.png 2x">`, base), `<img srcset="${data} 1x, ${served("plain.png")} 2x">`);
+  assert.equal(localizeHtmlMedia(`<img srcset="a.png, b.png 2x">`, base), `<img srcset="${served("a.png")}, ${served("b.png")} 2x">`);
+  const web = `<img srcset="https://x.org/a.png 1x,https://x.org/b.png 2x">`;
+  assert.equal(localizeHtmlMedia(web, base), web);
+  // The document around a mapped element is kept byte for byte, an unclosed tag included.
+  assert.equal(localizeHtmlMedia(`<p>a</p>\n<img src="plain.png" alt="x"\n<p>b</p>`, base), `<p>a</p>\n<img src="${served("plain.png")}" alt="x"\n<p>b</p>`);
+});

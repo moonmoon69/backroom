@@ -96,29 +96,115 @@ export function imageSource(src: string, base: string | null = null): string {
 }
 
 /** Elements that embed a picture, a recording or a sound, and the attributes that name one. */
-const MEDIA_ELEMENT = /<(img|source|video|audio)\b([^>]*)>/gi;
-const MEDIA_ATTRIBUTE = /(\s(src|poster|srcset)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+))/gi;
+const MEDIA_ELEMENTS = new Set(["img", "source", "video", "audio"]);
+const MEDIA_ATTRIBUTES = new Set(["src", "poster", "srcset"]);
+/** Elements whose content is text, not markup, up to their end tag. */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title"]);
+const TAG_NAME = /<([a-z][a-z0-9-]*)/iy;
+/** One attribute: its name, then an optional value in double quotes, single quotes or bare (a quoted value may hold `>`). */
+const ATTRIBUTE = /(\s*[^\s"'<>/=]+)(?:(\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/y;
+const ENTITY = /&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi;
+const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+const decodeEntities = (text: string): string => text.replace(ENTITY, (_, decimal?: string, hex?: string, name?: string) => (decimal ? String.fromCodePoint(Number(decimal)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : NAMED_ENTITIES[name!.toLowerCase()]!));
+const encodeAttribute = (text: string): string => text.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 
 /**
  * A previewed HTML document's local media (`shots/desk.png` next to it, `/tmp/shot.png`, a file URL) on img, source,
  * video and audio (src, poster, srcset), as Backroom URLs: the rule of a Markdown document's pictures, since the
- * preview's sandbox gives the document no folder of its own. Web, data and app URLs stay as written, as does the rest
- * of the document.
+ * preview's sandbox gives the document no folder of its own. Only those attributes change; web, data and app URLs,
+ * comments, scripts, styles and everything else stay as written. Pictures named in CSS (`url()`) are not mapped.
  */
 export function localizeHtmlMedia(html: string, base: string): string {
-  return html.replace(MEDIA_ELEMENT, (element: string, name: string, attributes: string) => {
-    const mapped = attributes.replace(MEDIA_ATTRIBUTE, (attribute: string, prefix: string, key: string, quoted?: string, single?: string, bare?: string) => {
-      const value = quoted ?? single ?? bare ?? "";
-      if (!value.trim()) return attribute;
-      const resolved = key.toLowerCase() === "srcset" ? localizeSrcset(value, base) : imageSource(value, base);
-      return resolved === value ? attribute : `${prefix}"${resolved}"`;
-    });
-    return mapped === attributes ? element : `<${name}${mapped}>`;
-  });
+  let out = "";
+  let copied = 0;
+  let at = 0;
+  for (;;) {
+    const open = html.indexOf("<", at);
+    if (open < 0) break;
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      at = close < 0 ? html.length : close + 3;
+      continue;
+    }
+    TAG_NAME.lastIndex = open;
+    const tag = TAG_NAME.exec(html);
+    if (!tag) {
+      at = open + 1;
+      continue;
+    }
+    const name = tag[1]!.toLowerCase();
+    let p = TAG_NAME.lastIndex;
+    if (RAW_TEXT_ELEMENTS.has(name)) {
+      const end = new RegExp(`</${name}\\s*>`, "ig");
+      end.lastIndex = p;
+      const close = end.exec(html);
+      at = close ? close.index + close[0].length : html.length;
+      continue;
+    }
+    let rewritten = html.slice(open, p);
+    let changed = false;
+    for (;;) {
+      ATTRIBUTE.lastIndex = p;
+      const attribute = ATTRIBUTE.exec(html);
+      if (!attribute) break;
+      p = ATTRIBUTE.lastIndex;
+      const [text, lead, equals, double, single, bare] = attribute;
+      const value = (double ?? single ?? bare)?.trim();
+      const key = lead!.trim().toLowerCase();
+      if (!value || !MEDIA_ELEMENTS.has(name) || !MEDIA_ATTRIBUTES.has(key)) {
+        rewritten += text;
+        continue;
+      }
+      const decoded = decodeEntities(value);
+      const resolved = key === "srcset" ? localizeSrcset(decoded, base) : imageSource(decoded, base);
+      if (resolved === decoded) rewritten += text;
+      else {
+        rewritten += `${lead}${equals}"${encodeAttribute(resolved)}"`;
+        changed = true;
+      }
+    }
+    const close = html.indexOf(">", p);
+    at = close < 0 ? html.length : close + 1;
+    if (changed) {
+      out += html.slice(copied, open) + rewritten + html.slice(p, at);
+      copied = at;
+    }
+  }
+  return out + html.slice(copied);
 }
 
-/** Each candidate's URL (`a.png 1x, b.png 2x`); a data URL's comma has no space after it, so it is not a separator. */
-const localizeSrcset = (srcset: string, base: string): string => srcset.split(/,\s+/).map((candidate) => candidate.replace(/^(\s*)(\S+)/, (_, space: string, url: string) => `${space}${imageSource(url, base)}`)).join(", ");
+/**
+ * The candidates of a srcset, as a browser reads them: a URL runs to the next whitespace, so a data URL's commas are
+ * its own; a URL ending in a comma has no descriptors, else they run to the next comma. The srcset is returned as it
+ * was when no candidate is local.
+ */
+function localizeSrcset(srcset: string, base: string): string {
+  const candidates: string[] = [];
+  let changed = false;
+  let p = 0;
+  while (p < srcset.length) {
+    const start = /[^\s,]/g;
+    start.lastIndex = p;
+    const first = start.exec(srcset);
+    if (!first) break;
+    const space = /\s|$/g;
+    space.lastIndex = first.index;
+    const end = space.exec(srcset)!.index;
+    let url = srcset.slice(first.index, end);
+    let descriptors = "";
+    p = end;
+    if (url.endsWith(",")) url = url.replace(/,+$/, "");
+    else {
+      const comma = srcset.indexOf(",", p);
+      descriptors = (comma < 0 ? srcset.slice(p) : srcset.slice(p, comma)).trim();
+      p = comma < 0 ? srcset.length : comma + 1;
+    }
+    const resolved = imageSource(url, base);
+    if (resolved !== url) changed = true;
+    candidates.push(descriptors ? `${resolved} ${descriptors}` : resolved);
+  }
+  return changed ? candidates.join(", ") : srcset;
+}
 
 export type MediaKind = "image" | "video" | "audio";
 const VIDEO = /\.(mp4|m4v|webm|mov|ogv)(\?|#|$)/i;
