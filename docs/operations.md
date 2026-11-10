@@ -97,7 +97,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 - **Restarting is safe.** The room's journal is on disk: requests not yet sent go out after the restart, and turns in flight are matched back to their T3 runs. A turn that finished while the service was down is picked up on the next poll.
 - **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "Backroom was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
 - **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, the rooms' journal `board.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/` and `browser-api.json`. Keep the copy private: the T3 credential and every browser's logins are inside.
-- **Keep it running** with any process manager: the systemd user unit in [A headless box over Tailscale](../README.md#a-headless-box-over-tailscale), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
+- **Keep it running** with any process manager: the systemd user unit in [Remote setup](../README.md#remote-setup), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
 
 ## Troubleshooting
 
