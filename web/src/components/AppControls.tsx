@@ -129,7 +129,7 @@ function SettingsMenu({ theme, onTheme }: { theme: ThemeChoice; onTheme: (choice
             role="menuitem"
             title={`The habits every agent in a project keeps, in its AGENTS.md: ${
               agentsFile ? "written once when a project with no instructions for agents yet gets its first room" : "new rooms write none (off)"
-            }. Opens the template ({checks} filled per project, {skills} with the packs' standing lines), the switch, and the projects already written, with a diff and Apply for those that differ from the saved template (docs/agents-file-and-skills.md).`}
+            }. Opens the template ({checks} filled per project, {skills} with the packs' standing lines), the switch, and every project's AGENTS.md against it, with a diff and Apply for those that differ (docs/agents-file-and-skills.md).`}
             onClick={pick(() => setAgentsFileOpen(true))}
           >
             <span className="menu-icon" aria-hidden="true">

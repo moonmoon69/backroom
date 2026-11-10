@@ -53,17 +53,18 @@
  *
  * Backroom writes once per folder: a file the user removes afterwards is not written again (it would come back with
  * every new room). What it wrote is kept in the kv table, one record per project folder, so a project removed from T3
- * and added again keeps its record.
+ * and added again keeps its record. The record serves this automatic writing only.
  *
  * The text is a template, Backroom's (DEFAULT_AGENTS_TEMPLATE) or the user's (Settings → Agents file, agentsFile.text in
  * kv), with {checks} filled per project and {skills} with the packs' standing lines (src/app/packs.ts; a change of a
- * standing text, or a pack turning ready, changes the rendered template, so written projects then differ). A saved
- * template reaches only folders written afterwards: Backroom never changes a file by itself. Settings → Agents file
- * lists each folder where it wrote AGENTS.md with its state against the saved template rendered for it (same, differs,
- * removed, blocked), shows the diff, and on the user's Apply writes the rendered template over the file: bound to the
- * digests of the diff the user saw, only through a handle on a plain file of its own (no link followed, nothing
- * created), never CLAUDE.md, git, the exclude file, the hook or worktrees' copies. The on/off setting governs the
- * automatic writing only.
+ * standing text, or a pack turning ready, changes the rendered template, so projects then differ). A saved template
+ * reaches only folders written afterwards: Backroom never changes a file by itself. Settings → Agents file lists every
+ * project T3 has, each with its AGENTS.md against the saved template rendered for it (same, differs, none, blocked),
+ * whoever wrote the file, shows the diff, and on the user's Apply writes the rendered template over the file: bound to
+ * the digests of the diff the user saw, only through a handle on a plain file of its own (no link followed, nothing
+ * created), never CLAUDE.md, git, the exclude file, the hook or worktrees' copies. The project's folder is T3's path
+ * with the links in it resolved, as the automatic writing resolves it; AGENTS.md itself is never followed, and reading
+ * it writes nothing. The on/off setting governs the automatic writing only.
  */
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
@@ -134,8 +135,6 @@ export interface AgentsFileRecord {
   /** The files Backroom wrote, relative to the folder: AGENTS.md and CLAUDE.md, CLAUDE.md alone, or none (it only listed the project's own ignored files). */
   written: string[];
   writtenAt: string;
-  /** When the user last applied the saved template over the AGENTS.md Backroom wrote (agentsFile.apply). */
-  appliedAt?: string;
   /** The folder was in a git repository. */
   repo: boolean;
   /** The entries it listed in the repository's exclude file (`/web/AGENTS.md`); none outside git, or when that failed. */
@@ -155,24 +154,25 @@ export interface AgentsFileWritten {
 }
 
 /**
- * A Backroom-written AGENTS.md against the saved template rendered for its project: the same, different, removed (gone
- * from the folder: Backroom does not write it again), or blocked (its folder is not on this machine, or it is no longer a
- * plain file of its own: a link, a folder, a file with another name linked to it, or unreadable). Apply is refused but
- * for same and differs.
+ * A project's AGENTS.md against the saved template rendered for it: the same, different, none (the folder holds no
+ * AGENTS.md), or blocked (the folder is not on this machine or outside the folders this service writes in, or AGENTS.md
+ * is not a plain file of its own: a link, a folder, a file with another name linked to it, or unreadable). The diff and
+ * Apply are refused but for same and differs.
  */
-export type AgentsFileState = "same" | "differs" | "removed" | "blocked";
+export type AgentsFileState = "same" | "differs" | "none" | "blocked";
 
-/** One project folder where Backroom wrote AGENTS.md, as GET /api/agents-files lists it. */
+/** A T3 project as the list, the diff and Apply take it (the adapter's listProjects). */
+export type AgentsFileProject = { id: string; title: string; workspaceRoot: string };
+
+/** One of T3's projects with its AGENTS.md's state, as GET /api/agents-files lists it. */
 export interface AgentsFileEntry {
   projectId: string;
+  /** The folder read: T3's path with its links resolved (as T3 gives it when that is not absolute). */
   folder: string;
   state: AgentsFileState;
   /** Why the state is blocked. */
   reason?: string;
-  /** The project's title in T3 when T3 still has it; null when it does not (or did not answer). */
-  title: string | null;
-  writtenAt: string;
-  appliedAt: string | null;
+  title: string;
 }
 
 /**
@@ -188,9 +188,6 @@ export interface AgentsFileDiff {
   fileDigest: string;
   templateDigest: string;
 }
-
-/** A project by its id or its folder, as the diff route and agentsFile.apply name it. */
-export type AgentsFileTarget = { projectId?: string | undefined; folder?: string | undefined };
 
 /** Why there is no diff or nothing was applied: the page shows the message. */
 const refused = (message: string): RoomError => new RoomError("agents_file_refused", message, 409);
@@ -427,8 +424,8 @@ export function agentsTemplate(repos: Pick<Repos, "getKv">): { text: string; cus
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Why a recorded folder is not itself any more: its real path (links resolved) is elsewhere, a link put in its place or
- * in a folder above it. Null when it is the recorded one.
+ * Why a resolved folder is not itself any more: its real path (links resolved) is elsewhere, a link put in its place or
+ * in a folder above it since it was resolved. Null when it is still that folder.
  */
 function movedAway(folder: string): string | null {
   let real: string;
@@ -438,8 +435,11 @@ function movedAway(folder: string): string | null {
     const code = (error as NodeJS.ErrnoException).code;
     return code === "ENOENT" || code === "ENOTDIR" ? `${folder} is not on this machine` : `${folder} cannot be resolved: ${errorText(error)}`;
   }
-  return real === folder ? null : `${folder} leads elsewhere now (${real}), not to the folder Backroom wrote in`;
+  return real === folder ? null : `${folder} leads elsewhere now (${real})`;
 }
+
+/** The project's folder as the list, the diff and Apply look at it: T3's path with its links resolved; null when T3's is not absolute. */
+const projectFolder = (project: AgentsFileProject): string | null => (typeof project.workspaceRoot === "string" && isAbsolute(project.workspaceRoot) ? canonicalPath(project.workspaceRoot) : null);
 
 /** `path` strictly inside `folder` (a folder named `..old` in it is inside too). */
 const isInside = (path: string, folder: string): boolean => {
@@ -656,29 +656,22 @@ export class AgentsFiles {
     });
   }
 
-  /** The records where Backroom wrote AGENTS.md (CLAUDE.md alone is never compared: it is the one import line). */
-  private agentsRecords(): AgentsFileRecord[] {
-    return this.records().filter((record) => Array.isArray(record.written) && record.written.includes(AGENTS_FILE));
-  }
-
-  /** The record for a project id or a folder, with AGENTS.md among what Backroom wrote; null when there is none. */
-  private agentsRecord(target: AgentsFileTarget): AgentsFileRecord | null {
-    if (target.folder !== undefined) {
-      if (!isAbsolute(target.folder)) return null;
-      const record = this.recordAt(canonicalPath(target.folder));
-      return record && record.written.includes(AGENTS_FILE) ? record : null;
-    }
-    return this.agentsRecords().find((record) => record.projectId === target.projectId) ?? null;
+  /** A project of T3's, by its id, for the diff and Apply. */
+  private projectOf(projectId: string, projects: ReadonlyArray<AgentsFileProject>): AgentsFileProject {
+    const project = projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw refused(`T3 has no project ${projectId}`);
+    return project;
   }
 
   /**
-   * The project's AGENTS.md as it is today, and the saved template rendered for it. Read without following a link (the
-   * name is looked at with lstat, then opened with O_NOFOLLOW and its handle checked), and a read that fails is
-   * blocked, never removed.
+   * The AGENTS.md in a project's folder (projectFolder's) as it is today, and the saved template rendered for it. Read
+   * without following a link (the name is looked at with lstat, then opened with O_NOFOLLOW and its handle checked), and
+   * a read that fails is blocked, never none.
    */
-  private compare(record: AgentsFileRecord): { state: "same" | "differs"; text: string; rendered: string } | { state: "removed" } | { state: "blocked"; reason: string } {
-    const folder = record.folder;
-    // Not on this machine, or not the recorded folder any more (a link put in its place or above it).
+  private compare(folder: string | null): { state: "same" | "differs"; text: string; rendered: string } | { state: "none" } | { state: "blocked"; reason: string } {
+    if (folder === null) return { state: "blocked", reason: "T3 gives no absolute folder for it" };
+    if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || isInside(folder, root))) return { state: "blocked", reason: `${folder} is outside the folders this service writes in` };
+    // Not on this machine, or not the resolved folder any more (a link put in its place or above it since).
     const moved = movedAway(folder);
     if (moved) return { state: "blocked", reason: moved };
     const path = join(folder, AGENTS_FILE);
@@ -686,11 +679,11 @@ export class AgentsFiles {
     try {
       kind = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "removed" };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "none" };
       return { state: "blocked", reason: `AGENTS.md cannot be looked at: ${errorText(error)}` };
     }
     const plain = (stats: Stats): string | null =>
-      stats.isSymbolicLink() ? "AGENTS.md is a link now" : !stats.isFile() ? "AGENTS.md is no longer a plain file" : stats.nlink !== 1 ? "AGENTS.md shares its contents with another name (a hard link)" : null;
+      stats.isSymbolicLink() ? "AGENTS.md is a link" : !stats.isFile() ? "AGENTS.md is not a plain file" : stats.nlink !== 1 ? "AGENTS.md shares its contents with another name (a hard link)" : null;
     const before = plain(kind);
     if (before) return { state: "blocked", reason: before };
     let text: string;
@@ -702,7 +695,7 @@ export class AgentsFiles {
       text = readFileSync(fd, "utf8");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      return { state: "blocked", reason: code === "ELOOP" ? "AGENTS.md is a link now" : `AGENTS.md cannot be read: ${errorText(error)}` };
+      return { state: "blocked", reason: code === "ELOOP" ? "AGENTS.md is a link" : `AGENTS.md cannot be read: ${errorText(error)}` };
     } finally {
       if (fd !== null) closeSync(fd);
     }
@@ -710,33 +703,29 @@ export class AgentsFiles {
     return { state: text === rendered ? "same" : "differs", text, rendered };
   }
 
-  /**
-   * Every project folder where Backroom wrote AGENTS.md, with its file's state against the saved template rendered for
-   * it; `projects` are T3's (for the titles), null when T3 did not answer.
-   */
-  list(projects: ReadonlyArray<{ id: string; title: string }> | null = null): AgentsFileEntry[] {
-    return this.agentsRecords()
-      .sort((a, b) => a.folder.localeCompare(b.folder))
-      .map((record) => {
-        const compared = this.compare(record);
-        return {
-          projectId: record.projectId,
-          folder: record.folder,
-          state: compared.state,
-          ...(compared.state === "blocked" ? { reason: compared.reason } : {}),
-          title: projects?.find((project) => project.id === record.projectId)?.title ?? null,
-          writtenAt: record.writtenAt,
-          appliedAt: record.appliedAt ?? null,
-        };
-      });
+  private entry(project: AgentsFileProject): AgentsFileEntry {
+    const folder = projectFolder(project);
+    const compared = this.compare(folder);
+    return {
+      projectId: project.id,
+      folder: folder ?? String(project.workspaceRoot),
+      state: compared.state,
+      ...(compared.state === "blocked" ? { reason: compared.reason } : {}),
+      title: project.title,
+    };
+  }
+
+  /** Every one of T3's projects (`projects`), with its AGENTS.md's state against the saved template rendered for it. */
+  list(projects: ReadonlyArray<AgentsFileProject>): AgentsFileEntry[] {
+    return projects.map((project) => this.entry(project)).sort((a, b) => a.folder.localeCompare(b.folder) || a.projectId.localeCompare(b.projectId));
   }
 
   /** The project's AGENTS.md against the saved template rendered for it, as git's line diff, with the digests of both. */
-  async diff(target: AgentsFileTarget): Promise<AgentsFileDiff> {
-    const record = this.agentsRecord(target);
-    if (!record) throw refused("Backroom wrote no AGENTS.md there");
-    const compared = this.compare(record);
-    if (compared.state === "removed") throw refused(`AGENTS.md is gone from ${record.folder}, and Backroom does not write it again`);
+  async diff(projectId: string, projects: ReadonlyArray<AgentsFileProject>): Promise<AgentsFileDiff> {
+    const project = this.projectOf(projectId, projects);
+    const folder = projectFolder(project);
+    const compared = this.compare(folder);
+    if (compared.state === "none") throw refused(`${folder} holds no AGENTS.md`);
     if (compared.state === "blocked") throw refused(compared.reason);
     let diff = "";
     if (compared.state === "differs") {
@@ -752,43 +741,42 @@ export class AgentsFiles {
         rmSync(scratch, { recursive: true, force: true });
       }
     }
-    return { projectId: record.projectId, folder: record.folder, state: compared.state, diff, fileDigest: digest(compared.text), templateDigest: digest(compared.rendered) };
+    return { projectId: project.id, folder: folder!, state: compared.state, diff, fileDigest: digest(compared.text), templateDigest: digest(compared.rendered) };
   }
 
   /**
-   * The user's Apply: the saved template rendered for the project, written over the whole AGENTS.md Backroom wrote
-   * there, bound to the diff the user looked at (its two digests). Only in a folder Backroom has a record for, on this
-   * machine and under onlyUnder, and only through a handle on a plain file of its own (opened with O_NOFOLLOW and no
-   * O_CREAT, checked with fstat): never through a link, never a file that is missing. CLAUDE.md, the exclude file, the
-   * hook and git are never touched, and worktrees keep their copies. The setting governs automatic writing only.
+   * The user's Apply: the saved template rendered for the project, written over its whole AGENTS.md, whoever wrote it,
+   * bound to the diff the user looked at (its two digests). Only for one of T3's projects, in a folder on this machine
+   * and under onlyUnder, and only through a handle on a plain file of its own (opened with O_NOFOLLOW and no O_CREAT,
+   * checked with fstat): never through a link, never a file that is missing. CLAUDE.md, the exclude file, the hook and
+   * git are never touched, and worktrees keep their copies. The setting governs automatic writing only.
    */
-  apply(target: AgentsFileTarget & { fileDigest: string; templateDigest: string }): Promise<AgentsFileEntry> {
-    const record = this.agentsRecord(target);
-    if (!record) return Promise.reject(refused("Backroom wrote no AGENTS.md there, so it applies nothing"));
-    return this.serial(record.folder, async () => {
-      const folder = record.folder;
-      // The recorded folder under onlyUnder; compare() below refuses it when its real path (links resolved) is elsewhere now.
-      if (this.onlyUnder && !this.onlyUnder.some((root) => folder === root || isInside(folder, root))) throw refused(`${folder} is outside the folders this service writes in`);
-      const compared = this.compare(record);
-      if (compared.state === "removed") throw refused(`AGENTS.md is gone from ${folder}, and Backroom does not write it again`);
+  async apply(target: { projectId: string; fileDigest: string; templateDigest: string }, projects: ReadonlyArray<AgentsFileProject>): Promise<AgentsFileEntry> {
+    const project = this.projectOf(target.projectId, projects);
+    const folder = projectFolder(project);
+    // The same queue as the automatic writing in this folder.
+    return this.serial(folder ?? `project:${project.id}`, async () => {
+      const compared = this.compare(folder);
+      if (compared.state === "none") throw refused(`${folder} holds no AGENTS.md, and Apply makes none`);
       if (compared.state === "blocked") throw refused(compared.reason);
       if (digest(compared.text) !== target.fileDigest || digest(compared.rendered) !== target.templateDigest) throw refused(STALE);
-      const path = join(folder, AGENTS_FILE);
-      this.beforeWrite(folder, AGENTS_FILE);
+      const at = folder!;
+      const path = join(at, AGENTS_FILE);
+      this.beforeWrite(at, AGENTS_FILE);
       // No O_CREAT: a file removed meanwhile is not made again. O_NOFOLLOW: a link put there meanwhile is not followed.
       let fd: number;
       try {
         fd = openSync(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        throw refused(code === "ENOENT" ? `AGENTS.md is gone from ${folder}, and Backroom does not write it again` : code === "ELOOP" ? "AGENTS.md is a link now" : `could not write AGENTS.md in ${folder}: ${errorText(error)}`);
+        throw refused(code === "ENOENT" ? `AGENTS.md is gone from ${at}, and Apply makes none` : code === "ELOOP" ? "AGENTS.md is a link" : `could not write AGENTS.md in ${at}: ${errorText(error)}`);
       }
       try {
         const stats = fstatSync(fd);
         if (!stats.isFile() || stats.nlink !== 1) throw refused("AGENTS.md is no longer a plain file of its own");
         // O_NOFOLLOW guards the file's own name only: the folder could have been swapped for a link before the open. So
-        // the folder is still the recorded one, and the handle is the file its path names now.
-        const movedSince = movedAway(folder);
+        // the folder is still the one resolved, and the handle is the file its path names now.
+        const movedSince = movedAway(at);
         if (movedSince) throw refused(movedSince);
         let named: Stats | null = null;
         try {
@@ -807,9 +795,8 @@ export class AgentsFiles {
       } finally {
         closeSync(fd);
       }
-      this.save({ ...(this.recordAt(folder) ?? record), appliedAt: new Date().toISOString() });
       this.log(`applied the saved agents template to ${path}`);
-      return this.list().find((entry) => entry.folder === folder)!;
+      return this.entry(project);
     });
   }
 

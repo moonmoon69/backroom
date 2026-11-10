@@ -98,7 +98,7 @@ export function Overview({
   returnTo: string | null;
 }) {
   const [dialog, setDialog] = useState<{ kind: "room"; projectId: string | null } | { kind: "project" } | { kind: "arrange" } | null>(null);
-  // The agents files Backroom wrote (src/app/agentsFile.ts): a project heading is marked when its AGENTS.md differs from
+  // The projects' agents files (src/app/agentsFile.ts): a project heading is marked when its AGENTS.md differs from
   // the saved template. Read when the overview mounts, and again when the editor or a diff dialog closes.
   const { entries: agentsFiles } = useAgentsFiles();
   useEffect(() => reloadAgentsFiles(), []);

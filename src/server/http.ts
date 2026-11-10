@@ -911,23 +911,29 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     return c.json(await stack.packs.updateDetail(c.req.param("name"), commit));
   });
   /**
-   * Every project folder where Backroom wrote AGENTS.md, each with its file's state against the saved template rendered
-   * for it (same, differs, removed, blocked) and the project's title when T3 still has it. A few file reads per call.
+   * T3's projects for the agents-file routes; T3 not answering refuses the route with the reason (the dialog shows it),
+   * since without them there is no list of projects to compare.
+   */
+  const t3Projects = () =>
+    stack.adapter.listProjects().catch((error: unknown) => {
+      throw new RoomError("t3_unavailable", `T3 did not answer, so its projects cannot be compared: ${error instanceof Error ? error.message : String(error)}`, 503);
+    });
+  /**
+   * Every one of T3's projects with its AGENTS.md's state against the saved template rendered for it (same, differs,
+   * none, blocked), whoever wrote the file. A few file reads per project.
    */
   app.get("/api/agents-files", async (c) => {
     const files = stack.service.agentsFiles;
     if (!files) return c.json([]);
-    const projects = await stack.adapter.listProjects().catch(() => null);
-    return c.json(files.list(projects));
+    return c.json(files.list(await t3Projects()));
   });
-  /** One project's AGENTS.md (?projectId= or ?folder=) against the saved template rendered for it, with the digests Apply takes back. */
+  /** One project's AGENTS.md (?projectId=) against the saved template rendered for it, with the digests Apply takes back. */
   app.get("/api/agents-files/diff", async (c) => {
     const files = stack.service.agentsFiles;
     if (!files) throw new RoomError("agents_file_refused", "this service writes no agents files", 409);
     const projectId = c.req.query("projectId");
-    const folder = c.req.query("folder");
-    if (!projectId === !folder) throw new RoomError("bad_request", "give a projectId or a folder");
-    return c.json(await files.diff(projectId ? { projectId } : { folder: folder! }));
+    if (!projectId) throw new RoomError("bad_request", "give a projectId");
+    return c.json(await files.diff(projectId, await t3Projects()));
   });
   /** What to tell the user before a member is made Consigliere: reasons it may not work. It is allowed all the same. */
   app.get("/api/rooms/:roomId/participants/:participantId/consigliere-warnings", async (c) => {

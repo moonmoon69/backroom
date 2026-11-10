@@ -1,7 +1,7 @@
 /**
  * A1's template (src/app/agentsFile.ts): the text a new room writes is a template with {checks} filled per project,
- * Backroom's or the user's (agentsFile.text.set); GET /api/agents-files says of every folder where Backroom wrote
- * AGENTS.md whether it is the same as the saved template rendered for it, differs, was removed or is blocked; the diff
+ * Backroom's or the user's (agentsFile.text.set); GET /api/agents-files says of every one of T3's projects whether its
+ * AGENTS.md, whoever wrote it, is the same as the saved template rendered for it, differs, is none or is blocked; the diff
  * route shows the difference with the digests of both sides; agentsFile.apply writes the rendered template over the
  * file, bound to those digests, only through a handle on a plain file of its own, and touches nothing else.
  */
@@ -107,11 +107,11 @@ function stackFor(t: TestContext, options: { onlyUnder?: string[] } = {}) {
   const room = (projectId: string) => run({ type: "room.create", projectId, title: "work", consigliere: false });
   const states = async () => (await get("/api/agents-files")).body as ServerEntry[];
   const stateOf = async (dir: string) => (await states()).find((entry) => entry.folder === dir);
-  const diff = async (dir: string) => (await get(`/api/agents-files/diff?folder=${encodeURIComponent(dir)}`)).body as ServerDiff & { message?: string };
+  const diff = async (projectId: string) => (await get(`/api/agents-files/diff?projectId=${encodeURIComponent(projectId)}`)).body as ServerDiff & { message?: string };
   /** Apply bound to the diff fetched just now. */
-  const apply = async (dir: string, seen?: ServerDiff) => {
-    const looked = seen ?? (await diff(dir));
-    return post({ type: "agentsFile.apply", folder: dir, fileDigest: looked.fileDigest ?? "none", templateDigest: looked.templateDigest ?? "none" });
+  const apply = async (projectId: string, seen?: ServerDiff) => {
+    const looked = seen ?? (await diff(projectId));
+    return post({ type: "agentsFile.apply", projectId, fileDigest: looked.fileDigest ?? "none", templateDigest: looked.templateDigest ?? "none" });
   };
   return { stack, fake, app, run, post, get, project, room, states, stateOf, diff, apply };
 }
@@ -185,90 +185,156 @@ test("a new room writes the saved template rendered for its project, the default
 
 // ---------------- the states ----------------
 
-test("GET /api/agents-files: one entry per folder where Backroom wrote AGENTS.md, with T3's title while it has the project; same, differs, removed", async (t) => {
+test("GET /api/agents-files: one entry per T3 project, whoever wrote its AGENTS.md: same, differs, none; a project T3 no longer has is not listed", async (t) => {
   const s = stackFor(t);
   const same = await written(s);
   const edited = await written(s);
   const removed = await written(s);
   const checksChanged = await written(s);
-  // CLAUDE.md alone (the project's own AGENTS.md there): not listed, Backroom wrote no AGENTS.md there.
+  // The project's own AGENTS.md, Backroom's CLAUDE.md beside it: listed like any other.
   const own = folder({ files: { "AGENTS.md": "# ours\n" } });
-  assert.deepEqual((await s.room(s.project(own))).agentsFile.written, ["CLAUDE.md"]);
+  const ownId = s.project(own, "own");
+  assert.deepEqual((await s.room(ownId)).agentsFile.written, ["CLAUDE.md"]);
+  // A project with no room and no AGENTS.md.
+  const bare = folder();
+  s.project(bare, "bare");
+  // A project T3 no longer has: its record stays for the automatic writing, and it is not listed.
+  const gone = await written(s);
   writeFileSync(join(edited.dir, "AGENTS.md"), `${read(join(edited.dir, "AGENTS.md"))}- One more of ours.\n`);
   unlinkSync(join(removed.dir, "AGENTS.md"));
   // The project's checks changed since: the template rendered for it now names the new one.
   writeFileSync(join(checksChanged.dir, "package.json"), JSON.stringify({ scripts: { check: "tsc && node --test" } }));
   const editedTitle = s.fake.projects.find((p) => p.id === edited.projectId)!.title;
-  // A project removed from T3 keeps its record, with no title.
-  s.fake.projects.splice(s.fake.projects.findIndex((p) => p.id === same.projectId), 1);
+  s.fake.projects.splice(s.fake.projects.findIndex((p) => p.id === gone.projectId), 1);
 
   const entries = await s.states();
-  assert.deepEqual(entries.map((entry) => entry.folder), [same.dir, edited.dir, removed.dir, checksChanged.dir].sort());
+  assert.deepEqual(entries.map((entry) => entry.projectId).sort(), s.fake.projects.map((p) => p.id).sort(), "every project T3 has, and only those");
   const of = (dir: string) => entries.find((entry) => entry.folder === dir)!;
-  assert.deepEqual([of(same.dir).state, of(same.dir).title, of(same.dir).projectId], ["same", null, same.projectId]);
+  assert.deepEqual(of(same.dir), { projectId: same.projectId, folder: same.dir, state: "same", title: s.fake.projects.find((p) => p.id === same.projectId)!.title });
   assert.deepEqual([of(edited.dir).state, of(edited.dir).title], ["differs", editedTitle]);
-  assert.equal(of(removed.dir).state, "removed");
+  assert.equal(of(removed.dir).state, "none");
   assert.equal(of(checksChanged.dir).state, "differs");
-  assert.equal(of(same.dir).appliedAt, null);
-  assert.ok(of(same.dir).writtenAt);
-  assert.equal(existsSync(join(removed.dir, "AGENTS.md")), false, "a list never writes a file again");
+  assert.deepEqual([of(own).state, of(own).title], ["differs", "own"]);
+  assert.deepEqual([of(bare).state, of(bare).title], ["none", "bare"]);
+  assert.equal(entries.find((entry) => entry.projectId === "project_demo")?.state, "blocked", "the fake's demo folder is not on this machine");
+  assert.equal(existsSync(join(removed.dir, "AGENTS.md")), false, "a list never writes a file");
+  assert.equal(existsSync(join(bare, "AGENTS.md")), false);
 
-  // A template saved: every file written with the default differs from it now.
+  // A template saved: every file differs from it now.
   await s.run({ type: "agentsFile.text.set", text: "# New\n\n{checks}" });
-  assert.equal((await s.stateOf(edited.dir))?.state, "differs");
-  assert.equal((await s.stateOf(removed.dir))?.state, "removed");
-  // A T3 that does not answer: the entries all the same, with no titles.
+  assert.equal((await s.stateOf(same.dir))?.state, "differs");
+  assert.equal((await s.stateOf(removed.dir))?.state, "none");
+  // A T3 that does not answer: no list to compare, and the reason said (the dialog shows it).
   s.fake.listProjects = async () => {
     throw new Error("T3 is down");
   };
-  assert.deepEqual((await s.states()).map((entry) => entry.title), [null, null, null, null]);
+  const down = await s.get("/api/agents-files");
+  assert.deepEqual([down.status, down.body.error], [503, "t3_unavailable"]);
+  assert.match(down.body.message, /T3 did not answer.*T3 is down/);
+  assert.equal((await s.get(`/api/agents-files/diff?projectId=${same.projectId}`)).status, 503, "nor a diff");
 });
 
-test("blocked, never removed: a link, a folder, a hard link, an unreadable file, a folder not on this machine; diff and apply refuse each", async (t) => {
+test("a project whose AGENTS.md Backroom never wrote: listed with its state, its diff opens, and Apply writes the saved template over it, leaving no record (#125)", async (t) => {
   const s = stackFor(t);
-  const linked = await written(s);
+  const dir = folder();
+  // Written by hand after the repository was made: untracked, before any room.
+  writeFileSync(join(dir, "AGENTS.md"), "# Our own habits\n\nRun the tests.\n");
+  const projectId = s.project(dir, "hand-written");
+  const excludeBefore = read(join(dir, ".git", "info", "exclude"));
+  const statusBefore = git(dir, "status", "--porcelain", "--untracked-files=all");
+
+  assert.deepEqual(await s.stateOf(dir), { projectId, folder: dir, state: "differs", title: "hand-written" });
+  const looked = await s.diff(projectId);
+  assert.equal(looked.state, "differs");
+  assert.match(looked.diff, /^-# Our own habits$/m);
+  assert.match(looked.diff, /^\+# Working in this project$/m);
+
+  const result = await s.apply(projectId, looked);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.deepEqual(result.body.file, { projectId, folder: dir, state: "same", title: "hand-written" });
+  assert.equal(read(join(dir, "AGENTS.md")), defaultAgentsText(checks));
+  assert.equal(existsSync(join(dir, "CLAUDE.md")), false, "Apply writes AGENTS.md alone");
+  assert.equal(read(join(dir, ".git", "info", "exclude")), excludeBefore, "the exclude file as it was");
+  assert.equal(existsSync(join(dir, ".git", "hooks", "post-checkout")), false, "no hook");
+  assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all"), statusBefore, "AGENTS.md still untracked, nothing else");
+  assert.equal(s.stack.service.agentsFiles!.record(projectId), null, "the record is the automatic writing's: Apply leaves none");
+
+  // The automatic writing is as it was: the first room finds AGENTS.md there and writes the one-line CLAUDE.md, once.
+  assert.deepEqual((await s.room(projectId)).agentsFile.written, ["CLAUDE.md"]);
+  assert.equal((await s.room(projectId)).agentsFile, undefined, "a second room writes nothing");
+  assert.equal(read(join(dir, "AGENTS.md")), defaultAgentsText(checks));
+});
+
+test("none: a project's folder with no AGENTS.md offers no diff and no Apply, and Apply makes none", async (t) => {
+  const s = stackFor(t);
+  const dir = folder();
+  const projectId = s.project(dir);
+  assert.equal((await s.stateOf(dir))?.state, "none");
+  const looked = await s.get(`/api/agents-files/diff?projectId=${projectId}`);
+  assert.deepEqual([looked.status, looked.body.error], [409, "agents_file_refused"]);
+  assert.match(looked.body.message, /holds no AGENTS\.md/);
+  const applied = await s.post({ type: "agentsFile.apply", projectId, fileDigest: "x", templateDigest: "y" });
+  assert.equal(applied.status, 409);
+  assert.match(applied.body.message, /holds no AGENTS\.md, and Apply makes none/);
+  assert.equal(existsSync(join(dir, "AGENTS.md")), false);
+});
+
+test("blocked, never none: a link, a folder, a hard link, an unreadable file, a folder not on this machine, a path not absolute; diff and apply refuse each", async (t) => {
+  const s = stackFor(t);
+  /** A project T3 has, its AGENTS.md written by hand (no room, so Backroom wrote nothing there). */
+  const own = (text = "# ours\n") => {
+    const dir = folder();
+    writeFileSync(join(dir, "AGENTS.md"), text);
+    return { dir, projectId: s.project(dir) };
+  };
+  const linked = own();
   const target = join(scratch, `elsewhere-${folders}.md`);
-  writeFileSync(target, read(join(linked.dir, "AGENTS.md")));
+  writeFileSync(target, "# ours\n");
   unlinkSync(join(linked.dir, "AGENTS.md"));
   symlinkSync(target, join(linked.dir, "AGENTS.md"));
-  const dangling = await written(s);
+  const dangling = own();
   unlinkSync(join(dangling.dir, "AGENTS.md"));
   symlinkSync(join(scratch, "nowhere", "AGENTS.md"), join(dangling.dir, "AGENTS.md"));
-  const dir = await written(s);
+  const dir = own();
   unlinkSync(join(dir.dir, "AGENTS.md"));
   mkdirSync(join(dir.dir, "AGENTS.md"));
+  // Backroom's own file, hard-linked since: the same rule.
   const hard = await written(s);
   linkSync(join(hard.dir, "AGENTS.md"), join(scratch, `hard-${folders}.md`));
-  const unreadable = await written(s);
+  const unreadable = own();
   chmodSync(join(unreadable.dir, "AGENTS.md"), 0o000);
   t.after(() => chmodSync(join(unreadable.dir, "AGENTS.md"), 0o644));
-  const gone = await written(s);
+  const gone = own();
   rmSync(gone.dir, { recursive: true, force: true });
-  // A folder that is there but cannot be searched: AGENTS.md cannot even be looked at, which is no removal.
-  const unsearchable = await written(s);
+  // A folder that is there but cannot be searched: AGENTS.md cannot even be looked at, which is no none.
+  const unsearchable = own();
   chmodSync(unsearchable.dir, 0o666);
   t.after(() => chmodSync(unsearchable.dir, 0o755));
+  const relativeId = s.project("relative/path");
 
   const cases: Array<[string, string, RegExp]> = [
-    ["a link", linked.dir, /a link now/],
-    ["a link to nowhere", dangling.dir, /a link now/],
-    ["a folder", dir.dir, /no longer a plain file/],
-    ["a hard link", hard.dir, /another name \(a hard link\)/],
-    ["a folder not on this machine", gone.dir, /is not on this machine/],
+    ["a link", linked.projectId, /AGENTS\.md is a link/],
+    ["a link to nowhere", dangling.projectId, /AGENTS\.md is a link/],
+    ["a folder", dir.projectId, /not a plain file/],
+    ["a hard link", hard.projectId, /another name \(a hard link\)/],
+    ["a folder not on this machine", gone.projectId, /is not on this machine/],
+    ["a path not absolute", relativeId, /no absolute folder/],
   ];
   // Root reads a file whatever its mode: the unreadable case is only for an ordinary account.
-  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.dir, /cannot be read/], ["a folder that cannot be searched", unsearchable.dir, /cannot be looked at/]);
-  for (const [what, at, reason] of cases) {
-    const entry = await s.stateOf(at);
+  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.projectId, /cannot be read/], ["a folder that cannot be searched", unsearchable.projectId, /cannot be looked at/]);
+  const entries = await s.states();
+  for (const [what, projectId, reason] of cases) {
+    const entry = entries.find((e) => e.projectId === projectId);
     assert.equal(entry?.state, "blocked", what);
     assert.match(entry?.reason ?? "", reason, what);
-    const looked = await s.get(`/api/agents-files/diff?folder=${encodeURIComponent(at)}`);
+    const looked = await s.get(`/api/agents-files/diff?projectId=${projectId}`);
     assert.deepEqual([looked.status, looked.body.error], [409, "agents_file_refused"], `${what}: no diff`);
-    const applied = await s.post({ type: "agentsFile.apply", folder: at, fileDigest: "x", templateDigest: "y" });
+    const applied = await s.post({ type: "agentsFile.apply", projectId, fileDigest: "x", templateDigest: "y" });
     assert.equal(applied.status, 409, `${what}: no apply`);
     assert.match(applied.body.message, reason, what);
   }
-  assert.equal(read(target), defaultAgentsText(checks), "the link's target is untouched");
+  assert.equal(entries.find((e) => e.projectId === relativeId)?.folder, "relative/path", "a path not absolute is never resolved against Backroom's folder");
+  assert.equal(read(target), "# ours\n", "the link's target is untouched");
   assert.equal(existsSync(join(scratch, "nowhere")), false, "a link to nowhere is never followed");
   assert.equal(existsSync(gone.dir), false, "no folder is made");
 });
@@ -278,12 +344,12 @@ test("blocked, never removed: a link, a folder, a hard link, an unreadable file,
 test("the diff: from the project's file to the saved template rendered for it, blank lines and a missing final newline kept, with both digests", async (t) => {
   const s = stackFor(t);
   const { dir, projectId } = await written(s);
-  const same = await s.diff(dir);
+  const same = await s.diff(projectId);
   assert.deepEqual([same.state, same.diff, same.projectId, same.folder], ["same", "", projectId, dir]);
   assert.equal(same.fileDigest, same.templateDigest, "the same text, the same digest");
 
   writeFileSync(join(dir, "AGENTS.md"), "# Ours\n\n\nOur own line.");
-  const looked = await s.diff(dir);
+  const looked = await s.diff(projectId);
   assert.equal(looked.state, "differs");
   assert.match(looked.diff, /^--- a\/project\/AGENTS\.md$/m, "the project's file is the old side");
   assert.match(looked.diff, /^\+\+\+ b\/template\/AGENTS\.md$/m, "the template the new side");
@@ -293,18 +359,17 @@ test("the diff: from the project's file to the saved template rendered for it, b
   assert.match(looked.diff, /^ $/m, "and a blank line both have is context");
   assert.match(looked.diff, /^\\ No newline at end of file$/m, "the missing final newline is said");
   assert.notEqual(looked.fileDigest, looked.templateDigest);
-  assert.equal((await s.get(`/api/agents-files/diff?projectId=${encodeURIComponent(projectId)}`)).body.diff, looked.diff, "by project id too");
 
-  for (const query of ["", `?projectId=${projectId}&folder=${encodeURIComponent(dir)}`]) assert.equal((await s.get(`/api/agents-files/diff${query}`)).status, 400, `refused: ${query || "neither"}`);
-  const other = folder();
-  assert.equal((await s.get(`/api/agents-files/diff?folder=${encodeURIComponent(other)}`)).status, 409, "a folder Backroom never wrote in");
+  assert.equal((await s.get("/api/agents-files/diff")).status, 400, "refused: no projectId");
+  const unknown = await s.get("/api/agents-files/diff?projectId=project_unknown");
+  assert.deepEqual([unknown.status, unknown.body.message], [409, "T3 has no project project_unknown"]);
   unlinkSync(join(dir, "AGENTS.md"));
-  assert.match((await s.diff(dir)).message ?? "", /gone from/);
+  assert.match((await s.diff(projectId)).message ?? "", /holds no AGENTS\.md/);
 });
 
 // ---------------- apply ----------------
 
-test("apply writes the saved template over the AGENTS.md Backroom wrote, and nothing else: CLAUDE.md, the exclude file, the hook, git and worktrees as they were", async (t) => {
+test("apply writes the saved template over the project's AGENTS.md, and nothing else: CLAUDE.md, the exclude file, the hook, git and worktrees as they were", async (t) => {
   const s = stackFor(t);
   const { dir, projectId } = await written(s);
   const worktree = join(scratch, `worktree-${++folders}`);
@@ -314,14 +379,13 @@ test("apply writes the saved template over the AGENTS.md Backroom wrote, and not
   await s.run({ type: "agentsFile.text.set", text: "# New habits\n\nRun {checks}." });
   const kept = (path: string) => (existsSync(path) ? read(path) : null);
   const others = [join(dir, "CLAUDE.md"), join(dir, ".git", "info", "exclude"), join(dir, ".git", "hooks", "post-checkout"), join(worktree, "CLAUDE.md")];
-  const before = { files: others.map(kept), head: git(dir, "rev-parse", "HEAD"), status: git(dir, "status", "--porcelain", "--untracked-files=all"), index: read(join(dir, ".git", "index")) };
+  const before = { files: others.map(kept), head: git(dir, "rev-parse", "HEAD"), status: git(dir, "status", "--porcelain", "--untracked-files=all"), index: read(join(dir, ".git", "index")), record: s.stack.service.agentsFiles!.record(projectId) };
   assert.equal((await s.stateOf(dir))?.state, "differs");
 
-  const result = await s.apply(dir);
+  const result = await s.apply(projectId);
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(result.body.type, "agentsFile.applied");
   assert.deepEqual([result.body.file.state, result.body.file.projectId, result.body.file.folder], ["same", projectId, dir]);
-  assert.ok(result.body.file.appliedAt);
   assert.equal(read(join(dir, "AGENTS.md")), "# New habits\n\nRun `npm run lint`, `npm run test`, and whatever else its README asks for.\n");
   assert.equal((await s.stateOf(dir))?.state, "same", "the state goes back to same");
   assert.deepEqual(others.map(kept), before.files, "CLAUDE.md, the exclude file, the hook and the worktree's CLAUDE.md as they were");
@@ -329,72 +393,69 @@ test("apply writes the saved template over the AGENTS.md Backroom wrote, and not
   assert.equal(git(dir, "rev-parse", "HEAD"), before.head, "nothing committed");
   assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all"), before.status);
   assert.equal(read(join(dir, ".git", "index")), before.index, "the index untouched");
+  assert.deepEqual(s.stack.service.agentsFiles!.record(projectId), before.record, "the automatic writing's record as it was");
 
-  // By project id too; and with the setting off, which governs automatic writing only.
+  // With the setting off, which governs automatic writing only.
   await s.run({ type: "agentsFile.enabled.set", enabled: false });
   await s.run({ type: "agentsFile.text.set", text: null });
-  const looked = await s.diff(dir);
-  const byId = await s.post({ type: "agentsFile.apply", projectId, fileDigest: looked.fileDigest, templateDigest: looked.templateDigest });
-  assert.equal(byId.status, 200, JSON.stringify(byId.body));
+  assert.equal((await s.apply(projectId)).status, 200);
   assert.equal(read(join(dir, "AGENTS.md")), defaultAgentsText(checks));
 });
 
 test("apply is bound to the diff the user looked at: the file or the template changed since is refused, and the file kept", async (t) => {
   const s = stackFor(t);
-  const { dir } = await written(s);
+  const dir = folder();
   writeFileSync(join(dir, "AGENTS.md"), "# Ours\n");
-  const looked = await s.diff(dir);
+  const projectId = s.project(dir);
+  const looked = await s.diff(projectId);
   writeFileSync(join(dir, "AGENTS.md"), "# Ours, edited again elsewhere\n");
-  const fileChanged = await s.apply(dir, looked);
+  const fileChanged = await s.apply(projectId, looked);
   assert.deepEqual([fileChanged.status, fileChanged.body.message], [409, STALE]);
   assert.equal(read(join(dir, "AGENTS.md")), "# Ours, edited again elsewhere\n");
 
-  const again = await s.diff(dir);
+  const again = await s.diff(projectId);
   await s.run({ type: "agentsFile.text.set", text: "# A template saved since\n" });
-  const templateChanged = await s.apply(dir, again);
+  const templateChanged = await s.apply(projectId, again);
   assert.deepEqual([templateChanged.status, templateChanged.body.message], [409, STALE]);
   assert.equal(read(join(dir, "AGENTS.md")), "# Ours, edited again elsewhere\n");
-  assert.equal((await s.apply(dir)).status, 200, "looked at again, it applies");
+  assert.equal((await s.apply(projectId)).status, 200, "looked at again, it applies");
   assert.equal(read(join(dir, "AGENTS.md")), "# A template saved since\n");
 });
 
-test("apply refuses a missing file, a folder without a record, CLAUDE.md alone, a folder outside onlyUnder, and neither or both of projectId and folder", async (t) => {
+test("apply refuses a project T3 does not have, a folder named instead of a project, a missing file and a folder outside onlyUnder", async (t) => {
   const s = stackFor(t);
   const { dir, projectId } = await written(s);
-  const looked = await s.diff(dir);
+  const looked = await s.diff(projectId);
   const refused = async (command: Record<string, unknown>, status: number, pattern: RegExp) => {
     const result = await s.post({ type: "agentsFile.apply", fileDigest: looked.fileDigest, templateDigest: looked.templateDigest, ...command });
     assert.equal(result.status, status, JSON.stringify(command));
     assert.match(result.body.message, pattern, JSON.stringify(command));
   };
-  await refused({}, 400, /a projectId or a folder/);
-  await refused({ projectId, folder: dir }, 400, /a projectId or a folder/);
-  await refused({ folder: folder() }, 409, /wrote no AGENTS\.md there/);
-  await refused({ projectId: "project_unknown" }, 409, /wrote no AGENTS\.md there/);
-  await refused({ folder: "relative/path" }, 409, /wrote no AGENTS\.md there/);
-  const own = folder({ files: { "AGENTS.md": "# ours\n" } });
-  await s.room(s.project(own));
-  await refused({ folder: own }, 409, /wrote no AGENTS\.md there/);
-  assert.equal(read(join(own, "AGENTS.md")), "# ours\n", "the project's own AGENTS.md beside Backroom's CLAUDE.md is never applied over");
+  await refused({}, 400, /projectId/);
+  await refused({ folder: dir }, 400, /folder/);
+  await refused({ projectId: "project_unknown" }, 409, /T3 has no project project_unknown/);
 
   unlinkSync(join(dir, "AGENTS.md"));
-  await refused({ folder: dir }, 409, /gone from .*does not write it again/);
+  await refused({ projectId }, 409, /holds no AGENTS\.md, and Apply makes none/);
   assert.equal(existsSync(join(dir, "AGENTS.md")), false, "a missing file is not written");
 
-  // A service that writes only under its own folders: a record outside them is never applied.
-  const inside = folder();
-  const outside = folder();
+  // A service that writes only under its own folders: a project outside them is blocked, never applied.
+  const inside = folder({ files: { "AGENTS.md": "# ours\n" } });
+  const outside = folder({ files: { "AGENTS.md": "# ours\n" } });
+  const projects = [
+    { id: "p_inside", title: "inside", workspaceRoot: inside },
+    { id: "p_outside", title: "outside", workspaceRoot: outside },
+  ];
   const restricted = new AgentsFiles(s.stack.repos, { onlyUnder: [inside] });
   const anywhere = new AgentsFiles(s.stack.repos);
-  assert.ok(await anywhere.roomCreated({ id: "p_outside", workspaceRoot: outside }));
-  writeFileSync(join(outside, "AGENTS.md"), "# ours\n");
-  const seen = await anywhere.diff({ folder: outside });
-  await assert.rejects(restricted.apply({ folder: outside, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }), /outside the folders this service writes in/);
+  const listed = restricted.list(projects);
+  assert.deepEqual(listed.find((entry) => entry.projectId === "p_inside")?.state, "differs");
+  assert.deepEqual(listed.find((entry) => entry.projectId === "p_outside"), { projectId: "p_outside", folder: outside, state: "blocked", reason: `${outside} is outside the folders this service writes in`, title: "outside" });
+  const seen = await anywhere.diff("p_outside", projects);
+  await assert.rejects(restricted.apply({ projectId: "p_outside", fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }, projects), /outside the folders this service writes in/);
   assert.equal(read(join(outside, "AGENTS.md")), "# ours\n");
-  assert.ok(await restricted.roomCreated({ id: "p_inside", workspaceRoot: inside }));
-  writeFileSync(join(inside, "AGENTS.md"), "# ours\n");
-  const seenInside = await restricted.diff({ folder: inside });
-  assert.equal((await restricted.apply({ folder: inside, fileDigest: seenInside.fileDigest, templateDigest: seenInside.templateDigest })).state, "same");
+  const seenInside = await restricted.diff("p_inside", projects);
+  assert.equal((await restricted.apply({ projectId: "p_inside", fileDigest: seenInside.fileDigest, templateDigest: seenInside.templateDigest }, projects)).state, "same");
 });
 
 test("apply between the look and the write: a link swapped in is never followed, a file removed is not made, a hard link or an edit is refused", async (t) => {
@@ -406,7 +467,7 @@ test("apply between the look and the write: a link swapped in is never followed,
         unlinkSync(join(dir, "AGENTS.md"));
         symlinkSync(join(dir, "victim.md"), join(dir, "AGENTS.md"));
       },
-      /a link now/,
+      /a link/,
       (dir) => assert.equal(read(join(dir, "victim.md")), "# not Backroom's\n", "the link's target is untouched"),
     ],
     ["the file removed", (dir) => unlinkSync(join(dir, "AGENTS.md")), /gone from/, (dir) => assert.equal(existsSync(join(dir, "AGENTS.md")), false, "not made again")],
@@ -420,28 +481,28 @@ test("apply between the look and the write: a link swapped in is never followed,
   ];
   for (const [what, swap, reason, check] of swaps) {
     const dir = folder({ files: { "victim.md": "# not Backroom's\n" } });
-    const plain = new AgentsFiles(s.stack.repos);
-    assert.ok(await plain.roomCreated({ id: `p_${what}`, workspaceRoot: dir }));
     writeFileSync(join(dir, "AGENTS.md"), "# Ours\n");
-    const seen = await plain.diff({ folder: dir });
+    const projects = [{ id: `p_${what}`, title: what, workspaceRoot: dir }];
+    const seen = await new AgentsFiles(s.stack.repos).diff(`p_${what}`, projects);
     const racing = new AgentsFiles(s.stack.repos, { beforeWrite: (at, file) => at === dir && file === "AGENTS.md" && swap(dir) });
-    await assert.rejects(racing.apply({ folder: dir, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }), reason, what);
+    await assert.rejects(racing.apply({ projectId: `p_${what}`, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }, projects), reason, what);
     check(dir);
   }
 });
 
-test("apply after the open: the folder still the recorded one, and the handle the file its name gives now, else refused", async (t) => {
+test("apply after the open: the folder still the one resolved, and the handle the file its name gives now, else refused", async (t) => {
   const s = stackFor(t);
-  const { dir } = await written(s);
+  const dir = folder();
   writeFileSync(join(dir, "AGENTS.md"), "# Ours\n");
+  const projects = [{ id: "p_after", title: "after", workspaceRoot: dir }];
   const files = new AgentsFiles(s.stack.repos);
-  const seen = await files.diff({ folder: dir });
+  const seen = await files.diff("p_after", projects);
   // Between the open and the write: the file renamed away and another put under its name. The handle still holds the
   // old one, whose bytes the user saw; the check after the open sees the name gives another file now.
   const realpath = fs.realpathSync;
   let calls = 0;
   t.mock.method(fs, "realpathSync", (...args: Parameters<typeof fs.realpathSync>) => {
-    // The third look at the folder in apply: the record's lookup, compare's, then the one after the open.
+    // The third look at the folder in apply: its resolving, compare's, then the one after the open.
     if (String(args[0]) === dir && ++calls === 3) {
       fs.renameSync(join(dir, "AGENTS.md"), join(dir, "AGENTS.old.md"));
       writeFileSync(join(dir, "AGENTS.md"), "# Put there meanwhile\n");
@@ -453,7 +514,7 @@ test("apply after the open: the folder still the recorded one, and the handle th
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  await assert.rejects(files.apply({ folder: dir, fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }), /replaced while it was being applied/);
+  await assert.rejects(files.apply({ projectId: "p_after", fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }, projects), /replaced while it was being applied/);
   assert.equal(calls, 3, "the folder is looked at again after the open");
   assert.equal(read(join(dir, "AGENTS.md")), "# Put there meanwhile\n");
   assert.equal(read(join(dir, "AGENTS.old.md")), "# Ours\n", "the file the handle holds is not written either");

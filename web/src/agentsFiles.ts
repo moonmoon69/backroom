@@ -1,6 +1,6 @@
 /**
- * The agents files on the page (src/app/agentsFile.ts): every project folder where Backroom wrote AGENTS.md, with its
- * state against the saved template, read from GET /api/agents-files and shared by the overview's heading marks and
+ * The agents files on the page (src/app/agentsFile.ts): every one of T3's projects with its AGENTS.md's state against
+ * the saved template, read from GET /api/agents-files and shared by the overview's heading marks and
  * Settings → Agents file. Read when the overview mounts and again when the editor or a diff dialog closes.
  */
 import { useSyncExternalStore } from "react";

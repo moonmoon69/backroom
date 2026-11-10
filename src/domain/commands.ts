@@ -416,12 +416,10 @@ export const AgentsFileEnabledCommand = z.object({ type: z.literal("agentsFile.e
 export const AgentsFileTextSetCommand = z.object({ type: z.literal("agentsFile.text.set"), text: z.string().trim().min(1).max(20000).nullable() }).strict();
 
 /**
- * Apply: the saved template rendered for one project, written over the AGENTS.md Backroom wrote there (src/app/agentsFile.ts).
- * The project by its id or its folder; the two digests are the diff's the user looked at.
+ * Apply: the saved template rendered for one of T3's projects, written over its AGENTS.md (src/app/agentsFile.ts). The
+ * two digests are the diff's the user looked at.
  */
-export const AgentsFileApplyCommand = z
-  .object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty.optional(), folder: nonEmpty.optional(), fileDigest: nonEmpty, templateDigest: nonEmpty })
-  .strict();
+export const AgentsFileApplyCommand = z.object({ type: z.literal("agentsFile.apply"), projectId: nonEmpty, fileDigest: nonEmpty, templateDigest: nonEmpty }).strict();
 
 const PACK_NAME = z.string().trim().min(1).max(100);
 /** A skill's folder in its pack, as Settings → Skills lists it ("." for the pack's root). */

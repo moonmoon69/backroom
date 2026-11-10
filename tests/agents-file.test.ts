@@ -546,7 +546,7 @@ const worktreeOf = (repo: string, ...from: string[]) => {
 };
 
 test("AGENTS.md and CLAUDE.md that .gitignore ignores: listed and the hook installed, nothing written or committed, and a new worktree has copies (the user's #8)", async (t) => {
-  const { project, room, stack } = stackFor(t);
+  const { project, room, stack, fake } = stackFor(t);
   const dir = ignoring(ownFiles);
   const before = status(dir);
   const projectId = project(dir);
@@ -560,7 +560,7 @@ test("AGENTS.md and CLAUDE.md that .gitignore ignores: listed and the hook insta
 
   const record = stack.service.agentsFiles!.record(projectId);
   assert.deepEqual([record?.written, record?.excluded, record?.hook], [[], ["/AGENTS.md", "/CLAUDE.md"], "installed"]);
-  assert.deepEqual(stack.service.agentsFiles!.list(), [], "Settings → Agents file lists only the AGENTS.md Backroom wrote");
+  assert.equal(stack.service.agentsFiles!.list(fake.projects).find((entry) => entry.projectId === projectId)?.state, "differs", "Settings → Agents file lists the project's own AGENTS.md like any other");
 
   const tree = worktreeOf(dir);
   for (const [name, text] of Object.entries(ownFiles)) assert.equal(read(join(tree, name)), text, `${name} in the new worktree`);

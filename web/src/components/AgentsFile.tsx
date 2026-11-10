@@ -13,18 +13,18 @@ const folderName = (folder: string): string => folder.split("/").filter(Boolean)
 /** What Apply does, said wherever it is offered. */
 const APPLY_SAYS = "Apply replaces the whole file, the project's own wording included, with the saved template rendered for it.";
 
-const STATE_LABEL: Record<AgentsFileEntry["state"], string> = { same: "same as the template", differs: "differs", removed: "removed", blocked: "blocked" };
+const STATE_LABEL: Record<AgentsFileEntry["state"], string> = { same: "same as the template", differs: "differs", none: "no AGENTS.md", blocked: "blocked" };
 const STATE_TITLE: Record<AgentsFileEntry["state"], string> = {
   same: "The project's AGENTS.md is the saved template rendered for it.",
-  differs: "The project's AGENTS.md differs from the saved template rendered for it: edited in the project, or written from an earlier template.",
-  removed: "AGENTS.md is gone from the project's folder; Backroom does not write it again.",
+  differs: "The project's AGENTS.md differs from the saved template rendered for it: written by hand, edited in the project, or written from an earlier template.",
+  none: "The project's folder holds no AGENTS.md; Apply makes none.",
   blocked: "Backroom leaves this file alone.",
 };
 
 /**
  * Settings → Agents file. Instructions (src/app/agentsFile.ts): the switch for new rooms, the template they
- * write with Save and Reset to default, and every project where Backroom wrote AGENTS.md with its state against the saved
- * template, and for the ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the
+ * write with Save and Reset to default, and every one of T3's projects with its AGENTS.md's state against the saved
+ * template, whoever wrote it, and for the ones that differ the diff dialog, the one Apply is in (Show diff and Apply… both open it, as the
  * overview's mark does). Diff and Apply use the saved template, never the draft in the textarea. The packs' standing
  * lines that {skills} becomes are Settings → Skills' (SkillsDialog.tsx).
  */
@@ -114,8 +114,8 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
             />
             <span className="hint">
               {template.custom ? "This is your template." : "This is Backroom's template; change it to your liking."} <code>{"{checks}"}</code> is filled per project with the checks its package scripts or Makefile name; <code>{"{skills}"}</code>, on a line of its own, is
-              one line per skill pack with a standing line (Settings → Skills), and goes when none has one, so a change there shows written projects as differing. The file is written
-              once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; the projects already written are listed below with their state.
+              one line per skill pack with a standing line (Settings → Skills), and goes when none has one, so a change there shows the projects written from it as differing. The file is written
+              once, when a project&rsquo;s first room is made, so a change reaches only projects written afterwards; every project is listed below with its own AGENTS.md&rsquo;s state.
             </span>
             <span className="task-actions">
               <button type="button" className="small primary" disabled={saving || template.text.trim().length === 0 || !dirty} onClick={() => void save(template.text.trim())}>
@@ -127,20 +127,20 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
             </span>
           </label>
         ) : null}
-        <section className="agents-file-projects" aria-label="Projects where Backroom wrote AGENTS.md">
-          <h4 className="agents-file-heading">Projects written</h4>
+        <section className="agents-file-projects" aria-label="Every project's AGENTS.md">
+          <h4 className="agents-file-heading">Projects</h4>
           <p className="hint">
             {APPLY_SAYS} Nothing applies without your click; CLAUDE.md, git and the worktrees that already hold a copy keep theirs.
             {dirty ? " Save the template first: Show diff and Apply use the saved one." : ""}
           </p>
           {listError ? <p className="status-error">{listError}</p> : null}
           {entries === null && !listError ? <p className="mono muted">reading the projects…</p> : null}
-          {entries?.length === 0 ? <p className="muted">Backroom has written AGENTS.md in no project yet.</p> : null}
+          {entries?.length === 0 ? <p className="muted">T3 has no projects yet.</p> : null}
           {entries && entries.length > 0 ? (
             <ul className="agents-file-list">
               {entries.map((entry) => (
-                <li key={entry.folder} className="agents-file-row" data-state={entry.state}>
-                  <span className="agents-file-name">{entry.title ?? folderName(entry.folder)}</span>
+                <li key={entry.projectId} className="agents-file-row" data-state={entry.state}>
+                  <span className="agents-file-name">{entry.title || folderName(entry.folder)}</span>
                   <span className="agents-file-folder mono muted" title={entry.folder}>
                     {entry.folder}
                   </span>
@@ -158,7 +158,6 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
                     </span>
                   ) : null}
                   {entry.state === "blocked" && entry.reason ? <span className="agents-file-reason hint">{entry.reason}</span> : null}
-                  {entry.state === "removed" ? <span className="agents-file-reason hint">Backroom does not write it again.</span> : null}
                 </li>
               ))}
             </ul>
@@ -179,21 +178,21 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
  * One project's AGENTS.md against the saved template rendered for it, drawn as the Git tab draws a diff, with Apply at
  * its end. Apply sends the digests of what this dialog showed: the service refuses it when either side changed since.
  */
-export function AgentsFileDiffDialog({ entry, onClose }: { entry: Pick<AgentsFileEntry, "folder" | "title">; onClose: () => void }) {
+export function AgentsFileDiffDialog({ entry, onClose }: { entry: Pick<AgentsFileEntry, "projectId" | "folder" | "title">; onClose: () => void }) {
   const { toast } = useToast();
   const [result, setResult] = useState<AgentsFileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    api.agentsFileDiff(entry.folder).then(
+    api.agentsFileDiff(entry.projectId).then(
       (value) => !cancelled && setResult(value),
       (caught: unknown) => !cancelled && setError(message(caught)),
     );
     return () => {
       cancelled = true;
     };
-  }, [entry.folder]);
+  }, [entry.projectId]);
   const close = () => {
     reloadAgentsFiles();
     onClose();
@@ -203,7 +202,7 @@ export function AgentsFileDiffDialog({ entry, onClose }: { entry: Pick<AgentsFil
     setApplying(true);
     setError(null);
     try {
-      await api.command({ type: "agentsFile.apply", folder: result.folder, fileDigest: result.fileDigest, templateDigest: result.templateDigest });
+      await api.command({ type: "agentsFile.apply", projectId: result.projectId, fileDigest: result.fileDigest, templateDigest: result.templateDigest });
       toast(`AGENTS.md in ${result.folder} now holds the saved template`, "success");
       close();
     } catch (caught) {
@@ -212,7 +211,7 @@ export function AgentsFileDiffDialog({ entry, onClose }: { entry: Pick<AgentsFil
     }
   };
   return (
-    <Dialog title={`AGENTS.md in ${entry.title ?? folderName(entry.folder)}`} onClose={close} wide>
+    <Dialog title={`AGENTS.md in ${entry.title || folderName(entry.folder)}`} onClose={close} wide>
       <p className="git-diff-source mono muted">{entry.folder} · − the project&rsquo;s file, + the saved template rendered for it</p>
       {!result && !error ? <p className="mono muted">reading the diff…</p> : null}
       {result && result.state === "same" ? <p className="muted">The project&rsquo;s file is the saved template rendered for it: nothing to apply.</p> : null}
@@ -237,14 +236,14 @@ export function AgentsFileDiffDialog({ entry, onClose }: { entry: Pick<AgentsFil
   );
 }
 
-/** The overview's quiet mark on a project heading whose Backroom-written AGENTS.md differs from the saved template. */
+/** The overview's quiet mark on a project heading whose AGENTS.md differs from the saved template. */
 export function AgentsFileMark({ entry, onOpen }: { entry: AgentsFileEntry; onOpen: () => void }) {
   return (
     <button
       type="button"
       className="tag ov-agents-mark"
-      title="This project's AGENTS.md, written by Backroom, differs from the saved template (Settings → Agents file). Click for the diff; nothing changes unless you apply it."
-      aria-label={`AGENTS.md differs from the template in ${entry.title ?? folderName(entry.folder)}: show the diff`}
+      title="This project's AGENTS.md differs from the saved template (Settings → Agents file). Click for the diff; nothing changes unless you apply it."
+      aria-label={`AGENTS.md differs from the template in ${entry.title || folderName(entry.folder)}: show the diff`}
       onClick={onOpen}
       data-nav="ov"
       data-nav-key={`head:agents:${entry.projectId}`}

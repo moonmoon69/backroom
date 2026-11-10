@@ -290,9 +290,8 @@ export class RoomService {
         else this.repos.setKv(AGENTS_TEXT_KEY, command.text);
         return { type: "settings.updated" };
       case "agentsFile.apply": {
-        if ((command.projectId === undefined) === (command.folder === undefined)) throw new RoomError("bad_request", "agentsFile.apply takes a projectId or a folder");
         if (!this.agentsFiles) throw new RoomError("agents_file_refused", "this service writes no agents files", 409);
-        return { type: "agentsFile.applied", file: await this.agentsFiles.apply(command) };
+        return { type: "agentsFile.applied", file: await this.agentsFiles.apply(command, await this.adapter.listProjects()) };
       }
       case "pack.add":
         return { type: "pack.updated", pack: await this.requirePacks().add(command.url), unlinked: [] };

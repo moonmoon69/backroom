@@ -624,17 +624,14 @@ export interface AgentsFileWritten {
   hook: "installed" | "ours" | "own-hook" | "hooks-path" | "not-main" | "no-exclude" | "failed" | null;
 }
 
-/** One project folder where Backroom wrote AGENTS.md, against the saved template rendered for it (GET /api/agents-files). */
+/** One of T3's projects with its AGENTS.md against the saved template rendered for it (GET /api/agents-files). */
 export interface AgentsFileEntry {
   projectId: string;
   folder: string;
-  /** blocked: the folder is not on this machine, or AGENTS.md is no longer a plain file of its own; Apply is refused. */
-  state: "same" | "differs" | "removed" | "blocked";
+  /** none: the folder holds no AGENTS.md; blocked: the folder is not here, or AGENTS.md is not a plain file of its own. Diff and Apply for same and differs only. */
+  state: "same" | "differs" | "none" | "blocked";
   reason?: string;
-  /** The project's title while T3 has it. */
-  title: string | null;
-  writtenAt: string;
-  appliedAt: string | null;
+  title: string;
 }
 
 /** A project's AGENTS.md against the saved template rendered for it, with the digests agentsFile.apply takes back. */
@@ -1433,7 +1430,7 @@ export type RoomCommand =
   /** Settings → Agents file: the template new rooms write ({checks} filled per project); null goes back to Backroom's. */
   | { type: "agentsFile.text.set"; text: string | null }
   /** Apply the saved template to one project's AGENTS.md, bound to the diff the user looked at. */
-  | { type: "agentsFile.apply"; projectId?: string | undefined; folder?: string | undefined; fileDigest: string; templateDigest: string }
+  | { type: "agentsFile.apply"; projectId: string; fileDigest: string; templateDigest: string }
   /** Settings → Skills (src/app/packs.ts): a pack cloned from a URL, removed, checked now, moved to the commit looked at. */
   | { type: "pack.add"; url: string }
   | { type: "pack.remove"; name: string }

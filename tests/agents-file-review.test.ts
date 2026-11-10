@@ -21,31 +21,31 @@ async function fixture(t: TestContext) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   const files = new AgentsFiles(stack.repos, { onlyUnder: [allowed] });
-  assert.ok(await files.roomCreated({ id: "review-project", workspaceRoot: folder }));
+  const projects = [{ id: "review-project", title: "review", workspaceRoot: folder }];
   fs.writeFileSync(join(folder, "AGENTS.md"), "# Reviewed project wording\n");
   fs.writeFileSync(join(outside, "AGENTS.md"), "# Reviewed project wording\n");
   stack.repos.setKv(AGENTS_TEXT_KEY, "# Replacement template");
-  const seen = await files.diff({ projectId: "review-project" });
+  const seen = await files.diff("review-project", projects);
   const redirect = () => {
     fs.renameSync(folder, folder + "-original");
     fs.symlinkSync(outside, folder, "dir");
   };
-  return { root, allowed, folder, outside, stack, files, seen, redirect };
+  return { root, allowed, folder, outside, stack, files, projects, seen, redirect };
 }
 
-test("review: a recorded folder redirected outside onlyUnder is blocked for state and diff reads", async (t) => {
+test("review: a project folder redirected outside onlyUnder is blocked for state and diff reads", async (t) => {
   const f = await fixture(t);
   f.redirect();
-  assert.equal(f.files.list()[0]?.state, "blocked", "a canonical record must not follow its folder's replacement link");
-  await assert.rejects(f.files.diff({ projectId: "review-project" }));
+  assert.equal(f.files.list(f.projects)[0]?.state, "blocked", "a folder resolved outside onlyUnder is never read");
+  await assert.rejects(f.files.diff("review-project", f.projects));
 });
 
-test("review: Apply cannot follow a recorded folder's replacement link outside onlyUnder", async (t) => {
+test("review: Apply cannot follow a project folder's replacement link outside onlyUnder", async (t) => {
   const f = await fixture(t);
   f.redirect();
   let refused = false;
   try {
-    await f.files.apply({ projectId: "review-project", fileDigest: f.seen.fileDigest, templateDigest: f.seen.templateDigest });
+    await f.files.apply({ projectId: "review-project", fileDigest: f.seen.fileDigest, templateDigest: f.seen.templateDigest }, f.projects);
   } catch {
     refused = true;
   }
@@ -58,7 +58,7 @@ test("review: a folder link swapped in after comparison cannot redirect Apply's 
   const racing = new AgentsFiles(f.stack.repos, { onlyUnder: [f.allowed], beforeWrite: f.redirect });
   let refused = false;
   try {
-    await racing.apply({ folder: f.folder, fileDigest: f.seen.fileDigest, templateDigest: f.seen.templateDigest });
+    await racing.apply({ projectId: "review-project", fileDigest: f.seen.fileDigest, templateDigest: f.seen.templateDigest }, f.projects);
   } catch {
     refused = true;
   }
@@ -85,8 +85,8 @@ test("review: O_NOFOLLOW blocks a state-read link swapped in after lstat", async
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  const entry = f.files.list()[0];
+  const entry = f.files.list(f.projects)[0];
   assert.equal(swapped, true);
   assert.equal(entry?.state, "blocked", "a successful lstat is insufficient if a link appears before open");
-  assert.match(entry?.reason ?? "", /link now/);
+  assert.match(entry?.reason ?? "", /is a link/);
 });

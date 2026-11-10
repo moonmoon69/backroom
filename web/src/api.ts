@@ -170,10 +170,10 @@ export const api = {
   skills: (): Promise<SkillsResponse> => get("/api/skills"),
   /** What a pack's update to `commit` brings. */
   packUpdate: (name: string, commit: string): Promise<PackUpdateDetail> => get(`/api/skills/packs/${encodeURIComponent(name)}/update?commit=${commit}`),
-  /** Every project folder where Backroom wrote AGENTS.md, with its state against the saved template. */
+  /** Every one of T3's projects, with its AGENTS.md's state against the saved template. */
   agentsFiles: (): Promise<AgentsFileEntry[]> => get("/api/agents-files"),
   /** One project's AGENTS.md against the saved template rendered for it. */
-  agentsFileDiff: (folder: string): Promise<AgentsFileDiff> => get(`/api/agents-files/diff?${new URLSearchParams({ folder })}`),
+  agentsFileDiff: (projectId: string): Promise<AgentsFileDiff> => get(`/api/agents-files/diff?${new URLSearchParams({ projectId })}`),
   /** Reasons designating this member may not work (plan mode, approvals, an untried harness); it is allowed anyway. */
   consigliereWarnings: (roomId: string, participantId: string): Promise<{ warnings: string[] }> =>
     get(`/api/rooms/${encodeURIComponent(roomId)}/participants/${encodeURIComponent(participantId)}/consigliere-warnings`),
