@@ -1,22 +1,19 @@
 /**
  * Updates for the sidebar's Updates popup: Backroom itself (src/app/backroomUpdate.ts), T3 and its harnesses. Nothing
  * updates by itself: an update starts only when the user asks for that one. The harnesses' versions are T3's own checks.
- * T3's and Backroom's newest releases come from npm, each on the channel its running version is on (nightly, preview or
- * latest), looked up at most once an hour.
+ * T3's newest release comes from npm, on the channel the running T3 is on (nightly, preview or latest); Backroom's from
+ * its own repository's tags. Each is looked up at most once an hour.
  */
 import type { T3Adapter, T3HarnessVersion } from "../adapter/types.ts";
 import { T3Unavailable } from "../adapter/types.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { BackroomUpdate, BackroomUpdateView } from "./backroomUpdate.ts";
 
-/** The version a package publishes under a dist-tag, or null when the package or the tag does not exist. */
-export type ReleaseLookup = (name: string, channel: string) => Promise<string | null>;
+/** The version published under a dist-tag of the `t3` package, or null when the tag does not exist. */
+export type ReleaseLookup = (channel: string) => Promise<string | null>;
 
-/** npm's dist-tags, from the registry npm is pointed at for this run (npm_config_registry), else npm's own. */
-export const npmDistTag: ReleaseLookup = async (name, channel) => {
-  const registry = new URL((process.env.npm_config_registry || "https://registry.npmjs.org/").replace(/\/?$/, "/"));
-  const response = await fetch(new URL(`-/package/${name.replace("/", "%2f")}/dist-tags`, registry), { signal: AbortSignal.timeout(8000), headers: { accept: "application/json" } });
-  if (response.status === 404) return null;
+export const npmLatestT3: ReleaseLookup = async (channel) => {
+  const response = await fetch("https://registry.npmjs.org/-/package/t3/dist-tags", { signal: AbortSignal.timeout(8000), headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`npm answered ${response.status}`);
   const version = ((await response.json()) as Record<string, unknown>)[channel];
   return typeof version === "string" ? version : null;
@@ -66,15 +63,18 @@ export interface Release {
   error: string | null;
 }
 
-/** One package's newest release on a channel, asked of npm at most once an hour (every 10 minutes after a failure). */
+/**
+ * A newest release, asked of its source at most once an hour (every 10 minutes after a failure), and again when the
+ * channel changes; a failure is shown as "<source>: <why>".
+ */
 export class ReleaseCache {
   private release: (Release & { channel: string }) | null = null;
-  private readonly name: string;
   private readonly lookup: ReleaseLookup;
+  private readonly source: string;
 
-  constructor(name: string, lookup: ReleaseLookup) {
-    this.name = name;
+  constructor(lookup: ReleaseLookup, source: string) {
     this.lookup = lookup;
+    this.source = source;
   }
 
   async latest(channel: string, force: boolean): Promise<Release> {
@@ -82,10 +82,10 @@ export class ReleaseCache {
     const fresh = cached && cached.channel === channel && Date.now() - cached.at < (cached.error ? RELEASE_RETRY_MS : RELEASE_TTL_MS);
     if (cached && fresh && !force) return cached;
     try {
-      this.release = { channel, version: await this.lookup(this.name, channel), at: Date.now(), error: null };
+      this.release = { channel, version: await this.lookup(channel), at: Date.now(), error: null };
     } catch (caught) {
       // Keep the last version known on this channel, and say why it could not be checked.
-      this.release = { channel, version: cached?.channel === channel ? cached.version : null, at: Date.now(), error: `npm: ${messageOf(caught)}` };
+      this.release = { channel, version: cached?.channel === channel ? cached.version : null, at: Date.now(), error: `${this.source}: ${messageOf(caught)}` };
     }
     return this.release;
   }
@@ -101,7 +101,7 @@ export interface ServerUpdateJob {
 }
 
 export interface UpdatesView {
-  /** Backroom itself: its version, the newest on its channel, and how it is updated. */
+  /** Backroom itself: its version, its newest release, and its update. */
   backroom: BackroomUpdateView;
   /** False while T3 does not answer: restarting into an update, or down. */
   reachable: boolean;
@@ -137,10 +137,10 @@ export class T3Updates {
   private readonly releases: ReleaseCache;
   readonly backroom: BackroomUpdate;
 
-  constructor(adapter: T3Adapter, backroom: BackroomUpdate, lookup: ReleaseLookup = npmDistTag) {
+  constructor(adapter: T3Adapter, backroom: BackroomUpdate, lookup: ReleaseLookup = npmLatestT3) {
     this.adapter = adapter;
     this.backroom = backroom;
-    this.releases = new ReleaseCache("t3", lookup);
+    this.releases = new ReleaseCache(lookup, "npm");
   }
 
   /** Versions and what can be updated. `fresh` reads T3 again instead of its copy from the last 20 seconds. */
@@ -183,11 +183,11 @@ export class T3Updates {
         job: this.serverJob ? { targetVersion: this.serverJob.targetVersion, state: this.serverJob.state, startedAt: this.serverJob.startedAt, finishedAt: this.serverJob.finishedAt, error: this.serverJob.error } : null,
       },
       harnesses,
-      available: (backroom.canUpdate && !this.backroom.running() ? 1 : 0) + (canUpdate && !running ? 1 : 0) + harnesses.filter((harness) => harness.updatable && !busy(harness)).length,
+      available: (backroom.newer && !this.backroom.running() ? 1 : 0) + (canUpdate && !running ? 1 : 0) + harnesses.filter((harness) => harness.updatable && !busy(harness)).length,
     };
   }
 
-  /** Check again now: T3 re-checks its harnesses, and npm is asked for T3's and Backroom's newest releases. */
+  /** Check again now: T3 re-checks its harnesses, npm is asked for T3's newest release, and Backroom's origin for its own. */
   async check(): Promise<UpdatesView> {
     await this.backroom.view(true);
     await this.adapter.refreshProviders();

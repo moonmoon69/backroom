@@ -50,28 +50,26 @@ In this tutorial we run Backroom on the computer where T3 Code runs, pair it wit
 
    It prints `"origin":"http://127.0.0.1:3773"`, or the port your T3 uses.
 
-3. Clone Backroom and build its page:
+3. Install Backroom with its install script:
 
    ```sh
-   git clone https://github.com/moonmoon69/backroom.git
-   cd backroom
-   npm install
-   npm run build:web
+   curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh
    ```
 
-   The build ends with a line such as `✓ built in 2.10s`.
+   It checks for git and Node 24, clones Backroom into `~/backroom` at its newest release, installs its packages with `npm ci` and builds its page. It ends with how to start it, such as `Backroom 0.1.0 is installed in /home/<you>/backroom. Start it with: cd /home/<you>/backroom && npm start`. To install into another folder, name it: `curl … | sh -s -- ~/Projects/backroom`.
 
 4. Start the service:
 
    ```sh
+   cd ~/backroom
    npm start
    ```
 
-   It logs the T3 address and whether it holds a credential:
+   It logs the T3 address and whether it holds a credential, then its version:
 
    ```
    [backroom] … T3 base URL http://127.0.0.1:3773; credentials missing, renewed by pairing again
-   [backroom] … listening on http://127.0.0.1:4400 (db /…/backroom/data/rooms.sqlite)
+   [backroom] … Backroom 0.1.0 listening on http://127.0.0.1:4400 (db /…/backroom/data/rooms.sqlite, page /…/backroom/web/dist)
    ```
 
    If the first line ends `renewed by Backroom with T3's CLI`, T3 runs as a service on this computer, and Backroom pairs itself within seconds. Skip to step 6.
@@ -88,7 +86,7 @@ In this tutorial we run Backroom on the computer where T3 Code runs, pair it wit
 
    It prints a `PASS` line for each thing it reads, such as `PASS protocol: orchestration protocol 2`, and ends with `read-only checks passed`. On the page, the **T3** button in the overview's header has a green dot.
 
-Now go on to [Your first room](#your-first-room). The service listens on `127.0.0.1` only, so no other machine reaches it. [Operations](docs/operations.md) has the rest about the credential, the settings and keeping the service running.
+Now go on to [Your first room](#your-first-room). The service listens on `127.0.0.1` only, so no other machine reaches it. Backroom keeps its data in its folder's `data`. When a new release is out, Backroom's row under **Updates** in the overview's header says so and offers **Update**; Backroom stops after it, so start it again with `npm start`. [Operations](docs/operations.md) has the rest about the credential, the settings, updating and keeping the service running.
 
 ## Remote setup
 
@@ -122,7 +120,11 @@ In this tutorial we set up a headless Linux box that runs T3 Code and Backroom a
 
    The local address reads `127.0.0.1:3773`. If it reads `0.0.0.0:3773`, LAN access is on, and `t3 status` says `Local network  on`. Turn it off with `npx t3 up --no-lan`, and check again.
 
-4. Clone Backroom and build its page, as in step 3 of [Local setup](#local-setup), here into `~/Projects/backroom`.
+4. Install Backroom with its install script, as in step 3 of [Local setup](#local-setup), here into `~/Projects/backroom`:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh -s -- ~/Projects/backroom
+   ```
 
 5. Find the `npm` that runs Node 24:
 
@@ -162,7 +164,7 @@ In this tutorial we set up a headless Linux box that runs T3 Code and Backroom a
    systemctl --user is-active backroom.service
    ```
 
-   The last command prints `active`.
+   The last command prints `active`. `Restart=always` also brings Backroom back after an update.
 
 7. Check that Backroom paired itself. On T3's machine Backroom issues its own credential with T3's command line and renews it, so there is no link to paste:
 
@@ -214,10 +216,10 @@ In this tutorial we set up a headless Linux box that runs T3 Code and Backroom a
 
     ![A shared browser's screen, opened from its watch link: Chrome on the box's virtual screen, showing example.com](assets/readme/browser-screen.png)
 
-To update Backroom later, run this in its folder:
+To update Backroom later, open **Updates** in the overview's header. When a new release is out, Backroom's row shows it and offers **Update**. Backroom moves its folder to the release with its install script and stops, and the unit starts it again on the new version. The row also shows the same update to run by hand:
 
 ```sh
-git pull && npm install && npm run build:web && systemctl --user restart backroom.service
+sh ~/Projects/backroom/install.sh ~/Projects/backroom && systemctl --user restart backroom.service
 ```
 
 Now go on to [Your first room](#your-first-room).

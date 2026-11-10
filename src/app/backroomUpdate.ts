@@ -1,25 +1,27 @@
 /**
- * Backroom's own update, its row in the Updates popup. The newest release of its package (package.json's name) on its
- * channel comes from the same lookup as T3's. Only a copy in npm's global folder updates itself (src/app/install.ts):
- * when the user asks, it runs the npm that came with its node to install its own package at the version the lookup
- * returned (nothing a request names) into the global folder that holds it, then stops, and a service manager that restarts it brings it back on the new
- * version. A failed install leaves the copy as it was (npm puts a package's folder back when it cannot finish) and says
- * why. A checkout is updated with git and a copy elsewhere by the user: their rows say how.
+ * Backroom's own update, its row in the Updates popup. A release is a tag v<version> on the repository; the newest is
+ * read from the tags of this copy's origin remote (a prerelease only for a copy that runs one), at most once an hour and
+ * on Check now. When the user asks, the service runs the copy's own install.sh on the copy's own folder, nothing a
+ * request names: the script is the one owner of whether the copy may move (it refuses one with work of its own) and of
+ * putting it back when a step fails. Once the script has succeeded, the service reads the version now in the copy's
+ * package.json, says so, and stops; a service manager that restarts it brings it back on that version, and a copy
+ * started by hand is started again by the user. The same command, to run by hand, is on the row.
  */
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { Repos } from "../db/repos.ts";
 import { roomForKey } from "../browser/catalog.ts";
+import { COPY_ROOT, COPY_VERSION } from "../config.ts";
 import type { Projection } from "../engine/types.ts";
 import { RoomError } from "../domain/errors.ts";
+import { runGit } from "../git/reader.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
-import type { Install, InstallKind } from "./install.ts";
-import { ReleaseCache, compareVersions, messageOf, releaseChannel, type ReleaseLookup } from "./t3Updates.ts";
+import { ReleaseCache, compareVersions, messageOf } from "./t3Updates.ts";
 
 export interface BackroomUpdateJob {
   targetVersion: string;
-  /** installing: npm is at work; restarting: installed, and this copy stops; failed: the copy is as it was. */
+  /** installing: the script is at work; restarting: installed, and this copy stops; failed: the script says why. */
   state: "installing" | "restarting" | "failed";
   startedAt: string;
   finishedAt: string | null;
@@ -28,139 +30,190 @@ export interface BackroomUpdateJob {
 
 export interface BackroomUpdateView {
   version: string;
-  install: InstallKind;
-  channel: string;
+  /** The copy's folder, which its update moves. */
+  folder: string;
   latest: string | null;
   newer: boolean;
-  /** Backroom can install the newer version itself, from here. */
-  canUpdate: boolean;
-  /** When it cannot: what to do instead. */
-  manual: string | null;
-  /** While it can: who works now, named in the confirmation (members with a running turn or a browser tab open). */
+  /** The update, to run on this machine by hand. */
+  command: string;
+  /** While a newer release is offered: who works now, named in the confirmation (a running turn, a browser tab open). */
   busy: string[];
   releaseCheckedAt: string | null;
   releaseError: string | null;
   job: BackroomUpdateJob | null;
 }
 
-/** Runs npm with these arguments; rejects with what npm said when it fails. */
-export type NpmRunner = (args: string[]) => Promise<void>;
+const RELEASE_TAG = /^refs\/tags\/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+const isPrerelease = (version: string) => version.split("+")[0]!.includes("-");
 
-/** The npm that came with the node running this copy (Install.npmCli), run by that node, its output kept for a failure. */
-export function nodeNpm(npmCli: string): NpmRunner {
-  return (args) =>
+/**
+ * The newest release on the origin remote of the checkout at `root`: its highest tag v<version>, a prerelease only when
+ * `running` is one; null when it has none. git asks for no credential, and a remote that does not answer in time fails.
+ */
+export async function originRelease(root: string, running: string, timeoutMs = 10_000): Promise<string | null> {
+  try {
+    await runGit(root, ["remote", "get-url", "origin"]);
+  } catch {
+    throw new Error("this copy has no origin remote");
+  }
+  const started = Date.now();
+  let refs: string;
+  try {
+    refs = await runGit(root, ["ls-remote", "--tags", "--refs", "origin"], { timeoutMs });
+  } catch (caught) {
+    throw new Error(Date.now() - started >= timeoutMs ? `origin did not answer within ${Math.round(timeoutMs / 1000)} s` : `origin did not answer: ${messageOf(caught)}`);
+  }
+  let newest: string | null = null;
+  for (const line of refs.split("\n")) {
+    const version = RELEASE_TAG.exec(line.split("\t")[1] ?? "")?.[1];
+    if (!version || (isPrerelease(version) && !isPrerelease(running))) continue;
+    if (!newest || compareVersions(version, newest) > 0) newest = version;
+  }
+  return newest;
+}
+
+/** Runs the install script on the copy's folder; rejects with the script's last lines when it fails or is stopped. */
+export type ScriptRunner = () => Promise<void>;
+
+const SCRIPT_TIMEOUT_MS = 20 * 60_000;
+const KEPT_LINES = 40;
+
+/**
+ * The copy's own install.sh on its own folder, with the node that runs this copy first on PATH (npm ci and the build
+ * use it). It runs in a process group of its own: at the timeout the whole group gets TERM, npm included, and the
+ * script puts the copy back before it exits.
+ */
+export function copyScript(root: string, timeoutMs = SCRIPT_TIMEOUT_MS): ScriptRunner {
+  return () =>
     new Promise((resolve, reject) => {
-      execFile(process.execPath, [npmCli, ...args], { timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (!error) return resolve();
-        const said = `${stderr}\n${stdout}`.trim().split("\n").slice(-12).join("\n");
-        reject(new Error(said || error.message));
+      const child = spawn("sh", [join(root, "install.sh"), root], {
+        cwd: root,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`, GIT_TERMINAL_PROMPT: "0" },
+      });
+      let output = "";
+      const keep = (chunk: Buffer) => {
+        output = (output + chunk.toString("utf8")).slice(-64 * 1024);
+      };
+      child.stdout.on("data", keep);
+      child.stderr.on("data", keep);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          process.kill(-child.pid!, "SIGTERM");
+        } catch {}
+      }, timeoutMs);
+      const last = () => output.trim().split("\n").slice(-KEPT_LINES).join("\n");
+      child.on("error", (error) => (clearTimeout(timer), reject(error)));
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0 && !timedOut) return resolve();
+        const why = timedOut ? `install.sh did not finish within ${timeoutMs >= 60_000 ? `${Math.round(timeoutMs / 60_000)} minutes` : `${Math.round(timeoutMs / 1000)} s`}` : `install.sh ${signal ? `was stopped by ${signal}` : `exited with ${code}`}`;
+        reject(new Error(last() ? `${why}:\n${last()}` : why));
       });
     });
 }
-
-/** A version npm could name: digits and dots, with prerelease and build parts of letters, digits, dots and dashes. */
-const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** How long an installed copy keeps answering before it stops, so a page polling while the update runs reads that it is installed. */
 const STOP_DELAY_MS = 3000;
 
 export interface BackroomUpdateOptions {
-  install: Install;
-  lookup: ReleaseLookup;
-  /** npm for the install; by default the one beside this copy's node. */
-  npm?: NpmRunner;
+  /** The copy: its folder and the version it runs (this checkout's by default). */
+  root?: string;
+  version?: string;
+  /** Its newest release; by default its origin's tags. */
+  lookup?: () => Promise<string | null>;
+  /** Its update; by default its own install.sh on its folder. */
+  run?: ScriptRunner;
   /** Who works now, for the confirmation. */
   busy?: () => Promise<string[]>;
-  /** The new version is installed: stop this copy. */
+  /** The update is installed: stop this copy. */
   installed?: (version: string) => void;
   stopDelayMs?: number;
   log?: (message: string, detail?: unknown) => void;
 }
 
+const quote = (path: string) => (/^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", `'\\''`)}'`);
+
 export class BackroomUpdate {
+  readonly root: string;
+  readonly version: string;
   private readonly releases: ReleaseCache;
+  private readonly run: ScriptRunner;
   private job: BackroomUpdateJob | null = null;
   /** An Update request is between its first check and its job: the release lookup is awaited. */
   private claimed = false;
   private readonly options: BackroomUpdateOptions;
 
-  constructor(options: BackroomUpdateOptions) {
+  constructor(options: BackroomUpdateOptions = {}) {
     this.options = options;
-    this.releases = new ReleaseCache(options.install.name, options.lookup);
+    this.root = options.root ?? COPY_ROOT;
+    this.version = options.version ?? COPY_VERSION;
+    const lookup = options.lookup ?? (() => originRelease(this.root, this.version));
+    this.releases = new ReleaseCache(() => lookup(), "git");
+    this.run = options.run ?? copyScript(this.root);
   }
 
-  /** The row. `force` asks npm again instead of the copy from the last hour. */
+  /** The command the row shows, and the one Update runs. */
+  get command(): string {
+    return `sh ${quote(join(this.root, "install.sh"))} ${quote(this.root)}`;
+  }
+
+  /** The row. `force` asks the origin again instead of the copy from the last hour. */
   async view(force: boolean): Promise<BackroomUpdateView> {
-    const { kind, name, version } = this.options.install;
-    const channel = releaseChannel(version);
-    const release = await this.releases.latest(channel, force);
-    const newer = Boolean(release.version && compareVersions(release.version, version) > 0);
-    const canUpdate = newer && kind === "global";
-    const manual =
-      kind === "checkout"
-        ? "A git checkout: Backroom does not update it. Update it with git, then npm install, npm run build:web and a restart."
-        : newer && !canUpdate
-          ? `Backroom updates itself only in npm's global folder. Start ${release.version} with npx ${name}@${release.version}, or install it with npm install --global ${name}.`
-          : null;
+    const release = await this.releases.latest("", force);
+    const newer = Boolean(release.version && compareVersions(release.version, this.version) > 0);
     return {
-      version,
-      install: kind,
-      channel,
+      version: this.version,
+      folder: this.root,
       latest: release.version,
       newer,
-      canUpdate,
-      manual,
-      busy: canUpdate && !this.running() && this.options.busy ? await this.options.busy() : [],
+      command: this.command,
+      busy: newer && !this.running() && this.options.busy ? await this.options.busy() : [],
       releaseCheckedAt: new Date(release.at).toISOString(),
       releaseError: release.error,
       job: this.job,
     };
   }
 
-  /** An update is under way: a request checking the release, npm installing, or the copy about to stop on the new version. */
+  /** An update is under way: a request checking the release, the script at work, or the copy about to stop on the new version. */
   running(): boolean {
     return this.claimed || this.job?.state === "installing" || this.job?.state === "restarting";
   }
 
-  /**
-   * Install the newest release, which must be `targetVersion`, the one the popup showed. The version installed is the
-   * lookup's; the request's is only compared with it.
-   */
+  /** Run the update when the newest release is `targetVersion`, the one the popup showed; the request only names it to compare. */
   async update(targetVersion: string): Promise<BackroomUpdateView> {
-    const { kind, name, version, root, npmCli, prefix } = this.options.install;
     if (this.running()) throw new RoomError("update_running", `Backroom is already being updated${this.claimed ? "" : ` to ${this.job!.targetVersion}`}`, 409);
-    if (kind !== "global" || !npmCli || !prefix) throw new RoomError("not_updatable", "Backroom updates itself only when installed in npm's global folder", 409);
     // Claimed before the lookup is awaited, so a second request meanwhile is refused; given back by every refusal below.
     this.claimed = true;
     let job: BackroomUpdateJob;
-    let latest: string;
     try {
-      const release = await this.releases.latest(releaseChannel(version), false);
-      if (!release.version || !VERSION.test(release.version)) throw new RoomError("no_release", `No newer Backroom is known${release.error ? `: ${release.error}` : ""}`, 409);
-      latest = release.version;
-      if (latest !== targetVersion) throw new RoomError("stale_release", `The newest Backroom is now ${latest}; check the popup again`, 409);
-      if (compareVersions(latest, version) <= 0) throw new RoomError("up_to_date", `Backroom already runs ${version}`, 409);
-      job = { targetVersion: latest, state: "installing", startedAt: new Date().toISOString(), finishedAt: null, error: null };
+      const release = await this.releases.latest("", false);
+      if (!release.version) throw new RoomError("no_release", `No newer Backroom is known${release.error ? `: ${release.error}` : ""}`, 409);
+      if (release.version !== targetVersion) throw new RoomError("stale_release", `The newest Backroom is now ${release.version}; check the popup again`, 409);
+      if (compareVersions(release.version, this.version) <= 0) throw new RoomError("up_to_date", `Backroom already runs ${this.version}`, 409);
+      job = { targetVersion: release.version, state: "installing", startedAt: new Date().toISOString(), finishedAt: null, error: null };
       this.job = job;
     } finally {
       this.claimed = false;
     }
-    this.options.log?.(`updating Backroom ${version} → ${latest}`);
-    const npm = this.options.npm ?? nodeNpm(npmCli);
+    this.options.log?.(`updating Backroom ${this.version} → ${job.targetVersion}: ${this.command}`);
     const fail = (error: string) => {
       if (this.job === job) this.job = { ...job, state: "failed", finishedAt: new Date().toISOString(), error };
-      this.options.log?.(`Backroom's update to ${latest} failed; still on ${version}`, error);
+      this.options.log?.(`Backroom's update to ${job.targetVersion} failed; still on ${this.version}`, error);
     };
-    void npm(["install", "--global", "--prefix", prefix, "--no-fund", "--no-audit", `${name}@${latest}`]).then(() => {
-      let now: unknown = null;
+    void this.run().then(() => {
+      let now: string;
       try {
-        now = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: unknown }).version;
+        now = String((JSON.parse(readFileSync(join(this.root, "package.json"), "utf8")) as { version?: unknown }).version);
       } catch (caught) {
-        now = messageOf(caught);
+        return fail(`install.sh finished, but ${join(this.root, "package.json")} could not be read: ${messageOf(caught)}`);
       }
-      if (now !== latest) return fail(`npm finished, but ${root} holds ${String(now)}, not ${latest}`);
-      if (this.job === job) this.job = { ...job, state: "restarting", finishedAt: new Date().toISOString() };
-      setTimeout(() => this.options.installed?.(latest), this.options.stopDelayMs ?? STOP_DELAY_MS);
+      if (compareVersions(now, this.version) <= 0) return fail(`install.sh finished, but ${this.root} holds ${now}`);
+      if (this.job === job) this.job = { ...job, targetVersion: now, state: "restarting", finishedAt: new Date().toISOString() };
+      setTimeout(() => this.options.installed?.(now), this.options.stopDelayMs ?? STOP_DELAY_MS);
     }, (caught) => fail(messageOf(caught)));
     return this.view(false);
   }

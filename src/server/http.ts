@@ -151,9 +151,8 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       uiBuild = null;
     }
     return c.json({
-      // This copy's version (package.json's) and how it was installed (src/app/install.ts).
-      version: config.install.version,
-      install: config.install.kind,
+      // This copy's version: its package.json's, which its release tag names.
+      version: stack.updates.backroom.version,
       adapter: stack.adapter.kind,
       uiBuild,
       t3: {

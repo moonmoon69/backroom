@@ -113,14 +113,16 @@ const Working = ({ children }: { children: ReactNode }) => (
 );
 
 /**
- * Backroom itself: its version, the newest on its channel, and, for a copy in npm's global folder, the update with a
- * confirmation naming who works now (it stops Backroom). A checkout or a copy elsewhere is told how to update instead.
+ * Backroom itself: its version, its newest release, and the update with a confirmation naming who works now (it moves
+ * the copy to the release with its install script and stops Backroom), beside the same command to run by hand.
  */
 function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting: boolean; onUpdate: (version: string) => void }) {
   const [confirming, setConfirming] = useState(false);
-  const { version, channel, latest, newer, canUpdate, manual, busy, releaseError, job } = view.backroom;
+  const { version, folder, latest, newer, command, busy, releaseError, job } = view.backroom;
   const running = job?.state === "installing" || job?.state === "restarting";
-  const offer = canUpdate && latest && !running;
+  const offer = newer && latest && !running;
+  // The script's last line says why it failed; the lines before it are its output.
+  const reason = job?.state === "failed" ? (job.error ?? "").trim().split("\n").at(-1) : null;
   const versions = (
     <>
       {version}
@@ -138,18 +140,28 @@ function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting
     </button>
   ) : null;
   return (
-    <Row name="Backroom" tag={channel} versions={versions} action={action}>
-      {job?.state === "installing" ? <Working>Installing {job.targetVersion} with npm…</Working> : null}
+    <Row name="Backroom" versions={versions} action={action}>
+      {job?.state === "installing" ? <Working>Installing {job.targetVersion} with install.sh…</Working> : null}
       {job?.state === "restarting" ? (
         <div className="update-status update-ok">
-          Installed {job.targetVersion}. Backroom stops now: a service manager that restarts it brings it back on {job.targetVersion}; started by hand, start it again with <code>backroom start</code>.
+          Installed {job.targetVersion}. Backroom stops now: a service manager that restarts it brings it back on {job.targetVersion}; started by hand, start it again with <code>npm start</code> in {folder}.
         </div>
       ) : null}
-      {job?.state === "failed" ? <div className="update-status status-error">Still on {version}: {job.error}</div> : null}
+      {job?.state === "failed" ? (
+        <div className="update-status status-error">
+          Still on {version}: {reason}
+          {job.error && job.error.trim() !== reason ? (
+            <details className="update-output">
+              <summary>Output</summary>
+              <pre>{job.error}</pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
       {offer && confirming ? (
         <div className="update-confirm">
           <span>
-            Backroom installs {latest} with npm and stops; a service manager that restarts it brings it back on {latest}, and started by hand you start it again. Turns that are running carry on in T3; a browser command running when it stops fails.{" "}
+            Backroom moves {folder} to {latest} with its install script, installs its packages, builds its page and stops; a service manager that restarts it brings it back on {latest}, and started by hand you start it again. A copy with changes of its own is left as it is, and a step that fails puts it back. Turns that are running carry on in T3; a browser command running meanwhile can fail.{" "}
             {busy.length > 0 ? `Working now: ${busy.join("; ")}.` : "Nobody is working now."}
           </span>
           <span className="update-confirm-actions">
@@ -170,8 +182,12 @@ function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting
           </span>
         </div>
       ) : null}
-      {manual ? <div className="update-status muted">{manual}</div> : null}
-      {!newer && !running && !job ? <div className="update-status muted">{releaseError ? `Could not check for a newer Backroom (${releaseError})` : latest ? "Up to date" : `No release on npm's ${channel} tag yet`}</div> : null}
+      {offer ? (
+        <div className="update-status muted">
+          Or on this machine run <code>{command}</code>, then restart Backroom.
+        </div>
+      ) : null}
+      {!newer && !running && !job ? <div className="update-status muted">{releaseError ? `Could not check for a newer Backroom (${releaseError})` : latest ? "Up to date" : "No release yet"}</div> : null}
     </Row>
   );
 }

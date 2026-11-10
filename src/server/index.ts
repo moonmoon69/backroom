@@ -16,7 +16,7 @@ import { seatsWithLiveRuns } from "../runtime/index.ts";
 import { threadHasWork } from "../runtime/t3.ts";
 import { mainCheckoutData } from "../browser/ports.ts";
 import { BrowserTools } from "../browser/tools.ts";
-import { loadConfig, readT3RuntimeOrigin } from "../config.ts";
+import { COPY_ROOT, COPY_VERSION, loadConfig, readT3RuntimeOrigin } from "../config.ts";
 import { withFakeControls } from "./fakeControls.ts";
 import { createHttpApp } from "./http.ts";
 
@@ -67,9 +67,8 @@ if (config.adapter === "fake") {
 }
 
 // Agents run bin/rooms-browser from their shell; it finds the service through data/browser-api.json beside it (URL and a
-// token written at every start). With a data directory elsewhere (a package's ~/.backroom), the briefing passes that
-// file's path along.
-const repoRoot = config.install.root;
+// token written at every start). With a data directory elsewhere, the briefing passes that file's path along.
+const repoRoot = COPY_ROOT;
 const browserApiFile = join(config.dataDir, "browser-api.json");
 const quote = (path: string) => (/\s/.test(path) ? `'${path}'` : path);
 const browserCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" : `ROOMS_BROWSER_API=${quote(browserApiFile)} `}${quote(join(repoRoot, "bin", "rooms-browser"))}`;
@@ -77,17 +76,16 @@ const boardCommand = `${resolve(config.dataDir) === join(repoRoot, "data") ? "" 
 let browserTools: BrowserTools | null = null;
 // A Backroom run from a worktree (a throwaway for tests and rehearsals) also records the ports of the browsers in the
 // main checkout's data folder, the user's Backroom's, even before that one runs a version that records them itself.
-const userData = config.install.kind === "checkout" ? mainCheckoutData(repoRoot) : null;
+const userData = mainCheckoutData(repoRoot);
 const knownDataDirs = userData && resolve(userData) !== resolve(config.dataDir) ? [userData] : [];
 
 const stack = createStack({
   dbPath: config.dbPath,
   adapter,
-  install: config.install,
-  selfUpdate: {
+  backroom: {
     agentsWithTabs: async () => (browserTools ? (await Promise.all(stack.repos.listBrowsers().map((browser) => browserTools!.agentsWithTabs(browser.id)))).flat() : []),
     installed: (version) => {
-      log(`Backroom ${version} is installed; this copy stops now. A service manager that restarts it brings it back on ${version}; started by hand, start it again with: backroom start`);
+      log(`Backroom ${version} is installed; this copy stops now. A service manager that restarts it brings it back on ${version}; started by hand, start it again with npm start in ${repoRoot}`);
       shutdown();
     },
   },
@@ -177,7 +175,7 @@ stack.packs?.start();
 // The fake T3's test controls (scripts/rehearse.ts) answer under /api/fake/ on a fake adapter only.
 const fetch = adapter instanceof FakeT3Adapter ? withFakeControls(app.fetch, adapter) : app.fetch;
 const server = serve({ fetch, port: config.port, hostname: "127.0.0.1" }, (info) => {
-  log(`Backroom ${config.install.version} (${config.install.kind}) listening on http://127.0.0.1:${info.port} (db ${config.dbPath}, page ${config.webDistDir})`);
+  log(`Backroom ${COPY_VERSION} listening on http://127.0.0.1:${info.port} (db ${config.dbPath}, page ${config.webDistDir})`);
   // rooms-board needs the file too, so it is written whether or not this service runs browsers.
   {
     writeFileSync(browserApiFile, `${JSON.stringify({ url: `http://127.0.0.1:${info.port}`, token: browserApiToken }, null, 2)}\n`, { mode: 0o600 });

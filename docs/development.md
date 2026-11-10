@@ -1,6 +1,6 @@
 # Development
 
-How to work on Backroom itself: the commands, the browser rehearsal, the README's pictures, where the code is, and how the service works.
+How to work on Backroom itself: the commands, the browser rehearsal, the README's pictures, releases, where the code is, and how the service works.
 
 ## Commands
 
@@ -66,6 +66,23 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS
 | `pixel.png` | A room in the pixel look by night | Look → Pixel (Slate) with the dark theme and Members open |
 | `pairing.png` | The pairing panel | a second throwaway on the real adapter, with a data folder of its own and `T3_CLI=off`, so it holds no credential and issues none: `ROOMS_PORT=4477 ROOMS_DATA_DIR=/tmp/backroom-pairing/data T3_CLI=off ROOMS_BROWSER_MODE=off npm start` |
 
+## Releases
+
+A release is a tag `v<version>` on the repository, `<version>` being `package.json`'s. Copies find releases by their tags: `install.sh` installs and updates to the newest, and Backroom's row under **Updates** offers it ([Updating](operations.md#updating)). `package.json` is private, so npm refuses to publish it.
+
+To cut one, set the version, commit it, tag that commit and push both:
+
+```sh
+npm version <version> --no-git-tag-version   # package.json and package-lock.json
+git commit -am "Release <version>"
+git tag v<version>
+git push origin main v<version>
+```
+
+On the tag, `.github/workflows/release.yml` checks that the tag is `v` and `package.json`'s version, runs `npm run check`, the page's typecheck and its build, and makes a GitHub release with generated notes, marked as a prerelease for a version such as `0.3.0-beta.1`. A tag whose checks fail makes no release, but copies still see the tag. Delete it with `git push origin :refs/tags/v<version>` and `git tag -d v<version>`.
+
+To try `install.sh` before a release, point it at a scratch bare repository with made-up tags, and install into a scratch folder: `BACKROOM_REPO=/tmp/scratch/backroom.git sh install.sh /tmp/scratch/copy`.
+
 ## Where the code is
 
 | Path | Purpose |
@@ -86,7 +103,9 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS
 | `src/domain/skills.ts` | pstack and its two standing lines, the skill folders and who reads each, a roster row's identity |
 | `src/app/threadView.ts` | What is shown of a T3 thread, from its projection: one reply per run, the run in progress, requests, context, background work, changed files |
 | `src/usage` | What a thread used and would cost at list price, read from T3's database and the harnesses' transcripts (`threadCosts.ts`) |
-| `src/config.ts` | The service's settings, from environment variables and T3's runtime file |
+| `src/config.ts` | The service's settings, from environment variables and T3's runtime file; this copy's folder and version |
+| `src/app/t3Updates.ts`, `src/app/backroomUpdate.ts` | The Updates popup: T3's npm release lookup, T3's and its harnesses' updates, and Backroom's own row (its origin's release tags) and update (the copy's `install.sh`) |
+| `install.sh` | Installs a copy from GitHub at the newest release, or updates one; refuses a copy with work of its own and puts a copy back when its packages or page fail |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
 | `web/src/pixel.css`, `web/src/pixel` | The pixel look: its windows, by night and by day (`pixel.css`), and the capybara crew (`sprites.ts`, drawn by `components/MemberMark.tsx`) |
@@ -99,6 +118,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS
 | `scripts/pstack-fixture.ts` | Local stand-ins for skill packs, for the tests and the rehearsal: cursor/plugins in pstack's shape, and a pack with two skills and scripts no one may run |
 | `scripts/rehearse.ts` | The page rehearsed in a browser against a fake-T3 service of its own (`--step ui`, `room`, `keys`, or `all` for the three at once; `--only` and `--until` choose states, `--list` lists them; `rehearse-select.ts` chooses, `rehearse-keys.ts` is the keys step) |
 | `tests/` | Acceptance tests driven through the fake adapter |
+| `.github/workflows/release.yml` | The release on a tag `v<version>`: the checks, the page's build and a GitHub release |
 
 ## How it works
 

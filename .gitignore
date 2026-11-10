@@ -6,4 +6,3 @@ web/dist/
 data/
 *.log
 .DS_Store
-dist/

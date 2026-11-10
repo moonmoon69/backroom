@@ -874,17 +874,15 @@ export interface HarnessUpdate {
   error: string | null;
 }
 
-/** What can be updated: T3 itself and its harnesses. Nothing updates unless the user starts it. */
 /** Backroom itself in the Updates popup (src/app/backroomUpdate.ts). */
 export interface BackroomUpdateView {
   version: string;
-  /** How this copy was installed: a git checkout, the package in npm's global folder, or the package elsewhere. */
-  install: "checkout" | "global" | "package";
-  channel: string;
+  /** The copy's folder, which its update moves. */
+  folder: string;
   latest: string | null;
   newer: boolean;
-  canUpdate: boolean;
-  manual: string | null;
+  /** The update, to run on this machine by hand. */
+  command: string;
   /** Who works now (a running turn, a browser tab open), named in the confirmation. */
   busy: string[];
   releaseCheckedAt: string | null;
@@ -892,6 +890,7 @@ export interface BackroomUpdateView {
   job: { targetVersion: string; state: "installing" | "restarting" | "failed"; startedAt: string; finishedAt: string | null; error: string | null } | null;
 }
 
+/** What can be updated: Backroom, T3 itself and its harnesses. Nothing updates unless the user starts it. */
 export interface UpdatesView {
   backroom: BackroomUpdateView;
   reachable: boolean;
@@ -1292,9 +1291,8 @@ export interface DeskResponse {
 }
 
 export interface StatusResponse {
-  /** This copy's version and how it was installed. */
+  /** This copy's version. */
   version: string;
-  install: "checkout" | "global" | "package";
   adapter: "fake" | "http";
   /** Entry script of the UI build the server now serves; differs from the loaded one after a rebuild. */
   uiBuild?: string | null;

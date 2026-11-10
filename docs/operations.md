@@ -64,10 +64,10 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ROOMS_PORT` | `4400` | UI/API port (always bound to 127.0.0.1) |
-| `ROOMS_DATA_DIR` | `./data` | Database, stored credential and images |
+| `ROOMS_DATA_DIR` | the copy's `data` folder | Database, stored credential, images, skill packs and browser profiles ([Where the data lives](#where-the-data-lives)) |
 | `ROOMS_DB_PATH` | `$ROOMS_DATA_DIR/rooms.sqlite` | Database file, if it should live elsewhere |
 | `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
-| `ROOMS_PSTACK_REPO` | `https://github.com/cursor/plugins` | Where the pstack pack ([Skills](agents-file-and-skills.md#skills)) is cloned from: a URL, or a local path (taken from the service's folder). The tests and the rehearsal give a local bare repository |
+| `ROOMS_PSTACK_REPO` | `https://github.com/cursor/plugins` | Where the pstack pack ([Skills](agents-file-and-skills.md#skills)) is cloned from: a URL, or a local path (taken from the working directory). The tests and the rehearsal give a local bare repository |
 | `ROOMS_SKILLS_HOME` | your home folder; `<data>/home` on the fake T3 | The home folder whose skill folders (`.claude/skills`, `.agents/skills`, `.grok/skills`) [Skills](agents-file-and-skills.md#skills) links into, so a throwaway service never links into your harnesses |
 | `ROOMS_FAKE_STATE` | none | Demo mode: a file the fake T3 keeps its threads, runs and command receipts in, so they outlive a restart of the service, as a real T3's do; without it the fake keeps them in memory only |
 | `ROOMS_FAKE_PROJECT_DIR` | `/tmp/demo` | Demo mode: the demo project's folder (never created), a scratch git repository to try [the agents file](agents-file-and-skills.md#the-agents-file) |
@@ -77,7 +77,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `T3CODE_HOME` | the folder above `T3_USERDATA_DIR` (`~/.t3`) | T3's home, where its service keeps its versions |
 | `T3_USERDATA_DIR` | `~/.t3/userdata` | Where to find T3's runtime file and local model catalog |
 | `ROOMS_TICK_MS` | `1500` | How often, at the latest, the engine host reads the members' threads and sends what is waiting (a change T3 streams to a member's thread wakes it at once) |
-| `ROOMS_WEB_DIST` | `web/dist` | The built UI the service serves (a second instance can serve another build) |
+| `ROOMS_WEB_DIST` | the copy's own `web/dist` | The built UI the service serves (a second instance can serve another build) |
 | `ROOMS_BRIEFING_BUDGET` | `60000` | Characters per delivery before older room context is condensed |
 | `ROOMS_KEEPALIVE_MS` | `3300000` | How long a seat with work in flight may go without a wake before it gets a keep-alive (55 minutes). It must be from 60000 (a minute) to 3599999, under the prompt cache's hour, or the service refuses to start; `0` turns keep-alives off in rooms that set no interval of their own (`rooms-board keepalive every <minutes>`) |
 | `ROOMS_THREAD_ACTION_TIMEOUT_MS` | `5000` | How long deleting a room waits for T3 to settle, archive or delete each member's thread. All are sent at once, so the page waits at most this long; an action still unanswered then is reported as timed out and may still go through (a dispatch itself waits up to 60 s; its late outcome goes to the service log). 60 s or more never fires |
@@ -94,9 +94,29 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 
 ## Running, updating and backing up
 
+### Where the data lives
+
+Every copy of Backroom is a git checkout, installed by `install.sh` or cloned by hand, and started with `npm start`. It keeps its data in its own `data` folder, whatever folder it is started from, unless `ROOMS_DATA_DIR` names another; these docs write that folder `data/`. It holds `rooms.sqlite`, the rooms' journal `board.sqlite`, `t3-auth.json`, the skill packs under `skills/`, the browsers' profiles under `browsers/`, and `browser-api.json`. The page it serves is its own build in its `web/dist`, unless `ROOMS_WEB_DIST` names another.
+
+### Updating
+
+A release is a tag `v<version>` on Backroom's repository. Backroom's row in the overview's **Updates** popup shows the version running and the newest release. It reads the newest release from the tags of the copy's `origin` remote, with `git ls-remote`, once an hour and on **Check now**; git asks for no credential, and a remote that does not answer within 10 seconds is reported on the row, as is a copy without an `origin`. A prerelease tag (`v0.3.0-beta.1`) counts only for a copy that runs a prerelease.
+
+When a newer release is out, the row offers **Update**, beside the same update as a command to run on the machine: `sh <folder>/install.sh <folder>`, with the copy's real folder, then a restart. **Update** asks first, naming the members with a running turn or a tab open in a room browser. Backroom then runs the copy's own `install.sh` on the copy's own folder, with the Node that runs Backroom first on `PATH`; nothing from the page's request reaches the command. When the script succeeds, Backroom reads the version now in the copy's `package.json`, says so on the page and in its log, and stops. A service manager that restarts it, such as the unit in [Remote setup](../README.md#remote-setup) with `Restart=always`, brings it back on the new version. A copy started by hand must be started again with `npm start` in its folder. Turns that are running carry on in T3 and are picked up after the start; a `rooms-browser` command running during the update can fail.
+
+`install.sh` decides whether the copy may move, by hand and from the page alike:
+
+- It updates only a copy that sits on a release or on commits a release contains. A copy with work of its own, meaning uncommitted changes or commits the newest release does not contain, is left as it is: the script says so, and the row shows that as the reason.
+- It fetches the copy's `origin`, checks out the newest release tag, and runs `npm ci` and `npm run build:web`.
+- When either step fails, it puts the copy back on the commit it was on, runs `npm ci` there and restores the page it served, then says what failed. The row shows the script's last lines, and Backroom runs on as it was.
+
+The page is rebuilt in place, so while the update runs, a page loaded then can fail to load. Database migrations run at startup.
+
+### Running and backing up
+
 - **Restarting is safe.** The room's journal is on disk: requests not yet sent go out after the restart, and turns in flight are matched back to their T3 runs. A turn that finished while the service was down is picked up on the next poll.
-- **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "Backroom was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
-- **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, the rooms' journal `board.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/` and `browser-api.json`. Keep the copy private: the T3 credential and every browser's logins are inside.
+- **A new page** reaches open pages on their next read: they show "Backroom was updated" and offer a reload. A change to the service needs a restart.
+- **Back up** by copying the data folder while the service is stopped. Keep the copy private: the T3 credential and every browser's logins are inside.
 - **Keep it running** with any process manager: the systemd user unit in [Remote setup](../README.md#remote-setup), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
 
 ## Troubleshooting
@@ -122,3 +142,5 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | A panel says "Backroom's service is older than this page" | The UI was rebuilt (`npm run build:web` goes live on the next load) but the service still runs the old server code. Restart it: `systemctl --user restart backroom.service`. |
 | `rooms-browser` can't reach the service | Backroom isn't running, or runs with another data folder. Start it; with a non-default `ROOMS_DATA_DIR`, briefings pass `ROOMS_BROWSER_API` along. |
 | The page stops updating | The service stopped. Restart it with `npm start`; nothing is lost. |
+| Backroom's update failed | The row says why, from the install script's last lines, and the copy runs on as it was. A copy with changes or commits of its own is never moved: commit or remove the changes, or keep the copy as it is. A failed `npm ci` or build put the copy back on the commit it was on; fix the cause, such as a registry that is not reachable, and click **Update** again. |
+| Backroom's row says "this copy has no origin remote" or "origin did not answer" | The copy was cloned without an `origin`, or `origin` cannot be reached. Add the repository with `git remote add origin https://github.com/moonmoon69/backroom.git`, or check the network, then **Check now**. |

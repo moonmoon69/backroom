@@ -2,12 +2,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { detectInstall, type Install } from "./app/install.ts";
+import { fileURLToPath } from "node:url";
 import { PSTACK_REPO } from "./domain/skills.ts";
 
+/**
+ * This copy of Backroom: the git checkout this file is in, whatever folder the service is started from. Its data is in
+ * its ./data and its page in its web/dist unless ROOMS_DATA_DIR and ROOMS_WEB_DIST say otherwise; its version is its
+ * package.json's, which a release tag v<version> names (install.sh).
+ */
+export const COPY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const COPY_VERSION = (JSON.parse(readFileSync(join(COPY_ROOT, "package.json"), "utf8")) as { version: string }).version;
+
 export interface Config {
-  /** How this copy was installed (src/app/install.ts): where its data and page are by default, and how it is updated. */
-  install: Install;
   port: number;
   dataDir: string;
   dbPath: string;
@@ -87,12 +93,11 @@ function parseBrowserMode(value: string | undefined): Config["browser"]["mode"] 
   throw new Error(`ROOMS_BROWSER_MODE must be auto, vnc, window, headless or off (got "${value}")`);
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env, install: Install = detectInstall()): Config {
-  const dataDir = env.ROOMS_DATA_DIR ? resolve(env.ROOMS_DATA_DIR) : install.dataDir;
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const dataDir = env.ROOMS_DATA_DIR ? resolve(env.ROOMS_DATA_DIR) : join(COPY_ROOT, "data");
   const t3UserDataDir = env.T3_USERDATA_DIR ?? join(homedir(), ".t3", "userdata");
   const adapter = env.ROOMS_ADAPTER === "fake" ? "fake" : "http";
   return {
-    install,
     port: Number(env.ROOMS_PORT ?? 4400),
     dataDir,
     dbPath: env.ROOMS_DB_PATH ?? join(dataDir, "rooms.sqlite"),
@@ -103,7 +108,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, install: Instal
     t3Home: env.T3CODE_HOME ?? dirname(t3UserDataDir),
     t3Cli: env.T3_CLI || null,
     tickMs: Number(env.ROOMS_TICK_MS ?? 1500),
-    webDistDir: env.ROOMS_WEB_DIST ? resolve(env.ROOMS_WEB_DIST) : install.webDistDir,
+    webDistDir: env.ROOMS_WEB_DIST ? resolve(env.ROOMS_WEB_DIST) : join(COPY_ROOT, "web", "dist"),
     briefingBudgetChars: Number(env.ROOMS_BRIEFING_BUDGET ?? 60000),
     // A local path is taken from the working directory, as the overrides above: git clones from another folder.
     pstackRepo: env.ROOMS_PSTACK_REPO ? (/^[a-z][a-z0-9+.-]*:\/\/|^[^/]+@[^/:]+:/i.test(env.ROOMS_PSTACK_REPO) ? env.ROOMS_PSTACK_REPO : resolve(env.ROOMS_PSTACK_REPO)) : PSTACK_REPO,

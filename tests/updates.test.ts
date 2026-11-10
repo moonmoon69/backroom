@@ -26,10 +26,10 @@ test("versions order like semver, nightlies by date and run; the channel is the 
 
 test("the count covers what can be updated from here, and looking never starts an update", async (t) => {
   const asked: string[] = [];
-  const stack = await createTestStack(undefined, undefined, { latestRelease: async (name, channel) => (asked.push(`${name} ${channel}`), name === "t3" ? NEWEST : null) });
+  const stack = await createTestStack(undefined, undefined, { latestRelease: async (channel) => (asked.push(channel), NEWEST) });
   t.after(() => stack.close());
   const view = await stack.updates.view();
-  assert.deepEqual(asked.sort(), ["agents-backroom latest", "t3 nightly"], "npm is asked for T3 on the running T3's channel, and for Backroom on its own");
+  assert.deepEqual(asked, ["nightly"], "npm is asked on the running T3's channel");
   assert.equal(view.server.newer, true);
   assert.equal(view.server.canUpdate, true);
   assert.equal(view.server.latest, NEWEST);
@@ -39,7 +39,7 @@ test("the count covers what can be updated from here, and looking never starts a
   assert.equal(codex.updatable, false);
   assert.match(codex.note ?? "", /cannot update this install/);
   await stack.updates.view();
-  assert.equal(asked.length, 2, "the newest releases are kept for an hour");
+  assert.equal(asked.length, 1, "the newest release is kept for an hour");
   assert.equal(stack.fake.serverUpdates.length, 0);
   assert.equal(stack.fake.versionState.harnesses.find((h) => h.instanceId === "claudeAgent")!.update, null);
 });
