@@ -2691,17 +2691,17 @@ async function rehearseSkills(service: Service, browser: Browser, room: Room, se
     },
   );
 
-  mkdirSync(join(home, ".agents/skills/beta"), { recursive: true });
-  writeFileSync(join(home, ".agents/skills/beta/SKILL.md"), "the user's own\n");
+  mkdirSync(join(home, ".agents/skills/beta-skill"), { recursive: true });
+  writeFileSync(join(home, ".agents/skills/beta-skill/SKILL.md"), "the user's own\n");
   if (!tick("skills/beta", "agents")) fail("no tickbox for beta in the agents' folder");
   await state(
     "a link refused where the user's own folder has the name: the reason shown, the folder untouched, nothing ticked",
     async () => {
       const pack = (await packOf("skills-pack"))!;
       if (pack.busy) return null;
-      if (readFileSync(join(home, ".agents/skills/beta/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder was changed");
+      if (readFileSync(join(home, ".agents/skills/beta-skill/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder was changed");
       if (pack.skills.find((s) => s.path === "skills/beta")!.linked.length > 0) fail("beta is linked");
-      return `${home}/.agents/skills/beta is the user's folder still, and beta is linked nowhere`;
+      return `${home}/.agents/skills/beta-skill is the user's folder still, and beta is linked nowhere`;
     },
     ["is a folder, not Backroom's link"],
     () => {
@@ -2835,7 +2835,7 @@ async function rehearseSkills(service: Service, browser: Browser, room: Room, se
       if (await packOf("skills-pack")) return null;
       if (existsSync(join(home, ".claude/skills/alpha"))) fail("alpha's link is still there");
       if (existsSync(join(room.dataDir, "skills", "skills-pack"))) fail("the pack's folder is still there");
-      if (readFileSync(join(home, ".agents/skills/beta/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder went with it");
+      if (readFileSync(join(home, ".agents/skills/beta-skill/SKILL.md"), "utf8") !== "the user's own\n") fail("the user's folder went with it");
       return "skills-pack, its folder and its link gone; the user's beta folder kept";
     },
     ["Links taken out"],
