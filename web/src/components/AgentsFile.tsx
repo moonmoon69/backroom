@@ -84,7 +84,7 @@ export function AgentsFileDialog({ onClose }: { onClose: () => void }) {
         <h3>Instructions</h3>
         <p className="muted">
           The habits every agent in a project keeps, whoever assigned the work, in the project&rsquo;s AGENTS.md (with a CLAUDE.md importing it), where every harness reads it. It says nothing of models or routing: those belong to the
-          crew and the Consigliere. README, &ldquo;The agents file&rdquo;, says where it is written and what is never touched.
+          crew and the Consigliere. Backroom&rsquo;s docs/agents-file-and-skills.md says where it is written and what is never touched.
         </p>
         {loadError ? <p className="status-error">{loadError}</p> : null}
         {enabled !== null ? (

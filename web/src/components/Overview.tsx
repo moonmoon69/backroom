@@ -350,7 +350,7 @@ export function Overview({
   );
 }
 
-/** What creating a room wrote in its project's folder, in one sentence (src/app/agentsFile.ts; README, The agents file). */
+/** What creating a room wrote in its project's folder, in one sentence (src/app/agentsFile.ts; docs/agents-file-and-skills.md). */
 function agentsFileNote(written: AgentsFileWritten): string {
   const files = written.written.join(" and ");
   const them = written.written.length > 1 ? "them" : "it";
@@ -360,9 +360,9 @@ function agentsFileNote(written: AgentsFileWritten): string {
     written.hook === "installed" || written.hook === "ours"
       ? `a git hook copies ${them} into each new worktree`
       : written.hook === "own-hook"
-        ? `the repository has a post-checkout hook of its own: add Backroom's copy line to it to have ${them} in new worktrees (README, The agents file)`
+        ? `the repository has a post-checkout hook of its own: add Backroom's copy line to it to have ${them} in new worktrees (Backroom's docs/agents-file-and-skills.md)`
         : written.hook === "hooks-path"
-          ? `the repository sets core.hooksPath: add Backroom's copy line to its post-checkout hook to have ${them} in new worktrees (README, The agents file)`
+          ? `the repository sets core.hooksPath: add Backroom's copy line to its post-checkout hook to have ${them} in new worktrees (Backroom's docs/agents-file-and-skills.md)`
           : written.hook === "not-main"
             ? `the project is not its repository's main checkout, so no hook copies ${them} into new worktrees`
             : written.hook === "no-exclude"

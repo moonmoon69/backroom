@@ -34,7 +34,7 @@
  *   (`--step ui` only; `--step room` writes one the same way for B1: a briefing in the user's name, as journals from
  *   before B1 hold it.)
  *
- * The board's semantics are H5's ("members only answer", README.md): a member's final answers the requests its turn was
+ * The board's semantics are H5's ("members only answer", docs/consigliere.md): a member's final answers the requests its turn was
  * given and wakes the Consigliere, with its T3 status line at the top; members do not post (`rooms-board post` is
  * refused them); the Consigliere routes reviews (the worker answers him, he posts the result to the reviewer, the
  * reviewer answers him, he posts the findings to the worker); his first final after a user's message answers it, his

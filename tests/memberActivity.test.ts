@@ -69,10 +69,10 @@ test("between turns is read in one place: the status bar's chip and the Members 
   assert.equal(memberActivity(lagging, watching).label, "monitoring");
 });
 
-test("the README's Members list ranks the states in the classifier's order", () => {
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+test("the docs' Members list ranks the states in the classifier's order", () => {
+  const readme = readFileSync(new URL("../docs/room.md", import.meta.url), "utf8");
   const list = /ranked as T3 Code ranks its thread statuses[^\n]*\n\n((?:- .*\n)+)/.exec(readme)?.[1];
-  assert.ok(list, "the README's Members list");
+  assert.ok(list, "docs/room.md's Members list");
   // Each bold word the list names, as the state the classifier gives it.
   const STATE: Record<string, MemberStateName> = {
     "thread deleted in T3": "deleted", "needs approval": "approval", "asking for a secret": "secret", "waiting for your answer": "input",

@@ -1,6 +1,6 @@
 /**
  * The user's message path on the engine (plan item L4a): src/app/engineMessages.ts, the parser's refusals (D2) and
- * the host's /steer. Each test is named after the README "Writing messages" behaviour it keeps (section: behaviour),
+ * the host's /steer. Each test is named after the "Writing messages" behaviour (docs/messages.md) it keeps (section: behaviour),
  * or after D2's rejections and the user's controls. What that section says about the composer itself (opening it,
  * keys, drafts, chips, the plan rows and their one-click fixes) is the web UI's, item L5; /add and /remove are L4b's.
  */

@@ -176,7 +176,7 @@ const TABLE: ReadonlyArray<{ state: MemberStateName; when: (f: MemberFacts) => b
   { state: "unknown", when: () => true, show: () => still("unknown", "unknown") },
 ];
 
-/** The states in the table's order, most pressing first: the order the README's Members list gives them. */
+/** The states in the table's order, most pressing first: the order docs/room.md's Members list gives them. */
 export const RANKING: readonly MemberStateName[] = [...new Set(TABLE.map((row) => row.state))];
 
 /** The member's state from its facts. `now` places a reset time before or after it, and times what runs. */

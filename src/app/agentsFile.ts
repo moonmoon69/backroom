@@ -7,7 +7,7 @@
  * Handoff), in the project's folder, where every harness reads it. Codex, Cursor and Antigravity read AGENTS.md; Claude Code reads
  * CLAUDE.md (AGENTS.md only where no CLAUDE.md is), and follows a line `@AGENTS.md` in it as an import. So one AGENTS.md
  * and a one-line CLAUDE.md importing it reach all four; a copy of the text would drift, and Cursor, which reads both
- * files, would load it twice. README.md ("The agents file") has the table and its evidence.
+ * files, would load it twice. docs/agents-file-and-skills.md ("The agents file") has the table and its evidence.
  *
  * When a room is created in a project (room.create, and consigliere.start, which creates its room the same way), the
  * setting is on (Settings → Agents file; on by default), and Backroom has not written in that folder before:
@@ -41,7 +41,7 @@
  * hook in the repository's hooks folder (its worktrees share it) that, on `git worktree add`, copies the files listed
  * there from the main checkout into the new worktree when they are missing there; it never writes over a file or a
  * link. It installs the hook only when the repository has no post-checkout hook, core.hooksPath is unset and the project
- * is the main checkout; otherwise it installs nothing, and README says how to add the copy line by hand (COPY_LINE, the
+ * is the main checkout; otherwise it installs nothing, and docs/agents-file-and-skills.md says how to add the copy line by hand (COPY_LINE, the
  * hook's own line). What could not be written (the exclude entries, the hook) is said once and not tried again.
  *
  * A project's own instruction file (INSTRUCTION_FILES, in its folder) that git ignores is in the same state: a new
@@ -97,7 +97,7 @@ export const EXCLUDE_END = "# <<< Backroom agents file";
  * worktree add` (a previous HEAD of zeros), every path after Backroom's start marker in the exclude file, up to the first
  * line that is no path, is copied from the main checkout (the first in `git worktree list`) when it is missing here,
  * never over a file or a link. Its status is always 0, so it never fails a `git worktree add` (a folder the new
- * worktree lacks is skipped). README gives it to add by hand to a post-checkout hook of the repository's own.
+ * worktree lacks is skipped). docs/agents-file-and-skills.md gives it to add by hand to a post-checkout hook of the repository's own.
  */
 export const COPY_LINE =
   `case "$1" in *[!0]*) ;; *) m=$(git worktree list --porcelain | sed -n '1s/^worktree //p'); ` +
@@ -109,7 +109,7 @@ export const HOOK_MARKER = "Installed by Backroom (A1)";
 export const HOOK_TEXT = `#!/bin/sh
 # ${HOOK_MARKER}. On git worktree add, copies into the new worktree the agents files the main checkout keeps out of
 # git: the paths in .git/info/exclude between Backroom's marker lines. Never over a file or a link that is there; other
-# checkouts (a branch switch) do nothing. Backroom's README, "The agents file", says more.
+# checkouts (a branch switch) do nothing. Backroom's docs/agents-file-and-skills.md says more.
 ${COPY_LINE}
 exit 0
 `;

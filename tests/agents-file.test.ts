@@ -850,7 +850,7 @@ test("the hook never copies through a link to nowhere the new worktree has", asy
   assert.equal(read(join(tree, "AGENTS.md")), read(join(repo, "AGENTS.md")));
 });
 
-test("a repository with a post-checkout hook of its own keeps it untouched; README's copy line added to it copies the files", async (t) => {
+test("a repository with a post-checkout hook of its own keeps it untouched; the docs' copy line added to it copies the files", async (t) => {
   const { project, room } = stackFor(t);
   const dir = folder();
   const theirs = "#!/bin/sh\necho 'their own hook'\n";
@@ -862,7 +862,7 @@ test("a repository with a post-checkout hook of its own keeps it untouched; READ
   git(dir, "worktree", "add", "-q", "-b", "without", without);
   assert.equal(existsSync(join(without, "AGENTS.md")), false, "nothing copied by a hook that is not Backroom's");
 
-  // The line README gives, added by hand.
+  // The line the docs give, added by hand.
   writeFileSync(hookOf(dir), `${theirs}${COPY_LINE}\n`, { mode: 0o755 });
   const withLine = join(scratch, `worktree-${++folders}`);
   git(dir, "worktree", "add", "-q", "-b", "with-line", withLine);
@@ -930,10 +930,10 @@ test("a project that is not its repository's main checkout (a linked worktree, a
   assert.equal(existsSync(join(superproject, ".git", "modules", "sub", "hooks", "post-checkout")), false);
 });
 
-test("the hook's line is README's: one source, and README says what is written, where, and what never is", () => {
-  const readme = read(resolve(dirname(fileURLToPath(import.meta.url)), "..", "README.md"));
+test("the hook's line is the docs': one source, and docs/agents-file-and-skills.md says what is written, where, and what never is", () => {
+  const readme = read(resolve(dirname(fileURLToPath(import.meta.url)), "..", "docs", "agents-file-and-skills.md"));
   assert.ok(HOOK_TEXT.includes(`\n${COPY_LINE}\n`), "the installed hook runs the copy line");
-  assert.ok(readme.includes(COPY_LINE), "README gives the copy line as the hook has it");
+  assert.ok(readme.includes(COPY_LINE), "the docs give the copy line as the hook has it");
   for (const phrase of [".git/info/exclude", "post-checkout", "core.hooksPath", "never commits", "never edits `.gitignore`", "the home folder or one above it"]) assert.ok(readme.includes(phrase), phrase);
 });
 
