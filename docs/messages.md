@@ -88,6 +88,8 @@ Type `/` at the start of the message to see these, each with a description:
 /remove @alice                                 retire a member (asks what happens to its T3 thread)
 ```
 
+A message that starts with `/note` is refused, and nothing is sent: a room keeps no notes, so send the text as a message.
+
 ### Images
 
 Paste, drop, or attach (**Image** under the composer) PNG, JPEG, GIF or WebP images (T3's limits: up to 10 MB each, 80 MB per message). Every assignment in the message receives them. A resend or retry delivers the same bytes. A message with images can have an empty instruction.
