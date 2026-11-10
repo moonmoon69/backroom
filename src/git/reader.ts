@@ -102,6 +102,18 @@ export interface GitView extends GitCheckoutSummary {
 
 
 /**
+ * The environment every git the service runs gets: it never prompts. No terminal prompt; no askpass program (an empty
+ * GIT_ASKPASS counts as set, so git passes over core.askPass and SSH_ASKPASS too); ssh in batch mode (added to the
+ * GIT_SSH_COMMAND there is, unless GIT_SSH names the program instead); Git Credential Manager never interactive. A
+ * credential helper that answers without asking still serves a private remote. src/app/backroomUpdate.ts gives the
+ * install script it runs the same environment.
+ */
+export function gitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const ssh = env.GIT_SSH && !env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: `${env.GIT_SSH_COMMAND || "ssh"} -o BatchMode=yes` };
+  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", GCM_INTERACTIVE: "never", ...ssh };
+}
+
+/**
  * Run git in `cwd`. Exit codes in `okCodes` count as success (git diff --no-index exits 1 when files differ). Nothing
  * can wait on a prompt: no terminal prompt, and stdin is closed. A failure is git's first line of error.
  * src/app/agentsFile.ts asks git with it too, and src/app/packs.ts keeps the skill packs with it (a clone or a fetch
@@ -117,7 +129,7 @@ function git(cwd: string, args: string[], options: { okCodes?: number[]; maxByte
         encoding: "utf8",
         timeout: options.timeoutMs ?? GIT_TIMEOUT_MS,
         maxBuffer: Math.max(options.maxBytes ?? 0, 16 * 1024 * 1024),
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+        env: { ...gitEnv(), GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
       },
       (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : null) : 0;

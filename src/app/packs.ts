@@ -36,7 +36,7 @@ import type { Repos } from "../db/repos.ts";
 import { RoomError } from "../domain/errors.ts";
 import { DRIVER_NAMES, FOLDER_PLACEHOLDER, frontmatter, linkNameFor, POTETO_WORDS, PSTACK_PACK, PSTACK_TREES, SKILL_FOLDERS, SYNCED_NAME } from "../domain/skills.ts";
 import type { Pack, PackError } from "../domain/types.ts";
-import { runGit } from "../git/reader.ts";
+import { gitEnv, runGit } from "../git/reader.ts";
 
 /** The packs' place under the data folder. */
 export const SKILLS_FOLDER = "skills";
@@ -274,7 +274,7 @@ export class Packs {
         timeout: 5000,
         maxBuffer: maxBuffer ?? 16 * 1024 * 1024,
         stdio: ["ignore", "pipe", "ignore"],
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+        env: { ...gitEnv(), GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
       });
       return text.trim() || null;
     } catch {

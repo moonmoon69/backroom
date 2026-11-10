@@ -1,11 +1,12 @@
 /**
- * Backroom's own update, its row in the Updates popup. A release is a tag v<version> on the repository; the newest is
- * read from the tags of this copy's origin remote (a prerelease only for a copy that runs one), at most once an hour and
- * on Check now. When the user asks, the service runs the copy's own install.sh on the copy's own folder, nothing a
- * request names: the script is the one owner of whether the copy may move (it refuses one with work of its own) and of
- * putting it back when a step fails. Once the script has succeeded, the service reads the version now in the copy's
- * package.json, says so, and stops; a service manager that restarts it brings it back on that version, and a copy
- * started by hand is started again by the user. The same command, to run by hand, is on the row.
+ * Backroom's own update, its row in the Updates popup. A release is a tag v<major>.<minor>.<patch>, three plain
+ * numbers, on the repository (install.sh holds the same rule); the newest is read from the tags of this copy's origin
+ * remote, at most once an hour and on Check now. When the user asks, the service runs the copy's own install.sh on the
+ * copy's own folder, nothing a request names: the script is the one owner of whether the copy may move (it refuses a
+ * checkout that is not Backroom, or one with work of its own) and of putting it back when a step fails or it is
+ * stopped. Once the script has succeeded, the service reads the version now in the copy's package.json, says so, and
+ * stops; a service manager that restarts it brings it back on that version, and a copy started by hand is started again
+ * by the user. The same command, to run by hand, is on the row.
  */
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -15,7 +16,7 @@ import { roomForKey } from "../browser/catalog.ts";
 import { COPY_ROOT, COPY_VERSION } from "../config.ts";
 import type { Projection } from "../engine/types.ts";
 import { RoomError } from "../domain/errors.ts";
-import { runGit } from "../git/reader.ts";
+import { gitEnv, runGit } from "../git/reader.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
 import { ReleaseCache, compareVersions, messageOf } from "./t3Updates.ts";
 
@@ -43,14 +44,13 @@ export interface BackroomUpdateView {
   job: BackroomUpdateJob | null;
 }
 
-const RELEASE_TAG = /^refs\/tags\/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
-const isPrerelease = (version: string) => version.split("+")[0]!.includes("-");
+const RELEASE_TAG = /^refs\/tags\/v(\d+\.\d+\.\d+)$/;
 
 /**
- * The newest release on the origin remote of the checkout at `root`: its highest tag v<version>, a prerelease only when
- * `running` is one; null when it has none. git asks for no credential, and a remote that does not answer in time fails.
+ * The newest release on the origin remote of the checkout at `root`: its highest tag v<major>.<minor>.<patch>; null when
+ * it has none. git never prompts (gitEnv), and a remote that does not answer in time fails.
  */
-export async function originRelease(root: string, running: string, timeoutMs = 10_000): Promise<string | null> {
+export async function originRelease(root: string, timeoutMs = 10_000): Promise<string | null> {
   try {
     await runGit(root, ["remote", "get-url", "origin"]);
   } catch {
@@ -66,7 +66,7 @@ export async function originRelease(root: string, running: string, timeoutMs = 1
   let newest: string | null = null;
   for (const line of refs.split("\n")) {
     const version = RELEASE_TAG.exec(line.split("\t")[1] ?? "")?.[1];
-    if (!version || (isPrerelease(version) && !isPrerelease(running))) continue;
+    if (!version) continue;
     if (!newest || compareVersions(version, newest) > 0) newest = version;
   }
   return newest;
@@ -90,7 +90,7 @@ export function copyScript(root: string, timeoutMs = SCRIPT_TIMEOUT_MS): ScriptR
         cwd: root,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`, GIT_TERMINAL_PROMPT: "0" },
+        env: gitEnv({ ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` }),
       });
       let output = "";
       const keep = (chunk: Buffer) => {
@@ -151,7 +151,7 @@ export class BackroomUpdate {
     this.options = options;
     this.root = options.root ?? COPY_ROOT;
     this.version = options.version ?? COPY_VERSION;
-    const lookup = options.lookup ?? (() => originRelease(this.root, this.version));
+    const lookup = options.lookup ?? (() => originRelease(this.root));
     this.releases = new ReleaseCache(() => lookup(), "git");
     this.run = options.run ?? copyScript(this.root);
   }

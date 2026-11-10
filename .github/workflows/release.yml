@@ -1,6 +1,6 @@
-# A release: a tag v<version> pushed for the version in package.json. The checks, the page's typecheck and its build
-# run, then a GitHub release is made with generated notes; a prerelease (0.3.0-beta.1) is marked as one. Copies find the
-# release by its tag (install.sh, src/app/backroomUpdate.ts).
+# A release: a tag v<version> pushed for the version in package.json, three plain numbers (0.2.0; nothing else is a
+# release). The checks, the page's typecheck and its build run, then a GitHub release is made with generated notes.
+# Copies find the release by its tag (install.sh, src/app/backroomUpdate.ts).
 name: Release
 
 on:
@@ -20,9 +20,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: The tag is package.json's version
+      - name: The tag is package.json's version, three plain numbers
         run: |
           version=$(node -p 'require("./package.json").version')
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "package.json's version $version is not three plain numbers"; exit 1; fi
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then echo "tag $GITHUB_REF_NAME is not v$version, package.json's version"; exit 1; fi
 
       - run: npm ci
@@ -34,6 +35,6 @@ jobs:
           npm run build:web
 
       - name: GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME" $(case "$GITHUB_REF_NAME" in *-*) echo --prerelease ;; esac)
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}

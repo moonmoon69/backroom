@@ -1,20 +1,24 @@
 #!/bin/sh
-# Installs Backroom, or updates a copy of it, to the newest release: a tag v<version> on its repository.
+# Installs Backroom, or updates a copy of it, to the newest release: a tag v<major>.<minor>.<patch> on its repository,
+# three plain numbers. No other tag is a release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh
 #   sh install.sh [folder]
 #
 # The folder is the argument, else BACKROOM_DIR, else ~/backroom. With no copy there, it clones BACKROOM_REPO (the
 # GitHub repository by default) at its newest release, or on its default branch while it has none. With a copy there,
-# it fetches the copy's own origin and moves the copy to the newest release; a prerelease counts only for a copy that
-# runs one. Either way it then installs the packages (npm ci) and builds the page (npm run build:web).
+# it fetches the copy's own origin and moves the copy to the newest release. Either way it then installs the packages
+# (npm ci) and builds the page (npm run build:web).
 #
-# It never touches a copy with work of its own: uncommitted changes, or commits the newest release does not contain.
-# When the packages or the page fail after the copy was moved, it puts the copy back on the commit it was on, with that
-# commit's packages and the page it served, and says why. Backroom's Update runs this same script on its own folder.
+# It never touches a folder that is not a copy of Backroom (by the name in its package.json), nor a copy with work of
+# its own: uncommitted changes, or commits the newest release does not contain. When the packages or the page fail after
+# the copy was moved, or the script is stopped (INT or TERM), it puts the copy back on the commit it was on: the page it
+# served first, then the commit, then that commit's packages. Should that npm ci fail too, the copy is on its old commit
+# with its old page, and the script names the command that finishes it. Backroom's Update runs this same script on its
+# own folder.
 #
-# The whole script is one function, called on its last line, so a download cut short runs nothing, and a copy that
-# replaces this file while it runs does not change what runs.
+# The whole script is one function, called on its last line, so a download cut short never runs a part of the script,
+# and a copy that replaces this file while it runs does not change what runs.
 
 main() {
   set -eu
@@ -35,17 +39,24 @@ fail() {
   exit 1
 }
 
-# The newest release tag of a repository (a URL or a remote's name), or nothing; "pre" counts prereleases too. git's
-# version order with "-" as a suffix puts v1.0.0-beta.2 after v1.0.0-beta.1 and before v1.0.0.
+# A path as the shell reads it back in a printed command: as it is when it is plain, else in single quotes.
+quoted() {
+  case $1 in
+    '' | *[!A-Za-z0-9_./+-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# The newest release tag of a repository (a URL or a remote's name), or nothing. git's version order sorts the three
+# numbers as numbers (v0.10.0 after v0.9.0).
 newest_tag() {
-  if [ "$2" = pre ]; then pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; else pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'; fi
-  refs=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname "$1" 'v*') || return 1
-  printf '%s\n' "$refs" | sed 's|.*refs/tags/||' | { grep -E "$pattern" || true; } | head -n 1
+  refs=$(git ls-remote --tags --refs --sort=-v:refname "$1" 'v*') || return 1
+  printf '%s\n' "$refs" | sed 's|.*refs/tags/||' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | head -n 1
 }
 
 install() {
   if [ -e "$dir" ] && [ -n "$(ls -A "$dir")" ]; then fail "$dir is not empty and is not a git checkout: name a new or empty folder."; fi
-  tag=$(newest_tag "$repo" release) || fail "could not read the releases of $repo."
+  tag=$(newest_tag "$repo") || fail "could not read the releases of $repo."
   if [ -n "$tag" ]; then
     git -c advice.detachedHead=false clone --quiet --branch "$tag" "$repo" "$dir"
     say "Cloned $repo at $tag into $dir."
@@ -56,7 +67,7 @@ install() {
   cd "$dir"
   npm ci || fail "npm ci failed in $dir; fix the cause, then run this again."
   npm run build:web || fail "the page's build failed in $dir; fix the cause, then run this again."
-  say "Backroom $(version) is installed in $dir. Start it with: cd $dir && npm start"
+  say "Backroom $(version) is installed in $dir. Start it with: cd $(quoted "$dir") && npm start"
 }
 
 version() { node -p 'require("./package.json").version'; }
@@ -64,10 +75,10 @@ version() { node -p 'require("./package.json").version'; }
 update() {
   cd "$dir"
   [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] || fail "$dir is inside another git checkout, not a copy of Backroom."
+  [ "$(node -p 'require("./package.json").name' 2>/dev/null)" = backroom ] || fail "$dir is not a copy of Backroom: its package.json does not name backroom. Nothing was changed."
   [ -z "$(git status --porcelain)" ] || fail "$dir has uncommitted changes; nothing was changed. Commit or remove them first."
-  case $(version) in *-*) channel=pre ;; *) channel=release ;; esac
   git fetch --quiet --tags origin || fail "could not fetch from $dir's origin; nothing was changed."
-  tag=$(newest_tag origin "$channel") || fail "could not read the releases of $dir's origin; nothing was changed."
+  tag=$(newest_tag origin) || fail "could not read the releases of $dir's origin; nothing was changed."
   [ -n "$tag" ] || fail "$dir's origin has no release yet; nothing was changed."
   git merge-base --is-ancestor HEAD "refs/tags/$tag" || fail "$dir has commits that $tag does not contain; nothing was changed."
   from=$(git describe --tags --exact-match HEAD 2>/dev/null || git rev-parse --short HEAD)
@@ -76,28 +87,30 @@ update() {
   saved=$(mktemp -d)
   trap 'rm -rf "$saved"' EXIT
   [ ! -d web/dist ] || cp -R web/dist "$saved/dist"
-  git -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$tag"
-  say "Moved $dir from $from to $tag."
-  # From here a failure, or a stop (Update's timeout sends TERM), puts the copy back.
+  # From here, before the copy moves, a failure or a stop (Update's timeout sends TERM) puts the copy back.
   trap 'put_back "the update was stopped"' INT TERM
-  npm ci || put_back "npm ci"
-  npm run build:web || put_back "the page's build"
+  git -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$tag" || put_back "the checkout failed"
+  say "Moved $dir from $from to $tag."
+  npm ci || put_back "npm ci failed"
+  npm run build:web || put_back "the page's build failed"
   trap - INT TERM
-  say "Backroom $(version) is installed in $dir. Restart it to run the new version: stop it and run npm start in $dir again, or restart the service that runs it."
+  say "Backroom $(version) is installed in $dir. Restart it to run the new version: stop it, then start it again with: cd $(quoted "$dir") && npm start (or restart the service that runs it)."
 }
 
-# Back to the commit the copy was on, with that commit's packages and the page it served; then stop, naming what failed.
+# Back to the commit the copy was on, page first, then the commit and its packages; then stop, naming what failed. It
+# runs to its end: a second INT or TERM is ignored.
 put_back() {
-  trap - INT TERM
-  say "$1 failed on $tag; putting $dir back on $from." >&2
-  if [ -n "$from_branch" ]; then git checkout --quiet --force "$from_branch"; else git -c advice.detachedHead=false checkout --quiet --force --detach "$from_commit"; fi
-  npm ci || fail "$1 failed on $tag, and npm ci failed on $from too: $dir is on $from; run npm ci and npm run build:web there."
-  if [ -d "$saved/dist" ]; then
-    rm -rf web/dist && cp -R "$saved/dist" web/dist
-  else
-    npm run build:web || fail "$1 failed on $tag, and the page's build failed on $from too: $dir is on $from; run npm run build:web there."
+  trap '' INT TERM
+  say "$1 on $tag; putting $dir back on $from." >&2
+  # The page first, so the page served is the one the copy served before, whatever fails after this.
+  if [ -d "$saved/dist" ]; then rm -rf web/dist && cp -R "$saved/dist" web/dist; fi
+  if [ -n "$from_branch" ]; then git checkout --quiet --force "$from_branch"; else git -c advice.detachedHead=false checkout --quiet --force --detach "$from_commit"; fi \
+    || fail "$1 on $tag, and checking out $from failed too. Finish it with: cd $(quoted "$dir") && git checkout --force $from_commit && npm ci && npm run build:web"
+  npm ci || fail "$1 on $tag, and npm ci failed on $from too: $dir is on $from with the page it served, but its packages are not installed. Finish it with: cd $(quoted "$dir") && npm ci"
+  if [ ! -d "$saved/dist" ]; then
+    npm run build:web || fail "$1 on $tag, and the page's build failed on $from too: $dir is on $from. Finish it with: cd $(quoted "$dir") && npm run build:web"
   fi
-  fail "$1 failed on $tag; $dir is back on $from as it was."
+  fail "$1 on $tag; $dir is back on $from as it was."
 }
 
 main "$@"

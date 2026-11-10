@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api.ts";
 import type { HarnessUpdate, UpdatesView } from "../types.ts";
+import { backroomCheckNote } from "../backroomRow.ts";
 import { showUpdates, updateRunning, useUpdates, watchUpdates } from "../updates.ts";
 import { Dialog } from "./Dialog.tsx";
 import { timeOf } from "./deskFormat.ts";
@@ -118,7 +119,8 @@ const Working = ({ children }: { children: ReactNode }) => (
  */
 function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting: boolean; onUpdate: (version: string) => void }) {
   const [confirming, setConfirming] = useState(false);
-  const { version, folder, latest, newer, command, busy, releaseError, job } = view.backroom;
+  const { version, folder, latest, newer, command, busy, job } = view.backroom;
+  const note = backroomCheckNote(view.backroom);
   const running = job?.state === "installing" || job?.state === "restarting";
   const offer = newer && latest && !running;
   // The script's last line says why it failed; the lines before it are its output.
@@ -187,7 +189,7 @@ function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting
           Or on this machine run <code>{command}</code>, then restart Backroom.
         </div>
       ) : null}
-      {!newer && !running && !job ? <div className="update-status muted">{releaseError ? `Could not check for a newer Backroom (${releaseError})` : latest ? "Up to date" : "No release yet"}</div> : null}
+      {note ? <div className="update-status muted">{note}</div> : null}
     </Row>
   );
 }

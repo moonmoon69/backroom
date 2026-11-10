@@ -68,7 +68,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS
 
 ## Releases
 
-A release is a tag `v<version>` on the repository, `<version>` being `package.json`'s. Copies find releases by their tags: `install.sh` installs and updates to the newest, and Backroom's row under **Updates** offers it ([Updating](operations.md#updating)). `package.json` is private, so npm refuses to publish it.
+A release is a tag `v<version>` on the repository, `<version>` being `package.json`'s and three plain numbers (`0.2.0`); no other tag is a release. Copies find releases by their tags: `install.sh` installs and updates to the newest, and Backroom's row under **Updates** offers it ([Updating](operations.md#updating)). `package.json` is private, so npm refuses to publish it.
 
 To cut one, set the version, commit it, tag that commit and push both:
 
@@ -79,7 +79,7 @@ git tag v<version>
 git push origin main v<version>
 ```
 
-On the tag, `.github/workflows/release.yml` checks that the tag is `v` and `package.json`'s version, runs `npm run check`, the page's typecheck and its build, and makes a GitHub release with generated notes, marked as a prerelease for a version such as `0.3.0-beta.1`. A tag whose checks fail makes no release, but copies still see the tag. Delete it with `git push origin :refs/tags/v<version>` and `git tag -d v<version>`.
+On the tag, `.github/workflows/release.yml` checks that the tag is `v` and `package.json`'s version, runs `npm run check`, the page's typecheck and its build, and makes a GitHub release with generated notes. It refuses a version that is not three plain numbers. A tag whose checks fail makes no release, but copies still see the tag. Delete it with `git push origin :refs/tags/v<version>` and `git tag -d v<version>`.
 
 To try `install.sh` before a release, point it at a scratch bare repository with made-up tags, and install into a scratch folder: `BACKROOM_REPO=/tmp/scratch/backroom.git sh install.sh /tmp/scratch/copy`.
 
@@ -105,7 +105,7 @@ To try `install.sh` before a release, point it at a scratch bare repository with
 | `src/usage` | What a thread used and would cost at list price, read from T3's database and the harnesses' transcripts (`threadCosts.ts`) |
 | `src/config.ts` | The service's settings, from environment variables and T3's runtime file; this copy's folder and version |
 | `src/app/t3Updates.ts`, `src/app/backroomUpdate.ts` | The Updates popup: T3's npm release lookup, T3's and its harnesses' updates, and Backroom's own row (its origin's release tags) and update (the copy's `install.sh`) |
-| `install.sh` | Installs a copy from GitHub at the newest release, or updates one; refuses a copy with work of its own and puts a copy back when its packages or page fail |
+| `install.sh` | Installs a copy from GitHub at the newest release, or updates one; refuses a checkout that is not Backroom or has work of its own, and puts a copy back when its packages or page fail or it is stopped |
 | `src/server` | HTTP API and Server-Sent Events for the UI |
 | `web/` | React UI |
 | `web/src/pixel.css`, `web/src/pixel` | The pixel look: its windows, by night and by day (`pixel.css`), and the capybara crew (`sprites.ts`, drawn by `components/MemberMark.tsx`) |
