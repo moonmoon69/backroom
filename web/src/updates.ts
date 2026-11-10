@@ -1,5 +1,5 @@
 /**
- * Updates for T3 and its harnesses, shared by the overview header's Updates button (its count) and the Updates popup. Read
+ * Updates for Backroom, T3 and its harnesses, shared by the overview header's Updates button (its count) and the Updates popup. Read
  * every 30 minutes; while the popup is open, fresh from T3 every 30 seconds, and every 2 while an update runs.
  * Nothing here starts an update: only the popup's buttons do.
  */
@@ -22,10 +22,11 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 /** Open popups. */
 let watchers = 0;
 
-/** An update is on its way: T3 installing or restarting, or a harness asked for, queued or running. */
+/** An update is on its way: Backroom or T3 installing or restarting, or a harness asked for, queued or running. */
 export function updateRunning(view: UpdatesView): boolean {
+  const own = view.backroom.job?.state;
   const job = view.server.job?.state;
-  return job === "installing" || job === "restarting" || view.harnesses.some((h) => h.pending || h.update?.status === "queued" || h.update?.status === "running");
+  return own === "installing" || own === "restarting" || job === "installing" || job === "restarting" || view.harnesses.some((h) => h.pending || h.update?.status === "queued" || h.update?.status === "running");
 }
 
 function set(next: UpdatesState): void {

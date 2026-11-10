@@ -8,15 +8,15 @@ import { UpdateIcon } from "./icons.tsx";
 import { useToast } from "./Toast.tsx";
 
 /**
- * The Updates button in the overview's header (a button in its row of the keyboard's grid): a count when T3 or a harness
- * can be updated, a spinner while an update runs. It opens the Updates popup.
+ * The Updates button in the overview's header (a button in its row of the keyboard's grid): a count when Backroom, T3 or a
+ * harness can be updated, a spinner while an update runs. It opens the Updates popup.
  */
 export function UpdatesButton() {
   const { view } = useUpdates();
   const [open, setOpen] = useState(false);
   const count = view?.available ?? 0;
   const running = view ? updateRunning(view) : false;
-  const label = running ? "Updates: one is running" : count > 0 ? `Updates: ${count} available` : "Updates: T3 and its harnesses";
+  const label = running ? "Updates: one is running" : count > 0 ? `Updates: ${count} available` : "Updates: Backroom, T3 and its harnesses";
   return (
     <>
       <button type="button" className={`small ghost icon-only updates-button${count > 0 ? " has-updates" : ""}`} aria-label={label} title={label} onClick={() => setOpen(true)} data-nav="ov" data-nav-key="head:updates">
@@ -57,6 +57,7 @@ function UpdatesDialog({ onClose }: { onClose: () => void }) {
         <p className="muted">Nothing here updates by itself: each update runs only when you click its button.</p>
         {view ? (
           <ul className="update-list">
+            <BackroomRow view={view} starting={starting === "backroom"} onUpdate={(version) => start("backroom", () => api.updateBackroom(version))} />
             <T3Row view={view} starting={starting === "t3"} onUpdate={(version) => start("t3", () => api.updateT3(version))} />
             {view.harnesses.map((harness) => (
               <HarnessRow key={harness.instanceId} harness={harness} starting={starting === harness.instanceId} onUpdate={() => start(harness.instanceId, () => api.updateHarness(harness.instanceId))} />
@@ -110,6 +111,70 @@ const Working = ({ children }: { children: ReactNode }) => (
     <span className="spinner" aria-hidden="true" /> {children}
   </div>
 );
+
+/**
+ * Backroom itself: its version, the newest on its channel, and, for a copy in npm's global folder, the update with a
+ * confirmation naming who works now (it stops Backroom). A checkout or a copy elsewhere is told how to update instead.
+ */
+function BackroomRow({ view, starting, onUpdate }: { view: UpdatesView; starting: boolean; onUpdate: (version: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const { version, channel, latest, newer, canUpdate, manual, busy, releaseError, job } = view.backroom;
+  const running = job?.state === "installing" || job?.state === "restarting";
+  const offer = canUpdate && latest && !running;
+  const versions = (
+    <>
+      {version}
+      {newer && latest ? (
+        <>
+          {" → "}
+          <strong>{latest}</strong>
+        </>
+      ) : null}
+    </>
+  );
+  const action = offer && !confirming ? (
+    <button type="button" className="small" disabled={starting} onClick={() => setConfirming(true)}>
+      Update
+    </button>
+  ) : null;
+  return (
+    <Row name="Backroom" tag={channel} versions={versions} action={action}>
+      {job?.state === "installing" ? <Working>Installing {job.targetVersion} with npm…</Working> : null}
+      {job?.state === "restarting" ? (
+        <div className="update-status update-ok">
+          Installed {job.targetVersion}. Backroom stops now: a service manager that restarts it brings it back on {job.targetVersion}; started by hand, start it again with <code>backroom start</code>.
+        </div>
+      ) : null}
+      {job?.state === "failed" ? <div className="update-status status-error">Still on {version}: {job.error}</div> : null}
+      {offer && confirming ? (
+        <div className="update-confirm">
+          <span>
+            Backroom installs {latest} with npm and stops; a service manager that restarts it brings it back on {latest}, and started by hand you start it again. Turns that are running carry on in T3; a browser command running when it stops fails.{" "}
+            {busy.length > 0 ? `Working now: ${busy.join("; ")}.` : "Nobody is working now."}
+          </span>
+          <span className="update-confirm-actions">
+            <button type="button" className="small ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="small primary"
+              disabled={starting}
+              onClick={() => {
+                setConfirming(false);
+                onUpdate(latest);
+              }}
+            >
+              Update Backroom
+            </button>
+          </span>
+        </div>
+      ) : null}
+      {manual ? <div className="update-status muted">{manual}</div> : null}
+      {!newer && !running && !job ? <div className="update-status muted">{releaseError ? `Could not check for a newer Backroom (${releaseError})` : latest ? "Up to date" : `No release on npm's ${channel} tag yet`}</div> : null}
+    </Row>
+  );
+}
 
 /** T3 itself: its version, the newest on its channel, and the update with a confirmation (it restarts T3). */
 function T3Row({ view, starting, onUpdate }: { view: UpdatesView; starting: boolean; onUpdate: (version: string) => void }) {

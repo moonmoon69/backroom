@@ -155,6 +155,7 @@ export const api = {
   checkUpdates: (): Promise<UpdatesView> => post("/api/t3/updates/check", {}),
   updateHarness: (instanceId: string): Promise<UpdatesView> => post("/api/t3/updates/harness", { instanceId }),
   updateT3: (targetVersion: string): Promise<UpdatesView> => post("/api/t3/updates/server", { targetVersion }),
+  updateBackroom: (targetVersion: string): Promise<UpdatesView> => post("/api/backroom/update", { targetVersion }),
   usageToday: (): Promise<UsageToday> => get(`/api/t3/usage/today?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   /** T3's default model for a project; null when T3 has none configured. */
   defaultModel: (projectId: string): Promise<{ modelSelection: ModelSelection | null }> => get(`/api/t3/projects/${encodeURIComponent(projectId)}/default-model`),

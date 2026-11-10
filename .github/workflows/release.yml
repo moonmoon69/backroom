@@ -1,0 +1,74 @@
+# A release: a tag v<version> pushed for the version in package.json. The checks run, the package is packed (its
+# prepack builds the page and compiles the service), the packed file is installed and started, and that same file is
+# published to npm and attached to a GitHub release with generated notes. A prerelease (0.3.0-beta.1) goes out under
+# its own dist-tag (beta), the channel the copies running one look up; a release under latest.
+#
+# npm: trusted publishing from this workflow (npmjs.com → the package's settings → Trusted publisher: GitHub Actions,
+# moonmoon69/backroom, release.yml). Until that is set up (npm sets it up for a package that exists, so before the first
+# release), the repository secret NPM_TOKEN, an npm access token allowed to publish the package, publishes instead.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the GitHub release
+  id-token: write # npm's trusted publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: The tag is package.json's version
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then echo "tag $GITHUB_REF_NAME is not v$version, package.json's version"; exit 1; fi
+          channel=$(node -p 'const m = /^\d+\.\d+\.\d+-([0-9A-Za-z-]+)/.exec(process.argv[1]); m && !/^\d+$/.test(m[1]) ? m[1] : "latest"' "$version")
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "CHANNEL=$channel" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - name: Checks
+        run: |
+          npm run check
+          npm --workspace web run typecheck
+
+      - name: Pack
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          echo "PACKAGE=$RUNNER_TEMP/pack/$(ls "$RUNNER_TEMP/pack")" >> "$GITHUB_ENV"
+
+      - name: Smoke test of the packed file
+        run: |
+          tmp=$(mktemp -d)
+          mkdir "$tmp/home" "$tmp/cwd"
+          npm install --global --prefix "$tmp/prefix" --no-fund --no-audit "$PACKAGE"
+          cd "$tmp/cwd"
+          HOME="$tmp/home" ROOMS_ADAPTER=fake ROOMS_PORT=4499 ROOMS_BROWSER_MODE=off "$tmp/prefix/bin/backroom" start > "$tmp/service.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:4499/api/status > "$tmp/status.json" && break; sleep 1; done
+          curl -sf http://127.0.0.1:4499/ > "$tmp/page.html" || true
+          kill $!
+          cat "$tmp/service.log"
+          answered=$(node -p "require('$tmp/status.json').version")
+          if [ "$answered" != "$VERSION" ]; then echo "the packed copy answers $answered, not $VERSION"; exit 1; fi
+          grep -q '<div id="root"' "$tmp/page.html" || { echo "the packed copy does not serve its page"; exit 1; }
+          test -f "$tmp/home/.backroom/rooms.sqlite"
+
+      - name: Publish to npm
+        run: npm publish "$PACKAGE" --tag "$CHANNEL"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: GitHub release
+        run: gh release create "$GITHUB_REF_NAME" "$PACKAGE" --generate-notes --title "$GITHUB_REF_NAME" $([ "$CHANNEL" = latest ] || echo --prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}

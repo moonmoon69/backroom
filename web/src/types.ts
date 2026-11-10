@@ -875,7 +875,25 @@ export interface HarnessUpdate {
 }
 
 /** What can be updated: T3 itself and its harnesses. Nothing updates unless the user starts it. */
+/** Backroom itself in the Updates popup (src/app/backroomUpdate.ts). */
+export interface BackroomUpdateView {
+  version: string;
+  /** How this copy was installed: a git checkout, the package in npm's global folder, or the package elsewhere. */
+  install: "checkout" | "global" | "package";
+  channel: string;
+  latest: string | null;
+  newer: boolean;
+  canUpdate: boolean;
+  manual: string | null;
+  /** Who works now (a running turn, a browser tab open), named in the confirmation. */
+  busy: string[];
+  releaseCheckedAt: string | null;
+  releaseError: string | null;
+  job: { targetVersion: string; state: "installing" | "restarting" | "failed"; startedAt: string; finishedAt: string | null; error: string | null } | null;
+}
+
 export interface UpdatesView {
+  backroom: BackroomUpdateView;
   reachable: boolean;
   error: string | null;
   server: {
@@ -1274,6 +1292,9 @@ export interface DeskResponse {
 }
 
 export interface StatusResponse {
+  /** This copy's version and how it was installed. */
+  version: string;
+  install: "checkout" | "global" | "package";
   adapter: "fake" | "http";
   /** Entry script of the UI build the server now serves; differs from the loaded one after a rebuild. */
   uiBuild?: string | null;

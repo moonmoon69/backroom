@@ -71,6 +71,8 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -257,7 +259,7 @@ class Service {
     // Its own process group: a signal meant for this script's group (a terminal's Ctrl-C aside) does not reach it.
     const child = spawn(process.execPath, ["--no-warnings=ExperimentalWarning", "src/server/index.ts"], {
       cwd: repo,
-      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ROOMS_SKILLS_HOME: join(this.o.data, "home"), ...kept },
+      env: { ...process.env, ROOMS_ADAPTER: "fake", ROOMS_PORT: String(this.o.port), ROOMS_DATA_DIR: this.o.data, ROOMS_PSTACK_REPO: join(this.o.data, "pstack-fixture", "plugins.git"), ROOMS_SKILLS_HOME: join(this.o.data, "home"), npm_config_registry: await releaseRegistry(), ...kept },
       stdio: ["ignore", logFd, logFd],
       detached: true,
     });
@@ -2270,6 +2272,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 28. What the page reads (#354): a shell push reads no whole thread list; the overview's shelf reads its rows when opened.
   check.passed.push(...(await rehearsePageReads(service, browser, room, selection, section)));
 
+  // 29. Backroom's own row in the Updates popup, as a checkout sees it (src/app/backroomUpdate.ts).
+  check.passed.push(...(await rehearseBackroomRow(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -2291,6 +2296,77 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
  * A state that makes the service refuse a command on purpose says so (`refusal`): the browser's console line for it is
  * accepted whether the state is checked or played silently, so it never fails a later state's console check.
  */
+/**
+ * npm's registry as the services of this run ask it for releases (npm_config_registry, src/app/t3Updates.ts): this
+ * checkout's package has `releases.latest` on its latest tag, and nothing else is published, so T3 shows no release.
+ */
+const releases = { latest: "" };
+let registry: Promise<string> | null = null;
+function releaseRegistry(): Promise<string> {
+  registry ??= new Promise((resolve) => {
+    const { name, version } = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { name: string; version: string };
+    const [major, minor] = version.split(".").map(Number);
+    releases.latest = `${major}.${minor! + 1}.0`;
+    const server = createServer((request, response) => {
+      if (request.url === `/-/package/${name.replace("/", "%2f")}/dist-tags`) return response.end(JSON.stringify({ latest: releases.latest }));
+      response.statusCode = 404;
+      response.end("{}");
+    });
+    server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`));
+    server.unref();
+  });
+  return registry;
+}
+
+/**
+ * Backroom's row in the Updates popup, for the service this run starts from its checkout: its version, the newest release
+ * from the run's registry, and the line that says a checkout is updated with git, with no Update button; Check now asks
+ * npm again. The row of a copy in npm's global folder (its Update, confirmation, install and stop) is reached only by a
+ * packed install, outside this run.
+ */
+async function rehearseBackroomRow(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("Updates: Backroom's row in a checkout shows its version and the newest release, says to update with git, and offers no Update"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const { version } = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string };
+  type Row = { install: string; version: string; latest: string | null; canUpdate: boolean; manual: string | null };
+  const row = async () => (await service.call<{ backroom: Row }>("GET", "/api/t3/updates")).backroom;
+  const rowRead = `() => { const r = [...document.querySelectorAll('.update-row')].find((x) => x.querySelector('.update-name')?.textContent === 'Backroom'); return r ? { text: r.textContent ?? '', buttons: r.querySelectorAll('button').length } : null; }`;
+  if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+  browser.click(/button "Updates/);
+  const first = releases.latest;
+  await state(
+    "Updates: Backroom's row in a checkout shows its version and the newest release, says to update with git, and offers no Update",
+    async () => {
+      const r = await row();
+      return r.install === "checkout" && r.version === version && r.latest === first && !r.canUpdate ? `GET /api/t3/updates: Backroom ${r.version}, a checkout, newest ${r.latest}` : null;
+    },
+    ["A git checkout: Backroom does not update it"],
+    () => {
+      const r = browser.poll<{ text: string; buttons: number } | null>("Backroom's row", rowRead, (x) => Boolean(x?.text.includes(`${version} → ${first}`)));
+      if (r!.buttons !== 0) fail(`Backroom's row in a checkout has ${r!.buttons} button(s): ${r!.text}`);
+      log(`  page: ${JSON.stringify(r!.text)}, no button`);
+    },
+  );
+  const [major] = version.split(".").map(Number);
+  releases.latest = `${major! + 1}.0.0`;
+  browser.click(/button "Check now"/);
+  await state(
+    "Updates: Check now asks npm again, and a release published since shows in Backroom's row",
+    async () => {
+      const r = await row();
+      return r.latest === releases.latest ? `GET /api/t3/updates: newest ${r.latest}` : null;
+    },
+    [releases.latest],
+    () => {
+      const r = browser.poll<{ text: string; buttons: number } | null>("Backroom's row to show the newer release", rowRead, (x) => Boolean(x?.text.includes(`${version} → ${releases.latest}`)));
+      log(`  page: ${JSON.stringify(r!.text)}`);
+    },
+  );
+  browser.click(/button "Close"$/);
+  return passed;
+}
+
 function probedStates(browser: Browser, selection: Selection, passed: string[]) {
   return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void, options: { refusal?: boolean } = {}): Promise<void> => {
     const { index, loud } = selection.enter(name);

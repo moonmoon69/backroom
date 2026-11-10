@@ -17,7 +17,9 @@ import { startSeen } from "./seen.ts";
 import { LimitRecovery } from "./limitRecovery.ts";
 import { storedLimitIntents } from "./limitIntent.ts";
 import { T3Presence } from "./t3Presence.ts";
-import { T3Updates, type ReleaseLookup } from "./t3Updates.ts";
+import { BackroomUpdate, busyMembers } from "./backroomUpdate.ts";
+import { detectInstall, type Install } from "./install.ts";
+import { T3Updates, npmDistTag, type ReleaseLookup } from "./t3Updates.ts";
 import { memberFacts, subagentRequests } from "./threadView.ts";
 import { checksReader } from "./pullRequestWatch.ts";
 import { memberState, type MemberState } from "../domain/memberState.ts";
@@ -57,7 +59,7 @@ export interface AppStack {
   changes: PageChanges;
   /** Room browsers, when this service may start them (the server; not the tests). */
   browsers: RoomBrowsers | null;
-  /** T3's and its harnesses' updates, started only when asked for. */
+  /** Backroom's, T3's and its harnesses' updates, started only when asked for. */
   updates: T3Updates;
   /** Backroom in place of T3's window: keeps T3 checking plan usage and harnesses while a page is open. */
   presence: T3Presence;
@@ -87,8 +89,12 @@ export function createStack(input: {
   boardCommand?: string;
   /** Builds the room browser manager once the repos and change hub exist. */
   browsers?: (deps: { repos: Repos; notify: (roomId: string) => void }) => RoomBrowsers;
-  /** Where T3's newest release is looked up (npm by default; tests pass their own). */
+  /** Where T3's and Backroom's newest releases are looked up (npm by default; tests pass their own). */
   latestRelease?: ReleaseLookup;
+  /** How this copy was installed (src/app/install.ts); this checkout's by default. */
+  install?: Install;
+  /** Backroom's own update: the agents with a tab open in a room browser, named in its confirmation, and its stop once installed. */
+  selfUpdate?: { agentsWithTabs?: () => Promise<string[]>; installed?: (version: string) => void };
   /** Per-call limit on the T3 thread actions room deletion sends (src/app/service.ts THREAD_ACTION_TIMEOUT_MS). */
   threadActionTimeoutMs?: number;
   /** The engine's keep-alive interval where a room sets none (ROOMS_KEEPALIVE_MS; H6): 55 minutes by default, 0 for off. */
@@ -178,7 +184,17 @@ export function createStack(input: {
     hub,
     changes,
     browsers,
-    updates: new T3Updates(input.adapter, input.latestRelease),
+    updates: new T3Updates(
+      input.adapter,
+      new BackroomUpdate({
+        install: input.install ?? detectInstall(),
+        lookup: input.latestRelease ?? npmDistTag,
+        busy: () => busyMembers(repos, (roomId) => engine.view(roomId), input.selfUpdate?.agentsWithTabs ?? (async () => [])),
+        ...(input.selfUpdate?.installed ? { installed: input.selfUpdate.installed } : {}),
+        ...(input.log ? { log: input.log } : {}),
+      }),
+      input.latestRelease,
+    ),
     presence,
     limitRecovery,
     engine,

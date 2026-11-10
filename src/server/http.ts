@@ -151,6 +151,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
       uiBuild = null;
     }
     return c.json({
+      // This copy's version (package.json's) and how it was installed (src/app/install.ts).
+      version: config.install.version,
+      install: config.install.kind,
       adapter: stack.adapter.kind,
       uiBuild,
       t3: {
@@ -271,13 +274,19 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
     });
     return c.json({ ok: true });
   });
-  // Updates for T3 and its harnesses. Nothing updates by itself: each POST starts the one update the user clicked.
+  // Updates for Backroom, T3 and its harnesses. Nothing updates by itself: each POST starts the one update the user clicked.
   app.get("/api/t3/updates", async (c) => c.json(await stack.updates.view(c.req.query("fresh") === "1")));
   app.post("/api/t3/updates/check", async (c) => c.json(await stack.updates.check()));
   app.post("/api/t3/updates/harness", async (c) => {
     const body = (await c.req.json()) as { instanceId?: unknown };
     if (typeof body.instanceId !== "string" || !body.instanceId) throw new RoomError("missing_instance", "instanceId is required");
     return c.json(await stack.updates.updateHarness(body.instanceId));
+  });
+  app.post("/api/backroom/update", async (c) => {
+    const body = (await c.req.json()) as { targetVersion?: unknown };
+    if (typeof body.targetVersion !== "string" || !body.targetVersion) throw new RoomError("missing_version", "targetVersion is required");
+    await stack.updates.backroom.update(body.targetVersion);
+    return c.json(await stack.updates.view(false));
   });
   app.post("/api/t3/updates/server", async (c) => {
     const body = (await c.req.json()) as { targetVersion?: unknown };
@@ -1017,7 +1026,6 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
 
   // ---- static UI ----
   if (existsSync(join(webDistDir, "index.html"))) {
-    const distRoot = webDistDir.replace(process.cwd() + "/", "");
     // Asset file names carry their content's hash: a rebuilt bundle has new names, so a copy kept a year is never stale.
     app.use(
       "/assets/*",
@@ -1025,9 +1033,9 @@ export function createHttpApp(stack: AppStack, config: Config, webDistDir: strin
         await next();
         if (c.res.status === 200) c.header("Cache-Control", "public, max-age=31536000, immutable");
       },
-      serveStatic({ root: distRoot }),
+      serveStatic({ root: webDistDir }),
     );
-    app.use("/icons/*", serveStatic({ root: distRoot }));
+    app.use("/icons/*", serveStatic({ root: webDistDir }));
     // PWA shell files live at the site root. They are revalidated on every load so an updated worker or manifest
     // is picked up without a hard refresh.
     const rootFiles: Record<string, string> = {

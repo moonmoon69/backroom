@@ -1,13 +1,22 @@
 {
-  "name": "backroom",
+  "name": "agents-backroom",
   "version": "0.1.0",
-  "private": true,
   "description": "Backroom: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/moonmoon69/backroom.git"
   },
   "type": "module",
+  "bin": {
+    "backroom": "bin/backroom.mjs"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "web/dist/",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=24"
   },
@@ -24,10 +33,12 @@
     "t3:feed": "node --no-warnings=ExperimentalWarning scripts/t3-shell-feed.ts",
     "t3:pair": "node --no-warnings=ExperimentalWarning scripts/t3-pair.ts",
     "t3:v2": "node --no-warnings=ExperimentalWarning scripts/t3-v2-cutover.ts",
-    "build:web": "npm --workspace web run build"
+    "build:web": "npm --workspace web run build",
+    "build": "npm run build:web && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
   },
   "dependencies": {
-    "@hono/node-server": "^1.14.0",
+    "@hono/node-server": "^1.19.0",
     "chrome-devtools-mcp": "1.10.1",
     "hono": "^4.7.0",
     "zod": "^4.0.0"
