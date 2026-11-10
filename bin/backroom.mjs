@@ -17,7 +17,7 @@ The page is at http://127.0.0.1:4400 (ROOMS_PORT changes the port); the data liv
 const [word, ...rest] = process.argv.slice(2);
 if (word === "--version" || word === "-v") {
   console.log(manifest.version);
-} else if (word === "--help" || word === "-h" || word === "help") {
+} else if (word === "--help" || word === "-h") {
   process.stdout.write(help);
 } else if ((word === undefined || word === "start") && rest.length === 0) {
   // node:sqlite warns that it is experimental on every start; other warnings still print.

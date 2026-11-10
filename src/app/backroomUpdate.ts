@@ -80,6 +80,8 @@ export interface BackroomUpdateOptions {
 export class BackroomUpdate {
   private readonly releases: ReleaseCache;
   private job: BackroomUpdateJob | null = null;
+  /** An Update request is between its first check and its job: the release lookup is awaited. */
+  private claimed = false;
   private readonly options: BackroomUpdateOptions;
 
   constructor(options: BackroomUpdateOptions) {
@@ -115,9 +117,9 @@ export class BackroomUpdate {
     };
   }
 
-  /** An update is under way: npm installing, or the copy about to stop on the new version. */
+  /** An update is under way: a request checking the release, npm installing, or the copy about to stop on the new version. */
   running(): boolean {
-    return this.job?.state === "installing" || this.job?.state === "restarting";
+    return this.claimed || this.job?.state === "installing" || this.job?.state === "restarting";
   }
 
   /**
@@ -126,15 +128,23 @@ export class BackroomUpdate {
    */
   async update(targetVersion: string): Promise<BackroomUpdateView> {
     const { kind, name, version, root, npmCli, prefix } = this.options.install;
-    if (this.running()) throw new RoomError("update_running", `Backroom is already being updated to ${this.job!.targetVersion}`, 409);
+    if (this.running()) throw new RoomError("update_running", `Backroom is already being updated${this.claimed ? "" : ` to ${this.job!.targetVersion}`}`, 409);
     if (kind !== "global" || !npmCli || !prefix) throw new RoomError("not_updatable", "Backroom updates itself only when installed in npm's global folder", 409);
-    const release = await this.releases.latest(releaseChannel(version), false);
-    const latest = release.version;
-    if (!latest || !VERSION.test(latest)) throw new RoomError("no_release", `No newer Backroom is known${release.error ? `: ${release.error}` : ""}`, 409);
-    if (latest !== targetVersion) throw new RoomError("stale_release", `The newest Backroom is now ${latest}; check the popup again`, 409);
-    if (compareVersions(latest, version) <= 0) throw new RoomError("up_to_date", `Backroom already runs ${version}`, 409);
-    const job: BackroomUpdateJob = { targetVersion: latest, state: "installing", startedAt: new Date().toISOString(), finishedAt: null, error: null };
-    this.job = job;
+    // Claimed before the lookup is awaited, so a second request meanwhile is refused; given back by every refusal below.
+    this.claimed = true;
+    let job: BackroomUpdateJob;
+    let latest: string;
+    try {
+      const release = await this.releases.latest(releaseChannel(version), false);
+      if (!release.version || !VERSION.test(release.version)) throw new RoomError("no_release", `No newer Backroom is known${release.error ? `: ${release.error}` : ""}`, 409);
+      latest = release.version;
+      if (latest !== targetVersion) throw new RoomError("stale_release", `The newest Backroom is now ${latest}; check the popup again`, 409);
+      if (compareVersions(latest, version) <= 0) throw new RoomError("up_to_date", `Backroom already runs ${version}`, 409);
+      job = { targetVersion: latest, state: "installing", startedAt: new Date().toISOString(), finishedAt: null, error: null };
+      this.job = job;
+    } finally {
+      this.claimed = false;
+    }
     this.options.log?.(`updating Backroom ${version} → ${latest}`);
     const npm = this.options.npm ?? nodeNpm(npmCli);
     const fail = (error: string) => {

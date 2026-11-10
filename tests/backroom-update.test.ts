@@ -1,6 +1,7 @@
 /** How this copy was installed decides its folders and its update: a checkout, a global package, a package elsewhere. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,28 @@ test("a package in npm's global folder is global, one anywhere else is not; both
   assert.equal(loadConfig({}, global).dataDir, join(m.home, ".backroom"));
 });
 
+test("a global folder's command makes a copy global only when it is that copy's own command file", (t) => {
+  const m = machine(t);
+  const root = m.copy(join(m.globalRoot, NAME));
+  // The prefix's command resolves to another file of the package: not the command npm linked for this copy.
+  mkdirSync(join(root, "unrelated"));
+  writeFileSync(join(root, "unrelated", "other"), "");
+  mkdirSync(join(m.dir, "node", "bin"), { recursive: true });
+  symlinkSync(join(root, "unrelated", "other"), join(m.dir, "node", "bin", "backroom"));
+  assert.equal(detectInstall({ root, home: m.home, execPath: m.execPath }).kind, "package");
+});
+
+test("a copy laid out as Windows' global folder (node_modules/<name>, a backroom.cmd beside it) is a package, whatever platform is asked for", (t) => {
+  const m = machine(t);
+  const windows = join(m.dir, "win");
+  const winRoot = m.copy(join(windows, "node_modules", NAME));
+  writeFileSync(join(windows, "backroom.cmd"), "@echo another command\r\n");
+  mkdirSync(join(windows, "node_modules", "npm", "bin"), { recursive: true });
+  writeFileSync(join(windows, "node_modules", "npm", "bin", "npm-cli.js"), "");
+  const asked = { root: winRoot, home: m.home, execPath: join(windows, "node.exe"), platform: "win32" };
+  assert.deepEqual([detectInstall(asked).kind, detectInstall(asked).prefix], ["package", null]);
+});
+
 const install = (kind: Install["kind"], version = "0.2.0"): Install => ({ kind, root: "/nonexistent", name: NAME, version, dataDir: "/nonexistent/data", webDistDir: "/nonexistent/web", npmCli: kind === "checkout" ? null : "/nonexistent/npm-cli.js", prefix: kind === "global" ? "/nonexistent/prefix" : null });
 
 test("the row compares the newest release on the copy's own channel: newer, the same, older, and a prerelease's channel", async () => {
@@ -107,6 +130,58 @@ test("Update is refused for a checkout and a copy elsewhere, and installs only i
   await assert.rejects(new BackroomUpdate({ install: install("global", "0.3.0"), lookup: async () => "0.3.0", npm }).update("0.3.0"), /No newer|already runs/);
   await assert.rejects(new BackroomUpdate({ install: install("global"), lookup: async () => "1.0.0 --prefix=/x", npm }).update("1.0.0 --prefix=/x"), /No newer Backroom/, "only a version npm could name is installed");
   assert.deepEqual(runs, []);
+});
+
+test("two Update requests during one release lookup start one install; the second is refused as running", async () => {
+  const waiting: Array<(version: string) => void> = [];
+  const runs: string[][] = [];
+  const update = new BackroomUpdate({ install: install("global"), lookup: () => new Promise((resolve) => waiting.push(resolve)), npm: (args) => (runs.push(args), new Promise<void>(() => {})) });
+  const first = update.update("0.3.0");
+  const second = update.update("0.3.0");
+  for (const resolve of waiting) resolve("0.3.0");
+  const [a, b] = await Promise.allSettled([first, second]);
+  assert.equal(a.status, "fulfilled");
+  assert.equal(b.status, "rejected");
+  assert.deepEqual([(b as PromiseRejectedResult).reason.code, (b as PromiseRejectedResult).reason.status], ["update_running", 409]);
+  assert.equal(runs.length, 1, "one npm replaces the package");
+});
+
+test("a refused Update or a failed lookup leaves Update free: a later one starts", async () => {
+  const runs: string[][] = [];
+  // npm still at work: the job stays "installing".
+  const npm = (args: string[]) => (runs.push(args), new Promise<void>(() => {}));
+  let latest = "0.3.0";
+  const stale = new BackroomUpdate({ install: install("global"), lookup: async () => latest, npm });
+  await stale.view(false);
+  latest = "0.4.0";
+  await stale.view(true);
+  await assert.rejects(stale.update("0.3.0"), (caught: { code?: string }) => caught.code === "stale_release");
+  assert.equal(stale.running(), false);
+  assert.equal((await stale.update("0.4.0")).job?.state, "installing");
+  assert.deepEqual(runs.map((args) => args.at(-1)), [`${NAME}@0.4.0`]);
+
+  let down = true;
+  const lookup = async () => {
+    if (down) throw new Error("registry unreachable");
+    return "0.3.0";
+  };
+  const flaky = new BackroomUpdate({ install: install("global"), lookup, npm });
+  await assert.rejects(flaky.update("0.3.0"), (caught: { code?: string; message?: string }) => caught.code === "no_release" && /registry unreachable/.test(caught.message ?? ""));
+  assert.equal(flaky.running(), false);
+  down = false;
+  await flaky.view(true);
+  assert.equal((await flaky.update("0.3.0")).job?.state, "installing");
+  assert.deepEqual(runs.map((args) => args.at(-1)), [`${NAME}@0.4.0`, `${NAME}@0.3.0`]);
+});
+
+test("the backroom command takes start and its flags; any other word, help among them, prints the help and exits 1", () => {
+  const command = join(import.meta.dirname, "..", "bin", "backroom.mjs");
+  const help = spawnSync(process.execPath, [command, "help"], { encoding: "utf8" });
+  assert.equal(help.status, 1);
+  assert.match(help.stderr, /unknown argument "help"[\s\S]*backroom start/);
+  const flag = spawnSync(process.execPath, [command, "--help"], { encoding: "utf8" });
+  assert.deepEqual([flag.status, /backroom start/.test(flag.stdout)], [0, true]);
+  assert.equal(spawnSync(process.execPath, [command, "--version"], { encoding: "utf8" }).stdout.trim(), JSON.parse(spawnSync(process.execPath, ["-p", "JSON.stringify(require('./package.json').version)"], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" }).stdout));
 });
 
 test("an installed update stops the copy; a failed one leaves it as it was and says why", async (t) => {
