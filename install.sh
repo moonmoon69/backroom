@@ -69,7 +69,10 @@ install() {
   cd "$dir"
   npm ci || fail "npm ci failed in $dir; fix the cause, then run this again."
   npm run build:web || fail "the page's build failed in $dir; fix the cause, then run this again."
-  say "Backroom $(version) is installed in $dir. Start it with: cd $(quoted "$dir") && npm start"
+  say "Backroom $(version) is installed in $dir."
+  say "Start it with: cd $(quoted "$dir") && npm start"
+  # The address the service listens on: ROOMS_PORT, else its default (src/config.ts).
+  say "Then open http://127.0.0.1:${ROOMS_PORT:-4400}"
 }
 
 version() { node -p 'require("./package.json").version'; }

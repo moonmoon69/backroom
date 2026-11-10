@@ -15,7 +15,7 @@ A few words before you install:
 - The **Consigliere** is the member you talk to. It seats the others from your crew, hands them the work and reports back.
 - Your **crew** are the people you seat in rooms: a name with a model, its options, a permission mode and a place to work.
 
-Set it up on the computer where T3 runs ([Local setup](#local-setup)), or on a headless box you reach over Tailscale ([Remote setup](#remote-setup)). Both end in [Your first room](#your-first-room). To look around first, [try it without T3](#try-it-without-t3).
+Set it up on the computer where T3 runs ([Local setup](#local-setup)), or on a headless box you reach over Tailscale ([Remote setup](#remote-setup)). Both end in [Your first room](#your-first-room).
 
 ## Requirements
 
@@ -29,18 +29,10 @@ Set it up on the computer where T3 runs ([Local setup](#local-setup)), or on a h
 
 In this tutorial we run Backroom on the computer where T3 Code runs, pair it with T3, and open it in a browser. Then [Your first room](#your-first-room) takes us to a first answered request.
 
-1. Check Node:
-
-   ```sh
-   node --version
-   ```
-
-   It prints a version from 24 on, such as `v24.22.0`.
-
-2. Start T3 Code so that it hands out pairing links. Do one of these:
+1. Check that T3 Code is installed and running, so that it hands out pairing links. Do one of these:
 
    - In **T3 Code Desktop**, open **Settings → Connections** and turn on **Network access**. The app restarts. Without Network access the Desktop app offers no pairing links.
-   - In a terminal of its own, run `npx t3 serve` and leave it running.
+   - Without the Desktop app, run `npx t3 serve` in a terminal of its own and leave it running. `npx` fetches T3 Code first when it is not installed yet.
 
    T3 writes its address to `~/.t3/userdata/server-runtime.json` while it runs, and Backroom reads it from there. Check that the file names T3's origin:
 
@@ -48,39 +40,48 @@ In this tutorial we run Backroom on the computer where T3 Code runs, pair it wit
    grep -o '"origin":"[^"]*"' ~/.t3/userdata/server-runtime.json
    ```
 
-   It prints `"origin":"http://127.0.0.1:3773"`, or the port your T3 uses.
+   It prints `"origin":"http://127.0.0.1:3773"`, or the port your T3 uses. No output, or no such file, means T3 is not running yet.
 
-3. Install Backroom with its install script:
+2. Install Backroom with its install script:
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh
    ```
 
-   It checks for git and Node 24, clones Backroom into `~/backroom` at its newest release, installs its packages with `npm ci` and builds its page. It ends with how to start it, such as `Backroom 0.1.0 is installed in /home/<you>/backroom. Start it with: cd /home/<you>/backroom && npm start`. To install into another folder, name it: `curl … | sh -s -- ~/Projects/backroom`.
+   It checks for git and Node 24 and says so when one is missing. Then it clones Backroom into `~/backroom` at its newest release, installs its packages with `npm ci` and builds its page. It ends with where Backroom is, how to start it and the address to open:
 
-4. Start the service:
+   ```
+   Backroom 0.1.0 is installed in /home/<you>/backroom.
+   Start it with: cd /home/<you>/backroom && npm start
+   Then open http://127.0.0.1:4400
+   ```
+
+   To install into another folder, name it: `curl … | sh -s -- ~/Projects/backroom`.
+
+3. Start Backroom and open its address:
 
    ```sh
    cd ~/backroom
    npm start
    ```
 
-   It logs the T3 address and whether it holds a credential, then its version:
+   It logs the T3 address and whether it holds a credential, then its version and its own address:
 
    ```
    [backroom] … T3 base URL http://127.0.0.1:3773; credentials missing, renewed by pairing again
    [backroom] … Backroom 0.1.0 listening on http://127.0.0.1:4400 (db /…/backroom/data/rooms.sqlite, page /…/backroom/web/dist)
    ```
 
-   If the first line ends `renewed by Backroom with T3's CLI`, T3 runs as a service on this computer, and Backroom pairs itself within seconds. Skip to step 6.
+   Open <http://127.0.0.1:4400>. If the first line ends `renewed by Backroom with T3's CLI`, T3 runs as a service on this computer, and Backroom pairs itself within seconds. Skip to step 5.
 
-5. Pair Backroom with T3. In T3 Code Desktop, create a pairing link on the same **Settings → Connections** screen. With `t3 serve`, run `npx t3 pair` in another terminal, which prints the link. A link works once and expires within minutes, so treat it like a password. Open <http://127.0.0.1:4400>, where Backroom shows its pairing panel in place of the rooms, and paste the link.
+4. Pair Backroom with T3. In T3 Code Desktop, create a pairing link on the same **Settings → Connections** screen. With `t3 serve`, run `npx t3 pair` in another terminal, which prints the link. A link works once and expires within minutes, so treat it like a password. The page shows its pairing panel in place of the rooms: paste the link there.
 
    ![The pairing panel of a Backroom that holds no credential: not paired, T3's address, and a field for the pairing link](assets/readme/pairing.png)
 
-6. Check that Backroom's credential works. This check only reads from T3:
+5. Check that Backroom's credential works. This check only reads from T3. Run it in another terminal, in Backroom's folder:
 
    ```sh
+   cd ~/backroom
    npm run t3:check
    ```
 
@@ -120,7 +121,7 @@ In this tutorial we set up a headless Linux box that runs T3 Code and Backroom a
 
    The local address reads `127.0.0.1:3773`. If it reads `0.0.0.0:3773`, LAN access is on, and `t3 status` says `Local network  on`. Turn it off with `npx t3 up --no-lan`, and check again.
 
-4. Install Backroom with its install script, as in step 3 of [Local setup](#local-setup), here into `~/Projects/backroom`:
+4. Install Backroom with its install script, as in step 2 of [Local setup](#local-setup), here into `~/Projects/backroom`:
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh -s -- ~/Projects/backroom
@@ -226,7 +227,7 @@ Now go on to [Your first room](#your-first-room).
 
 ## Your first room
 
-In this part we save a crew member, make them the Consigliere, open a room and send a first request. It works the same after either setup. The quoted lines come from a run on the fake T3 described in [Try it without T3](#try-it-without-t3), with a crew member named `fable`.
+In this part we save a crew member, make them the Consigliere, open a room and send a first request. It works the same after either setup. The quoted lines come from a run in a project named `demo`, with a crew member named `fable`; yours show your own names.
 
 1. Under **Crew**, click **+** (**New crew member**). Type a name, pick a model, its options and a permission mode, and click **Add to crew**. The crew member's tile shows the name and the model, such as `fable Claude Fable 5.1 · Medium · 1M`.
 
@@ -245,17 +246,6 @@ In this part we save a crew member, make them the Consigliere, open a room and s
    ![The first room: the request marked answered, and the Consigliere's reply below it, with what it cost](assets/readme/first-room.png)
 
 From here, ask the Consigliere for work that needs more hands, and it seats others from your crew. [Messages and requests](docs/messages.md) has the full syntax, and [The Consigliere and the board](docs/consigliere.md) how the work moves.
-
-## Try it without T3
-
-A fake T3 takes the place of the real one. Its agents answer after a few seconds, it offers sample slash commands (`/compact`, `/review`), and pairing is off. Install Backroom first, as in step 3 of [Local setup](#local-setup). Then start it in its folder with a port and a data folder of its own, so demo rooms stay out of your real ones:
-
-```sh
-cd ~/backroom
-ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
-```
-
-Open <http://127.0.0.1:4401>. The demo project's folder is `/tmp/demo`, which need not exist. `ROOMS_FAKE_PROJECT_DIR=<folder>` points it at a scratch git repository of yours, to see [the agents file](docs/agents-file-and-skills.md#the-agents-file) written there. A demo service writes agents files only inside its data folder and that folder.
 
 ## A tour
 

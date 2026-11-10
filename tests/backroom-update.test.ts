@@ -88,11 +88,11 @@ test("install.sh: a fresh install lands on the newest release, three plain numbe
   const up = upstream(dir);
   for (const version of ["0.1.0", "0.2.0", "0.10.0", "0.11.0-beta.1"]) up.release(version);
   const copy = join(dir, "copy");
-  const run = install(copy, up.bare);
+  const run = install(copy, up.bare, { ROOMS_PORT: "" });
   assert.equal(run.status, 0, run.out);
   assert.equal(at(copy), "v0.10.0", "0.10.0 is newer than 0.2.0, and a prerelease does not count");
   assert.equal(page(copy), "page 0.10.0");
-  assert.match(run.out, new RegExp(`Start it with: cd ${copy} && npm start`));
+  assert.ok(run.out.endsWith(`Backroom 0.10.0 is installed in ${copy}.\nStart it with: cd ${copy} && npm start\nThen open http://127.0.0.1:4400\n`), `it ends with where it is, how to start it and the address to open: ${run.out}`);
 });
 
 test("install.sh: with no release tag yet, a fresh install stays on the default branch", (t) => {
