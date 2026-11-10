@@ -248,9 +248,10 @@ From here, ask the Consigliere for work that needs more hands, and it seats othe
 
 ## Try it without T3
 
-A fake T3 takes the place of the real one. Its agents answer after a few seconds, it offers sample slash commands (`/compact`, `/review`), and pairing is off. Give it a port and a data folder of its own, so demo rooms stay out of your real ones:
+A fake T3 takes the place of the real one. Its agents answer after a few seconds, it offers sample slash commands (`/compact`, `/review`), and pairing is off. Install Backroom first, as in step 3 of [Local setup](#local-setup). Then start it in its folder with a port and a data folder of its own, so demo rooms stay out of your real ones:
 
 ```sh
+cd ~/backroom
 ROOMS_ADAPTER=fake ROOMS_PORT=4401 ROOMS_DATA_DIR=/tmp/rooms-demo npm start
 ```
 
@@ -331,7 +332,7 @@ Press **?** for every key in every place.
 - [Room browsers](docs/browsers.md): the shared browsers, which rooms may use them, and the `rooms-browser` command.
 - [Rooms and the overview](docs/room.md): what the overview and a room show, members, spend, Git, managing rooms and the crew.
 - [The agents file and skills](docs/agents-file-and-skills.md): the instructions file Backroom writes, and the skills roster and packs.
-- [Development](docs/development.md): the checks, the browser rehearsal, the README's pictures, where the code is, and how it works.
+- [Development](docs/development.md): the checks, the browser rehearsal, the README's pictures, releases, where the code is, and how it works.
 
 To work on Backroom itself:
 
@@ -342,3 +343,7 @@ npm run dev                          # the service, restarted when its code chan
 ```
 
 [Development](docs/development.md) has the rest.
+
+## License
+
+Backroom is released under the [MIT License](LICENSE).
