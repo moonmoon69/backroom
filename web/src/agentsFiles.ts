@@ -23,6 +23,8 @@ export function reloadAgentsFiles(): void {
       emit();
     },
     (caught: unknown) => {
+      // No answer, no list: an earlier one would show states (and overview marks) the service can no longer vouch for.
+      entries = null;
       error = caught instanceof Error ? caught.message : String(caught);
       snapshot = { entries, error };
       emit();
@@ -30,7 +32,7 @@ export function reloadAgentsFiles(): void {
   );
 }
 
-/** What the page last read: null until the first answer; the error of the last read that failed. */
+/** What the page last read: null until the first answer and after a read that failed, with its error. */
 export function useAgentsFiles(): { entries: AgentsFileEntry[] | null; error: string | null } {
   return useSyncExternalStore(
     (listener) => {

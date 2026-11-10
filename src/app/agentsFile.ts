@@ -47,8 +47,7 @@
  * A project's own instruction file (INSTRUCTION_FILES, in its folder) that git ignores is in the same state: a new
  * worktree lacks it, so in every row of the table a plain file git ignores is listed in the same block, and the hook
  * goes in on the same conditions (the user's #8). With nothing written that is the log's to say, not the room's, and the
- * record's written is empty, so Settings → Agents file does not list the folder. Files git tracks are in every worktree
- * already. Files untracked and not ignored stay as they are: listing them would hide them from git status while the
+ * record's written is empty. Files git tracks are in every worktree already. Files untracked and not ignored stay as they are: listing them would hide them from git status while the
  * project may be about to commit them. Nothing to add to the block and no hook to install leaves no record.
  *
  * Backroom writes once per folder: a file the user removes afterwards is not written again (it would come back with
