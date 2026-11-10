@@ -1,6 +1,6 @@
 /**
  * Keyboard navigation of the page (the shortcuts are listed in one place: keyOrder.ts, KEYS, shown by the key bar and
- * `?` and in README.md; where the overview's arrows go is there too, apart from the page, so it is tested on its own).
+ * `?`; where the overview's arrows go is there too, apart from the page, so it is tested on its own).
  *
  * The page moves real focus: every item the arrows reach is an element with `data-nav` (its group) and `data-nav-key`
  * (a key that survives a redraw: "room:<id>", "post:<seq>", …), focusable (a button, or tabindex -1 with a role and a

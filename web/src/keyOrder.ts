@@ -1,6 +1,6 @@
 /**
  * The page's keys without the page (keys.ts does the DOM side): the table of every key by the place it works in, which
- * the key bar (KeyBar.tsx), the `?` list (KeyHelp.tsx) and README.md's Keyboard section are all drawn from, where each
+ * the key bar (KeyBar.tsx) and the `?` list (KeyHelp.tsx) are drawn from, where each
  * arrow goes on the overview's grid, on items boxed as the overview draws them, a room's lanes with where each arrow
  * goes in them, and the order of the buttons in an item's action strip.
  */
@@ -8,7 +8,7 @@
 /** Something about the moment that changes what a key does (keys.ts, keyPlace, reads it off the page). */
 export type KeyWhen = "typing" | "empty" | "correcting" | "composer-open" | "chip-open" | "asking" | "panel-open" | "help" | "disabled";
 
-/** What the conditions are called in `?` and README. */
+/** What the conditions are called in `?`. */
 const WHEN_WORDS: Record<KeyWhen, [when: string, unless: string]> = {
   typing: ["in a text field", "outside a text field"],
   empty: ["in an empty field", "with text in the field"],
@@ -25,9 +25,9 @@ export interface KeyEntry {
   keys: string[];
   /** What the keys do there, worded by their effect, as the key bar says it ("open the room"). */
   does: string;
-  /** More about it, for `?` and README only. */
+  /** More about it, for `?` only. */
   more?: string;
-  /** Left off the key bar (Tab where it is not the way on): `?` and README only. */
+  /** Left off the key bar (Tab where it is not the way on): `?` only. */
   bar?: false;
   /** The bar says the name of the button the ring is on instead ("Enter Correct…"), cut to BAR_NAME characters. */
   named?: true;
@@ -97,7 +97,7 @@ export type PlaceId =
 
 export interface KeyPlace {
   id: PlaceId;
-  /** What the ring is on there, as `?` and README name it ("a room's tile"). */
+  /** What the ring is on there, as `?` names it ("a room's tile"). */
   on: string;
   /**
    * The place whose keys work here too, under these (a tile's keys are the overview's and its own Enter). Dialogs and
@@ -495,7 +495,7 @@ export const KEYS: Array<{ area: string; places: KeyPlace[] }> = [
 ];
 
 /**
- * The four keys, as `?` and README's Keyboard section open with them (the design's key map, K1-Fable section 2): the
+ * The four keys, as `?` opens with them (the design's key map, K1-Fable section 2): the
  * arrows move, Enter goes in, Backspace goes back, Esc closes what is in front.
  */
 export const FOUR_KEYS: Array<{ keys: string[]; does: string }> = [
@@ -504,9 +504,6 @@ export const FOUR_KEYS: Array<{ keys: string[]; does: string }> = [
   { keys: ["Backspace"], does: "back out one step: what is in front, then a member's thread, the side panel, the room; the one key that leaves a room (in a text field it deletes)" },
   { keys: ["Esc"], does: "close what is in front (a menu, an action strip, a dialog, the composer with its draft kept, these keys), and nothing else" },
 ];
-
-/** README's list of the four keys (scripts/keys-readme.ts draws it at the top of the Keyboard section). */
-export const fourKeysMarkdown = (): string => FOUR_KEYS.map(({ keys, does }) => `- ${keys.map((key) => `\`${key}\``).join(" ")}: ${does}.`).join("\n");
 
 const PLACES = new Map(KEYS.flatMap((area) => area.places).map((place) => [place.id, place]));
 
@@ -556,18 +553,10 @@ export function barDoes(entry: KeyEntry, name?: string | null): string {
   return name.length > BAR_NAME ? `${name.slice(0, BAR_NAME - 1)}…` : name;
 }
 
-/** An entry as `?` and README say it: its effect, capitalised, with what more there is to it and when it holds. */
+/** An entry as `?` says it: its effect, capitalised, with what more there is to it and when it holds. */
 export function entryText(entry: KeyEntry): string {
   const notes = [entry.more, entry.when ? WHEN_WORDS[entry.when][0] : null, entry.unless ? WHEN_WORDS[entry.unless][1] : null].filter(Boolean);
   return `${entry.does[0]!.toUpperCase()}${entry.does.slice(1)}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
-}
-
-/** README.md's tables of the keys, as `?` lists them: one per area, a row per key on each place (named on its first). */
-export function keysMarkdown(): string {
-  return KEYS.map(({ area, places }) => {
-    const rows = places.flatMap((place) => place.entries.map((entry, index) => `| ${index === 0 ? place.on : ""} | ${entry.keys.map((key) => `\`${key}\``).join(" ")} | ${entryText(entry)} |`));
-    return [`**${area}**`, "", "| On | Keys | What they do |", "|---|---|---|", ...rows].join("\n");
-  }).join("\n\n");
 }
 
 /** A key the page's navigation takes: the four arrows and the two ends. */

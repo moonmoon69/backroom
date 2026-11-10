@@ -1,5 +1,7 @@
 # Operations
 
+How Backroom connects to T3 Code, the settings it reads, how to run, update and back it up, and what to do when something fails.
+
 ## Connect to T3 Code
 
 Backroom is a third-party client of your T3 server, so it needs a credential: a bearer token with the permissions listed below. It is stored in `data/t3-auth.json` with owner-only permissions (0600) and is never sent to the browser.
@@ -33,7 +35,7 @@ The command prints only the scope and expiry, and names any permission the link 
 | `diagnostics:read` | today's usage in a member's usage card |
 | `filesystem:read` | the folder list in the New project dialog |
 
-It asks for nothing broader: not T3's settings, terminals, previews, source control, file writes, or the management of other clients. T3 0.0.46-nightly.20261007 started checking the four below `orchestration:operate`. Before that, `orchestration:operate` covered the updates and `orchestration:read` covered the other two. So a credential from an older pairing lacks them.
+It asks for nothing broader: not T3's settings, terminals, previews, source control, file writes, or the management of other clients.
 
 ### How the credential is kept
 
@@ -67,6 +69,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_ADAPTER` | `http` | `fake` for demo mode |
 | `ROOMS_PSTACK_REPO` | `https://github.com/cursor/plugins` | Where the pstack pack ([Skills](agents-file-and-skills.md#skills)) is cloned from: a URL, or a local path (taken from the service's folder). The tests and the rehearsal give a local bare repository |
 | `ROOMS_SKILLS_HOME` | your home folder; `<data>/home` on the fake T3 | The home folder whose skill folders (`.claude/skills`, `.agents/skills`, `.grok/skills`) [Skills](agents-file-and-skills.md#skills) links into, so a throwaway service never links into your harnesses |
+| `ROOMS_FAKE_STATE` | none | Demo mode: a file the fake T3 keeps its threads, runs and command receipts in, so they outlive a restart of the service, as a real T3's do; without it the fake keeps them in memory only |
 | `ROOMS_FAKE_PROJECT_DIR` | `/tmp/demo` | Demo mode: the demo project's folder (never created), a scratch git repository to try [the agents file](agents-file-and-skills.md#the-agents-file) |
 | `T3_BASE_URL` | from `~/.t3/userdata/server-runtime.json`, else the paired server, else `http://127.0.0.1:3773` | T3 server origin |
 | `T3_ACCESS_TOKEN` | stored credential | Overrides the paired token (used as it is, never renewed) |
@@ -86,6 +89,7 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 | `ROOMS_BROWSER_IDLE_MINUTES` | `30` | Stop a browser after this long without tab changes or agent use, unless it is in use: a room with it as its default has work in flight, or an agent with work in flight has a tab open in it (`0` = never) |
 | `ROOMS_BROWSER_PORTS_DIR` | `~/.local/state/backroom/browser-ports` (`$XDG_STATE_HOME` if set) | Where this machine's Backrooms record which browser ports and displays each keeps, so none takes another's; `off` keeps to this Backroom's own |
 | `ROOMS_BROWSER_SCOPE` | on under systemd | `0` keeps browser processes in the service's own cgroup (a service restart then kills them) |
+| `ROOMS_BROWSER_AS` | none | Read by `bin/rooms-browser` and `bin/rooms-board`: the agent's key when a command has no `--as` |
 | `ROOMS_BROWSER_API` | `data/browser-api.json` | Read by `bin/rooms-browser` and `bin/rooms-board` to find the service; briefings pass it along when the data folder is elsewhere |
 
 ## Running, updating and backing up
@@ -94,34 +98,6 @@ The service reads environment variables only; it does **not** load `.env`. Set v
 - **Update the UI** by rebuilding it with `npm run build:web`. Open pages show "Backroom was updated" and offer a reload. After changing server code, restart `npm start`. Database migrations run automatically at startup.
 - **Back up** by copying the `data/` directory while the service is stopped. It contains `rooms.sqlite`, the rooms' journal `board.sqlite`, `t3-auth.json`, the browsers' profiles under `browsers/` and `browser-api.json`. Keep the copy private: the T3 credential and every browser's logins are inside.
 - **Keep it running** with any process manager: the systemd user unit in [A headless box over Tailscale](../README.md#a-headless-box-over-tailscale), a `launchd` agent, `pm2`, a tmux pane. The service needs no special privileges.
-
-### Moving a server from T3's V1 to V2
-
-Backroom works with T3's Orchestrator V2 only (T3 Code 0.0.46 and newer). T3 0.0.45 and older run its V1 orchestrator; Backroom reads such a server's version, says in the T3 status that it needs updating, and can start the update, but no room or thread works until it is done.
-
-T3 makes the move itself the first time a V2 server starts: it copies its V1 database (`state.sqlite`) to a new one (`statev2.sqlite`) and migrates the copy. V1's file is left as it was, so going back to a V1 build shows everything as it stood at the move, and nothing done since.
-
-- **What comes across:** threads with their titles, projects, models, permission and interaction modes, branches and worktrees, archived, pinned and settled state, linked pull requests, and every user and assistant message.
-- **What does not:** the harness's live session, old checkpoints and diffs, tool activity, approval history and proposed plans. A member's first message after the move starts a fresh harness session; T3 hands it as much of the earlier conversation as fits, and the agent can look up the rest.
-- **Cursor has to be signed in again.** V2 runs Cursor through Cursor's SDK with a sign-in of its own: T3's provider settings (in T3 Code), or `CURSOR_API_KEY`. Until then a member on Cursor fails to start, with T3's message saying so. Claude and Codex keep their sign-ins.
-- **What to do first:** let running turns finish (or stop them), and answer or stop anything waiting on you, in every room and thread. A turn running during the move is cut off; a room's turn that was under way fails with "T3 no longer has this run" and can be retried.
-
-Then, on the machine that runs both, one command does the rest:
-
-```sh
-npm run t3:v2               # waits until no thread is in a turn, then switches
-npm run t3:v2 -- --dry-run  # only says what it would do
-```
-
-It builds the UI, restarts the Backroom service (the systemd user unit `backroom.service`; `--unit <name>` for another), starts T3's update through Backroom, waits for T3 to answer on protocol 2, pairs again if T3 no longer takes the credential, and reads the threads back. Under systemd it runs as a unit of its own, so it outlives the session that started it; it writes what it does to `data/t3-v2-cutover.log`. `--now` skips the wait and cuts running turns off.
-
-By hand it is the same three steps:
-
-1. Update Backroom and restart it (`git pull && npm install && npm run build:web`, then restart the service).
-2. Open **Updates** in the overview's header and update T3. On the box itself, `t3 update` does the same.
-3. When T3 answers on the new version, the T3 status clears, and rooms, members and threads are where they were. If Backroom says the credential was rejected, pair again ([Connect to T3 Code](#connect-to-t3-code)).
-
-Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot talk to each other. What each thread used before the move stays in its spend: Backroom remembers the harness sessions it has seen.
 
 ## Troubleshooting
 
@@ -136,8 +112,8 @@ Every other T3 client has to be on V2 as well: a V2 server and a V1 app cannot t
 | The service logs a T3 base URL that is wrong | T3 wasn't running when the service started, or runs elsewhere. Start T3 first, or set `T3_BASE_URL`. |
 | A member's turn stays "sending" or "starting" and then fails with "provider failed to start" | The harness behind that member isn't signed in, or its CLI is missing. Fix it in T3, then press **Retry** on the failed turn's notice. |
 | A member shows "working on its own" | Its thread is in a turn the room did not start: it woke itself, another agent messaged it, or someone typed in T3 Code. What the room has for it waits for that turn to end. |
-| The T3 status says "T3 … speaks orchestration protocol 1; Backroom needs protocol 2" | The T3 server is older than 0.0.46 (it runs T3's V1 orchestrator). Update it: **Updates** in the overview's header still reaches it. See [Moving a server from T3's V1 to V2](#moving-a-server-from-t3s-v1-to-v2). |
-| A turn failed with "T3 no longer has this run" | The thread was rolled back in T3 past that run, or T3 moved to V2 while it ran (the move keeps messages, not runs). Press **Retry** on the failed turn's notice. |
+| The T3 status says "T3 … speaks orchestration protocol 1; Backroom needs protocol 2" | The T3 server is older than 0.0.46 (it runs T3's V1 orchestrator). Update it: **Updates** in the overview's header still reaches it. |
+| A turn failed with "T3 no longer has this run" | The thread was rolled back in T3 past that run. Press **Retry** on the failed turn's notice. |
 | `/name is not a T3 command for @x` | That member's provider doesn't offer the command. Type `@x /` to see what it has. |
 | The model picker is empty | The catalog comes from T3's server config. With the RPC unavailable, it falls back to `~/.t3/userdata` and existing threads. Create one thread in T3 with the model you want, or type the instance id and model manually. |
 | A member shows "thread deleted in T3" | Its thread was deleted in T3 Code. Backroom keeps the member and its past replies, and new work for it fails. Remove it and seat another. Settling or archiving a thread does not cause this. |

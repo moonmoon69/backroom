@@ -1,13 +1,11 @@
 /**
  * The page's keys (web/src/keys.ts): where each arrow goes on the overview's grid, on layouts as the overview draws them
  * (a header row, each section's head with its + at the far right, tiles stacked per column); a room's lanes and where
- * each arrow goes in them; the key table (keyOrder.ts, KEYS) and what the key bar shows from it on a place; README.md's
- * Keyboard section drawn from the same table.
+ * each arrow goes in them; the key table (keyOrder.ts, KEYS) and what the key bar shows from it on a place.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, chipTarget, entryText, fourKeysMarkdown, gridStart, gridTarget, imageAction, KEYS, keysMarkdown, laneTarget, nearestInHeight, numberRepeats, openLanding, placeById, runCanStop, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
+import { ACTION_KINDS, BAR_NAME, barDoes, barEntries, chipOffers, chipTarget, entryText, gridStart, gridTarget, imageAction, KEYS, laneTarget, nearestInHeight, numberRepeats, openLanding, placeById, runCanStop, stripOrder, stripStep, type ActionKind, type Boxed, type KeyWhen, type Lane, type LaneAt, type NavKey, type PlaceId, type Span } from "../web/src/keyOrder.ts";
 
 /** An item: its key and box; a tile when `tile` says so. */
 const box = (key: string, left: number, right: number, top: number, bottom: number, tile = false, needs = false): Boxed<string> => ({ element: key, left, right, top, bottom, tile, needs });
@@ -225,7 +223,7 @@ test("the bar names the keys of a room's tile, a post and the composer by what t
   // A button in the header or a section's head is a stop of the grid: its arrows are the overview's, Enter presses it.
   assert.deepEqual(bar("overview-head"), ["↑ ↓ the row above or below", "← → along the row", "Enter press it", "Home End first or last in the row", "? all keys"]);
   assert.ok(bar("overview-crew").includes("Enter edit them"));
-  // Backspace has nothing to go back to on the overview: said in ? and README, not on the bar, which names what works.
+  // Backspace has nothing to go back to on the overview: said in ?, not on the bar, which names what works.
   assert.ok(!bar("overview-room").some((line) => line.startsWith("Backspace")));
   assert.deepEqual(bar("room-post"), ["↑ ↓ previous or next post", "→ the side panel", "Enter its actions", "Backspace back to the overview", "a–z start writing", "Home End first or last post", "? all keys"]);
   // In the field: no ? (it types), Backspace only while the field is empty.
@@ -391,22 +389,10 @@ test("every place but a dialog's and a menu's reaches Everywhere, each key once 
     assert.equal(chain.at(-1), ["dialog", "menu", "model-list"].includes(place.id) ? place.id : chain.includes("dialog") ? "dialog" : "everywhere", `${place.id} reaches Everywhere`);
     const keys = place.entries.flatMap((entry) => entry.keys.map((key) => `${key}:${entry.when ?? ""}:${entry.unless ?? ""}`));
     assert.equal(new Set(keys).size, keys.length, `${place.id} lists a key twice for the same moment`);
-    // As the bar says it, in the middle of its line: lower case (`?` and README capitalise it).
+    // As the bar says it, in the middle of its line: lower case (`?` capitalises it).
     for (const entry of place.entries) assert.match(entry.does, /^[a-z]/, `${place.id}: "${entry.does}"`);
   }
   assert.equal(entryText({ keys: ["?"], does: "all keys", unless: "typing" }), "All keys (outside a text field)");
-});
-
-test("README.md's Keyboard section is the key table, row for row", () => {
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  const section = readme.slice(readme.indexOf("## Keyboard"), readme.indexOf("## The pixel look"));
-  assert.ok(section.length > 0, "README.md has a Keyboard section");
-  const tables = keysMarkdown();
-  assert.ok(section.includes(tables), "README.md's Keyboard tables differ from KEYS: node scripts/keys-readme.ts draws them again");
-  // It opens with the four keys, as `?` does (KeyHelp.tsx draws the same FOUR_KEYS).
-  assert.ok(section.startsWith(`## Keyboard\n\n${fourKeysMarkdown()}\n\n`), "README.md's Keyboard section opens with FOUR_KEYS: node scripts/keys-readme.ts draws it again");
-  const rows = (text: string) => text.split("\n").filter((line) => line.startsWith("|")).length;
-  assert.equal(rows(section), rows(tables), "README.md's Keyboard section has no table rows besides KEYS'");
 });
 
 test("the turns running now follow the posts: Down from the newest post reaches them, End stays the newest post", () => {
@@ -564,7 +550,7 @@ test("in Add member the crew is one row read in order, however it wraps: ← →
 test("the bar names Add member's keys: ↓ to the crew from New and Existing; on a crew member ↑ ↓ ← →, Enter and Space pick", () => {
   assert.deepEqual(bar("dialog-mode"), ["↓ the crew", "← → choose New or Existing", "Enter press it", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
   assert.deepEqual(bar("dialog-crew"), ["↑ ↓ out of the crew", "← → along it", "Enter Space pick or unpick", "Tab Shift+Tab next or previous button or field", "Esc close it", "Backspace close it"]);
-  // Home and End are in ? and README, off the bar, which has no room for them in the pixel look.
+  // Home and End are in ?, off the bar, which has no room for them in the pixel look.
   assert.ok(placeById("dialog-crew").entries.some((entry) => entry.keys.includes("Home") && entry.bar === false));
   assert.ok(!bar("dialog-crew").some((line) => line.startsWith("?")), "? opens nothing over a dialog");
   assert.match(placeById("room-side-add").entries[0]!.more!, /↓ from New and Existing to the crew/);

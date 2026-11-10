@@ -8,7 +8,7 @@ const same = (a: PlaceNow, b: PlaceNow): boolean => a.place === b.place && a.whe
 
 /**
  * One line at the foot of the page: on the left what the ring is on, in words, then the keys that do something there,
- * each named by what it does there (keyOrder.ts, KEYS: the same table as `?` and README; in an action strip Enter is
+ * each named by what it does there (keyOrder.ts, KEYS: the same table as `?`; in an action strip Enter is
  * named by the button the ring is on), and `?` at the right end.
  * Keys are drawn whole or not at all: those that do not fit the window are left out from the end of the line (the last
  * in KEY_RANK first); `?` stays.

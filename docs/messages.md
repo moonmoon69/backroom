@@ -1,12 +1,14 @@
 # Messages and requests
 
+How a message you type becomes requests: the composer, how mentions and directives are read, what happens when a member is working, and T3's slash commands.
+
 ## Writing messages
 
 **The composer opens when you want it.** Under a room's conversation (and a thread's) there is one thin line: who a message goes to (the Consigliere, or whoever the text addresses), how many requests are open and how many members have posts they have not been given yet, and your unsent draft if there is one. Click it, press **Enter**, or just start typing anywhere outside a text field, and the composer opens over the lower middle of the conversation, in large type, with the text field focused: a dictation tool that types into the focused field works as it does anywhere. The conversation stays readable above it and scrolls with the mouse wheel, over the composer too. The field grows with the text and then scrolls inside. **Enter** sends and closes it; **Esc** closes it with the text kept, and so does a fresh press of **Backspace** in an empty field; holding Backspace to clear the text stops at the empty field and never closes the composer. When a room or thread opens, the line has the keyboard focus, so Enter is enough to start.
 
 **Unsent text and images are kept**, one draft per room or thread, in this browser, as you type and attach. Leaving the conversation, closing the composer or reloading the page keeps them, and the composer reopens with them and the cursor at the end of the text; sending clears the draft, as do deleting the text and removing the images. A **draft** mark on the overview's tile says where you left something, images alone included. A room's images are uploaded as you attach them, so its draft keeps only their ids (the room stores them until it is deleted, sent or not); a thread's are kept in this browser's IndexedDB until sent or removed.
 
-The text you type is the whole instruction. The buttons around the composer only edit that text. Above the field, one chip per member (plus **@all**) inserts `@name` at the cursor when clicked; chips the message already addresses are highlighted, and a dot marks anyone mid-turn. As you type, the composer highlights mentions and commands, then shows the **plan**: one row per assignment, with its recipients and instruction, and a fix for a directive that is gone (`/hold`, `/after`, `/steer`) or a wait the text implies.
+The text you type is the whole instruction. The buttons around the composer only edit that text. Above the field, one chip per member (plus **@all**) inserts `@name` at the cursor when clicked; chips the message already addresses are highlighted, and a dot marks anyone mid-turn. As you type, the composer highlights mentions and commands, then shows the **plan**: one row per assignment, with its recipients and instruction, and a fix for a directive Backroom refuses (`/hold`, `/after`, `/steer`) or a wait the text implies.
 
 | Key | Action |
 | --- | --- |
@@ -34,7 +36,7 @@ No model reads your message. The composer and the server run the same fixed rule
 - **a condition**, before the address or after it: `when @grok finishes, @claude write the summary`, `@grok deploy it when claude finishes`;
 - **pronouns:** "once she's done", "once they're finished", "when both are done", "when @all finished".
 
-`/now` on an assignment takes away a wait its text implies; a condition on someone's work then stays in the instruction (`when @grok finishes, @claude /now write the summary` sends claude "when @grok finishes, write the summary" at once). A condition Backroom could not observe ("when the tests pass") is no wait: it stays in the instruction, and before the address the plan says so. In a room with a Consigliere a message that names members goes to him whole, so it implies no wait: sequencing the work is his job (see [The Consigliere](consigliere.md#the-consigliere)); `/after` and `/hold` are refused there too.
+`/now` on an assignment takes away a wait its text implies; a condition on someone's work then stays in the instruction (`when @grok finishes, @claude /now write the summary` sends claude "when @grok finishes, write the summary" at once). A condition Backroom could not observe ("when the tests pass") is no wait: it stays in the instruction, and before the address the plan says so. In a room with a Consigliere a message that names members goes to him whole, so it implies no wait: sequencing the work is his job (see [The Consigliere](consigliere.md)); `/after` and `/hold` are refused there too.
 
 **3. Deliver.** A request goes to its member's thread straight away: into its running turn, or as a turn of its own. The member's final reply answers it: the reply says "answers #41", and the request's marker turns from **open** to **answered**. While it is open, **Correct…** under your message sends an amendment, which goes into the member's running turn the same way, and **Cancel** withdraws it (the member's running turn stops when it works on nothing else).
 
@@ -86,8 +88,6 @@ Type `/` at the start of the message to see these, each with a description:
 /remove @alice                                 retire a member (asks what happens to its T3 thread)
 ```
 
-Room notes are gone: everything goes through the Consigliere or the member you address, so a message that starts with `/note` is refused and nothing is sent. A board that already holds notes still shows them.
-
 ### Images
 
 Paste, drop, or attach (**Image** under the composer) PNG, JPEG, GIF or WebP images (T3's limits: up to 10 MB each, 80 MB per message). Every assignment in the message receives them. A resend or retry delivers the same bytes. A message with images can have an empty instruction.
@@ -115,13 +115,11 @@ What stays out of a running turn, and waits for it to end:
 - a turn the room did not start: one typed in T3, or the member's own after its background work ended (Backroom has no run of its own there to put the message in);
 - a keep-alive's turn, and a turn on Backroom's own request (a seat briefing, a reseat's checkpoint): short turns whose one-line reply would otherwise answer your message;
 - a turn that **Stop** or a **Cancel** is ending: the message starts the next turn instead;
-- while Backroom's own request waits for the member (or, on a board from before cancels went into running turns, a request with its cancel held to the turn's end): everything unread goes in together, so the rest waits with it;
+- while Backroom's own request waits for the member: everything unread goes in together, so the rest waits with it;
 - members' answers and follow-ups to the Consigliere, and Backroom's own requests: they reach him when his turn ends, each reply waking him once (they ride along when a message of yours goes in);
 - a T3 command (`@bob /compact`), which a harness runs only as a message of its own.
 
 A request that went into a running turn is answered by that turn's reply. The tag over a reply says what it did to the requests it was given: "answers #12 from you" for a request it answered (one reply can answer several: the one its turn was on and those that came in), "#12 stays open: input it had not seen came in" when a correction came in too late, as the turn ended (its next turn answers), "late for #12: it was cancelled". If a reply answers a request without covering it, say so again: it is answered, and only a new message reopens the work. The Consigliere's replies after his first answer to a message are **updates**, and a member's turn that answered nothing (one it started itself, or one typed in T3 Code) is a **follow-up** on its request. Your message's row says **into the turn** when it went into a running one.
-
-`/steer` is gone: a message that has it is refused before it is sent, with a hint, since every message does what it did.
 
 ## T3 slash commands
 

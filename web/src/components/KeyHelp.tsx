@@ -2,8 +2,8 @@ import { entryText, FOUR_KEYS, KEYS } from "../keyOrder.ts";
 import { Dialog } from "./Dialog.tsx";
 
 /**
- * The page's keys, in one place (keyOrder.ts, KEYS, which the key bar and README read too): the four keys first
- * (FOUR_KEYS, as README opens with them), then by area each place the ring can be on with what each key does there. `?`
+ * The page's keys, in one place (keyOrder.ts, KEYS, which the key bar reads too): the four keys first
+ * (FOUR_KEYS), then by area each place the ring can be on with what each key does there. `?`
  * opens it, Esc closes it and the focus goes back where it was.
  */
 export function KeyHelp({ onClose }: { onClose: () => void }) {
