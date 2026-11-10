@@ -290,7 +290,7 @@ Each part names what Backroom adds to T3 Code and links its reference.
 
 **One instructions file, and the skills you name.** When a project gets its first room, Backroom writes a short `AGENTS.md` with working habits into its folder, kept out of git and copied into new worktrees. **Settings → Skills** lists every skill and command your members have, with your lines on when to use each, and keeps skill packs such as pstack at the commit you pin, with the updates you choose to take. See [The agents file and skills](docs/agents-file-and-skills.md).
 
-![Settings → Skills: a pack skill linked into Claude's folder with your lines on when to use it and what to avoid, and the pstack pack pinned at a commit](assets/readme/skills.png)
+![Settings → Skills: a pack skill linked into Claude's folder with your lines on when to use it and what to avoid, and the pstack pack pinned at its commit](assets/readme/skills.png)
 
 **Git without leaving the room.** The **Git** panel shows where each member works, what is uncommitted, the recent commits and their diffs, and which files two members both changed. See [Git (side panel)](docs/room.md#git-side-panel).
 
@@ -302,7 +302,7 @@ Each part names what Backroom adds to T3 Code and links its reference.
 
 **On a phone.** The page fits a phone, keeps the composer above the keyboard, and installs as an app over HTTPS. See [On a phone](docs/room.md#on-a-phone).
 
-![The overview on a phone, 390 pixels wide: the rooms as one column of tiles, then the crew](assets/readme/phone.png)
+![Checkout discounts on a phone, 390 pixels wide: the Consigliere's updates, and the composer open at the foot with a message, its plan and the Send button](assets/readme/phone.png)
 
 **A pixel look, if you like.** **Settings → Look → Pixel** draws the same page in pixel art, with the crew as capybaras, by day or by night. See [The pixel look](docs/room.md#the-pixel-look).
 

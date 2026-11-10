@@ -42,10 +42,10 @@ The pictures in `assets/readme` are drawn by hand, in a tab of one's own in a ro
 ```sh
 ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS_FAKE_PROJECT_DIR=/tmp/demo-shop \
   T3_USERDATA_DIR=/tmp/backroom-shots/t3 CLAUDE_CONFIG_DIR=/tmp/backroom-shots/claude CODEX_HOME=/tmp/backroom-shots/codex \
-  ROOMS_BROWSER_MODE=vnc npm start
+  ROOMS_BROWSER_MODE=vnc ROOMS_PSTACK_REPO=/tmp/backroom-shots/pstack/plugins.git npm start
 ```
 
-The crew is `fable` (Claude Fable 5.1, the Consigliere of new rooms), `opus` (Claude Opus 5.5, in a worktree of its own) and `sol` (GPT-6 Sol). Each member's runs are held with `POST /api/fake/hold` and ended with `POST /api/fake/complete` and a reply that reads like real work, and the Consigliere posts with `bin/rooms-board` and his own key. Before a turn ends, a row in `orchestration_v2_projection_provider_threads` of `/tmp/backroom-shots/t3/statev2.sqlite` names its session, and Claude or Codex transcript lines timed inside the turn give it calls to price, with T3's `usage-model-rates.json` copied beside them. A member left running for five minutes wakes the Consigliere with a silent notice: end that turn too before drawing. Full pages are 1280 pixels wide and panels and dialogs are cropped to themselves, in the plain look; the phone picture is 390 wide.
+`ROOMS_PSTACK_REPO` names the pstack fixture that `makePstackFixture` in `scripts/pstack-fixture.ts` makes (here in `/tmp/backroom-shots/pstack`), so the pack's commits are synthetic and no upstream author's name shows. The crew is `fable` (Claude Fable 5.1, the Consigliere of new rooms), `opus` (Claude Opus 5.5, in a worktree of its own) and `sol` (GPT-6 Sol). Each member's runs are held with `POST /api/fake/hold` and ended with `POST /api/fake/complete` and a reply that reads like real work, and the Consigliere posts with `bin/rooms-board` and his own key. Before a turn ends, a row in `orchestration_v2_projection_provider_threads` of `/tmp/backroom-shots/t3/statev2.sqlite` names its session, and Claude or Codex transcript lines timed inside the turn give it calls to price, with T3's `usage-model-rates.json` copied beside them. A member left running for five minutes wakes the Consigliere with a silent notice: end that turn too before drawing. Full pages are 1280 pixels wide and panels and dialogs are cropped to themselves, in the plain look; the phone picture is 390 wide.
 
 | File | What it shows | What the fake needs |
 | --- | --- | --- |
@@ -59,10 +59,10 @@ The crew is `fable` (Claude Fable 5.1, the Consigliere of new rooms), `opus` (Cl
 | `approval.png` | An approval in the status bar and in the turn | `POST /api/fake/approval` on opus's running turn, a command |
 | `browsers.png` | The Browser panel | browsers on for Checkout discounts, `staging` the default and `general` allowed and started, with example.com opened through `bin/rooms-browser` |
 | `browser-screen.png` | The `general` browser's screen | its watch link opened in a tab of one's own; the link holds the viewer password, so it stays out of every picture |
-| `skills.png` | Settings → Skills: a linked pack skill and the pack | pstack's `tdd` linked into Claude's folder (`skill.link`) with two lines (`skill.hint.set`) |
+| `skills.png` | Settings → Skills: a linked pack skill and the pack | pstack cloned from the fixture; its Claude Code copy of `tdd` linked into Claude's folder (`skill.link`) with two lines (`skill.hint.set`) |
 | `git.png` | The Git panel on opus's worktree | three commits in `/tmp/demo-shop`, and the worktree the fake gives opus (`/tmp/demo-shop-worktrees/checkout-discounts-opus`) with one commit and one uncommitted change |
 | `file-preview.png` | A file from a reply in the preview | `DiscountField.tsx` in opus's worktree, opened from its answer |
-| `phone.png` | The overview on a phone | the same overview at 390 pixels wide with touch |
+| `phone.png` | Checkout discounts on a phone, with the composer open | the room at 390 pixels wide with touch, a message typed and not sent |
 | `pixel.png` | A room in the pixel look by night | Look → Pixel (Slate) with the dark theme and Members open |
 | `pairing.png` | The pairing panel | a second throwaway on the real adapter, with a data folder of its own and `T3_CLI=off`, so it holds no credential and issues none: `ROOMS_PORT=4477 ROOMS_DATA_DIR=/tmp/backroom-pairing/data T3_CLI=off ROOMS_BROWSER_MODE=off npm start` |
 
