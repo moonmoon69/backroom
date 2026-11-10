@@ -30,10 +30,11 @@
  * folder is created in the project's working tree (git's own info and hooks folders, inside .git, are made when
  * missing).
  *
- * Claude Code and Cursor read these files from every folder above the one they work in, so a folder that holds others
- * gets nothing: the home folder or one above it, a folder with another of T3's projects below it, and a folder outside
- * git with a repository below it (directly or one folder further down). Written there, the file would reach every
- * session in the folders below.
+ * Claude Code and Cursor read these files from every folder above the one they work in, so the automatic writing leaves a
+ * folder that holds others alone: the home folder or one above it, a folder with another of T3's projects below it, and
+ * a folder outside git with a repository below it (directly or one folder further down). Written there, the file would
+ * reach every session in the folders below. The user's Apply (below) writes over an AGENTS.md already in any project's
+ * folder, one that holds others included.
  *
  * In a git repository the files stay out of git, and nothing is committed (the user's #1119): Backroom lists them in
  * the repository's own exclude file (`.git/info/exclude`, which its worktrees share; never the tracked .gitignore),
@@ -60,7 +61,7 @@
  * reaches only folders written afterwards: Backroom never changes a file by itself. Settings → Agents file lists every
  * project T3 has, each with its AGENTS.md against the saved template rendered for it (same, differs, none, blocked),
  * whoever wrote the file, shows the diff, and on the user's Apply writes the rendered template over the file: bound to
- * the digests of the diff the user saw, only through a handle on a plain file of its own (no link followed, nothing
+ * the digests of the diff the user saw (each bound to the folder it was read in), only through a handle on a plain file of its own (no link followed, nothing
  * created), never CLAUDE.md, git, the exclude file, the hook or worktrees' copies. The project's folder is T3's path
  * with the links in it resolved, as the automatic writing resolves it; AGENTS.md itself is never followed, and reading
  * it writes nothing. The on/off setting governs the automatic writing only.
