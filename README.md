@@ -220,13 +220,13 @@ Now go on to [Your first room](#your-first-room).
 
 In this part we save a crew member, make them the Consigliere, open a room and send a first request. It works the same after either setup. The quoted lines come from a run on the fake T3 described in [Try it without T3](#try-it-without-t3), with a crew member named `fable`.
 
-1. If the overview lists no project, click **+** in its header (**New project**), type the path of a folder on T3's machine, and click **Add project**. The project's section appears with its folder under its name.
+1. Under **Crew**, click **+** (**New crew member**). Type a name, pick a model, its options and a permission mode, and click **Add to crew**. The crew member's tile shows the name and the model, such as `fable Claude Fable 5.1 · Medium · 1M`.
 
-2. Under **Crew**, click **+** (**New crew member**). Type a name, pick a model, its options and a permission mode, and click **Add to crew**. The crew member's tile shows the name and the model, such as `fable Claude Fable 5.1 · Medium · 1M`.
+2. Open the settings menu (the two sliders at the right of the overview's header), choose **Consigliere…**, pick your crew member and click **Done**. The **+** beside each project's name now says `New room in demo, with fable seated as its Consigliere` when you point at it.
 
-3. Open the settings menu (the two sliders at the right of the overview's header), choose **Consigliere…**, pick your crew member and click **Done**. The **+** beside the project's name now says `New room in demo, with fable seated as its Consigliere` when you point at it.
+3. Open the **New room** dialog. If the overview lists the project you want, click the **+** beside its name. If it lists none, click **+** in the overview's header (**New project**), type the path of a folder on T3's machine, and click **Add project**: Backroom adds the project and opens the **New room** dialog for it. Either way the dialog names the project and says `fable is seated as the room's Consigliere: the one you talk to there. He brings in the others.`
 
-4. Click that **+**, give the room a title, and click **Create room**. The room opens on your conversation with the Consigliere: `Tell fable what you need. He brings in the others, hands out the work and reports back.` When the project's folder has no instructions for agents yet, Backroom writes an `AGENTS.md` there, keeps it out of git, and says so ([The agents file](docs/agents-file-and-skills.md#the-agents-file)).
+4. Give the room a title and click **Create room**. The room opens on your conversation with the Consigliere: `Tell fable what you need. He brings in the others, hands out the work and reports back.` When the project's folder has no instructions for agents yet, Backroom writes an `AGENTS.md` there, keeps it out of git, and says so ([The agents file](docs/agents-file-and-skills.md#the-agents-file)).
 
 5. Press **Enter** to open the composer and type a request, such as `Describe this project in three sentences. Change no files.` Under the field, the plan shows who gets it: `1 @fable Describe this project in three sentences. Change no files.`
 
