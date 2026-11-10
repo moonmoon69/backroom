@@ -232,7 +232,7 @@ In this part we save a crew member, make them the Consigliere, open a room and s
 
 6. Press **Enter** to send it. Your message shows its number and **open**, and the Consigliere's turn shows `working on #3`.
 
-7. Wait for the answer. The message's mark turns to **answered** with the number of the reply, and the reply above it reads `answers #3 from you`. The room has its first answered request.
+7. Wait for the answer. The message's mark turns to **answered** with the number of the reply, and the reply below it reads `answers #3 from you`. The room has its first answered request.
 
 From here, ask the Consigliere for work that needs more hands, and it seats others from your crew. [Messages and requests](docs/messages.md) has the full syntax, and [The Consigliere and the board](docs/consigliere.md) how the work moves.
 
