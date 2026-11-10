@@ -44,7 +44,8 @@ export interface BackroomUpdateView {
   job: BackroomUpdateJob | null;
 }
 
-const RELEASE_TAG = /^refs\/tags\/v(\d+\.\d+\.\d+)$/;
+/** install.sh's rule: no leading zero and at most nine digits, so git's order there and compareVersions here agree. */
+const RELEASE_TAG = /^refs\/tags\/v((?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8}))$/;
 
 /**
  * The newest release on the origin remote of the checkout at `root`: its highest tag v<major>.<minor>.<patch>; null when

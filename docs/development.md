@@ -68,7 +68,7 @@ ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS
 
 ## Releases
 
-A release is a tag `v<version>` on the repository, `<version>` being `package.json`'s and three plain numbers (`0.2.0`); no other tag is a release. Copies find releases by their tags: `install.sh` installs and updates to the newest, and Backroom's row under **Updates** offers it ([Updating](operations.md#updating)). `package.json` is private, so npm refuses to publish it.
+A release is a tag `v<version>` on the repository, `<version>` being `package.json`'s and three plain numbers (`0.2.0`), each with no leading zero and at most nine digits; no other tag is a release. Copies find releases by their tags: `install.sh` installs and updates to the newest, and Backroom's row under **Updates** offers it ([Updating](operations.md#updating)). `package.json` is private, so npm refuses to publish it.
 
 To cut one, set the version, commit it, tag that commit and push both:
 

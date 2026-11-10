@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs Backroom, or updates a copy of it, to the newest release: a tag v<major>.<minor>.<patch> on its repository,
-# three plain numbers. No other tag is a release.
+# three plain numbers with no leading zero and at most nine digits each. No other tag is a release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/moonmoon69/backroom/main/install.sh | sh
 #   sh install.sh [folder]
@@ -48,10 +48,12 @@ quoted() {
 }
 
 # The newest release tag of a repository (a URL or a remote's name), or nothing. git's version order sorts the three
-# numbers as numbers (v0.10.0 after v0.9.0).
+# numbers as numbers (v0.10.0 after v0.9.0). A number with a leading zero or more than nine digits makes no release:
+# git and Backroom's row (src/app/backroomUpdate.ts) would order those differently.
 newest_tag() {
+  number='(0|[1-9][0-9]{0,8})'
   refs=$(git ls-remote --tags --refs --sort=-v:refname "$1" 'v*') || return 1
-  printf '%s\n' "$refs" | sed 's|.*refs/tags/||' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | head -n 1
+  printf '%s\n' "$refs" | sed 's|.*refs/tags/||' | { grep -E "^v$number\.$number\.$number\$" || true; } | head -n 1
 }
 
 install() {

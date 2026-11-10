@@ -23,7 +23,8 @@ jobs:
       - name: The tag is package.json's version, three plain numbers
         run: |
           version=$(node -p 'require("./package.json").version')
-          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then echo "package.json's version $version is not three plain numbers"; exit 1; fi
+          number='(0|[1-9][0-9]{0,8})' # install.sh's rule: no leading zero, at most nine digits
+          if ! echo "$version" | grep -Eq "^$number\.$number\.$number\$"; then echo "package.json's version $version is not three plain numbers"; exit 1; fi
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then echo "tag $GITHUB_REF_NAME is not v$version, package.json's version"; exit 1; fi
 
       - run: npm ci

@@ -252,6 +252,17 @@ test("prerelease tags never count, so the row and install.sh agree: a copy on on
   assert.equal(at(copy), "v1.0.0-alpha10");
 });
 
+test("a number with a leading zero or more than nine digits makes no release, so the row and install.sh pick the same one", async (t) => {
+  const dir = scratch(t);
+  const up = upstream(dir);
+  for (const version of ["1.0.0", "1.00.1", "01.2.0", "1.1234567890.0"]) up.release(version);
+  const copy = join(dir, "copy");
+  const run = install(copy, up.bare);
+  assert.equal(run.status, 0, run.out);
+  assert.equal(at(copy), "v1.0.0");
+  assert.equal(await originRelease(copy), "1.0.0");
+});
+
 test("neither the lookup nor the script Update runs starts a prompt: no askpass, no terminal, ssh in batch mode", async (t) => {
   const dir = scratch(t);
   const asked = join(dir, "asked.txt");
