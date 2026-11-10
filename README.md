@@ -4,6 +4,8 @@
 
 Backroom is a companion for [T3 Code](https://github.com/pingdotgg/t3code) that puts several of its agents in one conversation. You give them work in plain text, or let one of them, the Consigliere, hand it out, and every answer comes back to whoever asked.
 
+![A room: your request to the Consigliere, its answer and two updates as the work moves, the room state at the top, and Members beside it with each one's context and spend](assets/readme/room.png)
+
 A few words before you install:
 
 - A **project** is one of T3's projects: a folder on the machine T3 runs on.
@@ -75,6 +77,8 @@ In this tutorial we run Backroom on the computer where T3 Code runs, pair it wit
    If the first line ends `renewed by Backroom with T3's CLI`, T3 runs as a service on this computer, and Backroom pairs itself within seconds. Skip to step 6.
 
 5. Pair Backroom with T3. In T3 Code Desktop, create a pairing link on the same **Settings → Connections** screen. With `t3 serve`, run `npx t3 pair` in another terminal, which prints the link. A link works once and expires within minutes, so treat it like a password. Open <http://127.0.0.1:4400>, where Backroom shows its pairing panel in place of the rooms, and paste the link.
+
+   ![The pairing panel of a Backroom that holds no credential: not paired, T3's address, and a field for the pairing link](assets/readme/pairing.png)
 
 6. Check that Backroom's credential works. This check only reads from T3:
 
@@ -208,6 +212,8 @@ In this tutorial we set up a headless Linux box that runs T3 Code and Backroom a
 
     It lists the viewer on a port such as `100.x.y.z:6102`, and **Open the browser screen** shows Chrome. The browser's DevTools port stays on `127.0.0.1`. [Room browsers](docs/browsers.md) says how agents use them.
 
+    ![A shared browser's screen, opened from its watch link: Chrome on the box's virtual screen, showing example.com](assets/readme/browser-screen.png)
+
 To update Backroom later, run this in its folder:
 
 ```sh
@@ -234,6 +240,8 @@ In this part we save a crew member, make them the Consigliere, open a room and s
 
 7. Wait for the answer. The message's mark turns to **answered** with the number of the reply, and the reply below it reads `answers #3 from you`. The room has its first answered request.
 
+   ![The first room: the request marked answered, and the Consigliere's reply below it, with what it cost](assets/readme/first-room.png)
+
 From here, ask the Consigliere for work that needs more hands, and it seats others from your crew. [Messages and requests](docs/messages.md) has the full syntax, and [The Consigliere and the board](docs/consigliere.md) how the work moves.
 
 ## Try it without T3
@@ -252,27 +260,53 @@ Each part names what Backroom adds to T3 Code and links its reference.
 
 **A Consigliere who hands out the work.** Tell the Consigliere what you want, such as "research this with two others and bring me the result". The Consigliere seats members from your crew, posts each a numbered request, routes reviews between them and reports back. Every post is on the room's board, so you can check any claim against the posts it cites. See [The Consigliere and the board](docs/consigliere.md).
 
+![The board: your request, the Consigliere's numbered request to opus, its answer to you, opus's answer with its Handoff, and the review it then asks sol for](assets/readme/board.png)
+
 **The plan before you send.** No model reads your message on Backroom's side. Fixed rules read the `@names` and directives you type, and the plan under the composer shows who gets which instruction before you press Enter. A message to a member who is working goes into its running turn. See [Messages and requests](docs/messages.md).
+
+![The composer open on a message with context and two assignments, and the plan under it: context for everyone, then one row for opus and one for sol](assets/readme/composer-plan.png)
 
 **A crew instead of settings each time.** A crew member keeps a model with its options, a permission mode, where it works, and your lines on what it is good at and should avoid. Drag one onto a room, or pick several in **Add member**, and each is seated on a new T3 thread. See [Crew](docs/room.md#crew).
 
+![Add member with two crew members picked, fable and sol, and the settings each joins with](assets/readme/crew.png)
+
 **What needs you, where you are.** Approvals, questions and secrets that agents ask for appear in the room's status bar and in the member's bubble, with T3's own choices. A member stopped by its provider's usage limit reads as paused until the reset, and T3 continues it then. **Stop everything** ends a turn with the background work and subagents it left running. See [Status bar](docs/room.md#status-bar) and [Usage limits and held queues](docs/room.md#usage-limits-and-held-queues).
+
+![An approval waiting for you: opus asks to run a command, with T3's choices in the status bar and in its turn](assets/readme/approval.png)
 
 **What finished, room by room.** The overview shows each room's members and what each is doing, counts the replies you have not seen on the room's tile, and moves that room ahead. What you have seen is kept by the service, so reading on your phone clears it on your Mac. See [What finished while you were away](docs/room.md#what-finished-while-you-were-away).
 
+![The overview: the demo project's three rooms, Search latency needing you, Release 2.4 with a new reply and Checkout discounts busy with three; the crew and the shared browsers below](assets/readme/overview.png)
+
 **What each reply cost.** T3's usage page totals tokens and cost by day and model. Backroom prices each thread and each reply from the harnesses' own records, the way T3 prices its totals, so you can see what a task cost before you ask for the next one. See [Estimated spend](docs/room.md#estimated-spend).
 
-<img src="assets/readme/cost-card.png" alt="A member's card: the thread's estimated spend, split into its own calls and its subagents', per model" width="311">
+![A reply from opus with what its turn cost: the total, tokens in and out, the number of calls, and a row for its model with its subagents' calls](assets/readme/reply-cost.png)
+
+![A member's card: the thread's context, its estimated spend split into its own calls and its subagents', and the plan's limits](assets/readme/cost-card.png)
 
 **Browsers on the box, chosen per room.** Backroom runs named Chrome browsers on its own machine, each keeping its logins. Every harness drives them with one command, you watch and take over through a link, and each room decides which ones its agents may use. See [Room browsers](docs/browsers.md).
 
-![A room's browsers: two of three allowed, staging the default; each ticked one with its status, and its watch link and tabs while it runs](assets/readme/browsers.png)
+![A room's Browser panel: two of three browsers allowed, staging the default, general running with its watch link and tabs](assets/readme/browsers.png)
 
 **One instructions file, and the skills you name.** When a project gets its first room, Backroom writes a short `AGENTS.md` with working habits into its folder, kept out of git and copied into new worktrees. **Settings → Skills** lists every skill and command your members have, with your lines on when to use each, and keeps skill packs such as pstack at the commit you pin, with the updates you choose to take. See [The agents file and skills](docs/agents-file-and-skills.md).
 
-**Git and files without leaving the room.** The **Git** panel shows where each member works, what is uncommitted, the recent commits and their diffs, and which files two members both changed. A file named in a reply opens in a preview: Markdown, HTML, code, pictures, recordings and sounds. See [Git (side panel)](docs/room.md#git-side-panel) and [Timeline](docs/room.md#timeline).
+![Settings → Skills: a pack skill linked into Claude's folder with your lines on when to use it and what to avoid, and the pstack pack pinned at its commit](assets/readme/skills.png)
+
+**Git without leaving the room.** The **Git** panel shows where each member works, what is uncommitted, the recent commits and their diffs, and which files two members both changed. See [Git (side panel)](docs/room.md#git-side-panel).
+
+![The Git panel: where everyone works, main and opus's worktree one commit ahead, and that worktree's uncommitted file and commits](assets/readme/git.png)
+
+**Files named in a reply open in place.** A file a reply names opens in a preview: Markdown, HTML, code, pictures, recordings and sounds. See [Timeline](docs/room.md#timeline).
+
+![A file from opus's reply opened in the preview: DiscountField.tsx from its worktree, highlighted with line numbers](assets/readme/file-preview.png)
 
 **On a phone.** The page fits a phone, keeps the composer above the keyboard, and installs as an app over HTTPS. See [On a phone](docs/room.md#on-a-phone).
+
+![Checkout discounts on a phone, 390 pixels wide: the Consigliere's updates, and the composer open at the foot with a message, its plan and the Send button](assets/readme/phone.png)
+
+**A pixel look, if you like.** **Settings → Look → Pixel** draws the same page in pixel art, with the crew as capybaras, by day or by night. See [The pixel look](docs/room.md#the-pixel-look).
+
+![The room in the pixel look by night: the Consigliere's updates and Members, each member drawn as a capybara](assets/readme/pixel.png)
 
 Terminals, the preview browser, simulators, pull requests and rewinding a conversation stay T3 Code's. Every member is a T3 thread, and you can open it in T3 Code as it is.
 
@@ -295,7 +329,7 @@ Press **?** for every key in every place.
 - [Room browsers](docs/browsers.md): the shared browsers, which rooms may use them, and the `rooms-browser` command.
 - [Rooms and the overview](docs/room.md): what the overview and a room show, members, spend, Git, managing rooms and the crew.
 - [The agents file and skills](docs/agents-file-and-skills.md): the instructions file Backroom writes, and the skills roster and packs.
-- [Development](docs/development.md): the checks, the browser rehearsal, where the code is, and how it works.
+- [Development](docs/development.md): the checks, the browser rehearsal, the README's pictures, where the code is, and how it works.
 
 To work on Backroom itself:
 

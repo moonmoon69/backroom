@@ -1,6 +1,6 @@
 # Development
 
-How to work on Backroom itself: the commands, the browser rehearsal, where the code is, and how the service works.
+How to work on Backroom itself: the commands, the browser rehearsal, the README's pictures, where the code is, and how the service works.
 
 ## Commands
 
@@ -34,6 +34,37 @@ node scripts/rehearse.ts --step keys --as <key> --port 4511 --only 47 --only "Es
 - **`--only <state>`** (as often as wanted) checks just the states it names: a number from `--list` (under `--step all`, that number in each step), a range (`12-15`), a `/pattern/` or part of a name. Each step is cut into sections that stand on their own (the room quiet, the page at a known place); a run jumps to the section of the first state named, its setup makes through the API what the section reads (and checks it is there) and brings the page to where the section starts (every section played after it makes too what it reads that the skipped ones would have made, nothing twice), the states before the one named are played without their screenshots and console reads, and the step stops after the last state named. The states of each step's first section need the whole story before them: ui 1-14 and room 1-14 (keys' first section is its start). For those, `--until <state>` plays the step up to the state with every check on, in the same time. **`--until <state>`** plays a step as always and stops after the state it names. `--help` prints every flag.
 - **A failure** ends the step and leaves the page as it was beside the states' screenshots (under `--out`), before its tab closes: `NN-failure.png` and `NN-failure-snapshot.txt`, the page's text with element uids.
 - **A fails-without-the-fix proof on the page** (where no unit test can show it): in a worktree of the fix's commit (whose scripts have the flags and the state), take the fix out of the product with `git checkout <the commit before the fix> -- <the files of web/ or src/ the fix changed>` when the fix is the last change to those files, else with `git show <the fix's commit> -- <those files> | git apply -R --3way` (a later change to the same files needs the three-way merge), and delete a file the fix adds. Then `npm install`, `npm run build:web` and the state with `--only`: it must fail at that state.
+
+## The README's pictures
+
+The pictures in `assets/readme` are drawn by hand, in a tab of one's own in a room browser, from a throwaway service on the fake T3. Its demo project is a small shop repository at `/tmp/demo-shop`, and stand-ins for T3's database and the harnesses' transcripts let it estimate spend:
+
+```sh
+ROOMS_ADAPTER=fake ROOMS_PORT=4475 ROOMS_DATA_DIR=/tmp/backroom-shots/data ROOMS_FAKE_PROJECT_DIR=/tmp/demo-shop \
+  T3_USERDATA_DIR=/tmp/backroom-shots/t3 CLAUDE_CONFIG_DIR=/tmp/backroom-shots/claude CODEX_HOME=/tmp/backroom-shots/codex \
+  ROOMS_BROWSER_MODE=vnc ROOMS_PSTACK_REPO=/tmp/backroom-shots/pstack/plugins.git npm start
+```
+
+`ROOMS_PSTACK_REPO` names the pstack fixture that `makePstackFixture` in `scripts/pstack-fixture.ts` makes (here in `/tmp/backroom-shots/pstack`), so the pack's commits are synthetic and no upstream author's name shows. The crew is `fable` (Claude Fable 5.1, the Consigliere of new rooms), `opus` (Claude Opus 5.5, in a worktree of its own) and `sol` (GPT-6 Sol). Each member's runs are held with `POST /api/fake/hold` and ended with `POST /api/fake/complete` and a reply that reads like real work, and the Consigliere posts with `bin/rooms-board` and his own key. Before a turn ends, a row in `orchestration_v2_projection_provider_threads` of `/tmp/backroom-shots/t3/statev2.sqlite` names its session, and Claude or Codex transcript lines timed inside the turn give it calls to price, with T3's `usage-model-rates.json` copied beside them. A member left running for five minutes wakes the Consigliere with a silent notice: end that turn too before drawing. Full pages are 1280 pixels wide and panels and dialogs are cropped to themselves, in the plain look; the phone picture is 390 wide.
+
+| File | What it shows | What the fake needs |
+| --- | --- | --- |
+| `room.png` | Checkout discounts: the chat with the Consigliere, the room state, Members | fable as Consigliere, opus and sol seated; the user's request; fable's requests to opus, to sol and to opus again, the first two answered and the last left running; a room state written with `rooms-board state` |
+| `first-room.png` | A room's first request, answered | a room with fable alone and one answered request; deleted after the picture |
+| `overview.png` | The overview with three rooms, the crew and the browsers | Search latency (opus waiting on an approval), Release 2.4 (a reply not yet seen) and Checkout discounts; the browsers `staging` and `payments-sandbox` |
+| `board.png` | The board: a request, the Consigliere's posts and the members' answers | Checkout discounts' Board tab with the side panel closed, drawn 3,000 pixels tall and cropped |
+| `reply-cost.png`, `cost-card.png` | opus's answer with what its turn cost, and its card in Members | opus's turn with calls of its own and of a subagent in its transcript |
+| `composer-plan.png` | The composer's plan for context and two assignments | Release 2.4 (sol and opus, no Consigliere) with the message typed and not sent |
+| `crew.png` | Add member with two crew members picked | Search latency's Add member with fable and sol picked |
+| `approval.png` | An approval in the status bar and in the turn | `POST /api/fake/approval` on opus's running turn, a command |
+| `browsers.png` | The Browser panel | browsers on for Checkout discounts, `staging` the default and `general` allowed and started, with example.com opened through `bin/rooms-browser` |
+| `browser-screen.png` | The `general` browser's screen | its watch link opened in a tab of one's own; the link holds the viewer password, so it stays out of every picture |
+| `skills.png` | Settings → Skills: a linked pack skill and the pack | pstack cloned from the fixture; its Claude Code copy of `tdd` linked into Claude's folder (`skill.link`) with two lines (`skill.hint.set`) |
+| `git.png` | The Git panel on opus's worktree | three commits in `/tmp/demo-shop`, and the worktree the fake gives opus (`/tmp/demo-shop-worktrees/checkout-discounts-opus`) with one commit and one uncommitted change |
+| `file-preview.png` | A file from a reply in the preview | `DiscountField.tsx` in opus's worktree, opened from its answer |
+| `phone.png` | Checkout discounts on a phone, with the composer open | the room at 390 pixels wide with touch, a message typed and not sent |
+| `pixel.png` | A room in the pixel look by night | Look → Pixel (Slate) with the dark theme and Members open |
+| `pairing.png` | The pairing panel | a second throwaway on the real adapter, with a data folder of its own and `T3_CLI=off`, so it holds no credential and issues none: `ROOMS_PORT=4477 ROOMS_DATA_DIR=/tmp/backroom-pairing/data T3_CLI=off ROOMS_BROWSER_MODE=off npm start` |
 
 ## Where the code is
 
