@@ -192,7 +192,11 @@ export interface AgentsFileDiff {
 const refused = (message: string): RoomError => new RoomError("agents_file_refused", message, 409);
 /** Apply's refusal when the file or the rendered template is not what the diff showed. */
 export const STALE = "the file changed since you looked at it: open the diff again";
-const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+/**
+ * A diff's digest of one side: the text bound to the resolved folder it was read in, so Apply refuses as stale both a
+ * changed text and a project folder that resolves elsewhere now (a link turned to another repository with the same bytes).
+ */
+const digest = (folder: string, text: string): string => createHash("sha256").update(folder, "utf8").update("\0").update(text, "utf8").digest("hex");
 
 export interface AgentsFilesOptions {
   log?: (message: string, detail?: unknown) => void;
@@ -440,6 +444,55 @@ function movedAway(folder: string): string | null {
 /** The project's folder as the list, the diff and Apply look at it: T3's path with its links resolved; null when T3's is not absolute. */
 const projectFolder = (project: AgentsFileProject): string | null => (typeof project.workspaceRoot === "string" && isAbsolute(project.workspaceRoot) ? canonicalPath(project.workspaceRoot) : null);
 
+/**
+ * AGENTS.md in a resolved folder, opened the one way the list, the diff and Apply all open it: the name looked at with
+ * lstat, opened with O_NOFOLLOW and no O_CREAT, the handle a plain file of its own, and then, since O_NOFOLLOW guards
+ * the last name only, the folder still resolving to itself (no link put in its place or above it since) and the name
+ * still giving the handle's file. Answers the open handle (the caller closes it), none (no file of that name), or why
+ * it is blocked.
+ */
+function openAgents(folder: string, flags: number): { fd: number } | { none: true } | { blocked: string } {
+  const path = join(folder, AGENTS_FILE);
+  const plain = (stats: Stats): string | null =>
+    stats.isSymbolicLink() ? "AGENTS.md is a link" : !stats.isFile() ? "AGENTS.md is not a plain file" : stats.nlink !== 1 ? "AGENTS.md shares its contents with another name (a hard link)" : null;
+  let kind: Stats;
+  try {
+    kind = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { none: true };
+    return { blocked: `AGENTS.md cannot be looked at: ${errorText(error)}` };
+  }
+  const before = plain(kind);
+  if (before) return { blocked: before };
+  let fd: number;
+  try {
+    fd = openSync(path, flags | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { none: true };
+    return { blocked: code === "ELOOP" ? "AGENTS.md is a link" : `AGENTS.md cannot be opened: ${errorText(error)}` };
+  }
+  const why = ((): string | null => {
+    const stats = fstatSync(fd);
+    const now = plain(stats);
+    if (now) return now;
+    const moved = movedAway(folder);
+    if (moved) return moved;
+    let named: Stats | null = null;
+    try {
+      named = lstatSync(path);
+    } catch {
+      // gone meanwhile: not the handle's file
+    }
+    return !named || named.dev !== stats.dev || named.ino !== stats.ino ? "AGENTS.md was replaced while it was being opened" : null;
+  })();
+  if (why) {
+    closeSync(fd);
+    return { blocked: why };
+  }
+  return { fd };
+}
+
 /** `path` strictly inside `folder` (a folder named `..old` in it is inside too). */
 const isInside = (path: string, folder: string): boolean => {
   const rel = relative(folder, path);
@@ -664,8 +717,7 @@ export class AgentsFiles {
 
   /**
    * The AGENTS.md in a project's folder (projectFolder's) as it is today, and the saved template rendered for it. Read
-   * without following a link (the name is looked at with lstat, then opened with O_NOFOLLOW and its handle checked), and
-   * a read that fails is blocked, never none.
+   * through openAgents, and a read that fails is blocked, never none.
    */
   private compare(folder: string | null): { state: "same" | "differs"; text: string; rendered: string } | { state: "none" } | { state: "blocked"; reason: string } {
     if (folder === null) return { state: "blocked", reason: "T3 gives no absolute folder for it" };
@@ -673,30 +725,16 @@ export class AgentsFiles {
     // Not on this machine, or not the resolved folder any more (a link put in its place or above it since).
     const moved = movedAway(folder);
     if (moved) return { state: "blocked", reason: moved };
-    const path = join(folder, AGENTS_FILE);
-    let kind: Stats;
-    try {
-      kind = lstatSync(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "none" };
-      return { state: "blocked", reason: `AGENTS.md cannot be looked at: ${errorText(error)}` };
-    }
-    const plain = (stats: Stats): string | null =>
-      stats.isSymbolicLink() ? "AGENTS.md is a link" : !stats.isFile() ? "AGENTS.md is not a plain file" : stats.nlink !== 1 ? "AGENTS.md shares its contents with another name (a hard link)" : null;
-    const before = plain(kind);
-    if (before) return { state: "blocked", reason: before };
+    const opened = openAgents(folder, fsConstants.O_RDONLY);
+    if ("none" in opened) return { state: "none" };
+    if ("blocked" in opened) return { state: "blocked", reason: opened.blocked };
     let text: string;
-    let fd: number | null = null;
     try {
-      fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const now = plain(fstatSync(fd));
-      if (now) return { state: "blocked", reason: now };
-      text = readFileSync(fd, "utf8");
+      text = readFileSync(opened.fd, "utf8");
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      return { state: "blocked", reason: code === "ELOOP" ? "AGENTS.md is a link" : `AGENTS.md cannot be read: ${errorText(error)}` };
+      return { state: "blocked", reason: `AGENTS.md cannot be read: ${errorText(error)}` };
     } finally {
-      if (fd !== null) closeSync(fd);
+      closeSync(opened.fd);
     }
     const rendered = renderAgentsText(agentsTemplate(this.repos).text, projectChecks(folder), this.skills());
     return { state: text === rendered ? "same" : "differs", text, rendered };
@@ -740,7 +778,7 @@ export class AgentsFiles {
         rmSync(scratch, { recursive: true, force: true });
       }
     }
-    return { projectId: project.id, folder: folder!, state: compared.state, diff, fileDigest: digest(compared.text), templateDigest: digest(compared.rendered) };
+    return { projectId: project.id, folder: folder!, state: compared.state, diff, fileDigest: digest(folder!, compared.text), templateDigest: digest(folder!, compared.rendered) };
   }
 
   /**
@@ -758,36 +796,22 @@ export class AgentsFiles {
       const compared = this.compare(folder);
       if (compared.state === "none") throw refused(`${folder} holds no AGENTS.md, and Apply makes none`);
       if (compared.state === "blocked") throw refused(compared.reason);
-      if (digest(compared.text) !== target.fileDigest || digest(compared.rendered) !== target.templateDigest) throw refused(STALE);
+      // The folder resolved now is bound into both digests: one that resolves elsewhere than the diff's is stale too.
+      if (digest(folder!, compared.text) !== target.fileDigest || digest(folder!, compared.rendered) !== target.templateDigest) throw refused(STALE);
       const at = folder!;
       const path = join(at, AGENTS_FILE);
       this.beforeWrite(at, AGENTS_FILE);
-      // No O_CREAT: a file removed meanwhile is not made again. O_NOFOLLOW: a link put there meanwhile is not followed.
-      let fd: number;
+      // The same guarded open as the read: no O_CREAT (a file removed meanwhile is not made again), no link followed, the
+      // folder and the name checked again after the open.
+      const opened = openAgents(at, fsConstants.O_RDWR);
+      if ("none" in opened) throw refused(`AGENTS.md is gone from ${at}, and Apply makes none`);
+      if ("blocked" in opened) throw refused(opened.blocked);
+      const fd = opened.fd;
       try {
-        fd = openSync(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        throw refused(code === "ENOENT" ? `AGENTS.md is gone from ${at}, and Apply makes none` : code === "ELOOP" ? "AGENTS.md is a link" : `could not write AGENTS.md in ${at}: ${errorText(error)}`);
-      }
-      try {
-        const stats = fstatSync(fd);
-        if (!stats.isFile() || stats.nlink !== 1) throw refused("AGENTS.md is no longer a plain file of its own");
-        // O_NOFOLLOW guards the file's own name only: the folder could have been swapped for a link before the open. So
-        // the folder is still the one resolved, and the handle is the file its path names now.
-        const movedSince = movedAway(at);
-        if (movedSince) throw refused(movedSince);
-        let named: Stats | null = null;
-        try {
-          named = lstatSync(path);
-        } catch {
-          // gone meanwhile: not the handle's file
-        }
-        if (!named || named.dev !== stats.dev || named.ino !== stats.ino) throw refused("AGENTS.md was replaced while it was being applied");
         // The instant between these checks and the write stays open to a second swap; on a single-user machine only the
         // user could make it.
         // What the handle holds is what the user looked at, read through the handle itself.
-        if (digest(readFileSync(fd, "utf8")) !== target.fileDigest) throw refused(STALE);
+        if (digest(at, readFileSync(fd, "utf8")) !== target.fileDigest) throw refused(STALE);
         ftruncateSync(fd, 0);
         const bytes = Buffer.from(compared.rendered, "utf8");
         for (let done = 0; done < bytes.length; ) done += writeSync(fd, bytes, done, bytes.length - done, done);

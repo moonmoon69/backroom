@@ -321,7 +321,7 @@ test("blocked, never none: a link, a folder, a hard link, an unreadable file, a 
     ["a path not absolute", relativeId, /no absolute folder/],
   ];
   // Root reads a file whatever its mode: the unreadable case is only for an ordinary account.
-  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.projectId, /cannot be read/], ["a folder that cannot be searched", unsearchable.projectId, /cannot be looked at/]);
+  if (process.getuid?.() !== 0) cases.push(["an unreadable file", unreadable.projectId, /cannot be opened/], ["a folder that cannot be searched", unsearchable.projectId, /cannot be looked at/]);
   const entries = await s.states();
   for (const [what, projectId, reason] of cases) {
     const entry = entries.find((e) => e.projectId === projectId);
@@ -458,6 +458,26 @@ test("apply refuses a project T3 does not have, a folder named instead of a proj
   assert.equal((await restricted.apply({ projectId: "p_inside", fileDigest: seenInside.fileDigest, templateDigest: seenInside.templateDigest }, projects)).state, "same");
 });
 
+test("apply is bound to the folder the diff read: a project folder link turned to another repository with the same AGENTS.md is stale, and that one untouched (review #267)", async (t) => {
+  const s = stackFor(t);
+  const shown = folder({ files: { "AGENTS.md": "# The same text\n" } });
+  const other = folder({ files: { "AGENTS.md": "# The same text\n" } });
+  // T3's folder for the project is a link, as a project added through one is.
+  const alias = join(scratch, `alias-${++folders}`);
+  symlinkSync(shown, alias);
+  const projectId = s.project(alias);
+  const looked = await s.diff(projectId);
+  assert.equal(looked.folder, shown);
+  unlinkSync(alias);
+  symlinkSync(other, alias);
+  const applied = await s.apply(projectId, looked);
+  assert.deepEqual([applied.status, applied.body.message], [409, STALE]);
+  assert.equal(read(join(other, "AGENTS.md")), "# The same text\n", "the folder the diff did not show is untouched");
+  assert.equal(read(join(shown, "AGENTS.md")), "# The same text\n");
+  assert.equal((await s.apply(projectId)).status, 200, "looked at again, it applies where the diff now shows");
+  assert.equal(read(join(other, "AGENTS.md")), defaultAgentsText(checks));
+});
+
 test("apply between the look and the write: a link swapped in is never followed, a file removed is not made, a hard link or an edit is refused", async (t) => {
   const s = stackFor(t);
   const swaps: Array<[string, (dir: string) => void, RegExp, (dir: string) => void]> = [
@@ -474,7 +494,7 @@ test("apply between the look and the write: a link swapped in is never followed,
     [
       "a hard link made",
       (dir) => linkSync(join(dir, "AGENTS.md"), join(dir, "victim-hard.md")),
-      /plain file of its own/,
+      /a hard link/,
       (dir) => assert.equal(read(join(dir, "victim-hard.md")), "# Ours\n", "the other name's contents are untouched"),
     ],
     ["the file edited", (dir) => writeFileSync(join(dir, "AGENTS.md"), "# Edited meanwhile\n"), new RegExp(STALE), (dir) => assert.equal(read(join(dir, "AGENTS.md")), "# Edited meanwhile\n")],
@@ -502,8 +522,9 @@ test("apply after the open: the folder still the one resolved, and the handle th
   const realpath = fs.realpathSync;
   let calls = 0;
   t.mock.method(fs, "realpathSync", (...args: Parameters<typeof fs.realpathSync>) => {
-    // The third look at the folder in apply: its resolving, compare's, then the one after the open.
-    if (String(args[0]) === dir && ++calls === 3) {
+    // The fourth look at the folder in apply: its resolving, compare's before and after its open, then the one after
+    // Apply's own open.
+    if (String(args[0]) === dir && ++calls === 4) {
       fs.renameSync(join(dir, "AGENTS.md"), join(dir, "AGENTS.old.md"));
       writeFileSync(join(dir, "AGENTS.md"), "# Put there meanwhile\n");
     }
@@ -514,8 +535,8 @@ test("apply after the open: the folder still the one resolved, and the handle th
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  await assert.rejects(files.apply({ projectId: "p_after", fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }, projects), /replaced while it was being applied/);
-  assert.equal(calls, 3, "the folder is looked at again after the open");
+  await assert.rejects(files.apply({ projectId: "p_after", fileDigest: seen.fileDigest, templateDigest: seen.templateDigest }, projects), /replaced while it was being opened/);
+  assert.equal(calls, 4, "the folder is looked at again after the open");
   assert.equal(read(join(dir, "AGENTS.md")), "# Put there meanwhile\n");
   assert.equal(read(join(dir, "AGENTS.old.md")), "# Ours\n", "the file the handle holds is not written either");
 });

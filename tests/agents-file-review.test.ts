@@ -90,3 +90,38 @@ test("review: O_NOFOLLOW blocks a state-read link swapped in after lstat", async
   assert.equal(entry?.state, "blocked", "a successful lstat is insufficient if a link appears before open");
   assert.match(entry?.reason ?? "", /is a link/);
 });
+
+/** Swaps the project's folder for a link to the outside folder at the n-th lstat of its AGENTS.md: after the check, before the open. */
+function swapAtLstat(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, n: number): () => boolean {
+  const path = join(f.folder, "AGENTS.md");
+  const realLstat = fs.lstatSync;
+  let calls = 0;
+  t.mock.method(fs, "lstatSync", (...args: Parameters<typeof fs.lstatSync>) => {
+    const result = realLstat(...args);
+    if (String(args[0]) === path && ++calls === n) f.redirect();
+    return result;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  return () => calls >= n;
+}
+
+test("review #267: a folder swapped for a link after the read's check is blocked, never read from outside onlyUnder", async (t) => {
+  const f = await fixture(t);
+  fs.writeFileSync(join(f.outside, "AGENTS.md"), "# OUTSIDE_SENTINEL\n");
+  const swapped = swapAtLstat(t, f, 1);
+  await assert.rejects(f.files.diff("review-project", f.projects), /leads elsewhere now/);
+  assert.equal(swapped(), true);
+});
+
+test("review #267: Apply's own open goes through the same guard: a folder swapped after its check is refused, the outside file untouched", async (t) => {
+  const f = await fixture(t);
+  // compare's open looks at the name twice (before and after); Apply's own open looks first at the third.
+  const swapped = swapAtLstat(t, f, 3);
+  await assert.rejects(f.files.apply({ projectId: "review-project", fileDigest: f.seen.fileDigest, templateDigest: f.seen.templateDigest }, f.projects), /leads elsewhere now/);
+  assert.equal(swapped(), true);
+  assert.equal(fs.readFileSync(join(f.outside, "AGENTS.md"), "utf8"), "# Reviewed project wording\n");
+});
