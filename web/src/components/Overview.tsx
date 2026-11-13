@@ -379,9 +379,10 @@ const agentsFileTone = (written: AgentsFileWritten): "success" | "info" | "error
 
 /**
  * Stack each column independently, the cards in their ranked order in the DOM. The first `dealt` cards (the ones that
- * ask something or are busy) go along the columns in turn, so a card whose height changes as its members work moves no
- * other sideways; each card after them (a quiet one) goes under the column that is shortest so far, the leftmost of
- * equals, so none waits under a tall column beside an empty one. Every card sits in the grid's one row, pushed down by
+ * ask something or are busy) go along the columns in turn, so none of them changes column as their heights change with
+ * their members' work; each card after them (a quiet one) goes under the column that is shortest so far, the leftmost
+ * of equals, so none waits under a tall column beside an empty one, and one can change column when a card over it
+ * grows or shrinks. Every card sits in the grid's one row, pushed down by
  * a margin as tall as the cards above it: one length a card, so a zoomed page's rounding of lengths cannot add up over
  * a tall column and close the gap under it.
  */
