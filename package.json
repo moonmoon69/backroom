@@ -1,6 +1,6 @@
 {
   "name": "backroom",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Backroom: a local companion that coordinates several persistent T3 Code sessions in one shared conversation.",
   "license": "MIT",
