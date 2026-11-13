@@ -2273,7 +2273,7 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 29. Backroom's own row in the Updates popup (src/app/backroomUpdate.ts).
   check.passed.push(...(await rehearseBackroomRow(service, browser, room, selection, section)));
 
-  // 30. The overview's tiles: the gap under a tall tile on a zoomed page (its section opens in the function).
+  // 30. The overview's tiles: a quiet tile under the shortest column, and its gap there on a zoomed page (its section opens in the function).
   check.passed.push(...(await rehearseTallTile(service, browser, room, selection, section)));
 
   membersOnlyAnswer(await room.snapshot());
@@ -2374,66 +2374,84 @@ async function rehearseBackroomRow(service: Service, browser: Browser, room: Roo
 }
 
 /**
- * The overview's tiles (web/src/components/Overview.tsx, ProjectTiles): a column's tiles keep their gap under a tall
- * tile on a zoomed page. A scratch project holds a room of 45 members and three small rooms after it, so one sits under
- * it at any width. A rehearsal cannot set the browser's zoom, so the page's is stood in for by CSS zoom on the project's
- * tiles for the length of one read: it scales and rounds every length inside as the browser's zoom does, and it is off
- * again before the page can lay the tiles out for it.
+ * The overview's tiles (web/src/components/Overview.tsx, ProjectTiles), on a scratch project of three long rooms (36,
+ * 34 and 38 members) and a small one made after them, all quiet. At the rehearsal's three columns the long ones fill
+ * the first row, and the small one goes under the shortest column, the second's, not under the first as a tile dealt
+ * along the columns would. Under that long tile it keeps its gap on a zoomed page. A rehearsal cannot set the
+ * browser's zoom, so the page's is stood in for by CSS zoom on the project's tiles for the length of one read: it
+ * scales and rounds every length inside as the browser's zoom does, and it is off again before the page can lay the
+ * tiles out for it.
  */
 async function rehearseTallTile(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
-  if (!(await section("overview: the tile under a tall tile keeps its gap on a zoomed page"))) return passed;
+  if (!(await section("overview: a quiet tile goes under the shortest column, not the next along"))) return passed;
   const state = probedStates(browser, selection, passed);
-  const MEMBERS = 45;
+  const LONG = [36, 34, 38];
   const folder = join(room.dataDir, "tiles-project");
   mkdirSync(folder, { recursive: true });
   // Instructions of its own, so its rooms write no agents file and no toast (as the project's browsers' scratch project).
   writeFileSync(join(folder, "CLAUDE.md"), "The rehearsal's scratch project for the overview's tiles.\n");
   const { projectId } = await service.command<{ projectId: string }>({ type: "project.create", workspaceRoot: folder, title: "tiles-scratch" });
   const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
-  const tall = (await service.command<{ roomId: string }>({ type: "room.create", projectId, title: "tall-scratch", consigliere: false })).roomId;
-  for (let n = 1; n <= MEMBERS; n++) await service.command({ type: "participant.create", roomId: tall, alias: `tall${n}`, modelSelection: model, thread: { mode: "create" } });
-  for (const title of ["under-scratch-1", "under-scratch-2", "under-scratch-3"]) await service.command({ type: "room.create", projectId, title, consigliere: false });
+  const long: string[] = [];
+  for (const [index, members] of LONG.entries()) {
+    const { roomId } = await service.command<{ roomId: string }>({ type: "room.create", projectId, title: `long-scratch-${index + 1}`, consigliere: false });
+    for (let n = 1; n <= members; n++) await service.command({ type: "participant.create", roomId, alias: `long${n}`, modelSelection: model, thread: { mode: "create" } });
+    long.push(roomId);
+  }
+  const under = (await service.command<{ roomId: string }>({ type: "room.create", projectId, title: "under-scratch", consigliere: false })).roomId;
   if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
-  type Read = { members: number; height: number; gaps: Array<{ zoom: number; gap: number | null }> } | null;
+  const members = async () => {
+    const counts = await Promise.all(long.map(async (roomId) => (await service.call<Snapshot>("GET", `/api/rooms/${roomId}`)).participants.length));
+    return counts.join() === LONG.join() ? `the long rooms have ${counts.join(", ")} members` : null;
+  };
+  type Read = { columns: number; long: Array<{ members: number; left: number; top: number; height: number }>; under: { left: number; top: number } | null; gaps: Array<{ zoom: number; gap: number | null }> } | null;
   const read = `() => {
-    const head = document.querySelector('[data-nav-key="room:${tall}"]');
-    const grid = head?.closest('.ov-tiles');
-    if (!grid) return null;
-    const cards = [...grid.children];
-    const card = cards.find((c) => c.contains(head));
+    const card = (id) => document.querySelector('[data-nav-key="room:' + id + '"]')?.closest('.ov-room');
+    const long = ${JSON.stringify(long)}.map(card);
+    const under = card(${JSON.stringify(under)});
+    const grid = under?.closest('.ov-tiles');
+    if (!grid || long.some((c) => !c)) return null;
+    const box = (c) => { const r = c.getBoundingClientRect(); return { members: c.querySelectorAll('.ov-member').length, left: r.left, top: r.top, height: r.height }; };
+    const shortest = long.map(box).reduce((a, b, i, all) => (b.height < all[a].height ? i : a), 0);
     const gapAt = (zoom) => {
       grid.style.zoom = String(zoom);
-      const t = card.getBoundingClientRect();
-      const under = cards.filter((c) => c !== card).map((c) => c.getBoundingClientRect()).filter((r) => Math.abs(r.left - t.left) < 1 && r.top > t.top).sort((a, b) => a.top - b.top)[0];
+      const above = long[shortest].getBoundingClientRect(), below = under.getBoundingClientRect();
       grid.style.zoom = '';
-      return under ? (under.top - t.bottom) / zoom : null;
+      return Math.abs(below.left - above.left) < 1 ? (below.top - above.bottom) / zoom : null;
     };
-    return { members: card.querySelectorAll('.ov-member').length, height: card.getBoundingClientRect().height, gaps: [1, 0.9, 1.1, 0.8].map((zoom) => ({ zoom, gap: gapAt(zoom) })) };
+    return { columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length, long: long.map(box), under: box(under), gaps: [1, 0.9, 1.1, 0.8].map((zoom) => ({ zoom, gap: gapAt(zoom) })) };
   }`;
-  await state(
-    "overview: the tile under a tall tile keeps its gap on a zoomed page",
-    async () => {
-      const members = (await service.call<Snapshot>("GET", `/api/rooms/${tall}`)).participants.length;
-      return members === MEMBERS ? `GET /api/rooms/${tall.slice(0, 8)}: ${members} members` : null;
-    },
-    ["under-scratch-3"],
-    () => {
-      const r = browser.poll<Read>("the tall room's tile with its members", read, (x) => x?.members === MEMBERS);
-      if (!r) fail("the tall room's tile is not on the overview");
-      if (r.height < 1500) fail(`the tall room's tile is ${r.height}px tall: too short for a zoomed page's rounding to show`);
-      const plain = r.gaps[0]!.gap;
-      if (plain === null) fail("no tile sits under the tall room's tile");
-      // The row gap is 12px; a tile's measured height is rounded up to a whole pixel, so a gap is 12px to 13px.
-      if (plain < 12 || plain >= 13) fail(`the gap under the tall tile is ${plain}px, not the grid's 12px`);
-      // Within 3px: the tile's own lines are laid out again under the zoom, so its height moves a pixel or two against
-      // an offset measured without it. Rounding that adds up over the tile's height moves the gap by 6px and more.
-      const percent = (zoom: number) => `${Math.round(zoom * 100)}%`;
-      const off = r.gaps.filter((g) => g.gap === null || Math.abs(g.gap - plain) > 3);
-      if (off.length > 0) fail(`the gap under a ${Math.round(r.height)}px tile is ${plain.toFixed(2)}px unzoomed and changes on a zoomed page: ${off.map((g) => `${g.gap?.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
-      log(`  page: under a ${Math.round(r.height)}px tile of ${r.members} members the gap is ${r.gaps.map((g) => `${g.gap!.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
-    },
-  );
+  const tiles = () => {
+    const r = browser.poll<Read>("the long rooms' tiles with their members", read, (x) => x?.long.map((t) => t.members).join() === LONG.join());
+    if (!r || !r.under) fail("the scratch project's tiles are not on the overview");
+    if (r.columns !== LONG.length) fail(`the overview has ${r.columns} columns: this check needs ${LONG.length}, a long tile heading each`);
+    return { ...r, under: r.under };
+  };
+  await state("overview: a quiet tile goes under the shortest column, not the next along", members, ["under-scratch"], () => {
+    const r = tiles();
+    const heads = r.long.filter((t) => Math.abs(t.top - r.long[0]!.top) < 1).length;
+    if (heads !== LONG.length) fail(`the long tiles do not head a column each: ${JSON.stringify(r.long)}`);
+    const shortest = r.long.reduce((a, b) => (b.height < a.height ? b : a));
+    const column = (left: number) => r.long.findIndex((t) => Math.abs(t.left - left) < 1) + 1;
+    if (Math.abs(r.under.left - shortest.left) >= 1 || r.under.top < shortest.top + shortest.height) fail(`the small tile is in column ${column(r.under.left)} at ${Math.round(r.under.top)}px, not under the shortest long tile, column ${column(shortest.left)}'s (${r.long.map((t) => `${Math.round(t.height)}px`).join(", ")})`);
+    log(`  page: the columns are ${r.long.map((t) => `${Math.round(t.height)}px`).join(", ")} long; the small tile is under column ${column(shortest.left)}'s`);
+  });
+  await state("overview: the tile under a tall tile keeps its gap on a zoomed page", members, ["under-scratch"], () => {
+    const r = tiles();
+    const height = Math.min(...r.long.map((t) => t.height));
+    if (height < 1500) fail(`the tile over the small one is ${height}px tall: too short for a zoomed page's rounding to show`);
+    const plain = r.gaps[0]!.gap;
+    if (plain === null) fail("the small tile is not under the shortest long tile");
+    // The row gap is 12px; a tile's measured height is rounded up to a whole pixel, so a gap is 12px to 13px.
+    if (plain < 12 || plain >= 13) fail(`the gap under the tall tile is ${plain}px, not the grid's 12px`);
+    // Within 3px: the tile's own lines are laid out again under the zoom, so its height moves a pixel or two against
+    // an offset measured without it. Rounding that adds up over the tile's height moves the gap by 6px and more.
+    const percent = (zoom: number) => `${Math.round(zoom * 100)}%`;
+    const off = r.gaps.filter((g) => g.gap === null || Math.abs(g.gap - plain) > 3);
+    if (off.length > 0) fail(`the gap under a ${Math.round(height)}px tile is ${plain.toFixed(2)}px unzoomed and changes on a zoomed page: ${off.map((g) => `${g.gap?.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
+    log(`  page: under a ${Math.round(height)}px tile the gap is ${r.gaps.map((g) => `${g.gap!.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
+  });
   return passed;
 }
 

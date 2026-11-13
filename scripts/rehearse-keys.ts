@@ -874,12 +874,13 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     }
     log(`api: ${apiRooms.length} rooms, ${apiPresets.length} crew members, ${apiBrowsers.length} browsers; page: ${grid.length} stops (${grid.filter((p) => p.tile).length} tiles), every room's members on its tile and none a stop`);
 
-    // Down from a room's tile with another under it (four tiles on three columns: the fourth sits under the first): the
-    // tile below, then Crew's head, a crew member, Browsers' head and a browser, in the column the run began in.
+    // Down from a tile with another under it (four tiles on three columns: the fourth, a quiet room's, sits under the
+    // shortest of the first three, a room's or a thread's): the tile below, then Crew's head, a crew member, Browsers'
+    // head and a browser, in the column the run began in.
     const sameColumn = (a: Boxed<string>, b: Boxed<string>) => Math.abs(a.left - b.left) < 2;
     const projectTiles = grid.filter((p) => p.tile && /^(room|thread):/.test(p.element));
-    const upper = projectTiles.find((t) => t.element.startsWith("room:") && projectTiles.some((u) => u !== t && sameColumn(u, t) && u.top >= t.bottom - 1));
-    if (!upper) return fail(`no room's tile has another under it (tiles at ${projectTiles.map((p) => Math.round(p.left)).join(", ")}): the window is too wide for this check`);
+    const upper = projectTiles.find((t) => projectTiles.some((u) => u !== t && sameColumn(u, t) && u.top >= t.bottom - 1));
+    if (!upper) return fail(`no tile has another under it (tiles at ${projectTiles.map((p) => Math.round(p.left)).join(", ")}): the window is too wide for this check`);
     const below = projectTiles.filter((u) => u !== upper && sameColumn(u, upper) && u.top >= upper.bottom - 1).sort((a, b) => a.top - b.top)[0]!;
     // The run's column: the tile's own, unless the way there was already a run of Up and Down.
     const span = (await goTo(upper.element)) ?? upper;
@@ -907,7 +908,7 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     press("ArrowDown");
     await sleep(300);
     await expect("Down at the foot stays on the browser", (f) => f.key === browserTile.element);
-    await state("overview: Down from a room's tile reaches the tile below, then Crew, then Browsers", await overviewWhere(browserTile.element));
+    await state("overview: Down from a tile reaches the tile below, then Crew, then Browsers", await overviewWhere(browserTile.element));
 
     // Up from the first row: its section's +, then the page's header, which is the top. Along the header, Right stops at
     // its end; Home and End go to its ends.

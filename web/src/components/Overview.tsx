@@ -52,6 +52,8 @@ const oneLine = (text: string, max = 140): string => {
  * Inside a project the tiles are ranked by what they ask of you: needs you first (an approval, a question, a failure
  * nobody followed up), then new for you (a reply you have not seen), then busy, then the rest. Inside a tier they keep
  * the arranged order (Arrange), so a tile moves only when its tier changes: forward when it wants you, back once you looked.
+ * The tiles that ask something or are busy are dealt along the columns in that order; the rest, the quiet ones, each go
+ * under the shortest column (ProjectTiles).
  */
 export function Overview({
   rooms,
@@ -287,7 +289,7 @@ export function Overview({
                 {known && browsers ? <ProjectBrowsersButton project={project} browsers={browsers} runCommand={onCommand} onChanged={onT3Changed} /> : null}
               </h2>
               {projectTiles.length === 0 ? <p className="muted ov-empty">Nothing here yet.</p> : null}
-              <ProjectTiles>
+              <ProjectTiles dealt={projectTiles.filter((tile) => tile.tier < QUIET).length}>
                 {projectTiles.map((tile) =>
                   tile.kind === "room" ? (
                     <RoomCard
@@ -376,11 +378,14 @@ const agentsFileTone = (written: AgentsFileWritten): "success" | "info" | "error
   written.hook === "failed" || written.hook === "no-exclude" ? "error" : written.hook === "own-hook" || written.hook === "hooks-path" || written.hook === "not-main" ? "info" : "success";
 
 /**
- * Stack each column independently, keeping the arranged/ranked order in both the DOM and across columns. Every card
- * sits in the grid's one row, pushed down by a margin as tall as the cards above it: one length a card, so a zoomed
- * page's rounding of lengths cannot add up over a tall column and close the gap under it.
+ * Stack each column independently, the cards in their ranked order in the DOM. The first `dealt` cards (the ones that
+ * ask something or are busy) go along the columns in turn, so a card whose height changes as its members work moves no
+ * other sideways; each card after them (a quiet one) goes under the column that is shortest so far, the leftmost of
+ * equals, so none waits under a tall column beside an empty one. Every card sits in the grid's one row, pushed down by
+ * a margin as tall as the cards above it: one length a card, so a zoomed page's rounding of lengths cannot add up over
+ * a tall column and close the gap under it.
  */
-function ProjectTiles({ children }: { children: ReactNode }) {
+function ProjectTiles({ dealt, children }: { dealt: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const grid = ref.current;
@@ -402,7 +407,7 @@ function ProjectTiles({ children }: { children: ReactNode }) {
       const heights = cards.map((card) => Math.ceil(card.getBoundingClientRect().height));
       const top = Array<number>(columns).fill(0);
       cards.forEach((card, index) => {
-        const column = index % columns;
+        const column = index < dealt ? index % columns : top.indexOf(Math.min(...top));
         card.style.gridColumn = String(column + 1);
         card.style.gridRow = "1";
         card.style.marginTop = `${top[column]}px`;
@@ -423,7 +428,7 @@ function ProjectTiles({ children }: { children: ReactNode }) {
       observer.disconnect();
       cancelAnimationFrame(frame);
     };
-  }, [children]);
+  }, [dealt, children]);
   return <div className="ov-tiles" ref={ref}>{children}</div>;
 }
 
@@ -437,7 +442,8 @@ interface TileState {
 }
 
 /** The rank of a tile: 0 needs you, 1 new for you, 2 busy, 3 quiet. */
-const tierOf = (state: TileState): number => (state.needs > 0 ? 0 : state.unseen > 0 ? 1 : state.busy > 0 ? 2 : 3);
+const QUIET = 3;
+const tierOf = (state: TileState): number => (state.needs > 0 ? 0 : state.unseen > 0 ? 1 : state.busy > 0 ? 2 : QUIET);
 
 function roomState(room: RoomListItem, detail: OverviewRoom | undefined): TileState {
   return {
