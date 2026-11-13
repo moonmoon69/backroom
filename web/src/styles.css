@@ -6549,12 +6549,6 @@ button.work-chip:hover,
   align-items: start;
 }
 
-/* Measured row positions let each column follow its own cards; keep the horizontal gap and natural card heights. */
-.ov-tiles[data-stacked] {
-  grid-auto-rows: 1px;
-  row-gap: 0;
-}
-
 @media (max-width: 760px) {
   .ov-tiles {
     grid-template-columns: 1fr;

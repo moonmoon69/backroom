@@ -375,7 +375,11 @@ function agentsFileNote(written: AgentsFileWritten): string {
 const agentsFileTone = (written: AgentsFileWritten): "success" | "info" | "error" =>
   written.hook === "failed" || written.hook === "no-exclude" ? "error" : written.hook === "own-hook" || written.hook === "hooks-path" || written.hook === "not-main" ? "info" : "success";
 
-/** Stack each column independently, keeping the arranged/ranked order in both the DOM and across columns. */
+/**
+ * Stack each column independently, keeping the arranged/ranked order in both the DOM and across columns. Every card
+ * sits in the grid's one row, pushed down by a margin as tall as the cards above it: one length a card, so a zoomed
+ * page's rounding of lengths cannot add up over a tall column and close the gap under it.
+ */
 function ProjectTiles({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -383,26 +387,26 @@ function ProjectTiles({ children }: { children: ReactNode }) {
     if (!grid) return;
     const cards = Array.from(grid.children) as HTMLElement[];
     const layout = () => {
-      // Keep scrollbars (and thus card widths) stable while the old row placements are cleared.
+      // Keep scrollbars (and thus card widths) stable while the old placements are cleared.
       const minHeight = grid.style.minHeight;
       grid.style.minHeight = getComputedStyle(grid).height;
       // Clear placements first: old column numbers would create implicit columns after a narrower resize.
       for (const card of cards) {
         card.style.gridColumn = "";
         card.style.gridRow = "";
+        card.style.marginTop = "";
       }
       const style = getComputedStyle(grid);
       const columns = style.gridTemplateColumns.split(" ").length;
-      const gap = parseFloat(style.columnGap);
+      const gap = parseFloat(style.rowGap);
       const heights = cards.map((card) => Math.ceil(card.getBoundingClientRect().height));
-      const nextRow = Array<number>(columns).fill(1);
-      grid.dataset.stacked = "";
+      const top = Array<number>(columns).fill(0);
       cards.forEach((card, index) => {
         const column = index % columns;
-        const height = Math.max(1, heights[index]!);
         card.style.gridColumn = String(column + 1);
-        card.style.gridRow = `${nextRow[column]} / span ${height}`;
-        nextRow[column]! += height + gap;
+        card.style.gridRow = "1";
+        card.style.marginTop = `${top[column]}px`;
+        top[column]! += heights[index]! + gap;
       });
       grid.style.minHeight = minHeight;
     };
