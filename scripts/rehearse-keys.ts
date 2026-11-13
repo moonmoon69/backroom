@@ -885,16 +885,18 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
     // The run's column: the tile's own, unless the way there was already a run of Up and Down.
     const span = (await goTo(upper.element)) ?? upper;
     const middleOf = (p: Span) => (p.left + p.right) / 2;
-    const inColumn = (kind: string) => grid.filter((p) => p.element.startsWith(`${kind}:`) && p.left < span.right && p.right > span.left).sort((a, b) => Math.abs(middleOf(a) - middleOf(span)) - Math.abs(middleOf(b) - middleOf(span)))[0];
+    // The one in the column, or with none there the nearest to it across (keyOrder.ts, gridTarget).
+    const apart = (p: Span) => Math.max(0, Math.max(p.left, span.left) - Math.min(p.right, span.right));
+    const inColumn = (kind: string) => grid.filter((p) => p.element.startsWith(`${kind}:`)).sort((a, b) => apart(a) - apart(b) || Math.abs(middleOf(a) - middleOf(span)) - Math.abs(middleOf(b) - middleOf(span)))[0];
     const crewTile = inColumn("preset");
     const browserTile = inColumn("browser");
-    if (!crewTile || !browserTile) return fail(`no crew member or browser under the column ${Math.round(span.left)}–${Math.round(span.right)}`);
+    if (!crewTile || !browserTile) return fail("no crew member or no browser on the overview");
     const run: Array<[string, string]> = [
       [below.element, `the tile below it, ${short(below.element)}`],
       ["head:crew", "Crew's +, named New crew member"],
-      [crewTile.element, `the crew member in its column, ${apiPresets.find((p) => `preset:${p.id}` === crewTile.element)?.name}`],
+      [crewTile.element, `the crew member in its column or nearest it, ${apiPresets.find((p) => `preset:${p.id}` === crewTile.element)?.name}`],
       ["head:browsers", "Browsers' +, named New browser"],
-      [browserTile.element, `the browser in its column, ${apiBrowsers.find((b) => `browser:${b.id}` === browserTile.element)?.name}`],
+      [browserTile.element, `the browser in its column or nearest it, ${apiBrowsers.find((b) => `browser:${b.id}` === browserTile.element)?.name}`],
     ];
     for (const [key, what] of run) {
       press("ArrowDown");
