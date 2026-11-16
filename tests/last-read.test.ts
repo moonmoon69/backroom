@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { lastReadLine, READ_ABOVE } from "../web/src/lastRead.ts";
+import { heldTop, lastReadLine, READ_ABOVE } from "../web/src/lastRead.ts";
 
 const post = (seq: number, author = "seat-1") => [{ seq, author }];
 
@@ -31,4 +31,16 @@ test("the drawn window widens to hold the line and a little of what was read abo
 test("a first new post older than the posts read puts the line over the first one read", () => {
   const items = [post(50, "$user"), post(51), post(52)];
   assert.equal(lastReadLine(items, 10, 40)?.over, 1);
+});
+
+test("following the bottom never carries a held line above its place", () => {
+  // No line held: the bottom.
+  assert.deepEqual(heldTop(900, null), { top: 900, following: true });
+  // The news fits the screen: the bottom, still following.
+  assert.deepEqual(heldTop(900, 1100), { top: 900, following: true });
+  assert.deepEqual(heldTop(900, 900), { top: 900, following: true });
+  // It grew past the screen (images loaded, a new post): the line's place, following off.
+  assert.deepEqual(heldTop(2340, 1100), { top: 1100, following: false });
+  // A line nearer the board's start than its place: the start.
+  assert.deepEqual(heldTop(500, -40), { top: 0, following: false });
 });

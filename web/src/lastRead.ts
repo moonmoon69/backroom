@@ -12,3 +12,12 @@ export function lastReadLine(items: ReadonlyArray<ReadonlyArray<{ seq: number; a
   const over = items.findIndex((posts) => posts.length > 0 && posts[0]!.seq > mark && posts[0]!.author !== "$user");
   return over < 0 ? null : { over, shown: Math.max(shown, items.length - over + READ_ABOVE) };
 }
+
+/**
+ * Where the board puts itself when it follows its bottom: at `bottom` (its greatest scroll offset), or at `place` (the
+ * offset that puts the held "new" line at its place near the top; null with no line held) when that is higher up,
+ * where it follows no longer: what is new is longer than the screen.
+ */
+export function heldTop(bottom: number, place: number | null): { top: number; following: boolean } {
+  return place !== null && place < bottom ? { top: Math.max(0, place), following: false } : { top: bottom, following: true };
+}

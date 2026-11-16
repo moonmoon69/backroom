@@ -31,7 +31,7 @@ import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
 import { lastInputWasKey } from "../keys.ts";
 import { followsBottom } from "../boardFollow.ts";
-import { lastReadLine } from "../lastRead.ts";
+import { heldTop, lastReadLine } from "../lastRead.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -331,51 +331,56 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   }, [desk, chat, allPosts, snapshot.runs, snapshot.participants]);
 
   const lastSeq = posts[posts.length - 1]?.seq ?? 0;
-  const scrollToBottom = useCallback((smooth = false) => {
+  // A room opened with a line holds it until the reader scrolls the board themselves; `ours` is where the board last
+  // put itself, which tells its own scrolls from the reader's.
+  const held = useRef(false);
+  const ours = useRef(-1);
+  // Following the bottom, the one way the board puts itself anywhere: at its bottom or, while the line is held, at the
+  // line's place when that is higher up (lastRead.ts, heldTop). There following is off and the jump button counts the
+  // replies since the last read, whether the news was too long as the room opened or grew so afterwards (images
+  // loading, a new post).
+  const follow = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
-    if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    else el.scrollTop = el.scrollHeight;
-  }, []);
+    const place = held.current && line.current ? el.scrollTop + line.current.getBoundingClientRect().top - el.getBoundingClientRect().top - LINE_TOP_PX : null;
+    const to = heldTop(el.scrollHeight - el.clientHeight, place);
+    stickToBottom.current = to.following;
+    el.scrollTop = to.top;
+    ours.current = el.scrollTop;
+    if (to.following) return;
+    lastTop.current = el.scrollTop;
+    setFar(el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX);
+    if (lastRead !== null) setSeenSeq(lastRead);
+  }, [lastRead]);
 
   // The jump button counts the replies since the board was last near its bottom. Before the next effect, which counts
-  // them from the last read instead when it opens the room away from its bottom.
+  // them from the last read instead when it puts the board at its line (follow).
   useLayoutEffect(() => {
     if (!far) setSeenSeq(lastSeq);
   }, [far, lastSeq]);
 
   // A different room starts at the bottom; one opened with news, with its line near the top and a little of what was
-  // read over it, not following until the reader reaches the bottom. News that fits the screen is the bottom too.
+  // read over it. News that fits the screen is the bottom too, the line held all the same.
   useLayoutEffect(() => {
-    const el = scroller.current;
-    const top = el && line.current && opening && lastRead !== null ? el.scrollTop + line.current.getBoundingClientRect().top - el.getBoundingClientRect().top - LINE_TOP_PX : null;
-    if (!el || top === null || top >= el.scrollHeight - el.clientHeight) {
-      stickToBottom.current = true;
-      setFar(false);
-      scrollToBottom();
-      return;
-    }
-    stickToBottom.current = false;
-    el.scrollTop = Math.max(0, top);
-    lastTop.current = el.scrollTop;
-    setFar(el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX);
-    setSeenSeq(lastRead!);
-  }, [snapshot.room.id, opening, lastRead, scrollToBottom]);
+    held.current = opening && lastRead !== null;
+    setFar(false);
+    follow();
+  }, [snapshot.room.id, opening, lastRead, follow]);
 
   useLayoutEffect(() => {
-    if (stickToBottom.current) scrollToBottom();
-  }, [lastSeq, liveRuns, liveTurns, scrollToBottom]);
+    if (stickToBottom.current) follow();
+  }, [lastSeq, liveRuns, liveTurns, follow]);
 
-  // Content that grows after render (live feeds, opened rows) keeps the bottom in view.
+  // Content that grows after render (live feeds, opened rows, images) keeps the bottom in view.
   useEffect(() => {
     const el = content.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (stickToBottom.current) scrollToBottom();
+      if (stickToBottom.current) follow();
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [scrollToBottom]);
+  }, [follow]);
 
   // A panel that was put away comes back at the latest again; a width change keeps the bottom in view when it was.
   useEffect(() => {
@@ -389,15 +394,17 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
         stickToBottom.current = true;
         setFar(false);
       }
-      if (stickToBottom.current) scrollToBottom();
+      if (stickToBottom.current) follow();
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [scrollToBottom]);
+  }, [follow]);
 
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
+    // A scroll the board did not make itself: the reader's, and the line is held no longer.
+    if (el.scrollTop !== ours.current) held.current = false;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     // Only the reader leaves the bottom: a scroll the browser makes keeping the view steady does not (boardFollow.ts).
     stickToBottom.current = followsBottom(stickToBottom.current, lastTop.current, el.scrollTop, distance);
@@ -559,8 +566,9 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
                 type="button"
                 className={`jump-latest mono${unseen > 0 ? " has-new" : ""}`}
                 onClick={() => {
+                  held.current = false;
                   stickToBottom.current = true;
-                  scrollToBottom(true);
+                  scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
                 }}
               >
                 {unseen > 0 ? `${unseen} new repl${unseen === 1 ? "y" : "ies"}` : "Jump to latest"} <Glyph name="down" text="↓" />

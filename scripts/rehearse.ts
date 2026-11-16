@@ -2462,6 +2462,7 @@ async function rehearseTallTile(service: Service, browser: Browser, room: Room, 
  * A room opened with news (web/src/lastRead.ts): a room of one member with eight long replies seen and three more not.
  * Its tile says 3 new; opened from there, the board has a "new" line over the first reply after the last read, stands
  * with that line near its top and not at its bottom, and the jump button counts the three; its click ends at the bottom.
+ * Then a room whose one unread reply fits the screen until its three pictures load: the line keeps its place.
  */
 async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
@@ -2480,7 +2481,11 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
       return x.news.unseen === before + 1 ? x : null;
     });
   };
-  if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+  // Back on the overview, from wherever a state checked or played silently left the page.
+  const outside = () => {
+    if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+  };
+  outside();
   let read = await made.snapshot();
   for (let n = 1; n <= 8; n++) read = await exchange(n);
   const mark = read.news.latest!.seq;
@@ -2519,7 +2524,60 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
     log(`  page: after its click the board is ${Math.round(end!.toBottom)}px from its bottom, the line still over seq ${end!.over}`);
     if (end!.over !== String(firstNew.seq)) fail("the line went with the jump");
   });
-  browser.click(/button "Back to the overview"/);
+  outside();
+
+  // News that fits the screen as the room opens and outgrows it afterwards: one unread reply of three pictures, served
+  // five seconds late by a process of this state's own (this script's reads of the page block its event loop).
+  const images = spawn(process.execPath, ["-e", `require("node:http").createServer((req, res) => setTimeout(() => { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="480"><rect width="600" height="480" fill="#124455"/></svg>'); }, 5000)).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const imagePort = Number(await new Promise<string>((resolve) => images.stdout.once("data", (chunk) => resolve(String(chunk)))));
+    const lateTitle = "late-images-scratch";
+    const late = await room.second(lateTitle, ["viewer"]);
+    const lateThread = (await late.snapshot()).bindings[0]!.threadId;
+    const lateExchange = async (ask: string, text: string) => {
+      const before = (await late.snapshot()).news.unseen;
+      await service.command({ type: "message.create", roomId: late.roomId, sourceText: ask, clientMessageId: randomUUID(), attachmentIds: [], assignments: [{ recipients: [late.participant.viewer], instruction: ask }] });
+      await until(`T3 to run @viewer's turn on ${JSON.stringify(ask)}`, () => service.fake("complete", { threadId: lateThread, text }).then(() => true), 20_000, 300);
+      return until(`@viewer's reply to ${JSON.stringify(ask)} on the board`, async () => {
+        const x = await late.snapshot();
+        return x.news.unseen === before + 1 ? x : null;
+      });
+    };
+    const lateMark = (await lateExchange("What was read", long(0))).news.latest!.seq;
+    await service.call("POST", "/api/seen", { key: `room:${late.roomId}`, seq: lateMark });
+    await lateExchange("Show the pictures", `Here are the pictures.\n\n${[1, 2, 3].map((n) => `![picture ${n}](http://127.0.0.1:${imagePort}/${n}.svg)`).join("\n\n")}`);
+    type Late = { lineTop: number; toBottom: number; jump: string | null; loaded: boolean[] } | null;
+    const latePage = `() => {
+      const board = document.querySelector('.sheet[data-room-id=${JSON.stringify(late.roomId)}] .timeline');
+      const line = board?.querySelector('.new-line');
+      return line ? {
+        lineTop: line.getBoundingClientRect().top - board.getBoundingClientRect().top,
+        toBottom: board.scrollHeight - board.scrollTop - board.clientHeight,
+        jump: board.parentElement.querySelector('.jump-latest')?.textContent ?? null,
+        loaded: [...board.querySelectorAll('img[alt^="picture"]')].map((image) => image.complete && image.naturalHeight > 0),
+      } : null;
+    }`;
+    const lateProbe = async () => {
+      const x = await late.snapshot();
+      return x.news.unseen === 1 && x.news.seenSeq === lateMark ? `news.unseen=1 seenSeq=${lateMark}; the unread reply holds three pictures served 5 s late` : null;
+    };
+    await state("a room opened with one unread reply whose images load late keeps the line at its place, with the jump button", lateProbe, [lateTitle], () => {
+      browser.openRoom(lateTitle);
+      const before = browser.poll<Late>("the board with its line and the three pictures", latePage, (x) => x !== null && x.loaded.length === 3);
+      if (!before || before.loaded.some(Boolean)) fail(`the pictures had loaded when the board was first read, so this shows nothing: ${JSON.stringify(before)}`);
+      if (before.toBottom >= 2 || before.jump !== null) fail(`the news did not fit the screen before its pictures loaded: ${JSON.stringify(before)}`);
+      const after = browser.poll<Late>("the three pictures to load", latePage, (x) => x !== null && x.loaded.length === 3 && x.loaded.every(Boolean), 20_000);
+      execFileSync("sleep", ["0.5"]);
+      const r = browser.eval<Late>(latePage);
+      if (!after || !r) fail("the board went from the page");
+      if (r.lineTop < 0 || r.lineTop > 200) fail(`with its pictures loaded the line is ${Math.round(r.lineTop)}px under the board's top edge, not at its place: ${JSON.stringify(r)}`);
+      if (r.toBottom < 240 || !r.jump?.startsWith("1 new reply")) fail(`with its pictures loaded the board is ${Math.round(r.toBottom)}px from its bottom and the jump button says ${JSON.stringify(r.jump)}, not "1 new reply"`);
+      log(`  page: before the pictures loaded the line was ${Math.round(before.lineTop)}px under the board's top, the board at its bottom; after, ${Math.round(r.lineTop)}px, ${Math.round(r.toBottom)}px from the bottom, the button ${JSON.stringify(r.jump.trim())}`);
+    });
+    outside();
+  } finally {
+    images.kill();
+  }
   return passed;
 }
 
