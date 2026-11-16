@@ -23,8 +23,15 @@ export interface RoomContextValue {
   git: GitState;
   /** Look at a member's thread, over the room (Backspace comes back to the room). */
   openMember: (participantId: string) => void;
-  /** The seq the room was seen up to before this opening, when it opened with news (App.tsx); null otherwise. */
+  /**
+   * The room's last read, which its "new" line stands after: the seq it was seen up to before this opening, when it
+   * opened with news (App.tsx), or where the view's posts stood as you last looked away, when news landed before you
+   * came back (Timeline.tsx, which sets it); null otherwise.
+   */
   lastRead: number | null;
+  setLastRead: (seq: number) => void;
+  /** Whether you are looking at this room (App.tsx, lookingHere): the page on screen, its window in front, the sheet open. */
+  looking: boolean;
 }
 
 export interface GitState {

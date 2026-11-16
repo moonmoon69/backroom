@@ -422,6 +422,7 @@ export function App() {
   const selectedArchived = shelfRow?.archivedAt ? shelfRow : null;
   // An opening's last read: the seq the room was seen up to as its sheet opened, when it had news then (null when it had
   // none). Taken once per opening, here beside the mark below: once that lands, every read says the room is seen.
+  // The board moves it to where its posts stood as you looked away, when news landed before you came back (Timeline.tsx).
   const [entry, setEntry] = useState<{ roomId: string; mark: number | null } | null>(null);
   const enteredRoomId = open ? openRoomId : null;
   const enteredNews = enteredRoomId ? rooms.find((r) => r.id === enteredRoomId)?.news : undefined;
@@ -561,6 +562,8 @@ export function App() {
       ...seatLookups(snapshot, participantById),
       openMember: (participantId) => setMemberThread({ roomId: snapshot.room.id, participantId }),
       lastRead: entry?.roomId === snapshot.room.id ? entry.mark : null,
+      setLastRead: (seq) => setEntry({ roomId: snapshot.room.id, mark: seq }),
+      looking: lookingHere,
       desk,
       deskError,
       costs,
@@ -576,7 +579,7 @@ export function App() {
         showMoreCommits: () => setGitCommits((n) => n + 50),
       },
     };
-  }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits, entry]);
+  }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits, entry, lookingHere]);
   // The member whose thread is looked at over the room, once the room is read.
   const memberParticipant = memberThread && snapshot?.room.id === memberThread.roomId ? (snapshot.participants.find((p) => p.id === memberThread.participantId) ?? null) : null;
   // Its thread: the member's current binding (the newest generation not retired).

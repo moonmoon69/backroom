@@ -202,7 +202,7 @@ const PHASE_WORDS: Record<EngineRunView["phase"], string> = {
  * Consigliere (see consigliereChat). A room without a Consigliere shows the board alone.
  */
 export function Timeline({ view = "board", limit = 0, opening = false }: { view?: "board" | "chat"; limit?: number; /** The view the room opened in: put at its last-read line. */ opening?: boolean } = {}) {
-  const { snapshot, desk, lastRead } = useRoom();
+  const { snapshot, desk, lastRead, setLastRead, looking } = useRoom();
   const chat = view === "chat";
   const consigliereId = snapshot.room.consigliereId;
 
@@ -285,11 +285,10 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   // window above, keeping what is in view where it is.
   const [drawn, setDrawn] = useState(limit);
   useEffect(() => setDrawn(limit), [limit, snapshot.room.id]);
-  // A room opened with news has a line over the first post after its last read, and the window holds it (lastRead.ts).
-  const newLine = useMemo(
-    () => (lastRead === null ? null : lastReadLine(allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), lastRead, drawn)),
-    [allItems, lastRead, drawn],
-  );
+  // A room opened with news, or come back to with news, has a line over the first post after its last read, and the
+  // window holds it (lastRead.ts).
+  const itemPosts = useMemo(() => allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), [allItems]);
+  const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead, drawn)), [itemPosts, lastRead, drawn]);
   const shown = newLine?.shown ?? drawn;
   const items = limit > 0 && allItems.length > shown ? allItems.slice(allItems.length - shown) : allItems;
   const earlier = allItems.length - items.length;
@@ -360,27 +359,63 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   }, [far, lastSeq]);
 
   // A different room starts at the bottom; one opened with news, with its line near the top and a little of what was
-  // read over it. News that fits the screen is the bottom too, the line held all the same.
+  // read over it. News that fits the screen is the bottom too, the line held all the same. A last read taken on
+  // coming back (below) places nothing: the board stays where it was left.
+  const stayed = useRef(false);
   useLayoutEffect(() => {
+    if (stayed.current) return;
     held.current = opening && lastRead !== null;
     setFar(false);
     follow();
   }, [snapshot.room.id, opening, lastRead, follow]);
 
+  // While the reader is not looking (App.tsx, lookingHere) the board puts itself nowhere: it follows nothing.
+  const lookingNow = useRef(looking);
+  lookingNow.current = looking;
+  const keepUp = useCallback(() => {
+    if (stickToBottom.current && lookingNow.current) follow();
+  }, [follow]);
+
+  // Looking away takes where the view's posts stand. Coming back, a post since then that is not the reader's own makes
+  // that the last read: the board is where it was left, following no longer, with the line over that post and the jump
+  // button counting from it. With none, a board that followed its bottom goes there again (a live turn may have grown).
+  const leftAt = useRef<number | null>(null);
+  const back = useRef(() => {});
+  back.current = () => {
+    const el = scroller.current;
+    const left = leftAt.current;
+    leftAt.current = null;
+    if (!el || left === null) return;
+    const landed = lastReadLine(itemPosts, left, drawn);
+    if (!landed) return keepUp();
+    stayed.current = true;
+    held.current = false;
+    stickToBottom.current = false;
+    // A window widened to hold the line draws posts above: what is in view keeps its place.
+    if (limit > 0 && landed.shown !== shown) keep();
+    setLastRead(left);
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX) {
+      setFar(true);
+      setSeenSeq(left);
+    }
+  };
+  const lastSeqNow = useRef(lastSeq);
+  lastSeqNow.current = lastSeq;
   useLayoutEffect(() => {
-    if (stickToBottom.current) follow();
-  }, [lastSeq, liveRuns, liveTurns, follow]);
+    if (looking) back.current();
+    else leftAt.current = lastSeqNow.current;
+  }, [looking]);
+
+  useLayoutEffect(keepUp, [lastSeq, liveRuns, liveTurns, keepUp]);
 
   // Content that grows after render (live feeds, opened rows, images) keeps the bottom in view.
   useEffect(() => {
     const el = content.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (stickToBottom.current) follow();
-    });
+    const observer = new ResizeObserver(keepUp);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [follow]);
+  }, [keepUp]);
 
   // A panel that was put away comes back at the latest again; a width change keeps the bottom in view when it was.
   useEffect(() => {
@@ -394,11 +429,11 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
         stickToBottom.current = true;
         setFar(false);
       }
-      if (stickToBottom.current) follow();
+      keepUp();
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [follow]);
+  }, [keepUp]);
 
   const onScroll = () => {
     const el = scroller.current;

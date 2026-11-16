@@ -2276,7 +2276,8 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 30. The overview's tiles: a quiet tile under the shortest column, and its gap there on a zoomed page (its section opens in the function).
   check.passed.push(...(await rehearseTallTile(service, browser, room, selection, section)));
 
-  // 31. A room opened with news: at its last-read line, not at its bottom (its section opens in the function).
+  // 31. A room opened with news: at its last-read line, not at its bottom; left open and not looked at, it stays where
+  // it was (its section opens in the function).
   check.passed.push(...(await rehearseLastRead(service, browser, room, selection, section)));
 
   membersOnlyAnswer(await room.snapshot());
@@ -2463,6 +2464,10 @@ async function rehearseTallTile(service: Service, browser: Browser, room: Room, 
  * Its tile says 3 new; opened from there, the board has a "new" line over the first reply after the last read, stands
  * with that line near its top and not at its bottom, and the jump button counts the three; its click ends at the bottom.
  * Then a room whose one unread reply fits the screen until its three pictures load: the line keeps its place.
+ * Last, the first room open at its bottom while the page is not looked at (the two signals web/src/news.ts reads, the
+ * page's visibility and its window's focus, are set in the page, so the state does not depend on which tab the shared
+ * browser has in front): two replies land and the board does not move; looked at again, it is still there, with the
+ * line over the first of them and the button counting the two.
  */
 async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
@@ -2578,6 +2583,71 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
   } finally {
     images.kill();
   }
+
+  const stayProbe = async () => {
+    const x = await made.snapshot();
+    return x.posts.length > 0 ? `the room's board ends at #${x.posts.at(-1)!.number}` : null;
+  };
+  // Whether the page is looked at, as news.ts reads it; null gives the browser's own answers back.
+  const look = (on: boolean | null) =>
+    browser.eval<boolean>(`() => {
+      delete document.visibilityState;
+      delete document.hasFocus;
+      ${on === null ? "" : `Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => ${JSON.stringify(on ? "visible" : "hidden")} }); document.hasFocus = () => ${on};`}
+      document.dispatchEvent(new Event('visibilitychange'));
+      return true;
+    }`);
+  type Stay = (NonNullable<Read> & { last: string | null; lastTop: number | null }) | null;
+  // The board as `page` reads it, with the last post that starts in view and where it stands (`seq` asks for that one).
+  const stayPage = (seq: string | null) => `() => {
+    const read = (${page})();
+    if (!read) return null;
+    const board = document.querySelector('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline');
+    const edge = board.getBoundingClientRect();
+    const posts = [...board.querySelectorAll('[data-seq]')];
+    const last = ${seq === null ? "posts.filter((post) => post.getBoundingClientRect().top < edge.bottom).at(-1)" : `posts.find((post) => post.getAttribute('data-seq') === ${JSON.stringify(seq)})`};
+    return { ...read, last: last?.getAttribute('data-seq') ?? null, lastTop: last ? last.getBoundingClientRect().top - edge.top : null };
+  }`;
+  await state("a room open while you look away stays where it was, with a line over what landed and the jump button counting it", stayProbe, [], async () => {
+    try {
+      look(true);
+      browser.openRoom(title);
+      browser.poll<Read>("the room's board", page, (x) => x !== null);
+      browser.eval<boolean>(`() => { const board = document.querySelector('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline'); board.scrollTop = board.scrollHeight; return true; }`);
+      const before = browser.poll<Stay>("the board at its bottom", stayPage(null), (x) => x !== null && x.toBottom < 2 && x.jump === null && x.last !== null);
+      if (!before) fail("the room's board is not on the page");
+      const end = (await made.snapshot()).posts.at(-1)!.seq;
+      look(false);
+      for (const n of [12, 13]) {
+        const replies = (await made.snapshot()).posts.filter((post) => post.seq > end && post.author !== "$user").length;
+        await service.command({ type: "message.create", roomId: made.roomId, sourceText: `Question ${n}`, clientMessageId: randomUUID(), attachmentIds: [], assignments: [{ recipients: [made.participant.reader], instruction: `Question ${n}` }] });
+        await until(`T3 to run @reader's turn ${n}`, () => service.fake("complete", { threadId, text: long(n) }).then(() => true), 20_000, 300);
+        await until(`@reader's reply ${n} on the board`, async () => (await made.snapshot()).posts.filter((post) => post.seq > end && post.author !== "$user").length === replies + 1);
+      }
+      const landed = (await made.snapshot()).posts.find((post) => post.seq > end && post.author !== "$user")!;
+      const here = stayPage(before.last);
+      const away = browser.poll<Stay>("the two replies on the page", here, (x) => x !== null && x.toBottom > 240);
+      if (!away) fail("the replies did not reach the page while it was not looked at");
+      execFileSync("sleep", ["0.5"]);
+      const still = browser.eval<Stay>(here)!;
+      if (still.lastTop === null || Math.abs(still.lastTop - before.lastTop!) > 2) fail(`not looked at, the board moved: seq ${before.last} stood ${Math.round(before.lastTop!)}px under the board's top and stands ${still.lastTop === null ? "nowhere" : `${Math.round(still.lastTop)}px`} (${Math.round(still.toBottom)}px from the bottom)`);
+      look(true);
+      const r = browser.poll<Stay>("the line and the jump button on coming back", here, (x) => x !== null && x.line !== null && x.jump !== null);
+      if (!r) fail(`looked at again, the board has no line and no jump button: ${JSON.stringify(browser.eval<Stay>(here))}`);
+      if (r.line !== "new" || r.over !== String(landed.seq)) fail(`the line reads ${JSON.stringify(r.line)} over seq ${r.over}, not "new" over #${landed.number} (seq ${landed.seq})`);
+      if (r.lastTop === null || Math.abs(r.lastTop - before.lastTop!) > 2) fail(`looked at again, the board moved: seq ${before.last} stood ${Math.round(before.lastTop!)}px under the board's top and stands ${r.lastTop === null ? "nowhere" : `${Math.round(r.lastTop)}px`}`);
+      if (!r.jump?.startsWith("2 new replies")) fail(`the jump button says ${JSON.stringify(r.jump)}, not "2 new replies"`);
+      log(`  page: seq ${before.last} stood ${Math.round(before.lastTop!)}px under the board's top; not looked at, with two replies landed, ${Math.round(still.lastTop)}px; looked at again, ${Math.round(r.lastTop)}px, "new" over #${landed.number}, ${Math.round(r.toBottom)}px from the bottom, the button ${JSON.stringify(r.jump.trim())}`);
+      browser.click(/button "2 new replies/);
+      const jumped = browser.poll<Stay>("the board at its bottom after the jump", here, (x) => x !== null && x.toBottom < 2 && x.jump === null);
+      if (!jumped) fail("the jump button's click did not end at the bottom");
+      if (jumped.over !== String(landed.seq)) fail("the line went with the jump");
+      log(`  page: after its click the board is ${Math.round(jumped.toBottom)}px from its bottom, the line still over seq ${jumped.over}`);
+    } finally {
+      look(null);
+    }
+  });
+  outside();
   return passed;
 }
 
@@ -2598,7 +2668,7 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
  * accepted whether the state is checked or played silently, so it never fails a later state's console check.
  */
 function probedStates(browser: Browser, selection: Selection, passed: string[]) {
-  return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void, options: { refusal?: boolean } = {}): Promise<void> => {
+  return async (name: string, probe: () => Promise<string | null>, page: string[], extra?: () => void | Promise<void>, options: { refusal?: boolean } = {}): Promise<void> => {
     const { index, loud } = selection.enter(name);
     log(`${loud ? "CHECK" : "SET UP (silently)"} ${selection.label(index)}`);
     log(`  api: ${await until(`the service to show: ${name}`, probe)}`);
@@ -2606,7 +2676,7 @@ function probedStates(browser: Browser, selection: Selection, passed: string[]) 
     const refused = options.refusal ? browser.acceptRefusal() : [];
     if (!loud) return;
     if (refused.length > 0) log(`  console: the refused command's own line, expected: ${refused.join(" | ")}`);
-    extra?.();
+    await extra?.();
     browser.consoleClean();
     browser.screenshot(name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase());
     passed.push(name);
