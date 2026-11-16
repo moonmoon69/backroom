@@ -422,7 +422,7 @@ export function App() {
   const selectedArchived = shelfRow?.archivedAt ? shelfRow : null;
   // An opening's last read: the seq the room was seen up to as its sheet opened, when it had news then (null when it had
   // none). Taken once per opening, here beside the mark below: once that lands, every read says the room is seen.
-  // The board moves it to where its posts stood as you looked away, when news landed before you came back (Timeline.tsx).
+  // The board moves it to what you had seen as you looked away, when news landed before you came back (Timeline.tsx).
   const [entry, setEntry] = useState<{ roomId: string; mark: number | null } | null>(null);
   const enteredRoomId = open ? openRoomId : null;
   const enteredNews = enteredRoomId ? rooms.find((r) => r.id === enteredRoomId)?.news : undefined;

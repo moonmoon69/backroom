@@ -238,7 +238,6 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   // Where the board was scrolled to at its last scroll, to tell a scroll up from one down.
   const lastTop = useRef(0);
   const [far, setFar] = useState(false);
-  const [seenSeq, setSeenSeq] = useState(0);
 
   const board = useMemo<Board>(() => {
     const byRequest = new Map<string, EnginePost>();
@@ -290,6 +289,9 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   // A room opened with news, or come back to with news, has a line over the first post after its last read.
   const itemPosts = useMemo(() => allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), [allItems]);
   const lastSeq = posts[posts.length - 1]?.seq ?? 0;
+  // The seq the reader has seen the view's posts up to (measure): the one mark the jump button counts from and a line
+  // put on coming back stands after. A board starts at its newest post, or at its line (follow), seen up to there.
+  const [seenSeq, setSeenSeq] = useState(lastSeq);
   const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead)), [itemPosts, lastRead]);
   const earlier = windowStart(itemPosts, start, limit, newLine);
   const items = earlier > 0 ? allItems.slice(earlier) : allItems;
@@ -403,8 +405,10 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   }, [follow]);
 
   // Looking away takes where the view's posts stand. Coming back, a post since then that is not the reader's own makes
-  // that the last read: the board is where it was left, following no longer, with the line over that post and the jump
-  // button counting from it. With none, a board that followed its bottom goes there again (a live turn may have grown).
+  // what they had seen the room's last read: the board is where it was left, following no longer, with the line over
+  // the first post after it that is not their own, which the jump button counts from too. Left at the bottom, that is
+  // the first post that landed; left at a line or scrolled up, the line is where they stopped reading. With none
+  // landed, a board that followed its bottom goes there again (a live turn may have grown).
   const leftAt = useRef<number | null>(null);
   const back = useRef(() => {});
   back.current = () => {
@@ -412,8 +416,7 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     const left = leftAt.current;
     leftAt.current = null;
     if (!el || left === null) return;
-    const landed = lastReadLine(itemPosts, left);
-    if (landed === null) {
+    if (lastReadLine(itemPosts, left) === null) {
       keepUp();
       measure(false);
       return;
@@ -421,13 +424,13 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     stayed.current = true;
     held.current = false;
     stickToBottom.current = false;
-    // The line goes from where it was, and may have posts drawn above the window for it: what is read keeps its
-    // place, which under a line in view or above it is the post that line stood over.
-    const old = line.current;
-    keep(old && old.getBoundingClientRect().top < el.getBoundingClientRect().bottom ? postOf(old.nextElementSibling) : null);
-    // The line it draws grows the content, which is measured then.
-    setLastRead(left);
-    setSeenSeq(left);
+    // A line that goes from where it was, or has posts drawn above the window for it, keeps what is read in its place,
+    // which under a line in view or above it is the post that line stood over. The content it grows is measured then.
+    if (lastReadLine(itemPosts, seenSeq) !== newLine) {
+      const old = line.current;
+      keep(old && old.getBoundingClientRect().top < el.getBoundingClientRect().bottom ? postOf(old.nextElementSibling) : null);
+    }
+    setLastRead(seenSeq);
   };
   useLayoutEffect(() => {
     if (looking) back.current();

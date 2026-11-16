@@ -25,8 +25,8 @@ export interface RoomContextValue {
   openMember: (participantId: string) => void;
   /**
    * The room's last read, which its "new" line stands after: the seq it was seen up to before this opening, when it
-   * opened with news (App.tsx), or where the view's posts stood as you last looked away, when news landed before you
-   * came back (Timeline.tsx, which sets it); null otherwise.
+   * opened with news (App.tsx), or what you had seen of the view's posts as you looked away, when news landed before
+   * you came back (Timeline.tsx, which sets it); null otherwise.
    */
   lastRead: number | null;
   setLastRead: (seq: number) => void;

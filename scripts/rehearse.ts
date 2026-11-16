@@ -2476,7 +2476,7 @@ function lateImages() {
  * while it is not looked at, and the post being read is still drawn where it was; and one short reply with a picture
  * served late: the button counts it once the picture puts the bottom past its distance. Last, the room opened at its
  * line with more unread replies than the window draws: looked away from, with one reply landing, the post under that
- * line is still drawn where it was on coming back, when the line goes over the reply.
+ * line is still drawn where it was on coming back, the line still over it and the button counting the reply too.
  */
 async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
@@ -2740,7 +2740,7 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
     outside();
 
     // (The room still holds the reply with the late picture: its server stays up while the room is opened again.)
-    await state("a room opened at its line with more unread than the board draws keeps the post under that line when you come back to a reply", stayProbe, [], async () => {
+    await state("a room opened at its line with more unread than the board draws keeps that line and its post when you come back to a reply", stayProbe, [], async () => {
       try {
         // Seen up to its newest post, then 75 replies while the page is on the overview.
         const end = (await made.snapshot()).posts.at(-1)!.seq;
@@ -2763,12 +2763,13 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
         const landed = (await landsAfter(newest))[0]!;
         browser.poll<number>("the reply on the page", drawn, (count) => count === before + 1);
         look(true);
-        const back = browser.poll<Stay>("the line over the reply on coming back", here, (x) => x !== null && x.over === String(landed.seq));
+        const back = browser.poll<Stay>("the button counting the reply on coming back", here, (x) => x !== null && Boolean(x.jump?.startsWith(`${unread + 1} new replies`)));
         execFileSync("sleep", ["0.5"]);
         const r = browser.eval<Stay>(here);
         const after = browser.eval<number>(drawn);
         if (!back || !r || r.lastTop === null || Math.abs(r.lastTop - opened.lastTop!) > 2) fail(`the post under the opening line (seq ${first.seq}) stood ${Math.round(opened.lastTop!)}px under the board's top and ${r?.lastTop == null ? "is not drawn" : `stands ${Math.round(r.lastTop)}px under it`} on coming back: ${before} posts were drawn, ${after} are`);
         if (after < before + 1) fail(`coming back dropped drawn posts: ${before} were drawn, ${before + 1} with the reply, ${after} now`);
+      if (r.over !== String(first.seq)) fail(`the line went to seq ${r.over} (the reply is seq ${landed.seq}), not kept over seq ${first.seq} where the reading stopped`);
         log(`  page: opened at its line over seq ${first.seq}, ${Math.round(opened.lastTop!)}px under the board's top, ${before} posts drawn, ${JSON.stringify(opened.jump.trim())}; looked at again after one reply, that post at ${Math.round(r.lastTop)}px, ${after} drawn, the line over seq ${r.over}, ${JSON.stringify(r.jump?.trim() ?? null)}`);
       } finally {
         look(null);
