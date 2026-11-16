@@ -9,6 +9,7 @@ import { useSkin } from "../skin.ts";
 import { carriesPreset, droppedPresetId, usePresets } from "./presets.tsx";
 import { memberActivity } from "../memberActivity.ts";
 import { useConsigliereSetting } from "../consigliere.ts";
+import { consigliereFirst } from "../chat.ts";
 import { useDraftScopes } from "../drafts.ts";
 import { roomKey, threadKey } from "../news.ts";
 import type { AgentsFileEntry, AgentsFileWritten, EngineShelfCount, EngineShelfThread, OverviewRoom, OverviewThread, RoomListItem, T3Project } from "../types.ts";
@@ -517,7 +518,7 @@ function RoomCard({
       {detail ? (
         <ul className="ov-members">
           {/* The Consigliere first: what he says is the room's news. */}
-          {[...detail.members].sort((a, b) => Number(b.consigliere) - Number(a.consigliere)).map((member) => {
+          {consigliereFirst(detail.members, (member) => member.consigliere).map((member) => {
             const described = memberActivity(member.status);
             // A turn's latest line; else the request it is on; else what it last said (also between turns, while its
             // background work runs).

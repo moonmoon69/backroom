@@ -3,6 +3,7 @@ import { arrowKey, focusItem, tabbables, type NavProps } from "../keys.ts";
 import { chipTarget } from "../keyOrder.ts";
 import { api, ApiError } from "../api.ts";
 import { useRoom } from "../context.tsx";
+import { consigliereFirst } from "../chat.ts";
 import {
   isActiveParticipant,
   type Desk,
@@ -48,7 +49,7 @@ type MenuAction = "thread" | "open" | "details" | "settings" | "remove" | "consi
 export function CrewPanel() {
   const { snapshot, desk, runCommand, openMember } = useRoom();
   const [dialog, setDialog] = useState<{ action: MenuAction; participant: Participant; warnings?: string[] } | null>(null);
-  const crew = snapshot.participants.filter(isActiveParticipant);
+  const crew = consigliereFirst(snapshot.participants.filter(isActiveParticipant), (participant) => participant.id === snapshot.room.consigliereId);
   // Making a member the Consigliere is done at once, unless something says it may not work: then the user is told first.
   const onAction = async (action: MenuAction, participant: Participant) => {
     if (action === "thread") {

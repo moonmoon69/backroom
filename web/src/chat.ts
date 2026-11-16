@@ -57,3 +57,8 @@ export function consigliereChat(posts: readonly EnginePost[], his: { seats: Read
     return false;
   });
 }
+
+/** A room's members with its Consigliere first, the others in the order they were seated; unchanged without one. */
+export function consigliereFirst<T>(members: readonly T[], isConsigliere: (member: T) => boolean): T[] {
+  return [...members.filter(isConsigliere), ...members.filter((member) => !isConsigliere(member))];
+}
