@@ -31,7 +31,7 @@ import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
 import { lastInputWasKey } from "../keys.ts";
 import { followsBottom } from "../boardFollow.ts";
-import { heldTop, lastReadLine } from "../lastRead.ts";
+import { heldTop, landedAfter, lastReadLine } from "../lastRead.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -288,19 +288,32 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   // A room opened with news, or come back to with news, has a line over the first post after its last read, and the
   // window holds it (lastRead.ts).
   const itemPosts = useMemo(() => allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), [allItems]);
-  const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead, drawn)), [itemPosts, lastRead, drawn]);
-  const shown = newLine?.shown ?? drawn;
+  const lastSeq = posts[posts.length - 1]?.seq ?? 0;
+  // The window drops no drawn post while the board does not follow its bottom, whoever left it (the reader scrolled
+  // up, a line holds it, or nobody is looking): what lands then is drawn under what is there (`kept`), until the board
+  // is at its bottom and following again (measure).
+  const [tail, setTail] = useState(lastSeq);
+  const [kept, setKept] = useState(0);
+  if (lastSeq !== tail) {
+    setTail(lastSeq);
+    if (!(stickToBottom.current && looking)) setKept(kept + landedAfter(itemPosts, tail));
+  }
+  const windowed = drawn + kept;
+  const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead, windowed)), [itemPosts, lastRead, windowed]);
+  const shown = newLine?.shown ?? windowed;
   const items = limit > 0 && allItems.length > shown ? allItems.slice(allItems.length - shown) : allItems;
   const earlier = allItems.length - items.length;
   const line = useRef<HTMLDivElement>(null);
   const keepPlace = useRef<{ height: number; top: number } | null>(null);
+  // Where the board last put itself, which tells its own scrolls from the reader's.
+  const ours = useRef(-1);
   const keep = () => {
     const el = scroller.current;
     if (el) keepPlace.current = { height: el.scrollHeight, top: el.scrollTop };
   };
   const showEarlier = () => {
     keep();
-    setDrawn(shown + limit);
+    setDrawn(shown + limit - kept);
   };
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -308,6 +321,7 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     if (!el || !place) return;
     keepPlace.current = null;
     el.scrollTop = place.top + (el.scrollHeight - place.height);
+    ours.current = el.scrollTop;
   }, [shown, allPosts.length]);
 
   // Runs that have not ended: each builds up as its member's bubble at the bottom. In the chat, only his.
@@ -329,11 +343,28 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
       });
   }, [desk, chat, allPosts, snapshot.runs, snapshot.participants]);
 
-  const lastSeq = posts[posts.length - 1]?.seq ?? 0;
-  // A room opened with a line holds it until the reader scrolls the board themselves; `ours` is where the board last
-  // put itself, which tells its own scrolls from the reader's.
+  // A room opened with a line holds it until the reader scrolls the board themselves.
   const held = useRef(false);
-  const ours = useRef(-1);
+  // While the reader is not looking (App.tsx, lookingHere) the board puts itself nowhere and takes nothing as seen.
+  const lookingNow = useRef(looking);
+  lookingNow.current = looking;
+  const lastSeqNow = useRef(lastSeq);
+  lastSeqNow.current = lastSeq;
+  // The one measure of the board's distance from its bottom, taken at a scroll, when its content grows and when a post
+  // lands. Past JUMP_PX the jump button shows. Within it the posts are seen up to the newest, the mark the button
+  // counts the replies from: when the reader scrolled there (`reader`) or the board follows its bottom, while looked
+  // at. A mark put elsewhere (the last read, by follow and on coming back) stands until then. At its bottom and
+  // following, the window is its own size again.
+  const measure = useCallback((reader: boolean) => {
+    const el = scroller.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setFar(distance > JUMP_PX);
+    if (!lookingNow.current) return;
+    if (distance <= JUMP_PX && (reader || stickToBottom.current)) setSeenSeq(lastSeqNow.current);
+    if (distance < 2 && stickToBottom.current) setKept(0);
+  }, []);
+
   // Following the bottom, the one way the board puts itself anywhere: at its bottom or, while the line is held, at the
   // line's place when that is higher up (lastRead.ts, heldTop). There following is off and the jump button counts the
   // replies since the last read, whether the news was too long as the room opened or grew so afterwards (images
@@ -348,15 +379,9 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     ours.current = el.scrollTop;
     if (to.following) return;
     lastTop.current = el.scrollTop;
-    setFar(el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX);
     if (lastRead !== null) setSeenSeq(lastRead);
-  }, [lastRead]);
-
-  // The jump button counts the replies since the board was last near its bottom. Before the next effect, which counts
-  // them from the last read instead when it puts the board at its line (follow).
-  useLayoutEffect(() => {
-    if (!far) setSeenSeq(lastSeq);
-  }, [far, lastSeq]);
+    measure(false);
+  }, [lastRead, measure]);
 
   // A different room starts at the bottom; one opened with news, with its line near the top and a little of what was
   // read over it. News that fits the screen is the bottom too, the line held all the same. A last read taken on
@@ -369,9 +394,6 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     follow();
   }, [snapshot.room.id, opening, lastRead, follow]);
 
-  // While the reader is not looking (App.tsx, lookingHere) the board puts itself nowhere: it follows nothing.
-  const lookingNow = useRef(looking);
-  lookingNow.current = looking;
   const keepUp = useCallback(() => {
     if (stickToBottom.current && lookingNow.current) follow();
   }, [follow]);
@@ -386,36 +408,42 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     const left = leftAt.current;
     leftAt.current = null;
     if (!el || left === null) return;
-    const landed = lastReadLine(itemPosts, left, drawn);
-    if (!landed) return keepUp();
+    const landed = lastReadLine(itemPosts, left, windowed);
+    if (!landed) {
+      keepUp();
+      measure(false);
+      return;
+    }
     stayed.current = true;
     held.current = false;
     stickToBottom.current = false;
     // A window widened to hold the line draws posts above: what is in view keeps its place.
     if (limit > 0 && landed.shown !== shown) keep();
+    // The line it draws grows the content, which is measured then.
     setLastRead(left);
-    if (el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX) {
-      setFar(true);
-      setSeenSeq(left);
-    }
+    setSeenSeq(left);
   };
-  const lastSeqNow = useRef(lastSeq);
-  lastSeqNow.current = lastSeq;
   useLayoutEffect(() => {
     if (looking) back.current();
     else leftAt.current = lastSeqNow.current;
   }, [looking]);
 
-  useLayoutEffect(keepUp, [lastSeq, liveRuns, liveTurns, keepUp]);
+  useLayoutEffect(() => {
+    keepUp();
+    measure(false);
+  }, [lastSeq, liveRuns, liveTurns, keepUp, measure]);
 
   // Content that grows after render (live feeds, opened rows, images) keeps the bottom in view.
   useEffect(() => {
     const el = content.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(keepUp);
+    const observer = new ResizeObserver(() => {
+      keepUp();
+      measure(false);
+    });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [keepUp]);
+  }, [keepUp, measure]);
 
   // A panel that was put away comes back at the latest again; a width change keeps the bottom in view when it was.
   useEffect(() => {
@@ -439,13 +467,12 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     const el = scroller.current;
     if (!el) return;
     // A scroll the board did not make itself: the reader's, and the line is held no longer.
-    if (el.scrollTop !== ours.current) held.current = false;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const reader = el.scrollTop !== ours.current;
+    if (reader) held.current = false;
     // Only the reader leaves the bottom: a scroll the browser makes keeping the view steady does not (boardFollow.ts).
-    stickToBottom.current = followsBottom(stickToBottom.current, lastTop.current, el.scrollTop, distance);
+    stickToBottom.current = followsBottom(stickToBottom.current, lastTop.current, el.scrollTop, el.scrollHeight - el.scrollTop - el.clientHeight);
     lastTop.current = el.scrollTop;
-    const isFar = distance > JUMP_PX;
-    if (isFar !== far) setFar(isFar);
+    measure(reader);
   };
 
   // New replies while scrolled up: one per member turn (an explicit answer and its turn's final are one).

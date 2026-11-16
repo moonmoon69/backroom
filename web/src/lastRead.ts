@@ -21,3 +21,14 @@ export function lastReadLine(items: ReadonlyArray<ReadonlyArray<{ seq: number; a
 export function heldTop(bottom: number, place: number | null): { top: number; following: boolean } {
   return place !== null && place < bottom ? { top: Math.max(0, place), following: false } : { top: bottom, following: true };
 }
+
+/**
+ * How many of the view's items (as lastReadLine takes them) landed after `seq`, the seq its posts stood at before: the
+ * items from the first one after it, with the day's separator over that one. What the drawn window grows by while the
+ * board does not follow its bottom, so that a post that lands takes no drawn one away.
+ */
+export function landedAfter(items: ReadonlyArray<ReadonlyArray<{ seq: number }>>, seq: number): number {
+  const first = items.findIndex((posts) => posts.length > 0 && posts[0]!.seq > seq);
+  if (first < 0) return 0;
+  return items.length - (first > 0 && items[first - 1]!.length === 0 ? first - 1 : first);
+}

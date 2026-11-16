@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { heldTop, lastReadLine, READ_ABOVE } from "../web/src/lastRead.ts";
+import { heldTop, landedAfter, lastReadLine, READ_ABOVE } from "../web/src/lastRead.ts";
 
 const post = (seq: number, author = "seat-1") => [{ seq, author }];
 
@@ -43,4 +43,15 @@ test("following the bottom never carries a held line above its place", () => {
   assert.deepEqual(heldTop(2340, 1100), { top: 1100, following: false });
   // A line nearer the board's start than its place: the start.
   assert.deepEqual(heldTop(500, -40), { top: 0, following: false });
+});
+
+test("the items landed after a seq are the ones from the first after it, with the day's separator over that one", () => {
+  assert.equal(landedAfter([post(1), post(2), post(3, "$user"), post(4)], 2), 2);
+  // A new day starts with what landed: its separator landed too. One between posts already there did not.
+  assert.equal(landedAfter([post(1), [], post(2), [], post(3)], 2), 2);
+  assert.equal(landedAfter([post(1), [], post(2), post(3)], 2), 1);
+  // A post that joins a message already there (one item, by its first post) is no new item.
+  assert.equal(landedAfter([post(1), [{ seq: 2, author: "$user" }, { seq: 3, author: "$user" }]], 2), 0);
+  assert.equal(landedAfter([post(1), post(2)], 2), 0);
+  assert.equal(landedAfter([], 0), 0);
 });

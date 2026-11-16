@@ -2459,6 +2459,11 @@ async function rehearseTallTile(service: Service, browser: Browser, room: Room, 
   return passed;
 }
 
+/** A process serving any path as a picture five seconds late (this script's reads of the page block its own event loop). */
+function lateImages() {
+  return spawn(process.execPath, ["-e", `require("node:http").createServer((req, res) => setTimeout(() => { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="480"><rect width="600" height="480" fill="#124455"/></svg>'); }, 5000)).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+}
+
 /**
  * A room opened with news (web/src/lastRead.ts): a room of one member with eight long replies seen and three more not.
  * Its tile says 3 new; opened from there, the board has a "new" line over the first reply after the last read, stands
@@ -2467,7 +2472,9 @@ async function rehearseTallTile(service: Service, browser: Browser, room: Room, 
  * Last, the first room open at its bottom while the page is not looked at (the two signals web/src/news.ts reads, the
  * page's visibility and its window's focus, are set in the page, so the state does not depend on which tab the shared
  * browser has in front): two replies land and the board does not move; looked at again, it is still there, with the
- * line over the first of them and the button counting the two.
+ * line over the first of them and the button counting the two. Then more replies than the board's window draws land
+ * while it is not looked at, and the post being read is still drawn where it was; and one short reply with a picture
+ * served late: the button counts it once the picture puts the bottom past its distance.
  */
 async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
@@ -2532,8 +2539,8 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
   outside();
 
   // News that fits the screen as the room opens and outgrows it afterwards: one unread reply of three pictures, served
-  // five seconds late by a process of this state's own (this script's reads of the page block its event loop).
-  const images = spawn(process.execPath, ["-e", `require("node:http").createServer((req, res) => setTimeout(() => { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); res.end('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="480"><rect width="600" height="480" fill="#124455"/></svg>'); }, 5000)).listen(0, "127.0.0.1", function () { console.log(this.address().port); });`], { stdio: ["ignore", "pipe", "inherit"] });
+  // five seconds late by a process of this state's own (lateImages).
+  const images = lateImages();
   try {
     const imagePort = Number(await new Promise<string>((resolve) => images.stdout.once("data", (chunk) => resolve(String(chunk)))));
     const lateTitle = "late-images-scratch";
@@ -2648,6 +2655,90 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
     }
   });
   outside();
+
+  // The room open at its bottom and looked at: the last post that starts in view, and where the room's posts end.
+  const atBottom = async () => {
+    look(true);
+    browser.openRoom(title);
+    browser.poll<Read>("the room's board", page, (x) => x !== null);
+    browser.eval<boolean>(`() => { const board = document.querySelector('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline'); board.scrollTop = board.scrollHeight; return true; }`);
+    const before = browser.poll<Stay>("the board at its bottom", stayPage(null), (x) => x !== null && x.toBottom < 2 && x.jump === null && x.last !== null)!;
+    return { before, end: (await made.snapshot()).posts.at(-1)!.seq };
+  };
+  // A turn of @reader's own (no question of the user's), ended with `text`: one reply on the board.
+  const landsAfter = async (end: number) => (await made.snapshot()).posts.filter((post) => post.seq > end && post.author !== "$user");
+  const reply = async (end: number, text: string) => {
+    const replies = (await landsAfter(end)).length;
+    await service.fake("self-run", { threadId });
+    await service.fake("complete", { threadId, text });
+    await until(`@reader's reply ${JSON.stringify(text.slice(0, 20))} on the board`, async () => (await landsAfter(end)).length > replies, 20_000, 100);
+  };
+
+  await state("more replies than the board draws land while you look away, and the post you were reading keeps its place", stayProbe, [], async () => {
+    try {
+      const { before, end } = await atBottom();
+      const drawn = browser.eval<number>(`() => document.querySelectorAll('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline [data-seq]').length`);
+      look(false);
+      const count = 65;
+      for (let n = 1; n <= count; n++) await reply(end, `Overflow reply ${n}.`);
+      const landed = await landsAfter(end);
+      const here = stayPage(before.last);
+      const newest = `() => { const posts = document.querySelectorAll('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline [data-seq]'); return { newest: posts[posts.length - 1]?.getAttribute('data-seq') ?? null, drawn: posts.length }; }`;
+      const all = browser.poll<{ newest: string | null; drawn: number }>("the last of the replies on the page", newest, (x) => x.newest === String(landed.at(-1)!.seq));
+      execFileSync("sleep", ["0.5"]);
+      const away = browser.eval<Stay>(here);
+      if (!away || away.lastTop === null || Math.abs(away.lastTop - before.lastTop!) > 2) fail(`not looked at, with ${count} replies landed, seq ${before.last} stood ${Math.round(before.lastTop!)}px under the board's top and ${away?.lastTop == null ? "is not drawn" : `stands ${Math.round(away.lastTop)}px under it`} (${drawn} posts were drawn, ${all.drawn} are)`);
+      look(true);
+      const r = browser.poll<Stay>("the line and the jump button on coming back", here, (x) => x !== null && x.line !== null && x.jump !== null);
+      if (!r) fail("looked at again, the board has no line and no jump button");
+      if (r.lastTop === null || Math.abs(r.lastTop - before.lastTop!) > 2) fail(`looked at again, seq ${before.last} stood ${Math.round(before.lastTop!)}px under the board's top and ${r.lastTop === null ? "is not drawn" : `stands ${Math.round(r.lastTop)}px under it`}`);
+      if (r.over !== String(landed[0]!.seq) || !r.jump?.startsWith(`${count} new replies`)) fail(`the line is over seq ${r.over} and the button says ${JSON.stringify(r.jump)}, not over seq ${landed[0]!.seq} with "${count} new replies"`);
+      log(`  page: ${drawn} posts drawn, seq ${before.last} ${Math.round(before.lastTop!)}px under the board's top; not looked at, with ${count} replies landed, ${all.drawn} drawn and it stands ${Math.round(away.lastTop)}px; looked at again, ${Math.round(r.lastTop)}px, the button ${JSON.stringify(r.jump.trim())}`);
+      browser.click(new RegExp(`button "${count} new replies`));
+      browser.poll<Stay>("the board at its bottom after the jump", here, (x) => x !== null && x.toBottom < 2 && x.jump === null, 30_000);
+      const sized = browser.poll<{ newest: string | null; drawn: number }>("the window at its own size at the bottom", newest, (x) => x.drawn < all.drawn);
+      log(`  page: at its bottom again the board draws ${sized.drawn} posts`);
+    } finally {
+      look(null);
+    }
+  });
+  outside();
+
+  const pictures = lateImages();
+  try {
+    const picturePort = Number(await new Promise<string>((resolve) => pictures.stdout.once("data", (chunk) => resolve(String(chunk)))));
+    await state("a short reply that landed while you looked away is counted once its picture puts the bottom past the button's distance", stayProbe, [], async () => {
+      try {
+        const { before, end } = await atBottom();
+        look(false);
+        await reply(end, `Short reply.\n\n![late picture](http://127.0.0.1:${picturePort}/late.svg)`);
+        const landed = (await landsAfter(end))[0]!;
+        const shortPage = `() => {
+          const read = (${page})();
+          const image = document.querySelector('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline img[alt="late picture"]');
+          return read ? { ...read, loaded: image ? image.complete && image.naturalHeight > 0 : null } : null;
+        }`;
+        type Short = (NonNullable<Read> & { loaded: boolean | null }) | null;
+        browser.poll<Short>("the reply on the page", shortPage, (x) => x !== null && x.loaded !== null);
+        look(true);
+        const back = browser.poll<Short>("the line on coming back", shortPage, (x) => x !== null && x.line !== null);
+        if (!back || back.loaded) fail(`the picture had loaded as the page was looked at again, so this shows nothing: ${JSON.stringify(back)}`);
+        if (back.over !== String(landed.seq)) fail(`the line is over seq ${back.over}, not the reply's (seq ${landed.seq})`);
+        if (back.toBottom > 240 !== (back.jump !== null)) fail(`looked at again, the board is ${Math.round(back.toBottom)}px from its bottom and the jump button is ${JSON.stringify(back.jump)}`);
+        browser.poll<Short>("the picture to load", shortPage, (x) => x !== null && x.loaded === true, 20_000);
+        execFileSync("sleep", ["0.5"]);
+        const grown = browser.eval<Short>(shortPage)!;
+        if (grown.toBottom <= 240) fail(`with its picture the reply leaves the board ${Math.round(grown.toBottom)}px from its bottom, within the button's distance: this shows nothing`);
+        if (!grown.jump?.startsWith("1 new reply")) fail(`with its picture loaded the board is ${Math.round(grown.toBottom)}px from its bottom and the jump button says ${JSON.stringify(grown.jump)}, not "1 new reply"`);
+        log(`  page: looked at again, the line over seq ${back.over}, ${Math.round(back.toBottom)}px from the bottom, the button ${JSON.stringify(back.jump)}; with the picture loaded, ${Math.round(grown.toBottom)}px, ${JSON.stringify(grown.jump.trim())} (seq ${before.last} was last in view)`);
+      } finally {
+        look(null);
+      }
+    });
+    outside();
+  } finally {
+    pictures.kill();
+  }
   return passed;
 }
 
