@@ -23,6 +23,8 @@ export interface RoomContextValue {
   git: GitState;
   /** Look at a member's thread, over the room (Backspace comes back to the room). */
   openMember: (participantId: string) => void;
+  /** The seq the room was seen up to before this opening, when it opened with news (App.tsx); null otherwise. */
+  lastRead: number | null;
 }
 
 export interface GitState {

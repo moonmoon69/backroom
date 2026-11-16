@@ -12,7 +12,7 @@ import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
 import { gridTarget, laneTarget, nearestInHeight, openLanding, type Lane } from "../keyOrder.ts";
-import { boxed, byKey, focusItem, focusWhen, inView, itemOf, laneAt, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, sideItems } from "../keys.ts";
+import { boxed, byKey, focusItem, focusWhen, inView, itemOf, laneAt, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, showsNow, sideItems } from "../keys.ts";
 
 /** The room's panes (keys.ts): the board (or the chat), and the side panel's tabs. */
 type Pane = "board" | InspectorTab;
@@ -48,12 +48,13 @@ export function OverviewRoom({
   onClose: () => void;
   onManageBrowser: (browserId: string | null) => void;
 }) {
-  const { snapshot, participantById, desk, deskError } = useRoom();
+  const { snapshot, participantById, desk, deskError, lastRead } = useRoom();
   const designated = snapshot.room.consigliereId ? participantById(snapshot.room.consigliereId) : undefined;
   const consigliere = designated && !designated.retiredAt ? designated : null;
-  const [view, setView] = useState<"chat" | "board">("chat");
+  // The view the room opened in is put at its last-read line (Timeline); one switched to afterwards is not.
+  const [view, setView] = useState<{ name: "chat" | "board"; opening: boolean }>({ name: "chat", opening: true });
   useEffect(() => {
-    setView("chat");
+    setView({ name: "chat", opening: true });
     onPanel(null);
   }, [snapshot.room.id, onPanel]);
   // ---- the keys (keys.ts) ----
@@ -125,11 +126,14 @@ export function OverviewRoom({
   // Where the ring lands when the room opens (keyOrder.ts, openLanding: a chip that needs you, else the newest post if it
   // shows, else the running turn's chip, else the strip), once the room's first desk read is drawn: a running turn's
   // live feed comes with the desk, and its bubble can push the newest post out of the board's view.
-  // Whether it shows is judged with the board at its bottom, where it opens and stays. Focused without scrolling, so
-  // the board stays at its bottom and keeps following the turn. Typing anywhere still opens the composer; a ring
+  // Whether it shows is judged with the board at its bottom, where it opens and stays (opened at its last-read line,
+  // with the board where that put it). Focused without scrolling, so the board stays where it opened and, at its
+  // bottom, keeps following the turn. Typing anywhere still opens the composer; a ring
   // already moved into the room (a key pressed while it opened) stays where it is. A desk read slower than the wait
   // lands the ring once more when it comes, if the ring is still where the landing put it.
   const deskRead = desk !== null || deskError !== null;
+  const lastReadRef = useRef(lastRead);
+  lastReadRef.current = lastRead;
   const [waited, setWaited] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setWaited(true), 1500);
@@ -152,7 +156,7 @@ export function OverviewRoom({
       const chosen = openLanding({
         needs: chips.find((item) => item.closest(".work-needs")) ?? null,
         newest,
-        newestInView: newest !== null && showsAtBottom(newest),
+        newestInView: newest !== null && (lastReadRef.current === null ? showsAtBottom(newest) : showsNow(newest)),
         running: chips.find((item) => item.dataset.navKey?.startsWith("chip:run:")) ?? null,
         strip: all.find((lane) => lane.name === "strip")?.items[0] ?? null,
       });
@@ -281,7 +285,7 @@ export function OverviewRoom({
   const members = snapshot.participants.filter(isActiveParticipant);
   // The board's size: every post on the journal (the page holds the newest of them).
   const posts = snapshot.counts.posts;
-  const chat = consigliere !== null && view === "chat";
+  const chat = consigliere !== null && view.name === "chat";
   return (
     <div className={`sheet ${chat ? "sheet-chat" : "sheet-board"}`} ref={sheet} data-room-id={snapshot.room.id}>
       {/* The header lane: ×, the view's tabs, Members, Browser, Git and the room's options, Left and Right along it. */}
@@ -299,11 +303,11 @@ export function OverviewRoom({
         {consigliere ? (
           // The arrows move along the header (keys.ts); Enter on a tab shows its view.
           <div className="sheet-tabs" role="tablist" aria-label="View">
-            <button type="button" role="tab" aria-selected={chat} tabIndex={chat ? 0 : -1} className={chat ? "on" : ""} title={`Your conversation with ${consigliere.alias}, the Consigliere`} onClick={() => setView("chat")} {...navProps("head", "head:chat", `header · the chat with @${consigliere.alias}`)}>
+            <button type="button" role="tab" aria-selected={chat} tabIndex={chat ? 0 : -1} className={chat ? "on" : ""} title={`Your conversation with ${consigliere.alias}, the Consigliere`} onClick={() => setView({ name: "chat", opening: false })} {...navProps("head", "head:chat", `header · the chat with @${consigliere.alias}`)}>
               <Monogram participant={consigliere} size="xs" />
               {consigliere.alias}
             </button>
-            <button type="button" role="tab" aria-selected={!chat} tabIndex={chat ? -1 : 0} className={chat ? "" : "on"} title="Every post in the room, by number" onClick={() => setView("board")} {...navProps("head", "head:board", "header · the board")}>
+            <button type="button" role="tab" aria-selected={!chat} tabIndex={chat ? -1 : 0} className={chat ? "" : "on"} title="Every post in the room, by number" onClick={() => setView({ name: "board", opening: false })} {...navProps("head", "head:board", "header · the board")}>
               Board
               <span className="sheet-count mono">{posts}</span>
             </button>
@@ -321,7 +325,7 @@ export function OverviewRoom({
       <WorkBar />
       <div className="sheet-body">
         <section className="sheet-main" aria-label={chat ? `Conversation with ${consigliere?.alias}` : "Board"} data-nav-pane="board">
-          <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} />
+          <Timeline key={chat ? "chat" : "board"} view={chat ? "chat" : "board"} limit={chat ? CHAT_WINDOW : BOARD_WINDOW} opening={view.opening} />
           <Composer overlay />
         </section>
         {panel ? <Inspector tab={panel} onTab={onPanel} onClose={() => onPanel(null)} onManageBrowser={onManageBrowser} /> : null}

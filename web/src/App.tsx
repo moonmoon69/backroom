@@ -420,6 +420,15 @@ export function App() {
   const shelfRow = openRow && openRow.id === openThreadId ? openRow.row : null;
   // T3 serves an archived thread's conversation only after it is unarchived; such a thread gets its own panel.
   const selectedArchived = shelfRow?.archivedAt ? shelfRow : null;
+  // An opening's last read: the seq the room was seen up to as its sheet opened, when it had news then (null when it had
+  // none). Taken once per opening, here beside the mark below: once that lands, every read says the room is seen.
+  const [entry, setEntry] = useState<{ roomId: string; mark: number | null } | null>(null);
+  const enteredRoomId = open ? openRoomId : null;
+  const enteredNews = enteredRoomId ? rooms.find((r) => r.id === enteredRoomId)?.news : undefined;
+  useEffect(() => {
+    if (!enteredRoomId) setEntry(null);
+    else if (enteredNews) setEntry((taken) => (taken?.roomId === enteredRoomId ? taken : { roomId: enteredRoomId, mark: enteredNews.unseen > 0 ? enteredNews.seenSeq : null }));
+  }, [enteredRoomId, enteredNews]);
   useEffect(() => {
     if (!openRoomId || openRoomSeq === undefined || !lookingHere) return;
     api.markRoomSeen(openRoomId, openRoomSeq).then(
@@ -551,6 +560,7 @@ export function App() {
       colorOf: () => MEMBER_ACCENT,
       ...seatLookups(snapshot, participantById),
       openMember: (participantId) => setMemberThread({ roomId: snapshot.room.id, participantId }),
+      lastRead: entry?.roomId === snapshot.room.id ? entry.mark : null,
       desk,
       deskError,
       costs,
@@ -566,7 +576,7 @@ export function App() {
         showMoreCommits: () => setGitCommits((n) => n + 50),
       },
     };
-  }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits]);
+  }, [snapshot, runCommand, onRoomChanged, desk, deskError, costs, gitRead.git, gitRead.error, gitPath, gitCommits, entry]);
   // The member whose thread is looked at over the room, once the room is read.
   const memberParticipant = memberThread && snapshot?.room.id === memberThread.roomId ? (snapshot.participants.find((p) => p.id === memberThread.participantId) ?? null) : null;
   // Its thread: the member's current binding (the newest generation not retired).

@@ -31,6 +31,7 @@ import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
 import { lastInputWasKey } from "../keys.ts";
 import { followsBottom } from "../boardFollow.ts";
+import { lastReadLine } from "../lastRead.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -180,6 +181,8 @@ const ScrollControl = createContext<{ release: () => void }>({ release: () => {}
 
 /** Distance from the bottom (px) beyond which "Jump to latest" appears. */
 const JUMP_PX = 240;
+/** How far under the board's top edge (px) the "new" line is put when a room opens at it. */
+const LINE_TOP_PX = 96;
 
 type Item = { type: "day"; key: string; label: string } | { type: "post"; post: EnginePost } | { type: "message"; posts: EnginePost[] };
 
@@ -198,8 +201,8 @@ const PHASE_WORDS: Record<EngineRunView["phase"], string> = {
  * The room's posts, oldest first. "board" (the default) is every post; "chat" is the conversation with the room's
  * Consigliere (see consigliereChat). A room without a Consigliere shows the board alone.
  */
-export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat"; limit?: number } = {}) {
-  const { snapshot, desk } = useRoom();
+export function Timeline({ view = "board", limit = 0, opening = false }: { view?: "board" | "chat"; limit?: number; /** The view the room opened in: put at its last-read line. */ opening?: boolean } = {}) {
+  const { snapshot, desk, lastRead } = useRoom();
   const chat = view === "chat";
   const consigliereId = snapshot.room.consigliereId;
 
@@ -280,10 +283,17 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   }, [posts]);
   // With a limit, only the latest posts are drawn at first (a long board opens at once); "earlier" draws the next
   // window above, keeping what is in view where it is.
-  const [shown, setShown] = useState(limit);
-  useEffect(() => setShown(limit), [limit, snapshot.room.id]);
+  const [drawn, setDrawn] = useState(limit);
+  useEffect(() => setDrawn(limit), [limit, snapshot.room.id]);
+  // A room opened with news has a line over the first post after its last read, and the window holds it (lastRead.ts).
+  const newLine = useMemo(
+    () => (lastRead === null ? null : lastReadLine(allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), lastRead, drawn)),
+    [allItems, lastRead, drawn],
+  );
+  const shown = newLine?.shown ?? drawn;
   const items = limit > 0 && allItems.length > shown ? allItems.slice(allItems.length - shown) : allItems;
   const earlier = allItems.length - items.length;
+  const line = useRef<HTMLDivElement>(null);
   const keepPlace = useRef<{ height: number; top: number } | null>(null);
   const keep = () => {
     const el = scroller.current;
@@ -291,7 +301,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
   };
   const showEarlier = () => {
     keep();
-    setShown((n) => n + limit);
+    setDrawn(shown + limit);
   };
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -328,12 +338,29 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     else el.scrollTop = el.scrollHeight;
   }, []);
 
-  // A different room starts at the bottom.
+  // The jump button counts the replies since the board was last near its bottom. Before the next effect, which counts
+  // them from the last read instead when it opens the room away from its bottom.
   useLayoutEffect(() => {
-    stickToBottom.current = true;
-    setFar(false);
-    scrollToBottom();
-  }, [snapshot.room.id, scrollToBottom]);
+    if (!far) setSeenSeq(lastSeq);
+  }, [far, lastSeq]);
+
+  // A different room starts at the bottom; one opened with news, with its line near the top and a little of what was
+  // read over it, not following until the reader reaches the bottom. News that fits the screen is the bottom too.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const top = el && line.current && opening && lastRead !== null ? el.scrollTop + line.current.getBoundingClientRect().top - el.getBoundingClientRect().top - LINE_TOP_PX : null;
+    if (!el || top === null || top >= el.scrollHeight - el.clientHeight) {
+      stickToBottom.current = true;
+      setFar(false);
+      scrollToBottom();
+      return;
+    }
+    stickToBottom.current = false;
+    el.scrollTop = Math.max(0, top);
+    lastTop.current = el.scrollTop;
+    setFar(el.scrollHeight - el.scrollTop - el.clientHeight > JUMP_PX);
+    setSeenSeq(lastRead!);
+  }, [snapshot.room.id, opening, lastRead, scrollToBottom]);
 
   useLayoutEffect(() => {
     if (stickToBottom.current) scrollToBottom();
@@ -367,10 +394,6 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
     observer.observe(el);
     return () => observer.disconnect();
   }, [scrollToBottom]);
-
-  useEffect(() => {
-    if (!far) setSeenSeq(lastSeq);
-  }, [far, lastSeq]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -502,7 +525,12 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
                     <p className="muted">Each line is one message. Send a follow-up once the work it builds on is answered.</p>
                   </div>
                 ) : null}
-                {items.map((item) =>
+                {items.flatMap((item, index) => [
+                  newLine && index + earlier === newLine.over ? (
+                    <div key="new-line" className="chat-day new-line" role="separator" ref={line}>
+                      <span>new</span>
+                    </div>
+                  ) : null,
                   item.type === "day" ? (
                     <div key={item.key} className="chat-day" role="separator">
                       <span>{item.label}</span>
@@ -512,7 +540,7 @@ export function Timeline({ view = "board", limit = 0 }: { view?: "board" | "chat
                   ) : (
                     <PostRow key={item.post.id} post={item.post} chat={chat} />
                   ),
-                )}
+                ])}
                 {liveTurns.map(({ participant, desk: participantDesk }) => (
                   <LiveTurnBubble
                     key={participantDesk.runningRun?.runId ?? participant.id}

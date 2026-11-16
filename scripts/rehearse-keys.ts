@@ -716,6 +716,9 @@ export async function rehearseKeys(service: KeysService, browser: KeysBrowser, r
   const loose = await service.command<{ threadId: string }>({ type: "thread.start", projectId: "project_demo", text: "A thread outside rooms: read the logs" });
   // Two crew members, for the grid's Crew row and a seat by keys (the throwaway's Browsers row has its "general").
   for (const name of ["sol", "astra"]) await service.command({ type: "preset.create", name, modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" }, runtimeMode: "full-access", workspaceMode: "local" });
+  // The rooms are seen up to here: a room with news opens at its last-read line, not at its bottom (ui: a room with
+  // news opens at its last-read line), and this walk opens them at their newest post.
+  for (const roomId of [R, second.roomId, third.roomId]) await service.call("POST", "/api/seen", { key: `room:${roomId}`, seq: (await service.call<{ head: number }>("GET", `/api/rooms/${roomId}`)).head });
   log(`set up: rooms Rehearsal ${R.slice(0, 8)}, Second ${second.roomId.slice(0, 8)}, Third ${third.roomId.slice(0, 8)}; thread ${loose.threadId.slice(0, 8)} outside rooms; 62 notes; crew sol and astra`);
 
   // A run that jumps into a section opens the page once the section's setup has made what it reads (section()).

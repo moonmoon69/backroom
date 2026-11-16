@@ -403,6 +403,11 @@
 [data-skin="pixel"] .pill-failed { background: var(--px-b-failed); --px-glyph: var(--px-glyph-failed); }
 [data-skin="pixel"] .pill-draft { background: var(--px-b-draft); --px-glyph: var(--px-glyph-draft); }
 
+/* The last-read line: the "new" state's colour, as the word on a tile. */
+[data-skin="pixel"] .chat-day.new-line { color: var(--px-st-new); }
+[data-skin="pixel"] .chat-day.new-line::before,
+[data-skin="pixel"] .chat-day.new-line::after { border-top-color: var(--px-st-new); }
+
 /* A state word: its colour, after a 3×3 square, filled while live and hollow when ready. The row itself keeps the
    text colour: only the word says the state. */
 [data-skin="pixel"] .ov-member { color: var(--px-text) !important; }

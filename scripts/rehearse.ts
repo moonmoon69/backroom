@@ -2276,6 +2276,9 @@ async function rehearseUi(service: Service, browser: Browser, room: Room, select
   // 30. The overview's tiles: a quiet tile under the shortest column, and its gap there on a zoomed page (its section opens in the function).
   check.passed.push(...(await rehearseTallTile(service, browser, room, selection, section)));
 
+  // 31. A room opened with news: at its last-read line, not at its bottom (its section opens in the function).
+  check.passed.push(...(await rehearseLastRead(service, browser, room, selection, section)));
+
   membersOnlyAnswer(await room.snapshot());
   oldTablesAbsent(room.dataDir);
   return check.passed;
@@ -2452,6 +2455,71 @@ async function rehearseTallTile(service: Service, browser: Browser, room: Room, 
     if (off.length > 0) fail(`the gap under a ${Math.round(height)}px tile is ${plain.toFixed(2)}px unzoomed and changes on a zoomed page: ${off.map((g) => `${g.gap?.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
     log(`  page: under a ${Math.round(height)}px tile the gap is ${r.gaps.map((g) => `${g.gap!.toFixed(2)}px at ${percent(g.zoom)}`).join(", ")}`);
   });
+  return passed;
+}
+
+/**
+ * A room opened with news (web/src/lastRead.ts): a room of one member with eight long replies seen and three more not.
+ * Its tile says 3 new; opened from there, the board has a "new" line over the first reply after the last read, stands
+ * with that line near its top and not at its bottom, and the jump button counts the three; its click ends at the bottom.
+ */
+async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
+  const passed: string[] = [];
+  if (!(await section("a room with news opens at its last-read line, the jump button counting the new replies"))) return passed;
+  const state = probedStates(browser, selection, passed);
+  const title = "last-read-scratch";
+  const made = await room.second(title, ["reader"]);
+  const threadId = (await made.snapshot()).bindings[0]!.threadId;
+  const long = (n: number) => Array.from({ length: 12 }, (_, line) => `Reply ${n}, paragraph ${line + 1}: enough words to fill a line of the board and make the room scroll.`).join("\n\n");
+  const exchange = async (n: number) => {
+    const before = (await made.snapshot()).news.unseen;
+    await service.command({ type: "message.create", roomId: made.roomId, sourceText: `Question ${n}`, clientMessageId: randomUUID(), attachmentIds: [], assignments: [{ recipients: [made.participant.reader], instruction: `Question ${n}` }] });
+    await until(`T3 to run @reader's turn ${n}`, () => service.fake("complete", { threadId, text: long(n) }).then(() => true), 20_000, 300);
+    return until(`@reader's reply ${n} on the board`, async () => {
+      const x = await made.snapshot();
+      return x.news.unseen === before + 1 ? x : null;
+    });
+  };
+  if (browser.eval<boolean>("() => Boolean(document.querySelector('[aria-label=\"Back to the overview\"]'))")) browser.click(/button "Back to the overview"/);
+  let read = await made.snapshot();
+  for (let n = 1; n <= 8; n++) read = await exchange(n);
+  const mark = read.news.latest!.seq;
+  await service.call("POST", "/api/seen", { key: `room:${made.roomId}`, seq: mark });
+  for (let n = 9; n <= 11; n++) read = await exchange(n);
+  const firstNew = read.posts.find((post) => post.seq > mark && post.author !== "$user");
+  const probe = async () => {
+    const x = await made.snapshot();
+    return x.news.unseen === 3 && x.news.seenSeq === mark ? `news.unseen=3 seenSeq=${mark}; the first post after it that is not the user's is #${firstNew.number}` : null;
+  };
+  type Read = { line: string | null; over: string | null; lineTop: number | null; toBottom: number; jump: string | null } | null;
+  const page = `() => {
+    const board = document.querySelector('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline');
+    if (!board) return null;
+    const line = board.querySelector('.new-line');
+    const next = line?.nextElementSibling;
+    return {
+      line: line?.textContent ?? null,
+      over: (next?.matches('[data-seq]') ? next : next?.querySelector('[data-seq]'))?.getAttribute('data-seq') ?? null,
+      lineTop: line ? line.getBoundingClientRect().top - board.getBoundingClientRect().top : null,
+      toBottom: board.scrollHeight - board.scrollTop - board.clientHeight,
+      jump: board.parentElement.querySelector('.jump-latest')?.textContent ?? null,
+    };
+  }`;
+  await state("a room with news opens at its last-read line, the jump button counting the new replies", probe, ["3 new"], () => {
+    browser.openRoom(title);
+    const r = browser.poll<Read>("the board at its new line", page, (x) => x !== null && x.line !== null && x.jump !== null);
+    if (!r) fail("the room's board is not on the page");
+    if (r.line !== "new" || r.over !== String(firstNew.seq)) fail(`the line reads ${JSON.stringify(r.line)} over seq ${r.over}, not "new" over #${firstNew.number} (seq ${firstNew.seq})`);
+    if (r.lineTop === null || r.lineTop < 0 || r.lineTop > 200) fail(`the line is ${r.lineTop}px under the board's top edge, not near it`);
+    if (r.toBottom < 240) fail(`the board opened ${r.toBottom}px from its bottom, not at its last read`);
+    if (!r.jump?.startsWith("3 new replies")) fail(`the jump button says ${JSON.stringify(r.jump)}, not "3 new replies"`);
+    log(`  page: "new" over #${firstNew.number}, ${Math.round(r.lineTop)}px under the board's top, ${Math.round(r.toBottom)}px from its bottom; the button says ${JSON.stringify(r.jump.trim())}`);
+    browser.click(/button "3 new replies/);
+    const end = browser.poll<Read>("the board at its bottom after the jump", page, (x) => x !== null && x.toBottom < 2 && x.jump === null);
+    log(`  page: after its click the board is ${Math.round(end!.toBottom)}px from its bottom, the line still over seq ${end!.over}`);
+    if (end!.over !== String(firstNew.seq)) fail("the line went with the jump");
+  });
+  browser.click(/button "Back to the overview"/);
   return passed;
 }
 

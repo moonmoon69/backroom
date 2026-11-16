@@ -1148,6 +1148,16 @@ button.primary.destructive {
   border-top: 1px solid var(--line);
 }
 
+/* Where the reader stopped, in a room opened with news: the tile's "N new" in the same colour, as a line. */
+.chat-day.new-line {
+  color: var(--ok);
+}
+
+.chat-day.new-line::before,
+.chat-day.new-line::after {
+  border-top-color: color-mix(in srgb, var(--ok) 60%, var(--line));
+}
+
 /* ---- inside agent bubbles ---- */
 .asked-in-t3 {
   margin: 0 0 7px;
@@ -7138,6 +7148,11 @@ button.work-chip:hover,
 
 .sheet .chat-day {
   margin: 18px auto 6px;
+}
+
+/* The last-read line is ruled across the column; a day's name stands alone. */
+.sheet .chat-day.new-line {
+  width: 100%;
 }
 
 /* The chat: your lines boxed in the accent's tint, no "you" label; his as text, his name and mark over it. */
