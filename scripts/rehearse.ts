@@ -2474,7 +2474,9 @@ function lateImages() {
  * browser has in front): two replies land and the board does not move; looked at again, it is still there, with the
  * line over the first of them and the button counting the two. Then more replies than the board's window draws land
  * while it is not looked at, and the post being read is still drawn where it was; and one short reply with a picture
- * served late: the button counts it once the picture puts the bottom past its distance.
+ * served late: the button counts it once the picture puts the bottom past its distance. Last, the room opened at its
+ * line with more unread replies than the window draws: looked away from, with one reply landing, the post under that
+ * line is still drawn where it was on coming back, when the line goes over the reply.
  */
 async function rehearseLastRead(service: Service, browser: Browser, room: Room, selection: Selection, section: (first: string) => Promise<boolean>): Promise<string[]> {
   const passed: string[] = [];
@@ -2731,6 +2733,43 @@ async function rehearseLastRead(service: Service, browser: Browser, room: Room, 
         if (grown.toBottom <= 240) fail(`with its picture the reply leaves the board ${Math.round(grown.toBottom)}px from its bottom, within the button's distance: this shows nothing`);
         if (!grown.jump?.startsWith("1 new reply")) fail(`with its picture loaded the board is ${Math.round(grown.toBottom)}px from its bottom and the jump button says ${JSON.stringify(grown.jump)}, not "1 new reply"`);
         log(`  page: looked at again, the line over seq ${back.over}, ${Math.round(back.toBottom)}px from the bottom, the button ${JSON.stringify(back.jump)}; with the picture loaded, ${Math.round(grown.toBottom)}px, ${JSON.stringify(grown.jump.trim())} (seq ${before.last} was last in view)`);
+      } finally {
+        look(null);
+      }
+    });
+    outside();
+
+    // (The room still holds the reply with the late picture: its server stays up while the room is opened again.)
+    await state("a room opened at its line with more unread than the board draws keeps the post under that line when you come back to a reply", stayProbe, [], async () => {
+      try {
+        // Seen up to its newest post, then 75 replies while the page is on the overview.
+        const end = (await made.snapshot()).posts.at(-1)!.seq;
+        await service.call("POST", "/api/seen", { key: `room:${made.roomId}`, seq: end });
+        await until("the room to be seen up to its newest post", async () => (await made.snapshot()).news.unseen === 0);
+        const unread = 75;
+        for (let n = 1; n <= unread; n++) await reply(end, `Unread reply ${n}.`);
+        await until(`the room's ${unread} unread replies`, async () => (await made.snapshot()).news.unseen === unread);
+        const first = (await landsAfter(end))[0]!;
+        look(true);
+        browser.openRoom(title);
+        const here = stayPage(String(first.seq));
+        const opened = browser.poll<Stay>("the board at its opening line", here, (x) => x !== null && x.over === String(first.seq) && x.jump !== null && x.lastTop !== null);
+        if (!opened?.jump?.startsWith(`${unread} new replies`)) fail(`the room opened with the button ${JSON.stringify(opened?.jump)}, not "${unread} new replies"`);
+        const drawn = `() => document.querySelectorAll('.sheet[data-room-id=${JSON.stringify(made.roomId)}] .timeline [data-seq]').length`;
+        const before = browser.eval<number>(drawn);
+        const newest = (await made.snapshot()).posts.at(-1)!.seq;
+        look(false);
+        await reply(newest, "One more reply.");
+        const landed = (await landsAfter(newest))[0]!;
+        browser.poll<number>("the reply on the page", drawn, (count) => count === before + 1);
+        look(true);
+        const back = browser.poll<Stay>("the line over the reply on coming back", here, (x) => x !== null && x.over === String(landed.seq));
+        execFileSync("sleep", ["0.5"]);
+        const r = browser.eval<Stay>(here);
+        const after = browser.eval<number>(drawn);
+        if (!back || !r || r.lastTop === null || Math.abs(r.lastTop - opened.lastTop!) > 2) fail(`the post under the opening line (seq ${first.seq}) stood ${Math.round(opened.lastTop!)}px under the board's top and ${r?.lastTop == null ? "is not drawn" : `stands ${Math.round(r.lastTop)}px under it`} on coming back: ${before} posts were drawn, ${after} are`);
+        if (after < before + 1) fail(`coming back dropped drawn posts: ${before} were drawn, ${before + 1} with the reply, ${after} now`);
+        log(`  page: opened at its line over seq ${first.seq}, ${Math.round(opened.lastTop!)}px under the board's top, ${before} posts drawn, ${JSON.stringify(opened.jump.trim())}; looked at again after one reply, that post at ${Math.round(r.lastTop)}px, ${after} drawn, the line over seq ${r.over}, ${JSON.stringify(r.jump?.trim() ?? null)}`);
       } finally {
         look(null);
       }

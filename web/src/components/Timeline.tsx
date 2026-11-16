@@ -31,7 +31,7 @@ import type { StripAction } from "./ActionStrip.tsx";
 import { ControlsStrip, offersControls } from "./ControlsStrip.tsx";
 import { lastInputWasKey } from "../keys.ts";
 import { followsBottom } from "../boardFollow.ts";
-import { heldTop, landedAfter, lastReadLine } from "../lastRead.ts";
+import { heldTop, lastReadLine, windowStart } from "../lastRead.ts";
 
 /**
  * The room's board, read from its journal (GET /api/rooms/:roomId, RoomSnapshot.posts): every request with its
@@ -281,48 +281,51 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     }
     return items;
   }, [posts]);
-  // With a limit, only the latest posts are drawn at first (a long board opens at once); "earlier" draws the next
-  // window above, keeping what is in view where it is.
-  const [drawn, setDrawn] = useState(limit);
-  useEffect(() => setDrawn(limit), [limit, snapshot.room.id]);
-  // A room opened with news, or come back to with news, has a line over the first post after its last read, and the
-  // window holds it (lastRead.ts).
+  // With a limit, the window drawn is the view's items from where it starts: `start`, the seq of its first post, or
+  // null for the latest `limit` items, which is how a long board opens at once and what it is while it follows its
+  // bottom, looked at. Anywhere else the start is pinned where it is (measure), and from there it only moves earlier:
+  // "earlier" draws the next window above, a line has a little of what was read drawn above it (lastRead.ts,
+  // windowStart). A post that lands moves nothing: it is drawn under the ones there.
+  const [start, setStart] = useState<number | null>(null);
+  // A room opened with news, or come back to with news, has a line over the first post after its last read.
   const itemPosts = useMemo(() => allItems.map((item) => (item.type === "day" ? [] : item.type === "message" ? item.posts : [item.post])), [allItems]);
   const lastSeq = posts[posts.length - 1]?.seq ?? 0;
-  // The window drops no drawn post while the board does not follow its bottom, whoever left it (the reader scrolled
-  // up, a line holds it, or nobody is looking): what lands then is drawn under what is there (`kept`), until the board
-  // is at its bottom and following again (measure).
-  const [tail, setTail] = useState(lastSeq);
-  const [kept, setKept] = useState(0);
-  if (lastSeq !== tail) {
-    setTail(lastSeq);
-    if (!(stickToBottom.current && looking)) setKept(kept + landedAfter(itemPosts, tail));
-  }
-  const windowed = drawn + kept;
-  const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead, windowed)), [itemPosts, lastRead, windowed]);
-  const shown = newLine?.shown ?? windowed;
-  const items = limit > 0 && allItems.length > shown ? allItems.slice(allItems.length - shown) : allItems;
-  const earlier = allItems.length - items.length;
+  const newLine = useMemo(() => (lastRead === null ? null : lastReadLine(itemPosts, lastRead)), [itemPosts, lastRead]);
+  const earlier = windowStart(itemPosts, start, limit, newLine);
+  const items = earlier > 0 ? allItems.slice(earlier) : allItems;
+  // The seq the window drawn starts at, for pinning it there.
+  const startNow = useRef<number | null>(null);
+  startNow.current = itemPosts.slice(earlier).find((posts) => posts.length > 0)?.[0]!.seq ?? null;
   const line = useRef<HTMLDivElement>(null);
-  const keepPlace = useRef<{ height: number; top: number } | null>(null);
+  // A change that draws or takes away something above what is read keeps that post where it is: the post, and how far
+  // under the board's top it stands, taken before the change and put back after it.
+  const keepPlace = useRef<{ seq: string; top: number } | null>(null);
   // Where the board last put itself, which tells its own scrolls from the reader's.
   const ours = useRef(-1);
-  const keep = () => {
+  const postOf = (element: Element | null | undefined) => (element?.matches("[data-seq]") ? element : element?.querySelector("[data-seq]")) ?? null;
+  /** Keep `post` where it is through the next change; with none, the first post in view. */
+  const keep = (post?: Element | null) => {
     const el = scroller.current;
-    if (el) keepPlace.current = { height: el.scrollHeight, top: el.scrollTop };
+    if (!el) return;
+    const edge = el.getBoundingClientRect().top;
+    const kept = post ?? [...el.querySelectorAll("[data-seq]")].find((candidate) => candidate.getBoundingClientRect().bottom > edge);
+    const seq = kept?.getAttribute("data-seq");
+    if (kept && seq) keepPlace.current = { seq, top: kept.getBoundingClientRect().top - edge };
   };
   const showEarlier = () => {
     keep();
-    setDrawn(shown + limit - kept);
+    setStart(itemPosts.slice(Math.max(0, earlier - limit)).find((posts) => posts.length > 0)?.[0]!.seq ?? null);
   };
   useLayoutEffect(() => {
     const el = scroller.current;
     const place = keepPlace.current;
     if (!el || !place) return;
     keepPlace.current = null;
-    el.scrollTop = place.top + (el.scrollHeight - place.height);
+    const kept = el.querySelector(`[data-seq="${place.seq}"]`);
+    if (!kept) return;
+    el.scrollTop += kept.getBoundingClientRect().top - el.getBoundingClientRect().top - place.top;
     ours.current = el.scrollTop;
-  }, [shown, allPosts.length]);
+  }, [earlier, allPosts.length, newLine]);
 
   // Runs that have not ended: each builds up as its member's bubble at the bottom. In the chat, only his.
   const liveRuns = useMemo(
@@ -353,16 +356,17 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
   // The one measure of the board's distance from its bottom, taken at a scroll, when its content grows and when a post
   // lands. Past JUMP_PX the jump button shows. Within it the posts are seen up to the newest, the mark the button
   // counts the replies from: when the reader scrolled there (`reader`) or the board follows its bottom, while looked
-  // at. A mark put elsewhere (the last read, by follow and on coming back) stands until then. At its bottom and
-  // following, the window is its own size again.
+  // at. A mark put elsewhere (the last read, by follow and on coming back) stands until then. The window's start is
+  // let go at the bottom, following and looked at, and pinned anywhere else.
   const measure = useCallback((reader: boolean) => {
     const el = scroller.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     setFar(distance > JUMP_PX);
-    if (!lookingNow.current) return;
-    if (distance <= JUMP_PX && (reader || stickToBottom.current)) setSeenSeq(lastSeqNow.current);
-    if (distance < 2 && stickToBottom.current) setKept(0);
+    const following = stickToBottom.current && lookingNow.current;
+    if (following && distance < 2) setStart(null);
+    else if (!following) setStart((pinned) => pinned ?? startNow.current);
+    if (lookingNow.current && distance <= JUMP_PX && (reader || stickToBottom.current)) setSeenSeq(lastSeqNow.current);
   }, []);
 
   // Following the bottom, the one way the board puts itself anywhere: at its bottom or, while the line is held, at the
@@ -408,8 +412,8 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     const left = leftAt.current;
     leftAt.current = null;
     if (!el || left === null) return;
-    const landed = lastReadLine(itemPosts, left, windowed);
-    if (!landed) {
+    const landed = lastReadLine(itemPosts, left);
+    if (landed === null) {
       keepUp();
       measure(false);
       return;
@@ -417,16 +421,21 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
     stayed.current = true;
     held.current = false;
     stickToBottom.current = false;
-    // A window widened to hold the line draws posts above: what is in view keeps its place.
-    if (limit > 0 && landed.shown !== shown) keep();
+    // The line goes from where it was, and may have posts drawn above the window for it: what is read keeps its
+    // place, which under a line in view or above it is the post that line stood over.
+    const old = line.current;
+    keep(old && old.getBoundingClientRect().top < el.getBoundingClientRect().bottom ? postOf(old.nextElementSibling) : null);
     // The line it draws grows the content, which is measured then.
     setLastRead(left);
     setSeenSeq(left);
   };
   useLayoutEffect(() => {
     if (looking) back.current();
-    else leftAt.current = lastSeqNow.current;
-  }, [looking]);
+    else {
+      leftAt.current = lastSeqNow.current;
+      measure(false);
+    }
+  }, [looking, measure]);
 
   useLayoutEffect(() => {
     keepUp();
@@ -595,7 +604,7 @@ export function Timeline({ view = "board", limit = 0, opening = false }: { view?
                   </div>
                 ) : null}
                 {items.flatMap((item, index) => [
-                  newLine && index + earlier === newLine.over ? (
+                  index + earlier === newLine ? (
                     <div key="new-line" className="chat-day new-line" role="separator" ref={line}>
                       <span>new</span>
                     </div>
