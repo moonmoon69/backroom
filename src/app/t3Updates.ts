@@ -6,6 +6,7 @@
  */
 import type { T3Adapter, T3HarnessVersion } from "../adapter/types.ts";
 import { T3Unavailable } from "../adapter/types.ts";
+import { compareVersions } from "../domain/versions.ts";
 import { RoomError } from "../domain/errors.ts";
 import type { BackroomUpdate, BackroomUpdateView } from "./backroomUpdate.ts";
 
@@ -23,33 +24,6 @@ export const npmLatestT3: ReleaseLookup = async (channel) => {
 export function releaseChannel(version: string): string {
   const name = /^\d+\.\d+\.\d+-([0-9A-Za-z-]+)/.exec(version)?.[1];
   return name && !/^\d+$/.test(name) ? name : "latest";
-}
-
-/** Semver order: the core numbers, then the prerelease identifiers; a release is above its prereleases. 0 when either does not parse. */
-export function compareVersions(a: string, b: string): number {
-  const parse = (version: string) => {
-    const plain = version.split("+")[0]!;
-    const dash = plain.indexOf("-");
-    const core = (dash < 0 ? plain : plain.slice(0, dash)).split(".").map(Number);
-    return { core, pre: dash < 0 ? [] : plain.slice(dash + 1).split(".") };
-  };
-  const x = parse(a);
-  const y = parse(b);
-  if ([...x.core, ...y.core].some((n) => !Number.isInteger(n)) || x.core.length !== 3 || y.core.length !== 3) return 0;
-  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return x.core[i]! < y.core[i]! ? -1 : 1;
-  if (x.pre.length === 0 || y.pre.length === 0) return x.pre.length === y.pre.length ? 0 : x.pre.length === 0 ? 1 : -1;
-  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
-    const p = x.pre[i];
-    const q = y.pre[i];
-    if (p === undefined) return -1;
-    if (q === undefined) return 1;
-    const pNumber = /^\d+$/.test(p);
-    const qNumber = /^\d+$/.test(q);
-    if (pNumber && qNumber && Number(p) !== Number(q)) return Number(p) < Number(q) ? -1 : 1;
-    if (pNumber !== qNumber) return pNumber ? -1 : 1;
-    if (!pNumber && p !== q) return p < q ? -1 : 1;
-  }
-  return 0;
 }
 
 export const messageOf = (caught: unknown): string => (caught instanceof Error ? caught.message : String(caught));
@@ -198,12 +172,25 @@ export class T3Updates {
 
   /** Start one harness's update through T3. Answers at once; the popup follows T3's progress. */
   async updateHarness(instanceId: string): Promise<UpdatesView> {
-    const harness = (await this.adapter.versions(true)).harnesses.find((candidate) => candidate.instanceId === instanceId);
-    if (!harness) throw new RoomError("not_found", `T3 has no harness ${instanceId}`, 404);
-    const running = this.harnessJobs.get(instanceId)?.pending || harness.update?.status === "queued" || harness.update?.status === "running";
-    if (running) throw new RoomError("update_running", `${harness.displayName} is already being updated`, 409);
-    if (!harness.updatable) throw new RoomError("not_updatable", harness.note ?? `${harness.displayName} has no update to install`, 409);
+    // Claimed before T3 is read, so a second request that comes meanwhile is refused rather than starting it again.
+    const previous = this.harnessJobs.get(instanceId);
+    if (previous?.pending) throw new RoomError("update_running", `${instanceId} is already being updated`, 409);
     this.harnessJobs.set(instanceId, { pending: true, error: null });
+    /** Refused: the claim goes, and what the row showed before stays. */
+    const refuse = (error: unknown) => {
+      if (previous) this.harnessJobs.set(instanceId, previous);
+      else this.harnessJobs.delete(instanceId);
+      return error;
+    };
+    const harness = await this.adapter.versions(true).then(
+      (versions) => versions.harnesses.find((candidate) => candidate.instanceId === instanceId),
+      (caught: unknown) => {
+        throw refuse(caught);
+      },
+    );
+    if (!harness) throw refuse(new RoomError("not_found", `T3 has no harness ${instanceId}`, 404));
+    if (harness.update?.status === "queued" || harness.update?.status === "running") throw refuse(new RoomError("update_running", `${harness.displayName} is already being updated`, 409));
+    if (!harness.updatable) throw refuse(new RoomError("not_updatable", harness.note ?? `${harness.displayName} has no update to install`, 409));
     void this.adapter.updateHarness({ instanceId, driver: harness.driver }).then(
       () => this.harnessJobs.delete(instanceId),
       (caught) => this.harnessJobs.set(instanceId, { pending: false, error: messageOf(caught) }),

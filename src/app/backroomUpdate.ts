@@ -18,7 +18,8 @@ import type { Projection } from "../engine/types.ts";
 import { RoomError } from "../domain/errors.ts";
 import { gitEnv, runGit } from "../git/reader.ts";
 import { seatsWithLiveRuns } from "../runtime/index.ts";
-import { ReleaseCache, compareVersions, messageOf } from "./t3Updates.ts";
+import { compareVersions } from "../domain/versions.ts";
+import { ReleaseCache, messageOf } from "./t3Updates.ts";
 
 export interface BackroomUpdateJob {
   targetVersion: string;

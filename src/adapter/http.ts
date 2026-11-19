@@ -159,6 +159,12 @@ interface ServerConfigLike {
 }
 
 /**
+ * How long a view waits for a managed install's state. T3 sends it at once from memory (its release check runs in the
+ * background), so a few seconds is generous; past it the row is unknown, with no button.
+ */
+const INSTALL_READ_MS = 3_000;
+
+/**
  * A harness T3 installs itself, with no updater to run: T3 marks it as installable and gives it no version advisory.
  * Its versions and its update are its install's (provider.install.*).
  */
@@ -954,16 +960,17 @@ export class HttpT3Adapter implements T3Adapter {
 
   /**
    * A stream's first value, read on the command socket: T3 sends where the stream stands first, and the stream is
-   * interrupted once it has come.
+   * interrupted once it has come. One that sends nothing within `limitMs` is interrupted alone: its failure is not
+   * the socket's, so the socket and the other calls on it stay.
    */
-  private firstValue<T>(tag: string, payload: unknown, timeoutMs = 15000): Promise<T> {
-    return this.onCommandLink(tag, timeoutMs, (connection, remainingMs) => {
+  private firstValue<T>(tag: string, payload: unknown, limitMs: number): Promise<T> {
+    return this.onCommandLink(tag, 15_000, (connection) => {
       let stop = () => {};
       return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => {
           stop();
-          reject(new T3Unavailable(`T3 RPC ${tag} sent nothing within ${remainingMs}ms`));
-        }, remainingMs);
+          reject(new Error(`T3 sent no ${tag} answer within ${limitMs / 1000} s`));
+        }, limitMs);
         const subscription = connection.stream(tag, payload, (values) => {
           if (values.length === 0) return;
           clearTimeout(timer);
@@ -1116,7 +1123,7 @@ export class HttpT3Adapter implements T3Adapter {
         let installRead: string | null = null;
         if (provider.enabled && managedInstall(provider)) {
           try {
-            return managedHarness(identity, await this.firstValue<T3InstallState>("provider.install.subscribe", { instanceId: provider.instanceId }));
+            return managedHarness(identity, await this.firstValue<T3InstallState>("provider.install.subscribe", { instanceId: provider.instanceId }, INSTALL_READ_MS));
           } catch (caught) {
             // Shown on its row; the other harnesses are read all the same.
             installRead = caught instanceof Error ? caught.message : String(caught);

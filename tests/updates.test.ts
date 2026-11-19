@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { missingScopeMessage } from "../src/adapter/auth.ts";
 import { T3ScopeMissing, type T3Adapter } from "../src/adapter/types.ts";
-import { compareVersions, releaseChannel } from "../src/app/t3Updates.ts";
+import { releaseChannel } from "../src/app/t3Updates.ts";
+import { compareVersions } from "../src/domain/versions.ts";
 import { loadConfig } from "../src/config.ts";
 import { createHttpApp } from "../src/server/http.ts";
 import { createTestStack } from "./helpers.ts";
@@ -120,6 +121,52 @@ test("a failed install shows T3's words, and a harness T3 reports no version for
   assert.deepEqual([failed.version, failed.updatable], ["1.3.0", true], "the previous runtime stays, and the install can be tried again");
   const cursor = view.harnesses.find((h) => h.instanceId === "cursor")!;
   assert.deepEqual([cursor.version, cursor.latestVersion, cursor.status, cursor.updatable, cursor.note], [null, null, "unknown", false, "T3 reports no version for it."]);
+});
+
+test("two Update requests for one harness that overlap start it once; a refused one leaves no claim", async (t) => {
+  const stack = await createTestStack(undefined, undefined, { latestRelease: async () => NEWEST });
+  t.after(() => stack.close());
+  // T3 as it is while a start has not shown yet: each read still says Claude is behind and idle.
+  const starts: string[] = [];
+  let started: () => void = () => {};
+  const firstStarted = new Promise<void>((resolve) => (started = resolve));
+  stack.fake.updateHarness = async (input) => {
+    starts.push(input.instanceId);
+    // Once this start has returned and its request has let its claim go.
+    setTimeout(started, 5);
+  };
+  const read = stack.fake.versions.bind(stack.fake);
+  let reads = 0;
+  stack.fake.versions = async () => {
+    // Every read after the first request's own waits until that request's start has returned.
+    const held = (reads += 1) > 1;
+    const snapshot = await read();
+    if (held) await firstStarted;
+    return snapshot;
+  };
+  const first = stack.updates.updateHarness("claudeAgent");
+  const second = stack.updates.updateHarness("claudeAgent").then(() => "started", (caught: Error) => caught.message);
+  await first;
+  assert.match(await second, /already being updated/);
+  assert.deepEqual(starts, ["claudeAgent"]);
+
+  await assert.rejects(stack.updates.updateHarness("codex"), /cannot update this install/);
+  const codex = (await stack.updates.view(true)).harnesses.find((h) => h.instanceId === "codex")!;
+  assert.deepEqual([codex.pending, codex.error], [false, null], "a refusal releases its claim");
+});
+
+test("an install offer older than the installed version is no update: up to date, no button, not counted", async (t) => {
+  const stack = await createTestStack(undefined, undefined, { latestRelease: async () => NEWEST });
+  t.after(() => stack.close());
+  const install = stack.fake.installs.get("antigravity")!;
+  install.state = { ...install.state, installedVersion: "1.6.0" };
+  install.release = "1.5.12";
+  await stack.updates.view(true);
+  const view = await stack.updates.view(true);
+  const antigravity = view.harnesses.find((h) => h.instanceId === "antigravity")!;
+  assert.deepEqual([antigravity.version, antigravity.latestVersion, antigravity.status, antigravity.updatable], ["1.6.0", "1.5.12", "current", false]);
+  assert.equal(view.available, 2, "T3 and Claude only");
+  await assert.rejects(stack.updates.updateHarness("antigravity"), /no update to install/);
 });
 
 test("T3 updates to the newest release shown, keeps running turns going, and is done when it answers on it", async (t) => {

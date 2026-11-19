@@ -87,7 +87,7 @@ To try `install.sh` before a release, point it at a scratch bare repository with
 
 | Path | Purpose |
 | --- | --- |
-| `src/domain` | Room records, the versioned command contract (zod), the read API's shapes (`engineView.ts`), the member state table shared by the page and the service (`memberState.ts`) |
+| `src/domain` | Room records, the versioned command contract (zod), the read API's shapes (`engineView.ts`), the member state table shared by the page and the service (`memberState.ts`), version order (`versions.ts`) |
 | `src/db` | SQLite persistence (`node:sqlite`, WAL) and migrations |
 | `src/app/service.ts` | The single command handler behind every input path |
 | `src/parser` | Composer syntax: mentions, assignments, directives, slash commands, and the waits it refuses (shared with the UI) |

@@ -737,6 +737,32 @@ test("a harness T3 installs itself is read from its install stream and updated t
   assert.deepEqual([by.antigravity!.update?.status, by.antigravity!.update?.message], ["failed", "Installation cancelled. The previous runtime is unchanged."]);
 });
 
+test("an install read T3 does not answer ends alone after its limit: the row is unknown with no button, and the socket and its other calls stay", async (t) => {
+  let answerRefresh: () => void = () => {};
+  const t3 = streamingT3(() => ({ "provider.install.subscribe": [] }), {
+    "server.getConfig": () => ({
+      environment: { serverVersion: "0.1.10-nightly.20261113.4630", capabilities: {} },
+      providers: [{ instanceId: "antigravity", driver: "antigravity", displayName: "Antigravity", enabled: true, installed: true, version: "1.3.0", setup: { canAuthenticate: true, canInstall: true } }],
+    }),
+    "server.refreshProviders": () => new Promise<void>((resolve) => (answerRefresh = resolve)),
+  });
+  const { adapter } = feedAdapter(t3, { requestTimeoutMs: 30_000 });
+  t.after(() => adapter.close());
+  const refresh = adapter.refreshProviders();
+  await settle();
+  const started = Date.now();
+  const antigravity = (await adapter.versions(true)).harnesses[0]!;
+  const waited = Date.now() - started;
+  assert.ok(waited >= 2_900 && waited < 5_000, `the view waited ${waited} ms`);
+  assert.deepEqual([antigravity.version, antigravity.latestVersion, antigravity.status, antigravity.updatable], ["1.3.0", null, "unknown", false]);
+  const frames = t3.sockets.flatMap((socket) => socket.sent);
+  const subscribed = frames.find((f) => f.tag === "provider.install.subscribe");
+  assert.ok(frames.some((f) => f._tag === "Interrupt" && f.requestId === subscribed.id), "its own stream is interrupted");
+  assert.equal(t3.sockets.filter((socket) => socket.closed).length, 0, "the shared socket stays open");
+  answerRefresh();
+  await refresh;
+});
+
 // ---------------- the shell feed: T3's shell streams over the RPC socket ----------------
 
 const settle = async () => {

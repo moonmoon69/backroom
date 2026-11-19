@@ -5,6 +5,7 @@
  * creation and launch, message dispatch (start, queue, steer), observation, request responses and interruption.
  * All T3 identities are opaque strings.
  */
+import { compareVersions } from "../domain/versions.ts";
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../domain/types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
@@ -170,8 +171,8 @@ const megabytes = (bytes: number) => (bytes / 1_000_000).toFixed(bytes < 10_000_
  * that runs is an update running, with T3's words and the bytes downloaded; a cancelled one is a failed update.
  */
 export function managedHarness(harness: Pick<T3HarnessVersion, "instanceId" | "driver" | "displayName" | "enabled">, state: T3InstallState): T3HarnessVersion {
-  // T3 keeps `version` at the installed one when that is newer, so the two differ only when there is something to install.
-  const status = state.version === null ? "unknown" : state.installedVersion === state.version ? "current" : "behind_latest";
+  // Behind only when what is installed is older; an offer older than the installed one is no update.
+  const status = state.version === null ? "unknown" : state.installedVersion === null || compareVersions(state.installedVersion, state.version) < 0 ? "behind_latest" : "current";
   const running = state.phase === "downloading" || state.phase === "extracting" || state.phase === "verifying";
   // T3 knows the size only for some releases; it counts the bytes either way.
   const progress = state.phase !== "downloading" ? "" : state.totalBytes ? ` ${megabytes(state.downloadedBytes)} of ${megabytes(state.totalBytes)} MB` : state.downloadedBytes > 0 ? ` ${megabytes(state.downloadedBytes)} MB` : "";
