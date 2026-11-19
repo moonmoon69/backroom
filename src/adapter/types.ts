@@ -139,13 +139,50 @@ export interface T3HarnessVersion {
   status: "current" | "behind_latest" | "unknown";
   /**
    * T3 would offer its one-click update: the harness is behind, T3 knows the command to update it, and T3 has not
-   * flagged the newest version as broken or unsupported. The same rule as T3 Code's update prompt.
+   * flagged the newest version as broken or unsupported (the same rule as T3 Code's update prompt); or T3 manages
+   * its install and has found a newer release.
    */
   updatable: boolean;
-  /** Why a harness that is behind cannot be updated from here, or T3's advisory. */
+  /** Why a harness that is behind cannot be updated from here, T3's advisory, or that T3 reports no version for it. */
   note: string | null;
   checkedAt: string | null;
   update: T3HarnessUpdateState | null;
+}
+
+/**
+ * A harness install T3 manages itself (Antigravity), as provider.install.subscribe streams it (T3's
+ * ProviderInstallState): `installedVersion` is what is installed, `version` the newest release T3 found, null until
+ * its release check has answered.
+ */
+export interface T3InstallState {
+  phase: "idle" | "downloading" | "extracting" | "verifying" | "succeeded" | "failed" | "cancelled";
+  downloadedBytes: number;
+  totalBytes: number | null;
+  version: string | null;
+  installedVersion: string | null;
+  message: string | null;
+}
+
+const megabytes = (bytes: number) => (bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0);
+
+/**
+ * A managed harness's row from its install state, in the same terms as one T3 updates with its updater: an install
+ * that runs is an update running, with T3's words and the bytes downloaded; a cancelled one is a failed update.
+ */
+export function managedHarness(harness: Pick<T3HarnessVersion, "instanceId" | "driver" | "displayName" | "enabled">, state: T3InstallState): T3HarnessVersion {
+  // T3 keeps `version` at the installed one when that is newer, so the two differ only when there is something to install.
+  const status = state.version === null ? "unknown" : state.installedVersion === state.version ? "current" : "behind_latest";
+  const running = state.phase === "downloading" || state.phase === "extracting" || state.phase === "verifying";
+  // T3 knows the size only for some releases; it counts the bytes either way.
+  const progress = state.phase !== "downloading" ? "" : state.totalBytes ? ` ${megabytes(state.downloadedBytes)} of ${megabytes(state.totalBytes)} MB` : state.downloadedBytes > 0 ? ` ${megabytes(state.downloadedBytes)} MB` : "";
+  const update: T3HarnessUpdateState | null = running
+    ? { status: "running", startedAt: null, finishedAt: null, message: `${state.message ?? `${state.phase[0]!.toUpperCase()}${state.phase.slice(1)}…`}${progress}`, output: null }
+    : state.phase === "succeeded"
+      ? { status: "succeeded", startedAt: null, finishedAt: null, message: state.message ?? `Installed ${state.installedVersion}.`, output: null }
+      : state.phase === "failed" || state.phase === "cancelled"
+        ? { status: "failed", startedAt: null, finishedAt: null, message: state.message ?? `The install ${state.phase === "cancelled" ? "was cancelled" : "failed"}.`, output: null }
+        : null;
+  return { ...harness, version: state.installedVersion, latestVersion: state.version, status, updatable: harness.enabled && status === "behind_latest", note: null, checkedAt: null, update };
 }
 
 /** T3's own version, how it can update itself, and its harnesses' versions. */
@@ -819,7 +856,10 @@ export interface T3Adapter {
    * while it holds; null closes the connection it was reported on, and the lease lapses at its end.
    */
   reportActivity(activity: ClientActivity | null): Promise<void>;
-  /** Run a harness's updater through T3 (server.updateProvider). Resolves when T3 has finished; its state tells how. */
+  /**
+   * Update a harness through T3: its updater (server.updateProvider), which resolves when T3 has finished, or for an
+   * install T3 manages its install (provider.install.start), which resolves once started. Its state tells how it goes.
+   */
   updateHarness(input: { instanceId: string; driver: string }): Promise<void>;
   /**
    * Install an exact T3 version and hand over to it (server.updateServer). Resolves at the handover, just before T3

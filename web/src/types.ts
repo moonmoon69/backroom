@@ -863,8 +863,9 @@ export interface HarnessUpdate {
   version: string | null;
   latestVersion: string | null;
   status: "current" | "behind_latest" | "unknown";
-  /** T3 can run its updater: behind, with an update command, and the newest version not flagged. */
+  /** T3 can update it: behind, with an update command and the newest version not flagged, or an install T3 manages. */
   updatable: boolean;
+  /** Why it cannot be updated from here, T3's advisory, or that T3 reports no version for it. */
   note: string | null;
   checkedAt: string | null;
   update: { status: "idle" | "queued" | "running" | "succeeded" | "failed" | "unchanged"; startedAt: string | null; finishedAt: string | null; message: string | null; output: string | null } | null;

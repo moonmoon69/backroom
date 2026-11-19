@@ -56,7 +56,7 @@ test("a harness updates when asked, through T3; one T3 cannot update is refused"
   const after = (await (await app.request("/api/t3/updates?fresh=1")).json()) as { available: number; harnesses: Array<{ instanceId: string; version: string; status: string; update: { status: string } | null }> };
   const claude = after.harnesses.find((h) => h.instanceId === "claudeAgent")!;
   assert.deepEqual([claude.version, claude.status, claude.update?.status], ["2.1.283", "current", "succeeded"]);
-  assert.equal(after.available, 1, "only T3 itself is left");
+  assert.equal(after.available, 2, "T3 itself is left, and Antigravity now that T3 has checked its release");
 
   assert.equal((await post("/api/t3/updates/harness", { instanceId: "codex" })).status, 409);
   assert.equal((await post("/api/t3/updates/harness", { instanceId: "claudeAgent" })).status, 409, "already current");
@@ -72,6 +72,54 @@ test("a harness updates when asked, through T3; one T3 cannot update is refused"
   assert.equal(failed.update?.status, "failed");
   assert.equal(failed.update?.message, "npm ERR! EACCES");
   assert.equal(failed.version, "2.1.283");
+});
+
+test("a harness T3 installs itself shows no Update before T3 has checked its release, then installs the newest through T3", async (t) => {
+  const stack = await createTestStack({ updateMs: 40 }, undefined, { latestRelease: async () => NEWEST });
+  t.after(() => stack.close());
+  const app = createHttpApp(stack, loadConfig({ ROOMS_ADAPTER: "fake", ROOMS_DATA_DIR: "/tmp/rooms-test-updates", ROOMS_PORT: "0" }), "/nonexistent/dist");
+  const antigravity = async () => (await stack.updates.view(true)).harnesses.find((h) => h.instanceId === "antigravity")!;
+
+  const unchecked = await stack.updates.view(true);
+  const before = unchecked.harnesses.find((h) => h.instanceId === "antigravity")!;
+  assert.deepEqual([before.version, before.latestVersion, before.status, before.updatable], ["1.3.0", null, "unknown", false], "T3 has not checked yet: no button");
+  assert.equal(unchecked.available, 2, "T3 and Claude only");
+
+  const checked = await stack.updates.view(true);
+  const behind = checked.harnesses.find((h) => h.instanceId === "antigravity")!;
+  assert.deepEqual([behind.version, behind.latestVersion, behind.status, behind.updatable], ["1.3.0", "1.5.12", "behind_latest", true]);
+  assert.equal(checked.available, 3, "counted once T3 knows the newest");
+
+  assert.equal((await app.request("/api/t3/updates/harness", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ instanceId: "antigravity" }) })).status, 200);
+  const during = await stack.updates.view(true);
+  const running = during.harnesses.find((h) => h.instanceId === "antigravity")!;
+  assert.equal(running.update?.status, "running");
+  assert.match(running.update?.message ?? "", /^Downloading Google's official Antigravity runtime\. 0\.0 of 80 MB$/);
+  assert.equal(during.available, 2, "not counted while it runs");
+  await assert.rejects(stack.updates.updateHarness("antigravity"), /already being updated/);
+  let done = await antigravity();
+  for (let waited = 0; done.update?.status === "running" && waited < 2000; waited += 10) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    done = await antigravity();
+  }
+  assert.deepEqual([done.version, done.status, done.updatable, done.update?.status, done.update?.message], ["1.5.12", "current", false, "succeeded", "Installed 1.5.12."]);
+  assert.equal(stack.fake.versionState.harnesses.find((h) => h.instanceId === "claudeAgent")!.update, null, "no updater was run");
+  await assert.rejects(stack.updates.updateHarness("antigravity"), /no update to install/);
+});
+
+test("a failed install shows T3's words, and a harness T3 reports no version for says so and offers nothing", async (t) => {
+  const stack = await createTestStack(undefined, undefined, { latestRelease: async () => NEWEST });
+  t.after(() => stack.close());
+  await stack.updates.view(true);
+  stack.fake.updateFailure = "The Antigravity download failed its size or checksum check. Nothing was installed.";
+  await stack.updates.updateHarness("antigravity");
+  await settle();
+  const view = await stack.updates.view(true);
+  const failed = view.harnesses.find((h) => h.instanceId === "antigravity")!;
+  assert.deepEqual([failed.update?.status, failed.update?.message], ["failed", "The Antigravity download failed its size or checksum check. Nothing was installed."]);
+  assert.deepEqual([failed.version, failed.updatable], ["1.3.0", true], "the previous runtime stays, and the install can be tried again");
+  const cursor = view.harnesses.find((h) => h.instanceId === "cursor")!;
+  assert.deepEqual([cursor.version, cursor.latestVersion, cursor.status, cursor.updatable, cursor.note], [null, null, "unknown", false, "T3 reports no version for it."]);
 });
 
 test("T3 updates to the newest release shown, keeps running turns going, and is done when it answers on it", async (t) => {

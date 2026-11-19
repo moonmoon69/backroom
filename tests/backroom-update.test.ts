@@ -464,6 +464,8 @@ test("the status gives this copy's version, and the Updates view carries Backroo
   const app = createHttpApp(stack, config, "/nonexistent/dist");
   const status = (await (await app.request("/api/status")).json()) as { version: string };
   assert.equal(status.version, COPY_VERSION);
+  // The first read starts T3's release check of the harness it installs itself, which counts from the next read on.
+  await app.request("/api/t3/updates");
   const updates = (await (await app.request("/api/t3/updates")).json()) as { backroom: { version: string; latest: string; newer: boolean; command: string }; available: number };
   assert.deepEqual([updates.backroom.version, updates.backroom.latest, updates.backroom.newer], [COPY_VERSION, "99.0.0", true]);
   assert.match(updates.backroom.command, /^sh .*install\.sh /);

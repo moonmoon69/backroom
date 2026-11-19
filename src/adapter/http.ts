@@ -13,7 +13,8 @@
  *            GET /.well-known/t3/environment                the server and its protocol version
  * Commands:  orchestration.dispatchCommand (WebSocket RPC)  message.dispatch, run.interrupt, runtime-request.respond, thread.*
  *            orchestration.launchThread                     a thread with its workspace, optionally started
- *            projects.mutate, assets.persistChatAttachments, vcs.*, filesystem.browse, server.*
+ *            projects.mutate, assets.persistChatAttachments, vcs.*, filesystem.browse, server.*,
+ *            provider.install.start, and provider.install.subscribe read for its first value (a managed install's state)
  *
  * Every request names the protocol (x-t3-orchestration-protocol header, orchestrationProtocol on the socket). A server
  * on another protocol is reported as T3ProtocolMismatch; only server.* calls are still made to it, so it can be
@@ -48,6 +49,7 @@ import type {
   T3CheckpointFile,
   T3Environment,
   T3HarnessUpdateState,
+  T3InstallState,
   T3Message,
   T3MessageAttachment,
   T3Plan,
@@ -72,7 +74,7 @@ import type {
   T3Versions,
   TurnImage,
 } from "./types.ts";
-import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, openRequests, pullRequestWatchTaskId, recoveryFor, secretRequests, usageLimitOf } from "./types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, SECRET_REFUSALS, T3CommandRejected, T3OutcomeUnknown, T3ProtocolMismatch, T3ScopeMissing, T3SecretRefused, T3Unavailable, isRunActive, managedHarness, openRequests, pullRequestWatchTaskId, recoveryFor, secretRequests, usageLimitOf } from "./types.ts";
 import { missingScopeMessage } from "./auth.ts";
 
 export interface HttpAdapterOptions {
@@ -118,6 +120,7 @@ interface ServerConfigLike {
     displayName?: string;
     enabled?: boolean;
     installed?: boolean;
+    setup?: { canInstall?: boolean };
     status?: string;
     version?: string | null;
     message?: string;
@@ -154,6 +157,12 @@ interface ServerConfigLike {
     providerInstances?: Record<string, { autoCompactWindow?: string | number }>;
   };
 }
+
+/**
+ * A harness T3 installs itself, with no updater to run: T3 marks it as installable and gives it no version advisory.
+ * Its versions and its update are its install's (provider.install.*).
+ */
+const managedInstall = (provider: { setup?: { canInstall?: boolean }; versionAdvisory?: unknown }): boolean => provider.setup?.canInstall === true && !provider.versionAdvisory;
 
 /** T3 stores the Claude auto-compact window as a string: "" or "auto" for the harness default, otherwise a token count. */
 function parseAutoCompactWindow(raw: unknown): number | null {
@@ -931,8 +940,8 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   private async rpc<T>(tag: string, payload: unknown, timeoutMs = 15000): Promise<T> {
-    const deadline = Date.now() + timeoutMs;
     if (timeoutMs > 60_000) {
+      const deadline = Date.now() + timeoutMs;
       const connection = await this.connect(tag, timeoutMs);
       try {
         return await connection.request<T>(tag, payload, Math.max(1, deadline - Date.now()));
@@ -940,6 +949,45 @@ export class HttpT3Adapter implements T3Adapter {
         connection.close();
       }
     }
+    return this.onCommandLink(tag, timeoutMs, (connection, remainingMs) => connection.request<T>(tag, payload, remainingMs));
+  }
+
+  /**
+   * A stream's first value, read on the command socket: T3 sends where the stream stands first, and the stream is
+   * interrupted once it has come.
+   */
+  private firstValue<T>(tag: string, payload: unknown, timeoutMs = 15000): Promise<T> {
+    return this.onCommandLink(tag, timeoutMs, (connection, remainingMs) => {
+      let stop = () => {};
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          stop();
+          reject(new T3Unavailable(`T3 RPC ${tag} sent nothing within ${remainingMs}ms`));
+        }, remainingMs);
+        const subscription = connection.stream(tag, payload, (values) => {
+          if (values.length === 0) return;
+          clearTimeout(timer);
+          stop();
+          resolve(values[0] as T);
+        });
+        stop = subscription.cancel;
+        subscription.done.then(
+          () => {
+            clearTimeout(timer);
+            reject(new T3Unavailable(`T3 RPC ${tag} ended without a value`));
+          },
+          (error: unknown) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+    });
+  }
+
+  /** Run a call on the command socket shared by commands and short reads, opening it when there is none. */
+  private async onCommandLink<T>(tag: string, timeoutMs: number, call: (connection: RpcConnection, remainingMs: number) => Promise<T>): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
     let link = this.commandLink;
     if (!link || (await link.catch(() => null))?.closed !== false) {
       link = this.connect(tag, timeoutMs, () => {
@@ -954,7 +1002,7 @@ export class HttpT3Adapter implements T3Adapter {
     if (this.commandLinkIdle) clearTimeout(this.commandLinkIdle);
     this.commandLinkIdle = null;
     try {
-      return await connection.request<T>(tag, payload, Math.max(1, deadline - Date.now()));
+      return await call(connection, Math.max(1, deadline - Date.now()));
     } catch (error) {
       // No answer in time, or the socket went: the link is in doubt, and the next call opens a new one.
       if (error instanceof T3Unavailable && this.commandLink === link) this.dropCommandLink();
@@ -1062,24 +1110,35 @@ export class HttpT3Adapter implements T3Adapter {
       selfUpdate: capabilities.serverSelfUpdate ?? null,
       desktopAppUpdate: capabilities.desktopAppUpdate === true,
       threadContinuation: capabilities.serverUpdateThreadContinuation === true,
-      harnesses: (config.providers ?? []).map((provider) => {
+      harnesses: await Promise.all((config.providers ?? []).map(async (provider) => {
         const advisory = provider.versionAdvisory;
+        const identity = { instanceId: provider.instanceId, driver: provider.driver ?? provider.instanceId, displayName: provider.displayName ?? provider.instanceId, enabled: Boolean(provider.enabled) };
+        let installRead: string | null = null;
+        if (provider.enabled && managedInstall(provider)) {
+          try {
+            return managedHarness(identity, await this.firstValue<T3InstallState>("provider.install.subscribe", { instanceId: provider.instanceId }));
+          } catch (caught) {
+            // Shown on its row; the other harnesses are read all the same.
+            installRead = caught instanceof Error ? caught.message : String(caught);
+          }
+        }
         const status = advisory?.status === "current" || advisory?.status === "behind_latest" ? advisory.status : "unknown";
         const latestFlagged = provider.compatibilityAdvisory?.latestVersionStatus === "broken" || provider.compatibilityAdvisory?.latestVersionStatus === "unsupported";
         const canRun = advisory?.canUpdate === true && Boolean(advisory.updateCommand);
         const updatable = Boolean(provider.enabled) && status === "behind_latest" && canRun && !latestFlagged;
+        const version = provider.version ?? advisory?.currentVersion ?? null;
         const note =
-          status !== "behind_latest" || updatable
-            ? null
+          installRead ??
+          (status !== "behind_latest" || updatable
+            ? !advisory && version === null && provider.installed
+              ? "T3 reports no version for it."
+              : null
             : latestFlagged
               ? (provider.compatibilityAdvisory?.message ?? "T3 has not cleared the newest version for use yet.")
-              : "T3 cannot update this install; update it where it was installed.";
+              : "T3 cannot update this install; update it where it was installed.");
         return {
-          instanceId: provider.instanceId,
-          driver: provider.driver ?? provider.instanceId,
-          displayName: provider.displayName ?? provider.instanceId,
-          enabled: Boolean(provider.enabled),
-          version: provider.version ?? advisory?.currentVersion ?? null,
+          ...identity,
+          version,
           latestVersion: advisory?.latestVersion ?? null,
           status,
           updatable,
@@ -1087,7 +1146,7 @@ export class HttpT3Adapter implements T3Adapter {
           checkedAt: advisory?.checkedAt ?? null,
           update: provider.updateState ?? null,
         };
-      }),
+      })),
     };
   }
 
@@ -1100,9 +1159,12 @@ export class HttpT3Adapter implements T3Adapter {
   }
 
   async updateHarness(input: { instanceId: string; driver: string }): Promise<void> {
-    // T3 answers when the updater has finished (it queues behind another harness's update).
+    const provider = (await this.getServerConfig()).providers?.find((candidate) => candidate.instanceId === input.instanceId);
     try {
-      await this.rpc("server.updateProvider", { provider: input.driver, instanceId: input.instanceId }, 15 * 60_000);
+      // T3 checks the release again before it answers, with the install started; its install state carries the progress.
+      if (provider && managedInstall(provider)) await this.rpc("provider.install.start", { instanceId: input.instanceId }, 60_000);
+      // T3 answers when the updater has finished (it queues behind another harness's update).
+      else await this.rpc("server.updateProvider", { provider: input.driver, instanceId: input.instanceId }, 15 * 60_000);
     } finally {
       this.configCache = null;
     }

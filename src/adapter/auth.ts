@@ -27,9 +27,9 @@ export const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
  * grants those of them its pairing link holds (`t3 pair` holds them all) and silently leaves out the rest.
  */
 export const SCOPE_USES = {
-  "orchestration:read": "the shell and thread reads, server.getConfig, server.refreshProviders, server.reportClientActivity, vcs.listRefs",
+  "orchestration:read": "the shell and thread reads, server.getConfig, server.refreshProviders, server.reportClientActivity, provider.install.subscribe, vcs.listRefs",
   "orchestration:operate": "orchestration.dispatchCommand, orchestration.launchThread, projects.mutate, assets.persistChatAttachments",
-  "providers:manage": "server.updateProvider (a harness's Update)",
+  "providers:manage": "server.updateProvider, provider.install.start (a harness's Update)",
   "environment:maintain": "server.updateServer (T3's Update)",
   "diagnostics:read": "server.getUsageSummary (today's usage)",
   "filesystem:read": "filesystem.browse (the New project dialog's folders)",

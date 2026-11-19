@@ -255,13 +255,17 @@ function T3Row({ view, starting, onUpdate }: { view: UpdatesView; starting: bool
 function HarnessRow({ harness, starting, onUpdate }: { harness: HarnessUpdate; starting: boolean; onUpdate: () => void }) {
   const state = harness.update;
   const busy = harness.pending || state?.status === "queued" || state?.status === "running";
+  // With no version and no newest, T3's note (that it reports no version) stands in their place.
+  const noteInPlace = harness.version === null && harness.latestVersion === null && harness.note !== null;
   const versions =
     harness.status === "behind_latest" && harness.latestVersion ? (
       <>
-        {harness.version ?? "unknown"}
+        {harness.version ?? "none"}
         {" → "}
         <strong>{harness.latestVersion}</strong>
       </>
+    ) : noteInPlace ? (
+      <span className="muted">{harness.note}</span>
     ) : (
       <>
         {harness.version ?? "version unknown"}
@@ -276,7 +280,7 @@ function HarnessRow({ harness, starting, onUpdate }: { harness: HarnessUpdate; s
     ) : null;
   return (
     <Row name={harness.displayName} versions={versions} action={action}>
-      {busy ? <Working>{state?.status === "queued" ? "Waiting for another update to finish…" : "Updating…"}</Working> : null}
+      {busy ? <Working>{state?.status === "queued" ? "Waiting for another update to finish…" : (state?.message ?? "Updating…")}</Working> : null}
       {!busy && state?.status === "succeeded" ? <div className="update-status update-ok">{(state.message ?? "Updated").replace(/\.$/, "")}{state.finishedAt ? ` at ${timeOf(state.finishedAt)}` : ""}</div> : null}
       {!busy && state?.status === "unchanged" ? <div className="update-status muted">{state.message ?? "The updater ran; the version did not change."}</div> : null}
       {!busy && state?.status === "failed" ? (
@@ -291,7 +295,7 @@ function HarnessRow({ harness, starting, onUpdate }: { harness: HarnessUpdate; s
         </div>
       ) : null}
       {harness.error ? <div className="update-status status-error">{harness.error}</div> : null}
-      {harness.note ? <div className="update-status muted">{harness.note}</div> : null}
+      {harness.note && !noteInPlace ? <div className="update-status muted">{harness.note}</div> : null}
     </Row>
   );
 }

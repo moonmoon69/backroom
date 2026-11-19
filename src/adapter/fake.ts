@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { SKILL_FOLDERS, frontmatter } from "../domain/skills.ts";
 import type { ModelSelection } from "../domain/types.ts";
 import type {
+  T3InstallState,
   T3ProviderSkill,
   ApprovalDecision,
   ThreadLifecycleAction,
@@ -49,7 +50,7 @@ import type {
   T3Versions,
   ThreadControl,
 } from "./types.ts";
-import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, limitArmId, limitIdentity, openRequests, pullRequestWatchTaskId, secretRequests, usageLimitOf } from "./types.ts";
+import { CONTINUE_TEXT, STOP_EVERYTHING_REASON, ORCHESTRATION_PROTOCOL_VERSION, T3CommandRejected, T3SecretRefused, isRunActive, latestExecutedRun, managedHarness, limitArmId, limitIdentity, openRequests, pullRequestWatchTaskId, secretRequests, usageLimitOf } from "./types.ts";
 import { ThreadWatches } from "./threadFeed.ts";
 
 interface FakeThread {
@@ -144,7 +145,8 @@ export class FakeT3Adapter implements T3Adapter {
   readonly held = new Set<string>();
   /**
    * What versions() reports; tests and the demo change it. A T3 on the nightly channel with a Claude update it can
-   * run and a Codex update it cannot. updateHarness and updateServer move it along the way T3 does.
+   * run, a Codex update it cannot, an Antigravity it installs itself (its row is its install's, below) and a Cursor it
+   * reports no version for. updateHarness and updateServer move it along the way T3 does.
    */
   readonly versionState: T3Versions = {
     serverVersion: "0.0.46-nightly.20261003.2610",
@@ -154,8 +156,17 @@ export class FakeT3Adapter implements T3Adapter {
     harnesses: [
       { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude", enabled: true, version: "2.1.282", latestVersion: "2.1.283", status: "behind_latest", updatable: true, note: null, checkedAt: new Date().toISOString(), update: null },
       { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, version: "0.157.0", latestVersion: "0.158.0", status: "behind_latest", updatable: false, note: "T3 cannot update this install; update it where it was installed.", checkedAt: new Date().toISOString(), update: null },
+      { instanceId: "antigravity", driver: "antigravity", displayName: "Antigravity", enabled: true, version: null, latestVersion: null, status: "unknown", updatable: false, note: null, checkedAt: null, update: null },
+      { instanceId: "cursor", driver: "cursor", displayName: "Cursor", enabled: true, version: null, latestVersion: null, status: "unknown", updatable: false, note: "T3 reports no version for it.", checkedAt: null, update: null },
     ],
   };
+  /**
+   * The installs T3 manages, as provider.install.subscribe streams them, and the newest release its check finds. A
+   * read is a subscription: the first shows no newest release, as on a T3 that has not checked yet, and starts the check.
+   */
+  readonly installs = new Map<string, { state: T3InstallState; release: string; checked: boolean }>([
+    ["antigravity", { state: { phase: "idle", downloadedBytes: 0, totalBytes: null, version: null, installedVersion: "1.3.0", message: null }, release: "1.5.12", checked: false }],
+  ]);
   /** When set, the next harness update fails with this message (T3 answers, with the failure in its state) and a server update is refused. */
   updateFailure: string | null = null;
   /** Server updates asked for, in order. */
@@ -263,7 +274,17 @@ export class FakeT3Adapter implements T3Adapter {
 
   async versions(): Promise<T3Versions> {
     this.guard();
-    return structuredClone(this.versionState);
+    const versions = structuredClone(this.versionState);
+    versions.harnesses = versions.harnesses.map((harness) => {
+      const install = this.installs.get(harness.instanceId);
+      return install && harness.enabled ? managedHarness(harness, install.state) : harness;
+    });
+    for (const install of this.installs.values()) {
+      if (install.checked) continue;
+      install.checked = true;
+      install.state = { ...install.state, version: install.release };
+    }
+    return versions;
   }
 
   async refreshProviders(input: { instanceId?: string; refreshModels?: boolean } = {}): Promise<void> {
@@ -279,6 +300,8 @@ export class FakeT3Adapter implements T3Adapter {
 
   async updateHarness(input: { instanceId: string; driver: string }): Promise<void> {
     this.guard();
+    const install = this.installs.get(input.instanceId);
+    if (install) return this.startInstall(install);
     const harness = this.versionState.harnesses.find((h) => h.instanceId === input.instanceId);
     if (!harness) throw new T3CommandRejected(`T3 RPC server.updateProvider failed: no provider ${input.instanceId}`, 500, null);
     const startedAt = new Date().toISOString();
@@ -292,6 +315,27 @@ export class FakeT3Adapter implements T3Adapter {
     }
     Object.assign(harness, { version: harness.latestVersion, status: "current", updatable: false, note: null });
     harness.update = { status: "succeeded", startedAt, finishedAt, message: `Updated to ${harness.latestVersion}.`, output: null };
+  }
+
+  /**
+   * As T3's provider.install.start: it checks the release again, answers with the download started, and its state
+   * moves on from there (halfway, then installed, or failed with T3's words when updateFailure is set).
+   */
+  private startInstall(install: { state: T3InstallState; release: string; checked: boolean }): void {
+    if (["downloading", "extracting", "verifying"].includes(install.state.phase)) return;
+    const totalBytes = 80_000_000;
+    install.checked = true;
+    install.state = { ...install.state, phase: "downloading", downloadedBytes: 0, totalBytes, version: install.release, message: "Downloading Google's official Antigravity runtime." };
+    const failure = this.updateFailure;
+    this.updateFailure = null;
+    setTimeout(() => {
+      install.state = { ...install.state, downloadedBytes: totalBytes / 2 };
+    }, this.options.updateMs / 2);
+    setTimeout(() => {
+      install.state = failure
+        ? { ...install.state, phase: "failed", message: failure }
+        : { ...install.state, phase: "succeeded", downloadedBytes: totalBytes, installedVersion: install.state.version, message: null };
+    }, this.options.updateMs);
   }
 
   async updateServer(input: { targetVersion: string; continueRunningThreads: boolean }): Promise<void> {

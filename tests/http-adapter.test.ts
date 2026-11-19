@@ -597,9 +597,10 @@ test("pairing URL parsing and the RFC 8693 token exchange request", async () => 
 });
 
 test("Backroom asks T3 for exactly the scopes its calls need, and nothing broader", () => {
-  // T3's RPC_REQUIRED_SCOPES (0.0.46): server.updateProvider providers:manage, server.updateServer environment:maintain,
-  // server.getUsageSummary diagnostics:read, filesystem.browse filesystem:read; every other call Backroom makes needs
-  // orchestration:read or orchestration:operate.
+  // T3's RPC_REQUIRED_SCOPES (0.1.10): server.updateProvider and provider.install.start providers:manage,
+  // server.updateServer environment:maintain, server.getUsageSummary diagnostics:read, filesystem.browse
+  // filesystem:read; every other call Backroom makes (provider.install.subscribe included) needs orchestration:read or
+  // orchestration:operate.
   assert.equal(REQUESTED_SCOPES, "orchestration:read orchestration:operate providers:manage environment:maintain diagnostics:read filesystem:read");
 });
 
@@ -614,6 +615,7 @@ test("a call T3 refuses for a permission Backroom's pairing lacks says, in one s
   const { Socket } = mockSocket({
     "server.updateServer": refusal("environment:maintain", "orchestration:operate"),
     "server.updateProvider": refusal("providers:manage", "orchestration:operate"),
+    "server.getConfig": () => ({ providers: [] }),
     "filesystem.browse": refusal("filesystem:read", "orchestration:read"),
     "orchestration.dispatchCommand": () => {
       throw new Error("Run run:nope is not interruptible.");
@@ -679,6 +681,60 @@ test("versions read T3's own version and each harness's, offering an update only
   assert.equal(by.opencode!.updatable, false, "T3 flags the newest version as broken");
   assert.equal(by.opencode!.note, "OpenCode 1.3.0 breaks T3's session resume.");
   assert.deepEqual([by.grok!.enabled, by.grok!.status, by.grok!.displayName], [false, "unknown", "grok"]);
+});
+
+test("a harness T3 installs itself is read from its install stream and updated through it; one with no version says T3 reports none", async (t) => {
+  // T3 0.1.10 as it answers: Antigravity is a managed install with no version advisory; Cursor runs from T3's SDK and
+  // has neither; Codex here is not a managed install, so T3 refuses to stream one for it.
+  const install = (over: Record<string, unknown>) => ({ driver: "antigravity", operationId: null, phase: "idle", downloadedBytes: 0, totalBytes: null, version: "1.5.12", installedVersion: "1.3.0", canRemove: true, message: null, ...over });
+  let state = install({});
+  const config = {
+    environment: { serverVersion: "0.1.10-nightly.20261113.4630", capabilities: {} },
+    providers: [
+      { instanceId: "antigravity", driver: "antigravity", displayName: "Antigravity", enabled: true, installed: true, version: "1.3.0", setup: { canAuthenticate: true, canInstall: true } },
+      { instanceId: "cursor", driver: "cursor", displayName: "Cursor", enabled: true, installed: true, version: null, setup: { canAuthenticate: true, canInstall: false } },
+      { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: true, installed: true, version: "0.169.0", setup: { canAuthenticate: false, canInstall: false }, versionAdvisory: { status: "current", currentVersion: "0.169.0", latestVersion: "0.169.0", updateCommand: "codex update", canUpdate: true, checkedAt: null, message: null } },
+    ],
+  };
+  const t3 = streamingT3(() => ({ "provider.install.subscribe": [[state]] }), {
+    "server.getConfig": () => config,
+    "provider.install.start": () => install({ phase: "downloading", operationId: "op-1", totalBytes: 80_000_000, message: "Downloading Google's official Antigravity runtime." }),
+    "server.updateProvider": () => ({}),
+  });
+  const { adapter } = feedAdapter(t3);
+  t.after(() => adapter.close());
+  const harnesses = async () => Object.fromEntries((await adapter.versions(true)).harnesses.map((h) => [h.instanceId, h]));
+  const frames = () => t3.sockets.flatMap((socket) => socket.sent);
+
+  let by = await harnesses();
+  assert.deepEqual([by.antigravity!.version, by.antigravity!.latestVersion, by.antigravity!.status, by.antigravity!.updatable, by.antigravity!.update], ["1.3.0", "1.5.12", "behind_latest", true, null]);
+  const subscribed = frames().find((f) => f.tag === "provider.install.subscribe");
+  assert.deepEqual(subscribed.payload, { instanceId: "antigravity" });
+  assert.ok(frames().some((f) => f._tag === "Interrupt" && f.requestId === subscribed.id), "the stream is let go once its state has come");
+  assert.deepEqual([by.cursor!.version, by.cursor!.status, by.cursor!.updatable, by.cursor!.note], [null, "unknown", false, "T3 reports no version for it."]);
+  assert.equal(by.codex!.note, null, "a harness with a version advisory is read from it");
+
+  state = install({ version: null });
+  assert.deepEqual([(await harnesses()).antigravity!.status, (await harnesses()).antigravity!.updatable], ["unknown", false], "before T3's release check has answered");
+
+  await adapter.updateHarness({ instanceId: "antigravity", driver: "antigravity" });
+  await adapter.updateHarness({ instanceId: "codex", driver: "codex" });
+  assert.deepEqual(frames().filter((f) => f.tag === "provider.install.start" || f.tag === "server.updateProvider").map((f) => [f.tag, f.payload]), [
+    ["provider.install.start", { instanceId: "antigravity" }],
+    ["server.updateProvider", { provider: "codex", instanceId: "codex" }],
+  ]);
+
+  state = install({ phase: "downloading", operationId: "op-1", downloadedBytes: 20_000_000, totalBytes: 80_000_000, message: "Downloading Google's official Antigravity runtime." });
+  by = await harnesses();
+  assert.deepEqual([by.antigravity!.update?.status, by.antigravity!.update?.message], ["running", "Downloading Google's official Antigravity runtime. 20 of 80 MB"]);
+  state = install({ phase: "downloading", operationId: "op-1", downloadedBytes: 34_500_000, message: "Downloading Google's official Antigravity runtime." });
+  assert.equal((await harnesses()).antigravity!.update?.message, "Downloading Google's official Antigravity runtime. 35 MB", "a release T3 knows no size for");
+  state = install({ phase: "succeeded", operationId: "op-1", installedVersion: "1.5.12" });
+  by = await harnesses();
+  assert.deepEqual([by.antigravity!.version, by.antigravity!.status, by.antigravity!.updatable, by.antigravity!.update?.status], ["1.5.12", "current", false, "succeeded"]);
+  state = install({ phase: "cancelled", operationId: "op-2", message: "Installation cancelled. The previous runtime is unchanged." });
+  by = await harnesses();
+  assert.deepEqual([by.antigravity!.update?.status, by.antigravity!.update?.message], ["failed", "Installation cancelled. The previous runtime is unchanged."]);
 });
 
 // ---------------- the shell feed: T3's shell streams over the RPC socket ----------------
