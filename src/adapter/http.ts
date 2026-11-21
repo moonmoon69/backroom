@@ -1852,9 +1852,9 @@ export class HttpT3Adapter implements T3Adapter {
         await this.dispatch({ type: "queue.resume", commandId, threadId });
         return;
       case "thread.stop":
-        await this.cancelHeldApprovals(threadId, null);
         // Delegated tasks under the thread are stopped too (T3's default).
         await this.dispatch({ type: "thread.stop", commandId, threadId, reason: STOP_EVERYTHING_REASON });
+        await this.cancelLeftApprovals(threadId, null);
         return;
       case "subagent.stop":
         await this.dispatch({ type: "subagent.stop", commandId, threadId, runId: control.runId, subagentId: control.subagentId });
@@ -1865,37 +1865,30 @@ export class HttpT3Adapter implements T3Adapter {
   async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {
     const runId = input.runId ?? (await this.getThreadShell(input.threadId))?.activeRunId ?? null;
     if (!runId) return;
-    const cancelled = await this.cancelHeldApprovals(input.threadId, runId);
-    try {
-      await this.dispatch({ type: "run.interrupt", commandId: input.commandId, threadId: input.threadId, runId });
-    } catch (error) {
-      // The cancel had already ended the turn when the interrupt arrived.
-      if (!cancelled || !(error instanceof T3CommandRejected)) throw error;
-    }
+    await this.dispatch({ type: "run.interrupt", commandId: input.commandId, threadId: input.threadId, runId });
+    await this.cancelLeftApprovals(input.threadId, runId);
   }
 
   /**
-   * Before a stop, the approvals the run is held on (`runId`, or the thread's runs in progress) are answered with
-   * their own "cancel", T3's Cancel turn, which ends the turn. T3 cancels a stopped Claude run's approval itself but
-   * leaves a Codex run's pending: the thread then waits on it for good, and T3 refuses to settle it. True when T3
-   * took one. An approval answered meanwhile, or one that does not offer cancel, is left to the stop alone.
+   * After a stop T3 took, the approvals the stopped run was held on (`runId`; every one on the thread after Stop
+   * everything) are answered with their own "cancel", T3's Cancel turn. T3 cancels a stopped Claude run's approval
+   * itself but leaves a Codex run's pending: the thread then waits on it for good, and T3 refuses to settle it. The
+   * stop has gone through whatever happens here, so nothing is thrown: an approval T3 has cancelled meanwhile, one
+   * that does not offer cancel, or a thread that cannot be read leaves what the stop alone left.
    */
-  private async cancelHeldApprovals(threadId: string, runId: string | null): Promise<boolean> {
-    const detail = await this.getThreadDetail(threadId, { bounded: true });
-    if (!detail) return false;
-    const active = new Set(detail.runs.filter((run) => isRunActive(run.status)).map((run) => run.id));
-    let cancelled = false;
-    for (const request of detail.runtimeRequests) {
-      if (request.status !== "pending" || request.type !== "approval" || request.runId === null || !(runId ? request.runId === runId : active.has(request.runId))) continue;
-      if (request.options && request.options.length > 0 && !request.options.some((option) => option.decision === "cancel")) continue;
-      try {
-        await this.dispatch({ type: "runtime-request.respond", commandId: randomUUID(), threadId, requestId: request.id, decision: "cancel" });
-        cancelled = true;
-      } catch (error) {
-        if (!(error instanceof T3CommandRejected)) throw error;
+  private async cancelLeftApprovals(threadId: string, runId: string | null): Promise<void> {
+    try {
+      const detail = await this.getThreadDetail(threadId, { bounded: true });
+      for (const request of detail?.runtimeRequests ?? []) {
+        if (request.status !== "pending" || request.type !== "approval" || (runId !== null && request.runId !== runId)) continue;
+        if (request.options && request.options.length > 0 && !request.options.some((option) => option.decision === "cancel")) continue;
+        await this.dispatch({ type: "runtime-request.respond", commandId: randomUUID(), threadId, requestId: request.id, decision: "cancel" }).catch((error: unknown) => {
+          if (!(error instanceof T3CommandRejected)) throw error;
+        });
       }
+    } catch (error) {
+      console.warn(`[backroom] approvals left by the stop of thread ${threadId} not cancelled: ${(error as Error).message}`);
     }
-    return cancelled;
   }
 
   async respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: ApprovalDecision }): Promise<void> {
