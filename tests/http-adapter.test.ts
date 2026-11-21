@@ -267,10 +267,19 @@ test("after a stop T3 took, the approval the stopped run was held on is answered
     runtimeRequests: [request("held"), request("earlier"), request("form", "mcp-elicitation"), request("question", "user_input")],
   };
   let readable = true;
+  // Reads still to show the approval pending before T3 is seen to have cancelled it itself; null: it stays pending.
+  let pendingReads: number | null = null;
+  let reads = 0;
+  const read = () => {
+    reads += 1;
+    const cancelled = pendingReads !== null && pendingReads-- <= 0;
+    const requests = cancelled ? projection.runtimeRequests.map((r) => (r.id === "held" ? { ...r, status: "cancelled" } : r)) : projection.runtimeRequests;
+    return { status: 200, body: { snapshotSequence: 10 + reads, projection: { ...projection, runtimeRequests: requests } } };
+  };
   const { fetchImpl } = mockFetch({
     ...base,
     "GET /api/orchestration/shell": () => ({ status: 200, body: shell }),
-    "GET /api/orchestration/threads/thread-1/bounded": () => (readable ? { status: 200, body: { snapshotSequence: 10, projection } } : { status: 503, body: { error: "unavailable" } }),
+    "GET /api/orchestration/threads/thread-1/bounded": () => (readable ? read() : { status: 503, body: { error: "unavailable" } }),
   });
   let refuse: string[] = [];
   const { Socket, frames } = mockSocket({
@@ -286,29 +295,38 @@ test("after a stop T3 took, the approval the stopped run was held on is answered
   await adapter.interruptRun({ commandId: "c1", threadId: "thread-1", runId: RUN });
   assert.deepEqual(sent(), [["run.interrupt", RUN, null], ["runtime-request.respond", "held", "cancel"]], "the stopped run's approvals that offer cancel; a question is not an approval");
 
-  // Stop everything stops every run: each approval on the thread is left by it.
+  // Stop everything stops the run the shell names as active: another run's approval is not its to answer.
   await adapter.controlThread({ commandId: "c2", threadId: "thread-1", control: { type: "thread.stop" } });
-  assert.deepEqual(sent(), [["thread.stop", null, null], ["runtime-request.respond", "held", "cancel"], ["runtime-request.respond", "earlier", "cancel"]]);
+  assert.deepEqual(sent(), [["thread.stop", null, null], ["runtime-request.respond", "held", "cancel"]]);
 
   // A stop T3 refuses is refused as before, and nothing is answered.
   refuse = ["run.interrupt"];
   await assert.rejects(adapter.interruptRun({ commandId: "c3", threadId: "thread-1", runId: RUN }), (error: unknown) => error instanceof T3CommandRejected && /is not interruptible/.test(error.message));
   assert.deepEqual(sent().map((f) => f[0]), ["run.interrupt"]);
 
-  // T3 cancelled the approval itself meanwhile (a Claude run's): the stop is done.
+  assert.equal(warned.mock.callCount(), 0);
+
+  // T3 cancelled the approval itself meanwhile (a Claude run's) and refuses the cancel: nothing is left, nothing said.
   refuse = ["runtime-request.respond"];
-  await adapter.interruptRun({ commandId: "c4", threadId: "thread-1", runId: RUN });
+  pendingReads = 1;
+  await adapter.interruptRun({ commandId: "c4a", threadId: "thread-1", runId: RUN });
   assert.deepEqual(sent().map((f) => f[0]), ["run.interrupt", "runtime-request.respond"]);
   assert.equal(warned.mock.callCount(), 0);
 
-  // The thread cannot be read after the stop: the stop went out and is done; what it left is said in the log.
+  // T3 refuses the cancel and the approval is still pending: the stop is done, and what it left is said in the log.
+  pendingReads = null;
+  await adapter.interruptRun({ commandId: "c4", threadId: "thread-1", runId: RUN });
+  assert.deepEqual(sent().map((f) => f[0]), ["run.interrupt", "runtime-request.respond"]);
+  assert.equal(warned.mock.callCount(), 1);
+  assert.match(String(warned.mock.calls[0]!.arguments[0]), new RegExp(`an approval left by the stop of run ${RUN} was not cancelled: .*Runtime request held is cancelled`));
+
+  // The thread cannot be read after the stop: the stop went out and is done, and the log says so.
   refuse = [];
   readable = false;
   await adapter.interruptRun({ commandId: "c5", threadId: "thread-1", runId: RUN });
   await adapter.controlThread({ commandId: "c6", threadId: "thread-1", control: { type: "thread.stop" } });
   assert.deepEqual(sent().map((f) => f[0]), ["run.interrupt", "thread.stop"]);
-  assert.equal(warned.mock.callCount(), 2);
-  assert.match(String(warned.mock.calls[0]!.arguments[0]), /approvals left by the stop of thread thread-1 not cancelled/);
+  assert.equal(warned.mock.callCount(), 3);
   adapter.close();
 });
 
