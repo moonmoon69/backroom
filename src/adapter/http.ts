@@ -20,6 +20,7 @@
  * on another protocol is reported as T3ProtocolMismatch; only server.* calls are still made to it, so it can be
  * updated from here. A run is found by the id of the user message that started it: T3 records it on the run.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelSelection } from "../domain/types.ts";
@@ -1851,6 +1852,7 @@ export class HttpT3Adapter implements T3Adapter {
         await this.dispatch({ type: "queue.resume", commandId, threadId });
         return;
       case "thread.stop":
+        await this.cancelHeldApprovals(threadId, null);
         // Delegated tasks under the thread are stopped too (T3's default).
         await this.dispatch({ type: "thread.stop", commandId, threadId, reason: STOP_EVERYTHING_REASON });
         return;
@@ -1863,7 +1865,37 @@ export class HttpT3Adapter implements T3Adapter {
   async interruptRun(input: { commandId: string; threadId: string; runId: string | null }): Promise<void> {
     const runId = input.runId ?? (await this.getThreadShell(input.threadId))?.activeRunId ?? null;
     if (!runId) return;
-    await this.dispatch({ type: "run.interrupt", commandId: input.commandId, threadId: input.threadId, runId });
+    const cancelled = await this.cancelHeldApprovals(input.threadId, runId);
+    try {
+      await this.dispatch({ type: "run.interrupt", commandId: input.commandId, threadId: input.threadId, runId });
+    } catch (error) {
+      // The cancel had already ended the turn when the interrupt arrived.
+      if (!cancelled || !(error instanceof T3CommandRejected)) throw error;
+    }
+  }
+
+  /**
+   * Before a stop, the approvals the run is held on (`runId`, or the thread's runs in progress) are answered with
+   * their own "cancel", T3's Cancel turn, which ends the turn. T3 cancels a stopped Claude run's approval itself but
+   * leaves a Codex run's pending: the thread then waits on it for good, and T3 refuses to settle it. True when T3
+   * took one. An approval answered meanwhile, or one that does not offer cancel, is left to the stop alone.
+   */
+  private async cancelHeldApprovals(threadId: string, runId: string | null): Promise<boolean> {
+    const detail = await this.getThreadDetail(threadId, { bounded: true });
+    if (!detail) return false;
+    const active = new Set(detail.runs.filter((run) => isRunActive(run.status)).map((run) => run.id));
+    let cancelled = false;
+    for (const request of detail.runtimeRequests) {
+      if (request.status !== "pending" || request.type !== "approval" || request.runId === null || !(runId ? request.runId === runId : active.has(request.runId))) continue;
+      if (request.options && request.options.length > 0 && !request.options.some((option) => option.decision === "cancel")) continue;
+      try {
+        await this.dispatch({ type: "runtime-request.respond", commandId: randomUUID(), threadId, requestId: request.id, decision: "cancel" });
+        cancelled = true;
+      } catch (error) {
+        if (!(error instanceof T3CommandRejected)) throw error;
+      }
+    }
+    return cancelled;
   }
 
   async respondApproval(input: { commandId: string; threadId: string; requestId: string; decision: ApprovalDecision }): Promise<void> {

@@ -247,6 +247,58 @@ test("a thread is launched with its workspace and, when given, its first message
   adapter.close();
 });
 
+test("a stop first answers the approval its run is held on with the approval's own cancel, which T3 leaves pending on a stopped Codex run", async () => {
+  // As T3 0.1.12 showed it: run.interrupt and thread.stop end a Codex run and leave its command approval pending, and
+  // T3 then refuses to settle the thread ("is waiting on an approval or question"); the approval's cancel ends the turn.
+  const ENDED = "run:thread:thread-1:ordinal:0";
+  const item = (requestId: string, runId: string, fields: Record<string, unknown> = {}) => ({ id: `item-${requestId}`, threadId: "thread-1", runId, nodeId: `node-${requestId}`, ordinal: 1, status: "completed", title: null, startedAt: "2026-10-03T00:00:01.000Z", completedAt: null, updatedAt: "2026-10-03T00:00:01.000Z", type: "approval_request", requestId, requestKind: "command", prompt: "rm -rf scratch", ...fields });
+  const request = (id: string, kind = "command") => ({ id, nodeId: `node-${id}`, kind, status: "pending", responseCapability: { type: "live" }, createdAt: "2026-10-03T00:00:02.000Z", resolvedAt: null });
+  const run = (id: string, ordinal: number, status: string) => ({ id, threadId: "thread-1", ordinal, providerInstanceId: "codex", modelSelection: { instanceId: "codex", model: "gpt-6-sol" }, userMessageId: `msg-${ordinal}`, status, queuePosition: null, requestedAt: "2026-10-03T00:00:00.000Z", startedAt: "2026-10-03T00:00:00.500Z", completedAt: null, checkpointId: null });
+  const projection = {
+    thread: { ...threadShell },
+    runs: [run(ENDED, 0, "interrupted"), run(RUN, 1, "running")],
+    messages: [],
+    turnItems: [
+      item("held", RUN),
+      item("earlier", ENDED),
+      item("form", RUN, { requestKind: "mcp-elicitation", options: [{ decision: "accept", label: "Approve" }, { decision: "decline", label: "Decline" }] }),
+      { ...item("question", RUN), type: "user_input_request", questions: [], responseMode: "live" },
+    ],
+    runtimeRequests: [request("held"), request("earlier"), request("form", "mcp-elicitation"), request("question", "user_input")],
+  };
+  const { fetchImpl } = mockFetch({ ...base, "GET /api/orchestration/shell": () => ({ status: 200, body: shell }), "GET /api/orchestration/threads/thread-1/bounded": () => ({ status: 200, body: { snapshotSequence: 10, projection } }) });
+  let refuse: string[] = [];
+  const { Socket, frames } = mockSocket({
+    "orchestration.dispatchCommand": (payload: { type: string }) => {
+      if (refuse.includes(payload.type)) throw new Error(payload.type === "run.interrupt" ? `Run ${RUN} is not interruptible.` : "Runtime request held is resolved.");
+      return { sequence: 11 };
+    },
+  });
+  const adapter = new HttpT3Adapter({ baseUrl: "http://t3.local:3773", accessToken: "tok", fetchImpl, webSocketImpl: Socket });
+  const sent = () => frames.splice(0).map((f) => [f.payload.type, f.payload.requestId ?? f.payload.runId ?? null, f.payload.decision ?? null]);
+
+  await adapter.interruptRun({ commandId: "c1", threadId: "thread-1", runId: RUN });
+  assert.deepEqual(sent(), [["runtime-request.respond", "held", "cancel"], ["run.interrupt", RUN, null]], "only this run's approvals that offer cancel; a question is not an approval");
+
+  // The cancel has ended the turn by the time the interrupt arrives: the stop is done.
+  refuse = ["run.interrupt"];
+  await adapter.interruptRun({ commandId: "c2", threadId: "thread-1", runId: RUN });
+  assert.deepEqual(sent().map((f) => f[0]), ["runtime-request.respond", "run.interrupt"]);
+
+  // The approval was answered meanwhile: the interrupt alone stops the run, and its refusal is the caller's to hear.
+  refuse = ["runtime-request.respond", "run.interrupt"];
+  await assert.rejects(adapter.interruptRun({ commandId: "c3", threadId: "thread-1", runId: RUN }), (error: unknown) => error instanceof T3CommandRejected && /is not interruptible/.test(error.message));
+  refuse = ["runtime-request.respond"];
+  await adapter.interruptRun({ commandId: "c4", threadId: "thread-1", runId: RUN });
+  assert.deepEqual(sent().map((f) => f[0]), ["runtime-request.respond", "run.interrupt", "runtime-request.respond", "run.interrupt"]);
+
+  // Stop everything names no run: the approvals of the runs in progress.
+  refuse = [];
+  await adapter.controlThread({ commandId: "c5", threadId: "thread-1", control: { type: "thread.stop" } });
+  assert.deepEqual(sent(), [["runtime-request.respond", "held", "cancel"], ["thread.stop", null, null]]);
+  adapter.close();
+});
+
 test("a thread launched into a new worktree without a first message is returned once T3 has made the worktree", async () => {
   // T3 answers the launch as soon as the thread exists; the worktree is recorded on it a moment later.
   let reads = 0;
