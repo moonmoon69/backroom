@@ -73,7 +73,7 @@ export const startedWords = (iso: string | null | undefined): string => {
 };
 
 /**
- * A room tile's hover text: "Open Total time · Started 21 Nov 2026, 10:13". The tile is one button stretched over all
+ * A room tile's hover text: "Open Search latency · Started 21 Nov 2026, 10:13". The tile is one button stretched over all
  * of it (styles.css, .ov-room-head::after), so a title on anything inside it is never reached: the start is said here.
  */
 export const roomTileTitle = (title: string, createdAt: string | null | undefined): string => [`Open ${title}`, startedWords(createdAt)].filter(Boolean).join(" · ");

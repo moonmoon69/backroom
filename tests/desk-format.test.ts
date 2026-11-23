@@ -34,6 +34,6 @@ test("when a room started, in words: the day and time, nothing for no time", () 
 // Review #23: a title on the age inside the tile was never reached, the tile's button being stretched over it.
 test("a room tile's hover text says when the room started, after what a click does; without a time, only that", () => {
   const iso = "2026-11-21T10:13:00Z";
-  assert.equal(roomTileTitle("Total time", iso), `Open Total time · ${startedWords(iso)}`);
-  assert.equal(roomTileTitle("Total time", "not a time"), "Open Total time");
+  assert.equal(roomTileTitle("Search latency", iso), `Open Search latency · ${startedWords(iso)}`);
+  assert.equal(roomTileTitle("Search latency", "not a time"), "Open Search latency");
 });
