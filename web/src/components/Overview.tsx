@@ -510,9 +510,7 @@ function RoomCard({
         {news ? <span className="pill pill-new">{news.unseen} new</span> : null}
         {drafted ? <DraftMark /> : null}
         <span className="spacer" />
-        <span className="mono muted">
-          {hoursSince(room.createdAt)} · {room.participantCount} member{room.participantCount === 1 ? "" : "s"}
-        </span>
+        <span className="mono muted">{hoursSince(room.createdAt)}</span>
       </button>
       {/* Rename or delete, outside the card's button; above its stretched hit area. */}
       <span className="ov-room-menu">
