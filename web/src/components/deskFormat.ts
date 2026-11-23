@@ -55,6 +55,23 @@ export const ageOf = (iso: string | null | undefined, now = Date.now()): string 
   return new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 };
 
+/**
+ * How long something has been around: whole hours ("37h"), minutes under one hour ("12m"). Hours however long, never
+ * days: a room's age is read as the time spent on it.
+ */
+export const hoursSince = (iso: string | null | undefined, now = Date.now()): string => {
+  const ms = iso ? now - Date.parse(iso) : Number.NaN;
+  if (!Number.isFinite(ms)) return "";
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h`;
+};
+
+/** "Started 21 Nov 2026, 10:13": the day and time something began, in the user's locale. */
+export const startedWords = (iso: string | null | undefined): string => {
+  const date = iso ? new Date(iso) : null;
+  return date && !Number.isNaN(date.getTime()) ? `Started ${date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : "";
+};
+
 /** Meter tone by percent used: ok under 60, warn 60–85, err above. */
 export const meterTone = (percent: number): "ok" | "warn" | "err" => (percent < 60 ? "ok" : percent <= 85 ? "warn" : "err");
 

@@ -11,6 +11,7 @@ import { RoomStatePanel } from "./RoomState.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { WorkBar } from "./WorkBar.tsx";
 import { CloseIcon } from "./icons.tsx";
+import { hoursSince, startedWords } from "./deskFormat.ts";
 import { gridTarget, laneTarget, nearestInHeight, openLanding, type Lane } from "../keyOrder.ts";
 import { boxed, byKey, focusItem, focusWhen, inView, itemOf, laneAt, navItems, navKey, navProps, postsOf, roomLanes, showsAtBottom, showsNow, sideItems } from "../keys.ts";
 
@@ -297,7 +298,7 @@ export function OverviewRoom({
           <h1 title={snapshot.room.title}>{snapshot.room.title}</h1>
           <span className="sheet-sub muted">
             {project ? `${project.title} · ` : ""}
-            {members.length} member{members.length === 1 ? "" : "s"}
+            {members.length} member{members.length === 1 ? "" : "s"} · <span title={startedWords(snapshot.room.createdAt)}>{hoursSince(snapshot.room.createdAt)}</span>
           </span>
         </div>
         {consigliere ? (

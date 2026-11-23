@@ -19,6 +19,7 @@ import { reloadAgentsFiles, useAgentsFiles } from "../agentsFiles.ts";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
+import { hoursSince, startedWords } from "./deskFormat.ts";
 import { byKey, focusItem, itemOf, keyOf, navKey, overviewItems } from "../keys.ts";
 import { gridStart, gridTarget, type Span } from "../keyOrder.ts";
 
@@ -509,7 +510,9 @@ function RoomCard({
         {news ? <span className="pill pill-new">{news.unseen} new</span> : null}
         {drafted ? <DraftMark /> : null}
         <span className="spacer" />
-        <span className="mono muted">{room.participantCount} member{room.participantCount === 1 ? "" : "s"}</span>
+        <span className="mono muted">
+          <span title={startedWords(room.createdAt)}>{hoursSince(room.createdAt)}</span> · {room.participantCount} member{room.participantCount === 1 ? "" : "s"}
+        </span>
       </button>
       {/* Rename or delete, outside the card's button; above its stretched hit area. */}
       <span className="ov-room-menu">

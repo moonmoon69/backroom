@@ -141,7 +141,7 @@ The overview's header holds **+** (a new project) and **Arrange** on the left, a
 
 Controls that open, close, toggle or add something are icons with a hover name (people, globe, branch, ⋯, ×, +, image, theme); actions that change something (**Send**, **Start browser**, **Retry**) are words. Each page's **⋯** menu holds its less frequent actions, the destructive one last and in red.
 
-A room's tile shows what it asks of you: **N need you** (an approval, a question, a secret, a failure), **N busy**, and **N new** when something finished there since you last looked (see [below](#what-finished-while-you-were-away)); under them each member's state and what it is doing. A thread's tile shows its agent's state the same way, **needs you** when it waits on you, and **new** (or **failed**) when its turn ended since you last looked.
+A room's tile shows what it asks of you: **N need you** (an approval, a question, a secret, a failure), **N busy**, and **N new** when something finished there since you last looked (see [below](#what-finished-while-you-were-away)); under them each member's state and what it is doing. Beside the member count, on the tile and under the room's name in its header, is how long the room has been around since it was made: whole hours however long (`37h`), minutes in its first hour; hover it for the day and time it started. A thread's tile shows its agent's state the same way, **needs you** when it waits on you, and **new** (or **failed**) when its turn ended since you last looked.
 
 ### What finished while you were away
 
