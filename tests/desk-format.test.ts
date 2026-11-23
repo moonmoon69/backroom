@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isEffortOption } from "../src/domain/effort.ts";
-import { hoursSince, optionLabel, startedWords } from "../web/src/components/deskFormat.ts";
+import { hoursSince, optionLabel, roomTileTitle, startedWords } from "../web/src/components/deskFormat.ts";
 
 test("an option's label: every harness's spelling of the effort level reads 'effort', an unknown id reads as itself", () => {
   // Claude's effort, Codex's reasoningEffort, Cursor's reasoning (gpt-5.x, kimi, glm) and reasoning_effort (Grok 4.7 and
@@ -29,4 +29,11 @@ test("when a room started, in words: the day and time, nothing for no time", () 
   const iso = "2026-11-21T10:13:00Z";
   assert.equal(startedWords(iso), `Started ${new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`);
   for (const none of [null, undefined, "", "not a time"]) assert.equal(startedWords(none), "", String(none));
+});
+
+// Review #23: a title on the age inside the tile was never reached, the tile's button being stretched over it.
+test("a room tile's hover text says when the room started, after what a click does; without a time, only that", () => {
+  const iso = "2026-11-21T10:13:00Z";
+  assert.equal(roomTileTitle("Total time", iso), `Open Total time · ${startedWords(iso)}`);
+  assert.equal(roomTileTitle("Total time", "not a time"), "Open Total time");
 });

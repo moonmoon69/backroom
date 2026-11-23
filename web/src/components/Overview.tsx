@@ -19,7 +19,7 @@ import { reloadAgentsFiles, useAgentsFiles } from "../agentsFiles.ts";
 import { LookSprite, MemberMark } from "./MemberMark.tsx";
 import { threadActivity, threadCrew } from "./ThreadView.tsx";
 import { useCatalog } from "./catalog.ts";
-import { hoursSince, startedWords } from "./deskFormat.ts";
+import { hoursSince, roomTileTitle } from "./deskFormat.ts";
 import { byKey, focusItem, itemOf, keyOf, navKey, overviewItems } from "../keys.ts";
 import { gridStart, gridTarget, type Span } from "../keyOrder.ts";
 
@@ -503,7 +503,7 @@ function RoomCard({
   const news = room.news.unseen > 0 ? room.news : null;
   return (
     <article className={`ov-room${needs > 0 ? " needs" : busy > 0 ? " busy" : ""}${presetOver ? " preset-over" : ""}`} {...dropTarget} onClick={openOnClick(onOpen)} data-nav-card>
-      <button type="button" className="ov-room-head" onClick={onOpen} title={`Open ${room.title}`} data-nav="ov" data-nav-key={`room:${room.id}`} data-where={room.title}>
+      <button type="button" className="ov-room-head" onClick={onOpen} title={roomTileTitle(room.title, room.createdAt)} data-nav="ov" data-nav-key={`room:${room.id}`} data-where={room.title}>
         <span className="ov-room-title">{room.title}</span>
         {needs > 0 ? <span className="pill pill-input">{needs} need{needs === 1 ? "s" : ""} you</span> : null}
         {busy > 0 ? <span className="pill pill-working">{busy} busy</span> : null}
@@ -511,7 +511,7 @@ function RoomCard({
         {drafted ? <DraftMark /> : null}
         <span className="spacer" />
         <span className="mono muted">
-          <span title={startedWords(room.createdAt)}>{hoursSince(room.createdAt)}</span> · {room.participantCount} member{room.participantCount === 1 ? "" : "s"}
+          {hoursSince(room.createdAt)} · {room.participantCount} member{room.participantCount === 1 ? "" : "s"}
         </span>
       </button>
       {/* Rename or delete, outside the card's button; above its stretched hit area. */}

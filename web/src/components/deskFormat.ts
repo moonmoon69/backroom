@@ -72,6 +72,12 @@ export const startedWords = (iso: string | null | undefined): string => {
   return date && !Number.isNaN(date.getTime()) ? `Started ${date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : "";
 };
 
+/**
+ * A room tile's hover text: "Open Total time · Started 21 Nov 2026, 10:13". The tile is one button stretched over all
+ * of it (styles.css, .ov-room-head::after), so a title on anything inside it is never reached: the start is said here.
+ */
+export const roomTileTitle = (title: string, createdAt: string | null | undefined): string => [`Open ${title}`, startedWords(createdAt)].filter(Boolean).join(" · ");
+
 /** Meter tone by percent used: ok under 60, warn 60–85, err above. */
 export const meterTone = (percent: number): "ok" | "warn" | "err" => (percent < 60 ? "ok" : percent <= 85 ? "warn" : "err");
 
